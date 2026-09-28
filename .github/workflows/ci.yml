@@ -1,0 +1,86 @@
+name: CI
+
+# Continuous integration: build + test + dependency vulnerability scan for
+# both the Rust backend and the Svelte frontend. Maps to the CLAUDE.md
+# "Compliance & security baseline" (NIST SSDF 800-218 for the build
+# pipeline; ISO/IEC 27002 secure development & vulnerability management;
+# OWASP CI/CD).
+
+on:
+  push:
+    branches: [main, "checkpoint-*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  backend:
+    name: Rust — build, test, clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component clippy rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt --all --check
+        continue-on-error: true
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+        continue-on-error: true
+      - name: Build
+        run: cargo build --locked --all-targets
+      - name: Unit + integration tests
+        run: cargo test --locked
+        # The E2E Playwright suites need a live server + host tools
+        # (sudo, mdadm, clamav, …) and are run separately, not in CI.
+
+  backend-audit:
+    name: Rust — cargo audit (advisory scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-audit
+        run: rustup toolchain install stable --profile minimal && cargo install cargo-audit --locked
+      - name: Audit dependencies (RUSTSEC)
+        run: cargo audit --deny warnings
+
+  frontend:
+    name: Frontend — type-check, build, npm audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Type-check (svelte-check + tsc)
+        run: npm run check
+      - name: Build
+        run: npm run build
+      - name: npm audit (high+ severity)
+        run: npm audit --audit-level=high
+        continue-on-error: true
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

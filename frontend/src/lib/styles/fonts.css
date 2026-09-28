@@ -1,0 +1,139 @@
+/* HomeVault Fonts - Inter + JetBrains Mono, both self-hosted variable fonts (no external CDN).
+   Embedded in the Rust binary via include_dir! → served from /fonts/{path} at runtime.
+   SIL Open Font License — redistribution and embedding permitted. */
+
+/* Inter Variable Font — full glyph set: Latin, Latin-Ext, Greek, Cyrillic, Vietnamese.
+   The .woff2 files contain the complete Inter 4.0 variable set (~345KB normal, ~380KB italic). */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/fonts/inter/Inter-Variable.woff2') format('woff2-variations');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, /* Basic Latin + Latin-1 Supplement + modifiers */
+    U+0100-024F,        /* Latin Extended-A/B */
+    U+0250-02AF,        /* IPA Extensions */
+    U+0259,             /* Schwa */
+    U+1E00-1EFF,        /* Latin Extended Additional (Vietnamese etc.) */
+    U+2000-206F,        /* General Punctuation */
+    U+2074, U+20AC,     /* Superscripts, Euro sign */
+    U+20A0-20CF,        /* Currency Symbols */
+    U+2100-214F,        /* Letterlike Symbols */
+    U+2190-21FF,        /* Arrows */
+    U+2200-22FF,        /* Mathematical Operators */
+    U+2C60-2C7F,        /* Latin Extended-C */
+    U+FB00-FB06,        /* Latin ligatures (fi, fl etc.) */
+    U+A720-A7FF,        /* Latin Extended-D */
+    U+1F000-1FFFF,      /* Emojis — Inter skips, fallback picks up */
+    U+2030, U+2122,     /* Per-mille, Trade Mark */
+    U+FEFF, U+FFFD;     /* BOM, replacement char */
+}
+
+/* Inter Variable Italic — same coverage */
+@font-face {
+  font-family: 'Inter';
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/fonts/inter/Inter-Variable-Italic.woff2') format('woff2-variations');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0100-024F,
+    U+0250-02AF,
+    U+0259,
+    U+1E00-1EFF,
+    U+2000-206F,
+    U+2074, U+20AC,
+    U+20A0-20CF,
+    U+2100-214F,
+    U+2190-21FF,
+    U+2200-22FF,
+    U+2C60-2C7F,
+    U+FB00-FB06,
+    U+A720-A7FF,
+    U+1F000-1FFFF,
+    U+2030, U+2122,
+    U+FEFF, U+FFFD;
+}
+
+/* JetBrains Mono Variable — monospace for terminal/code. Full set: Latin, Latin-Ext, Greek, Cyrillic. */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url('/fonts/jetbrains-mono/JetBrainsMono-Variable.woff2') format('woff2-variations');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0100-024F,
+    U+0250-02AF,
+    U+1E00-1EFF,
+    U+2000-206F,
+    U+20A0-20CF,
+    U+2190-21FF,
+    U+2200-22FF,
+    U+2C60-2C7F,
+    U+A720-A7FF,
+    U+2030, U+2122,
+    U+FEFF, U+FFFD;
+}
+
+/* JetBrains Mono Variable Italic */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: italic;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url('/fonts/jetbrains-mono/JetBrainsMono-Variable-Italic.woff2') format('woff2-variations');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0100-024F,
+    U+0250-02AF,
+    U+1E00-1EFF,
+    U+2000-206F,
+    U+20A0-20CF,
+    U+2190-21FF,
+    U+2200-22FF,
+    U+2C60-2C7F,
+    U+A720-A7FF,
+    U+2030, U+2122,
+    U+FEFF, U+FFFD;
+}
+
+/* OpenType Features for Inter - Improves rendering */
+body {
+  font-feature-settings:
+    'cv01' 1,  /* Alternate l (better readability) */
+    'cv02' 1,  /* Alternate a */
+    'cv05' 1,  /* Alternate G */
+    'cv09' 1,  /* Alternate 4 */
+    'ss01' 1,  /* Stylistic Set 1 */
+    'ss03' 1,  /* Stylistic Set 3 */
+    'zero' 1,  /* Slashed zero */
+    'tnum' 1;  /* Tabular numbers (important for stats/tables) */
+}
+
+/* Disable tabular numbers for body text */
+p, span, div {
+  font-variant-numeric: normal;
+}
+
+/* Force tabular numbers for figures in tables/stats */
+table,
+.metric-value,
+.stat-number,
+.hv-widget-value,
+.hv-topbar-time,
+.dashboard-metric,
+[data-numeric="true"] {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* Text rendering optimization */
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}

@@ -1,0 +1,313 @@
+{
+  "covered": [
+    {
+      "original": "alert-circle",
+      "normalized": "alert-circle"
+    },
+    {
+      "original": "alert-triangle",
+      "normalized": "alert-triangle"
+    },
+    {
+      "original": "arrow_right",
+      "normalized": "arrow-right"
+    },
+    {
+      "original": "bookmark",
+      "normalized": "bookmark"
+    },
+    {
+      "original": "cast",
+      "normalized": "cast"
+    },
+    {
+      "original": "check",
+      "normalized": "check"
+    },
+    {
+      "original": "check-circle",
+      "normalized": "check-circle"
+    },
+    {
+      "original": "check_circle",
+      "normalized": "check-circle"
+    },
+    {
+      "original": "chevron-left",
+      "normalized": "chevron-left"
+    },
+    {
+      "original": "chevron-right",
+      "normalized": "chevron-right"
+    },
+    {
+      "original": "chevron_left",
+      "normalized": "chevron-left"
+    },
+    {
+      "original": "cloud",
+      "normalized": "cloud"
+    },
+    {
+      "original": "cloud_off",
+      "normalized": "cloud-off"
+    },
+    {
+      "original": "computer",
+      "normalized": "computer"
+    },
+    {
+      "original": "cookie",
+      "normalized": "cookie"
+    },
+    {
+      "original": "database",
+      "normalized": "database"
+    },
+    {
+      "original": "delete",
+      "normalized": "delete"
+    },
+    {
+      "original": "download",
+      "normalized": "download"
+    },
+    {
+      "original": "edit",
+      "normalized": "edit"
+    },
+    {
+      "original": "folder",
+      "normalized": "folder"
+    },
+    {
+      "original": "folder_open",
+      "normalized": "folder-open"
+    },
+    {
+      "original": "hard_drive",
+      "normalized": "hard-drive"
+    },
+    {
+      "original": "home",
+      "normalized": "home"
+    },
+    {
+      "original": "image",
+      "normalized": "image"
+    },
+    {
+      "original": "info",
+      "normalized": "info"
+    },
+    {
+      "original": "layers",
+      "normalized": "layers"
+    },
+    {
+      "original": "loader",
+      "normalized": "loader"
+    },
+    {
+      "original": "loader-2",
+      "normalized": "loader-2"
+    },
+    {
+      "original": "lock",
+      "normalized": "lock"
+    },
+    {
+      "original": "lucide-check-circle",
+      "normalized": "check-circle"
+    },
+    {
+      "original": "pause",
+      "normalized": "pause"
+    },
+    {
+      "original": "play_circle",
+      "normalized": "play-circle"
+    },
+    {
+      "original": "plus",
+      "normalized": "plus"
+    },
+    {
+      "original": "power",
+      "normalized": "power"
+    },
+    {
+      "original": "refresh-cw",
+      "normalized": "refresh-cw"
+    },
+    {
+      "original": "router",
+      "normalized": "router"
+    },
+    {
+      "original": "search",
+      "normalized": "search"
+    },
+    {
+      "original": "settings",
+      "normalized": "settings"
+    },
+    {
+      "original": "shield",
+      "normalized": "shield"
+    },
+    {
+      "original": "shield-check",
+      "normalized": "shield-check"
+    },
+    {
+      "original": "shield_check",
+      "normalized": "shield-check"
+    },
+    {
+      "original": "speed",
+      "normalized": "speed"
+    },
+    {
+      "original": "terminal",
+      "normalized": "terminal"
+    },
+    {
+      "original": "upload",
+      "normalized": "upload"
+    },
+    {
+      "original": "user",
+      "normalized": "user"
+    },
+    {
+      "original": "user-check",
+      "normalized": "user-check"
+    },
+    {
+      "original": "wifi",
+      "normalized": "wifi"
+    },
+    {
+      "original": "wifi_off",
+      "normalized": "wifi-off"
+    },
+    {
+      "original": "x",
+      "normalized": "x"
+    }
+  ],
+  "notCovered": [
+    "account_circle",
+    "add",
+    "add_circle",
+    "apps",
+    "arrow_upward",
+    "backup",
+    "cable",
+    "cast_connected",
+    "category",
+    "close",
+    "cloud_check",
+    "cloud_done",
+    "cloud_download",
+    "cloud_sync",
+    "cloud_upload",
+    "content_copy",
+    "create_new_folder",
+    "dark_mode",
+    "description",
+    "device_usb",
+    "dns",
+    "done",
+    "drive_file_move",
+    "error",
+    "error_outline",
+    "file_settings",
+    "folder_shared",
+    "grid_view",
+    "group",
+    "hard_drives",
+    "hub",
+    "inventory_2",
+    "launchpad",
+    "memory",
+    "monitor_heart",
+    "network_check",
+    "notifications",
+    "notifications_off",
+    "person",
+    "pie_chart",
+    "pin_drop",
+    "play_arrow",
+    "power_settings_new",
+    "progress_activity",
+    "radio_button_unchecked",
+    "refresh",
+    "schedule",
+    "search_off",
+    "server",
+    "stop",
+    "storage",
+    "system_update_alt",
+    "thermostat",
+    "tune",
+    "unarchive",
+    "video_library",
+    "view_list",
+    "visibility",
+    "warning",
+    "widgets"
+  ],
+  "mapping": {
+    "alert-circle": "alert-circle",
+    "alert-triangle": "alert-triangle",
+    "arrow_right": "arrow-right",
+    "bookmark": "bookmark",
+    "cast": "cast",
+    "check": "check",
+    "check-circle": "check-circle",
+    "check_circle": "check-circle",
+    "chevron-left": "chevron-left",
+    "chevron-right": "chevron-right",
+    "chevron_left": "chevron-left",
+    "cloud": "cloud",
+    "cloud_off": "cloud-off",
+    "computer": "computer",
+    "cookie": "cookie",
+    "database": "database",
+    "delete": "delete",
+    "download": "download",
+    "edit": "edit",
+    "folder": "folder",
+    "folder_open": "folder-open",
+    "hard_drive": "hard-drive",
+    "home": "home",
+    "image": "image",
+    "info": "info",
+    "layers": "layers",
+    "loader": "loader",
+    "loader-2": "loader-2",
+    "lock": "lock",
+    "lucide-check-circle": "check-circle",
+    "pause": "pause",
+    "play_circle": "play-circle",
+    "plus": "plus",
+    "power": "power",
+    "refresh-cw": "refresh-cw",
+    "router": "router",
+    "search": "search",
+    "settings": "settings",
+    "shield": "shield",
+    "shield-check": "shield-check",
+    "shield_check": "shield-check",
+    "speed": "speed",
+    "terminal": "terminal",
+    "upload": "upload",
+    "user": "user",
+    "user-check": "user-check",
+    "wifi": "wifi",
+    "wifi_off": "wifi-off",
+    "x": "x"
+  }
+}

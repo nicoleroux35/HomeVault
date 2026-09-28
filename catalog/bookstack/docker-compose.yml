@@ -1,0 +1,38 @@
+services:
+  bookstack:
+    image: lscr.io/linuxserver/bookstack:latest
+    container_name: bookstack
+    restart: unless-stopped
+    ports:
+      - "{{PORT}}:80"
+    environment:
+      - APP_URL=http://localhost:{{PORT}}
+      - DB_HOST=bookstack-db
+      - DB_USER=bookstack
+      - DB_PASS=bookstack
+      - DB_DATABASE=bookstackapp
+    volumes:
+      - {{DATA_DIR}}/config:/config
+    depends_on:
+      - bookstack-db
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+  bookstack-db:
+    image: lscr.io/linuxserver/mariadb:latest
+    container_name: bookstack-db
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=bookstack
+      - MYSQL_DATABASE=bookstackapp
+      - MYSQL_USER=bookstack
+      - MYSQL_PASSWORD=bookstack
+    volumes:
+      - {{DATA_DIR}}/db:/config
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'

@@ -1,0 +1,17 @@
+services:
+  freshrss:
+    image: freshrss/freshrss:latest
+    container_name: freshrss
+    restart: unless-stopped
+    environment:
+      - TZ=UTC
+    ports:
+      - "{{PORT}}:80"
+    volumes:
+      - {{DATA_DIR}}/data:/var/www/FreshRSS/data
+      - {{DATA_DIR}}/extensions:/var/www/FreshRSS/extensions
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'

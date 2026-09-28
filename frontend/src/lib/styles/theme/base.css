@@ -1,0 +1,744 @@
+/**
+ * HOMEVAULT DESIGN SYSTEM - Base Styles
+ * Version: 2.0
+ * Date: 2026-07-03
+ *
+ * Base styles and resets for HomeVault interface
+ */
+
+/* ============================================
+   BASE RESET & NORMALIZATION
+   ============================================ */
+/* Fonts are self-hosted — see frontend/src/lib/styles/fonts.css, loaded once from main.ts */
+/* Universal reset must live in `@layer base` (not unlayered): an unlayered
+   `* { padding:0; margin:0 }` would otherwise beat every Tailwind
+   padding/margin utility (unlayered styles outrank all layers), silently
+   killing `p-*`/`px-*`/`pt-*`/`m-*` app-wide. In `@layer base` the reset still
+   normalizes elements, but utilities (a later layer) win where used. */
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+}
+
+html {
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  font-family: var(--hv-font-family);
+  font-size: var(--hv-font-size-base);
+  font-weight: var(--hv-font-weight-regular);
+  line-height: var(--hv-line-height-normal);
+  color: var(--hv-text-primary);
+  background-color: var(--hv-background);
+  overflow-x: hidden;
+  font-feature-settings:
+    'cv01' 1,
+    'cv02' 1,
+    'ss01' 1,
+    'tnum' 1,
+    'zero' 1;
+}
+
+/* ============================================
+   TYPOGRAPHY BASE
+   ============================================ */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: var(--hv-font-weight-semibold);
+  line-height: var(--hv-line-height-tight);
+  color: var(--hv-text-primary);
+}
+
+h1 {
+  font-size: var(--hv-font-size-4xl);
+  letter-spacing: var(--hv-letter-spacing-tight);
+}
+
+h2 {
+  font-size: var(--hv-font-size-3xl);
+}
+
+h3 {
+  font-size: var(--hv-font-size-2xl);
+}
+
+h4 {
+  font-size: var(--hv-font-size-xl);
+}
+
+h5 {
+  font-size: var(--hv-font-size-lg);
+}
+
+h6 {
+  font-size: var(--hv-font-size-md);
+}
+
+p {
+  margin-bottom: var(--hv-space-4);
+}
+
+a {
+  color: var(--hv-primary);
+  text-decoration: none;
+  transition: color var(--hv-transition-base) var(--hv-ease-default);
+}
+
+a:hover {
+  color: var(--hv-primary-hover);
+}
+
+a:focus-visible {
+  outline: 2px solid var(--hv-primary);
+  outline-offset: 2px;
+  border-radius: var(--hv-radius-sm);
+}
+
+/* ============================================
+   FORM ELEMENTS BASE
+   ============================================
+   Lives in `@layer base` (same reason as the universal reset above): an
+   unlayered `button { background:none; padding:0 }` or
+   `input { width:100%; border:1px solid … }` outranks every layered Tailwind
+   utility, so a `bg-[var(--hv-primary)]` button loses its fill and padding
+   (invisible "Save" in Settings) and a `w-auto` compact select renders full
+   width. In `@layer base` the element defaults still apply to unstyled
+   controls, but utilities win where used. */
+@layer base {
+  button,
+  input,
+  select,
+  textarea {
+    font-family: inherit;
+    font-size: inherit;
+    line-height: inherit;
+  }
+
+  button {
+    cursor: pointer;
+    border: none;
+    background: none;
+    padding: 0;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  input,
+  select,
+  textarea {
+    width: 100%;
+    border: 1px solid var(--hv-border);
+    border-radius: var(--hv-radius-md);
+    padding: var(--hv-input-padding);
+    background-color: var(--hv-surface-container-lowest);
+    color: var(--hv-text-primary);
+    transition:
+      color var(--hv-transition-base) var(--hv-ease-default),
+      background-color var(--hv-transition-base) var(--hv-ease-default),
+      border-color var(--hv-transition-base) var(--hv-ease-default),
+      box-shadow var(--hv-transition-base) var(--hv-ease-default);
+  }
+
+  input:focus,
+  select:focus,
+  textarea:focus {
+    outline: none;
+    border-color: var(--hv-primary);
+    box-shadow: var(--hv-focus-ring);
+  }
+
+  input:disabled,
+  select:disabled,
+  textarea:disabled {
+    background-color: var(--hv-surface-container);
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+
+  /* Textareas must carry the same placeholder colour as inputs: without this
+     they keep the UA default (≈3.1:1 on white) while inputs read the token's
+     4.7:1. One selector keeps the two from drifting apart again. */
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--hv-text-tertiary);
+  }
+}
+
+/* ============================================
+   SCROLLBAR STYLING
+   ============================================ */
+::-webkit-scrollbar {
+  width: var(--hv-scrollbar-size);
+  height: var(--hv-scrollbar-size);
+}
+
+::-webkit-scrollbar-track {
+  background-color: var(--hv-scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--hv-scrollbar-thumb);
+  border-radius: var(--hv-radius-full);
+  transition: background-color var(--hv-transition-base) var(--hv-ease-default);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--hv-scrollbar-thumb-hover);
+}
+
+/* Held while dragging the thumb — a stronger, primary-tinted grip. */
+::-webkit-scrollbar-thumb:active {
+  background-color: var(--hv-scrollbar-thumb-active);
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--hv-scrollbar-thumb) var(--hv-scrollbar-track);
+}
+
+/* ============================================
+   TOUCH / PEN SCROLLBARS
+   --------------------------------------------
+   Coarse pointers can't catch an 8px bar. Widen the track and give the
+   thumb a tall minimum length + a transparent border that enlarges the
+   finger hit-area while `background-clip: padding-box` keeps the painted
+   pill visually slim (the overlay look). Scoped to `any-pointer: coarse`
+   (a touch panel or pen on a hybrid laptop reports coarse alongside a
+   fine primary pointer) so a pure mouse keeps the slim bar above.
+   ============================================ */
+@media (any-pointer: coarse) {
+  ::-webkit-scrollbar {
+    width: var(--hv-scrollbar-size-touch);
+    height: var(--hv-scrollbar-size-touch);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    min-height: var(--hv-scrollbar-thumb-min);
+    min-width: var(--hv-scrollbar-thumb-min);
+    border: 4px solid transparent;
+    background-clip: padding-box;
+  }
+
+  /* Firefox: `auto` renders a wider, easier-to-grab bar than `thin`. */
+  * {
+    scrollbar-width: auto;
+  }
+}
+
+/* ============================================
+   SELECTION STYLING
+   ============================================ */
+::selection {
+  background-color: var(--hv-primary-light);
+  color: var(--hv-text-primary);
+}
+
+::-moz-selection {
+  background-color: var(--hv-primary-light);
+  color: var(--hv-text-primary);
+}
+
+/* ============================================
+   FOCUS VISIBLE
+   ============================================ */
+/* Global focus state for all interactive elements.
+
+   These two `*` rules live in `@layer base` for the same reason the form
+   element defaults do (see the FORM ELEMENTS BASE note above): unlayered,
+   their `border-radius: var(--hv-radius-sm)` outranked every layered
+   `rounded-*` utility, so a `rounded-lg` input snapped from 10px to 4px the
+   moment it took keyboard focus, and their `outline`/`box-shadow` could not
+   be tuned by a `focus-visible:*` utility. In `@layer base` the generic
+   fallback still styles anything with no more specific rule, while element
+   rules below (`button/input/a/[role]`, unlayered) and utilities win where
+   they are used. */
+@layer base {
+  *:focus {
+    outline: none;
+  }
+
+  *:focus-visible {
+    outline: 2px solid var(--hv-primary);
+    outline-offset: 2px;
+    box-shadow: var(--hv-focus-ring);
+    border-radius: var(--hv-radius-sm);
+  }
+}
+
+/* Specific focus states for buttons */
+button:focus-visible,
+.hv-btn:focus-visible {
+  outline: 2px solid var(--hv-primary);
+  outline-offset: 2px;
+  box-shadow: var(--hv-focus-ring);
+}
+
+/* Focus states for form elements */
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+  border-color: var(--hv-primary);
+  box-shadow: var(--hv-focus-ring);
+}
+
+/* Focus for interactive cards, list items */
+[role="button"]:focus-visible,
+[role="tab"]:focus-visible,
+[role="menuitem"]:focus-visible,
+.hv-interactive:focus-visible {
+  outline: 2px solid var(--hv-primary);
+  outline-offset: 2px;
+  box-shadow: var(--hv-focus-ring);
+}
+
+/* Error state focus */
+.hv-error:focus-visible,
+input.hv-error:focus-visible {
+  outline-color: var(--hv-error);
+  box-shadow: var(--hv-focus-ring-error);
+}
+
+/* ============================================
+   UTILITY CLASSES
+   ============================================ */
+.hv-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+.hv-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hv-line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.hv-line-clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ============================================
+   ANIMATIONS
+   ============================================ */
+@keyframes hv-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes hv-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes hv-slide-up {
+  from {
+    transform: translateY(10px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes hv-slide-down {
+  from {
+    transform: translateY(-10px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes hv-scale-in {
+  from {
+    transform: scale(0.95);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes hv-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Pulse animation for loading states */
+@keyframes hv-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Bounce animation for notifications */
+@keyframes hv-bounce {
+  0%, 100% {
+    transform: translateY(0);
+    animation-timing-function: cubic-bezier(0.8, 0, 1, 1);
+  }
+  50% {
+    transform: translateY(-25%);
+    animation-timing-function: cubic-bezier(0, 0, 0.2, 1);
+  }
+}
+
+/* Shake animation for errors */
+@keyframes hv-shake {
+  0%, 100% { transform: translateX(0); }
+  10%, 30%, 50%, 70%, 90% { transform: translateX(-10px); }
+  20%, 40%, 60%, 80% { transform: translateX(10px); }
+}
+
+/* Skeleton shimmer animation */
+@keyframes hv-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+/* Slide in from right */
+@keyframes hv-slide-in-right {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* Slide in from left */
+@keyframes hv-slide-in-left {
+  from {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* ============================================
+   ANIMATION UTILITY CLASSES
+   ============================================ */
+.hv-animate-fade-in {
+  animation: hv-fade-in var(--hv-transition-base) var(--hv-ease-default);
+}
+
+.hv-animate-slide-up {
+  animation: hv-slide-up var(--hv-transition-base) var(--hv-ease-out);
+}
+
+.hv-animate-slide-down {
+  animation: hv-slide-down var(--hv-transition-base) var(--hv-ease-out);
+}
+
+.hv-animate-scale-in {
+  animation: hv-scale-in var(--hv-transition-base) var(--hv-ease-out);
+}
+
+.hv-animate-spin {
+  animation: hv-spin 1s linear infinite;
+}
+
+.hv-animate-pulse {
+  animation: hv-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.hv-animate-bounce {
+  animation: hv-bounce 1s infinite;
+}
+
+.hv-animate-shake {
+  animation: hv-shake 0.5s cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
+.hv-animate-slide-in-right {
+  animation: hv-slide-in-right var(--hv-transition-base) var(--hv-ease-out);
+}
+
+.hv-animate-slide-in-left {
+  animation: hv-slide-in-left var(--hv-transition-base) var(--hv-ease-out);
+}
+
+/* Skeleton loading animation */
+.hv-skeleton {
+  background: var(--hv-skeleton-bg);
+  background-image: var(--hv-skeleton-shimmer);
+  background-size: 200% 100%;
+  animation: hv-shimmer 1.5s ease-in-out infinite;
+  border-radius: var(--hv-radius-md);
+}
+
+/* ============================================
+   COVE DESKTOP ANIMATIONS
+   ============================================ */
+
+/* Bounce-in (apparition) */
+@keyframes hv-bounce-in {
+  0%   { opacity: 0; transform: scale(0.3) translateY(20px); }
+  50%  { transform: scale(1.05) translateY(-5px); }
+  70%  { transform: scale(0.95) translateY(2px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* Wiggle (mode edition) */
+@keyframes hv-wiggle {
+  0%, 100% { transform: rotate(-1.5deg); }
+  50%       { transform: rotate(1.5deg); }
+}
+
+/* Pulse glow (notifications) */
+@keyframes hv-pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(30, 98, 174, 0.4); }
+  50%      { box-shadow: 0 0 0 8px rgba(30, 98, 174, 0); }
+}
+
+/* ============================================
+   COVE DESKTOP UTILITY CLASSES
+   ============================================ */
+
+/* Pulse notification */
+.hv-pulse-notification {
+  animation: hv-pulse-glow 2s infinite;
+}
+
+/* Bounce-in animation */
+.hv-animate-bounce-in {
+  animation: hv-bounce-in 500ms var(--hv-spring-easing);
+}
+
+/* Wiggle animation */
+.hv-animate-wiggle {
+  animation: hv-wiggle 0.5s ease-in-out infinite;
+}
+
+/* Icon hover */
+.hv-icon-hover {
+  transition: transform 200ms var(--hv-ease-default);
+}
+
+.hv-icon-hover:hover {
+  transform: scale(1.1);
+}
+
+.hv-icon-hover:active {
+  transform: scale(0.95);
+}
+
+/* Text shadow on desktop */
+.hv-text-shadow-soft {
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.hv-text-shadow-strong {
+  text-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.5),
+    0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* ============================================
+   ACCESSIBILITY - Reduced Motion
+   ============================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ============================================
+   RESPONSIVE DESIGN - Media Queries
+   ============================================ */
+
+/* Mobile First - Base styles above are for mobile */
+
+/* Medium devices (tablets, 768px and up) */
+@media (min-width: 768px) {
+  .hide-md {
+    display: none !important;
+  }
+  
+  .show-md {
+    display: block !important;
+  }
+}
+
+/* Large devices (desktops, 1024px and up) */
+@media (min-width: 1024px) {
+  .hide-lg {
+    display: none !important;
+  }
+  
+  .show-lg {
+    display: block !important;
+  }
+}
+
+/* Extra large devices (large desktops, 1280px and up) */
+@media (min-width: 1280px) {
+  .hide-xl {
+    display: none !important;
+  }
+  
+  .show-xl {
+    display: block !important;
+  }
+}
+
+/* ============================================
+   TOUCH DEVICES - Enhanced Touch Targets
+   ============================================ */
+/* `any-pointer: coarse`, not `pointer: coarse`: the 44px minimum must hold
+   whenever a touch screen or pen is available (a hybrid touch-laptop whose
+   primary pointer is the mouse still reports coarse for the touch panel),
+   and must never apply to a mouse-only desktop. ISO 9241-410 / WCAG 2.5.5. */
+@media (any-pointer: coarse) {
+  /* Ensure minimum 44x44px touch targets on touch devices */
+  button,
+  a,
+  input[type="checkbox"],
+  input[type="radio"],
+  select {
+    min-height: var(--hv-touch-target-min);
+    min-width: var(--hv-touch-target-min);
+  }
+  
+  /* Larger padding for better touch experience */
+  .hv-btn {
+    padding: var(--hv-space-3) var(--hv-space-5);
+  }
+
+  /* iOS Safari auto-zooms into any form control whose font-size is below
+     16px on focus (puter ships 17px for the same reason). The compact
+     chrome scale (`text-sm` 12px / `text-base` 14px via the legacy alias
+     block in tokens.css) is far under the threshold, so on coarse pointers
+     bump form text to the 16px content step. Unlayered beats Tailwind's
+     `@layer utilities`, so this wins over the shadcn input's
+     `text-base md:text-sm`; the extra `input.hv-form-input` arm matches the
+     theme Input (`.hv-form-input` is unlayered too and would otherwise win
+     on specificity with its 14px base). */
+  input,
+  input.hv-form-input,
+  select,
+  textarea {
+    font-size: var(--hv-font-size-md);
+  }
+}
+
+/* ============================================
+   HIGH CONTRAST MODE
+   ============================================ */
+@media (prefers-contrast: high) {
+  :root {
+    --hv-border: #000000;
+    --hv-text-primary: #000000;
+  }
+  
+  button,
+  .hv-btn {
+    border: 2px solid currentColor !important;
+  }
+  
+  a {
+    text-decoration: underline;
+  }
+}
+
+/* ============================================
+   PRINT STYLES
+   ============================================ */
+@media print {
+  /* Hide non-essential elements */
+  nav,
+  aside,
+  .hv-topbar,
+  .hv-sidebar,
+  button,
+  .hv-btn {
+    display: none !important;
+  }
+  
+  /* Optimize for print */
+  body {
+    background: white !important;
+    color: black !important;
+  }
+  
+  a {
+    text-decoration: underline;
+  }
+  
+  a[href]::after {
+    content: " (" attr(href) ")";
+  }
+  
+  /* Page breaks */
+  h1, h2, h3, h4, h5, h6 {
+    page-break-after: avoid;
+  }
+  
+  img {
+    page-break-inside: avoid;
+  }
+}

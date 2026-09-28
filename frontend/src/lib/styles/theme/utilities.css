@@ -1,0 +1,578 @@
+/**
+ * HOMEVAULT DESIGN SYSTEM - Utility Classes
+ * Version: 2.0
+ * Date: 2026-07-03
+ *
+ * Utility classes for rapid development
+ */
+
+/* ============================================
+   LAYOUT UTILITIES
+   ============================================ */
+.hv-flex {
+  display: flex;
+}
+
+.hv-inline-flex {
+  display: inline-flex;
+}
+
+.hv-flex-col {
+  flex-direction: column;
+}
+
+.hv-flex-row {
+  flex-direction: row;
+}
+
+.hv-items-center {
+  align-items: center;
+}
+
+.hv-items-start {
+  align-items: flex-start;
+}
+
+.hv-items-end {
+  align-items: flex-end;
+}
+
+.hv-justify-center {
+  justify-content: center;
+}
+
+.hv-justify-between {
+  justify-content: space-between;
+}
+
+.hv-justify-start {
+  justify-content: flex-start;
+}
+
+.hv-justify-end {
+  justify-content: flex-end;
+}
+
+.hv-flex-1 {
+  flex: 1;
+}
+
+.hv-flex-shrink-0 {
+  flex-shrink: 0;
+}
+
+.hv-flex-wrap {
+  flex-wrap: wrap;
+}
+
+/* ============================================
+   SPACING UTILITIES
+   ============================================ */
+/* Gap */
+.hv-gap-1 { gap: var(--hv-space-1); }
+.hv-gap-2 { gap: var(--hv-space-2); }
+.hv-gap-3 { gap: var(--hv-space-3); }
+.hv-gap-4 { gap: var(--hv-space-4); }
+.hv-gap-5 { gap: var(--hv-space-5); }
+.hv-gap-6 { gap: var(--hv-space-6); }
+.hv-gap-8 { gap: var(--hv-space-8); }
+
+/* Padding */
+.hv-p-0 { padding: 0; }
+.hv-p-1 { padding: var(--hv-space-1); }
+.hv-p-2 { padding: var(--hv-space-2); }
+.hv-p-3 { padding: var(--hv-space-3); }
+.hv-p-4 { padding: var(--hv-space-4); }
+.hv-p-5 { padding: var(--hv-space-5); }
+.hv-p-6 { padding: var(--hv-space-6); }
+.hv-p-8 { padding: var(--hv-space-8); }
+
+/* Padding X */
+.hv-px-0 { padding-left: 0; padding-right: 0; }
+.hv-px-2 { padding-left: var(--hv-space-2); padding-right: var(--hv-space-2); }
+.hv-px-3 { padding-left: var(--hv-space-3); padding-right: var(--hv-space-3); }
+.hv-px-4 { padding-left: var(--hv-space-4); padding-right: var(--hv-space-4); }
+.hv-px-6 { padding-left: var(--hv-space-6); padding-right: var(--hv-space-6); }
+
+/* Padding Y */
+.hv-py-0 { padding-top: 0; padding-bottom: 0; }
+.hv-py-2 { padding-top: var(--hv-space-2); padding-bottom: var(--hv-space-2); }
+.hv-py-3 { padding-top: var(--hv-space-3); padding-bottom: var(--hv-space-3); }
+.hv-py-4 { padding-top: var(--hv-space-4); padding-bottom: var(--hv-space-4); }
+.hv-py-6 { padding-top: var(--hv-space-6); padding-bottom: var(--hv-space-6); }
+
+/* Margin */
+.hv-m-0 { margin: 0; }
+.hv-m-1 { margin: var(--hv-space-1); }
+.hv-m-2 { margin: var(--hv-space-2); }
+.hv-m-3 { margin: var(--hv-space-3); }
+.hv-m-4 { margin: var(--hv-space-4); }
+.hv-m-auto { margin: auto; }
+
+/* Margin X */
+.hv-mx-auto { margin-left: auto; margin-right: auto; }
+.hv-mx-2 { margin-left: var(--hv-space-2); margin-right: var(--hv-space-2); }
+.hv-mx-4 { margin-left: var(--hv-space-4); margin-right: var(--hv-space-4); }
+
+/* Margin Y */
+.hv-my-2 { margin-top: var(--hv-space-2); margin-bottom: var(--hv-space-2); }
+.hv-my-4 { margin-top: var(--hv-space-4); margin-bottom: var(--hv-space-4); }
+
+/* Margin Bottom */
+.hv-mb-2 { margin-bottom: var(--hv-space-2); }
+.hv-mb-4 { margin-bottom: var(--hv-space-4); }
+.hv-mb-6 { margin-bottom: var(--hv-space-6); }
+
+/* ============================================
+   SIZING UTILITIES
+   ============================================ */
+.hv-w-full { width: 100%; }
+.hv-w-auto { width: auto; }
+.hv-h-full { height: 100%; }
+.hv-h-auto { height: auto; }
+.hv-min-h-screen { min-height: 100vh; }
+
+/* ============================================
+   TYPOGRAPHY UTILITIES
+   ============================================ */
+.hv-text-xs { font-size: var(--hv-font-size-xs); }
+.hv-text-sm { font-size: var(--hv-font-size-sm); }
+.hv-text-base { font-size: var(--hv-font-size-base); }
+.hv-text-md { font-size: var(--hv-font-size-md); }
+.hv-text-lg { font-size: var(--hv-font-size-lg); }
+.hv-text-xl { font-size: var(--hv-font-size-xl); }
+.hv-text-2xl { font-size: var(--hv-font-size-2xl); }
+.hv-text-3xl { font-size: var(--hv-font-size-3xl); }
+
+.hv-font-normal { font-weight: var(--hv-font-weight-regular); }
+.hv-font-medium { font-weight: var(--hv-font-weight-medium); }
+.hv-font-semibold { font-weight: var(--hv-font-weight-semibold); }
+.hv-font-bold { font-weight: var(--hv-font-weight-bold); }
+
+.hv-text-left { text-align: left; }
+.hv-text-center { text-align: center; }
+.hv-text-right { text-align: right; }
+
+.hv-text-primary { color: var(--hv-text-primary); }
+.hv-text-secondary { color: var(--hv-text-secondary); }
+.hv-text-tertiary { color: var(--hv-text-tertiary); }
+
+.hv-uppercase { text-transform: uppercase; }
+.hv-lowercase { text-transform: lowercase; }
+.hv-capitalize { text-transform: capitalize; }
+
+/* ============================================
+   COLOR UTILITIES
+   ============================================ */
+.hv-bg-primary { background-color: var(--hv-primary); }
+.hv-bg-surface { background-color: var(--hv-surface); }
+.hv-bg-white { background-color: var(--hv-surface-container-lowest); }
+.hv-bg-transparent { background-color: transparent; }
+
+.hv-text-primary-color { color: var(--hv-primary); }
+.hv-text-error { color: var(--hv-error); }
+.hv-text-success { color: var(--hv-success); }
+.hv-text-warning { color: var(--hv-warning); }
+
+/* ============================================
+   BORDER UTILITIES
+   ============================================ */
+.hv-border { border: 1px solid var(--hv-border); }
+.hv-border-t { border-top: 1px solid var(--hv-border); }
+.hv-border-b { border-bottom: 1px solid var(--hv-border); }
+.hv-border-l { border-left: 1px solid var(--hv-border); }
+.hv-border-r { border-right: 1px solid var(--hv-border); }
+.hv-border-0 { border: none; }
+
+.hv-rounded-sm { border-radius: var(--hv-radius-sm); }
+.hv-rounded { border-radius: var(--hv-radius-default); }
+.hv-rounded-md { border-radius: var(--hv-radius-md); }
+.hv-rounded-lg { border-radius: var(--hv-radius-lg); }
+.hv-rounded-xl { border-radius: var(--hv-radius-xl); }
+.hv-rounded-full { border-radius: var(--hv-radius-full); }
+
+/* ============================================
+   SHADOW UTILITIES
+   ============================================ */
+.hv-shadow-none { box-shadow: none; }
+.hv-shadow-sm { box-shadow: var(--hv-shadow-sm); }
+.hv-shadow-md { box-shadow: var(--hv-shadow-md); }
+.hv-shadow-lg { box-shadow: var(--hv-shadow-lg); }
+.hv-shadow-xl { box-shadow: var(--hv-shadow-xl); }
+.hv-shadow-2xl { box-shadow: var(--hv-shadow-2xl); }
+
+/* ============================================
+   POSITION UTILITIES
+   ============================================ */
+.hv-relative { position: relative; }
+.hv-absolute { position: absolute; }
+.hv-fixed { position: fixed; }
+.hv-sticky { position: sticky; }
+
+.hv-inset-0 {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+}
+
+/* ============================================
+   OVERFLOW UTILITIES
+   ============================================ */
+.hv-overflow-auto { overflow: auto; }
+.hv-overflow-hidden { overflow: hidden; }
+.hv-overflow-visible { overflow: visible; }
+.hv-overflow-scroll { overflow: scroll; }
+.hv-overflow-x-auto { overflow-x: auto; }
+.hv-overflow-y-auto { overflow-y: auto; }
+
+/* ============================================
+   VISIBILITY UTILITIES
+   ============================================ */
+.hv-hidden { display: none; }
+.hv-visible { visibility: visible; }
+.hv-invisible { visibility: hidden; }
+
+.hv-opacity-0 { opacity: 0; }
+.hv-opacity-50 { opacity: 0.5; }
+.hv-opacity-100 { opacity: 1; }
+
+/* ============================================
+   CURSOR UTILITIES
+   ============================================ */
+.hv-cursor-pointer { cursor: pointer; }
+.hv-cursor-default { cursor: default; }
+.hv-cursor-not-allowed { cursor: not-allowed; }
+.hv-cursor-move { cursor: move; }
+
+/* ============================================
+   USER SELECT UTILITIES
+   ============================================ */
+.hv-select-none { user-select: none; }
+.hv-select-text { user-select: text; }
+.hv-select-all { user-select: all; }
+
+/* ============================================
+   POINTER EVENTS UTILITIES
+   ============================================ */
+.hv-pointer-events-none { pointer-events: none; }
+.hv-pointer-events-auto { pointer-events: auto; }
+
+/* ============================================
+   Z-INDEX UTILITIES
+   ============================================ */
+.hv-z-0 { z-index: var(--hv-z-base); }
+.hv-z-10 { z-index: 10; }
+.hv-z-20 { z-index: 20; }
+.hv-z-30 { z-index: 30; }
+.hv-z-40 { z-index: 40; }
+.hv-z-50 { z-index: 50; }
+.hv-z-dropdown { z-index: var(--hv-z-dropdown); }
+.hv-z-modal { z-index: var(--hv-z-modal); }
+.hv-z-tooltip { z-index: var(--hv-z-tooltip); }
+
+/* ============================================
+   TRANSITION UTILITIES
+   ============================================ */
+.hv-transition {
+  transition:
+    color var(--hv-transition-base) var(--hv-ease-default),
+    background-color var(--hv-transition-base) var(--hv-ease-default),
+    border-color var(--hv-transition-base) var(--hv-ease-default),
+    box-shadow var(--hv-transition-base) var(--hv-ease-default);
+}
+
+.hv-transition-fast {
+  transition:
+    color var(--hv-transition-fast) var(--hv-ease-default),
+    background-color var(--hv-transition-fast) var(--hv-ease-default),
+    border-color var(--hv-transition-fast) var(--hv-ease-default),
+    box-shadow var(--hv-transition-fast) var(--hv-ease-default);
+}
+
+.hv-transition-slow {
+  transition:
+    color var(--hv-transition-slow) var(--hv-ease-default),
+    background-color var(--hv-transition-slow) var(--hv-ease-default),
+    border-color var(--hv-transition-slow) var(--hv-ease-default),
+    box-shadow var(--hv-transition-slow) var(--hv-ease-default);
+}
+
+.hv-transition-colors {
+  transition: color var(--hv-transition-base) var(--hv-ease-default),
+              background-color var(--hv-transition-base) var(--hv-ease-default),
+              border-color var(--hv-transition-base) var(--hv-ease-default);
+}
+
+.hv-transition-transform {
+  transition: transform var(--hv-transition-base) var(--hv-ease-default);
+}
+
+/* ============================================
+   TRANSFORM UTILITIES
+   ============================================ */
+.hv-transform {
+  transform: translateX(var(--hv-translate-x))
+             translateY(var(--hv-translate-y))
+             rotate(var(--hv-rotate))
+             scale(var(--hv-scale));
+}
+
+.hv-scale-95 { --hv-scale: 0.95; }
+.hv-scale-100 { --hv-scale: 1; }
+.hv-scale-105 { --hv-scale: 1.05; }
+
+/* ============================================
+   HOVER STATE UTILITIES
+   ============================================ */
+.hv-hover-primary:hover {
+  background-color: var(--hv-primary-light);
+  color: var(--hv-primary);
+}
+
+.hv-hover-surface:hover {
+  background-color: var(--hv-surface-container);
+}
+
+.hv-hover-scale:hover {
+  transform: scale(1.05);
+}
+
+.hv-hover-shadow:hover {
+  box-shadow: var(--hv-shadow-lg);
+}
+
+/* ============================================
+   PRINT UTILITIES
+   ============================================ */
+@media print {
+  .hv-print\:hidden {
+    display: none;
+  }
+}
+
+/* ============================================
+   INTERACTIVE STATE UTILITIES
+   ============================================ */
+/* Focus states */
+.hv-focus-ring:focus-visible {
+  box-shadow: var(--hv-focus-ring);
+}
+
+.hv-focus-ring-error:focus-visible {
+  box-shadow: var(--hv-focus-ring-error);
+}
+
+.hv-focus-ring-success:focus-visible {
+  box-shadow: var(--hv-focus-ring-success);
+}
+
+/* Disabled states */
+.hv-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* Loading states */
+.hv-loading {
+  opacity: 0.6;
+  cursor: wait;
+  pointer-events: none;
+}
+
+.hv-loading::after {
+  content: "";
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-left: 0.5em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: hv-spin 0.6s linear infinite;
+}
+
+/* Active/Pressed states */
+.hv-active-scale:active {
+  transform: scale(0.95);
+}
+
+.hv-active-opacity:active {
+  opacity: 0.7;
+}
+
+/* Selected states */
+.hv-selected {
+  background-color: var(--hv-primary-selected-bg);
+  border-color: var(--hv-primary);
+}
+
+.hv-selected:hover {
+  background-color: var(--hv-primary-selected-bg-hover);
+}
+
+/* ============================================
+   CARD HOVER EFFECTS
+   ============================================ */
+.hv-card-interactive {
+  transition:
+    box-shadow var(--hv-transition-base) var(--hv-ease-default),
+    transform var(--hv-transition-base) var(--hv-ease-default);
+  cursor: pointer;
+}
+
+.hv-card-interactive:hover {
+  box-shadow: var(--hv-card-hover-shadow);
+  transform: translateY(-2px);
+}
+
+.hv-card-interactive:active {
+  transform: translateY(0);
+  box-shadow: var(--hv-card-active-shadow);
+}
+
+/* ============================================
+   DATA TABLE
+   ============================================ */
+.hv-datatable {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================
+   SKELETON LOADING UTILITIES
+   ============================================ */
+.hv-skeleton-text {
+  height: 1em;
+  background: var(--hv-skeleton-bg);
+  background-image: var(--hv-skeleton-shimmer);
+  background-size: 200% 100%;
+  animation: hv-shimmer 1.5s ease-in-out infinite;
+  border-radius: var(--hv-radius-sm);
+}
+
+.hv-skeleton-circle {
+  border-radius: var(--hv-radius-full);
+  background: var(--hv-skeleton-bg);
+  background-image: var(--hv-skeleton-shimmer);
+  background-size: 200% 100%;
+  animation: hv-shimmer 1.5s ease-in-out infinite;
+}
+
+.hv-skeleton-rect {
+  background: var(--hv-skeleton-bg);
+  background-image: var(--hv-skeleton-shimmer);
+  background-size: 200% 100%;
+  animation: hv-shimmer 1.5s ease-in-out infinite;
+  border-radius: var(--hv-radius-md);
+}
+
+/* ============================================
+   TOOLTIP UTILITIES
+   ============================================ */
+.hv-tooltip {
+  position: relative;
+}
+
+.hv-tooltip::before {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%) translateY(-8px);
+  padding: var(--hv-space-1) var(--hv-space-2);
+  background: var(--hv-tooltip-bg);
+  color: var(--hv-tooltip-text);
+  font-size: var(--hv-font-size-xs);
+  border-radius: var(--hv-radius-md);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--hv-transition-fast) var(--hv-ease-default);
+  z-index: var(--hv-z-tooltip);
+}
+
+.hv-tooltip:hover::before {
+  opacity: 1;
+}
+
+/* ============================================
+   BADGE POSITION UTILITIES
+   ============================================ */
+.hv-badge-container {
+  position: relative;
+  display: inline-block;
+}
+
+.hv-badge-dot {
+  position: absolute;
+  top: 0;
+  right: 0;
+  transform: translate(50%, -50%);
+  width: 8px;
+  height: 8px;
+  border-radius: var(--hv-radius-full);
+  background: var(--hv-error);
+  border: 2px solid var(--hv-surface-window);
+}
+
+.hv-badge-count {
+  position: absolute;
+  top: 0;
+  right: 0;
+  transform: translate(50%, -50%);
+  min-width: 20px;
+  height: 20px;
+  padding: 0 var(--hv-space-1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--hv-font-size-xs);
+  font-weight: var(--hv-font-weight-semibold);
+  border-radius: var(--hv-radius-full);
+  background: var(--hv-error);
+  color: white;
+  border: 2px solid var(--hv-surface-window);
+}
+
+/* ============================================
+   ACCESSIBILITY UTILITIES
+   ============================================ */
+.hv-skip-link {
+  position: absolute;
+  top: -100px;
+  left: 0;
+  background: var(--hv-primary);
+  color: white;
+  padding: var(--hv-space-2) var(--hv-space-4);
+  text-decoration: none;
+  border-radius: var(--hv-radius-md);
+  z-index: var(--hv-z-notification);
+}
+
+.hv-skip-link:focus {
+  top: var(--hv-space-2);
+  left: var(--hv-space-2);
+}
+
+/* Visually hidden but accessible to screen readers */
+.hv-visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border-width: 0 !important;
+}
+
+/* Focus visible helper */
+.hv-focus-visible-only:not(:focus-visible) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}

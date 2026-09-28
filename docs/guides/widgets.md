@@ -1,0 +1,122 @@
+# Widgets (desktop monitor catalog)
+
+**Purpose:** A "store" app for toggling the floating desktop monitor panels
+on/off. Pure frontend feature — no dedicated backend surface of its own
+(monitor *position* sync uses the small, unrelated `monitor-layout` endpoint
+below, shared with the rest of the desktop shell).
+
+## The 11 monitors
+
+Each is a large, single-instance, draggable panel rendered directly in
+`Desktop.svelte` (not a separate `DesktopWidget.svelte` component — an
+earlier multi-instance small-widget catalog of that shape, plus 6 small
+widgets — CPU/RAM/Traffic/CPU-Temp/App-Update/Server-Update — was removed
+entirely on 2026-07-18 at the user's explicit request; see `CLAUDE.md`'s
+Widgets app section for that history):
+
+Resource, RAID, Security, VPN, Downloader, Syncthing, Calendar, Docker,
+Weather, Active Sessions, System Health.
+
+Each is table-driven across three files, so adding a 12th monitor means one
+entry in each, not a copy-pasted block:
+
+- `frontend/src/lib/stores/monitorStore.ts` — one `<name>Monitor: {x, y}` +
+  one `<name>MonitorVisible: boolean` field, persisted per-account (see
+  Persistence below), plus a `set<Name>Visible(visible)` setter.
+- `frontend/src/routes/Desktop.svelte` — one `MonitorKind` case in every
+  keyed table/switch (`MONITOR_WIDTH`, `MONITOR_SELECTOR`,
+  `MONITOR_CLOSE_SELECTOR`, `getMonitorPosition`/`updateMonitorPosition`,
+  a `<name>Clamped` reactive value — see [Desktop](./desktop.md) for why
+  positions are re-clamped against the live viewport rather than read
+  directly from the store), the panel's own data-loading function and
+  polling interval, and the `.hv-<name>-monitor` markup + CSS.
+- `frontend/src/routes/Widgets.svelte` — one `widgetDefs` entry (icon,
+  color, `nameKey`/`descKey`, `visible`, `toggle`) driving the catalog grid;
+  `resetAll()` also needs the new monitor added.
+
+Weather is the one monitor with its own extra persisted state
+(`frontend/src/lib/stores/weatherLocation.ts`, the saved city — deliberately
+not folded into `monitorStore.ts`, which only ever holds
+position/visibility) and calls the Open-Meteo API directly from the
+browser rather than through a backend proxy, since a weather lookup is
+neither privileged nor host-specific (unlike every other monitor here).
+System Health is a pure new consumer of the already-existing, already-
+admin-audited `GET /health` endpoint ([Health](./health.md)) — it needed no
+backend change at all. Active Sessions needed two small backend additions:
+`SessionRepository::count_distinct_active_users()` and
+`GET /security/active-sessions-count` (`require_admin` — it reveals
+aggregate information about *other* users' presence on the system).
+
+## Persistence
+
+Position/visibility live in `localStorage`, namespaced per account
+(`hv-monitor-positions:<username>` — without this, two accounts sharing a
+browser would silently overwrite each other's layout). They're also synced
+to the backend (`GET/POST /monitor-layout`, `auth`,
+`src/handlers/monitor_layout.rs`) so the same account converges on one
+layout across different origins/ports; a failed sync is non-fatal, since
+`localStorage` already has the latest value locally.
+
+### `refreshMs` — the widget poll interval lives in the same blob (2026-09-14)
+
+`MonitorPositions` also carries `refreshMs: number`, the interval every
+resource monitor polls at (`REFRESH_INTERVAL_OPTIONS` in
+`monitorStore.ts` = 2 s / 5 s / 10 s / 30 s / 60 s; default `5000`). It is
+set from **Settings → Widgets** ("Refresh interval") and read by
+`Desktop.svelte`'s widget subscriptions, which are keyed
+`` `${widgetId}:${intervalMs}` `` in `widgetData.ts` — a changed interval
+tears the old poller down and starts a new one, so no poller leaks.
+
+Two things to know before touching it:
+
+- **No migration, no schema.** `POST /api/monitor-layout` stores the client's
+  `layout_json` string verbatim (upsert on `username`), so the new key needs
+  no backend change — `tests/widgets_integration.rs` proves both that a legacy
+  blob without `refresh_ms` round-trips byte-for-byte and that a new value
+  persists alongside its sibling keys. `syncFromServer` spreads
+  `{ ...d, ...parsed }`, so an old blob simply keeps the default.
+- **`loadFromStorage` whitelists keys explicitly** (it does not spread). A new
+  field added to `MonitorPositions` is *silently dropped* on reload unless it
+  is also added to that remap. `normalizeRefreshMs()` coerces anything
+  unusable (absent / 0 / NaN) back to `DEFAULT_REFRESH_MS`.
+
+The long-cadence pollers (Docker catalog, notifications) deliberately keep
+their own fixed intervals — they are not "widget refresh" and are not driven
+by `refreshMs`.
+
+## Frontend
+
+- `frontend/src/routes/Widgets.svelte` — the app itself, reachable from the
+  Applications launcher as the `widgets` entry in `Desktop.svelte`'s `apps`
+  array.
+- `frontend/src/lib/stores/monitorStore.ts`, `weatherLocation.ts`.
+- `frontend/src/lib/services/api.ts`: `getMonitorLayout`, `setMonitorLayout`,
+  `getActiveSessionsCount`.
+
+## Invariants
+
+- **Shared panel geometry** — the 11 panels share one visual vocabulary from
+  `tokens.css`: corner `--hv-radius-card` (12px, a floating-card corner — not
+  the 6px control radius), header `--hv-widget-header-h` (44px, the app-header
+  bar: a 28px accent icon tile + 14px semibold title, **no close/action
+  button** — monitor visibility is managed from Settings > Widgets), and the
+  width stops `--hv-monitor-w-compact` (280px: Resources/VPN/Downloader/
+  Syncthing), `--hv-monitor-w` (300px: Security/Calendar/Docker/Weather/
+  Sessions/Health), `--hv-monitor-w-wide` (320px: RAID). Keep the three-tier
+  width set — widening any compact panel by hand breaks the shared stops. The
+  geometry is locked by `tests/e2e/widgets/widgets.spec.ts` test 2.2.
+- There is no second place to keep monitors in sync — see the three-file
+  list above. Missing one leaves either a dead store field, a panel that
+  never renders, or a catalog tile that toggles nothing.
+- `refreshMs` is persisted in the same `monitor-layout` blob as the positions
+  (no migration) and must be added to `loadFromStorage`'s explicit whitelist,
+  not just to the type — see the Persistence section.
+- The System Health monitor tallies the wire values `healthy`/`warning`/
+  `unhealthy`/`unknown` (displaying `unhealthy` as "critical") — never a
+  literal `'critical'` string, which doesn't appear on the wire. See
+  [Health](./health.md) for the history of this exact mismatch bug.
+
+## Related
+
+- [Desktop](./desktop.md), [Health](./health.md), [Security](./security.md),
+  [API Contract](../API.md)

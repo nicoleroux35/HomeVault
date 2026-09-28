@@ -1,0 +1,207 @@
+# Full pipeline: unit + component + integration in parallel, then E2E gated.
+#
+#                  Push (manual dispatch)
+#                   │
+#          ┌────────┼────────┐
+#          ▼        ▼        ▼
+#        Unit   Component Integration
+#          │        │        │
+#          └────────┼────────┘
+#                   ▼
+#                  E2E  (needs: + if: success())
+#
+# Trigger is workflow_dispatch only on purpose: unit/component/integration
+# already run in parallel on every push via their own files, so running this
+# pipeline on push too would duplicate them. Dispatch it manually from the
+# Gitea Actions tab (or add `push: branches: [main]` and set branches-ignore
+# on the three standalone files).
+# Place: .gitea/workflows/full-pipeline.yml
+name: full-pipeline
+on: [workflow_dispatch]
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          fi
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup toolchain install stable --profile minimal
+          # Put cargo/rustc on the default PATH so `uses:` steps (e.g.
+          # Swatinem/rust-cache, which runs `rustc -vV`) see them too.
+          for t in cargo rustc rustup; do ln -sf "$HOME/.cargo/bin/$t" /usr/local/bin/$t 2>/dev/null || true; done
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true # cache backend optional on self-hosted Gitea
+      - run: export PATH="$HOME/.cargo/bin:$PATH" && cargo test --lib --locked
+
+  component:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      # Direct Node tarball — see component.yml: setup-node's shared cache
+      # races under parallel jobs. Always install the pinned build (the
+      # image's node v22.11.0 is BELOW vite 8's required >=22.12).
+      - name: Install Node 22
+        run: |
+          curl -fsSL https://nodejs.org/dist/v22.23.3/node-v22.23.3-linux-x64.tar.xz -o /tmp/node.tar.xz
+          rm -rf /opt/node-v22.23.3-linux-x64
+          tar -xJf /tmp/node.tar.xz -C /opt
+          rm -f /tmp/node.tar.xz
+          for b in node npm npx; do ln -sf /opt/node-v22.23.3-linux-x64/bin/$b /usr/local/bin/$b; done
+          node --version && npm --version
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: testdb
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgres://test:test@localhost:5432/testdb
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      # See integration.yml: the suite must run unprivileged, otherwise the
+      # "fails cleanly without sudo" assertions invert (act runs as root).
+      - name: Create unprivileged CI user
+        run: |
+          id ci >/dev/null 2>&1 || useradd -m -s /bin/bash ci
+          mkdir -p /opt/rustup /opt/cargo
+          chown -R ci:ci /opt/rustup /opt/cargo "$GITHUB_WORKSPACE"
+          # See integration.yml: rescue_integration needs /dev/loop0+loop1
+          # nodes to exist (validation canonicalizes the valid source).
+          for n in 0 1; do [ -e /dev/loop$n ] || mknod /dev/loop$n b 7 $n 2>/dev/null || true; done
+      - name: Install Rust toolchain (as ci)
+        run: |
+          su ci -s /bin/bash -c 'export RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:/usr/bin:/bin; if ! command -v rustup >/dev/null; then curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal; fi; rustup toolchain install stable --profile minimal'
+          for t in cargo rustc rustup; do ln -sf /opt/cargo/bin/$t /usr/local/bin/$t 2>/dev/null || true; done
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true # cache backend optional on self-hosted Gitea
+        env:
+          RUSTUP_HOME: /opt/rustup
+          CARGO_HOME: /opt/cargo
+      - run: |
+          cd "$GITHUB_WORKSPACE"
+          su ci -s /bin/bash -c 'export RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:/usr/bin:/bin; cargo test --locked'
+
+  e2e:
+    needs: [unit, component, integration]
+    if: success()
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.49.0-noble
+    env:
+      BASE_URL: http://localhost:8080
+      E2E_ADMIN_USER: e2eadmin
+      E2E_ADMIN_PASS: E2eSecret123
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust build deps
+        # sudo: without the binary, setup-status reports sudo_available=false
+        # and the wizard shows a prereq banner that breaks strict locators.
+        run: apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev curl git ca-certificates xz-utils sudo
+      # Direct Node tarball — see component.yml: setup-node's shared cache
+      # races under parallel jobs. Always install the pinned build (the
+      # image's node v22.11.0 is BELOW vite 8's required >=22.12).
+      - name: Install Node 22
+        run: |
+          curl -fsSL https://nodejs.org/dist/v22.23.3/node-v22.23.3-linux-x64.tar.xz -o /tmp/node.tar.xz
+          rm -rf /opt/node-v22.23.3-linux-x64
+          tar -xJf /tmp/node.tar.xz -C /opt
+          rm -f /tmp/node.tar.xz
+          for b in node npm npx; do ln -sf /opt/node-v22.23.3-linux-x64/bin/$b /usr/local/bin/$b; done
+          node --version && npm --version
+      - name: Install Rust toolchain
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          fi
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup toolchain install stable --profile minimal
+          # Put cargo/rustc on the default PATH so `uses:` steps (e.g.
+          # Swatinem/rust-cache, which runs `rustc -vV`) see them too.
+          for t in cargo rustc rustup; do ln -sf "$HOME/.cargo/bin/$t" /usr/local/bin/$t 2>/dev/null || true; done
+      - run: npm ci
+      - run: cd frontend && npm ci
+      - run: cd frontend && npm run build
+      - run: npx playwright install chromium firefox
+      - run: export PATH="$HOME/.cargo/bin:$PATH" && cargo build --locked
+      - name: Start server (scratch data dir)
+        run: |
+          mkdir -p /tmp/hv-e2e-data
+          DATA_DIRECTORY=/tmp/hv-e2e-data PORT=8080 ./target/debug/homevault > /tmp/hv-e2e.log 2>&1 &
+          echo $! > /tmp/hv-e2e.pid
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8080/api/health >/dev/null && break
+            sleep 2
+          done
+          curl -sf http://localhost:8080/api/health >/dev/null
+          # Warm the cold debug build before the tight spec timeouts start.
+          curl -sf http://localhost:8080/ -o /dev/null
+          curl -sf http://localhost:8080/api/auth/setup-status -o /dev/null
+      # Stage A — setup wizard on a truly fresh server (see e2e-playwright.yml).
+      - name: E2E stage A — setup wizard
+        run: npx playwright test tests/e2e/setup --reporter=html --retries=1
+      - name: Reset server + seed e2eadmin
+        run: |
+          kill $(cat /tmp/hv-e2e.pid) || true
+          sleep 2
+          rm -rf /tmp/hv-e2e-data && mkdir -p /tmp/hv-e2e-data
+          DATA_DIRECTORY=/tmp/hv-e2e-data PORT=8080 ./target/debug/homevault > /tmp/hv-e2e.log 2>&1 &
+          echo $! > /tmp/hv-e2e.pid
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8080/api/health >/dev/null && break
+            sleep 2
+          done
+          for i in $(seq 1 15); do
+            SEED=$(curl -sf -X POST http://localhost:8080/api/auth/setup -H 'Content-Type: application/json' -d '{"username":"e2eadmin","password":"E2eSecret123","fullname":"E2E Admin"}') && break
+            sleep 2
+          done
+          echo "$SEED" | grep -q '"success":true'
+          # Warm the paths the specs hit first (cold debug builds answer
+          # slowly; specs click through within tight timeouts).
+          curl -sf http://localhost:8080/ -o /dev/null
+          curl -sf http://localhost:8080/api/auth/setup-status -o /dev/null
+          curl -sf "http://localhost:8080/api/auth/check-username?username=warmup_probe" -o /dev/null
+      # Stage B — every other screen against the seeded server.
+      # --retries=1 absorbs cold-start timing flakes (a cold debug build
+      # shifts layout mid-click); failures that persist warm stay red.
+      - name: E2E stage B — all screens except setup
+        run: |
+          E2E_DIRS=$(for d in tests/e2e/*/; do [ "$d" != "tests/e2e/setup/" ] && printf '%s ' "$d"; done)
+          npx playwright test $E2E_DIRS --reporter=html --retries=1
+      - name: Stop server
+        if: always()
+        run: kill $(cat /tmp/hv-e2e.pid) || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true # this Gitea's artifact backend rejects v4 uploads (GHESNotSupported)
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/

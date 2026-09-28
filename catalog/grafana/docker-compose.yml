@@ -1,0 +1,14 @@
+services:
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "{{PORT}}:3000"
+    volumes:
+      - {{DATA_DIR}}/data:/var/lib/grafana
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'

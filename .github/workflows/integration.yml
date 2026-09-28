@@ -1,0 +1,74 @@
+# Integration tests — app + real services via `services:` containers.
+# GitHub-hosted mirror of .gitea/workflows/integration.yml.
+# HomeVault note: tests/*_integration.rs use in-memory SQLite + Axum
+# Router + tower oneshot, so they do NOT touch Postgres/Redis. The two
+# services below stay as proof that the Docker wiring works and as
+# ready-to-use backends for future DB-backed suites (DATABASE_URL /
+# REDIS_URL are exported for that purpose).
+# GitHub differences vs Gitea: github-hosted jobs run as the non-root
+# `runner` user (passwordless sudo), not as root, so privileged setup
+# steps use sudo and the suite runs via `sudo -u ci` instead of `su ci`.
+name: integration
+on:
+  push:
+  pull_request:
+  workflow_dispatch: # manual re-run (e.g. after a runner-side flake)
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgres://test:test@localhost:5432/testdb
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      # Several suites (groups, users, shares, …) assert privileged ops
+      # FAIL CLEANLY without sudo — the author's sandbox is unprivileged.
+      # Root (or a sudoer) would invert those assertions (`sudo groupadd`
+      # succeeds), so the suite runs as a dedicated non-root user with no
+      # sudo rights.
+      - name: Create unprivileged CI user
+        run: |
+          id ci >/dev/null 2>&1 || sudo useradd -m -s /bin/bash ci
+          sudo mkdir -p /opt/rustup /opt/cargo
+          sudo chown -R ci:ci /opt/rustup /opt/cargo "$GITHUB_WORKSPACE"
+          # rescue_integration sends /dev/loop0 + /dev/loop1 as the *valid*
+          # source and asserts the destination/logfile/output checks fire.
+          # Validation canonicalizes (nodes must exist); plain nodes
+          # suffice since validation stops at 400 before touching them.
+          for n in 0 1; do [ -e /dev/loop$n ] || sudo mknod /dev/loop$n b 7 $n 2>/dev/null || true; done
+      - name: Install Rust toolchain (as ci)
+        run: |
+          sudo -u ci bash -c 'export RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:/usr/bin:/bin; if ! command -v rustup >/dev/null; then curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal; fi; rustup toolchain install stable --profile minimal'
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true # /opt/cargo belongs to ci; cache save may fail as runner
+        env:
+          RUSTUP_HOME: /opt/rustup
+          CARGO_HOME: /opt/cargo
+      - name: Full test suite (unit + integration, as ci)
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          sudo -u ci bash -c 'export RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:/usr/bin:/bin; cargo test --locked'

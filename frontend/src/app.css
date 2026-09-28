@@ -1,0 +1,184 @@
+/* shadcn-svelte animation utilities (animate-in/out, fade, zoom, slide-in
+   used by dialog/select/tooltip). Must load before the Tailwind layers
+   (@import rules can't follow other statements). */
+@import "tw-animate-css";
+
+/* Tailwind v4 — replaces the v3 @tailwind base/components/utilities trio.
+   This is required for responsive variants (sm:, md:, …) and @theme inline
+   to register properly through @tailwindcss/postcss. */
+@import "tailwindcss";
+
+/* All design tokens live in lib/styles/theme/tokens.css (the single source
+   of truth). This file keeps only Tailwind's layers plus a handful of
+   genuinely global element defaults. */
+
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--hv-font-family);
+  background: white;
+  color: var(--hv-text-primary);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f3f5;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--hv-neutral-300);
+  border-radius: var(--hv-radius-default);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--hv-neutral-400);
+}
+
+/* =====================================================================
+   shadcn-svelte / Melt UI theme bridge
+   ---------------------------------------------------------------------
+   tokens.css (`--hv-*`) stays the single source of truth. This block maps
+   it onto shadcn-svelte's semantic variables (`--background`, `--foreground`,
+   `--primary`, `--ring`, …) and registers the Tailwind v4 color/radius
+   tokens the `components/ui/*` components reference (`bg-primary`,
+   `text-muted-foreground`, `ring-ring`, `rounded-md`, …), so every ui/*
+   component renders the HomeVault palette — #1E62AE brand, #1F2733 ink on
+   #FFFFFF/#F7F8FA paper, #DCE1E7 hairlines, #C22B21 danger.
+   ===================================================================== */
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+
+  --radius-sm: var(--hv-radius-sm);
+  --radius-md: var(--hv-radius-md);
+  --radius-lg: var(--hv-radius-lg);
+  --radius-xl: var(--hv-radius-xl);
+  --radius-2xl: var(--hv-radius-2xl);
+  --radius-3xl: var(--hv-radius-3xl);
+
+  /* Type scales — the ONE bridge onto Tailwind's `text-*` namespace
+     (UI audit W1, 2026-09-23). Two vocabularies, clearly named:
+       `text-*`   = content scale   (--hv-font-size-*, default: body,
+                                     headings, form labels)
+       `text-c-*` = compact chrome  (--hv-text-*, dense table cells,
+                                     chips, meta rows, role tokens)
+     Sizes are applied ONLY through these utilities — never through
+     `text-[length:var(--hv-…)]` (banned — docs/guides/design-system.md
+     §2.1; the D1 style gate from the UI audit will enforce it once built,
+     see docs/design/ui-audit-tasklist.md). `@theme inline` inlines the
+     var() into the utility, so the values can't drift from tokens.css.
+  */
+  --text-micro: var(--hv-font-size-micro); /* 11px */
+  --text-xs: var(--hv-font-size-xs);       /* 11px */
+  --text-sm: var(--hv-font-size-sm);       /* 12px */
+  --text-base: var(--hv-font-size-base);   /* 14px */
+  --text-md: var(--hv-font-size-md);       /* 16px */
+  --text-lg: var(--hv-font-size-lg);       /* 18px */
+  --text-xl: var(--hv-font-size-xl);       /* 20px */
+  --text-2xl: var(--hv-font-size-2xl);     /* 24px */
+  --text-3xl: var(--hv-font-size-3xl);     /* 28px */
+  --text-4xl: var(--hv-font-size-4xl);     /* 30px */
+  --text-5xl: var(--hv-font-size-5xl);     /* 62px — gauge/hero */
+
+  --text-c-xs: var(--hv-text-xs);                  /* 11px */
+  --text-c-sm: var(--hv-text-sm);                  /* 12px */
+  --text-c-base: var(--hv-text-base);              /* 13px */
+  --text-c-md: var(--hv-text-md);                  /* 14px */
+  --text-c-lg: var(--hv-text-lg);                  /* 16px */
+  --text-c-xl: var(--hv-text-xl);                  /* 18px */
+  --text-c-2xl: var(--hv-text-2xl);                /* 20px */
+  --text-c-3xl: var(--hv-text-3xl);                /* 28px */
+  --text-c-stat: var(--hv-text-stat);              /* 20px — big metric numbers */
+  --text-c-card-title: var(--hv-text-card-title);  /* 16px — card/section titles */
+  --text-c-label: var(--hv-text-label);            /* 13px — form field labels */
+}
+
+:root {
+  /* Neutral paper: opaque white shell, appliance grey ink ramp. */
+  --background: var(--hv-shell-bg);
+  --foreground: var(--hv-shell-text-strong);
+
+  --card: var(--hv-shell-card);
+  --card-foreground: var(--hv-shell-text-strong);
+
+  --popover: var(--hv-shell-card);
+  --popover-foreground: var(--hv-shell-text-strong);
+
+  /* Brand = HomeVault primary #1E62AE (was shadcn default black). */
+  --primary: var(--hv-primary);
+  --primary-foreground: var(--hv-on-primary);
+
+  /* Secondary = the soft light-grey surface (HomeVault secondary button). */
+  --secondary: var(--hv-button-secondary);
+  --secondary-foreground: var(--hv-shell-text-strong);
+
+  --muted: var(--hv-surface-container-low);
+  --muted-foreground: var(--hv-shell-text-2);
+
+  --accent: var(--hv-surface-container-low);
+  --accent-foreground: var(--hv-shell-text-strong);
+
+  /* Success #1E7E34 / warning #B45309 / danger #C22B21 — the HomeVault
+     semantic hues (were shadcn green/yellow/red). */
+  --success: var(--hv-success);
+  --warning: var(--hv-warning);
+  --destructive: var(--hv-error);
+  --destructive-foreground: #ffffff;
+
+  --border: var(--hv-shell-border);
+  --input: var(--hv-shell-border-strong);
+  --ring: var(--hv-primary);
+
+  /* Sidebar aliases point at the same paper surfaces (no sidebar skin). */
+  --sidebar: var(--hv-shell-card);
+  --sidebar-foreground: var(--hv-shell-text-strong);
+  --sidebar-primary: var(--hv-primary);
+  --sidebar-primary-foreground: var(--hv-on-primary);
+  --sidebar-accent: var(--hv-surface-container-low);
+  --sidebar-accent-foreground: var(--hv-shell-text-strong);
+  --sidebar-border: var(--hv-shell-border);
+  --sidebar-ring: var(--hv-primary);
+
+  /* Radius: HomeVault stop map (4/6/8/10/12/16). shadcn's `rounded-md` →
+     --radius-md → 8px, matching the appliance control radius. */
+  --radius: var(--hv-radius-default);
+}

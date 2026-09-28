@@ -1,0 +1,452 @@
+/**
+ * HOMEVAULT - App Layout Standardization
+ * Standardized layout styles for all app pages
+ * Based on homevault-desktop.html
+ */
+
+/* ============================================
+   APP TOOLBAR - Standardized
+   ============================================ */
+.app-toolbar {
+  height: var(--hv-toolbar-height);
+  background: var(--hv-toolbar-bg);
+  border-bottom: var(--hv-toolbar-border);
+  display: flex;
+  align-items: center;
+  padding: var(--hv-toolbar-padding);
+  gap: var(--hv-space-2);
+  flex-shrink: 0;
+}
+
+.app-toolbar-btn {
+  padding: var(--hv-toolbar-button-padding);
+  border: none;
+  background: transparent;
+  border-radius: var(--hv-toolbar-button-radius);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: var(--hv-toolbar-button-gap);
+  font-size: var(--hv-font-size-sm);
+  font-weight: var(--hv-font-weight-medium);
+  color: var(--hv-text-secondary);
+  transition:
+    color var(--hv-transition-base) var(--hv-ease-default),
+    background-color var(--hv-transition-base) var(--hv-ease-default),
+    border-color var(--hv-transition-base) var(--hv-ease-default),
+    box-shadow var(--hv-transition-base) var(--hv-ease-default);
+}
+
+.app-toolbar-btn:hover {
+  background: var(--hv-neutral-100);
+}
+
+.app-toolbar-btn:active {
+  background: var(--hv-border);
+}
+
+.app-toolbar-btn svg {
+  width: var(--hv-toolbar-button-icon-size);
+  height: var(--hv-toolbar-button-icon-size);
+}
+
+.app-toolbar-btn.primary {
+  background: var(--hv-primary);
+  color: white;
+}
+
+.app-toolbar-btn.primary:hover {
+  background: var(--hv-primary-hover);
+}
+
+.app-toolbar-btn.primary:active {
+  background: var(--hv-primary-active);
+}
+
+.app-toolbar-separator {
+  width: 1px;
+  height: 24px;
+  background: var(--hv-border);
+  margin: 0 4px;
+}
+
+/* ============================================
+   APP CONTENT - Standardized
+   ============================================ */
+.app-content {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: var(--hv-window-content-padding);
+  background: var(--hv-window-content-bg);
+  color: var(--hv-window-content-text);
+}
+
+.app-content-no-padding {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 0;
+  background: var(--hv-window-content-bg);
+  color: var(--hv-window-content-text);
+}
+
+/* ============================================
+   APP SECTIONS - Standardized
+   ============================================ */
+.app-section {
+  margin-bottom: var(--hv-space-6);
+}
+
+.app-section:last-child {
+  margin-bottom: 0;
+}
+
+.app-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--hv-space-4);
+}
+
+.app-section-title {
+  font-size: var(--hv-font-size-md);
+  font-weight: var(--hv-font-weight-semibold);
+  color: var(--hv-text-primary);
+  display: flex;
+  align-items: center;
+  gap: var(--hv-space-2);
+}
+
+.app-section-title svg {
+  width: 18px;
+  height: 18px;
+  stroke: var(--hv-primary);
+}
+
+.app-section-actions {
+  display: flex;
+  gap: var(--hv-space-2);
+}
+
+/* ============================================
+   APP CARDS - Standardized
+   ============================================ */
+.app-card {
+  background: var(--hv-surface-container-lowest);
+  border: 1px solid var(--hv-border);
+  border-radius: var(--hv-radius-lg);
+  padding: var(--hv-space-4);
+  transition:
+    color var(--hv-transition-base) var(--hv-ease-default),
+    background-color var(--hv-transition-base) var(--hv-ease-default),
+    border-color var(--hv-transition-base) var(--hv-ease-default),
+    box-shadow var(--hv-transition-base) var(--hv-ease-default);
+}
+
+.app-card:hover {
+  border-color: var(--hv-border-hover);
+  box-shadow: 0 2px 8px var(--hv-overlay-normal);
+}
+
+.app-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--hv-space-3);
+}
+
+.app-card-title {
+  font-size: var(--hv-font-size-base);
+  font-weight: var(--hv-font-weight-semibold);
+  color: var(--hv-text-primary);
+}
+
+.app-card-body {
+  font-size: var(--hv-font-size-sm);
+  color: var(--hv-text-secondary);
+  line-height: 1.5;
+}
+
+/* ============================================
+   APP FORMS - Standardized
+   ============================================ */
+.app-form-group {
+  margin-bottom: var(--hv-space-4);
+}
+
+.app-form-group:last-child {
+  margin-bottom: 0;
+}
+
+.app-form-label {
+  display: block;
+  font-size: var(--hv-font-size-sm);
+  font-weight: var(--hv-font-weight-medium);
+  color: var(--hv-text-primary);
+  margin-bottom: var(--hv-space-2);
+}
+
+.app-form-input {
+  width: 100%;
+  height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--hv-border);
+  border-radius: var(--hv-radius-md);
+  font-size: var(--hv-font-size-base);
+  color: var(--hv-text-primary);
+  background: white;
+  transition:
+    color var(--hv-transition-base) var(--hv-ease-default),
+    background-color var(--hv-transition-base) var(--hv-ease-default),
+    border-color var(--hv-transition-base) var(--hv-ease-default),
+    box-shadow var(--hv-transition-base) var(--hv-ease-default);
+}
+
+.app-form-input:hover {
+  border-color: var(--hv-border-hover);
+}
+
+.app-form-input:focus {
+  outline: none;
+  border-color: var(--hv-primary);
+  box-shadow: 0 0 0 3px rgba(15, 108, 189, 0.1);
+}
+
+.app-form-textarea {
+  width: 100%;
+  min-height: 100px;
+  padding: var(--hv-space-3);
+  border: 1px solid var(--hv-border);
+  border-radius: var(--hv-radius-md);
+  font-size: var(--hv-font-size-base);
+  color: var(--hv-text-primary);
+  background: white;
+  font-family: var(--hv-font-family);
+  transition:
+    color var(--hv-transition-base) var(--hv-ease-default),
+    background-color var(--hv-transition-base) var(--hv-ease-default),
+    border-color var(--hv-transition-base) var(--hv-ease-default),
+    box-shadow var(--hv-transition-base) var(--hv-ease-default);
+  resize: vertical;
+}
+
+.app-form-textarea:hover {
+  border-color: var(--hv-border-hover);
+}
+
+.app-form-textarea:focus {
+  outline: none;
+  border-color: var(--hv-primary);
+  box-shadow: 0 0 0 3px rgba(15, 108, 189, 0.1);
+}
+
+.app-form-help {
+  font-size: var(--hv-font-size-sm);
+  color: var(--hv-text-tertiary);
+  margin-top: var(--hv-space-1);
+}
+
+.app-form-error {
+  font-size: var(--hv-font-size-sm);
+  color: var(--hv-error);
+  margin-top: var(--hv-space-1);
+}
+
+/* ============================================
+   APP BUTTONS - Standardized
+   ============================================ */
+.app-btn {
+  height: 44px;
+  padding: 0 20px;
+  border: none;
+  border-radius: var(--hv-radius-md);
+  font-size: var(--hv-font-size-base);
+  font-weight: var(--hv-font-weight-medium);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--hv-space-2);
+  transition:
+    color var(--hv-transition-base) var(--hv-ease-default),
+    background-color var(--hv-transition-base) var(--hv-ease-default),
+    border-color var(--hv-transition-base) var(--hv-ease-default),
+    box-shadow var(--hv-transition-base) var(--hv-ease-default);
+}
+
+.app-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.app-btn-primary {
+  background: var(--hv-primary);
+  color: white;
+}
+
+.app-btn-primary:hover {
+  background: var(--hv-primary-hover);
+}
+
+.app-btn-primary:active {
+  background: var(--hv-primary-active);
+}
+
+.app-btn-secondary {
+  background: var(--hv-neutral-100);
+  color: var(--hv-text-secondary);
+}
+
+.app-btn-secondary:hover {
+  background: var(--hv-border);
+  color: var(--hv-text-primary);
+}
+
+.app-btn-secondary:active {
+  background: var(--hv-neutral-300);
+}
+
+.app-btn-danger {
+  background: var(--hv-error);
+  color: white;
+}
+
+.app-btn-danger:hover {
+  background: var(--hv-error-hover);
+}
+
+.app-btn-danger:active {
+  background: #b91c1c;
+}
+
+.app-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ============================================
+   APP TABLES - Standardized
+   ============================================ */
+.app-table-container {
+  border: 1px solid var(--hv-border);
+  border-radius: var(--hv-radius-lg);
+  overflow: hidden;
+}
+
+.app-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--hv-font-size-sm);
+}
+
+.app-table thead {
+  background: var(--hv-surface-container-low);
+}
+
+.app-table th {
+  text-align: left;
+  padding: var(--hv-space-3) 16px;
+  font-weight: var(--hv-font-weight-semibold);
+  color: var(--hv-text-primary);
+  border-bottom: 1px solid var(--hv-border);
+}
+
+.app-table td {
+  padding: var(--hv-space-3) 16px;
+  color: var(--hv-text-secondary);
+  border-bottom: 1px solid var(--hv-border);
+}
+
+.app-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.app-table tbody tr:hover {
+  background: var(--hv-surface-container-lowest);
+}
+
+/* ============================================
+   APP EMPTY STATES - Standardized
+   ============================================ */
+.app-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  text-align: center;
+}
+
+.app-empty-state svg {
+  width: 64px;
+  height: 64px;
+  stroke: var(--hv-text-tertiary);
+  margin-bottom: var(--hv-space-4);
+  opacity: 0.5;
+}
+
+.app-empty-state-title {
+  font-size: var(--hv-font-size-lg);
+  font-weight: var(--hv-font-weight-semibold);
+  color: var(--hv-text-primary);
+  margin-bottom: var(--hv-space-2);
+}
+
+.app-empty-state-text {
+  font-size: var(--hv-font-size-base);
+  color: var(--hv-text-secondary);
+  margin-bottom: var(--hv-space-6);
+}
+
+/* ============================================
+   APP UTILITIES
+   ============================================ */
+.app-divider {
+  height: 1px;
+  background: var(--hv-border);
+  margin: var(--hv-space-4) 0;
+}
+
+.app-spacer {
+  flex: 1;
+}
+
+.app-flex {
+  display: flex;
+  align-items: center;
+  gap: var(--hv-space-2);
+}
+
+.app-flex-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.app-grid {
+  display: grid;
+  gap: var(--hv-space-4);
+}
+
+.app-grid-2 {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.app-grid-3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.app-grid-4 {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+@media (max-width: 768px) {
+  .app-grid-2,
+  .app-grid-3,
+  .app-grid-4 {
+    grid-template-columns: 1fr;
+  }
+}
