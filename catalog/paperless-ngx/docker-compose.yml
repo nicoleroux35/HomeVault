@@ -1,0 +1,49 @@
+services:
+  paperless-ngx:
+    image: ghcr.io/paperless-ngx/paperless-ngx:latest
+    container_name: paperless-ngx
+    restart: unless-stopped
+    ports:
+      - "{{PORT}}:8000"
+    environment:
+      - PAPERLESS_REDIS=redis://paperless-broker:6379
+      - PAPERLESS_DBHOST=paperless-db
+      - PAPERLESS_DBUSER=paperless
+      - PAPERLESS_DBPASS=paperless
+      - PAPERLESS_DBNAME=paperless
+    volumes:
+      - {{DATA_DIR}}/data:/usr/src/paperless/data
+      - {{DATA_DIR}}/media:/usr/src/paperless/media
+      - {{DATA_DIR}}/consume:/usr/src/paperless/consume
+    depends_on:
+      - paperless-db
+      - paperless-broker
+    deploy:
+      resources:
+        limits:
+          memory: 1.5G
+          cpus: '1.5'
+  paperless-broker:
+    image: redis:7-alpine
+    container_name: paperless-broker
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+  paperless-db:
+    image: postgres:16-alpine
+    container_name: paperless-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=paperless
+      - POSTGRES_PASSWORD=paperless
+      - POSTGRES_DB=paperless
+    volumes:
+      - {{DATA_DIR}}/postgres:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'

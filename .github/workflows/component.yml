@@ -1,0 +1,44 @@
+# Component tests — same runner, no services, mocked or build-level checks.
+# GitHub-hosted mirror of .gitea/workflows/component.yml: no MSW/WireMock
+# vendored in this repo, so the component gate is the Svelte frontend
+# compiling clean: `svelte-check` (types) + `vite build` (wiring/assets).
+# Backend handler composition (Axum Router + oneshot, no mocks needed) is
+# covered by integration.yml.
+# GitHub differences vs Gitea: github-hosted jobs run as the non-root
+# `runner` user, so writes to /opt and /usr/local/bin use sudo.
+name: component
+on:
+  push:
+  pull_request:
+  workflow_dispatch: # manual re-run (e.g. after a runner-side flake)
+
+concurrency:
+  group: component-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  component:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      # Direct Node tarball, pinned like .github/workflows/ci.yml's node 22:
+      # always install the pinned build (no version guard) — older node
+      # minors are BELOW vite 8's required >=22.12 and yield a broken
+      # rolldown native binding.
+      - name: Install Node 22
+        run: |
+          curl -fsSL https://nodejs.org/dist/v22.23.3/node-v22.23.3-linux-x64.tar.xz -o /tmp/node.tar.xz
+          sudo rm -rf /opt/node-v22.23.3-linux-x64
+          sudo tar -xJf /tmp/node.tar.xz -C /opt
+          rm -f /tmp/node.tar.xz
+          for b in node npm npx; do sudo ln -sf /opt/node-v22.23.3-linux-x64/bin/$b /usr/local/bin/$b; done
+          node --version && npm --version
+      - name: Install
+        run: npm ci
+      - name: Type-check (svelte-check + tsc)
+        run: npm run check
+      - name: Production build
+        run: npm run build

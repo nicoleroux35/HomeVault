@@ -1,0 +1,931 @@
+/**
+ * HOMEVAULT DESIGN SYSTEM - Component Styles
+ * Version: 2.0
+ * Date: 2026-07-03
+ *
+ * Reusable component styles based on theme homevault/ specifications
+ */
+
+/* ============================================
+   COMPACT-CONTROL HIT AREA (WCAG 2.5.8 / ISO 9241-410)
+   --------------------------------------------
+   A transparent 44px square centred on a compact control so a 28–36px icon
+   button keeps its small visible geometry (desktop density) while meeting
+   the --hv-touch-target-min hit target for touch, pen, mouse and keyboard.
+   Same technique as `.hv-switch-track::before` and `.hv-cl-btn::after`.
+
+   - `.hv-ic`    : for statically-positioned buttons (also sets position:
+                   relative so the pad anchors to the button).
+   - `.hv-ic-abs`: for controls that are ALREADY absolutely positioned
+                   (Drawer close, in-field password toggles) — the pad only.
+   Add the class to the button; never to an element that defines its own
+   `::after` (e.g. `.hv-cl-btn`).
+   ============================================ */
+.hv-ic {
+  position: relative;
+}
+
+.hv-ic::after,
+.hv-ic-abs::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: var(--hv-touch-target-min);
+  height: var(--hv-touch-target-min);
+  transform: translate(-50%, -50%);
+  border-radius: inherit;
+}
+
+/* ============================================
+   BUTTONS
+   ============================================ */
+.hv-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--hv-space-2);
+  height: var(--hv-button-height);
+  padding: var(--hv-button-padding);
+  font-size: var(--hv-font-size-base);
+  font-weight: var(--hv-font-weight-medium);
+  border-radius: var(--hv-radius-lg);
+  transition:
+    color var(--hv-transition-base) var(--hv-ease-default),
+    background-color var(--hv-transition-base) var(--hv-ease-default),
+    border-color var(--hv-transition-base) var(--hv-ease-default),
+    box-shadow var(--hv-transition-base) var(--hv-ease-default);
+  cursor: pointer;
+  border: none;
+  outline: none;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.hv-btn:focus-visible {
+  outline: 2px solid var(--hv-primary);
+  outline-offset: 2px;
+}
+
+.hv-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Press feedback — transform-only, so it's compositor-driven (no layout/paint
+   cost) and automatically disabled by the prefers-reduced-motion rule below. */
+.hv-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* Button Variants */
+.hv-btn-primary {
+  background-color: var(--hv-button-primary);
+  color: var(--hv-on-primary);
+}
+
+.hv-btn-primary:hover:not(:disabled) {
+  background-color: var(--hv-button-primary-hover);
+}
+
+.hv-btn-secondary {
+  background-color: var(--hv-button-secondary);
+  color: var(--hv-text-primary);
+  border: 1px solid var(--hv-border);
+}
+
+.hv-btn-secondary:hover:not(:disabled) {
+  background-color: var(--hv-button-secondary-hover);
+}
+
+.hv-btn-danger {
+  background-color: var(--hv-button-danger);
+  color: var(--hv-on-error);
+}
+
+.hv-btn-danger:hover:not(:disabled) {
+  background-color: var(--hv-button-danger-hover);
+}
+
+.hv-btn-ghost {
+  background-color: transparent;
+  color: var(--hv-text-primary);
+}
+
+.hv-btn-ghost:hover:not(:disabled) {
+  background-color: var(--hv-surface-container);
+}
+
+/* Button Sizes */
+.hv-btn-sm {
+  height: 36px;
+  padding: 0 16px;
+  font-size: var(--hv-font-size-sm);
+}
+
+.hv-btn-lg {
+  height: 56px;
+  padding: 0 32px;
+  font-size: var(--hv-font-size-md);
+}
+
+.hv-btn-icon {
+  width: var(--hv-button-height);
+  padding: 0;
+}
+
+.hv-btn-icon.hv-btn-sm {
+  width: 36px;
+}
+
+/* ============================================
+   FORM INPUTS
+   ============================================ */
+.hv-form-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--hv-space-2);
+  margin-bottom: var(--hv-space-4);
+}
+
+.hv-form-label {
+  font-size: var(--hv-font-size-sm);
+  font-weight: var(--hv-font-weight-medium);
+  color: var(--hv-text-secondary);
+  letter-spacing: var(--hv-letter-spacing-wide);
+  text-transform: uppercase;
+}
+
+.hv-form-input {
+  height: var(--hv-input-height);
+  padding: var(--hv-input-padding);
+  font-size: var(--hv-font-size-base);
+  /* --hv-shell-border-strong (#87929E, 3.16:1 on white) so the control
+     boundary is perceivable (WCAG 1.4.11) — not the 1.3:1 hairline. */
+  border: 1px solid var(--hv-shell-border-strong);
+  border-radius: var(--hv-radius-lg);
+  background-color: var(--hv-surface-container-lowest);
+  color: var(--hv-text-primary);
+  transition:
+    color var(--hv-transition-base) var(--hv-ease-default),
+    background-color var(--hv-transition-base) var(--hv-ease-default),
+    border-color var(--hv-transition-base) var(--hv-ease-default),
+    box-shadow var(--hv-transition-base) var(--hv-ease-default);
+}
+
+.hv-form-input:focus {
+  border-color: var(--hv-primary);
+  box-shadow: var(--hv-focus-ring);
+  outline: none;
+}
+
+.hv-form-input::placeholder {
+  color: var(--hv-text-tertiary);
+}
+
+.hv-form-input:disabled {
+  background-color: var(--hv-surface-container);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.hv-form-input.hv-error {
+  border-color: var(--hv-error);
+}
+
+.hv-form-input.hv-error:focus {
+  box-shadow: var(--hv-focus-ring-error);
+}
+
+.hv-form-helper {
+  font-size: var(--hv-font-size-sm);
+  color: var(--hv-text-tertiary);
+}
+
+.hv-form-error {
+  font-size: var(--hv-font-size-sm);
+  color: var(--hv-error);
+}
+
+/* ============================================
+   BADGES
+   ============================================ */
+.hv-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 12px;
+  font-size: var(--hv-font-size-xs);
+  font-weight: var(--hv-font-weight-medium);
+  line-height: 1;
+  border-radius: var(--hv-radius-full);
+  white-space: nowrap;
+}
+
+.hv-badge-success {
+  background-color: var(--hv-badge-success-bg);
+  color: var(--hv-badge-success-text);
+}
+
+.hv-badge-warning {
+  background-color: var(--hv-badge-warning-bg);
+  color: var(--hv-badge-warning-text);
+}
+
+.hv-badge-error {
+  background-color: var(--hv-badge-error-bg);
+  color: var(--hv-badge-error-text);
+}
+
+.hv-badge-info {
+  background-color: var(--hv-badge-info-bg);
+  color: var(--hv-badge-info-text);
+}
+
+.hv-badge-secondary {
+  background-color: var(--hv-surface-variant);
+  color: var(--hv-text-secondary);
+}
+
+.hv-badge-sm {
+  padding: 2px 8px;
+  font-size: var(--hv-font-size-micro);
+}
+
+.hv-badge-lg {
+  padding: 6px 16px;
+  font-size: var(--hv-font-size-sm);
+}
+
+.hv-badge-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+}
+
+/* Opt-in "live" variant for a badge dot representing an actively-updating
+   status (e.g. a running/connected state) — opacity-only pulse (hv-pulse,
+   defined in base.css), so it stays cheap even left running indefinitely. */
+.hv-badge-dot-live {
+  animation: hv-pulse 1.6s ease-in-out infinite;
+}
+
+/* ============================================
+   CARDS
+   ============================================ */
+.hv-card {
+  background-color: var(--hv-surface-container-lowest);
+  border: 1px solid var(--hv-border);
+  border-radius: var(--hv-radius-xl);
+  padding: var(--hv-space-6);
+  transition:
+    color var(--hv-transition-base) var(--hv-ease-default),
+    background-color var(--hv-transition-base) var(--hv-ease-default),
+    border-color var(--hv-transition-base) var(--hv-ease-default),
+    box-shadow var(--hv-transition-base) var(--hv-ease-default);
+}
+
+.hv-card:hover {
+  box-shadow: var(--hv-shadow-md);
+}
+
+.hv-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--hv-space-4);
+}
+
+.hv-card-title {
+  font-size: var(--hv-font-size-lg);
+  font-weight: var(--hv-font-weight-semibold);
+  color: var(--hv-text-primary);
+}
+
+.hv-card-body {
+  color: var(--hv-text-secondary);
+  line-height: var(--hv-line-height-normal);
+}
+
+.hv-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--hv-space-3);
+  margin-top: var(--hv-space-4);
+  padding-top: var(--hv-space-4);
+  border-top: 1px solid var(--hv-border);
+}
+
+/* ============================================
+   MODALS
+   ============================================ */
+.hv-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: var(--hv-modal-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: var(--hv-z-modal-backdrop);
+  animation: hv-fade-in var(--hv-transition-base) var(--hv-ease-default);
+}
+
+.hv-modal-dialog {
+  background-color: var(--hv-surface-container-lowest);
+  border-radius: var(--hv-radius-xl);
+  box-shadow: var(--hv-shadow-2xl);
+  max-width: var(--hv-modal-max-width);
+  width: 90%;
+  max-height: 90vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: hv-scale-in var(--hv-transition-base) var(--hv-ease-out);
+}
+
+.hv-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--hv-modal-header-padding);
+  border-bottom: 1px solid var(--hv-border);
+}
+
+.hv-modal-title {
+  display: flex;
+  align-items: center;
+  gap: var(--hv-space-2);
+  font-size: var(--hv-font-size-lg);
+  font-weight: var(--hv-font-weight-semibold);
+  color: var(--hv-text-primary);
+}
+
+.hv-modal-close {
+  width: var(--hv-modal-close-size);
+  height: var(--hv-modal-close-size);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--hv-radius-md);
+  background-color: transparent;
+  color: var(--hv-text-secondary);
+  cursor: pointer;
+  transition:
+    color var(--hv-transition-base) var(--hv-ease-default),
+    background-color var(--hv-transition-base) var(--hv-ease-default),
+    border-color var(--hv-transition-base) var(--hv-ease-default),
+    box-shadow var(--hv-transition-base) var(--hv-ease-default);
+}
+
+.hv-modal-close:hover {
+  background-color: var(--hv-surface-container);
+  color: var(--hv-text-primary);
+}
+
+.hv-modal-content {
+  flex: 1;
+  padding: var(--hv-space-6);
+  overflow-y: auto;
+}
+
+.hv-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--hv-space-3);
+  padding: var(--hv-space-6);
+  border-top: 1px solid var(--hv-border);
+}
+
+/* ============================================
+   MESSAGES / ALERTS
+   ============================================ */
+.hv-message {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--hv-space-3);
+  padding: var(--hv-space-4);
+  border-radius: var(--hv-radius-lg);
+  font-size: var(--hv-font-size-sm);
+  animation: hv-slide-down var(--hv-transition-base) var(--hv-ease-out);
+}
+
+.hv-message-icon {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+}
+
+.hv-message-content {
+  flex: 1;
+}
+
+.hv-message-title {
+  font-weight: var(--hv-font-weight-semibold);
+  margin-bottom: var(--hv-space-1);
+}
+
+.hv-message-error {
+  background-color: var(--hv-login-error-bg);
+  color: var(--hv-login-error-text);
+  border: 1px solid var(--hv-error-container);
+}
+
+.hv-message-success {
+  background-color: var(--hv-login-success-bg);
+  color: var(--hv-login-success-text);
+  border: 1px solid var(--hv-success);
+}
+
+.hv-message-info {
+  background-color: var(--hv-login-info-bg);
+  color: var(--hv-login-info-text);
+  border: 1px solid var(--hv-login-info-border);
+}
+
+.hv-message-warning {
+  background-color: var(--hv-badge-warning-bg);
+  color: var(--hv-badge-warning-text);
+  border: 1px solid var(--hv-warning);
+}
+
+/* ============================================
+   SIDEBAR
+   ============================================ */
+.hv-sidebar {
+  width: var(--hv-sidebar-width);
+  height: 100%;
+  background-color: var(--hv-surface-sidebar);
+  border-right: 1px solid var(--hv-border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.hv-sidebar-section {
+  padding: var(--hv-space-4);
+}
+
+.hv-sidebar-section-title {
+  font-size: var(--hv-font-size-xs);
+  font-weight: var(--hv-font-weight-semibold);
+  color: var(--hv-text-tertiary);
+  letter-spacing: var(--hv-letter-spacing-wide);
+  text-transform: uppercase;
+  margin-bottom: var(--hv-space-2);
+  padding: 0 var(--hv-space-3);
+}
+
+.hv-sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: var(--hv-space-3);
+  padding: var(--hv-space-3);
+  border-radius: var(--hv-radius-md);
+  font-size: var(--hv-font-size-base);
+  color: var(--hv-text-secondary);
+  cursor: pointer;
+  transition:
+    color var(--hv-transition-base) var(--hv-ease-default),
+    background-color var(--hv-transition-base) var(--hv-ease-default),
+    border-color var(--hv-transition-base) var(--hv-ease-default),
+    box-shadow var(--hv-transition-base) var(--hv-ease-default);
+  user-select: none;
+}
+
+.hv-sidebar-item:hover {
+  background-color: rgba(15, 108, 189, 0.08);
+  color: var(--hv-text-primary);
+}
+
+.hv-sidebar-item.active {
+  background-color: rgba(15, 108, 189, 0.15);
+  color: var(--hv-primary);
+  font-weight: var(--hv-font-weight-medium);
+}
+
+.hv-sidebar-item-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.hv-sidebar-badge {
+  margin-left: auto;
+}
+
+/* ============================================
+   DESKTOP-SHELL TOPBAR PANEL
+   --------------------------------------------
+   Shared anchor for any panel opened from a button on the desktop shell's
+   floating topbar pill — the network popover, the account menu, the
+   notification center, and whatever comes next. Give the panel this class
+   and it opens a constant `--hv-chrome-panel-gap` below the pill's bottom
+   edge, right-aligned to the pill, regardless of pill height (desktop vs
+   phone) or which button opened it.
+
+   How the anchoring works: `.hv-menubar` is `position: fixed`, so it is
+   the containing block for any `position: absolute` descendant that has no
+   closer positioned/filtered ancestor — `top: 100%` therefore resolves to
+   the pill's own bottom edge. The panel must NOT sit inside an
+   intermediate `position: relative` wrapper (those were removed from
+   `.hv-connection-wrap` / `.hv-notifications-trigger` for exactly this).
+
+   This class also owns the whole solid-white card look so every topbar
+   popover is visually identical: background, border, blur, shadow, radius,
+   text colour, corner-clipping, and the 160ms scale-in entrance. A panel
+   only sets its own body content and, if it needs to be wider than the
+   420px default, overrides `--hv-topbar-panel-w`. The width is always
+   clamped to the viewport minus the chrome inset so it never overflows on
+   phone.
+   ============================================ */
+.hv-topbar-panel {
+  /* placement + stacking */
+  position: absolute;
+  top: calc(100% + var(--hv-chrome-panel-gap, 8px));
+  right: 0;
+  z-index: var(--hv-z-dropdown-menu);
+
+  /* shared solid-white card chrome (Appliance 2026-09-12) */
+  width: min(
+    var(--hv-topbar-panel-w, 420px),
+    calc(100vw - 2 * var(--hv-chrome-inset) - 16px)
+  );
+  border-radius: var(--hv-radius-4xl); /* 24px */
+  background: var(--hv-shell-glass);
+  /* Chrome border, not the in-window hairline: this panel hangs off the
+     topbar pill and must match the pill's own outline, i.e. --hv-shell-border
+     (lighter) would read as a different surface. */
+  border: 1px solid var(--hv-chrome-surface-border);
+  box-shadow: var(--hv-chrome-surface-shadow);
+  color: var(--hv-shell-text-strong);
+  font-family: var(--hv-font-family);
+  overflow: hidden;
+  transform-origin: top right;
+  animation: hvTopbarPanelAppear 160ms ease-out;
+}
+
+@keyframes hvTopbarPanelAppear {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* ============================================
+   WINDOW
+   ============================================ */
+.hv-window {
+  position: absolute;
+  width: var(--hv-window-default-width);
+  height: var(--hv-window-default-height);
+  background-color: var(--hv-surface-window);
+  border-radius: var(--hv-radius-xl);
+  box-shadow: var(--hv-shadow-2xl);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: var(--hv-z-fixed);
+}
+
+.hv-title-bar {
+  height: var(--hv-title-bar-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--hv-space-4);
+  background-color: var(--hv-surface-titlebar);
+  border-bottom: 1px solid var(--hv-border);
+  cursor: move;
+  user-select: none;
+}
+
+.hv-title-bar-left {
+  display: flex;
+  align-items: center;
+  gap: var(--hv-space-2);
+}
+
+.hv-title-bar-icon {
+  width: 20px;
+  height: 20px;
+  color: var(--hv-primary);
+}
+
+.hv-title-bar-title {
+  font-size: var(--hv-font-size-base);
+  font-weight: var(--hv-font-weight-medium);
+  color: var(--hv-text-primary);
+}
+
+.hv-title-bar-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--hv-space-1);
+}
+
+.hv-title-bar-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--hv-radius-md);
+  color: var(--hv-text-secondary);
+  cursor: pointer;
+  transition:
+    color var(--hv-transition-base) var(--hv-ease-default),
+    background-color var(--hv-transition-base) var(--hv-ease-default),
+    border-color var(--hv-transition-base) var(--hv-ease-default),
+    box-shadow var(--hv-transition-base) var(--hv-ease-default);
+}
+
+.hv-title-bar-btn:hover {
+  background-color: var(--hv-surface-container);
+}
+
+.hv-title-bar-btn.close:hover {
+  background-color: var(--hv-error);
+  color: var(--hv-on-error);
+}
+
+.hv-window-content {
+  flex: 1;
+  overflow: auto;
+}
+
+/* The old `.hv-toggle-switch` (44x24, 20px knob, brand-blue when on) lived
+   here. Its only consumer was the TLS card, which now uses the shared
+   `theme/Switch` (40x22, 16px knob, category-coloured when on) like the rest
+   of the Settings screen — removing the rule left it unreferenced. */
+
+/* ============================================
+   TOOLTIP
+   ============================================ */
+.hv-tooltip {
+  position: absolute;
+  background-color: var(--hv-inverse-surface);
+  color: var(--hv-inverse-on-surface);
+  padding: var(--hv-space-2) var(--hv-space-3);
+  border-radius: var(--hv-radius-md);
+  font-size: var(--hv-font-size-sm);
+  white-space: nowrap;
+  z-index: var(--hv-z-tooltip);
+  pointer-events: none;
+  animation: hv-fade-in var(--hv-transition-fast) var(--hv-ease-default);
+}
+
+/* ============================================
+   SPINNER / LOADER
+   ============================================ */
+.hv-spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid var(--hv-surface-container);
+  border-top-color: var(--hv-primary);
+  border-radius: 50%;
+  animation: hv-spin 0.8s linear infinite;
+}
+
+.hv-spinner-sm {
+  width: 16px;
+  height: 16px;
+  border-width: 2px;
+}
+
+.hv-spinner-lg {
+  width: 32px;
+  height: 32px;
+  border-width: 4px;
+}
+
+/* ============================================
+   DIVIDER
+   ============================================ */
+.hv-divider {
+  height: 1px;
+  background-color: var(--hv-border);
+  border: none;
+  margin: var(--hv-space-4) 0;
+}
+
+.hv-divider-vertical {
+  width: 1px;
+  height: auto;
+  margin: 0 var(--hv-space-4);
+}
+
+/* ============================================
+   MENU COMPONENTS (Migrated from cove)
+   ============================================ */
+.hv-menu {
+  background: var(--hv-surface);
+  border: 1px solid var(--hv-border);
+  border-radius: var(--hv-radius-lg);
+  box-shadow: var(--hv-shadow-md);
+  padding: var(--hv-space-1);
+  min-width: 200px;
+}
+
+.hv-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--hv-space-2);
+  padding: var(--hv-space-2) var(--hv-space-3);
+  font-size: var(--hv-font-size-base);
+  color: var(--hv-text-primary);
+  border-radius: var(--hv-radius-sm);
+  cursor: pointer;
+  transition:
+    color var(--hv-transition-fast) var(--hv-ease-default),
+    background-color var(--hv-transition-fast) var(--hv-ease-default),
+    border-color var(--hv-transition-fast) var(--hv-ease-default),
+    box-shadow var(--hv-transition-fast) var(--hv-ease-default);
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+}
+
+.hv-menu-item:hover {
+  background: var(--hv-overlay-hover);
+}
+
+.hv-menu-item:active {
+  background: var(--hv-overlay-active);
+}
+
+.hv-menu-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.hv-menu-item svg {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+}
+
+.hv-menu-separator {
+  height: 1px;
+  background: var(--hv-divider);
+  margin: var(--hv-space-1) 0;
+}
+
+/* ============================================
+   TABS SYSTEM (Standard pour toutes les apps)
+   ============================================ */
+
+/* Tabs Container */
+.hv-tabs {
+  display: flex;
+  gap: var(--hv-space-2);
+  border-bottom: 1px solid var(--hv-border);
+  background: transparent;
+}
+
+/* Individual Tab Button */
+.hv-tab {
+  display: flex;
+  align-items: center;
+  gap: var(--hv-space-2);
+  padding: var(--hv-space-3) var(--hv-space-4);
+  font-size: var(--hv-font-size-base);
+  font-weight: var(--hv-font-weight-medium);
+  color: var(--hv-text-secondary);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition:
+    color var(--hv-transition-base) var(--hv-ease-default),
+    background-color var(--hv-transition-base) var(--hv-ease-default),
+    border-color var(--hv-transition-base) var(--hv-ease-default),
+    box-shadow var(--hv-transition-base) var(--hv-ease-default);
+  white-space: nowrap;
+  user-select: none;
+  position: relative;
+}
+
+.hv-tab:hover {
+  color: var(--hv-text-primary);
+  background: var(--hv-overlay-hover);
+}
+
+.hv-tab:active {
+  background: var(--hv-overlay-active);
+}
+
+/* Active Tab State */
+.hv-tab.active,
+.hv-tab[aria-selected="true"] {
+  color: var(--hv-primary);
+  border-bottom-color: var(--hv-primary);
+}
+
+/* Tab Icon */
+.hv-tab svg {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+}
+
+/* Tab Badge (for counts) */
+.hv-tab .hv-badge {
+  margin-left: var(--hv-space-1);
+}
+
+/* Disabled Tab */
+.hv-tab:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* Tab Panel (Content Area) */
+.hv-tab-panel {
+  padding: var(--hv-space-6) 0;
+  animation: fadeIn var(--hv-transition-base) var(--hv-ease-default);
+}
+
+.hv-tab-panel[hidden] {
+  display: none;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Tabs Variants */
+
+/* Contained Tabs (with background) */
+.hv-tabs.contained {
+  background: var(--hv-surface-container);
+  border-radius: var(--hv-radius-lg);
+  padding: var(--hv-space-1);
+  border-bottom: none;
+}
+
+.hv-tabs.contained .hv-tab {
+  border-radius: var(--hv-radius-md);
+  border-bottom: none;
+}
+
+.hv-tabs.contained .hv-tab.active {
+  background: var(--hv-surface);
+  box-shadow: var(--hv-shadow-sm);
+}
+
+/* Compact Tabs (smaller padding) */
+.hv-tabs.compact .hv-tab {
+  padding: var(--hv-space-2) var(--hv-space-3);
+  font-size: var(--hv-font-size-sm);
+}
+
+/* Full Width Tabs */
+.hv-tabs.full-width {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+}
+
+.hv-tabs.full-width .hv-tab {
+  justify-content: center;
+}
+
+/* Icon Only Tabs */
+.hv-tab.icon-only {
+  padding: var(--hv-space-2);
+  min-width: 40px;
+  justify-content: center;
+}
+
+/* Vertical Tabs */
+.hv-tabs.vertical {
+  flex-direction: column;
+  border-bottom: none;
+  border-right: 1px solid var(--hv-border);
+}
+
+.hv-tabs.vertical .hv-tab {
+  border-bottom: none;
+  border-right: 2px solid transparent;
+  justify-content: flex-start;
+}
+
+.hv-tabs.vertical .hv-tab.active {
+  border-right-color: var(--hv-primary);
+}

@@ -1,0 +1,20 @@
+services:
+  pihole:
+    image: pihole/pihole:latest
+    container_name: pihole
+    restart: unless-stopped
+    ports:
+      - "{{PORT}}:80"
+      - "53:53/tcp"
+      - "53:53/udp"
+    environment:
+      - TZ=UTC
+      - WEBPASSWORD=changeme
+    volumes:
+      - {{DATA_DIR}}/etc-pihole:/etc/pihole
+      - {{DATA_DIR}}/etc-dnsmasq.d:/etc/dnsmasq.d
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'

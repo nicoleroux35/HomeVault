@@ -1,0 +1,59 @@
+=== ANALYSE DÉTAILLÉE DES MÉTHODES D'AFFICHAGE DES ICÔNES ===
+
+COMPOSANTS DISPONIBLES
+----------------------
+1. Icon.svelte         → Material Icons (Lucide/Phosphor/Tabler)
+2. PapirusIcon.svelte  → Icônes Papirus Linux Desktop
+3. UserAvatar.svelte   → Avatars utilisateurs
+4. PapirusIcon custom  → Pour applications Desktop
+
+SPRITES CHARGÉS
+---------------
+- sprite-unified.svg   → 4.0M (Lucide + Phosphor + Tabler)
+- papirus-sprite.svg   → 47K  (21 icônes Papirus)
+- sprite.svg           → 466K (Legacy)
+- icons.svg            → 5.0K (Custom)
+- favicon.svg          → 9.3K (Favicon)
+
+UTILISATION PAR CONTEXTE
+------------------------
+
+A. PAGES ROUTES (23 fichiers)
+   - Total icônes: ~241
+   - PapirusIcon: 4 seulement (Login, Desktop, DesktopInteractive)
+   - Icon (Material): 237 (98.3%)
+
+   Top utilisateurs Material Icons:
+   1. Explorer.svelte    → 34 icônes
+   2. CloudSync.svelte   → 32 icônes
+   3. Raid.svelte        → 31 icônes
+   4. Backup.svelte      → 25 icônes
+   5. Network.svelte     → 24 icônes
+
+B. COMPOSANTS UI
+   - Quasi 100% Material Icons
+   - Aucun PapirusIcon sauf dans Desktop
+
+C. APPLICATIONS DESKTOP
+   - Desktop.svelte: 1 Papirus (launchpad)
+   - DesktopInteractive: 2 Papirus (dock apps)
+   - Login: 1 Papirus (logo)
+
+PROBLÈMES IDENTIFIÉS
+--------------------
+
+❌ INCOHÉRENCE: 
+   - Desktop apps configurés avec papirusIcon mais n'utilisent PAS PapirusIcon
+   - 98% des icônes sont Material au lieu de Papirus
+   - Seules 4 utilisations de PapirusIcon sur 241+ icônes
+
+❌ MÉTHODE INEFFICACE:
+   - Chargement de 4MB de Material Icons
+   - Chargement de 47KB de Papirus Icons
+   - Mais Papirus quasi inutilisé
+
+❌ COMPOSANTS DESKTOP:
+   - Apps ont "papirusIcon: 'dashboard'" dans config
+   - MAIS utilisent <Icon name="dashboard"> au lieu de <PapirusIcon>
+   - Résultat: Material Icons au lieu de Papirus colorées
+

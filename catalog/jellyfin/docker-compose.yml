@@ -1,0 +1,16 @@
+services:
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    container_name: jellyfin
+    restart: unless-stopped
+    ports:
+      - "{{PORT}}:8096"
+    volumes:
+      - {{DATA_DIR}}/config:/config
+      - {{DATA_DIR}}/cache:/cache
+      - {{DATA_DIR}}/media:/media
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'

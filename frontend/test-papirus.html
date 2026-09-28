@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Test Papirus Icons</title>
+  <style>
+    body { padding: 40px; background: #f0f0f0; }
+    .icon-test { margin: 20px; padding: 20px; background: white; border-radius: 8px; }
+    svg { margin: 10px; border: 1px solid #ddd; }
+  </style>
+</head>
+<body>
+  <h1>Test Papirus Icons</h1>
+  
+  <div class="icon-test">
+    <h2>Direct use (should work):</h2>
+    <svg width="48" height="48" viewBox="0 0 48 48">
+      <use href="/papirus-sprite.svg#papirus-dashboard" />
+    </svg>
+    <svg width="48" height="48" viewBox="0 0 48 48">
+      <use href="/papirus-sprite.svg#papirus-docker" />
+    </svg>
+    <svg width="48" height="48" viewBox="0 0 48 48">
+      <use href="/papirus-sprite.svg#papirus-terminal" />
+    </svg>
+  </div>
+
+  <div class="icon-test">
+    <h2>After inline load (should work better):</h2>
+    <div id="inline-icons"></div>
+  </div>
+
+  <script>
+    // Load sprite inline like in index.html
+    fetch('/papirus-sprite.svg')
+      .then(r => r.text())
+      .then(text => {
+        document.body.insertAdjacentHTML('afterbegin', text);
+        
+        // Now test icons again
+        document.getElementById('inline-icons').innerHTML = `
+          <svg width="48" height="48" viewBox="0 0 48 48">
+            <use href="#papirus-dashboard" />
+          </svg>
+          <svg width="48" height="48" viewBox="0 0 48 48">
+            <use href="#papirus-docker" />
+          </svg>
+          <svg width="48" height="48" viewBox="0 0 48 48">
+            <use href="#papirus-terminal" />
+          </svg>
+        `;
+        console.log('Sprite loaded, icons should appear');
+      });
+  </script>
+</body>
+</html>

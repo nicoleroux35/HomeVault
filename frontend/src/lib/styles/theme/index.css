@@ -1,0 +1,22 @@
+/**
+ * HOMEVAULT DESIGN SYSTEM - Main Theme Entry
+ * Version: 3.0 "shadcn-svelte + Melt UI"
+ * Date: 2026-09-11
+ *
+ * Import all theme files in the correct order. The shadcn-svelte / Melt UI
+ * semantic color bridge lives in app.css (@theme inline + :root mappings
+ * onto the --hv-* tokens), imported after this file in main.ts.
+ */
+
+/* Base styles - tokens must come first */
+@import './tokens.css';
+@import './base.css';
+
+/* Component styles */
+@import './components.css';
+
+/* App layout standardization */
+@import '../app-layout.css';
+
+/* Utility classes */
+@import './utilities.css';

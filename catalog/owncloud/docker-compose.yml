@@ -1,0 +1,19 @@
+services:
+  owncloud:
+    image: owncloud/server:latest
+    container_name: owncloud
+    restart: unless-stopped
+    ports:
+      - "{{PORT}}:8080"
+    environment:
+      - OWNCLOUD_DOMAIN=localhost:{{PORT}}
+      - OWNCLOUD_DB_TYPE=sqlite
+      - OWNCLOUD_ADMIN_USERNAME=admin
+      - OWNCLOUD_ADMIN_PASSWORD=changeme
+    volumes:
+      - {{DATA_DIR}}/files:/mnt/data
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'

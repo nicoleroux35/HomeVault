@@ -1,0 +1,16 @@
+services:
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    ports:
+      - "{{PORT}}:5678"
+    environment:
+      - N8N_SECURE_COOKIE=false
+    volumes:
+      - {{DATA_DIR}}/data:/home/node/.n8n
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'

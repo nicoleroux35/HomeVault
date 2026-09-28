@@ -1,0 +1,1200 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
+  import { api } from '$lib/services/api';
+  import { notificationsStore } from '$lib/stores/notifications';
+  import { wallpaperStore, BUNDLED_WALLPAPERS } from '$lib/stores/wallpaper';
+  import { monitorStore, REFRESH_INTERVAL_OPTIONS } from '$lib/stores/monitorStore';
+  import { WIDGET_DEFS } from '$lib/stores/widgetCatalog';
+  import { languageStore, t, translate } from '$lib/stores/i18n';
+  import { weatherLocationStore, type WeatherLocation } from '$lib/stores/weatherLocation';
+  import { weatherDisplayPrefsStore, WEATHER_FIELDS, type WeatherField } from '$lib/stores/weatherDisplayPrefs';
+  import {
+    draft,
+    invalidateGroups,
+    syncWidgetsFromMonitor,
+    syncWeatherFromStores,
+    onGroupSaved,
+    seedGroup,
+    seedAutostart,
+    seedAiModel,
+    setSavedLanguage,
+    notices,
+    clearHostnameNotice,
+    type SettingsGroup
+  } from '$lib/stores/settingsDraft.svelte';
+  import SettingsSaveButton from '$lib/components/settings/SettingsSaveButton.svelte';
+  import { Alert, Switch } from '$lib/components/theme';
+  import { PageLayout, ConfirmDialog } from '$lib/components/app';
+  import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
+  import { cn } from '$lib/utils.js';
+  import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
+  import WindowSidebarItem from '$lib/components/desktop/WindowSidebarItem.svelte';
+  import {
+    secLabel,
+    secLabelFirst,
+    settingsCard,
+    settingsCardFooter,
+    settingsRow,
+    settingsRowHint,
+    settingsRowLabel,
+    settingsRowLast,
+    settingsRowStacked,
+    settingsLabel,
+    settingsHint,
+    settingsInput,
+    settingsSelect,
+    settingsSelectCompact,
+    settingsTextarea,
+    settingsBtn,
+    settingsBtnGhost,
+    settingsBtnPrimary,
+    settingsBtnDanger
+  } from '$lib/components/settings/vocabulary';
+  import AntivirusCard from '$lib/components/settings/AntivirusCard.svelte';
+  import AntiRansomwareCard from '$lib/components/settings/AntiRansomwareCard.svelte';
+  import FirewallCard from '$lib/components/settings/FirewallCard.svelte';
+  import TlsCard from '$lib/components/settings/TlsCard.svelte';
+  import UpsCard from '$lib/components/settings/UpsCard.svelte';
+  import SnmpCard from '$lib/components/settings/SnmpCard.svelte';
+  import NotificationBellIcon from '$lib/components/shared/NotificationBellIcon.svelte';
+  import { IconAlertTriangle, IconCookie, IconShield, IconCheck, IconWifiOff, IconSettings, IconPalette, IconInfoCircle, IconBrain, IconRefresh, IconMapPin, IconPencil, IconShieldCheckered, IconActivity, IconLayoutGrid } from '@tabler/icons-svelte';
+
+  // Sidebar categories — 8 grouped entries instead of a 12-item flat list.
+  // Each `key` gates one or more of the `{#if activeCategory === …}` blocks in
+  // the markup; several former standalone categories stack inside one group
+  // (each renders its own section label + card, so the group still reads as
+  // labelled sub-sections — same pattern Security/Monitoring already use):
+  //
+  //   general   → General
+  //   security  → HTTPS/TLS + Antivirus + Anti-Ransomware + Firewall
+  //   appearance→ Wallpaper
+  //   widgets   → Active monitors + Refresh + Weather widget
+  //   notifications → E-mail / SMTP + Alerts + Webhook
+  //   ai        → AI Assistant
+  //   monitoring→ UPS + SNMP
+  //   system    → Software update + System information + Data management +
+  //               Privacy
+  //
+  // `labelKey` reuses each group's existing card-title translation.
+  // `subtitleKey` is the rail item's second line AND the content header's
+  // subtitle, so the rail and the panel heading can never disagree.
+  // `accent` is the category colour (tokens.css → SETTINGS SCREEN) driving the
+  // rail icon tile, the content header tile and this category's row accents.
+  //
+  // Keys are declared literally (never built as `settings.nav_subtitle_${key}`)
+  // so a grep for the full key name still finds it — see docs/I18N.md.
+  const categories: {
+    key: string
+    labelKey: string
+    subtitleKey: string
+    icon: any
+    accent: string
+  }[] = [
+    { key: 'general', labelKey: 'settings.general_title', subtitleKey: 'settings.nav_subtitle_general', icon: IconSettings, accent: 'var(--hv-settings-cat-general)' },
+    { key: 'security', labelKey: 'settings.security', subtitleKey: 'settings.nav_subtitle_security', icon: IconShieldCheckered, accent: 'var(--hv-settings-cat-security)' },
+    { key: 'appearance', labelKey: 'settings.appearance_title', subtitleKey: 'settings.nav_subtitle_appearance', icon: IconPalette, accent: 'var(--hv-settings-cat-appearance)' },
+    { key: 'widgets', labelKey: 'settings.widgets_title', subtitleKey: 'settings.nav_subtitle_widgets', icon: IconLayoutGrid, accent: 'var(--hv-settings-cat-widgets)' },
+    { key: 'notifications', labelKey: 'settings.notifications_title', subtitleKey: 'settings.nav_subtitle_notifications', icon: NotificationBellIcon, accent: 'var(--hv-settings-cat-notifications)' },
+    { key: 'ai', labelKey: 'settings.ai_title', subtitleKey: 'settings.nav_subtitle_ai', icon: IconBrain, accent: 'var(--hv-settings-cat-ai)' },
+    { key: 'monitoring', labelKey: 'settings.monitoring_title', subtitleKey: 'settings.nav_subtitle_monitoring', icon: IconActivity, accent: 'var(--hv-settings-cat-monitoring)' },
+    { key: 'system', labelKey: 'settings.system_title', subtitleKey: 'settings.nav_subtitle_system', icon: IconInfoCircle, accent: 'var(--hv-settings-cat-system)' }
+  ];
+  let activeCategory = 'general';
+  /* The active category's record — drives the content header (icon, title,
+     subtitle, accent). Falls back to the first entry so the header is never
+     empty, even for a moment during hydration.
+
+     Deliberately a legacy `$:` statement, not `$derived`: this component is
+     legacy-mode (like Syncthing/Chat), and a single rune here would switch the
+     whole file to runes mode, invalidating the ~40 plain `let`s and the other
+     `$:` blocks it is built from. */
+  let activeCat = categories[0];
+  $: activeCat = categories.find((c) => c.key === activeCategory) ?? categories[0];
+  const dlg = createConfirmState();
+
+  // Settings state — every editable value lives in `draft` (the shared
+  // settingsDraft store) and is persisted ONLY by the sidebar-footer Save
+  // button. There is no auto-save: changing a field just marks its group
+  // dirty. See `stores/settingsDraft.svelte.ts`.
+
+  // Version info
+  let versionInfo = {
+    current_version: '1.0.0',
+    latest_version: null as string | null,
+    up_to_date: true,
+    release_date: null as string | null,
+    error: null as string | null
+  };
+
+  // Server info
+  let serverInfo = {
+    ip: '',
+    port: 0,
+    display_address: ''
+  };
+
+  // Local UI state
+  let loading = true;
+  let testingEmail = false;
+  let checkingUpdate = false;
+
+  // Data management (export/import/reset)
+  let exportingSettings = false;
+  let importingSettings = false;
+  let resettingSettings = false;
+  let importText = '';
+  let importFileInput: HTMLInputElement;
+  let importingFromFile = false;
+
+  // Languages
+  const languages = [
+    { value: 'en', label: 'English' },
+    { value: 'fr', label: 'Français' },
+    { value: 'es', label: 'Español' },
+    { value: 'de', label: 'Deutsch' }
+  ];
+
+  // Timezones
+  const timezones = [
+    { value: 'UTC', label: 'UTC' },
+    { value: 'America/New_York', label: 'Eastern Time (New York)' },
+    { value: 'America/Chicago', label: 'Central Time (Chicago)' },
+    { value: 'America/Denver', label: 'Mountain Time (Denver)' },
+    { value: 'America/Los_Angeles', label: 'Pacific Time (Los Angeles)' },
+    { value: 'America/Toronto', label: 'Eastern Time (Toronto)' },
+    { value: 'Europe/London', label: 'London' },
+    { value: 'Europe/Paris', label: 'Paris' },
+    { value: 'Europe/Berlin', label: 'Berlin' },
+    { value: 'Europe/Madrid', label: 'Madrid' },
+    { value: 'Asia/Tokyo', label: 'Tokyo' },
+    { value: 'Asia/Shanghai', label: 'Shanghai' },
+    { value: 'Asia/Singapore', label: 'Singapore' },
+    { value: 'Australia/Sydney', label: 'Sydney' }
+  ];
+
+  // AI / Ollama
+  let aiModels: { name: string; modified_at: string; size: number }[] = [];
+  let currentModelDisplay = '';
+  let ollamaRunning = false;
+  let aiLoading = true;
+  let aiPulling = false;
+  let newModelName = '';
+  let aiPullMessage = '';
+  let aiPullError = '';
+  let recommendations: {
+    name: string; description: string; min_ram_gb: number;
+    min_vram_gb: number | null; requires_gpu: boolean;
+    speed: string; size_gb: number;
+  }[] = [];
+  let systemSpecs: { total_ram_gb: number; has_gpu: boolean; gpu_name: string | null; gpu_vram_gb: number | null } | null = null;
+  let recommending = false;
+
+  const quickModels = [
+    'gemma3:1b',
+    'gemma3:4b',
+    'qwen3.5:0.8b',
+    'qwen3.5:2b',
+    'llama3.2:1b',
+    'llama3.2:3b',
+  ];
+
+  async function loadAiModels() {
+    aiLoading = true;
+    aiPullMessage = '';
+    aiPullError = '';
+    try {
+      const response = await api.chatListModels();
+      if (response.success && response.data) {
+        aiModels = response.data.models || [];
+        ollamaRunning = response.data.ollama_running;
+        currentModelDisplay = response.data.current;
+        // Seed the AI group draft from the server's active model, but only
+        // on first load — a later refresh must not clobber an unsaved pick.
+        if (!draft.ai.model) {
+          seedAiModel(response.data.current || '');
+        }
+      } else {
+        aiModels = [];
+        ollamaRunning = false;
+      }
+    } catch {
+      aiModels = [];
+      ollamaRunning = false;
+    }
+    aiLoading = false;
+  }
+
+  async function loadRecommendations() {
+    recommending = true;
+    try {
+      const res = await api.chatRecommendModels();
+      if (res.success && res.data) {
+        recommendations = res.data.recommendations || [];
+        systemSpecs = res.data.system;
+      }
+    } catch {
+      recommendations = [];
+      systemSpecs = null;
+    }
+    recommending = false;
+  }
+
+  /** Surfaces a settings save/action result via the notification center (not a toast — see notificationsStore). */
+  function notifySettings(message: string, type: 'success' | 'error' = 'success') {
+    notificationsStore.add({ title: translate('desktop.app_settings_name'), message, type });
+  }
+
+  async function handleInstallAndLoad(modelName: string) {
+    newModelName = modelName;
+    aiPulling = true;
+    aiPullMessage = translate('settings.ai_installing_model', { model: modelName });
+    aiPullError = '';
+    try {
+      const pullRes = await api.chatPullModel(modelName);
+      if (pullRes.success) {
+        aiPullMessage = translate('settings.ai_model_installed_activating', { model: modelName });
+        await loadAiModels();
+        // Stage the freshly installed model as the pick; the Save button
+        // activates it server-side.
+        draft.ai.model = modelName;
+        aiPullMessage = translate('settings.ai_model_installed', { model: modelName });
+      } else {
+        aiPullError = pullRes.error || translate('settings.ai_install_failed');
+        aiPullMessage = '';
+      }
+    } catch (err: any) {
+      aiPullError = err?.message || translate('settings.ai_comm_error');
+      aiPullMessage = '';
+    }
+    aiPulling = false;
+  }
+
+  async function handlePullModel() {
+    const model = newModelName.trim();
+    if (!model) return;
+    aiPulling = true;
+    aiPullMessage = translate('settings.ai_installing_model_wait', { model });
+    aiPullError = '';
+    try {
+      const response = await api.chatPullModel(model);
+      if (response.success) {
+        aiPullMessage = translate('settings.ai_model_installed', { model });
+        newModelName = '';
+        await loadAiModels();
+        draft.ai.model = model;
+      } else {
+        aiPullError = response.error || translate('settings.ai_install_failed');
+        aiPullMessage = '';
+      }
+    } catch (err: any) {
+      aiPullError = err?.message || translate('settings.ai_server_comm_error');
+      aiPullMessage = '';
+    }
+    aiPulling = false;
+  }
+
+  // Update frequencies
+  const updateFrequencies = [
+    { value: 'manual', label: 'Manual' },
+    { value: 'daily', label: 'Once per day' },
+    { value: 'weekly', label: 'Once per week' },
+    { value: 'monthly', label: 'Once per month' },
+    { value: 'disabled', label: 'Disabled' }
+  ];
+
+  // Load settings, version info, and server info in parallel on mount
+  onMount(async () => {
+    await Promise.all([
+      loadSettings(),
+      loadVersionInfo(),
+      loadServerInfo(),
+      loadAiModels(),
+      loadRecommendations(),
+      loadAutostart()
+    ]);
+    // After a save flushes the AI group, keep the display model in step.
+    onGroupSaved('ai', () => {
+      currentModelDisplay = draft.ai.model;
+    });
+  });
+
+  async function loadAutostart() {
+    const res = await api.getAutostart();
+    if (res.success && res.data) {
+      seedAutostart(!!(res.data as any).enabled);
+    }
+  }
+
+  async function loadSettings() {
+    loading = true;
+    try {
+      const response = await api.getAllSettings();
+      if (response.success && response.data) {
+        const data = response.data;
+        // Seed every main group into the draft store and baseline it. Nothing
+        // is persisted here — the sidebar-footer Save button flushes only the
+        // groups the user actually changed.
+        draft.general = {
+          server_name: data.general?.server_name || 'HomeVault',
+          timezone: data.general?.timezone || 'UTC',
+          language: data.general?.language || $languageStore
+        };
+        draft.email = {
+          smtp_server: data.email?.smtp_server || '',
+          smtp_port: data.email?.smtp_port || 587,
+          smtp_username: data.email?.smtp_username || '',
+          smtp_password: '',
+          from_address: data.email?.from_address || '',
+          use_tls: data.email?.use_tls ?? true
+        };
+        draft.update = {
+          check_frequency: data.update?.check_frequency || 'weekly'
+        };
+        draft.notifications = {
+          email: data.notifications?.email || '',
+          enable_alerts: data.notifications?.enable_alerts ?? true,
+          alert_threshold: data.notifications?.alert_threshold || 80,
+          smtp_enabled: data.notifications?.smtp_enabled ?? false,
+          webhook_url: data.notifications?.webhook_url || '',
+          webhook_enabled: data.notifications?.webhook_enabled ?? false
+        };
+        draft.appearance = {
+          theme: data.appearance?.theme || 'auto',
+          wallpaper: '',
+          accent_color: data.appearance?.accent_color || '#1E62AE',
+          density: data.appearance?.density || 'comfortable'
+        };
+
+        // Apply the persisted accent color and wallpaper live — the desktop
+        // updates immediately, but the server only gets the new value on Save.
+        document.documentElement.style.setProperty('--hv-primary', draft.appearance.accent_color);
+        if (data.appearance?.wallpaper) {
+          try {
+            // applyRaw keeps only a bundled /wallpapers/ image; anything else
+            // (legacy colour / gradient / custom upload) resolves to default.
+            wallpaperStore.applyRaw(JSON.parse(data.appearance.wallpaper));
+          } catch {
+            // Pre-existing values may not be JSON-encoded; ignore.
+          }
+        }
+        // The wallpaper draft is the live store's JSON — the same value the
+        // appearance saver sends — so the baseline matches what is on screen.
+        draft.appearance.wallpaper = JSON.stringify($wallpaperStore);
+
+        // Baseline every seeded group so a fresh load never reads as dirty.
+        setSavedLanguage(draft.general.language);
+        for (const g of ['general', 'email', 'update', 'notifications', 'appearance'] as SettingsGroup[]) {
+          seedGroup(g);
+        }
+
+        // Widget layout + weather preferences live in their own stores and are
+        // mirrored into the draft (unless already edited). Fire both after the
+        // main groups so their baselines are set from the live state.
+        syncWidgetsFromMonitor(get(monitorStore));
+        syncWeatherFromStores(get(weatherLocationStore), get(weatherDisplayPrefsStore));
+        // Enable the live wallpaper→draft mirror once the baseline is set.
+        wallpaperDirtySync = true;
+      }
+    } catch (error) {
+      console.error('Failed to load settings:', error);
+      notifySettings(translate('settings.load_settings_failed'), 'error');
+    }
+    loading = false;
+  }
+
+  async function loadVersionInfo() {
+    try {
+      const response = await api.checkForUpdates();
+      if (response.success && response.data) {
+        versionInfo = response.data;
+      }
+    } catch (error) {
+      console.error('Failed to load version info:', error);
+    }
+  }
+
+  async function loadServerInfo() {
+    try {
+      const response = await api.getServerInfo();
+      if (response.success && response.data) {
+        serverInfo = response.data;
+      }
+    } catch (error) {
+      console.error('Failed to load server info:', error);
+    }
+  }
+
+  // Wallpaper choice is applied live (the desktop behind the window updates
+  // immediately); the server only persists it when the user clicks Save (the
+  // `appearance` group). The default-gradient tile was removed (explicit
+  // request) — every wallpaper offered here is now a bundled photo.
+  //
+  // `selectedWpUrl` is a reactive `$:` (not a helper fn) so the tile's
+  // `class:is-selected`, `aria-checked` AND the check-badge `{#if}` all
+  // re-evaluate when the store changes — calling a function that reads
+  // `$wallpaperStore` only re-ran the `class:` directive.
+  $: selectedWpUrl = $wallpaperStore.type === 'image' ? $wallpaperStore.value : '';
+
+  // Mirror the live wallpaper into the `appearance` draft so picking a tile
+  // marks that group dirty — but only after the initial load has baselined it.
+  let wallpaperDirtySync = false;
+  $: if (wallpaperDirtySync) draft.appearance.wallpaper = JSON.stringify($wallpaperStore);
+
+  // Keep the widgets + weather drafts in step with their live stores — the
+  // sync helpers no-op while the group is dirty, so a late server sync can
+  // never clobber edits the user staged for Save.
+  $: syncWidgetsFromMonitor($monitorStore);
+  $: syncWeatherFromStores($weatherLocationStore, $weatherDisplayPrefsStore);
+
+  async function handleTestEmail() {
+    testingEmail = true;
+    try {
+      const response = await api.testEmailSettings();
+      if (response.success) {
+        notifySettings(translate('settings.test_sent'));
+      } else {
+        notifySettings(response.error || translate('settings.test_failed'), 'error');
+      }
+    } catch (error) {
+      notifySettings(translate('settings.test_failed'), 'error');
+    }
+    testingEmail = false;
+  }
+
+  async function handleCheckUpdate() {
+    checkingUpdate = true;
+    await loadVersionInfo();
+    checkingUpdate = false;
+  }
+
+  async function handleExportSettings() {
+    exportingSettings = true;
+    try {
+      const response = await api.exportSettings();
+      if (response.success && response.data) {
+        const json = JSON.stringify(response.data, null, 2);
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `homevault-settings-${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        notifySettings(translate('settings.settings_exported'));
+      } else {
+        notifySettings(response.error || translate('settings.export_failed'), 'error');
+      }
+    } catch (error) {
+      notifySettings(translate('settings.export_failed'), 'error');
+    }
+    exportingSettings = false;
+  }
+
+  async function handleImportSettings() {
+    let data: any = null;
+    if (importingFromFile) {
+      if (!importFileInput?.files?.length) {
+        notifySettings(translate('settings.reset_confirm_msg'), 'error');
+        return;
+      }
+      try {
+        const text = await importFileInput.files[0].text();
+        data = JSON.parse(text);
+      } catch {
+        notifySettings(translate('settings.invalid_json'), 'error');
+        return;
+      }
+    } else {
+      if (!importText.trim()) {
+        notifySettings(translate('settings.paste_json_import'), 'error');
+        return;
+      }
+      try {
+        data = JSON.parse(importText);
+      } catch {
+        notifySettings(translate('settings.invalid_json'), 'error');
+        return;
+      }
+    }
+
+    importingSettings = true;
+    try {
+      const response = await api.importSettings(data);
+      if (response.success) {
+        importText = '';
+        if (importFileInput) importFileInput.value = '';
+        importingFromFile = false;
+        // Re-read everything: main groups are re-seeded by loadSettings; the
+        // independently-loaded ones (autostart, AI) are invalidated + refetched.
+        invalidateGroups('ai', 'autostart', 'widgets', 'weather');
+        await loadSettings();
+        await loadAutostart();
+        await loadAiModels();
+        notifySettings(translate('settings.settings_imported'));
+      } else {
+        notifySettings(response.error || translate('settings.import_failed'), 'error');
+      }
+    } catch (error) {
+      notifySettings(translate('settings.import_failed'), 'error');
+    }
+    importingSettings = false;
+  }
+
+  async function handleResetSettings() {
+    if (!(await dlg.ask(translate('settings.reset_confirm')))) return;
+    resettingSettings = true;
+    try {
+      const response = await api.resetSettings();
+      if (response.success) {
+        invalidateGroups('ai', 'autostart', 'widgets', 'weather');
+        await loadSettings();
+        await loadAutostart();
+        await loadAiModels();
+        notifySettings(translate('settings.settings_reset'));
+      } else {
+        notifySettings(response.error || translate('settings.reset_failed'), 'error');
+      }
+    } catch (error) {
+      notifySettings(translate('settings.reset_failed'), 'error');
+    }
+    resettingSettings = false;
+  }
+
+  // Check if update available
+  function isUpdateAvailable(): boolean {
+    return versionInfo.latest_version !== null && !versionInfo.up_to_date;
+  }
+
+  // Weather widget location — the desktop Weather monitor only ever reads
+  // weatherLocationStore now; this is the one place that writes to it,
+  // via the same free, no-key, CORS-enabled Open-Meteo geocoding endpoint
+  // the widget itself used to call directly before this moved here.
+  let weatherSearchQuery = '';
+  let weatherSearchResults: WeatherLocation[] = [];
+  let weatherSearching = false;
+  let weatherEditingLocation = false;
+
+  async function searchWeatherLocation() {
+    const query = weatherSearchQuery.trim();
+    if (!query) return;
+    weatherSearching = true;
+    weatherSearchResults = [];
+    try {
+      const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=5&language=${$languageStore}&format=json`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      weatherSearchResults = (json.results ?? []).map((r: any) => ({
+        name: [r.name, r.admin1, r.country].filter(Boolean).join(', '),
+        lat: r.latitude,
+        lon: r.longitude,
+      }));
+    } catch {
+      notifySettings(translate('desktop.weather_search_failed'), 'error');
+    }
+    weatherSearching = false;
+  }
+
+  function chooseWeatherLocation(location: WeatherLocation) {
+    // Stage the pick into the draft; the desktop widget only follows once the
+    // user clicks Save (the `weather` saver pushes to the location store).
+    draft.weather.location = location;
+    weatherEditingLocation = false;
+    weatherSearchQuery = '';
+    weatherSearchResults = [];
+  }
+
+  function openWeatherLocationEditor() {
+    weatherEditingLocation = true;
+    weatherSearchQuery = '';
+    weatherSearchResults = [];
+  }
+
+  // Optional Open-Meteo fields the desktop Weather widget can show, on top
+  // of the always-shown temperature/condition/humidity/wind. Reuses the
+  // same `desktop.weather_<field>` labels the widget itself displays.
+  function handleWeatherFieldToggle(field: WeatherField, checked: boolean) {
+    const fields = [...draft.weather.displayFields];
+    if (checked && !fields.includes(field)) fields.push(field);
+    if (!checked) {
+      const i = fields.indexOf(field);
+      if (i >= 0) fields.splice(i, 1);
+    }
+    draft.weather.displayFields = fields;
+  }
+
+  // ---------------------------------------------------------------------
+  // Class vocabulary — the shared "section label + card + row" language of
+  // the Settings design. It lives in `components/settings/vocabulary.ts` so
+  // the six embedded sub-cards (built on `SettingsCard`) share the same one.
+  // ---------------------------------------------------------------------
+</script>
+
+<PageLayout
+  title={$t('desktop.app_settings_name')}
+  data-testid="settings-page"
+  sidebarLabel={$t('settings.subtitle')}
+  sidebarTestId="settings-sidebar"
+  sidebarWidth="var(--hv-settings-sidebar-w)"
+  sidebarClass="[--winsidebar-pad:8px] bg-[var(--hv-settings-tile)]! border-r-[1.45px]! border-r-[var(--hv-settings-border)]!"
+  bodyClass="p-0! overflow-hidden! flex flex-col bg-[var(--hv-settings-canvas)]"
+>
+  {#snippet icon()}
+    <IconSettings stroke={1.7} />
+  {/snippet}
+
+  {#snippet sidebar()}
+    <!-- Rail header — the micro-label above the category list. Rendered as the
+         first child of the rail body and pulled full-bleed with negative
+         margins, so the 8px body padding doesn't inset its hairline.
+         The size token needs its `length:` type hint. `--hv-text-*` is
+         overloaded — it holds colours (--hv-text-primary) *and* sizes
+         (--hv-text-xs) — so Tailwind cannot tell which property an unhinted
+         `text-[var(…)]` means and emits a `color:` rule: right for the
+         colours, silently wrong for the sizes, which then render at the
+         inherited size instead of their own.
+         Keep the token spelled out only in this prose form: Tailwind scans
+         comments for class candidates too, so writing the full unhinted
+         utility here would emit the very dead rule this note explains. -->
+    <div class="-mx-2 -mt-2 mb-2 px-4 py-4 border-b-[1.45px] border-[var(--hv-settings-hairline)] text-c-xs font-bold uppercase tracking-[var(--hv-letter-spacing-wider)] leading-[var(--hv-line-height-normal)] text-[var(--hv-settings-label)]">
+      {$t('desktop.app_settings_name')}
+    </div>
+    <nav class="flex flex-col gap-0.5" aria-label={$t('settings.subtitle')}>
+      {#each categories as cat (cat.key)}
+        <WindowSidebarItem
+          variant="rich"
+          label={$t(cat.labelKey)}
+          subtitle={$t(cat.subtitleKey)}
+          accent={cat.accent}
+          testId="settings-nav-item"
+          class={cn(activeCategory === cat.key && 'set-nav-active')}
+          active={activeCategory === cat.key}
+          onclick={() => (activeCategory = cat.key)}
+        >
+          {#snippet icon()}<svelte:component this={cat.icon} size={16} />{/snippet}
+        </WindowSidebarItem>
+      {/each}
+    </nav>
+  {/snippet}
+
+  {#snippet sidebarFooter()}
+    <!-- One control in the rail footer: the Save button is also the screen's
+         save indicator (colour + label state machine, plus the sr-only status
+         line it renders) — the visible status pill above it and the unsaved
+         caption under it were removed 2026-09-23. The header bar stays
+         icon + title + window controls only. -->
+    <SettingsSaveButton />
+  {/snippet}
+
+  <!-- Content header — the active category's identity: tinted icon tile,
+       title, and the same subtitle the rail item shows. Sits flush above the
+       scrolling panel and does not scroll with it. -->
+  <div class="flex-none flex items-center gap-3 px-6 pt-5 pb-4 bg-[var(--hv-settings-tile)] border-b-[1.45px] border-[var(--hv-settings-border)]">
+    <span
+      class="grid place-items-center w-9 h-9 rounded-xl flex-none"
+      style="background: color-mix(in srgb, {activeCat.accent} var(--hv-settings-cat-tint), transparent); color: {activeCat.accent}"
+    >
+      <svelte:component this={activeCat.icon} size={20} />
+    </span>
+    <div class="min-w-0">
+      <!-- The type utilities are `!` on purpose: `styles/theme/base.css`
+           declares a bare `h2 { font-size: … }` OUTSIDE any `@layer`, and an
+           unlayered rule outranks every layered Tailwind utility no matter how
+           specific the utility's class is. Without the flag this heading
+           renders at the 28px base size instead of the design's 16px/700
+           (`text-md`, the 16px content-scale step — `text-base` is 14px). -->
+      <h2 data-testid="settings-header-title" class="m-0 text-md! font-bold! leading-6! text-[var(--hv-settings-title)]!">{$t(activeCat.labelKey)}</h2>
+      <p class="m-0 mt-0.5 text-xs leading-4 text-[var(--hv-settings-label)]">{$t(activeCat.subtitleKey)}</p>
+    </div>
+  </div>
+
+  {#if loading}
+    <div class="flex-1 min-h-0 flex items-center justify-center gap-3 text-[var(--hv-settings-label)]">
+      <div data-testid="settings-spinner" class="set-spinner"></div>
+      <span>{$t('settings.loading_settings')}</span>
+    </div>
+  {:else}
+    <!-- The scroll container. Every section label and every card is a DIRECT
+         child of this element (E2E 2.5): the labels are siblings of their
+         card, spaced with padding, and the cards carry `shrink-0` so a tall
+         card is never squeezed into clipping its own content. -->
+    <div data-testid="settings-content" class="flex-1 min-h-0 overflow-y-auto flex flex-col px-6 pb-4">
+      {#if activeCategory === 'general'}
+        <div data-testid="settings-card-title" class={secLabelFirst}></div>
+        <div data-testid="settings-card" class={settingsCard}>
+          {#if notices.hostname}
+            <div class="py-3 border-b-[1.45px] border-[var(--hv-settings-hairline)]">
+              <Alert variant="warning" dismissible ondismiss={clearHostnameNotice}>{notices.hostname}</Alert>
+            </div>
+          {/if}
+          <div class={settingsRow}>
+            <label class={settingsRowLabel} for="serverName">{$t('settings.server_name')}</label>
+            <input id="serverName" class={cn(settingsInput, 'max-w-[280px]')} type="text" bind:value={draft.general.server_name} placeholder="HomeVault" />
+          </div>
+          <div class={settingsRow}>
+            <label class={settingsRowLabel} for="language">{$t('settings.language_label')}</label>
+            <select id="language" class={cn(settingsSelect, 'max-w-[280px]')} bind:value={draft.general.language}>
+              {#each languages as lang}<option value={lang.value}>{lang.label}</option>{/each}
+            </select>
+          </div>
+          <div class={settingsRow}>
+            <label class={settingsRowLabel} for="timezone">{$t('settings.timezone')}</label>
+            <select id="timezone" class={cn(settingsSelect, 'max-w-[280px]')} bind:value={draft.general.timezone}>
+              {#each timezones as tz}<option value={tz.value}>{tz.label}</option>{/each}
+            </select>
+          </div>
+          <div class={settingsRow}>
+            <div class="min-w-0">
+              <span class={settingsRowLabel}>{$t('settings.autostart_label')}</span>
+              <p class={settingsRowHint}>{$t('settings.autostart_description')}</p>
+            </div>
+            <Switch
+              bind:checked={draft.autostart.enabled}
+              accent={activeCat.accent}
+              ariaLabel={$t('settings.autostart_label')}
+            />
+          </div>
+        </div>
+      {/if}
+      {#if activeCategory === 'security'}
+        <!-- The four security sub-cards carry their own header (icon tile +
+             title + subtitle) via the shared SettingsCard shell, so they need
+             no section label above them — their `settings-card-title` IS the
+             card heading (E2E 12.1 reads those). They stay *direct* children
+             of the panel so E2E 2.5's clip check still covers them. -->
+        <TlsCard class="mt-6" />
+        <AntivirusCard class="mt-3" />
+        <AntiRansomwareCard class="mt-3" />
+        <FirewallCard class="mt-3" />
+      {/if}
+      {#if activeCategory === 'appearance'}
+        <div data-testid="settings-card-title" class={secLabelFirst}></div>
+        <div data-testid="settings-card" class={settingsCard}>
+          <div class={settingsRowStacked}>
+            <span class={settingsLabel} id="wallpaperLabel">{$t('settings.wallpaper')}</span>
+            <p class={settingsHint}>{$t('settings.wallpaper_hint')}</p>
+            <!-- Container query, not a viewport breakpoint: the grid follows
+                 the width the window actually gives it. 3 columns normally,
+                 2 once the card is narrower than 380px. -->
+            <div class="@container">
+              <div class="settings-wallpaper-grid grid grid-cols-3 @max-[380px]:grid-cols-2 gap-3 mt-1" role="radiogroup" aria-labelledby="wallpaperLabel">
+                {#each BUNDLED_WALLPAPERS as w, i (w.id)}
+                  <button type="button" class="settings-wallpaper-tile relative p-0 border-0 bg-transparent cursor-pointer" class:is-selected={w.url === selectedWpUrl} role="radio" aria-checked={w.url === selectedWpUrl} aria-label={`${$t('settings.wallpaper')} ${i + 1}`} onclick={() => wallpaperStore.setWallpaper({ type: 'image', value: w.url })}>
+                    <img class="settings-wallpaper-thumb w-full h-auto rounded-lg object-cover border-[1.45px] border-[var(--hv-settings-border)]" src={w.thumb} alt="" decoding="async" width="320" height="200" />
+                    {#if w.url === selectedWpUrl}<span class="settings-wallpaper-check absolute top-1.5 right-1.5 grid place-items-center w-6 h-6 rounded-full bg-[var(--hv-primary)] text-[var(--hv-on-primary)]"><IconCheck size={16} stroke={3} /></span>{/if}
+                  </button>
+                {/each}
+              </div>
+            </div>
+          </div>
+        </div>
+      {/if}
+      {#if activeCategory === 'notifications'}
+        <div data-testid="settings-card-title" class={secLabelFirst}></div>
+        <div data-testid="settings-card" class={settingsCard}>
+          <div class={settingsRow}>
+            <label class={settingsRowLabel} for="smtpServer">{$t('settings.smtp_server')}</label>
+            <input id="smtpServer" class={cn(settingsInput, 'max-w-[280px]')} type="text" bind:value={draft.email.smtp_server} placeholder="smtp.example.com" />
+          </div>
+          <div class={settingsRow}>
+            <label class={settingsRowLabel} for="smtpPort">{$t('settings.smtp_port')}</label>
+            <input id="smtpPort" class={cn(settingsInput, 'max-w-[280px]')} type="number" bind:value={draft.email.smtp_port} placeholder="587" />
+          </div>
+          <div class={settingsRow}>
+            <label class={settingsRowLabel} for="smtpUsername">{$t('settings.username_label')}</label>
+            <input id="smtpUsername" class={cn(settingsInput, 'max-w-[280px]')} type="text" bind:value={draft.email.smtp_username} placeholder="user@example.com" />
+          </div>
+          <div class={settingsRow}>
+            <label class={settingsRowLabel} for="smtpPassword">{$t('settings.password_label')}</label>
+            <input id="smtpPassword" class={cn(settingsInput, 'max-w-[280px]')} type="password" bind:value={draft.email.smtp_password} placeholder={$t('settings.smtp_password_placeholder')} />
+          </div>
+          <div class={settingsRow}>
+            <label class={settingsRowLabel} for="fromAddress">{$t('settings.from_address')}</label>
+            <input id="fromAddress" class={cn(settingsInput, 'max-w-[280px]')} type="email" bind:value={draft.email.from_address} placeholder="noreply@example.com" />
+          </div>
+          <div class={settingsRowLast}>
+            <span class={settingsRowLabel}>{$t('settings.use_tls')}</span>
+            <Switch
+              bind:checked={draft.email.use_tls}
+              accent={activeCat.accent}
+              ariaLabel={$t('settings.use_tls')}
+            />
+          </div>
+          <div data-testid="settings-card-footer" class={settingsCardFooter}>
+            <button class={cn(settingsBtn, settingsBtnGhost)} onclick={handleTestEmail} disabled={testingEmail}>{testingEmail ? $t('settings.sending') : $t('settings.test_email')}</button>
+          </div>
+        </div>
+      {/if}
+      {#if activeCategory === 'notifications'}
+        <div data-testid="settings-card-title" class={secLabel}></div>
+        <div data-testid="settings-card" class={settingsCard}>
+          <div class={settingsRow}>
+            <div class="min-w-0">
+              <label class={settingsRowLabel} for="notifyEmail">{$t('settings.notification_email')}</label>
+              <p class={settingsRowHint}>{$t('settings.receive_system_alerts')}</p>
+            </div>
+            <input id="notifyEmail" class={cn(settingsInput, 'max-w-[280px]')} type="email" bind:value={draft.notifications.email} placeholder="admin@example.com" />
+          </div>
+          <div class={settingsRowStacked}>
+            <label class={settingsRowLabel} for="alertThreshold">{$t('settings.alert_threshold')}: {draft.notifications.alert_threshold}%</label>
+            <input type="range" id="alertThreshold" min="0" max="100" step="5" bind:value={draft.notifications.alert_threshold} class="settings-alert-range w-full h-[var(--hv-touch-target-min)] accent-[var(--hv-primary)]" />
+          </div>
+          <div class={settingsRow}>
+            <span class={settingsRowLabel}>{$t('settings.enable_alert_notifications')}</span>
+            <Switch
+              bind:checked={draft.notifications.enable_alerts}
+              accent={activeCat.accent}
+              ariaLabel={$t('settings.enable_alert_notifications')}
+            />
+          </div>
+          <div class={settingsRow}>
+            <span class={settingsRowLabel}>{$t('settings.use_smtp_for_notifications')}</span>
+            <Switch
+              bind:checked={draft.notifications.smtp_enabled}
+              accent={activeCat.accent}
+              ariaLabel={$t('settings.use_smtp_for_notifications')}
+            />
+          </div>
+          <div class={settingsRowStacked}>
+            <label class={settingsRowLabel} for="webhookUrl">{$t('settings.webhook_url_label')}</label>
+            <input id="webhookUrl" class={settingsInput} type="url" bind:value={draft.notifications.webhook_url} placeholder="https://example.com/webhook" />
+            <p class={settingsRowHint}>{$t('settings.webhook_hint')}</p>
+          </div>
+          <div class={settingsRowLast}>
+            <span class={settingsRowLabel}>{$t('settings.enable_webhook_notifications')}</span>
+            <Switch
+              bind:checked={draft.notifications.webhook_enabled}
+              accent={activeCat.accent}
+              ariaLabel={$t('settings.enable_webhook_notifications')}
+            />
+          </div>
+        </div>
+      {/if}
+      {#if activeCategory === 'system'}
+        <div data-testid="settings-card-title" class={secLabelFirst}></div>
+        <div data-testid="settings-card" class={settingsCard}>
+          <div class={settingsRow}>
+            <label class={settingsRowLabel} for="updateFrequency">{$t('settings.check_frequency')}</label>
+            <select id="updateFrequency" class={cn(settingsSelect, 'max-w-[280px]')} bind:value={draft.update.check_frequency}>
+              {#each updateFrequencies as freq}<option value={freq.value}>{$t(`settings.update_${freq.value}`)}</option>{/each}
+            </select>
+          </div>
+          <div class="settings-version-box flex flex-col gap-0.5 py-3">
+            <div class="settings-version-row flex justify-between text-sm py-1"><span class="text-[var(--hv-settings-label)]">{$t('settings.current_version')}</span><span class="font-semibold text-[var(--hv-settings-title)]">v{versionInfo.current_version}</span></div>
+            {#if versionInfo.latest_version}
+              <div class="settings-version-row flex justify-between text-sm py-1"><span class="text-[var(--hv-settings-label)]">{$t('settings.latest_version')}</span><span class="font-semibold text-[var(--hv-settings-title)]">v{versionInfo.latest_version}{#if !versionInfo.up_to_date}<span class="ml-1 px-1.5 py-0.5 rounded bg-[var(--hv-warning-bg)] text-[var(--hv-warning)] text-micro font-bold uppercase">{$t('settings.update_available_badge')}</span>{/if}</span></div>
+            {/if}
+            {#if versionInfo.release_date}<div class="settings-version-row flex justify-between text-sm py-1"><span class="text-[var(--hv-settings-label)]">{$t('settings.release_date2')}</span><span class="font-semibold text-[var(--hv-settings-title)]">{versionInfo.release_date}</span></div>{/if}
+            {#if versionInfo.error}<div class="settings-version-row flex items-center gap-1.5 text-xs text-[var(--hv-error)]"><IconAlertTriangle size={16} /> <span>{versionInfo.error}</span></div>{/if}
+          </div>
+          <div data-testid="settings-card-footer" class={settingsCardFooter}>
+            <button class={cn(settingsBtn, settingsBtnGhost)} onclick={handleCheckUpdate} disabled={checkingUpdate}>{checkingUpdate ? $t('settings.checking') : $t('settings.check_for_updates')}</button>
+          </div>
+        </div>
+      {/if}
+      {#if activeCategory === 'ai'}
+        <div data-testid="settings-card-title" class={secLabelFirst}></div>
+        <div data-testid="settings-card" class={settingsCard}>
+          {#if aiLoading}
+            <div class="py-3 text-sm text-[var(--hv-settings-label)]">{$t('settings.ai_loading')}</div>
+          {:else}
+            <div class={settingsRowStacked}>
+              <label class={settingsRowLabel} for="aiModel">{$t('settings.ai_active_model')}</label>
+              <div class="settings-ai-select-row flex items-center gap-2">
+                <select id="aiModel" class={cn(settingsSelect, 'max-w-xs')} bind:value={draft.ai.model} disabled={aiModels.length === 0}>
+                  {#each aiModels as model}<option value={model.name}>{model.name}</option>{/each}
+                </select>
+              </div>
+              <p class={settingsRowHint}>{$t('settings.ai_current_model', { model: currentModelDisplay })}</p>
+            </div>
+
+            <div class={settingsRowStacked}>
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class={settingsRowLabel}>{$t('settings.ai_recommended')}</span>
+                {#if recommending}<span class="text-xs text-[var(--hv-settings-label)]">{$t('settings.ai_analyzing')}</span>{:else if systemSpecs}<span class="text-xs text-[var(--hv-settings-label)]">{translate('settings.ai_specs', { ram: String(systemSpecs.total_ram_gb) })}{#if systemSpecs.has_gpu} · {systemSpecs.gpu_vram_gb ? translate('settings.ai_gpu', { gpu: systemSpecs.gpu_name ?? 'GPU', vram: String(systemSpecs.gpu_vram_gb) }) : (systemSpecs.gpu_name ?? 'GPU')}{/if}</span>{/if}
+              </div>
+              {#if recommendations.length > 0}
+                <div class="grid gap-2.5">
+                  {#each recommendations as rec, i}
+                    <div class:settings-ai-rec-card-top={i === 0} class={cn('p-3 rounded-xl bg-[var(--hv-settings-canvas)] border-[1.45px] border-[var(--hv-settings-border)]', i === 0 && 'border-[var(--hv-primary)]/40')}>
+                      {#if i === 0}<div class="inline-block px-2 py-0.5 mb-2 rounded bg-[var(--hv-primary)] text-[var(--hv-on-primary)] text-micro font-bold uppercase">{$t('settings.ai_best_choice')}</div>{/if}
+                      <div class="flex items-center justify-between gap-2">
+                        <span class="text-sm font-bold text-[var(--hv-settings-title-strong)]">{rec.name}</span>
+                        <span class="text-xs text-[var(--hv-settings-label)]">{rec.speed}</span>
+                      </div>
+                      <p class="m-0 mt-1 text-xs text-[var(--hv-settings-row)]">{rec.description}</p>
+                      <div class="flex gap-1.5 mt-2 flex-wrap">
+                        <span class="px-1.5 py-0.5 rounded bg-[var(--hv-settings-hairline)] text-micro font-bold uppercase text-[var(--hv-settings-chip-text)]">RAM &ge; {rec.min_ram_gb} GB</span>
+                        {#if rec.min_vram_gb}<span class="px-1.5 py-0.5 rounded bg-[var(--hv-settings-hairline)] text-micro font-bold uppercase text-[var(--hv-settings-chip-text)]">VRAM &ge; {rec.min_vram_gb} GB</span>{/if}
+                        <span class="px-1.5 py-0.5 rounded bg-[var(--hv-settings-hairline)] text-micro font-bold uppercase text-[var(--hv-settings-chip-text)]">{rec.size_gb.toFixed(1)} GB</span>
+                      </div>
+                      <div class="mt-2">
+                        {#if aiModels.some(m => m.name === rec.name)}
+                          <span class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--hv-success)]"><IconCheck size={16} stroke={2.5} /> {$t('settings.ai_installed')}</span>
+                        {:else}
+                          <button class={cn(settingsBtn, settingsBtnGhost)} onclick={() => handleInstallAndLoad(rec.name)} disabled={aiPulling}>{aiPulling && newModelName === rec.name ? $t('settings.ai_installing') : $t('settings.ai_install_activate')}</button>
+                        {/if}
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              {:else if !recommending}
+                <p class={settingsRowHint}>{$t('settings.ai_no_recommendations')}</p>
+              {/if}
+            </div>
+
+            <div class={settingsRowStacked}>
+              <label class={settingsRowLabel} for="newModelName">{$t('settings.ai_install_specific')}</label>
+              <div class="flex gap-2">
+                <input type="text" id="newModelName" class={cn(settingsInput, 'max-w-xs')} bind:value={newModelName} placeholder="gemma3:4b, qwen3.5:2b..." disabled={aiPulling} />
+                <button class={cn(settingsBtn, settingsBtnGhost)} onclick={handlePullModel} disabled={aiPulling || !newModelName.trim()}>{$t('settings.ai_install')}</button>
+              </div>
+              <div class="flex gap-1.5 flex-wrap">
+                {#each quickModels as m}<button class="settings-ai-quick-btn inline-flex items-center justify-center min-h-[var(--hv-touch-target-min)] px-2.5 py-1 rounded-lg border-[1.45px] border-[var(--hv-settings-border)] bg-[var(--hv-settings-canvas)] text-c-xs font-medium text-[var(--hv-settings-label)] cursor-pointer hover:text-[var(--hv-settings-title)]" onclick={() => newModelName = m} disabled={aiPulling}>{m}</button>{/each}
+              </div>
+              {#if aiPullMessage}<p class={settingsRowHint}>{aiPullMessage}</p>{/if}
+              {#if aiPullError}<p class="m-0 text-xs text-[var(--hv-error)]">{aiPullError}</p>{/if}
+            </div>
+
+            <div class="settings-ai-status flex items-center gap-2 py-3 text-sm text-[var(--hv-settings-label)]">
+              <span class="settings-ai-status-dot {cn('w-2 h-2 rounded-full', ollamaRunning ? 'bg-[var(--hv-success)]' : 'bg-[var(--hv-error)]')}"></span>
+              <span>{ollamaRunning ? $t('settings.ai_ollama_running') : $t('settings.ai_ollama_down')}</span>
+              <button class="settings-ai-refresh-btn ml-auto grid place-items-center w-[var(--hv-touch-target-min)] h-[var(--hv-touch-target-min)] rounded-lg border-none bg-transparent text-[var(--hv-settings-label)] cursor-pointer hover:text-[var(--hv-settings-title)]" onclick={() => { loadAiModels(); loadRecommendations(); }} aria-label={$t('settings.ai_refresh')} title={$t('settings.ai_refresh')}><IconRefresh size={20} /></button>
+            </div>
+          {/if}
+        </div>
+      {/if}
+      {#if activeCategory === 'monitoring'}
+        <UpsCard class="mt-6" />
+        <SnmpCard class="mt-3" />
+      {/if}
+      {#if activeCategory === 'widgets'}
+        <div data-testid="settings-card-title" class={secLabelFirst}></div>
+        <div data-testid="settings-card" class={settingsCard}>
+          {#each WIDGET_DEFS as def (def.id)}
+            <div class={cn(settingsRow, 'settings-widget-row')} data-widget={def.id}>
+              <div class="flex items-center gap-3 min-w-0">
+                <span
+                  class="grid place-items-center w-7 h-7 rounded-lg flex-none"
+                  style="background: color-mix(in srgb, {def.color} var(--hv-settings-cat-tint), transparent); color: {def.color}"
+                >
+                  <svelte:component this={def.icon} size={16} />
+                </span>
+                <div class="min-w-0">
+                  <span class={settingsRowLabel}>{$t(def.nameKey)}</span>
+                  <p class={settingsRowHint}>{$t(def.descKey)}</p>
+                </div>
+              </div>
+              <Switch
+                checked={draft.widgets.visible[def.visibleKey]}
+                onchange={(v) => (draft.widgets.visible[def.visibleKey] = v)}
+                accent={def.color}
+                ariaLabel={$t(def.nameKey)}
+              />
+            </div>
+          {/each}
+        </div>
+
+        <div data-testid="settings-card-title" class={secLabel}></div>
+        <div data-testid="settings-card" class={settingsCard}>
+          <div class={cn(settingsRow, 'last:border-b-0')}>
+            <div class="min-w-0">
+              <label class={settingsRowLabel} for="refreshInterval">{$t('settings.refresh_interval_label')}</label>
+              <p class={settingsRowHint}>{$t('settings.refresh_section_subtitle')}</p>
+            </div>
+            <select
+              id="refreshInterval"
+              class={cn(settingsSelectCompact, 'settings-refresh-select')}
+              value={String(draft.widgets.refreshMs)}
+              onchange={(e) => (draft.widgets.refreshMs = Number((e.currentTarget as HTMLSelectElement).value))}
+            >
+              {#each REFRESH_INTERVAL_OPTIONS as ms}
+                <option value={String(ms)}>{$t(`settings.refresh_interval_${ms / 1000}s`)}</option>
+              {/each}
+            </select>
+          </div>
+        </div>
+
+        <div data-testid="settings-card-title" class={secLabel}></div>
+        <div data-testid="settings-card" class={settingsCard}>
+          {#if draft.weather.location && !weatherEditingLocation}
+            <div class={cn(settingsRow, 'settings-weather-current')}>
+              <div class="flex items-center gap-3 min-w-0">
+                <IconMapPin size={16} class="flex-none text-[var(--hv-settings-label)]" />
+                <div class="min-w-0">
+                  <span class={settingsRowHint}>{$t('settings.weather_current_location')}</span>
+                  <span class="block text-sm font-semibold text-[var(--hv-settings-title)]">{draft.weather.location.name}</span>
+                </div>
+              </div>
+              <button class={cn(settingsBtn, settingsBtnGhost)} onclick={openWeatherLocationEditor}><IconPencil size={16} /> {$t('desktop.weather_change_location')}</button>
+            </div>
+          {:else}
+            <div class={cn(settingsRow, 'settings-weather-search-row')}>
+              <input class={cn(settingsInput, 'flex-1')} type="text" placeholder={$t('desktop.weather_search_placeholder')} bind:value={weatherSearchQuery} onkeydown={(e) => { if (e.key === 'Enter') searchWeatherLocation(); }} />
+              <button class={cn(settingsBtn, settingsBtnPrimary, 'flex-none')} onclick={searchWeatherLocation} disabled={weatherSearching}>{weatherSearching ? $t('desktop.weather_searching') : $t('desktop.weather_search_button')}</button>
+            </div>
+            {#if weatherSearchResults.length > 0}
+              <div class="flex flex-col gap-1 py-3 border-b-[1.45px] border-[var(--hv-settings-hairline)]">
+                {#each weatherSearchResults as result (result.name + result.lat)}
+                  <button class="settings-weather-result-btn flex items-center gap-1.5 px-3 min-h-[var(--hv-touch-target-min)] rounded-lg text-left text-sm text-[var(--hv-settings-title)] cursor-pointer hover:bg-[var(--hv-settings-hairline)]" onclick={() => chooseWeatherLocation(result)}><IconMapPin size={16} /> {result.name}</button>
+                {/each}
+              </div>
+            {:else if !draft.weather.location && !weatherSearching}
+              <div class="py-3 border-b-[1.45px] border-[var(--hv-settings-hairline)]">
+                <p class={cn(settingsHint, 'm-0')}>{$t('desktop.weather_no_location')}</p>
+              </div>
+            {/if}
+          {/if}
+          {#if draft.weather.location && weatherEditingLocation}
+            <div class={cn(settingsRowLast, 'border-b-[1.45px] border-[var(--hv-settings-hairline)]')}>
+              <button class={cn(settingsBtn, settingsBtnGhost)} onclick={() => { weatherEditingLocation = false; weatherSearchQuery = ''; weatherSearchResults = []; }}>{$t('settings.weather_cancel')}</button>
+            </div>
+          {/if}
+          <div class={cn(settingsRowStacked, 'settings-weather-fields')}>
+            <div class="min-w-0">
+              <span class={settingsRowLabel}>{$t('settings.weather_display_title')}</span>
+              <p class={settingsRowHint}>{$t('settings.weather_display_subtitle')}</p>
+            </div>
+            <div class="flex flex-wrap gap-x-4 gap-y-1">
+              {#each WEATHER_FIELDS as field}
+                <Switch checked={draft.weather.displayFields.includes(field)} onchange={(v) => handleWeatherFieldToggle(field, v)} label={$t(`desktop.weather_${field}`)} accent={activeCat.accent} />
+              {/each}
+            </div>
+          </div>
+        </div>
+      {/if}
+      {#if activeCategory === 'system'}
+        <div data-testid="settings-card-title" class={secLabel}></div>
+        <div data-testid="settings-card" class={settingsCard}>
+          <div class="settings-info-row flex items-center justify-between gap-4 py-3 border-b-[1.45px] border-[var(--hv-settings-hairline)]">
+            <span class={settingsRowLabel}>{$t('settings.server_address')}</span>
+            <span class="text-sm font-semibold text-[var(--hv-settings-title-strong)]">{serverInfo.display_address || `${serverInfo.ip}:${serverInfo.port}`}</span>
+          </div>
+          <div class="settings-info-row flex items-center justify-between gap-4 py-3 border-b-[1.45px] border-[var(--hv-settings-hairline)]">
+            <span class={settingsRowLabel}>{$t('settings.platform')}</span>
+            <span class="text-sm font-semibold text-[var(--hv-settings-title-strong)]">Linux x64</span>
+          </div>
+          <div class="settings-info-row flex items-center justify-between gap-4 py-3">
+            <span class={settingsRowLabel}>{$t('settings.version_label')}</span>
+            <span class="text-sm font-semibold text-[var(--hv-settings-title-strong)]">HomeVault v{versionInfo.current_version}</span>
+          </div>
+        </div>
+      {/if}
+      {#if activeCategory === 'system'}
+        <div data-testid="settings-card-title" class={secLabel}></div>
+        <div data-testid="settings-card" class={settingsCard}>
+          <div class={settingsRowStacked}>
+            <span class={settingsRowLabel}>{$t('settings.backup_restore')}</span>
+            <!-- Order is load-bearing: E2E 14.1/14.2 address these by index
+                 (export = first, paste/file toggle = second). -->
+            <div class="settings-data-actions flex gap-2 flex-wrap">
+              <button class={cn(settingsBtn, settingsBtnGhost)} onclick={handleExportSettings} disabled={exportingSettings}>{exportingSettings ? $t('settings.exporting') : $t('settings.export_settings')}</button>
+              <button class={cn(settingsBtn, settingsBtnGhost)} onclick={() => (importingFromFile = !importingFromFile)}>{importingFromFile ? $t('settings.paste_json_instead') : $t('settings.import_from_file')}</button>
+              <button class={cn(settingsBtn, settingsBtnDanger)} onclick={handleResetSettings} disabled={resettingSettings}>{resettingSettings ? $t('settings.resetting') : $t('settings.reset_to_defaults')}</button>
+            </div>
+          </div>
+          {#if importingFromFile}
+            <div class={cn(settingsRowStacked, 'settings-field-full')}>
+              <label class={settingsRowLabel} for="importFile">{$t('settings.settings_file')}</label>
+              <input id="importFile" type="file" accept="application/json,.json" bind:this={importFileInput} class={cn(settingsInput, 'h-auto py-1.5')} />
+            </div>
+          {:else}
+            <div class={cn(settingsRowStacked, 'settings-field-full')}>
+              <label class={settingsRowLabel} for="importText">{$t('settings.paste_settings_json')}</label>
+              <textarea id="importText" class={settingsTextarea} bind:value={importText} placeholder={$t('settings.paste_settings_placeholder')}></textarea>
+            </div>
+          {/if}
+          <div class={cn(settingsRowLast, 'settings-field-full')}>
+            <button class={cn(settingsBtn, settingsBtnPrimary)} onclick={handleImportSettings} disabled={importingSettings}>{importingSettings ? $t('settings.importing') : $t('settings.import_settings')}</button>
+          </div>
+        </div>
+      {/if}
+      {#if activeCategory === 'system'}
+        <div data-testid="settings-card-title" class={secLabel}></div>
+        <div data-testid="settings-card" class={settingsCard}>
+          <div class="settings-privacy-feature flex items-start gap-3 py-3 border-b-[1.45px] border-[var(--hv-settings-hairline)]">
+            <span class="grid place-items-center w-9 h-9 rounded-xl flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><IconShield size={20} /></span>
+            <div><strong class="block text-sm text-[var(--hv-settings-title-strong)]">{$t('settings.privacy_local')}</strong><p class="m-0 text-xs text-[var(--hv-settings-label)]">{$t('settings.privacy_local_desc')}</p></div>
+          </div>
+          <div class="settings-privacy-feature flex items-start gap-3 py-3 border-b-[1.45px] border-[var(--hv-settings-hairline)]">
+            <span class="grid place-items-center w-9 h-9 rounded-xl flex-none bg-[var(--hv-warning-bg)] text-[var(--hv-warning)]"><IconCookie size={20} /></span>
+            <div><strong class="block text-sm text-[var(--hv-settings-title-strong)]">{$t('settings.privacy_cookies')}</strong><p class="m-0 text-xs text-[var(--hv-settings-label)]">{$t('settings.privacy_cookies_desc')}</p></div>
+          </div>
+          <div class="settings-privacy-feature flex items-start gap-3 py-3">
+            <span class="grid place-items-center w-9 h-9 rounded-xl flex-none bg-[var(--hv-success-bg)] text-[var(--hv-success)]"><IconWifiOff size={20} /></span>
+            <div><strong class="block text-sm text-[var(--hv-settings-title-strong)]">{$t('settings.privacy_offline')}</strong><p class="m-0 text-xs text-[var(--hv-settings-label)]">{$t('settings.privacy_offline_desc')}</p></div>
+          </div>
+        </div>
+      {/if}
+    </div>
+  {/if}
+  <ConfirmDialog
+    {dlg}
+    onconfirm={() => dlg.settle(true)}
+    oncancel={() => dlg.settle(false)}
+  />
+</PageLayout>
+
+<style>
+  /* The panel loader. The save pip now lives in the SettingsSaveButton
+     component (colour + label state machine), with its own CSS. */
+  .set-spinner {
+    display: inline-block;
+    flex: none;
+    width: 20px;
+    height: 20px;
+    border-radius: var(--hv-radius-full);
+    border: 2px solid var(--hv-settings-border);
+    border-top-color: var(--hv-primary);
+    animation: set-spin 700ms linear infinite;
+  }
+
+  @keyframes set-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  /* Alert-threshold slider: the 44px input is the touch target; the track is
+     a slim hairline and the thumb is ≥24px (WCAG 2.5.8). `accent-color` can't
+     size a native thumb, so the track/thumb are drawn explicitly. */
+  .settings-alert-range {
+    appearance: none;
+    background: transparent;
+  }
+  .settings-alert-range::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: var(--hv-radius-full);
+    background: var(--hv-settings-hairline);
+  }
+  .settings-alert-range::-webkit-slider-thumb {
+    appearance: none;
+    width: 24px;
+    height: 24px;
+    margin-top: calc(var(--hv-space-2-5) * -1);
+    border: none;
+    border-radius: var(--hv-radius-full);
+    background: var(--hv-primary);
+  }
+  .settings-alert-range::-moz-range-track {
+    height: 4px;
+    border-radius: var(--hv-radius-full);
+    background: var(--hv-settings-hairline);
+  }
+  .settings-alert-range::-moz-range-thumb {
+    width: 24px;
+    height: 24px;
+    border: none;
+    border-radius: var(--hv-radius-full);
+    background: var(--hv-primary);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .set-spinner {
+      animation-duration: 2s;
+    }
+  }
+</style>

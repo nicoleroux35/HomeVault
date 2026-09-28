@@ -1,0 +1,34 @@
+# Unit tests — fast, every push, no Docker/services.
+# HomeVault mapping: Rust unit tests inside src/ (`cargo test --lib`,
+# pure logic, no HTTP, no DB file — ~600 tests). The Svelte components have
+# no unit runner; they are covered by component.yml (type-check + build).
+# Place: .gitea/workflows/unit.yml (Gitea uses .gitea/, not .github/).
+name: unit
+on:
+  push:
+  pull_request:
+  workflow_dispatch: # manual re-run (e.g. after a runner-side flake)
+
+concurrency:
+  group: unit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          fi
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup toolchain install stable --profile minimal
+          # Put cargo/rustc on the default PATH so `uses:` steps (e.g.
+          # Swatinem/rust-cache, which runs `rustc -vV`) see them too.
+          for t in cargo rustc rustup; do ln -sf "$HOME/.cargo/bin/$t" /usr/local/bin/$t 2>/dev/null || true; done
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true # cache backend optional on self-hosted Gitea
+      - name: Unit tests (lib)
+        run: export PATH="$HOME/.cargo/bin:$PATH" && cargo test --lib --locked

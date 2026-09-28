@@ -1,0 +1,18 @@
+services:
+  gitea:
+    image: gitea/gitea:latest
+    container_name: gitea
+    restart: unless-stopped
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+    ports:
+      - "{{PORT}}:3000"
+      - "2222:22"
+    volumes:
+      - {{DATA_DIR}}/data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'

@@ -1,0 +1,921 @@
+use crate::auth::service::AuthError;
+use crate::handlers::AppState;
+use crate::setup::SetupService;
+use crate::storage::models::{
+    ADMIN_ROLE_ID, LoginRequest, LoginResponse, SetupRequest, SetupStatusResponse,
+    TwoFactorSetupRequest, TwoFactorVerifyRequest,
+};
+use crate::utils::ResponseHelper;
+use axum::{extract::State, http::HeaderMap, response::Response};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+/// Confirmation of a successful password reset.
+#[derive(Debug, Serialize)]
+pub struct ResetPasswordResponse {
+    pub message: String,
+}
+
+/// Response carrying a freshly generated recovery code (shown to the user once).
+#[derive(Debug, Serialize)]
+pub struct RecoveryCodeResponse {
+    pub recovery_code: String,
+}
+
+/// Query flags for [`handle_generate_recovery_code`].
+#[derive(Debug, Deserialize)]
+pub struct RecoveryCodeQuery {
+    /// When true, replace an existing recovery code instead of returning a
+    /// conflict.
+    #[serde(default)]
+    pub regenerate: bool,
+}
+
+/// Body for resetting a password with a numeric recovery code.
+#[derive(Debug, Deserialize)]
+pub struct ResetPasswordRecoveryRequest {
+    pub username: String,
+    pub recovery_code: String,
+    pub new_password: String,
+}
+
+/// Body for checking a recovery code without resetting anything.
+#[derive(Debug, Deserialize)]
+pub struct VerifyRecoveryCodeRequest {
+    pub username: String,
+    pub recovery_code: String,
+}
+
+/// Resolves the username from the `x-session-token` header, if present.
+pub async fn extract_session(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Option<String> {
+    let session_token = headers
+        .get("x-session-token")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+
+    if session_token.is_empty() {
+        return None;
+    }
+
+    state.auth.get_username_from_token(session_token).await
+}
+
+/// Extracts the client IP from forwarded-headers, falling back to `"unknown"`.
+pub fn extract_client_ip(headers: &HeaderMap) -> String {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim().to_string())
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|h| h.to_str().ok())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Guards a handler to admins only.
+///
+/// Returns `Ok(username)` on success or an error response on failure.
+pub async fn require_admin(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<String, Response> {
+    let session_token = headers
+        .get("x-session-token")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+
+    if session_token.is_empty() {
+        return Err(ResponseHelper::json_error(
+            "No session token provided".to_string(),
+        ));
+    }
+
+    match state.auth.get_username_from_token(session_token).await {
+        Some(username) => {
+            if state.auth.is_admin(&username).await {
+                Ok(username)
+            } else {
+                Err(ResponseHelper::json_forbidden(
+                    "Admin privileges required".to_string(),
+                ))
+            }
+        }
+        None => Err(ResponseHelper::json_unauthorized(
+            "Invalid session".to_string(),
+        )),
+    }
+}
+
+#[axum_macros::debug_handler]
+/// Authenticates a user and returns a session token.
+///
+/// If 2FA is enabled for the account, returns a 2FA-required signal instead.
+pub async fn handle_login(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    req: axum::extract::Json<LoginRequest>,
+) -> Response {
+    let ip_address = extract_client_ip(&headers);
+    let user_agent = headers
+        .get("user-agent")
+        .and_then(|h| h.to_str().ok());
+
+    match state
+        .auth
+        .authenticate(&req.username, &req.password, &ip_address, user_agent)
+        .await
+    {
+        Ok(_) => {
+            let two_fa_enabled = state
+                .auth
+                .is_2fa_enabled(&req.username)
+                .await
+                .unwrap_or(false);
+
+            if two_fa_enabled {
+                return ResponseHelper::json_2fa_required();
+            }
+
+            match state
+                .auth
+                .create_session(req.username.clone(), ip_address.clone(), req.remember_me)
+                .await
+            {
+                Ok(session) => {
+                    crate::events::log_event(format!(
+                        "User '{}' logged in successfully from {}",
+                        session.username, ip_address
+                    ));
+                    // Keep the audit history truthful: record the successful
+                    // login (with the browser fingerprint) now that a session
+                    // exists.
+                    let _ = state
+                        .auth
+                        .record_successful_attempt(&session.username, &ip_address, user_agent)
+                        .await;
+                    // The API is header-authenticated; the cookie is read
+                    // ONLY by the per-app reverse proxy's auth gate
+                    // (crate::app_proxy). Additive — response body unchanged.
+                    let token = session.token.clone();
+                    let response = LoginResponse {
+                        token: session.token,
+                        csrf_token: session.csrf_token,
+                        username: session.username,
+                        is_admin: session.is_admin,
+                    };
+                    crate::app_proxy::cookie::attach_session(
+                        ResponseHelper::json_success(response),
+                        &token,
+                        req.remember_me,
+                    )
+                }
+                Err(e) => {
+                    ResponseHelper::json_internal_error(format!("Failed to create session: {}", e))
+                }
+            }
+        }
+        Err(e) => {
+            crate::events::log_event_warn(format!(
+                "Failed login attempt for user '{}' from {}",
+                req.username, ip_address
+            ));
+            let (message, status) = match &e {
+                AuthError::UserNotFound => (
+                    "Invalid username or password".to_string(),
+                    axum::http::StatusCode::UNAUTHORIZED,
+                ),
+                AuthError::InvalidPassword => (
+                    "Invalid username or password".to_string(),
+                    axum::http::StatusCode::UNAUTHORIZED,
+                ),
+                AuthError::UserLocked => (
+                    "Account is locked".to_string(),
+                    axum::http::StatusCode::UNAUTHORIZED,
+                ),
+                AuthError::TooManyAttempts => (
+                    "Too many login attempts. Please try again later.".to_string(),
+                    axum::http::StatusCode::TOO_MANY_REQUESTS,
+                ),
+                AuthError::AccountLocked => (
+                    "Account temporarily locked due to too many failed attempts.".to_string(),
+                    axum::http::StatusCode::UNAUTHORIZED,
+                ),
+                _ => (
+                    format!("Authentication failed: {}", e),
+                    axum::http::StatusCode::UNAUTHORIZED,
+                ),
+            };
+
+            if status == axum::http::StatusCode::UNAUTHORIZED {
+                ResponseHelper::json_unauthorized(message)
+            } else {
+                ResponseHelper::json_error(message)
+            }
+        }
+    }
+}
+
+#[axum_macros::debug_handler]
+/// Verifies a 2FA TOTP code and issues a session on success.
+pub async fn handle_2fa_verify(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    req: axum::extract::Json<TwoFactorVerifyRequest>,
+) -> Response {
+    let ip_address = extract_client_ip(&headers);
+    let user_agent = headers
+        .get("user-agent")
+        .and_then(|h| h.to_str().ok());
+
+    match state
+        .auth
+        .authenticate_with_2fa(
+            &req.username,
+            &req.password,
+            &req.totp_code,
+            &ip_address,
+            req.remember_me,
+            user_agent,
+        )
+        .await
+    {
+        Ok(session) => {
+            crate::events::log_event(format!(
+                "User '{}' logged in successfully with 2FA from {}",
+                session.username, ip_address
+            ));
+            let token = session.token.clone();
+            let response = LoginResponse {
+                token: session.token,
+                csrf_token: session.csrf_token,
+                username: session.username,
+                is_admin: session.is_admin,
+            };
+            crate::app_proxy::cookie::attach_session(
+                ResponseHelper::json_success(response),
+                &token,
+                req.remember_me,
+            )
+        }
+        Err(e) => {
+            crate::events::log_event_warn(format!(
+                "Failed 2FA login attempt for user '{}' from {}",
+                req.username, ip_address
+            ));
+            let message = match e {
+                AuthError::InvalidTwoFactorCode => "Invalid verification code".to_string(),
+                AuthError::InvalidPassword => "Invalid username or password".to_string(),
+                _ => format!("Authentication failed: {}", e),
+            };
+            ResponseHelper::json_unauthorized(message)
+        }
+    }
+}
+
+#[axum_macros::debug_handler]
+/// Manages 2FA lifecycle: generate secret, verify & enable, disable, or query status.
+pub async fn handle_2fa_setup(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    req: axum::extract::Json<TwoFactorSetupRequest>,
+) -> Response {
+    let session_token = headers
+        .get("x-session-token")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+
+    let username = match state.auth.get_username_from_token(session_token).await {
+        Some(u) => u,
+        None => return ResponseHelper::json_unauthorized("Invalid session".to_string()),
+    };
+
+    match req.action.as_str() {
+        "generate" => match state.auth.generate_totp_secret(&username).await {
+            Ok((secret, qrcode_url)) => {
+                // Persist as the pending (not yet enabled) secret so the
+                // subsequent verification step validates against this exact secret.
+                let repo = crate::storage::User2faRepository::new(state.db.pool());
+                if let Err(e) = repo.save_pending(&username, &secret).await {
+                    return ResponseHelper::json_error(format!("Failed to store secret: {}", e));
+                }
+                ResponseHelper::json_success(serde_json::json!({
+                    "secret": secret,
+                    "qrcode_url": qrcode_url
+                }))
+            }
+            Err(e) => ResponseHelper::json_error(format!("Failed to generate secret: {}", e)),
+        },
+        "verify" => {
+            let code = match &req.totp_code {
+                Some(c) => c,
+                None => {
+                    return ResponseHelper::json_error("Verification code required".to_string())
+                }
+            };
+
+            let user_repo = crate::storage::UserRepository::new(state.db.pool());
+            let user = match user_repo.find_by_username(&username).await {
+                Ok(Some(u)) => u,
+                _ => return ResponseHelper::json_error("User not found".to_string()),
+            };
+
+            if !state
+                .auth
+                .verify_password(req.password.as_deref().unwrap_or(""), &user.password_hash)
+            {
+                return ResponseHelper::json_unauthorized("Invalid password".to_string());
+            }
+
+            // Read the pending secret that was shown to the user during "generate".
+            let repo = crate::storage::User2faRepository::new(state.db.pool());
+            let pending = match repo.get_by_username(&username).await {
+                Ok(Some(p)) => p,
+                _ => return ResponseHelper::json_error("No pending 2FA secret. Generate one first.".to_string()),
+            };
+            let secret = pending.totp_secret_encrypted;
+
+            let code_valid = state
+                .auth
+                .verify_totp_code(&username, code)
+                .await
+                .unwrap_or(false);
+            if !code_valid {
+                return ResponseHelper::json_unauthorized("Invalid verification code".to_string());
+            }
+
+            match state.auth.enable_2fa(&username, &secret).await {
+                Ok(backup_codes) => ResponseHelper::json_success(serde_json::json!({
+                    "enabled": true,
+                    "backup_codes": backup_codes
+                })),
+                Err(e) => ResponseHelper::json_error(format!("Failed to enable 2FA: {}", e)),
+            }
+        }
+        "disable" => {
+            let user_repo = crate::storage::UserRepository::new(state.db.pool());
+            let user = match user_repo.find_by_username(&username).await {
+                Ok(Some(u)) => u,
+                _ => return ResponseHelper::json_error("User not found".to_string()),
+            };
+
+            let password = match &req.password {
+                Some(p) => p,
+                None => return ResponseHelper::json_error("Password required".to_string()),
+            };
+
+            if !state.auth.verify_password(password, &user.password_hash) {
+                return ResponseHelper::json_unauthorized("Invalid password".to_string());
+            }
+
+            match state.auth.disable_2fa(&username).await {
+                Ok(_) => ResponseHelper::json_success(serde_json::json!({
+                    "enabled": false
+                })),
+                Err(e) => ResponseHelper::json_error(format!("Failed to disable 2FA: {}", e)),
+            }
+        }
+        "status" => {
+            let enabled = state.auth.is_2fa_enabled(&username).await.unwrap_or(false);
+            ResponseHelper::json_success(serde_json::json!({
+                "enabled": enabled
+            }))
+        }
+        "backup_codes" => {
+            let codes = state
+                .auth
+                .get_backup_codes(&username)
+                .await
+                .unwrap_or_default();
+            ResponseHelper::json_success(serde_json::json!({
+                "codes": codes
+            }))
+        }
+        _ => ResponseHelper::json_error("Invalid action".to_string()),
+    }
+}
+
+#[axum_macros::debug_handler]
+/// Invalidates the current session, logging the user out.
+pub async fn handle_logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let session_token = headers
+        .get("x-session-token")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+
+    if session_token.is_empty() {
+        return ResponseHelper::json_error("No session token provided".to_string());
+    }
+
+    let username = match state.auth.get_username_from_token(session_token).await {
+        Some(username) => username,
+        // Unlike every other authenticated endpoint, this handler previously
+        // only checked the header was non-empty and reported success
+        // regardless — a garbage/invalid token got the same "Logged out
+        // successfully" response as a real one instead of a rejection.
+        None => return ResponseHelper::json_error("Invalid session".to_string()),
+    };
+
+    match state.auth.invalidate_session(session_token).await {
+        Ok(_) => {
+            crate::events::log_event(format!("User '{}' logged out", username));
+            crate::app_proxy::cookie::clear_session(ResponseHelper::json_success(
+                "Logged out successfully".to_string(),
+            ))
+        }
+        Err(e) => ResponseHelper::json_error(format!("Logout failed: {}", e)),
+    }
+}
+
+#[axum_macros::debug_handler]
+/// Returns profile details for the currently authenticated user.
+pub async fn handle_get_current_user(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    let session_token = headers
+        .get("x-session-token")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+
+    if session_token.is_empty() {
+        return ResponseHelper::json_error("No session token provided".to_string());
+    }
+
+    match state.auth.get_session(session_token).await {
+        Ok(session) => match state.auth.get_user(&session.username).await {
+            Ok(user) => {
+                let two_fa_enabled = state
+                    .auth
+                    .is_2fa_enabled(&session.username)
+                    .await
+                    .unwrap_or(false);
+
+                let user_data = serde_json::json!({
+                    "username": user.username,
+                    "fullname": user.fullname,
+                    "email": user.email,
+                    "role": user.role_name().to_string(),
+                    "role_id": user.role_id,
+                    "is_admin": session.is_admin,
+                    "created_at": user.created_at,
+                    "two_fa_enabled": two_fa_enabled,
+                    "avatar_seed": user.avatar_seed,
+                    "avatar_url": format!("/api/users/{}/avatar.svg", user.username),
+                });
+                ResponseHelper::json_success(user_data)
+            }
+            Err(e) => ResponseHelper::json_error(format!("User not found: {}", e)),
+        },
+        Err(e) => ResponseHelper::json_error(format!("Session invalid: {}", e)),
+    }
+}
+
+#[axum_macros::debug_handler]
+/// Reports whether the initial setup has been completed and whether hardware changed.
+pub async fn handle_setup_status() -> Response {
+    let is_first_run = SetupService::is_first_run();
+    let is_setup_valid = SetupService::is_setup_valid();
+    let hardware_changed = SetupService::has_hardware_changed();
+    let server_machine_id = SetupService::get_machine_id();
+    let sudo_available = SetupService::is_command_available("sudo");
+    ResponseHelper::json_success(SetupStatusResponse {
+        is_first_run,
+        is_setup_valid,
+        hardware_changed,
+        server_machine_id,
+        sudo_available,
+    })
+}
+
+/// Reports whether a candidate administrator username is available for the
+/// first-run setup. Validates the format, reserved/system names and existing
+/// database or system accounts.
+pub async fn handle_check_username(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<CheckUsernameQuery>,
+) -> Response {
+    let username = params.username.trim();
+
+    if let Err(e) = SetupService::validate_username(username) {
+        return ResponseHelper::json_success(serde_json::json!({
+            "available": false,
+            "reason": e,
+        }));
+    }
+
+    // Already taken in the HomeVault database?
+    let user_repo = crate::storage::UserRepository::new(state.db.pool());
+    if let Ok(Some(_)) = user_repo.find_by_username(username).await {
+        return ResponseHelper::json_success(serde_json::json!({
+            "available": false,
+            "reason": "Username already exists",
+        }));
+    }
+
+    // Already an existing system account?
+    if crate::auth::service::AuthService::is_system_user(username) {
+        return ResponseHelper::json_success(serde_json::json!({
+            "available": false,
+            "reason": "Username already exists on this system",
+        }));
+    }
+
+    ResponseHelper::json_success(serde_json::json!({
+        "available": true,
+        "reason": "",
+    }))
+}
+
+/// Query parameters for [`handle_check_username`].
+#[derive(Debug, Deserialize)]
+pub struct CheckUsernameQuery {
+    pub username: String,
+}
+
+/// Body for the pre-creation TOTP code check used by the Setup Wizard's
+/// password step.
+#[derive(Debug, Deserialize)]
+pub struct SetupTotpVerifyRequest {
+    /// Client-generated base32 TOTP secret (never stored by this endpoint).
+    pub secret: String,
+    /// The 6-digit code the admin entered from their authenticator app.
+    pub code: String,
+}
+
+#[axum_macros::debug_handler]
+/// Verifies a TOTP code against a client-generated secret during the first-run
+/// Setup Wizard, before the admin account exists.
+///
+/// Stateless: nothing is persisted here, so this endpoint only answers
+/// "is this code valid for this secret right now?" and gives an attacker with
+/// a stolen secret nothing they could not compute offline themselves. Only
+/// reachable while the server is still unconfigured (first run).
+pub async fn handle_setup_verify_totp(
+    req: axum::extract::Json<SetupTotpVerifyRequest>,
+) -> Response {
+    if !SetupService::is_first_run() {
+        return ResponseHelper::json_forbidden("Setup already complete".to_string());
+    }
+
+    let valid = crate::auth::service::AuthService::verify_totp_code_with_secret(
+        &req.secret,
+        &req.code,
+    );
+    ResponseHelper::json_success(serde_json::json!({ "valid": valid }))
+}
+
+#[axum_macros::debug_handler]
+/// Bootstraps the first admin user, creates the system group, and issues a session.
+///
+/// Only works while the app is in its initial unconfigured state.
+pub async fn handle_setup(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    req: axum::extract::Json<SetupRequest>,
+) -> Response {
+    if !SetupService::is_first_run() {
+        return ResponseHelper::json_error("Setup already complete".to_string());
+    }
+
+    if let Err(e) = SetupService::mark_setup_in_progress() {
+        return match e {
+            crate::setup::SetupError::SetupInProgress => {
+                ResponseHelper::json_error("Setup is already in progress".to_string())
+            }
+            _ => ResponseHelper::json_internal_error(format!("Setup lock failed: {}", e)),
+        };
+    }
+
+    if let Err(e) = SetupService::validate_username(&req.username) {
+        SetupService::cleanup_setup_lock();
+        return ResponseHelper::json_error(e);
+    }
+
+    if let Err(e) = SetupService::validate_password(&req.password) {
+        SetupService::cleanup_setup_lock();
+        return ResponseHelper::json_error(e);
+    }
+
+    // Optional TOTP enrollment from the wizard's password step: the 6-digit
+    // code must verify against the client-generated secret BEFORE any row is
+    // created, so an invalid code is a clean rejection with nothing
+    // persisted. Both fields are required together; a lone secret is ignored.
+    if let (Some(secret), Some(code)) = (&req.totp_secret, &req.totp_code) {
+        let secret = secret.trim();
+        let code = code.trim();
+        if secret.is_empty()
+            || code.is_empty()
+            || !crate::auth::service::AuthService::verify_totp_code_with_secret(secret, code)
+        {
+            SetupService::cleanup_setup_lock();
+            return ResponseHelper::json_error(
+                "Invalid two-factor verification code".to_string(),
+            );
+        }
+    }
+
+    // Fullname is optional in the wizard; only validate it when provided.
+    if let Some(fullname) = req.fullname.as_deref() {
+        if let Err(e) = SetupService::validate_fullname(fullname) {
+            SetupService::cleanup_setup_lock();
+            return ResponseHelper::json_error(e);
+        }
+    }
+    let _fullname = req.fullname.clone().unwrap_or_default();
+
+    let avatar_seed = match req
+        .avatar_seed
+        .as_deref()
+        .and_then(crate::avatars::normalize_seed)
+    {
+        Some(seed) => seed,
+        None => crate::avatars::generate_random_seed(),
+    };
+
+    let password_hash = match state.auth.hash_password(&req.password) {
+        Ok(h) => h,
+        Err(_) => {
+            SetupService::cleanup_setup_lock();
+            return ResponseHelper::json_error("Failed to hash password".to_string());
+        }
+    };
+
+    let mut tx = match state.db.pool().begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            SetupService::cleanup_setup_lock();
+            return ResponseHelper::json_internal_error(format!("Database error: {}", e));
+        }
+    };
+
+    let created_at = chrono::Utc::now().to_rfc3339();
+    if let Err(e) = sqlx::query(
+        "INSERT INTO users (username, password_hash, fullname, email, role_id, locked, created_at, avatar_seed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    .bind(&req.username)
+    .bind(&password_hash)
+    .bind(req.fullname.as_deref().unwrap_or(""))
+    .bind("") // Empty email
+    .bind(ADMIN_ROLE_ID)
+    .bind(false)
+    .bind(&created_at)
+    .bind(&avatar_seed)
+    .execute(&mut *tx)
+    .await
+    {
+        let _ = tx.rollback().await;
+        SetupService::cleanup_setup_lock();
+
+        if let sqlx::Error::Database(ref db_err) = e {
+            if db_err.code().map(|c| c == "2067").unwrap_or(false) {
+                return ResponseHelper::json_error("Username already exists".to_string());
+            }
+        }
+        return ResponseHelper::json_error(format!("Failed to create user: {}", e));
+    }
+
+    if let Err(e) = state.db.ensure_admin_group().await {
+        tracing::warn!("Failed to ensure admin group: {}. Continuing without system group integration.", e);
+    }
+
+    if let Err(e) = state.db.sync_admin_user_to_group(&req.username).await {
+        tracing::warn!("Failed to sync admin user to group: {}. Continuing without system group integration.", e);
+    }
+
+    if let Err(e) = state.db.create_admin_home_directory(&req.username).await {
+        tracing::warn!("Failed to create admin home directory: {}", e);
+    }
+
+    if let Err(e) = tx.commit().await {
+        SetupService::cleanup_setup_lock();
+        return ResponseHelper::json_internal_error(format!("Transaction commit failed: {}", e));
+    }
+
+    if let Err(e) = SetupService::mark_setup_complete() {
+        tracing::error!("Failed to mark setup complete: {}", e);
+        return ResponseHelper::json_internal_error(format!("Failed to finalize setup: {}", e));
+    }
+
+    // Enable 2FA with the secret the admin scanned at the password step (the
+    // code was already verified above). Persists the encrypted secret and
+    // returns the one-time backup codes. Best-effort: a failure here leaves
+    // the account fully usable without 2FA — surfaced to the wizard via
+    // `totp_enabled` so the admin is never silently left unprotected.
+    let mut totp_enabled = false;
+    let mut backup_codes: Vec<String> = Vec::new();
+    if let Some(secret) = req.totp_secret.as_deref() {
+        let secret = secret.trim();
+        let code_present = req
+            .totp_code
+            .as_deref()
+            .map(|c| !c.trim().is_empty())
+            .unwrap_or(false);
+        if !secret.is_empty() && code_present {
+            match state.auth.enable_2fa(&req.username, secret).await {
+                Ok(codes) => {
+                    crate::events::log_event(format!(
+                        "Two-factor authentication enabled for '{}' during setup",
+                        req.username
+                    ));
+                    totp_enabled = true;
+                    backup_codes = codes;
+                }
+                Err(e) => tracing::error!(
+                    username = %req.username,
+                    error = %e,
+                    "Setup: failed to enable 2FA at creation; account continues without it"
+                ),
+            }
+        }
+    }
+
+    // No sudoers file to generate any more: HomeVault runs as root (see
+    // installer/homevault.service — no User=/Group=, and install.sh no
+    // longer creates a "homevault" service account), so every `sudo` call
+    // already in the codebase (RAID/mdadm, ZFS, VPN, Docker, useradd/
+    // groupadd above, ...) already succeeds against the default Debian/
+    // Ubuntu `root ALL=(ALL:ALL) ALL` sudoers rule — nothing left to grant.
+    // `SetupService::configure_sudoers()` is kept in setup.rs (unused) as a
+    // reference for anyone reviving a non-root deployment mode later.
+
+    let ip_address = extract_client_ip(&headers);
+
+    match state
+        .auth
+        .create_session(req.username.clone(), ip_address.clone(), false)
+        .await
+    {
+        Ok(session) => {
+            tracing::info!(
+                username = %req.username,
+                ip_address = %ip_address,
+                "First setup completed - admin user created"
+            );
+
+            let token = session.token.clone();
+            // Enriched LoginResponse: carries the optional TOTP enrolment
+            // outcome so the wizard can show the one-time backup codes (or a
+            // warning when the server could not persist 2FA).
+            let data = serde_json::json!({
+                "token": session.token,
+                "csrf_token": session.csrf_token,
+                "username": session.username,
+                "is_admin": session.is_admin,
+                "totp_enabled": totp_enabled,
+                "backup_codes": backup_codes,
+            });
+            crate::app_proxy::cookie::attach_session(ResponseHelper::json_success(data), &token, false)
+        }
+        Err(e) => {
+            tracing::error!("Setup complete but failed to create session: {}", e);
+            ResponseHelper::json_internal_error(format!(
+                "Setup complete but failed to create session: {}",
+                e
+            ))
+        }
+    }
+}
+
+#[axum_macros::debug_handler]
+/// Generates a numeric recovery code for the authenticated user.
+///
+/// Returns the plaintext code once; only its hash is stored. Refuses if a code
+/// already exists unless `?regenerate=true` is passed.
+pub async fn handle_generate_recovery_code(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<RecoveryCodeQuery>,
+) -> Response {
+    let session_token = headers
+        .get("x-session-token")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+
+    let username = match state.auth.get_username_from_token(session_token).await {
+        Some(u) => u,
+        None => return ResponseHelper::json_unauthorized("Invalid session".to_string()),
+    };
+
+    if !params.regenerate {
+        match state.auth.has_recovery_code(&username).await {
+            Ok(true) => {
+                return ResponseHelper::json_error(
+                    "A recovery code is already set for this account.".to_string(),
+                );
+            }
+            Ok(false) => {}
+            Err(e) => {
+                return ResponseHelper::json_internal_error(format!(
+                    "Failed to check recovery code: {}",
+                    e
+                ));
+            }
+        }
+    }
+
+    match state.auth.set_recovery_code(&username).await {
+        Ok(code) => {
+            crate::events::log_event(format!(
+                "User '{}' generated a password recovery code",
+                username
+            ));
+            ResponseHelper::json_success(RecoveryCodeResponse {
+                recovery_code: code,
+            })
+        }
+        Err(e) => ResponseHelper::json_error(format!("Failed to generate recovery code: {}", e)),
+    }
+}
+
+#[axum_macros::debug_handler]
+/// Checks a recovery code without changing anything, so the login UI can gate
+/// the "choose a new password" step. Rate-limited via the same per-user counter
+/// as the reset itself.
+pub async fn handle_verify_recovery_code(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    req: axum::extract::Json<VerifyRecoveryCodeRequest>,
+) -> Response {
+    let ip_address = extract_client_ip(&headers);
+    let username = req.username.trim();
+
+    match state
+        .auth
+        .verify_recovery_code(username, &req.recovery_code)
+        .await
+    {
+        Ok(true) => ResponseHelper::json_success(serde_json::json!({ "valid": true })),
+        Ok(false) => {
+            crate::events::log_event_warn(format!(
+                "Failed recovery-code verification for user '{}' from {}",
+                username, ip_address
+            ));
+            ResponseHelper::json_error("The recovery code is incorrect.".to_string())
+        }
+        Err(AuthError::TooManyRecoveryAttempts) => ResponseHelper::json_error(
+            "Too many attempts. Please wait a few minutes and try again.".to_string(),
+        ),
+        Err(e) => ResponseHelper::json_internal_error(format!("Verification failed: {}", e)),
+    }
+}
+
+#[axum_macros::debug_handler]
+/// Completes a password reset using a numeric recovery code (email-free flow).
+///
+/// Responses are deliberately generic so a caller cannot tell whether the
+/// username exists or whether it was the code or the password that was rejected
+/// (beyond password-policy feedback).
+pub async fn handle_reset_password_recovery(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    req: axum::extract::Json<ResetPasswordRecoveryRequest>,
+) -> Response {
+    let ip_address = extract_client_ip(&headers);
+    let username = req.username.trim();
+
+    match state
+        .auth
+        .reset_password_with_recovery_code(username, &req.recovery_code, &req.new_password)
+        .await
+    {
+        Ok(_) => {
+            crate::events::log_event(format!(
+                "Password for user '{}' reset via recovery code from {}",
+                username, ip_address
+            ));
+            ResponseHelper::json_success(ResetPasswordResponse {
+                message: "Password successfully reset. You can now log in with your new password."
+                    .to_string(),
+            })
+        }
+        Err(e) => {
+            crate::events::log_event_warn(format!(
+                "Failed recovery-code password reset for user '{}' from {}",
+                username, ip_address
+            ));
+            match e {
+                AuthError::WeakPassword => ResponseHelper::json_error(
+                    "Password does not meet security requirements. It must be at least 8 characters long and contain uppercase, lowercase, and numbers.".to_string(),
+                ),
+                AuthError::PasswordReused => ResponseHelper::json_error(
+                    "This password was used recently. Please choose a different password.".to_string(),
+                ),
+                AuthError::TooManyRecoveryAttempts => ResponseHelper::json_error(
+                    "Too many attempts. Please wait a few minutes and try again.".to_string(),
+                ),
+                // InvalidRecoveryCode, UserNotFound, and anything else collapse
+                // to one generic message.
+                _ => ResponseHelper::json_error(
+                    "The recovery code is incorrect.".to_string(),
+                ),
+            }
+        }
+    }
+}

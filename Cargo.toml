@@ -1,0 +1,94 @@
+[package]
+name = "homevault"
+version = "1.0.0"
+edition = "2021"
+authors = ["HomeVault Team"]
+description = "Home server management application in Rust"
+
+[[bin]]
+name = "homevault"
+path = "src/bin/server.rs"
+
+[dependencies]
+reqwest = { version = "0.13", features = ["json", "stream"] }
+axum = { version = "0.8", features = ["macros", "ws", "multipart"] }
+axum-macros = "0.5"
+chrono = { version = "0.4", features = ["serde"] }
+argon2 = { version = "0.6", features = ["password-hash", "rand_core"] }
+hostname = "0.4"
+http = "1"
+# Per-app reverse proxy (crate::app_proxy) — a small hyper 1.x proxy per
+# installed catalog app, forwarding to the container's published port with
+# an optional HomeVault session-cookie gate and WebSocket pass-through.
+hyper = { version = "1", features = ["server", "client", "http1"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+http-body-util = "0.1"
+log = "0.4"
+once_cell = "1.19"
+parking_lot = "0.12"
+rand = "0.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.11"
+# SHA-512 crypt ($6$) hashing for the cloud-init user password we seed into a
+# new VM — the plaintext never touches the instance config or any log.
+sha-crypt = { version = "0.6", features = ["getrandom"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "chrono"] }
+tokio = { version = "1.52", features = ["full"] }
+# Raw WebSocket client for the VM console relay (browser xterm <-> HomeVault
+# <-> Incus operation WebSocket over the Incus Unix socket). Version pinned to
+# whatever axum 0.8 already pulls in transitively so there is a single copy.
+tokio-tungstenite = "0.29"
+futures-util = "0.3"
+open = "5"
+tower-http = { version = "0.7", features = ["fs", "trace", "cors", "compression-br", "compression-gzip", "set-header", "limit"] }
+thiserror = "2"
+toml = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+validator = { version = "0.21", features = ["derive"] }
+hmac = "0.13"
+sha1 = "0.11"
+libc = "0.2"
+dirs = "7"
+uuid = { version = "1.0", features = ["serde", "v4"] }
+image = "0.25"
+tokio-util = { version = "0.7", features = ["io"] }
+url = "2"
+# SSE Progress System
+async-stream = "0.3"
+# Avatar generation (offline - all generation is local PRNG, no API calls)
+dicebear-core = "10.7.0"
+dicebear-styles = { version = "10.6.0", features = ["miniavs"] }
+# Native PTY for the web terminal
+portable-pty = "0.9"
+bytes = "1"
+cron = "0.17"
+# Filesystem watching for the anti-ransomware honeypot/rate-detection guard
+notify = "8"
+# Embeds sqlx/migrations/*.sql and the built frontend (static/) into the
+# binary at compile time, so a single binary file is enough to run
+# HomeVault — see Database::run_migrations in src/storage/database.rs and
+# src/handlers/spa.rs.
+include_dir = "0.7"
+mime_guess = "2"
+# Built-in HTTPS/TLS termination (crate::tls + the optional second listener in
+# src/web/mod.rs). rustls/tokio-rustls are already pulled transitively by
+# reqwest/hyper-rustls, so this only adds the thin axum-server accept loop plus
+# self-signed certificate generation (rcgen) and introspection (x509-parser).
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+rcgen = "0.14"
+rustls-pemfile = "2"
+x509-parser = "0.18"
+time = "0.3"
+
+[dev-dependencies]
+tempfile = "3.27"
+regex = "1.13"
+tower = { version = "0.5", features = ["util"] }
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1

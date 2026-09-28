@@ -1,0 +1,47 @@
+[Unit]
+Description=HomeVault Server
+After=network.target
+
+[Service]
+Type=simple
+# No dedicated service account (root, systemd's default when User=/Group=
+# are omitted) — see installer/install.sh's note on why: HomeVault manages
+# the host deeply enough (RAID, ZFS, Samba/NFS/vsftpd, Docker, disk
+# encryption, real Linux user/group accounts...) that an unprivileged
+# account plus a generated sudoers file was mostly re-granting root
+# piecemeal anyway, and bootstrapping that sudoers file always needed root
+# in the first place — which a freshly `useradd --system`'d account never
+# had until *after* the Setup Wizard ran, so the very first "create the
+# admin's real Linux account" attempt silently failed on every install.
+WorkingDirectory=/opt/homevault
+ExecStart=/opt/homevault/homevault
+Restart=on-failure
+RestartSec=5
+Environment="PORT=8080"
+Environment="DATA_DIRECTORY=/var/lib/homevault"
+# Built-in HTTPS is opt-in (Settings > Security > HTTPS/TLS, or set
+# TLS_ENABLED=true here / in /etc/homevault.env). When enabled, HomeVault
+# adds a TLS listener on HTTPS_PORT (default 8443) alongside the HTTP one.
+#Environment="TLS_ENABLED=true"
+#Environment="HTTPS_PORT=8443"
+EnvironmentFile=-/etc/homevault.env
+
+# Resource ceiling: HomeVault targets low-power boards and modest mini-PCs,
+# often shared with other host services (Samba, Docker apps). These give the
+# process room for legitimate heavy work (large Restic backups, Explorer
+# archive operations) while still capping a runaway feature or memory leak
+# instead of letting it starve the whole machine. MemoryHigh is a soft
+# throttle (reclaim pressure, no kill); MemoryMax is the hard cap. Tune both
+# against real `systemd-cgtop`/`systemctl status` measurements for your
+# hardware before relying on them in production — these are conservative
+# starting points, not measured limits.
+MemoryHigh=1536M
+MemoryMax=2G
+TasksMax=1024
+# CPU is intentionally left unrestricted by default (backup/compression
+# throughput benefits from all available cores); uncomment and size to your
+# hardware's core count if HomeVault needs to share CPU with other services:
+#CPUQuota=300%
+
+[Install]
+WantedBy=multi-user.target
