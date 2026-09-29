@@ -45,6 +45,13 @@ jobs:
       REDIS_URL: redis://localhost:6379
     steps:
       - uses: actions/checkout@v4
+      # See ci.yml: the full `cargo test` build (every test binary, with
+      # debuginfo) plus the preinstalled toolchains overflowed the runner
+      # disk — "No space left on device (os error 28)" mid-compile.
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       # Several suites (groups, users, shares, …) assert privileged ops
       # FAIL CLEANLY without sudo — the author's sandbox is unprivileged.
       # Root (or a sudoer) would invert those assertions (`sudo groupadd`
@@ -82,4 +89,8 @@ jobs:
       - name: Full test suite (unit + integration, as ci)
         run: |
           cd "$GITHUB_WORKSPACE"
-          sudo -u ci bash -c 'export RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:/usr/bin:/bin; cargo test --locked'
+          # See ci.yml on CARGO_PROFILE_*_DEBUG (strip debuginfo so the
+          # test-binary farm fits the runner disk; assertions unaffected).
+          # Exported inside the `sudo -u ci` shell because sudo's env_reset
+          # drops job-level env vars for the unprivileged user.
+          sudo -u ci bash -c 'export RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 PATH=/opt/cargo/bin:/usr/bin:/bin; cargo test --locked'
