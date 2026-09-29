@@ -23,8 +23,23 @@ jobs:
   backend:
     name: Rust — build, test, clippy
     runs-on: ubuntu-latest
+    env:
+      # `debug` only controls DWARF debuginfo — assertions, overflow
+      # checks and backtrace symbols stay intact. Without this, the
+      # --all-targets test-binary farm (50+ statically linked binaries)
+      # overflows the runner's ~21 GB disk budget.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - uses: actions/checkout@v4
+      # Toolchains this job never uses (Android SDK, .NET, GHC, ghcup,
+      # CodeQL) share the disk with target/. Linking failed with
+      # "No space left on device"/SIGBUS until they were removed
+      # (~17 GB reclaimed).
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       - name: Install Rust toolchain
         # One --component per flag: rustup treats a bare trailing value as
         # another positional TOOLCHAIN (`--component clippy rustfmt` fails

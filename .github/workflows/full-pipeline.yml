@@ -81,6 +81,13 @@ jobs:
       REDIS_URL: redis://localhost:6379
     steps:
       - uses: actions/checkout@v4
+      # See integration.yml: the full `cargo test` build overflows the
+      # runner disk together with the preinstalled toolchains (ENOSPC
+      # mid-compile).
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       # See integration.yml: the suite must run unprivileged, otherwise the
       # "fails cleanly without sudo" assertions invert.
       - name: Create unprivileged CI user
@@ -109,7 +116,9 @@ jobs:
           CARGO_HOME: /opt/cargo
       - run: |
           cd "$GITHUB_WORKSPACE"
-          sudo -u ci bash -c 'export RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:/usr/bin:/bin; cargo test --locked'
+          # See integration.yml: strip debuginfo inside the `sudo -u ci`
+          # shell (sudo's env_reset drops job-level env vars).
+          sudo -u ci bash -c 'export RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 PATH=/opt/cargo/bin:/usr/bin:/bin; cargo test --locked'
 
   e2e:
     needs: [unit, component, integration]
@@ -126,6 +135,9 @@ jobs:
       # pwuser) does not belong to the running user (root) — see
       # e2e-playwright.yml.
       HOME: /root
+      # Strip debuginfo from target/ (see e2e-playwright.yml): only
+      # `cargo build` runs here, i.e. the dev profile.
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust build deps

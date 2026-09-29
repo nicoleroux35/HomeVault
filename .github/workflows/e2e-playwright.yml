@@ -41,6 +41,10 @@ jobs:
       # HOME=/root). Chromium is unaffected; Firefox specs all fail
       # without this.
       HOME: /root
+      # Strip debuginfo from target/ (browser downloads + node_modules +
+      # cargo target share the runner disk). Only `cargo build` runs here,
+      # i.e. the dev profile; assertions are a separate profile key.
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust build deps
