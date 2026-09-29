@@ -54,8 +54,16 @@ jobs:
         continue-on-error: true
       - name: Build
         run: cargo build --locked --all-targets
-      - name: Unit + integration tests
-        run: cargo test --locked
+      - name: Unit tests (lib)
+        # The privileged-ops integration suites (groups, users, shares, …)
+        # assert clean 400 failures WITHOUT sudo rights — running them as
+        # the passwordless-sudo `runner` user INVERTS those assertions
+        # (`sudo groupadd` succeeds → 200, verified failing on run
+        # 36592566909). The full suite runs unprivileged as the dedicated
+        # `ci` user in integration.yml on the same push; here `--lib`
+        # mirrors Gitea's unit.yml. Compile coverage for every target
+        # (including all test binaries) stays in the Build step above.
+        run: cargo test --locked --lib
         # The E2E Playwright suites need a live server + host tools
         # (sudo, mdadm, clamav, …) and are run separately, not in CI.
 
