@@ -88,6 +88,14 @@ jobs:
           id ci >/dev/null 2>&1 || sudo useradd -m -s /bin/bash ci
           sudo mkdir -p /opt/rustup /opt/cargo
           sudo chown -R ci:ci /opt/rustup /opt/cargo "$GITHUB_WORKSPACE"
+          # See integration.yml: /home/runner is not world-traversable, so
+          # the unprivileged ci user needs o+x on every workspace ancestor
+          # or cargo cannot stat Cargo.toml via absolute paths.
+          d="$GITHUB_WORKSPACE"
+          while [ "$d" != "/" ] && [ -n "$d" ]; do
+            sudo chmod o+x "$d" 2>/dev/null || true
+            d="$(dirname "$d")"
+          done
           # See integration.yml: rescue_integration needs /dev/loop0+loop1
           # nodes to exist (validation canonicalizes the valid source).
           for n in 0 1; do [ -e /dev/loop$n ] || sudo mknod /dev/loop$n b 7 $n 2>/dev/null || true; done
@@ -114,6 +122,10 @@ jobs:
       E2E_ADMIN_USER: e2eadmin
       E2E_ADMIN_PASS: E2eSecret123
       CI: "true"
+      # Firefox refuses to launch when $HOME (/github/home, owned by
+      # pwuser) does not belong to the running user (root) — see
+      # e2e-playwright.yml.
+      HOME: /root
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust build deps

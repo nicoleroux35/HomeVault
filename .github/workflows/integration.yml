@@ -55,6 +55,17 @@ jobs:
           id ci >/dev/null 2>&1 || sudo useradd -m -s /bin/bash ci
           sudo mkdir -p /opt/rustup /opt/cargo
           sudo chown -R ci:ci /opt/rustup /opt/cargo "$GITHUB_WORKSPACE"
+          # The workspace lives under /home/runner, which is not
+          # world-traversable (e.g. 750 runner:runner). chown above runs as
+          # root and bypasses that, but the unprivileged `ci` user then
+          # stats files with ABSOLUTE paths — every missing o+x ancestor
+          # makes Path::exists() return false and cargo reports
+          # "could not find Cargo.toml". Grant traversal only (o+x).
+          d="$GITHUB_WORKSPACE"
+          while [ "$d" != "/" ] && [ -n "$d" ]; do
+            sudo chmod o+x "$d" 2>/dev/null || true
+            d="$(dirname "$d")"
+          done
           # rescue_integration sends /dev/loop0 + /dev/loop1 as the *valid*
           # source and asserts the destination/logfile/output checks fire.
           # Validation canonicalizes (nodes must exist); plain nodes
