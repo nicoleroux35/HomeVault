@@ -35,6 +35,12 @@ jobs:
       E2E_ADMIN_USER: e2eadmin
       E2E_ADMIN_PASS: E2eSecret123
       CI: "true"
+      # Container jobs run as root, but the Playwright image's $HOME
+      # (/github/home) belongs to pwuser: Firefox refuses to launch in a
+      # "regular user's session" (Playwright's documented workaround is
+      # HOME=/root). Chromium is unaffected; Firefox specs all fail
+      # without this.
+      HOME: /root
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust build deps
