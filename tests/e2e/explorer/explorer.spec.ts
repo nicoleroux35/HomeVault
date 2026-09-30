@@ -1074,30 +1074,32 @@ async function favList(page: Page, t: Tokens): Promise<any[]> {
   return Array.isArray(r.data) ? (r.data as any[]) : [];
 }
 
-test.describe('15 — umbrelOS features', () => {
-  // Reaching WORK by walking the file list means clicking through a very
-  // large /tmp, which is slow and flaky (rows reflow as the list renders and
-  // on the 8 s auto-refresh). Instead each test opens WORK in one click via a
-  // sidebar favorite; `openWork` re-asserts it every time so 15.3 (which
-  // toggles it) can't break the tests after it.
-  async function openWork(page: Page) {
-    // Re-create the favorite with a known label every time (15.3 toggles it,
-    // and the UI re-pin path would relabel it to the raw folder name).
-    await sharedCtx
-      .delete('/api/explorer/favorites', { headers: adminHeaders, data: { path: WORK } })
-      .catch(() => {});
-    await sharedCtx
-      .post('/api/explorer/favorites', { headers: adminHeaders, data: { path: WORK, label: 'e2ework' } })
-      .catch(() => {});
-    await gotoExplorer(page, adminTokens);
-    await win(page)
-      .locator('[data-testid="explorer-sidebar"] .disk-btn')
-      .filter({ hasText: 'e2ework' })
-      .first()
-      .click();
-    await expect.poll(() => currentPath(page), { timeout: 15_000 }).toBe(WORK);
-  }
+// Reaching WORK by walking the file list means clicking through a very
+// large /tmp, which is slow and flaky (rows reflow as the list renders and
+// on the 8 s auto-refresh). Instead each test opens WORK in one click via a
+// sidebar favorite; `openWork` re-asserts it every time so 15.3 (which
+// toggles it) can't break the tests after it. Declared at file scope: the
+// describe 16 tests use it too (nested in describe 15 they hit a
+// ReferenceError — `openWork is not defined` — on every run).
+async function openWork(page: Page) {
+  // Re-create the favorite with a known label every time (15.3 toggles it,
+  // and the UI re-pin path would relabel it to the raw folder name).
+  await sharedCtx
+    .delete('/api/explorer/favorites', { headers: adminHeaders, data: { path: WORK } })
+    .catch(() => {});
+  await sharedCtx
+    .post('/api/explorer/favorites', { headers: adminHeaders, data: { path: WORK, label: 'e2ework' } })
+    .catch(() => {});
+  await gotoExplorer(page, adminTokens);
+  await win(page)
+    .locator('[data-testid="explorer-sidebar"] .disk-btn')
+    .filter({ hasText: 'e2ework' })
+    .first()
+    .click();
+  await expect.poll(() => currentPath(page), { timeout: 15_000 }).toBe(WORK);
+}
 
+test.describe('15 — umbrelOS features', () => {
   // Favorites are per-user + server-side; the file-level afterAll only sweeps
   // /tmp work dirs, so clean up any favorite pointing back into one here.
   test.afterAll(async () => {
