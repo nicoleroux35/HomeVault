@@ -14,7 +14,11 @@ export default defineConfig({
     actionTimeout: 10_000,
     navigationTimeout: 15_000,
     screenshot: 'only-on-failure',
-    trace: 'retain-on-failure',
+    // Traces of every failed attempt filled the CI runner disk mid-suite
+    // (ENOSPC cascaded into dozens of unrelated failures). Keep them for
+    // local debugging; on CI the screenshots + html report + server log
+    // are enough to triage.
+    trace: process.env.CI ? 'off' : 'retain-on-failure',
   },
   projects: [
     {

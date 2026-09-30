@@ -49,7 +49,10 @@ const EICAR = 'X5O!P%@AP[4\\PZX54(P^)7CC)7}$' + 'EICAR-STANDARD-ANTIVIRUS-TEST-F
 
 // A throwaway workspace under the test user's home ( `/home/...` is an
 // allowed explorer root on the server, `/tmp` is not).
-const WORKROOT = path.join(os.homedir(), 'hv-e2e-security');
+// On CI the job runs as root with HOME=/root, which is NOT an explorer
+// allowed root (src/config/explorer_config.rs), so the 4.3 honeypot POST
+// would get 400 — the workflow points this at /home/hv-e2e-security.
+const WORKROOT = process.env.HV_E2E_WORKROOT || path.join(os.homedir(), 'hv-e2e-security');
 const SCAN_DIR = path.join(WORKROOT, 'scan-target');
 const QUARANTINE_DIR = path.join(WORKROOT, 'quarantine');
 const PROTECTED_DIR = path.join(WORKROOT, 'protected');

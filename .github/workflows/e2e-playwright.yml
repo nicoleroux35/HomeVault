@@ -45,6 +45,11 @@ jobs:
       # cargo target share the runner disk). Only `cargo build` runs here,
       # i.e. the dev profile; assertions are a separate profile key.
       CARGO_PROFILE_DEV_DEBUG: "0"
+      # security.spec.ts keeps its scratch dir out of $HOME on CI: /root is
+      # not an explorer allowed root (src/config/explorer_config.rs), so the
+      # honeypot POST in test 4.3 needs a workdir under an allowed root —
+      # /home exists in the image and is on the default list.
+      HV_E2E_WORKROOT: /home/hv-e2e-security
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust build deps
@@ -81,6 +86,17 @@ jobs:
         run: npx playwright install chromium firefox
       - name: Build backend
         run: export PATH="$HOME/.cargo/bin:$PATH" && cargo build --locked
+      # Nothing after this point needs cargo or the package caches, and the
+      # first 5 h stage B hit ENOSPC mid-run (rustup + caches + test
+      # artifacts exhausted the runner disk; ~80 tests died of it). Reclaim
+      # several GB: target/debug/deps only matters for linking, the binary
+      # is already built.
+      - name: Free disk space before the spec run
+        run: |
+          rm -rf "$HOME/.rustup" "$HOME/.cargo/registry" "$HOME/.cargo/git" "$HOME/.npm"
+          rm -rf target/debug/deps target/debug/incremental
+          apt-get clean && rm -rf /var/lib/apt/lists/*
+          df -h /
       - name: Start server (scratch data dir)
         run: |
           mkdir -p /tmp/hv-e2e-data
@@ -132,7 +148,17 @@ jobs:
           npx playwright test $E2E_DIRS --reporter=html --retries=1
       - name: Stop server
         if: always()
-        run: kill $(cat /tmp/hv-e2e.pid) || true
+        run: |
+          kill $(cat /tmp/hv-e2e.pid) || true
+          # Post-mortem evidence for the next triage: free space, biggest
+          # consumers, and the server log (journalctl / path_guard / sudo
+          # errors land there, not in the playwright report).
+          {
+            df -h /
+            echo '---'
+            du -sh target node_modules frontend/node_modules playwright-report test-results /tmp/hv-e2e-data 2>/dev/null
+          } > disk-report.txt || true
+          cp /tmp/hv-e2e.log hv-e2e-server.log 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -140,3 +166,5 @@ jobs:
           path: |
             playwright-report/
             test-results/
+            hv-e2e-server.log
+            disk-report.txt

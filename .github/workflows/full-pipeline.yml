@@ -138,6 +138,9 @@ jobs:
       # Strip debuginfo from target/ (see e2e-playwright.yml): only
       # `cargo build` runs here, i.e. the dev profile.
       CARGO_PROFILE_DEV_DEBUG: "0"
+      # security.spec.ts scratch dir out of $HOME (see e2e-playwright.yml):
+      # /root is not an explorer allowed root, /home is.
+      HV_E2E_WORKROOT: /home/hv-e2e-security
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust build deps
@@ -168,6 +171,15 @@ jobs:
       - run: cd frontend && npm run build
       - run: npx playwright install chromium firefox
       - run: export PATH="$HOME/.cargo/bin:$PATH" && cargo build --locked
+      # Nothing after this point needs cargo or the package caches (see
+      # e2e-playwright.yml): reclaim several GB before the 5 h stage B so
+      # the runner disk never hits ENOSPC again.
+      - name: Free disk space before the spec run
+        run: |
+          rm -rf "$HOME/.rustup" "$HOME/.cargo/registry" "$HOME/.cargo/git" "$HOME/.npm"
+          rm -rf target/debug/deps target/debug/incremental
+          apt-get clean && rm -rf /var/lib/apt/lists/*
+          df -h /
       - name: Start server (scratch data dir)
         run: |
           mkdir -p /tmp/hv-e2e-data
@@ -214,7 +226,16 @@ jobs:
           npx playwright test $E2E_DIRS --reporter=html --retries=1
       - name: Stop server
         if: always()
-        run: kill $(cat /tmp/hv-e2e.pid) || true
+        run: |
+          kill $(cat /tmp/hv-e2e.pid) || true
+          # Post-mortem evidence (see e2e-playwright.yml): free space,
+          # biggest consumers, and the server log for triage.
+          {
+            df -h /
+            echo '---'
+            du -sh target node_modules frontend/node_modules playwright-report test-results /tmp/hv-e2e-data 2>/dev/null
+          } > disk-report.txt || true
+          cp /tmp/hv-e2e.log hv-e2e-server.log 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -222,3 +243,5 @@ jobs:
           path: |
             playwright-report/
             test-results/
+            hv-e2e-server.log
+            disk-report.txt
