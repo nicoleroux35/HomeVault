@@ -240,6 +240,9 @@ jobs:
         if: always()
         with:
           name: playwright-report
+          # Cap retention (see e2e-playwright.yml): hundreds of MB per run
+          # against a 500 MB private-repo quota.
+          retention-days: 7
           path: |
             playwright-report/
             test-results/

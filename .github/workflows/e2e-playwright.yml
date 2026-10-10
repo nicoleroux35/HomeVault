@@ -163,6 +163,11 @@ jobs:
         if: always()
         with:
           name: playwright-report
+          # Cap retention: these reports run to hundreds of MB and the
+          # free private-repo artifact quota is 500 MB — the default
+          # 90-day retention filled it and made gitleaks' own sarif
+          # upload fail the workflow (run 38062668578).
+          retention-days: 7
           path: |
             playwright-report/
             test-results/
