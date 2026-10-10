@@ -31,6 +31,7 @@
 //!     (bad cron / out-of-range knobs / bad share name / bad cache mode /
 //!     short passphrase / bad filesystem / bad label / unknown volume id /
 //!     missing confirmation).
+//!
 //! The read-only endpoints are safe to run for real — they only inventory
 //! the host (`lsblk`, and best-effort `zpool`/`mdadm` scans that come back
 //! empty when those tools aren't installed or need a password).
@@ -43,6 +44,12 @@
 //! Run:
 //!   cargo test --test storage_integration
 //!   cargo test --test storage_integration -- --nocapture
+
+// Every test serialises on a process-wide `ENV_LOCK` (they mutate
+// `DATA_DIRECTORY`), so its guard is intentionally held across `.await` for
+// the whole test body. That is the pattern clippy's `await_holding_lock`
+// warns about, but here it is exactly what keeps the suite deterministic.
+#![allow(clippy::await_holding_lock)]
 
 use axum::{
     routing::{delete, get, post, put},
@@ -88,7 +95,11 @@ static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 // Harness
 // ---------------------------------------------------------------------------
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -143,7 +154,10 @@ fn storage_router(state: Arc<AppState>) -> Router {
         .route("/api/cache/shares", get(handle_cache_shares_list))
         .route("/api/cache/shares", post(handle_cache_share_create))
         .route("/api/cache/shares/{name}", put(handle_cache_share_update))
-        .route("/api/cache/shares/{name}", delete(handle_cache_share_delete))
+        .route(
+            "/api/cache/shares/{name}",
+            delete(handle_cache_share_delete),
+        )
         .route("/api/cache/mover/run", post(handle_cache_mover_run))
         .route("/api/cache/mover/runs", get(handle_cache_mover_runs))
         .route(
@@ -168,7 +182,10 @@ fn storage_router(state: Arc<AppState>) -> Router {
             "/api/encryption/volumes/{id}/lock",
             post(handle_encryption_lock),
         )
-        .route("/api/encryption/volumes/{id}", delete(handle_encryption_delete))
+        .route(
+            "/api/encryption/volumes/{id}",
+            delete(handle_encryption_delete),
+        )
         .with_state(state)
 }
 
@@ -266,7 +283,11 @@ fn read_endpoints() -> Vec<(Method, &'static str)> {
 /// (method, uri, body) for every write endpoint (require_admin).
 fn write_endpoints() -> Vec<(Method, &'static str, Option<Value>)> {
     vec![
-        (Method::PUT, "/api/cache/settings", Some(json!({"mover_enabled": true}))),
+        (
+            Method::PUT,
+            "/api/cache/settings",
+            Some(json!({"mover_enabled": true})),
+        ),
         (
             Method::POST,
             "/api/cache/shares",
@@ -282,7 +303,9 @@ fn write_endpoints() -> Vec<(Method, &'static str, Option<Value>)> {
         (
             Method::POST,
             "/api/encryption/volumes",
-            Some(json!({"device": "/dev/hv-x", "filesystem": "ext4", "label": "l", "passphrase": "abcdefgh"})),
+            Some(
+                json!({"device": "/dev/hv-x", "filesystem": "ext4", "label": "l", "passphrase": "abcdefgh"}),
+            ),
         ),
         (
             Method::POST,
@@ -351,7 +374,11 @@ async fn test_all_write_endpoints_reject_non_admin_session() {
     let token = login(&mut router, "regular", "Password123!").await;
     for (method, uri, body) in write_endpoints() {
         let (status, _) = send(&mut router, method.clone(), uri, Some(&token), body).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri} should be admin-only");
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{method} {uri} should be admin-only"
+        );
     }
 }
 
@@ -363,7 +390,11 @@ async fn test_read_endpoints_allow_any_valid_session() {
     let token = login(&mut router, "regular", "Password123!").await;
     for (method, uri) in read_endpoints() {
         let (status, _) = send(&mut router, method.clone(), uri, Some(&token), None).await;
-        assert_eq!(status, StatusCode::OK, "GET {uri} should allow a non-admin session");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "GET {uri} should allow a non-admin session"
+        );
     }
 }
 
@@ -371,7 +402,12 @@ async fn test_read_endpoints_allow_any_valid_session() {
 // 2. Cache-settings validation — clean 400s, no command run
 // ---------------------------------------------------------------------------
 
-async fn admin_router() -> (Router, String, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn admin_router() -> (
+    Router,
+    String,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let (state, tmp, guard) = setup_state().await;
     create_test_user(&state, "admin1", "Password123!", 2).await;
     let mut router = storage_router(state);

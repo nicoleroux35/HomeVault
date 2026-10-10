@@ -533,7 +533,9 @@ mod tests {
     #[test]
     fn test_is_writable_home_filesystem() {
         // Real writable filesystems stay offered.
-        for fs in ["ext4", "xfs", "btrfs", "zfs", "f2fs", "vfat", "ntfs", "exfat", "unknown"] {
+        for fs in [
+            "ext4", "xfs", "btrfs", "zfs", "f2fs", "vfat", "ntfs", "exfat", "unknown",
+        ] {
             assert!(
                 is_writable_home_filesystem(fs),
                 "{fs} should be offered as a home disk"
