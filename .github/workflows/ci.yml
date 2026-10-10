@@ -115,3 +115,10 @@ jobs:
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The scan still runs and still fails on a real leak (exit 2); we
+          # only drop the SARIF artifact upload, which shares the 500 MB
+          # private-repo artifact quota with the E2E reports and made this
+          # job fail with "Artifact storage quota has been hit" once that
+          # filled up (run 38066499116). Code scanning is unavailable on a
+          # private repo without GHAS, so the artifact bought nothing.
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
