@@ -87,9 +87,17 @@ async fn load_applicable(
         .await
         .map_err(|e| format!("Failed to load user quota: {}", e))?;
     let (enabled, limit, used) = if upload {
-        (user_quota.upload_enabled, user_quota.upload_limit_bytes, user_quota.upload_used_bytes)
+        (
+            user_quota.upload_enabled,
+            user_quota.upload_limit_bytes,
+            user_quota.upload_used_bytes,
+        )
     } else {
-        (user_quota.download_enabled, user_quota.download_limit_bytes, user_quota.download_used_bytes)
+        (
+            user_quota.download_enabled,
+            user_quota.download_limit_bytes,
+            user_quota.download_used_bytes,
+        )
     };
     if enabled {
         applicable.push(ApplicableQuota {
@@ -101,10 +109,11 @@ async fn load_applicable(
     }
 
     let username_owned = username.to_string();
-    let group_names = tokio::task::spawn_blocking(move || GroupService::get_user_groups(&username_owned))
-        .await
-        .map_err(|e| format!("Failed to resolve group membership: {}", e))?
-        .unwrap_or_default();
+    let group_names =
+        tokio::task::spawn_blocking(move || GroupService::get_user_groups(&username_owned))
+            .await
+            .map_err(|e| format!("Failed to resolve group membership: {}", e))?
+            .unwrap_or_default();
 
     for group_name in group_names {
         let group_quota = repo
@@ -112,9 +121,17 @@ async fn load_applicable(
             .await
             .map_err(|e| format!("Failed to load group quota for '{}': {}", group_name, e))?;
         let (enabled, limit, used) = if upload {
-            (group_quota.upload_enabled, group_quota.upload_limit_bytes, group_quota.upload_used_bytes)
+            (
+                group_quota.upload_enabled,
+                group_quota.upload_limit_bytes,
+                group_quota.upload_used_bytes,
+            )
         } else {
-            (group_quota.download_enabled, group_quota.download_limit_bytes, group_quota.download_used_bytes)
+            (
+                group_quota.download_enabled,
+                group_quota.download_limit_bytes,
+                group_quota.download_used_bytes,
+            )
         };
         if enabled {
             applicable.push(ApplicableQuota {
@@ -164,14 +181,18 @@ pub async fn record_usage(
     let repo = TransferQuotaRepository::new(pool);
     for q in quotas {
         let result = if upload {
-            repo.add_upload_usage(q.subject_type, &q.subject_name, bytes as i64).await
+            repo.add_upload_usage(q.subject_type, &q.subject_name, bytes as i64)
+                .await
         } else {
-            repo.add_download_usage(q.subject_type, &q.subject_name, bytes as i64).await
+            repo.add_download_usage(q.subject_type, &q.subject_name, bytes as i64)
+                .await
         };
         if let Err(e) = result {
             tracing::warn!(
                 "Failed to record transfer quota usage for {} '{}': {}",
-                q.subject_type, q.subject_name, e
+                q.subject_type,
+                q.subject_name,
+                e
             );
         }
     }
@@ -194,14 +215,18 @@ pub async fn refund_usage(
     for q in quotas {
         let delta = -(bytes as i64);
         let result = if upload {
-            repo.add_upload_usage(q.subject_type, &q.subject_name, delta).await
+            repo.add_upload_usage(q.subject_type, &q.subject_name, delta)
+                .await
         } else {
-            repo.add_download_usage(q.subject_type, &q.subject_name, delta).await
+            repo.add_download_usage(q.subject_type, &q.subject_name, delta)
+                .await
         };
         if let Err(e) = result {
             tracing::warn!(
                 "Failed to refund transfer quota usage for {} '{}': {}",
-                q.subject_type, q.subject_name, e
+                q.subject_type,
+                q.subject_name,
+                e
             );
         }
     }
@@ -239,7 +264,9 @@ pub async fn acquire_quota_locks(quotas: &[ApplicableQuota]) -> QuotaLockGuard {
     for key in keys {
         let lock = {
             let mut map = QUOTA_LOCKS.lock();
-            map.entry(key).or_insert_with(|| Arc::new(AsyncMutex::new(()))).clone()
+            map.entry(key)
+                .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+                .clone()
         };
         guards.push(lock.lock_owned().await);
     }

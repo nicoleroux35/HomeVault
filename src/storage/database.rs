@@ -112,11 +112,9 @@ impl Database {
         let mut tx = self.pool.begin().await?;
 
         // Bootstrap: create applied-migrations table if it doesn't exist.
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS _hv_migrations (name TEXT PRIMARY KEY)",
-        )
-        .execute(tx.as_mut())
-        .await?;
+        sqlx::query("CREATE TABLE IF NOT EXISTS _hv_migrations (name TEXT PRIMARY KEY)")
+            .execute(tx.as_mut())
+            .await?;
 
         let mut entries: Vec<_> = MIGRATIONS_DIR
             .files()
@@ -133,12 +131,11 @@ impl Database {
                 .unwrap_or_default();
 
             // Skip if already applied.
-            let already_applied: Option<(String,)> = sqlx::query_as(
-                "SELECT name FROM _hv_migrations WHERE name = ?",
-            )
-            .bind(&filename)
-            .fetch_optional(tx.as_mut())
-            .await?;
+            let already_applied: Option<(String,)> =
+                sqlx::query_as("SELECT name FROM _hv_migrations WHERE name = ?")
+                    .bind(&filename)
+                    .fetch_optional(tx.as_mut())
+                    .await?;
 
             if already_applied.is_some() {
                 tracing::debug!("Skipping already-applied migration: {}", filename);
@@ -194,13 +191,12 @@ impl Database {
             .await?;
 
         // Step 2: Add role_id column only if it doesn't already exist.
-        let role_id_exists: bool = sqlx::query(
-            "SELECT count(*) FROM pragma_table_info('users') WHERE name = 'role_id'",
-        )
-        .fetch_one(tx.as_mut())
-        .await
-        .map(|row| row.get::<i64, _>(0) > 0)
-        .unwrap_or(false);
+        let role_id_exists: bool =
+            sqlx::query("SELECT count(*) FROM pragma_table_info('users') WHERE name = 'role_id'")
+                .fetch_one(tx.as_mut())
+                .await
+                .map(|row| row.get::<i64, _>(0) > 0)
+                .unwrap_or(false);
 
         if !role_id_exists {
             sqlx::query("ALTER TABLE users ADD COLUMN role_id INTEGER NOT NULL DEFAULT 1")
@@ -214,13 +210,12 @@ impl Database {
         }
 
         // Step 3: Recreate users table if old `role` column still exists.
-        let role_column_exists: bool = sqlx::query(
-            "SELECT count(*) FROM pragma_table_info('users') WHERE name = 'role'",
-        )
-        .fetch_one(tx.as_mut())
-        .await
-        .map(|row| row.get::<i64, _>(0) > 0)
-        .unwrap_or(false);
+        let role_column_exists: bool =
+            sqlx::query("SELECT count(*) FROM pragma_table_info('users') WHERE name = 'role'")
+                .fetch_one(tx.as_mut())
+                .await
+                .map(|row| row.get::<i64, _>(0) > 0)
+                .unwrap_or(false);
 
         if role_column_exists {
             sqlx::query("ALTER TABLE users RENAME TO _users_old_005")
@@ -253,7 +248,9 @@ impl Database {
                 .await?;
         }
 
-        tx.commit().await.map_err(|e| DbError::Migration(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| DbError::Migration(e.to_string()))?;
         tracing::info!("Applied migration: 005_roles");
         Ok(())
     }
@@ -440,16 +437,18 @@ impl Database {
         if !user_exists {
             // Create Linux user with home directory
             tracing::info!("Creating Linux user '{}' for admin access", username);
+            let home_path = crate::config::paths::user_home_path(username);
+            let home = home_path.to_string_lossy();
             let output = tokio::process::Command::new("sudo")
                 .arg("useradd")
                 .args([
-                    "-m",                    // Create home directory
+                    "-m", // Create home directory
                     "-d",
-                    &crate::config::paths::user_home_path(username)
-                        .to_string_lossy()
-                        .into_owned(),       // Home under /home/homevault/{user}
-                    "-s", "/bin/bash",       // Set shell to bash
-                    "-G", ADMIN_GROUP_NAME,  // Add to admin group
+                    home.as_ref(), // Home under /home/homevault/{user}
+                    "-s",
+                    "/bin/bash", // Set shell to bash
+                    "-G",
+                    ADMIN_GROUP_NAME, // Add to admin group
                     username,
                 ])
                 .output()
@@ -460,7 +459,11 @@ impl Database {
                 tracing::info!("Created Linux user '{}' with home directory", username);
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                tracing::warn!("Failed to create Linux user '{}': {}. Terminal access may be limited.", username, stderr);
+                tracing::warn!(
+                    "Failed to create Linux user '{}': {}. Terminal access may be limited.",
+                    username,
+                    stderr
+                );
                 // Don't fail - user can still use HomeVault without Linux account
                 return Ok(());
             }
@@ -601,8 +604,12 @@ impl Database {
             return Ok(());
         }
 
-        let uid_str = String::from_utf8_lossy(&uid_output.stdout).trim().to_string();
-        let gid_str = String::from_utf8_lossy(&gid_output.stdout).trim().to_string();
+        let uid_str = String::from_utf8_lossy(&uid_output.stdout)
+            .trim()
+            .to_string();
+        let gid_str = String::from_utf8_lossy(&gid_output.stdout)
+            .trim()
+            .to_string();
 
         // Ensure ownership is correct
         let output = tokio::process::Command::new("chown")

@@ -5,9 +5,9 @@
 //! enabled in `cache_settings`).
 
 use crate::cache::run_mover;
+use crate::restic_scheduler::compute_next_run;
 use crate::sse::ProgressEmitter;
 use crate::storage::cache_repo::CacheRepository;
-use crate::restic_scheduler::compute_next_run;
 use chrono::Utc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -42,9 +42,7 @@ async fn run_due(state: &Arc<crate::handlers::AppState>) -> Result<(), String> {
         .map(|d| d.with_timezone(&Utc))
         .unwrap_or_else(|| now - chrono::Duration::days(2));
 
-    let next = compute_next_run(&settings.mover_cron, after)
-        .ok()
-        .flatten();
+    let next = compute_next_run(&settings.mover_cron, after).ok().flatten();
 
     let should_run = match next {
         Some(n) => n <= now,

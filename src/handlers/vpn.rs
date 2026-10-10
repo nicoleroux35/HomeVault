@@ -1,12 +1,16 @@
-use axum::{extract::{Path, State}, http::HeaderMap, Json, Router};
+use axum::{
+    extract::{Path, State},
+    http::HeaderMap,
+    Json, Router,
+};
 use serde::{Deserialize, Serialize};
 
-use crate::vpn as vpn_mod;
 use crate::handlers::AppStateArc;
 use crate::storage::vpn_peer_repo::{VpnPeerRepository, VpnWireGuardPeer};
+use crate::vpn as vpn_mod;
 
 // Re-export VPN types for convenience
-pub use crate::vpn::{VpnConnection, VpnType, VpnStatus, OpenVPNConfig, VpnCapabilities};
+pub use crate::vpn::{OpenVPNConfig, VpnCapabilities, VpnConnection, VpnStatus, VpnType};
 
 // ---------------------------------------------------------------------------
 // API Types
@@ -141,8 +145,7 @@ fn sanitize_name(name: &str) -> Result<String, (axum::http::StatusCode, Json<Api
             axum::http::StatusCode::BAD_REQUEST,
             Json(ApiError {
                 success: false,
-                error: "Connection name may only contain letters, numbers, '_' and '-'"
-                    .to_string(),
+                error: "Connection name may only contain letters, numbers, '_' and '-'".to_string(),
             }),
         ));
     }
@@ -180,8 +183,17 @@ fn ok(message: String) -> Json<ApiSuccess> {
     })
 }
 
-fn err(status: axum::http::StatusCode, message: String) -> (axum::http::StatusCode, Json<ApiError>) {
-    (status, Json(ApiError { success: false, error: message }))
+fn err(
+    status: axum::http::StatusCode,
+    message: String,
+) -> (axum::http::StatusCode, Json<ApiError>) {
+    (
+        status,
+        Json(ApiError {
+            success: false,
+            error: message,
+        }),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -233,7 +245,8 @@ pub async fn handle_vpn_get(
 ) -> HandlerResult {
     let _username = require_admin(&state, &headers).await?;
 
-    let id = sanitize_name(&id).map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e.1.0.error))?;
+    let id =
+        sanitize_name(&id).map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e.1 .0.error))?;
 
     let connection = vpn_mod::get_vpn_connection(&id).ok_or_else(|| {
         err(
@@ -352,7 +365,10 @@ pub async fn handle_wg_peer_create(
         // that back rather than leaving an unregistered, unrevokable peer
         // attached to the server.
         let _ = vpn_mod::revoke_wireguard_peer(&provisioned.public_key);
-        return Err(err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+        return Err(err(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            e.to_string(),
+        ));
     }
 
     crate::events::log_event(format!(
@@ -387,16 +403,18 @@ pub async fn handle_wg_peer_config(
         .find_by_id(&id)
         .await
         .map_err(|e| err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| err(axum::http::StatusCode::NOT_FOUND, "Device not found".to_string()))?;
+        .ok_or_else(|| {
+            err(
+                axum::http::StatusCode::NOT_FOUND,
+                "Device not found".to_string(),
+            )
+        })?;
 
     // Regenerate the full client config from stored keys + live server status.
-    let client_config = vpn_mod::get_wireguard_peer_config(
-        &peer.peer_ip,
-        &peer.private_key,
-        &peer.preshared_key,
-    )
-    .await
-    .map_err(|e| err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let client_config =
+        vpn_mod::get_wireguard_peer_config(&peer.peer_ip, &peer.private_key, &peer.preshared_key)
+            .await
+            .map_err(|e| err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     Ok(Json(ApiSuccess {
         success: true,
@@ -423,7 +441,12 @@ pub async fn handle_wg_peer_revoke(
         .find_by_id(&id)
         .await
         .map_err(|e| err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| err(axum::http::StatusCode::NOT_FOUND, "Device not found".to_string()))?;
+        .ok_or_else(|| {
+            err(
+                axum::http::StatusCode::NOT_FOUND,
+                "Device not found".to_string(),
+            )
+        })?;
 
     vpn_mod::revoke_wireguard_peer(&peer.public_key)
         .map_err(|e| err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -446,7 +469,7 @@ pub async fn handle_openvpn_create(
 ) -> HandlerResult {
     let username = require_admin(&state, &headers).await?;
     let name = sanitize_name(&request.name)
-        .map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e.1.0.error))?;
+        .map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e.1 .0.error))?;
 
     let config_path = vpn_mod::save_openvpn_config(&name, &request.config_content)
         .map_err(|e| err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -472,7 +495,8 @@ pub async fn handle_openvpn_start(
     Json(payload): Json<serde_json::Value>,
 ) -> HandlerResult {
     let username = require_admin(&state, &headers).await?;
-    let name = sanitize_name(&name).map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e.1.0.error))?;
+    let name =
+        sanitize_name(&name).map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e.1 .0.error))?;
 
     let config_file = format!("/etc/openvpn/{}.ovpn", name);
 
@@ -491,7 +515,8 @@ pub async fn handle_openvpn_start(
         auth_user_pass,
     };
 
-    vpn_mod::start_openvpn_connection(&config).map_err(|e| err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    vpn_mod::start_openvpn_connection(&config)
+        .map_err(|e| err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     crate::events::log_event(format!(
         "Admin '{}' started OpenVPN connection '{}'",
@@ -507,9 +532,11 @@ pub async fn handle_openvpn_stop(
     Path(name): Path<String>,
 ) -> HandlerResult {
     let username = require_admin(&state, &headers).await?;
-    let name = sanitize_name(&name).map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e.1.0.error))?;
+    let name =
+        sanitize_name(&name).map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e.1 .0.error))?;
 
-    vpn_mod::stop_openvpn_connection(&name).map_err(|e| err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    vpn_mod::stop_openvpn_connection(&name)
+        .map_err(|e| err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     crate::events::log_event(format!(
         "Admin '{}' stopped OpenVPN connection '{}'",
@@ -525,9 +552,11 @@ pub async fn handle_openvpn_delete(
     Path(name): Path<String>,
 ) -> HandlerResult {
     let username = require_admin(&state, &headers).await?;
-    let name = sanitize_name(&name).map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e.1.0.error))?;
+    let name =
+        sanitize_name(&name).map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e.1 .0.error))?;
 
-    vpn_mod::delete_openvpn_connection(&name).map_err(|e| err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    vpn_mod::delete_openvpn_connection(&name)
+        .map_err(|e| err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     crate::events::log_event_warn(format!(
         "Admin '{}' deleted OpenVPN connection '{}'",
@@ -548,15 +577,36 @@ pub fn create_vpn_router(state: AppStateArc) -> Router {
         .route("/connections", axum::routing::get(handle_vpn_list))
         .route("/connections/{id}", axum::routing::get(handle_vpn_get))
         // WireGuard (server + provisioned peers)
-        .route("/wireguard/server", axum::routing::get(handle_wg_server_status))
+        .route(
+            "/wireguard/server",
+            axum::routing::get(handle_wg_server_status),
+        )
         .route("/wireguard/peers", axum::routing::get(handle_wg_peers_list))
-        .route("/wireguard/peers", axum::routing::post(handle_wg_peer_create))
-        .route("/wireguard/peers/{id}", axum::routing::get(handle_wg_peer_config))
-        .route("/wireguard/peers/{id}", axum::routing::delete(handle_wg_peer_revoke))
+        .route(
+            "/wireguard/peers",
+            axum::routing::post(handle_wg_peer_create),
+        )
+        .route(
+            "/wireguard/peers/{id}",
+            axum::routing::get(handle_wg_peer_config),
+        )
+        .route(
+            "/wireguard/peers/{id}",
+            axum::routing::delete(handle_wg_peer_revoke),
+        )
         // OpenVPN
         .route("/openvpn", axum::routing::post(handle_openvpn_create))
-        .route("/openvpn/{name}/start", axum::routing::post(handle_openvpn_start))
-        .route("/openvpn/{name}/stop", axum::routing::post(handle_openvpn_stop))
-        .route("/openvpn/{name}", axum::routing::delete(handle_openvpn_delete))
+        .route(
+            "/openvpn/{name}/start",
+            axum::routing::post(handle_openvpn_start),
+        )
+        .route(
+            "/openvpn/{name}/stop",
+            axum::routing::post(handle_openvpn_stop),
+        )
+        .route(
+            "/openvpn/{name}",
+            axum::routing::delete(handle_openvpn_delete),
+        )
         .with_state(state)
 }

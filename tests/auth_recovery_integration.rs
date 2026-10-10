@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the numeric recovery-code password-reset flow.
 //!
 //! Fresh in-memory SQLite + embedded migrations per test, minimal Axum router,
@@ -38,7 +41,11 @@ async fn setup_db() -> Database {
     db
 }
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -155,7 +162,11 @@ async fn generate_returns_eight_groups_and_rejects_duplicate() {
 
     let resp = app
         .clone()
-        .oneshot(post_auth("/api/auth/recovery-code", &session.token, json!({})))
+        .oneshot(post_auth(
+            "/api/auth/recovery-code",
+            &session.token,
+            json!({}),
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -163,12 +174,18 @@ async fn generate_returns_eight_groups_and_rejects_duplicate() {
     let code = v["data"]["recovery_code"].as_str().unwrap().to_string();
     let groups: Vec<&str> = code.split(' ').collect();
     assert_eq!(groups.len(), 8);
-    assert!(groups.iter().all(|g| g.len() == 4 && g.chars().all(|c| c.is_ascii_digit())));
+    assert!(groups
+        .iter()
+        .all(|g| g.len() == 4 && g.chars().all(|c| c.is_ascii_digit())));
 
     // Second call without ?regenerate must be refused.
     let resp = app
         .clone()
-        .oneshot(post_auth("/api/auth/recovery-code", &session.token, json!({})))
+        .oneshot(post_auth(
+            "/api/auth/recovery-code",
+            &session.token,
+            json!({}),
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -244,8 +261,16 @@ async fn reset_with_recovery_code_changes_password_and_kills_sessions() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // Old password no longer works, new one does.
-    assert!(state.auth.authenticate("carol", "OldPassw0rd", "127.0.0.1", None).await.is_err());
-    assert!(state.auth.authenticate("carol", "BrandNewP4ss", "127.0.0.1", None).await.is_ok());
+    assert!(state
+        .auth
+        .authenticate("carol", "OldPassw0rd", "127.0.0.1", None)
+        .await
+        .is_err());
+    assert!(state
+        .auth
+        .authenticate("carol", "BrandNewP4ss", "127.0.0.1", None)
+        .await
+        .is_ok());
 
     // Prior session was invalidated.
     assert!(state.auth.get_session(&session.token).await.is_err());
@@ -268,7 +293,11 @@ async fn reset_rejects_weak_password() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let v = body_json(resp).await;
     assert!(
-        v["message"].as_str().unwrap().to_lowercase().contains("security requirements"),
+        v["message"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("security requirements"),
         "unexpected message: {}",
         v["message"]
     );
@@ -303,7 +332,11 @@ async fn reset_rejects_a_recently_used_password() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let v = body_json(resp).await;
     assert!(
-        v["message"].as_str().unwrap().to_lowercase().contains("recently"),
+        v["message"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("recently"),
         "unexpected message: {}",
         v["message"]
     );
@@ -329,5 +362,9 @@ async fn reset_rejects_wrong_code_generically() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     // Password must be unchanged.
-    assert!(state.auth.authenticate("erin", "OldPassw0rd", "127.0.0.1", None).await.is_ok());
+    assert!(state
+        .auth
+        .authenticate("erin", "OldPassw0rd", "127.0.0.1", None)
+        .await
+        .is_ok());
 }

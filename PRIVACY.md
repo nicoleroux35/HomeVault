@@ -79,6 +79,8 @@ or alters a feature touching personal data.
 | `ipwho.is` | Connection popover, best-effort | Row hidden on any failure; browser-side | Server's public IP | Show approximate server location |
 | `api.ipify.org` / `ifconfig.me` / `icanhazip.com` | Network → Diagnostics page, on demand | Only when the admin opens diagnostics | Server's outbound request | Discover the server's public IP |
 | Docker Hub / GHCR registry APIs | Docker app + app-catalog update detection | Only when Docker features are used | Image names being queried | Container image search & digest comparison (read-only, no pull) |
+| `images.linuxcontainers.org` | Virtual Machines app — image download, on demand | Only when the admin downloads a VM image | Server's outbound request | Linux container image downloads |
+| `fedorapeople.org` (virtio-win ISO) | Virtual Machines app — driver ISO download, on demand | Only when the admin clicks the VirtIO driver download | Server's outbound request | Windows VM driver ISO |
 | SMTP server (admin-configured) | Notification emails | Off until the admin configures it | Alert content, recipient address | Email notifications |
 | `webhook_url` (admin-configured) | Notification webhooks | Off until the admin sets a URL | Alert JSON | Discord/Slack-style notifications |
 

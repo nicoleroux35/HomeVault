@@ -88,17 +88,7 @@ impl CacheRepository {
     }
 
     /// Insert or replace the singleton settings row.
-    pub async fn save_settings(
-        &self,
-        cache_pool: Option<&str>,
-        mover_cron: &str,
-        mover_enabled: bool,
-        min_free_percent: u32,
-        mover_last_run_at: Option<&str>,
-        mover_age_days: u32,
-        mover_excludes: Option<&str>,
-        mover_bwlimit: u32,
-    ) -> Result<(), sqlx::Error> {
+    pub async fn save_settings(&self, settings: &CacheSettings) -> Result<(), sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         sqlx::query(
             "INSERT INTO cache_settings (id, cache_pool, mover_cron, mover_enabled, min_free_percent, mover_last_run_at, mover_age_days, mover_excludes, mover_bwlimit, updated_at)
@@ -114,14 +104,14 @@ impl CacheRepository {
                 mover_bwlimit = excluded.mover_bwlimit,
                 updated_at = excluded.updated_at",
         )
-        .bind(cache_pool)
-        .bind(mover_cron)
-        .bind(mover_enabled as i64)
-        .bind(min_free_percent as i64)
-        .bind(mover_last_run_at)
-        .bind(mover_age_days as i64)
-        .bind(mover_excludes)
-        .bind(mover_bwlimit as i64)
+        .bind(settings.cache_pool.as_deref())
+        .bind(settings.mover_cron.as_str())
+        .bind(settings.mover_enabled as i64)
+        .bind(settings.min_free_percent as i64)
+        .bind(settings.mover_last_run_at.as_deref())
+        .bind(settings.mover_age_days as i64)
+        .bind(settings.mover_excludes.as_deref())
+        .bind(settings.mover_bwlimit as i64)
         .bind(&now)
         .execute(self.pool.as_ref())
         .await?;
@@ -240,14 +230,12 @@ impl CacheRepository {
     pub async fn create_run(&self, status: &str) -> Result<String, sqlx::Error> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        sqlx::query(
-            "INSERT INTO cache_mover_runs (id, status, started_at) VALUES (?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(status)
-        .bind(&now)
-        .execute(self.pool.as_ref())
-        .await?;
+        sqlx::query("INSERT INTO cache_mover_runs (id, status, started_at) VALUES (?, ?, ?)")
+            .bind(&id)
+            .bind(status)
+            .bind(&now)
+            .execute(self.pool.as_ref())
+            .await?;
         Ok(id)
     }
 

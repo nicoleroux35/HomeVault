@@ -29,7 +29,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::shares::{SharesService, ShareType};
+use crate::shares::{ShareType, SharesService};
 
 /// The name HomeVault publishes itself as — the `.local` address is always
 /// `<MDNS_HOSTNAME>.local`, independent of the OS hostname.
@@ -157,7 +157,14 @@ pub fn ensure_host_name(existing: &str, host_name: &str) -> Option<String> {
         if t.starts_with('[') && t.ends_with(']') {
             in_server = t.eq_ignore_ascii_case("[server]");
             has_server |= in_server;
-            classified.push((if in_server { Kind::ServerHeader } else { Kind::Other }, line));
+            classified.push((
+                if in_server {
+                    Kind::ServerHeader
+                } else {
+                    Kind::Other
+                },
+                line,
+            ));
             continue;
         }
         let key = t.trim_start_matches('#').trim_start();
@@ -288,16 +295,34 @@ pub fn detect_services() -> Vec<AdvertisedService> {
                 txt: vec![],
             }),
             ShareType::Ftp if unit_active("vsftpd") => {
-                let port = SharesService::get_ftp_config().map(|c| c.port).unwrap_or(21);
-                out.push(AdvertisedService { svc_type: "_ftp._tcp", port, txt: vec![] });
+                let port = SharesService::get_ftp_config()
+                    .map(|c| c.port)
+                    .unwrap_or(21);
+                out.push(AdvertisedService {
+                    svc_type: "_ftp._tcp",
+                    port,
+                    txt: vec![],
+                });
             }
             ShareType::Webdav if unit_active("homevault-webdav") => {
-                let port = SharesService::get_webdav_config().map(|c| c.port).unwrap_or(8082);
-                out.push(AdvertisedService { svc_type: "_webdav._tcp", port, txt: vec!["path=/".into()] });
+                let port = SharesService::get_webdav_config()
+                    .map(|c| c.port)
+                    .unwrap_or(8082);
+                out.push(AdvertisedService {
+                    svc_type: "_webdav._tcp",
+                    port,
+                    txt: vec!["path=/".into()],
+                });
             }
             ShareType::Sftp if unit_active("homevault-sftp") => {
-                let port = SharesService::get_sftp_config().map(|c| c.port).unwrap_or(2222);
-                out.push(AdvertisedService { svc_type: "_sftp-ssh._tcp", port, txt: vec![] });
+                let port = SharesService::get_sftp_config()
+                    .map(|c| c.port)
+                    .unwrap_or(2222);
+                out.push(AdvertisedService {
+                    svc_type: "_sftp-ssh._tcp",
+                    port,
+                    txt: vec![],
+                });
             }
             _ => {}
         }
@@ -490,9 +515,21 @@ mod tests {
     #[test]
     fn test_render_service_file_includes_shares_and_ports() {
         let svcs = vec![
-            AdvertisedService { svc_type: "_smb._tcp", port: 445, txt: vec![] },
-            AdvertisedService { svc_type: "_sftp-ssh._tcp", port: 2222, txt: vec![] },
-            AdvertisedService { svc_type: "_webdav._tcp", port: 8082, txt: vec!["path=/".into()] },
+            AdvertisedService {
+                svc_type: "_smb._tcp",
+                port: 445,
+                txt: vec![],
+            },
+            AdvertisedService {
+                svc_type: "_sftp-ssh._tcp",
+                port: 2222,
+                txt: vec![],
+            },
+            AdvertisedService {
+                svc_type: "_webdav._tcp",
+                port: 8082,
+                txt: vec!["path=/".into()],
+            },
         ];
         let xml = render_service_file(9000, &svcs);
         assert!(xml.contains("<type>_smb._tcp</type>"));

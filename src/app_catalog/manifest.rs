@@ -183,7 +183,10 @@ mod tests {
 
     #[test]
     fn test_reject_bad_version_and_id() {
-        assert!(Manifest::parse(&MINIMAL.replace("manifest_version = 1", "manifest_version = 2")).is_err());
+        assert!(
+            Manifest::parse(&MINIMAL.replace("manifest_version = 1", "manifest_version = 2"))
+                .is_err()
+        );
         assert!(Manifest::parse(&MINIMAL.replace(r#"id = "demo""#, r#"id = "../evil""#)).is_err());
     }
 }

@@ -78,7 +78,13 @@ pub struct ProgressEvent {
 }
 
 impl ProgressEvent {
-    pub fn new(job_id: String, job_type: JobType, state: ProgressState, progress: f64, message: &str) -> Self {
+    pub fn new(
+        job_id: String,
+        job_type: JobType,
+        state: ProgressState,
+        progress: f64,
+        message: &str,
+    ) -> Self {
         Self {
             job_id,
             job_type,
@@ -292,7 +298,8 @@ impl ProgressManager {
 
     /// Get all tracked jobs (ID, type, state).
     pub fn list_active_jobs(&self) -> Vec<(String, JobType, ProgressState)> {
-        self.jobs.read()
+        self.jobs
+            .read()
             .iter()
             .map(|(id, job)| (id.clone(), job.job_type.clone(), effective_state(job)))
             .collect()
@@ -302,7 +309,8 @@ impl ProgressManager {
     /// live state, the last-reported percentage (or `None` when indeterminate),
     /// the latest message, byte counters, speed, and the owning username.
     pub fn list_activity(&self) -> Vec<ActivitySnapshot> {
-        self.jobs.read()
+        self.jobs
+            .read()
             .iter()
             .map(|(id, job)| {
                 let last = job.last_event.lock();
@@ -331,7 +339,10 @@ impl ProgressManager {
 
     /// Subscribe to progress updates for a job.
     pub fn get_receiver(&self, job_id: &str) -> Option<broadcast::Receiver<ProgressEvent>> {
-        self.jobs.read().get(job_id).map(|job| job.sender.subscribe())
+        self.jobs
+            .read()
+            .get(job_id)
+            .map(|job| job.sender.subscribe())
     }
 
     /// Remove completed/failed jobs older than `max_age` (call periodically).
@@ -364,7 +375,7 @@ pub fn create_progress_manager() -> Arc<ProgressManager> {
 }
 
 /// Global progress manager instance
-pub static PROGRESS_MANAGER: std::sync::LazyLock<Arc<ProgressManager>> = 
+pub static PROGRESS_MANAGER: std::sync::LazyLock<Arc<ProgressManager>> =
     std::sync::LazyLock::new(create_progress_manager);
 
 /// Convenience wrapper around the global [`PROGRESS_MANAGER`] singleton.
@@ -408,7 +419,14 @@ impl ProgressEmitter {
         bytes_total: Option<u64>,
         speed_bps: Option<u64>,
     ) -> bool {
-        PROGRESS_MANAGER.emit_progress_extended(job_id, progress, message, bytes_processed, bytes_total, speed_bps)
+        PROGRESS_MANAGER.emit_progress_extended(
+            job_id,
+            progress,
+            message,
+            bytes_processed,
+            bytes_total,
+            speed_bps,
+        )
     }
 
     /// Mark job as completed
@@ -440,7 +458,9 @@ mod tests {
     use super::*;
 
     fn snap<'a>(list: &'a [ActivitySnapshot], id: &str) -> &'a ActivitySnapshot {
-        list.iter().find(|s| s.id == id).expect("snapshot for job id")
+        list.iter()
+            .find(|s| s.id == id)
+            .expect("snapshot for job id")
     }
 
     #[test]
@@ -530,7 +550,10 @@ mod tests {
             "Starting copy",
             Some("alice".to_string()),
         );
-        assert_eq!(snap(&m.list_activity(), &id).owner.as_deref(), Some("alice"));
+        assert_eq!(
+            snap(&m.list_activity(), &id).owner.as_deref(),
+            Some("alice")
+        );
     }
 
     #[test]

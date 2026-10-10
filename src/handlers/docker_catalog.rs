@@ -7,8 +7,8 @@
 
 use crate::app_catalog::{self, store as app_store};
 use crate::compose::ComposeManager;
-use crate::handlers::AppState;
 use crate::handlers::admin_guard::{require_admin, require_auth};
+use crate::handlers::AppState;
 use crate::storage::AppStoreRepository;
 use crate::utils::ResponseHelper;
 use axum::{
@@ -124,7 +124,9 @@ pub async fn proxy_restore_entries() -> Vec<crate::app_proxy::RestoreEntry> {
         };
         for entry in entries.flatten() {
             let key = entry.file_name().to_string_lossy().to_string();
-            let Some(m) = read_install_marker(&key) else { continue };
+            let Some(m) = read_install_marker(&key) else {
+                continue;
+            };
             // Only restore for apps whose compose project still exists.
             if ComposeManager::get_project(&key).is_err() {
                 continue;
@@ -162,7 +164,10 @@ pub struct InstallCatalogAppRequest {
 
 /// Lists every catalog app (built-in + enabled stores) with its live
 /// install / run state.
-pub async fn handle_catalog_list(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_catalog_list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -345,7 +350,12 @@ pub async fn handle_catalog_install(
 
     let (rendered, data_dir) = match app_catalog::render(&app, port) {
         Ok(v) => v,
-        Err(e) => return ResponseHelper::json_error(format!("Failed to render {}: {}", app.manifest.name, e)),
+        Err(e) => {
+            return ResponseHelper::json_error(format!(
+                "Failed to render {}: {}",
+                app.manifest.name, e
+            ))
+        }
     };
 
     if let Err(e) = std::fs::create_dir_all(&data_dir) {
@@ -396,8 +406,7 @@ pub async fn handle_catalog_install(
         },
     );
 
-    crate::sse::PROGRESS_MANAGER
-        .complete_job(&job_id, &format!("{} installed", app.manifest.name));
+    crate::sse::PROGRESS_MANAGER.complete_job(&job_id, &format!("{} installed", app.manifest.name));
 
     crate::events::log_event(format!(
         "Admin '{}' installed catalog app '{}' from store '{}' (port: {})",
@@ -434,10 +443,9 @@ pub async fn handle_catalog_uninstall(
             ));
             ResponseHelper::json_success(format!("{} uninstalled", app.manifest.name))
         }
-        Err(e) => ResponseHelper::json_error(format!(
-            "Failed to uninstall {}: {}",
-            app.manifest.name, e
-        )),
+        Err(e) => {
+            ResponseHelper::json_error(format!("Failed to uninstall {}: {}", app.manifest.name, e))
+        }
     }
 }
 
@@ -577,7 +585,10 @@ pub struct AddStoreRequest {
     pub git_url: String,
 }
 
-pub async fn handle_stores_list(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_stores_list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -645,10 +656,7 @@ pub async fn handle_store_add(
     };
 
     let repo = AppStoreRepository::new(state.db.pool());
-    if let Err(e) = repo
-        .add(&store_id, &desc.name, &git_url, &admin)
-        .await
-    {
+    if let Err(e) = repo.add(&store_id, &desc.name, &git_url, &admin).await {
         let _ = std::fs::remove_dir_all(app_store::store_dir(&store_id));
         return ResponseHelper::json_error(format!("This store is already added ({})", e));
     }

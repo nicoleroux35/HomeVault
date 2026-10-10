@@ -1,6 +1,7 @@
 # Login / Authentication — Test Tasklist
 
-> Last validated: 2026-09-01 · Firefox · full re-run — Login E2E 93/93, backend all green
+> Last validated: 2026-09-01 · Firefox · full re-run — Login E2E 91 `test(` + 3 `test.slow` (94 runtime), backend all green
+> (count re-verified 2026-10-10; the spec was edited 2026-09-23 and not re-run since)
 
 ## Summary
 
@@ -8,7 +9,7 @@
 |-------|------|-------|--------|
 | Backend unit | `src/auth/tests.rs` + `src/auth/service.rs` (`base32_totp_tests`) | 9 | ✅ 9/9 |
 | Backend integration | `tests/login_integration.rs` | 66 | ✅ 66/66 |
-| Frontend E2E | `tests/e2e/login/login.spec.ts` | 93 | ✅ 93/93 |
+| Frontend E2E | `tests/e2e/login/login.spec.ts` | 91 `test(` + 3 `test.slow` = 94 runtime | ✅ last green 2026-09-01 |
 | Host-mutating (opt-in, `#[ignore]`) | `tests/login_pam_integration.rs` | 3 | ✅ 3/3 as root |
 | **Total** | | **171** | ✅ |
 
@@ -20,10 +21,11 @@ account. See the "Host-mutating opt-in tests" section.
 Setup-wizard concurrency is covered by `tests/setup_integration.rs`
 (`test_concurrent_setup_only_one_succeeds`).
 
-The auth service and handlers are a **frozen** area (see the root `CLAUDE.md`
-"Login / authentication — frozen" section). These tests only add coverage —
-no production file was changed. If a test starts failing because of a real
-product change, stop and report it rather than loosening the assertion.
+The auth service and handlers keep the **engineering invariants** in
+`CLAUDE.md` ("Auth, sessions, recovery codes") — no frozen-area registry
+since 2026-09-12. These tests only add coverage — no production file was
+changed. If a test starts failing because of a real product change, stop and
+report it rather than loosening the assertion.
 
 ---
 

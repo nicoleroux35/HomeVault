@@ -149,12 +149,29 @@ impl DiskService {
             }
             let size = Self::parse_size(fields.get("SIZE").map(String::as_str).unwrap_or("0"));
             let unknown = || "Unknown".to_string();
-            let vendor = fields.get("VENDOR").cloned().filter(|s| !s.is_empty()).unwrap_or_else(unknown);
-            let model = fields.get("MODEL").cloned().filter(|s| !s.is_empty()).unwrap_or_else(unknown);
-            let serial = fields.get("SERIAL").cloned().filter(|s| !s.is_empty()).unwrap_or_else(unknown);
-            let connection_type = fields.get("TRAN").cloned().filter(|s| !s.is_empty()).unwrap_or_else(unknown);
+            let vendor = fields
+                .get("VENDOR")
+                .cloned()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(unknown);
+            let model = fields
+                .get("MODEL")
+                .cloned()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(unknown);
+            let serial = fields
+                .get("SERIAL")
+                .cloned()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(unknown);
+            let connection_type = fields
+                .get("TRAN")
+                .cloned()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(unknown);
 
-            let (smart_status, read_errors, write_errors, bad_sectors) = Self::get_smart_details(&name).await;
+            let (smart_status, read_errors, write_errors, bad_sectors) =
+                Self::get_smart_details(&name).await;
             let temperature = Self::get_disk_temperature(&name).await.ok();
             let role = Self::detect_disk_role(&name).await;
 
@@ -267,7 +284,8 @@ impl DiskService {
     pub async fn list_raid_arrays() -> Result<Vec<RaidArray>, DiskError> {
         let mut arrays = Vec::new();
 
-        let mdadm_output = Command::new("sudo").arg("mdadm")
+        let mdadm_output = Command::new("sudo")
+            .arg("mdadm")
             .args(["--detail", "--scan"])
             .output()
             .await?;
@@ -386,10 +404,17 @@ impl DiskService {
         // `sudo mkdir`, not `std::fs::create_dir_all` — the mount point may be
         // under a root-owned directory (e.g. /mnt/) and the unprivileged
         // homevault process cannot create subdirectories there.
-        let mkdir_output = Command::new("sudo").arg("mkdir").args(["-p", mount_point]).output().await?;
+        let mkdir_output = Command::new("sudo")
+            .arg("mkdir")
+            .args(["-p", mount_point])
+            .output()
+            .await?;
         if !mkdir_output.status.success() {
             let stderr = String::from_utf8_lossy(&mkdir_output.stderr);
-            return Err(DiskError::Parse(format!("Failed to create mount point '{}': {}", mount_point, stderr)));
+            return Err(DiskError::Parse(format!(
+                "Failed to create mount point '{}': {}",
+                mount_point, stderr
+            )));
         }
         let output = Command::new("mount")
             .args(["-o", "uid=1000,gid=1000", device, mount_point])
@@ -417,10 +442,17 @@ impl DiskService {
     /// Mount a disk (including non-removable) at the given mount point.
     pub async fn mount_disk(&self, device: &str, mount_point: &str) -> Result<(), DiskError> {
         // `sudo mkdir`, not `std::fs::create_dir_all` — same reason as mount_removable_disk.
-        let mkdir_output = Command::new("sudo").arg("mkdir").args(["-p", mount_point]).output().await?;
+        let mkdir_output = Command::new("sudo")
+            .arg("mkdir")
+            .args(["-p", mount_point])
+            .output()
+            .await?;
         if !mkdir_output.status.success() {
             let stderr = String::from_utf8_lossy(&mkdir_output.stderr);
-            return Err(DiskError::Parse(format!("Failed to create mount point '{}': {}", mount_point, stderr)));
+            return Err(DiskError::Parse(format!(
+                "Failed to create mount point '{}': {}",
+                mount_point, stderr
+            )));
         }
         Command::new("mount")
             .args([device, mount_point])
@@ -518,7 +550,8 @@ impl DiskService {
     /// Detect the role of a disk by checking RAID membership, ZFS, Btrfs, and mount points.
     async fn detect_disk_role(device_name: &str) -> String {
         // Check if disk is part of a RAID array
-        if let Ok(mdadm_output) = Command::new("sudo").arg("mdadm")
+        if let Ok(mdadm_output) = Command::new("sudo")
+            .arg("mdadm")
             .args(["--examine", &format!("/dev/{}", device_name)])
             .output()
             .await
@@ -602,8 +635,11 @@ impl DiskService {
 
     /// Query `mdadm --detail` for array size and member device paths, and `df`
     /// (via the array's mount point, if any) for the actual used bytes.
-    async fn get_raid_detail(name: &str) -> Result<(u64, u64, Vec<String>, String, String), DiskError> {
-        let output = Command::new("sudo").arg("mdadm")
+    async fn get_raid_detail(
+        name: &str,
+    ) -> Result<(u64, u64, Vec<String>, String, String), DiskError> {
+        let output = Command::new("sudo")
+            .arg("mdadm")
             .args(["--detail", name])
             .output()
             .await?;
@@ -758,11 +794,17 @@ impl DiskService {
 
         // Validate name
         if name.is_empty() || name.len() > 32 {
-            return Err(DiskError::Parse("RAID name must be 1-32 characters".to_string()));
-        }
-        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
             return Err(DiskError::Parse(
-                "RAID name can only contain alphanumeric, dash and underscore characters".to_string()
+                "RAID name must be 1-32 characters".to_string(),
+            ));
+        }
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(DiskError::Parse(
+                "RAID name can only contain alphanumeric, dash and underscore characters"
+                    .to_string(),
             ));
         }
 
@@ -801,11 +843,18 @@ impl DiskService {
             args.push(device);
         }
 
-        let output = Command::new("sudo").arg("mdadm").args(&args).output().await?;
+        let output = Command::new("sudo")
+            .arg("mdadm")
+            .args(&args)
+            .output()
+            .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DiskError::Parse(format!("Failed to create RAID: {}", stderr)));
+            return Err(DiskError::Parse(format!(
+                "Failed to create RAID: {}",
+                stderr
+            )));
         }
 
         // Wait for array to be ready
@@ -840,9 +889,17 @@ impl DiskService {
     /// live array holding the member devices hostage. Best-effort — errors
     /// here are secondary to the original failure already being returned.
     async fn teardown_failed_array(raid_device: &str, devices: &[String]) {
-        let _ = Command::new("sudo").arg("mdadm").args(["--stop", raid_device]).output().await;
+        let _ = Command::new("sudo")
+            .arg("mdadm")
+            .args(["--stop", raid_device])
+            .output()
+            .await;
         for device in devices {
-            let _ = Command::new("sudo").arg("mdadm").args(["--zero-superblock", device]).output().await;
+            let _ = Command::new("sudo")
+                .arg("mdadm")
+                .args(["--zero-superblock", device])
+                .output()
+                .await;
         }
     }
 
@@ -862,7 +919,11 @@ impl DiskService {
 
         // `sudo mkdir`, not `tokio::fs::create_dir_all` — `/mnt` is root-owned
         // and the unprivileged homevault process cannot create subdirectories there.
-        let mkdir_output = Command::new("sudo").arg("mkdir").args(["-p", &mount_point]).output().await?;
+        let mkdir_output = Command::new("sudo")
+            .arg("mkdir")
+            .args(["-p", &mount_point])
+            .output()
+            .await?;
         if !mkdir_output.status.success() {
             let stderr = String::from_utf8_lossy(&mkdir_output.stderr);
             return Err(DiskError::Parse(format!(
@@ -891,15 +952,20 @@ impl DiskService {
         let marker = format!("# homevault-raid:{}", name);
 
         // Record the array so mdadm reassembles it automatically on boot.
-        if let Ok(scan_output) = Command::new("sudo").arg("mdadm")
+        if let Ok(scan_output) = Command::new("sudo")
+            .arg("mdadm")
             .args(["--detail", "--scan", raid_device])
             .output()
             .await
         {
             if scan_output.status.success() {
-                let array_line = String::from_utf8_lossy(&scan_output.stdout).trim().to_string();
+                let array_line = String::from_utf8_lossy(&scan_output.stdout)
+                    .trim()
+                    .to_string();
                 if !array_line.is_empty() {
-                    let _ = Self::append_marked_entry("/etc/mdadm/mdadm.conf", &marker, &array_line).await;
+                    let _ =
+                        Self::append_marked_entry("/etc/mdadm/mdadm.conf", &marker, &array_line)
+                            .await;
                 }
             }
         }
@@ -912,7 +978,9 @@ impl DiskService {
             .output()
             .await
         {
-            let uuid = String::from_utf8_lossy(&uuid_output.stdout).trim().to_string();
+            let uuid = String::from_utf8_lossy(&uuid_output.stdout)
+                .trim()
+                .to_string();
             if !uuid.is_empty() {
                 let fstab_line = format!(
                     "UUID={} {} {} defaults,nofail 0 2",
@@ -992,10 +1060,13 @@ impl DiskService {
             .spawn()
             .map_err(|e| DiskError::Parse(format!("Failed to spawn sudo tee: {}", e)))?;
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(content.as_bytes()).await
-                .map_err(|e| DiskError::Parse(format!("Failed to write to sudo tee stdin: {}", e)))?;
+            stdin.write_all(content.as_bytes()).await.map_err(|e| {
+                DiskError::Parse(format!("Failed to write to sudo tee stdin: {}", e))
+            })?;
         }
-        let output = child.wait_with_output().await
+        let output = child
+            .wait_with_output()
+            .await
             .map_err(|e| DiskError::Parse(format!("Failed to wait for sudo tee: {}", e)))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1011,11 +1082,17 @@ impl DiskService {
         devices: Vec<String>,
     ) -> Result<(), DiskError> {
         if name.is_empty() || name.len() > 32 {
-            return Err(DiskError::Parse("Pool name must be 1-32 characters".to_string()));
-        }
-        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
             return Err(DiskError::Parse(
-                "Pool name can only contain alphanumeric, dash and underscore characters".to_string()
+                "Pool name must be 1-32 characters".to_string(),
+            ));
+        }
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(DiskError::Parse(
+                "Pool name can only contain alphanumeric, dash and underscore characters"
+                    .to_string(),
             ));
         }
 
@@ -1073,7 +1150,10 @@ impl DiskService {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DiskError::Parse(format!("Failed to create ZFS pool: {}", stderr)));
+            return Err(DiskError::Parse(format!(
+                "Failed to create ZFS pool: {}",
+                stderr
+            )));
         }
 
         Ok(())
@@ -1090,7 +1170,12 @@ impl DiskService {
                 // ZFS is handled differently - it's a pool-based filesystem
                 return Self::create_zfs_pool(device).await;
             }
-            _ => return Err(DiskError::Parse(format!("Unsupported filesystem: {}", filesystem))),
+            _ => {
+                return Err(DiskError::Parse(format!(
+                    "Unsupported filesystem: {}",
+                    filesystem
+                )))
+            }
         };
 
         let mut args = vec!["-f"];
@@ -1104,11 +1189,18 @@ impl DiskService {
         // confirmed live against a device with realistic 660 root:disk
         // permissions). This is reached from the encryption feature to
         // format a freshly-opened /dev/mapper/* LUKS device.
-        let output = Command::new("sudo").arg(command).args(&args).output().await?;
+        let output = Command::new("sudo")
+            .arg(command)
+            .args(&args)
+            .output()
+            .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DiskError::Parse(format!("Failed to format device: {}", stderr)));
+            return Err(DiskError::Parse(format!(
+                "Failed to format device: {}",
+                stderr
+            )));
         }
 
         Ok(())
@@ -1129,7 +1221,10 @@ impl DiskService {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DiskError::Parse(format!("Failed to create ZFS pool: {}", stderr)));
+            return Err(DiskError::Parse(format!(
+                "Failed to create ZFS pool: {}",
+                stderr
+            )));
         }
 
         Ok(())
@@ -1144,8 +1239,12 @@ impl DiskService {
         };
 
         // Check if the RAID exists before trying to delete
-        let raid_exists = std::path::Path::new(&device).exists() || 
-            Command::new("sudo").arg("mdadm").args(["--detail", "--scan"]).output().await
+        let raid_exists = std::path::Path::new(&device).exists()
+            || Command::new("sudo")
+                .arg("mdadm")
+                .args(["--detail", "--scan"])
+                .output()
+                .await
                 .map(|o| String::from_utf8_lossy(&o.stdout).contains(&device))
                 .unwrap_or(false);
 
@@ -1161,10 +1260,15 @@ impl DiskService {
         // `sudo umount`, not a bare `umount`: a bare one silently fails as a
         // non-root process, leaving the array mounted so `--stop` then errors
         // out and the whole delete aborts.
-        let _ = Command::new("sudo").arg("umount").arg(&device).output().await;
+        let _ = Command::new("sudo")
+            .arg("umount")
+            .arg(&device)
+            .output()
+            .await;
 
         // Stop the array
-        let stop_output = Command::new("sudo").arg("mdadm")
+        let stop_output = Command::new("sudo")
+            .arg("mdadm")
             .args(["--stop", &device])
             .output()
             .await?;
@@ -1172,28 +1276,38 @@ impl DiskService {
         if !stop_output.status.success() {
             let stderr = String::from_utf8_lossy(&stop_output.stderr);
             // Continue even if stop fails - array might already be stopped
-            if !stderr.contains("No such file") && !stderr.contains("not found") && !stderr.contains("inactive") {
+            if !stderr.contains("No such file")
+                && !stderr.contains("not found")
+                && !stderr.contains("inactive")
+            {
                 return Err(DiskError::Parse(format!("Failed to stop RAID: {}", stderr)));
             }
         }
 
         // Remove the mdadm.conf/fstab entries added by create_raid so they
         // don't keep referencing an array that no longer exists.
-        let marker_name = device.trim_start_matches("/dev/md/").trim_start_matches("/dev/");
+        let marker_name = device
+            .trim_start_matches("/dev/md/")
+            .trim_start_matches("/dev/");
         let marker = format!("# homevault-raid:{}", marker_name);
         Self::remove_marked_entry("/etc/mdadm/mdadm.conf", &marker).await;
         Self::remove_marked_entry("/etc/fstab", &marker).await;
 
         // Remove the mount point directory (now empty after unmount).
         let mount_point = format!("{}/{}", crate::config::paths::RAID_MOUNT_BASE, marker_name);
-        let _ = Command::new("sudo").arg("rmdir").arg(&mount_point).output().await;
+        let _ = Command::new("sudo")
+            .arg("rmdir")
+            .arg(&mount_point)
+            .output()
+            .await;
 
         // Get device list before zeroing (in case we need cleanup)
         let devices = Self::get_raid_devices_for_wipe(name).await;
 
         // Zero superblock on all devices
         for device_path in devices {
-            let _ = Command::new("sudo").arg("mdadm")
+            let _ = Command::new("sudo")
+                .arg("mdadm")
                 .args(["--zero-superblock", &device_path])
                 .output()
                 .await;
@@ -1244,7 +1358,10 @@ impl DiskService {
     /// missing a device. Without a replacement, a degraded array can't actually
     /// be repaired (there's no failed member to resync onto), so this only runs
     /// a data-integrity scrub on healthy arrays.
-    pub async fn rebuild_raid(name: &str, replacement_device: Option<&str>) -> Result<(), DiskError> {
+    pub async fn rebuild_raid(
+        name: &str,
+        replacement_device: Option<&str>,
+    ) -> Result<(), DiskError> {
         let device = if name.starts_with("/dev/") {
             name.to_string()
         } else {
@@ -1261,7 +1378,8 @@ impl DiskService {
         }
 
         // Get array state to determine whether it's actually missing a device.
-        let state_output = Command::new("sudo").arg("mdadm")
+        let state_output = Command::new("sudo")
+            .arg("mdadm")
             .args(["--detail", &device])
             .output()
             .await?;
@@ -1282,14 +1400,18 @@ impl DiskService {
                 )));
             }
 
-            let output = Command::new("sudo").arg("mdadm")
+            let output = Command::new("sudo")
+                .arg("mdadm")
                 .args(["--manage", &device, "--add", &replacement_path])
                 .output()
                 .await?;
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(DiskError::Parse(format!("Failed to add replacement device: {}", stderr)));
+                return Err(DiskError::Parse(format!(
+                    "Failed to add replacement device: {}",
+                    stderr
+                )));
             }
 
             return Ok(());
@@ -1302,14 +1424,18 @@ impl DiskService {
         }
 
         // Healthy array: run an integrity scrub.
-        let output = Command::new("sudo").arg("mdadm")
+        let output = Command::new("sudo")
+            .arg("mdadm")
             .args(["--action", "check", &device])
             .output()
             .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DiskError::Parse(format!("Failed to check RAID: {}", stderr)));
+            return Err(DiskError::Parse(format!(
+                "Failed to check RAID: {}",
+                stderr
+            )));
         }
 
         Ok(())
@@ -1337,12 +1463,14 @@ impl DiskService {
                 }
                 s
             }
-            Err(_) => return SmartCapabilities {
-                available: false,
-                supports_short_test: false,
-                supports_long_test: false,
-                supports_conveyance_test: false,
-            },
+            Err(_) => {
+                return SmartCapabilities {
+                    available: false,
+                    supports_short_test: false,
+                    supports_long_test: false,
+                    supports_conveyance_test: false,
+                }
+            }
         };
 
         SmartCapabilities {
@@ -1366,7 +1494,12 @@ impl DiskService {
             "short" => "short",
             "long" => "long",
             "conveyance" => "conveyance",
-            _ => return Err(DiskError::Parse(format!("Unknown test type: {}", test_type))),
+            _ => {
+                return Err(DiskError::Parse(format!(
+                    "Unknown test type: {}",
+                    test_type
+                )))
+            }
         };
 
         let device = format!("/dev/{}", device_name);
@@ -1401,12 +1534,14 @@ impl DiskService {
 
         let stdout = match output {
             Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
-            Err(_) => return SmartTestStatus {
-                in_progress: false,
-                progress_pct: 0,
-                remaining_minutes: 0,
-                last_result: None,
-            },
+            Err(_) => {
+                return SmartTestStatus {
+                    in_progress: false,
+                    progress_pct: 0,
+                    remaining_minutes: 0,
+                    last_result: None,
+                }
+            }
         };
 
         // Parse the self-test log — most recent entry first.
@@ -1426,7 +1561,11 @@ impl DiskService {
             }
 
             let status_field = tokens[3..].join(" ");
-            let remaining_str = tokens.iter().find(|t| t.ends_with('%')).copied().unwrap_or("00%");
+            let remaining_str = tokens
+                .iter()
+                .find(|t| t.ends_with('%'))
+                .copied()
+                .unwrap_or("00%");
 
             // Extract Remaining %: "90%" → 90
             if let Some(pct_str) = remaining_str.strip_suffix('%') {
@@ -1551,7 +1690,9 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, DiskError::Parse(ref m) if m.contains("1-32 characters") || m.contains("alphanumeric")));
+        assert!(
+            matches!(err, DiskError::Parse(ref m) if m.contains("1-32 characters") || m.contains("alphanumeric"))
+        );
     }
 
     #[tokio::test]
@@ -1582,7 +1723,10 @@ mod tests {
 
     #[test]
     fn test_parse_size_gigabytes_dot() {
-        assert_eq!(DiskService::parse_size("465.8G"), (465.8 * 1024.0 * 1024.0 * 1024.0) as u64);
+        assert_eq!(
+            DiskService::parse_size("465.8G"),
+            (465.8 * 1024.0 * 1024.0 * 1024.0) as u64
+        );
     }
 
     #[test]
@@ -1590,7 +1734,10 @@ mod tests {
         // Regression test: `lsblk` under a comma-decimal locale (e.g. French)
         // reports "465,8G" — confirmed live this silently parsed to 0 before
         // the fix, making every disk size in the RAID/Storage UI show 0.
-        assert_eq!(DiskService::parse_size("465,8G"), DiskService::parse_size("465.8G"));
+        assert_eq!(
+            DiskService::parse_size("465,8G"),
+            DiskService::parse_size("465.8G")
+        );
         assert!(DiskService::parse_size("465,8G") > 0);
     }
 

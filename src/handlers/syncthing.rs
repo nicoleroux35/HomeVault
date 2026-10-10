@@ -1,7 +1,7 @@
 use axum::{extract::State, http::HeaderMap, Json};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use reqwest::Client;
 
 use crate::handlers::AppStateArc;
 
@@ -44,10 +44,18 @@ pub struct ApiResponse<T: Serialize> {
 
 impl<T: Serialize> ApiResponse<T> {
     fn success(data: T) -> Self {
-        Self { success: true, data: Some(data), error: None }
+        Self {
+            success: true,
+            data: Some(data),
+            error: None,
+        }
     }
     fn error(msg: &str) -> Self {
-        Self { success: false, data: None, error: Some(msg.to_string()) }
+        Self {
+            success: false,
+            data: None,
+            error: Some(msg.to_string()),
+        }
     }
 }
 
@@ -278,7 +286,10 @@ async fn syncthing_get(endpoint: &str) -> Result<String, String> {
         return Err(format!("Syncthing API error ({}): {}", status, body));
     }
 
-    response.text().await.map_err(|e| format!("Failed to read response: {}", e))
+    response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read response: {}", e))
 }
 
 async fn syncthing_post(endpoint: &str) -> Result<String, String> {
@@ -297,7 +308,10 @@ async fn syncthing_post(endpoint: &str) -> Result<String, String> {
         return Err(format!("Syncthing API error ({}): {}", status, body));
     }
 
-    response.text().await.map_err(|e| format!("Failed to read response: {}", e))
+    response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read response: {}", e))
 }
 
 // ---------------------------------------------------------------------------
@@ -333,12 +347,12 @@ pub async fn handle_syncthing_status(
         Ok(_) => {
             // Get version and status
             let version_str = syncthing_get("system/version").await.ok();
-            let version: Option<SyncthingVersion> = version_str
-                .and_then(|v| serde_json::from_str(&v).ok());
+            let version: Option<SyncthingVersion> =
+                version_str.and_then(|v| serde_json::from_str(&v).ok());
 
             let status_str = syncthing_get("system/status").await.ok();
-            let status: Option<SyncthingSystemStatus> = status_str
-                .and_then(|s| serde_json::from_str(&s).ok());
+            let status: Option<SyncthingSystemStatus> =
+                status_str.and_then(|s| serde_json::from_str(&s).ok());
 
             Json(ApiResponse::success(SyncthingStatus {
                 available: true,
@@ -348,15 +362,13 @@ pub async fn handle_syncthing_status(
                 last_seen: status.as_ref().and_then(|s| s.last_seen.clone()),
             }))
         }
-        Err(_) => {
-            Json(ApiResponse::success(SyncthingStatus {
-                available: false,
-                version: Some("Installed but not running".to_string()),
-                my_id: None,
-                uptime: None,
-                last_seen: None,
-            }))
-        }
+        Err(_) => Json(ApiResponse::success(SyncthingStatus {
+            available: false,
+            version: Some("Installed but not running".to_string()),
+            my_id: None,
+            uptime: None,
+            last_seen: None,
+        })),
     }
 }
 
@@ -375,7 +387,10 @@ pub async fn handle_syncthing_config(
 
     match serde_json::from_str::<SyncthingConfig>(&raw) {
         Ok(config) => Json(ApiResponse::success(config)),
-        Err(e) => Json(ApiResponse::error(&format!("Failed to parse config: {}", e))),
+        Err(e) => Json(ApiResponse::error(&format!(
+            "Failed to parse config: {}",
+            e
+        ))),
     }
 }
 
@@ -393,12 +408,17 @@ pub async fn handle_syncthing_devices(
     };
     let config: SyncthingConfig = match serde_json::from_str(&config_raw) {
         Ok(c) => c,
-        Err(e) => return Json(ApiResponse::error(&format!("Failed to parse config: {}", e))),
+        Err(e) => {
+            return Json(ApiResponse::error(&format!(
+                "Failed to parse config: {}",
+                e
+            )))
+        }
     };
 
     let connections_raw = syncthing_get("system/connections").await.ok();
-    let connections: Option<ConnectionsResponse> = connections_raw
-        .and_then(|r| serde_json::from_str(&r).ok());
+    let connections: Option<ConnectionsResponse> =
+        connections_raw.and_then(|r| serde_json::from_str(&r).ok());
 
     let mut devices_with_status = Vec::new();
 
@@ -442,7 +462,12 @@ pub async fn handle_syncthing_folders(
     };
     let config: SyncthingConfig = match serde_json::from_str(&config_raw) {
         Ok(c) => c,
-        Err(e) => return Json(ApiResponse::error(&format!("Failed to parse config: {}", e))),
+        Err(e) => {
+            return Json(ApiResponse::error(&format!(
+                "Failed to parse config: {}",
+                e
+            )))
+        }
     };
 
     let mut folder_statuses = Vec::new();
@@ -454,11 +479,13 @@ pub async fn handle_syncthing_folders(
     // `id`/`label`/`path` already have to come from `config`, not `db_info`.
     for folder in config.folders {
         let device_ids: Vec<String> = folder.devices.iter().map(|d| d.device_id.clone()).collect();
-        let encoded_id: String = url::form_urlencoded::byte_serialize(folder.id.as_bytes()).collect();
-        let db_info: Option<DbFolderStatus> = syncthing_get(&format!("db/status?folder={}", encoded_id))
-            .await
-            .ok()
-            .and_then(|r| serde_json::from_str(&r).ok());
+        let encoded_id: String =
+            url::form_urlencoded::byte_serialize(folder.id.as_bytes()).collect();
+        let db_info: Option<DbFolderStatus> =
+            syncthing_get(&format!("db/status?folder={}", encoded_id))
+                .await
+                .ok()
+                .and_then(|r| serde_json::from_str(&r).ok());
 
         folder_statuses.push(FolderStatus {
             id: folder.id.clone(),
@@ -471,7 +498,10 @@ pub async fn handle_syncthing_folders(
             local_files: db_info.as_ref().map(|f| f.local_files).unwrap_or(0),
             need_bytes: db_info.as_ref().map(|f| f.need_bytes).unwrap_or(0),
             need_files: db_info.as_ref().map(|f| f.need_files).unwrap_or(0),
-            in_sync_files: db_info.as_ref().map(|f| f.local_files.saturating_sub(f.need_files)).unwrap_or(0),
+            in_sync_files: db_info
+                .as_ref()
+                .map(|f| f.local_files.saturating_sub(f.need_files))
+                .unwrap_or(0),
             receive_only: folder.folder_type == "receiveonly",
             devices: device_ids,
         });
@@ -495,7 +525,10 @@ pub async fn handle_syncthing_connections(
 
     match serde_json::from_str::<ConnectionsResponse>(&raw) {
         Ok(conns) => Json(ApiResponse::success(conns)),
-        Err(e) => Json(ApiResponse::error(&format!("Failed to parse connections: {}", e))),
+        Err(e) => Json(ApiResponse::error(&format!(
+            "Failed to parse connections: {}",
+            e
+        ))),
     }
 }
 
@@ -765,8 +798,7 @@ mod tests {
 
     #[test]
     fn test_pause_and_scan_request_bodies() {
-        let p: PauseDeviceRequest =
-            serde_json::from_str(r#"{"device":"AAAA-BBBB"}"#).unwrap();
+        let p: PauseDeviceRequest = serde_json::from_str(r#"{"device":"AAAA-BBBB"}"#).unwrap();
         assert_eq!(p.device, "AAAA-BBBB");
         assert!(serde_json::from_str::<PauseDeviceRequest>("{}").is_err());
 
@@ -791,7 +823,7 @@ mod tests {
     #[test]
     fn test_receive_only_is_derived_from_folder_type() {
         let cfg: SyncthingConfig = serde_json::from_str(CONFIG_JSON).unwrap();
-        assert_eq!(cfg.folders[0].folder_type == "receiveonly", false);
-        assert_eq!(cfg.folders[1].folder_type == "receiveonly", true);
+        assert!(cfg.folders[0].folder_type != "receiveonly");
+        assert!(cfg.folders[1].folder_type == "receiveonly");
     }
 }

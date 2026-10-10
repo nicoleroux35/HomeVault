@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the admin Users-management API endpoints:
 //!
 //!   - GET    /api/users                     (list)
@@ -62,13 +65,15 @@ async fn setup_db() -> Database {
     let db = Database::new("sqlite::memory:")
         .await
         .expect("Failed to create in-memory database");
-    db.run_migrations()
-        .await
-        .expect("Failed to run migrations");
+    db.run_migrations().await.expect("Failed to run migrations");
     db
 }
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("Failed to create temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -207,8 +212,8 @@ async fn send(
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
-    let json = serde_json::from_slice(&bytes)
-        .unwrap_or(json!({"raw": String::from_utf8_lossy(&bytes)}));
+    let json =
+        serde_json::from_slice(&bytes).unwrap_or(json!({"raw": String::from_utf8_lossy(&bytes)}));
     (status, json)
 }
 
@@ -326,14 +331,7 @@ async fn test_user_get_nonexistent_user() {
     create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
     let mut r = users_router(state);
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
-    let (_, body) = send(
-        &mut r,
-        Method::GET,
-        "/api/users/ghost",
-        Some(&token),
-        None,
-    )
-    .await;
+    let (_, body) = send(&mut r, Method::GET, "/api/users/ghost", Some(&token), None).await;
     assert_eq!(body["success"], json!(false));
 }
 
@@ -379,7 +377,14 @@ async fn test_user_create_invalid_username() {
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
     let mut payload = valid_create_payload("a");
     payload["username"] = json!("a"); // too short / reserved-ish
-    let (_, body) = send(&mut r, Method::POST, "/api/users", Some(&token), Some(payload)).await;
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/users",
+        Some(&token),
+        Some(payload),
+    )
+    .await;
     assert_eq!(body["success"], json!(false));
 }
 
@@ -391,7 +396,14 @@ async fn test_user_create_weak_password() {
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
     let mut payload = valid_create_payload("weakpwuser");
     payload["password"] = json!("short");
-    let (_, body) = send(&mut r, Method::POST, "/api/users", Some(&token), Some(payload)).await;
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/users",
+        Some(&token),
+        Some(payload),
+    )
+    .await;
     assert_eq!(body["success"], json!(false));
 }
 
@@ -403,7 +415,14 @@ async fn test_user_create_invalid_email() {
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
     let mut payload = valid_create_payload("bademailuser");
     payload["email"] = json!("not-an-email");
-    let (_, body) = send(&mut r, Method::POST, "/api/users", Some(&token), Some(payload)).await;
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/users",
+        Some(&token),
+        Some(payload),
+    )
+    .await;
     assert_eq!(body["success"], json!(false));
 }
 
@@ -416,7 +435,14 @@ async fn test_user_create_email_too_long() {
     let mut payload = valid_create_payload("longemailuser");
     let long_local = "a".repeat(130);
     payload["email"] = json!(format!("{}@example.com", long_local));
-    let (_, body) = send(&mut r, Method::POST, "/api/users", Some(&token), Some(payload)).await;
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/users",
+        Some(&token),
+        Some(payload),
+    )
+    .await;
     assert_eq!(body["success"], json!(false));
 }
 
@@ -428,7 +454,14 @@ async fn test_user_create_invalid_role_id() {
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
     let mut payload = valid_create_payload("badroleuser");
     payload["role_id"] = json!(99);
-    let (_, body) = send(&mut r, Method::POST, "/api/users", Some(&token), Some(payload)).await;
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/users",
+        Some(&token),
+        Some(payload),
+    )
+    .await;
     assert_eq!(body["success"], json!(false));
 }
 
@@ -440,7 +473,14 @@ async fn test_user_create_nonexistent_group() {
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
     let mut payload = valid_create_payload("groupuser");
     payload["groups"] = json!(["homevault_this_group_does_not_exist"]);
-    let (_, body) = send(&mut r, Method::POST, "/api/users", Some(&token), Some(payload)).await;
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/users",
+        Some(&token),
+        Some(payload),
+    )
+    .await;
     assert_eq!(
         body["success"],
         json!(false),
@@ -647,7 +687,14 @@ async fn test_user_create_rejects_negative_home_size() {
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
     let mut payload = valid_create_payload("sizeuser");
     payload["home_size_bytes"] = json!(-1);
-    let (_, body) = send(&mut r, Method::POST, "/api/users", Some(&token), Some(payload)).await;
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/users",
+        Some(&token),
+        Some(payload),
+    )
+    .await;
     assert_eq!(body["success"], json!(false));
     assert!(body["message"]
         .as_str()
@@ -689,13 +736,23 @@ async fn test_user_create_ignores_home_size_when_home_disabled() {
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
     let mut payload = valid_create_payload("nolimituser");
     payload["home_size_bytes"] = json!(5_368_709_120i64);
-    let (status, body) =
-        send(&mut r, Method::POST, "/api/users", Some(&token), Some(payload)).await;
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/users",
+        Some(&token),
+        Some(payload),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], json!(true));
 
     let repo = homevault::storage::user_home_repo::UserHomeRepository::new(state.db.pool());
-    assert!(repo.find_by_username("nolimituser").await.unwrap().is_none());
+    assert!(repo
+        .find_by_username("nolimituser")
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -747,7 +804,12 @@ async fn test_user_full_rejects_relative_and_traversal_home_path() {
             })),
         )
         .await;
-        assert_eq!(body["success"], json!(false), "path {:?} should be rejected", bad);
+        assert_eq!(
+            body["success"],
+            json!(false),
+            "path {:?} should be rejected",
+            bad
+        );
     }
 }
 
@@ -1306,7 +1368,11 @@ async fn test_user_delete_admin_when_another_admin_remains_succeeds() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "deleting one of two admins must succeed");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "deleting one of two admins must succeed"
+    );
     assert_eq!(body["success"], json!(true));
 
     let (_, get_body) = send(&mut r, Method::GET, "/api/users/admin1", Some(&token), None).await;
@@ -1344,7 +1410,11 @@ async fn test_user_delete_success() {
         None,
     )
     .await;
-    assert_eq!(get_body["success"], json!(false), "deleted user must be gone");
+    assert_eq!(
+        get_body["success"],
+        json!(false),
+        "deleted user must be gone"
+    );
 }
 
 #[tokio::test]

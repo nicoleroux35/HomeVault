@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the File Explorer API (`crate::handlers::explorer`):
 //!
 //!   - GET    /api/explorer/list                     (directory listing)
@@ -47,7 +50,7 @@ use axum::{
 };
 use http::{Method, Request, StatusCode};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::Mutex;
@@ -58,12 +61,11 @@ use homevault::config::PathGuard;
 use homevault::handlers::explorer::{
     handle_explorer_compress, handle_explorer_copy, handle_explorer_delete, handle_explorer_disks,
     handle_explorer_download, handle_explorer_download_ticket, handle_explorer_eject,
-    handle_explorer_extract,
-    handle_explorer_favorites_add, handle_explorer_favorites_list, handle_explorer_favorites_remove,
-    handle_explorer_list, handle_explorer_mkdir, handle_explorer_move, handle_explorer_permissions,
-    handle_explorer_preview, handle_explorer_rename, handle_explorer_roots, handle_explorer_save,
-    handle_explorer_search, handle_explorer_snapshots, handle_explorer_thumbnail,
-    handle_explorer_thumbnail_ticket,
+    handle_explorer_extract, handle_explorer_favorites_add, handle_explorer_favorites_list,
+    handle_explorer_favorites_remove, handle_explorer_list, handle_explorer_mkdir,
+    handle_explorer_move, handle_explorer_permissions, handle_explorer_preview,
+    handle_explorer_rename, handle_explorer_roots, handle_explorer_save, handle_explorer_search,
+    handle_explorer_snapshots, handle_explorer_thumbnail, handle_explorer_thumbnail_ticket,
     handle_explorer_trash, handle_explorer_trash_empty, handle_explorer_trash_list,
     handle_explorer_trash_purge, handle_explorer_trash_restore, handle_explorer_upload,
     handle_explorer_upload_chunk, handle_explorer_upload_complete,
@@ -139,32 +141,71 @@ fn explorer_router(state: Arc<AppState>) -> Router {
         .route("/api/explorer/rename", post(handle_explorer_rename))
         .route("/api/explorer/copy", post(handle_explorer_copy))
         .route("/api/explorer/move", post(handle_explorer_move))
-        .route("/api/explorer/permissions", get(handle_explorer_permissions))
-        .route("/api/explorer/permissions", post(handle_explorer_permissions))
+        .route(
+            "/api/explorer/permissions",
+            get(handle_explorer_permissions),
+        )
+        .route(
+            "/api/explorer/permissions",
+            post(handle_explorer_permissions),
+        )
         .route("/api/explorer/preview", get(handle_explorer_preview))
         .route("/api/explorer/extract", post(handle_explorer_extract))
         .route("/api/explorer/download", get(handle_explorer_download))
-        .route("/api/explorer/download-ticket", post(handle_explorer_download_ticket))
+        .route(
+            "/api/explorer/download-ticket",
+            post(handle_explorer_download_ticket),
+        )
         .route("/api/explorer/thumbnail", get(handle_explorer_thumbnail))
-        .route("/api/explorer/thumbnail-ticket", post(handle_explorer_thumbnail_ticket))
+        .route(
+            "/api/explorer/thumbnail-ticket",
+            post(handle_explorer_thumbnail_ticket),
+        )
         .route("/api/explorer/upload", post(handle_explorer_upload))
-        .route("/api/explorer/upload/session", post(handle_explorer_upload_session_start))
-        .route("/api/explorer/upload/session", delete(handle_explorer_upload_session_abort))
-        .route("/api/explorer/upload/chunk", post(handle_explorer_upload_chunk))
-        .route("/api/explorer/upload/complete", post(handle_explorer_upload_complete))
+        .route(
+            "/api/explorer/upload/session",
+            post(handle_explorer_upload_session_start),
+        )
+        .route(
+            "/api/explorer/upload/session",
+            delete(handle_explorer_upload_session_abort),
+        )
+        .route(
+            "/api/explorer/upload/chunk",
+            post(handle_explorer_upload_chunk),
+        )
+        .route(
+            "/api/explorer/upload/complete",
+            post(handle_explorer_upload_complete),
+        )
         .route("/api/explorer/compress", post(handle_explorer_compress))
         .route("/api/explorer/trash", post(handle_explorer_trash))
         .route("/api/explorer/trash", get(handle_explorer_trash_list))
         .route("/api/explorer/trash", delete(handle_explorer_trash_empty))
-        .route("/api/explorer/trash/restore", post(handle_explorer_trash_restore))
-        .route("/api/explorer/trash/{id}", delete(handle_explorer_trash_purge))
+        .route(
+            "/api/explorer/trash/restore",
+            post(handle_explorer_trash_restore),
+        )
+        .route(
+            "/api/explorer/trash/{id}",
+            delete(handle_explorer_trash_purge),
+        )
         .route("/api/explorer/roots", get(handle_explorer_roots))
         .route("/api/explorer/save", post(handle_explorer_save))
         .route("/api/explorer/eject", post(handle_explorer_eject))
         .route("/api/explorer/snapshots", get(handle_explorer_snapshots))
-        .route("/api/explorer/favorites", get(handle_explorer_favorites_list))
-        .route("/api/explorer/favorites", post(handle_explorer_favorites_add))
-        .route("/api/explorer/favorites", delete(handle_explorer_favorites_remove))
+        .route(
+            "/api/explorer/favorites",
+            get(handle_explorer_favorites_list),
+        )
+        .route(
+            "/api/explorer/favorites",
+            post(handle_explorer_favorites_add),
+        )
+        .route(
+            "/api/explorer/favorites",
+            delete(handle_explorer_favorites_remove),
+        )
         .with_state(state)
 }
 
@@ -302,7 +343,7 @@ async fn send_upload(
     (status, json)
 }
 
-fn p(root: &PathBuf, rel: &str) -> String {
+fn p(root: &Path, rel: &str) -> String {
     root.join(rel).to_string_lossy().to_string()
 }
 
@@ -314,7 +355,11 @@ fn assert_clean_rejection(status: StatusCode, body: &Value) {
         StatusCode::INTERNAL_SERVER_ERROR,
         "handler 500'd instead of returning a clean error: {body}"
     );
-    assert_eq!(body["success"], json!(false), "expected success:false: {body}");
+    assert_eq!(
+        body["success"],
+        json!(false),
+        "expected success:false: {body}"
+    );
 }
 
 // ===========================================================================
@@ -333,14 +378,38 @@ async fn test_json_endpoints_reject_missing_token() {
         (Method::GET, "/api/explorer/disks", None),
         (Method::POST, "/api/explorer/mkdir?path=/tmp/x", None),
         (Method::POST, "/api/explorer/delete?path=/tmp/x", None),
-        (Method::POST, "/api/explorer/rename?path=/tmp/x&new_name=y", None),
-        (Method::POST, "/api/explorer/copy?source=/tmp/x&destination=/tmp/y", None),
-        (Method::POST, "/api/explorer/move?source=/tmp/x&destination=/tmp/y", None),
+        (
+            Method::POST,
+            "/api/explorer/rename?path=/tmp/x&new_name=y",
+            None,
+        ),
+        (
+            Method::POST,
+            "/api/explorer/copy?source=/tmp/x&destination=/tmp/y",
+            None,
+        ),
+        (
+            Method::POST,
+            "/api/explorer/move?source=/tmp/x&destination=/tmp/y",
+            None,
+        ),
         (Method::GET, "/api/explorer/permissions?path=/tmp/x", None),
-        (Method::POST, "/api/explorer/permissions?path=/tmp/x&mode=755", None),
+        (
+            Method::POST,
+            "/api/explorer/permissions?path=/tmp/x&mode=755",
+            None,
+        ),
         (Method::GET, "/api/explorer/preview?path=/tmp/x", None),
-        (Method::POST, "/api/explorer/extract?path=/tmp/a.zip&destination=/tmp", None),
-        (Method::POST, "/api/explorer/compress", Some(json!({"paths":["/tmp/x"],"destination":"/tmp/a.tar.gz"}))),
+        (
+            Method::POST,
+            "/api/explorer/extract?path=/tmp/a.zip&destination=/tmp",
+            None,
+        ),
+        (
+            Method::POST,
+            "/api/explorer/compress",
+            Some(json!({"paths":["/tmp/x"],"destination":"/tmp/a.tar.gz"})),
+        ),
         (Method::POST, "/api/explorer/trash?path=/tmp/x", None),
         (Method::GET, "/api/explorer/trash", None),
         (Method::DELETE, "/api/explorer/trash", None),
@@ -350,9 +419,21 @@ async fn test_json_endpoints_reject_missing_token() {
 
     for (method, uri, body) in cases {
         let (status, resp) = send(&mut r, method.clone(), uri, None, body.clone()).await;
-        assert_eq!(resp["success"], json!(false), "{method} {uri} must reject a missing token");
-        assert_ne!(status, StatusCode::OK, "{method} {uri} returned 200 unauthenticated");
-        assert_ne!(status, StatusCode::INTERNAL_SERVER_ERROR, "{method} {uri} 500'd");
+        assert_eq!(
+            resp["success"],
+            json!(false),
+            "{method} {uri} must reject a missing token"
+        );
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "{method} {uri} returned 200 unauthenticated"
+        );
+        assert_ne!(
+            status,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "{method} {uri} 500'd"
+        );
     }
 }
 
@@ -367,7 +448,11 @@ async fn test_binary_endpoints_reject_missing_token() {
         "/api/explorer/thumbnail?path=/tmp/x.png",
     ] {
         let (status, _) = send_raw(&mut r, Method::GET, uri, None, None).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri} must be 401 without a token");
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{uri} must be 401 without a token"
+        );
     }
 }
 
@@ -409,7 +494,11 @@ async fn test_non_admin_cannot_escape_allowed_root() {
         None,
     )
     .await;
-    assert_eq!(body["success"], json!(false), "listing /etc must be denied: {body}");
+    assert_eq!(
+        body["success"],
+        json!(false),
+        "listing /etc must be denied: {body}"
+    );
 
     // Traversal out of the root.
     let escape = format!("{}/../../../../etc/passwd", h.root.display());
@@ -421,7 +510,11 @@ async fn test_non_admin_cannot_escape_allowed_root() {
         None,
     )
     .await;
-    assert_eq!(body["success"], json!(false), "traversal preview must be denied: {body}");
+    assert_eq!(
+        body["success"],
+        json!(false),
+        "traversal preview must be denied: {body}"
+    );
 
     // mkdir outside the root.
     let (_, body) = send(
@@ -451,7 +544,11 @@ async fn test_non_admin_download_outside_root_is_forbidden() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "download of /etc/passwd must be 403");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "download of /etc/passwd must be 403"
+    );
 }
 
 #[tokio::test]
@@ -515,7 +612,10 @@ async fn test_mkdir_list_rename_delete_roundtrip() {
         .iter()
         .map(|e| e["name"].as_str().unwrap())
         .collect();
-    assert!(names.contains(&"project"), "list missing the new dir: {names:?}");
+    assert!(
+        names.contains(&"project"),
+        "list missing the new dir: {names:?}"
+    );
 
     // rename
     let (_, body) = send(
@@ -570,8 +670,14 @@ async fn test_copy_and_move_a_file() {
     )
     .await;
     assert_eq!(body["success"], json!(true), "{body}");
-    assert_eq!(std::fs::read(h.root.join("b.txt")).unwrap(), b"hello explorer");
-    assert!(h.root.join("a.txt").exists(), "copy must not remove the source");
+    assert_eq!(
+        std::fs::read(h.root.join("b.txt")).unwrap(),
+        b"hello explorer"
+    );
+    assert!(
+        h.root.join("a.txt").exists(),
+        "copy must not remove the source"
+    );
 
     // move
     let (_, body) = send(
@@ -587,8 +693,14 @@ async fn test_copy_and_move_a_file() {
     )
     .await;
     assert_eq!(body["success"], json!(true), "{body}");
-    assert_eq!(std::fs::read(h.root.join("c.txt")).unwrap(), b"hello explorer");
-    assert!(!h.root.join("a.txt").exists(), "move must remove the source");
+    assert_eq!(
+        std::fs::read(h.root.join("c.txt")).unwrap(),
+        b"hello explorer"
+    );
+    assert!(
+        !h.root.join("a.txt").exists(),
+        "move must remove the source"
+    );
 }
 
 #[tokio::test]
@@ -637,7 +749,9 @@ async fn test_search_finds_a_nested_file() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let results = body["data"]["results"].as_array().unwrap();
     assert!(
-        results.iter().any(|e| e["name"].as_str().unwrap().contains("needle-report")),
+        results
+            .iter()
+            .any(|e| e["name"].as_str().unwrap().contains("needle-report")),
         "search did not find the nested file: {body}"
     );
 }
@@ -696,7 +810,10 @@ async fn test_permissions_rejects_a_bad_mode() {
         let (status, body) = send(
             &mut r,
             Method::POST,
-            &format!("/api/explorer/permissions?path={}&mode={bad}", file.display()),
+            &format!(
+                "/api/explorer/permissions?path={}&mode={bad}",
+                file.display()
+            ),
             Some(&token),
             None,
         )
@@ -874,7 +991,10 @@ async fn test_upload_rejects_a_traversing_filename() {
     // The handler sanitises to the basename `evil.txt` and stores it inside
     // the target dir — the important guarantee is nothing escapes.
     assert_ne!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-    assert!(!h.root.join("evil.txt").exists(), "file escaped the upload dir");
+    assert!(
+        !h.root.join("evil.txt").exists(),
+        "file escaped the upload dir"
+    );
     assert!(!std::path::Path::new("/tmp/evil.txt").exists());
 }
 
@@ -924,7 +1044,11 @@ async fn test_download_blocked_when_quota_exceeded() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "over-quota download must be 429");
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "over-quota download must be 429"
+    );
 }
 
 #[tokio::test]
@@ -1010,10 +1134,20 @@ async fn test_trash_list_restore_then_purge() {
     )
     .await;
     assert_eq!(body["success"], json!(true), "{body}");
-    assert!(!file.exists(), "trashed file must leave its original location");
+    assert!(
+        !file.exists(),
+        "trashed file must leave its original location"
+    );
 
     // list — find its id
-    let (_, body) = send(&mut r, Method::GET, "/api/explorer/trash", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/trash",
+        Some(&token),
+        None,
+    )
+    .await;
     let entries = body["data"].as_array().expect("trash list is an array");
     let entry = entries
         .iter()
@@ -1031,7 +1165,11 @@ async fn test_trash_list_restore_then_purge() {
     )
     .await;
     assert_eq!(body["success"], json!(true), "{body}");
-    assert_eq!(std::fs::read(&file).unwrap(), b"data", "restore did not bring the file back");
+    assert_eq!(
+        std::fs::read(&file).unwrap(),
+        b"data",
+        "restore did not bring the file back"
+    );
 
     // trash again, then purge by id
     send(
@@ -1042,7 +1180,14 @@ async fn test_trash_list_restore_then_purge() {
         None,
     )
     .await;
-    let (_, body) = send(&mut r, Method::GET, "/api/explorer/trash", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/trash",
+        Some(&token),
+        None,
+    )
+    .await;
     let id = body["data"]
         .as_array()
         .unwrap()
@@ -1063,7 +1208,14 @@ async fn test_trash_list_restore_then_purge() {
     .await;
     assert_eq!(body["success"], json!(true), "{body}");
 
-    let (_, body) = send(&mut r, Method::GET, "/api/explorer/trash", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/trash",
+        Some(&token),
+        None,
+    )
+    .await;
     assert!(
         !body["data"]
             .as_array()
@@ -1094,14 +1246,39 @@ async fn test_empty_trash_clears_everything() {
         .await;
     }
 
-    let (_, body) = send(&mut r, Method::GET, "/api/explorer/trash", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/trash",
+        Some(&token),
+        None,
+    )
+    .await;
     assert!(body["data"].as_array().unwrap().len() >= 3);
 
-    let (_, body) = send(&mut r, Method::DELETE, "/api/explorer/trash", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::DELETE,
+        "/api/explorer/trash",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["success"], json!(true), "{body}");
 
-    let (_, body) = send(&mut r, Method::GET, "/api/explorer/trash", Some(&token), None).await;
-    assert_eq!(body["data"].as_array().unwrap().len(), 0, "trash not emptied: {body}");
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/trash",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(
+        body["data"].as_array().unwrap().len(),
+        0,
+        "trash not emptied: {body}"
+    );
 }
 
 #[tokio::test]
@@ -1170,10 +1347,20 @@ async fn test_disks_returns_the_six_categories() {
     let mut r = explorer_router(h.state.clone());
     let token = login(&mut r, "bob", "Password123!").await;
 
-    let (status, body) = send(&mut r, Method::GET, "/api/explorer/disks", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/disks",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     for key in ["system", "internal", "raid", "external", "cloud", "network"] {
-        assert!(body["data"][key].is_array(), "missing category {key}: {body}");
+        assert!(
+            body["data"][key].is_array(),
+            "missing category {key}: {body}"
+        );
     }
 }
 
@@ -1185,7 +1372,14 @@ async fn test_list_defaults_to_root_for_admin() {
     let token = login(&mut r, "root_admin", "Password123!").await;
 
     // No `path` param → handler defaults to "/", admin may read it.
-    let (status, body) = send(&mut r, Method::GET, "/api/explorer/list", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/list",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["path"], json!("/"));
 }
@@ -1228,10 +1422,20 @@ async fn test_new_endpoints_reject_missing_and_bogus_token() {
     for (method, uri, body) in cases {
         let (status, resp) = send(&mut r, method.clone(), uri, None, body.clone()).await;
         assert_ne!(status, StatusCode::OK, "{method} {uri} unauthenticated");
-        assert_eq!(resp["success"], json!(false), "{method} {uri} missing token");
+        assert_eq!(
+            resp["success"],
+            json!(false),
+            "{method} {uri} missing token"
+        );
 
-        let (status, resp) =
-            send(&mut r, method.clone(), uri, Some("not-a-real-token"), body.clone()).await;
+        let (status, resp) = send(
+            &mut r,
+            method.clone(),
+            uri,
+            Some("not-a-real-token"),
+            body.clone(),
+        )
+        .await;
         assert_ne!(status, StatusCode::OK, "{method} {uri} bogus token");
         assert_eq!(resp["success"], json!(false), "{method} {uri} bogus token");
     }
@@ -1246,16 +1450,29 @@ async fn test_roots_lists_the_allowed_root_with_a_kind() {
     let mut r = explorer_router(h.state.clone());
     let token = login(&mut r, "bob", "Password123!").await;
 
-    let (status, body) = send(&mut r, Method::GET, "/api/explorer/roots", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/roots",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let roots = body["data"].as_array().expect("data is an array");
-    assert!(!roots.is_empty(), "at least the scoped root must be listed: {body}");
+    assert!(
+        !roots.is_empty(),
+        "at least the scoped root must be listed: {body}"
+    );
     let root_str = h.root.to_string_lossy().to_string();
     let scoped = roots
         .iter()
         .find(|r| r["path"] == json!(root_str))
         .unwrap_or_else(|| panic!("scoped root {root_str} not in {body}"));
-    assert!(scoped["kind"].is_string(), "each root carries a kind: {scoped}");
+    assert!(
+        scoped["kind"].is_string(),
+        "each root carries a kind: {scoped}"
+    );
     assert!(scoped["name"].is_string());
 }
 
@@ -1279,7 +1496,10 @@ async fn test_save_writes_and_overwrites_a_text_file() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(std::fs::read_to_string(h.root.join("notes.md")).unwrap(), "# first\n");
+    assert_eq!(
+        std::fs::read_to_string(h.root.join("notes.md")).unwrap(),
+        "# first\n"
+    );
 
     let (status, _) = send(
         &mut r,
@@ -1290,7 +1510,10 @@ async fn test_save_writes_and_overwrites_a_text_file() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(std::fs::read_to_string(h.root.join("notes.md")).unwrap(), "# second\nmore");
+    assert_eq!(
+        std::fs::read_to_string(h.root.join("notes.md")).unwrap(),
+        "# second\nmore"
+    );
 
     // No `.hvsave-*` temp debris left behind.
     let debris: Vec<_> = std::fs::read_dir(&h.root)
@@ -1431,7 +1654,14 @@ async fn test_favorites_add_list_remove_lifecycle() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    let (_, body) = send(&mut r, Method::GET, "/api/explorer/favorites", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/favorites",
+        Some(&token),
+        None,
+    )
+    .await;
     let favs = body["data"].as_array().expect("array");
     assert_eq!(favs.len(), 1);
     assert_eq!(favs[0]["path"], json!(fav_path));
@@ -1447,7 +1677,14 @@ async fn test_favorites_add_list_remove_lifecycle() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    let (_, body) = send(&mut r, Method::GET, "/api/explorer/favorites", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/favorites",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["data"].as_array().map(|a| a.len()), Some(0));
 }
 
@@ -1600,11 +1837,19 @@ async fn test_download_sends_integrity_digest() {
 
     let req = Request::builder()
         .method(Method::GET)
-        .uri(format!("/api/explorer/download?path={}", p(&h.root, "d.bin")))
+        .uri(format!(
+            "/api/explorer/download?path={}",
+            p(&h.root, "d.bin")
+        ))
         .header("x-session-token", &token)
         .body(axum::body::Body::empty())
         .unwrap();
-    let resp = ServiceExt::<Req>::ready(&mut r).await.unwrap().call(req).await.unwrap();
+    let resp = ServiceExt::<Req>::ready(&mut r)
+        .await
+        .unwrap()
+        .call(req)
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let digest = resp
         .headers()
@@ -1612,7 +1857,10 @@ async fn test_download_sends_integrity_digest() {
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
         .expect("X-Content-Sha256 header missing");
-    let expected: String = Sha256::digest(&payload).iter().map(|b| format!("{:02x}", b)).collect();
+    let expected: String = Sha256::digest(&payload)
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
     assert_eq!(digest, expected);
 }
 
@@ -1690,7 +1938,10 @@ async fn test_thumbnail_ticket_authenticates_without_session() {
     let (status, _) = send_raw_headers(
         &mut r,
         Method::GET,
-        &format!("/api/explorer/thumbnail?path={}&ticket=deadbeef", p(&h.root, "plain.txt")),
+        &format!(
+            "/api/explorer/thumbnail?path={}&ticket=deadbeef",
+            p(&h.root, "plain.txt")
+        ),
         None,
         None,
         &[],
@@ -1716,10 +1967,18 @@ async fn send_chunk(
         req = req.header("x-session-token", t);
     }
     let req = req.body(axum::body::Body::from(bytes.to_vec())).unwrap();
-    let resp = ServiceExt::<Req>::ready(router).await.unwrap().call(req).await.unwrap();
+    let resp = ServiceExt::<Req>::ready(router)
+        .await
+        .unwrap()
+        .call(req)
+        .await
+        .unwrap();
     let status = resp.status();
-    let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let json = serde_json::from_slice(&body).unwrap_or(json!({"raw": String::from_utf8_lossy(&body)}));
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json =
+        serde_json::from_slice(&body).unwrap_or(json!({"raw": String::from_utf8_lossy(&body)}));
     (status, json)
 }
 
@@ -1748,13 +2007,17 @@ async fn test_chunked_upload_roundtrip() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let sid = body["data"]["session_id"].as_str().expect("session_id").to_string();
+    let sid = body["data"]["session_id"]
+        .as_str()
+        .expect("session_id")
+        .to_string();
 
     let chunk = 8192usize;
     let mut offset = 0usize;
     while offset < payload.len() {
         let end = (offset + chunk).min(payload.len());
-        let (status, body) = send_chunk(&mut r, &sid, offset, &payload[offset..end], Some(&token)).await;
+        let (status, body) =
+            send_chunk(&mut r, &sid, offset, &payload[offset..end], Some(&token)).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["data"]["offset"].as_u64(), Some(end as u64));
         offset = end;
@@ -1770,7 +2033,10 @@ async fn test_chunked_upload_roundtrip() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["data"]["checksum"].is_string(), "{body}");
-    assert_eq!(std::fs::read(h.root.join("incoming/chunked.bin")).unwrap(), payload);
+    assert_eq!(
+        std::fs::read(h.root.join("incoming/chunked.bin")).unwrap(),
+        payload
+    );
 
     let debris: Vec<_> = std::fs::read_dir(h.root.join("incoming"))
         .unwrap()
@@ -1805,7 +2071,11 @@ async fn test_chunked_upload_offset_mismatch_reports_offset() {
 
     let (status, body) = send_chunk(&mut r, &sid, 5, b"hello", Some(&token)).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert_eq!(body["offset"].as_u64(), Some(0), "must report the real offset");
+    assert_eq!(
+        body["offset"].as_u64(),
+        Some(0),
+        "must report the real offset"
+    );
 }
 
 /// Aborting a resumable upload removes its partial temp file.
@@ -1873,9 +2143,16 @@ async fn test_rename_outside_allowed_root_is_rejected() {
         None,
     )
     .await;
-    assert_eq!(body["success"], json!(false), "rename escape must be denied: {body}");
+    assert_eq!(
+        body["success"],
+        json!(false),
+        "rename escape must be denied: {body}"
+    );
     assert!(h.root.join("move-me.txt").exists(), "source must stay put");
-    assert!(!std::path::Path::new(escape).exists(), "nothing must escape");
+    assert!(
+        !std::path::Path::new(escape).exists(),
+        "nothing must escape"
+    );
 }
 
 /// Permanent delete is admin-only; a regular user is forbidden.

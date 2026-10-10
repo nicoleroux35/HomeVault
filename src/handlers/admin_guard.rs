@@ -9,10 +9,10 @@ use std::sync::Arc;
 
 /// Vérifie qu'un utilisateur est authentifié ET admin
 /// Retourne Ok(username) si admin, Err(Response) sinon
-pub async fn require_admin(
-    state: &Arc<AppState>,
-    headers: &HeaderMap,
-) -> Result<String, Response> {
+// `Response` is axum's canonical error type; boxing it would ripple
+// through every call site for no real benefit, so allow the lint here.
+#[allow(clippy::result_large_err)]
+pub async fn require_admin(state: &Arc<AppState>, headers: &HeaderMap) -> Result<String, Response> {
     let session_token = headers
         .get("x-session-token")
         .and_then(|h| h.to_str().ok())
@@ -42,10 +42,10 @@ pub async fn require_admin(
 
 /// Vérifie qu'un utilisateur est authentifié (admin ou user)
 /// Retourne Ok(username) si authentifié, Err(Response) sinon
-pub async fn require_auth(
-    state: &Arc<AppState>,
-    headers: &HeaderMap,
-) -> Result<String, Response> {
+// `Response` is axum's canonical error type; boxing it would ripple
+// through every call site for no real benefit, so allow the lint here.
+#[allow(clippy::result_large_err)]
+pub async fn require_auth(state: &Arc<AppState>, headers: &HeaderMap) -> Result<String, Response> {
     let session_token = headers
         .get("x-session-token")
         .and_then(|h| h.to_str().ok())

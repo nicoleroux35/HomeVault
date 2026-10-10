@@ -52,8 +52,7 @@ pub async fn index_all(pool: &SqlitePool) -> Result<(i32, i32), String> {
 async fn index_catalog(pool: &SqlitePool) -> Result<(i32, i32), String> {
     use include_dir::include_dir;
 
-    static BUILTIN_DIR: include_dir::Dir<'_> =
-        include_dir!("$CARGO_MANIFEST_DIR/catalog");
+    static BUILTIN_DIR: include_dir::Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/catalog");
 
     let mut doc_count = 0;
     let mut chunk_count = 0;
@@ -81,7 +80,10 @@ async fn index_catalog(pool: &SqlitePool) -> Result<(i32, i32), String> {
         };
 
         // Build a rich text document for this app
-        let mut content = format!("Application: {}\nCategory: {}\n", manifest.name, manifest.category);
+        let mut content = format!(
+            "Application: {}\nCategory: {}\n",
+            manifest.name, manifest.category
+        );
 
         if let Some(tagline) = &manifest.tagline {
             content.push_str(&format!("Summary: {}\n", tagline));
@@ -128,7 +130,9 @@ async fn index_catalog(pool: &SqlitePool) -> Result<(i32, i32), String> {
 
         let chunks = crate::rag::chunk_text(&content);
         let chunk_texts: Vec<String> = chunks.iter().map(|(t, _)| t.clone()).collect();
-        let embeddings = crate::rag::generate_embeddings(&chunk_texts).await.unwrap_or_default();
+        let embeddings = crate::rag::generate_embeddings(&chunk_texts)
+            .await
+            .unwrap_or_default();
 
         // Upsert document
         sqlx::query(
@@ -503,7 +507,9 @@ Endpoint: GET /api/activity (any signed-in user; non-admins only see their own t
         let doc_id = format!("feature:{}", feature.id);
         let chunks = crate::rag::chunk_text(&feature.content);
         let chunk_texts: Vec<String> = chunks.iter().map(|(t, _)| t.clone()).collect();
-        let embeddings = crate::rag::generate_embeddings(&chunk_texts).await.unwrap_or_default();
+        let embeddings = crate::rag::generate_embeddings(&chunk_texts)
+            .await
+            .unwrap_or_default();
 
         sqlx::query(
             "INSERT INTO rag_documents (id, source, source_id, title, content, language, updated_at)
@@ -594,7 +600,9 @@ async fn index_i18n(pool: &SqlitePool) -> Result<(i32, i32), String> {
                 let doc_id = format!("i18n:{}:{}", lang_code, section);
                 let chunks = crate::rag::chunk_text(&content);
                 let chunk_texts: Vec<String> = chunks.iter().map(|(t, _)| t.clone()).collect();
-                let embeddings = crate::rag::generate_embeddings(&chunk_texts).await.unwrap_or_default();
+                let embeddings = crate::rag::generate_embeddings(&chunk_texts)
+                    .await
+                    .unwrap_or_default();
 
                 sqlx::query(
                     "INSERT INTO rag_documents (id, source, source_id, title, content, language, updated_at)
@@ -656,7 +664,26 @@ mod tests {
     #[test]
     fn test_feature_docs_are_nonempty() {
         // Quick sanity check that we defined real features
-        let features = vec!["dashboard", "explorer", "storage", "docker", "virtual-machines", "backup", "users", "shares", "cloudsync", "network", "health", "terminal", "security", "vpn", "rescue", "settings", "journal", "activity"];
+        let features = vec![
+            "dashboard",
+            "explorer",
+            "storage",
+            "docker",
+            "virtual-machines",
+            "backup",
+            "users",
+            "shares",
+            "cloudsync",
+            "network",
+            "health",
+            "terminal",
+            "security",
+            "vpn",
+            "rescue",
+            "settings",
+            "journal",
+            "activity",
+        ];
         assert!(features.len() >= 18);
     }
 
@@ -693,6 +720,9 @@ mod tests {
 
         // Re-indexing upserts rather than duplicating documents.
         let (docs2, _) = super::index_all(pool.as_ref()).await.expect("second index");
-        assert_eq!(docs, docs2, "re-indexing must not change the document count");
+        assert_eq!(
+            docs, docs2,
+            "re-indexing must not change the document count"
+        );
     }
 }

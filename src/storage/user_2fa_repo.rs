@@ -1,5 +1,5 @@
-use crate::storage::database::DbError;
 use crate::impl_repository;
+use crate::storage::database::DbError;
 use chrono::Utc;
 use rand::RngExt;
 use sqlx::SqlitePool;
@@ -98,11 +98,7 @@ impl User2faRepository {
     /// Store a freshly generated (not yet enabled) TOTP secret as the pending
     /// enrollment. The previously generated secret, if any, is replaced so the
     /// subsequent verification step validates against the secret shown to the user.
-    pub async fn save_pending(
-        &self,
-        username: &str,
-        totp_secret: &str,
-    ) -> Result<(), DbError> {
+    pub async fn save_pending(&self, username: &str, totp_secret: &str) -> Result<(), DbError> {
         let now = Utc::now();
         sqlx::query(
             "INSERT OR REPLACE INTO user_2fa (username, totp_secret_encrypted, enabled, backup_codes, created_at) VALUES (?, ?, 0, '', ?)"
@@ -191,23 +187,21 @@ impl User2faRepository {
 
     /// List all usernames that have 2FA enabled.
     pub async fn list_enabled_users(&self) -> Result<Vec<String>, DbError> {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT username FROM user_2fa WHERE enabled = 1 ORDER BY username"
-        )
-        .fetch_all(self.pool.as_ref())
-        .await?;
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT username FROM user_2fa WHERE enabled = 1 ORDER BY username")
+                .fetch_all(self.pool.as_ref())
+                .await?;
 
         Ok(rows.into_iter().map(|r| r.0).collect())
     }
 
     /// Check whether a specific user has 2FA enabled.
     pub async fn is_enabled(&self, username: &str) -> Result<bool, DbError> {
-        let row: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM user_2fa WHERE username = ? AND enabled = 1"
-        )
-        .bind(username)
-        .fetch_one(self.pool.as_ref())
-        .await?;
+        let row: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM user_2fa WHERE username = ? AND enabled = 1")
+                .bind(username)
+                .fetch_one(self.pool.as_ref())
+                .await?;
 
         Ok(row.0 > 0)
     }
@@ -227,7 +221,11 @@ impl User2faRepository {
     }
 
     /// Generate new backup codes and persist them for the user.
-    pub async fn regenerate_backup_codes(&self, username: &str, count: usize) -> Result<Vec<String>, DbError> {
+    pub async fn regenerate_backup_codes(
+        &self,
+        username: &str,
+        count: usize,
+    ) -> Result<Vec<String>, DbError> {
         let codes = Self::generate_backup_codes(count);
         let codes_json = serde_json::to_string(&codes).unwrap_or_default();
 

@@ -118,7 +118,10 @@ pub struct ReorderWidgetsRequest {
     pub widgets: Vec<String>,
 }
 
-pub async fn handle_dashboard_data(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_dashboard_data(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -255,7 +258,10 @@ pub async fn handle_reorder_widgets(
     }
 }
 
-pub async fn handle_get_all_widgets(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_get_all_widgets(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -309,7 +315,10 @@ pub async fn handle_network_traffic_data(
     ResponseHelper::json_success(data)
 }
 
-pub async fn handle_disk_io_data(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_disk_io_data(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -341,7 +350,10 @@ pub async fn handle_disk_io_data(State(state): State<Arc<AppState>>, headers: He
     ResponseHelper::json_success(data)
 }
 
-pub async fn handle_storage_data(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_storage_data(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -395,7 +407,10 @@ pub async fn handle_storage_data(State(state): State<Arc<AppState>>, headers: He
     ResponseHelper::json_success(data)
 }
 
-pub async fn handle_cpu_temperature(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_cpu_temperature(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -442,7 +457,10 @@ fn get_cpu_temperature() -> f64 {
 }
 
 /// Returns comprehensive health data including disk status.
-pub async fn handle_health_data(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_health_data(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -455,8 +473,18 @@ pub async fn handle_health_data(State(state): State<Arc<AppState>>, headers: Hea
     let disk_score = calculate_disk_score(&disks, &filesystems);
 
     // Calculate overall health score
-    let cpu_score = if cpu_usage < 70.0 { 100.0 - cpu_usage } else { (100.0 - cpu_usage) * 0.5 }.max(0.0);
-    let mem_score = if memory_usage < 70.0 { 100.0 - memory_usage } else { (100.0 - memory_usage) * 0.5 }.max(0.0);
+    let cpu_score = if cpu_usage < 70.0 {
+        100.0 - cpu_usage
+    } else {
+        (100.0 - cpu_usage) * 0.5
+    }
+    .max(0.0);
+    let mem_score = if memory_usage < 70.0 {
+        100.0 - memory_usage
+    } else {
+        (100.0 - memory_usage) * 0.5
+    }
+    .max(0.0);
     let overall_score = ((cpu_score * 0.25) + (mem_score * 0.25) + (disk_score * 0.5)) as u32;
 
     let status = if overall_score >= 70 {
@@ -486,7 +514,8 @@ fn get_system_metrics() -> (f64, f64, u64, u64) {
     // Get CPU usage
     let loadavg = ProcParser::parse_loadavg();
     let cpu_info = ProcParser::read_proc_file("/proc/cpuinfo");
-    let cores = cpu_info.lines()
+    let cores = cpu_info
+        .lines()
         .filter(|l| l.starts_with("processor"))
         .count() as f64;
     let cores = if cores > 0.0 { cores } else { 1.0 };
@@ -560,7 +589,8 @@ async fn get_disk_health() -> (Vec<DiskHealth>, Vec<FsHealth>) {
                     get_last_self_test(&name, &connection_type)
                 );
                 let (smart_status, temperature) = smart;
-                let health_score = calculate_individual_disk_score(&smart_status, temperature, usage_percent);
+                let health_score =
+                    calculate_individual_disk_score(&smart_status, temperature, usage_percent);
 
                 DiskHealth {
                     name: name.clone(),
@@ -587,9 +617,12 @@ async fn get_disk_health() -> (Vec<DiskHealth>, Vec<FsHealth>) {
         .args([
             "-B1",
             "--output=source,fstype,size,used,avail,target",
-            "-x", "tmpfs",
-            "-x", "devtmpfs",
-            "-x", "squashfs",
+            "-x",
+            "tmpfs",
+            "-x",
+            "devtmpfs",
+            "-x",
+            "squashfs",
         ])
         .output()
         .await
@@ -670,7 +703,10 @@ async fn get_smart_status(device_name: &str, connection_type: &str) -> (String, 
 }
 
 async fn get_smart_temperature(device: &str, connection_type: &str) -> Option<f64> {
-    let stdout = run_smartctl(device, connection_type, &["-A"], |s| s.contains("Temperature")).await?;
+    let stdout = run_smartctl(device, connection_type, &["-A"], |s| {
+        s.contains("Temperature")
+    })
+    .await?;
 
     for line in stdout.lines() {
         if line.contains("Temperature_Celsius") || line.contains("Airflow_Temperature") {
@@ -703,7 +739,9 @@ async fn get_last_self_test(device_name: &str, connection_type: &str) -> Option<
     let line = stdout.lines().find(|l| l.trim_start().starts_with('#'))?;
     let tokens: Vec<&str> = line.split_whitespace().collect();
     let percent_idx = tokens.iter().position(|t| t.ends_with('%'))?;
-    let hours = tokens.get(percent_idx + 1).and_then(|t| t.parse::<u64>().ok());
+    let hours = tokens
+        .get(percent_idx + 1)
+        .and_then(|t| t.parse::<u64>().ok());
 
     let status = if line.contains("Completed without error") {
         "Completed without error"
@@ -772,7 +810,11 @@ async fn run_smartctl(
         }
     }
 
-    if stdout.is_empty() { None } else { Some(stdout) }
+    if stdout.is_empty() {
+        None
+    } else {
+        Some(stdout)
+    }
 }
 
 async fn detect_disk_role(device_name: &str) -> String {
@@ -832,13 +874,13 @@ async fn get_disk_usage_percent(device_name: &str) -> f64 {
 
         for line in stdout.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 && parts[0].starts_with(device_name) && !parts[1].is_empty() && parts[1] != "MOUNTPOINT" {
+            if parts.len() >= 2
+                && parts[0].starts_with(device_name)
+                && !parts[1].is_empty()
+                && parts[1] != "MOUNTPOINT"
+            {
                 let partition = format!("/dev/{}", parts[0]);
-                if let Ok(df_output) = Command::new("df")
-                    .args(["-B1", &partition])
-                    .output()
-                    .await
-                {
+                if let Ok(df_output) = Command::new("df").args(["-B1", &partition]).output().await {
                     let df_stdout = String::from_utf8_lossy(&df_output.stdout);
                     let lines: Vec<&str> = df_stdout.lines().collect();
                     if lines.len() >= 2 {
@@ -863,7 +905,11 @@ async fn get_disk_usage_percent(device_name: &str) -> f64 {
     0.0
 }
 
-fn calculate_individual_disk_score(smart_status: &str, temperature: Option<f64>, usage_percent: f64) -> u32 {
+fn calculate_individual_disk_score(
+    smart_status: &str,
+    temperature: Option<f64>,
+    usage_percent: f64,
+) -> u32 {
     // SMART status: 40 points
     let smart_score = match smart_status {
         "Healthy" => 40,
@@ -874,19 +920,29 @@ fn calculate_individual_disk_score(smart_status: &str, temperature: Option<f64>,
 
     // Temperature: 20 points
     let temp_score: u32 = if let Some(temp) = temperature {
-        if temp < 50.0 { 20 }
-        else if temp < 70.0 { 15 }
-        else if temp < 85.0 { 10 }
-        else { 0 }
+        if temp < 50.0 {
+            20
+        } else if temp < 70.0 {
+            15
+        } else if temp < 85.0 {
+            10
+        } else {
+            0
+        }
     } else {
         15 // Unknown temperature, give partial score
     };
 
     // Usage space: 30 points
-    let usage_score: u32 = if usage_percent < 70.0 { 30 }
-        else if usage_percent < 85.0 { 20 }
-        else if usage_percent < 95.0 { 10 }
-        else { 0 };
+    let usage_score: u32 = if usage_percent < 70.0 {
+        30
+    } else if usage_percent < 85.0 {
+        20
+    } else if usage_percent < 95.0 {
+        10
+    } else {
+        0
+    };
 
     // Error count: 10 points (simplified)
     let error_score = 10;
@@ -921,7 +977,8 @@ fn calculate_disk_score(disks: &[DiskHealth], filesystems: &[FsHealth]) -> f64 {
     }
 
     // Calculate average disk health
-    let disk_avg: f64 = disks.iter().map(|d| d.health_score as f64).sum::<f64>() / disks.len() as f64;
+    let disk_avg: f64 =
+        disks.iter().map(|d| d.health_score as f64).sum::<f64>() / disks.len() as f64;
 
     // Calculate filesystem health based on critical usage
     let fs_score = if filesystems.iter().any(|f| f.usage_percent > 95.0) {
@@ -985,7 +1042,10 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-pub async fn handle_storage_volumes(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_storage_volumes(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -1113,7 +1173,7 @@ async fn get_raid_device_info(device_name: &str, raid_level: &str) -> Option<Sto
             let stdout = String::from_utf8_lossy(&output.stdout);
             let lines: Vec<&str> = stdout.lines().collect();
 
-                    if lines.len() >= 2 {
+            if lines.len() >= 2 {
                 let parts: Vec<&str> = lines[1].split_whitespace().collect();
                 if parts.len() >= 6 {
                     let size: u64 = parts[1].parse().unwrap_or(0);
@@ -1323,7 +1383,10 @@ pub struct MemoryDetails {
     pub ram_speed_mhz: u32,
 }
 
-pub async fn handle_server_details(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_server_details(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -1571,7 +1634,12 @@ fn get_os_details(architecture: String) -> OsDetails {
 /// Count installed packages, trying the common Linux package managers in
 /// turn. Returns e.g. "2143 (dpkg)", or an empty string when none match.
 fn count_installed_packages() -> String {
-    let count_lines = |bytes: &[u8]| bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()).count();
+    let count_lines = |bytes: &[u8]| {
+        bytes
+            .split(|b| *b == b'\n')
+            .filter(|l| !l.is_empty())
+            .count()
+    };
 
     let candidates: [(&str, &[&str]); 3] = [
         ("dpkg", &["dpkg-query", "-f", "${binary:Package}\n", "-W"]),
@@ -1580,7 +1648,10 @@ fn count_installed_packages() -> String {
     ];
 
     for (label, argv) in candidates {
-        if let Ok(output) = std::process::Command::new(argv[0]).args(&argv[1..]).output() {
+        if let Ok(output) = std::process::Command::new(argv[0])
+            .args(&argv[1..])
+            .output()
+        {
             if output.status.success() {
                 let n = count_lines(&output.stdout);
                 if n > 0 {
@@ -1661,7 +1732,8 @@ fn get_per_core_delta() -> Vec<PerCoreUsageItem> {
     {
         let mut prev = PREV_PER_CORE.write();
         for (core, (cur_idle, cur_total)) in &current_stats {
-            let (prev_idle, prev_total) = prev.get(core).copied().unwrap_or((*cur_idle, *cur_total));
+            let (prev_idle, prev_total) =
+                prev.get(core).copied().unwrap_or((*cur_idle, *cur_total));
             let delta_total = cur_total.saturating_sub(prev_total);
             let delta_idle = cur_idle.saturating_sub(prev_idle);
             let usage = if delta_total > 0 {
@@ -1735,7 +1807,13 @@ fn get_gpu_details() -> Vec<GpuDetails> {
     // Try rocm-smi (AMD GPUs)
     let mut rocm_found = false;
     if let Ok(output) = std::process::Command::new("rocm-smi")
-        .args(["--showtemp", "--showuse", "--showmeminfo", "--showpower", "--showclocks"])
+        .args([
+            "--showtemp",
+            "--showuse",
+            "--showmeminfo",
+            "--showpower",
+            "--showclocks",
+        ])
         .output()
     {
         if output.status.success() {
@@ -1749,7 +1827,11 @@ fn get_gpu_details() -> Vec<GpuDetails> {
                     .unwrap_or_else(|| "AMD GPU".to_string());
                 for line in stdout.lines() {
                     if line.contains("GPU[") && line.contains("Temperature") {
-                        if let Some(val) = line.split(':').next_back().and_then(|s| s.trim().parse::<f64>().ok()) {
+                        if let Some(val) = line
+                            .split(':')
+                            .next_back()
+                            .and_then(|s| s.trim().parse::<f64>().ok())
+                        {
                             gpus.push(GpuDetails {
                                 model: model.clone(),
                                 gpu_type: "Dedicated (AMD)".to_string(),
@@ -1768,35 +1850,55 @@ fn get_gpu_details() -> Vec<GpuDetails> {
                 }
                 for line in stdout.lines() {
                     if line.contains("GPU[") && line.contains("Utilization") {
-                        if let Some(val) = line.split(':').next_back().and_then(|s| s.trim().trim_end_matches('%').parse::<f64>().ok()) {
+                        if let Some(val) = line
+                            .split(':')
+                            .next_back()
+                            .and_then(|s| s.trim().trim_end_matches('%').parse::<f64>().ok())
+                        {
                             if let Some(gpu) = gpus.last_mut() {
                                 gpu.utilization_percent = Some(val as u32);
                             }
                         }
                     }
                     if line.contains("VRAM Total Memory") {
-                        if let Some(val) = line.split(':').next_back().and_then(|s| s.trim().parse::<u64>().ok()) {
+                        if let Some(val) = line
+                            .split(':')
+                            .next_back()
+                            .and_then(|s| s.trim().parse::<u64>().ok())
+                        {
                             if let Some(gpu) = gpus.last_mut() {
                                 gpu.memory_total_bytes = Some(val);
                             }
                         }
                     }
                     if line.contains("VRAM Used Memory") {
-                        if let Some(val) = line.split(':').next_back().and_then(|s| s.trim().parse::<u64>().ok()) {
+                        if let Some(val) = line
+                            .split(':')
+                            .next_back()
+                            .and_then(|s| s.trim().parse::<u64>().ok())
+                        {
                             if let Some(gpu) = gpus.last_mut() {
                                 gpu.memory_used_bytes = Some(val);
                             }
                         }
                     }
                     if line.contains("Power Draw") {
-                        if let Some(val) = line.split(':').next_back().and_then(|s| s.trim().parse::<f64>().ok()) {
+                        if let Some(val) = line
+                            .split(':')
+                            .next_back()
+                            .and_then(|s| s.trim().parse::<f64>().ok())
+                        {
                             if let Some(gpu) = gpus.last_mut() {
                                 gpu.power_watts = Some(val);
                             }
                         }
                     }
                     if line.contains("GPU Clock") {
-                        if let Some(val) = line.split(':').next_back().and_then(|s| s.trim().parse::<f64>().ok()) {
+                        if let Some(val) = line
+                            .split(':')
+                            .next_back()
+                            .and_then(|s| s.trim().parse::<f64>().ok())
+                        {
                             if let Some(gpu) = gpus.last_mut() {
                                 gpu.freq_current_mhz = Some(val as u32);
                             }
@@ -1876,10 +1978,16 @@ fn get_network_details() -> NetworkDetails {
                             }
                             if family == "inet" {
                                 let prefix = addr["prefixlen"].as_u64().unwrap_or(0);
-                                ipv4_map.entry(ifname.to_string()).or_default().push(format!("{}/{}", local, prefix));
+                                ipv4_map
+                                    .entry(ifname.to_string())
+                                    .or_default()
+                                    .push(format!("{}/{}", local, prefix));
                             } else if family == "inet6" {
                                 let prefix = addr["prefixlen"].as_u64().unwrap_or(0);
-                                ipv6_map.entry(ifname.to_string()).or_default().push(format!("{}/{}", local, prefix));
+                                ipv6_map
+                                    .entry(ifname.to_string())
+                                    .or_default()
+                                    .push(format!("{}/{}", local, prefix));
                             }
                         }
                     }
@@ -1902,7 +2010,10 @@ fn get_network_details() -> NetworkDetails {
                     }
                     if line.contains("Slave Interface:") {
                         let slave = line.split(':').nth(1).unwrap_or("").trim().to_string();
-                        bond_slaves.entry(bond_name.clone()).or_default().push(slave);
+                        bond_slaves
+                            .entry(bond_name.clone())
+                            .or_default()
+                            .push(slave);
                     }
                 }
             }
@@ -1949,7 +2060,9 @@ fn get_network_details() -> NetworkDetails {
             // Detect VLAN (iface name contains dot: eth0.100 or enp0s3.100)
             let is_vlan = name.contains('.');
             let vlan_id = if is_vlan {
-                name.split('.').next_back().and_then(|s| s.parse::<u32>().ok())
+                name.split('.')
+                    .next_back()
+                    .and_then(|s| s.parse::<u32>().ok())
             } else {
                 None
             };
@@ -1987,11 +2100,7 @@ fn get_network_details() -> NetworkDetails {
     }
 
     // Sort: active interfaces first, then by name
-    interfaces.sort_by(|a, b| {
-        b.carrier
-            .cmp(&a.carrier)
-            .then(a.name.cmp(&b.name))
-    });
+    interfaces.sort_by(|a, b| b.carrier.cmp(&a.carrier).then(a.name.cmp(&b.name)));
 
     NetworkDetails { interfaces }
 }
@@ -2018,8 +2127,13 @@ fn get_drive_temperatures() -> Vec<TempItem> {
             {
                 let smart_out = String::from_utf8_lossy(&smart.stdout);
                 for smart_line in smart_out.lines() {
-                    if smart_line.contains("Temperature_Celsius") || smart_line.contains("Airflow_Temperature") {
-                        let parts: Vec<&str> = smart_line.split_whitespace().filter(|s| !s.is_empty()).collect();
+                    if smart_line.contains("Temperature_Celsius")
+                        || smart_line.contains("Airflow_Temperature")
+                    {
+                        let parts: Vec<&str> = smart_line
+                            .split_whitespace()
+                            .filter(|s| !s.is_empty())
+                            .collect();
                         if let Some(temp_str) = parts.last() {
                             if let Ok(temp) = temp_str.parse::<f64>() {
                                 temps.push(TempItem {
@@ -2050,15 +2164,28 @@ fn parse_voltages(_meminfo: &str, _sensors: &crate::utils::proc::SensorInfo) -> 
         for line in stdout.lines() {
             // Detect chip name (line before adapter)
             if line.contains("Adapter:") || (!line.starts_with(' ') && line.contains(':')) {
-                if !line.starts_with(' ') && line.contains(':') && !line.contains('°') && !line.contains("RPM") {
+                if !line.starts_with(' ')
+                    && line.contains(':')
+                    && !line.contains('°')
+                    && !line.contains("RPM")
+                {
                     let parts: Vec<&str> = line.split(':').collect();
                     let label = parts[0].trim().to_string();
                     let val_str = parts[1].trim();
-                    // Voltage lines: contain "V" or "mV" or " V" 
+                    // Voltage lines: contain "V" or "mV" or " V"
                     if val_str.contains(" V") || val_str.ends_with('V') || val_str.contains(" mV") {
-                        let clean = val_str.replace(" V", "").replace(" mV", "").replace('+', "").trim().to_string();
+                        let clean = val_str
+                            .replace(" V", "")
+                            .replace(" mV", "")
+                            .replace('+', "")
+                            .trim()
+                            .to_string();
                         if let Ok(v) = clean.parse::<f64>() {
-                            let voltage = if val_str.contains(" mV") { v / 1000.0 } else { v };
+                            let voltage = if val_str.contains(" mV") {
+                                v / 1000.0
+                            } else {
+                                v
+                            };
                             voltages.push(VoltageItem { label, voltage });
                         }
                     }
@@ -2072,9 +2199,18 @@ fn parse_voltages(_meminfo: &str, _sensors: &crate::utils::proc::SensorInfo) -> 
                     let label = parts[0].trim().to_string();
                     let val_str = parts[1].trim();
                     if val_str.contains(" V") || val_str.contains(" mV") {
-                        let clean = val_str.replace(" V", "").replace(" mV", "").replace('+', "").trim().to_string();
+                        let clean = val_str
+                            .replace(" V", "")
+                            .replace(" mV", "")
+                            .replace('+', "")
+                            .trim()
+                            .to_string();
                         if let Ok(v) = clean.parse::<f64>() {
-                            let voltage = if val_str.contains(" mV") { v / 1000.0 } else { v };
+                            let voltage = if val_str.contains(" mV") {
+                                v / 1000.0
+                            } else {
+                                v
+                            };
                             voltages.push(VoltageItem { label, voltage });
                         }
                     }
@@ -2100,15 +2236,16 @@ pub async fn handle_get_widget_preferences(
     }
 
     // Get user_id from session
-    let user_id = match sqlx::query_scalar::<_, String>("SELECT username FROM sessions WHERE token = ?")
-        .bind(session_token)
-        .fetch_optional(state.db.pool().as_ref())
-        .await
-    {
-        Ok(Some(id)) => id,
-        Ok(None) => return ResponseHelper::json_error("Invalid session".to_string()),
-        Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
-    };
+    let user_id =
+        match sqlx::query_scalar::<_, String>("SELECT username FROM sessions WHERE token = ?")
+            .bind(session_token)
+            .fetch_optional(state.db.pool().as_ref())
+            .await
+        {
+            Ok(Some(id)) => id,
+            Ok(None) => return ResponseHelper::json_error("Invalid session".to_string()),
+            Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
+        };
 
     // Fetch widget preferences
     let preferences = sqlx::query_as::<_, (String, i32, i32, bool)>(
@@ -2122,12 +2259,14 @@ pub async fn handle_get_widget_preferences(
         Ok(prefs) => {
             let widget_prefs: Vec<WidgetPreference> = prefs
                 .into_iter()
-                .map(|(widget_key, position_x, position_y, is_visible)| WidgetPreference {
-                    widget_key,
-                    position_x,
-                    position_y,
-                    is_visible,
-                })
+                .map(
+                    |(widget_key, position_x, position_y, is_visible)| WidgetPreference {
+                        widget_key,
+                        position_x,
+                        position_y,
+                        is_visible,
+                    },
+                )
                 .collect();
 
             ResponseHelper::json_success(widget_prefs)
@@ -2151,15 +2290,16 @@ pub async fn handle_update_widget_preference(
     }
 
     // Get user_id from session
-    let user_id = match sqlx::query_scalar::<_, String>("SELECT username FROM sessions WHERE token = ?")
-        .bind(session_token)
-        .fetch_optional(state.db.pool().as_ref())
-        .await
-    {
-        Ok(Some(id)) => id,
-        Ok(None) => return ResponseHelper::json_error("Invalid session".to_string()),
-        Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
-    };
+    let user_id =
+        match sqlx::query_scalar::<_, String>("SELECT username FROM sessions WHERE token = ?")
+            .bind(session_token)
+            .fetch_optional(state.db.pool().as_ref())
+            .await
+        {
+            Ok(Some(id)) => id,
+            Ok(None) => return ResponseHelper::json_error("Invalid session".to_string()),
+            Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
+        };
 
     let is_visible = payload.is_visible.unwrap_or(true);
 
@@ -2188,7 +2328,6 @@ pub async fn handle_update_widget_preference(
         Err(e) => ResponseHelper::json_error(format!("Failed to update preference: {}", e)),
     }
 }
-
 
 #[cfg(test)]
 mod os_details_tests {
@@ -2290,13 +2429,19 @@ mod tests {
 
     #[test]
     fn test_individual_disk_score_healthy_cool_and_empty_is_perfect() {
-        assert_eq!(calculate_individual_disk_score("Healthy", Some(35.0), 10.0), 100);
+        assert_eq!(
+            calculate_individual_disk_score("Healthy", Some(35.0), 10.0),
+            100
+        );
     }
 
     #[test]
     fn test_individual_disk_score_failed_smart_drags_it_down() {
         // 0 (smart) + 20 (temp) + 30 (usage) + 10 (errors) = 60
-        assert_eq!(calculate_individual_disk_score("Failed", Some(30.0), 20.0), 60);
+        assert_eq!(
+            calculate_individual_disk_score("Failed", Some(30.0), 20.0),
+            60
+        );
     }
 
     #[test]
@@ -2308,7 +2453,10 @@ mod tests {
     #[test]
     fn test_individual_disk_score_hot_and_full_disk_is_penalised() {
         // 40 (healthy) + 0 (>=85°C) + 0 (>=95% usage) + 10 = 50
-        assert_eq!(calculate_individual_disk_score("Healthy", Some(90.0), 99.0), 50);
+        assert_eq!(
+            calculate_individual_disk_score("Healthy", Some(90.0), 99.0),
+            50
+        );
     }
 
     #[test]
@@ -2348,7 +2496,15 @@ mod tests {
     #[test]
     fn test_disk_summary_of_no_disks_is_all_zero() {
         let s = calculate_disk_summary(&[]);
-        assert_eq!((s.total_count, s.healthy_count, s.warning_count, s.critical_count), (0, 0, 0, 0));
+        assert_eq!(
+            (
+                s.total_count,
+                s.healthy_count,
+                s.warning_count,
+                s.critical_count
+            ),
+            (0, 0, 0, 0)
+        );
     }
 
     // --- calculate_disk_score: 60% avg disk health + 40% filesystem headroom ---
@@ -2376,7 +2532,10 @@ mod tests {
     #[test]
     fn test_disk_score_all_healthy_with_roomy_filesystems() {
         // disk_avg 100 * 0.6 + fs 100 * 0.4 = 100
-        assert_eq!(calculate_disk_score(&[disk(100), disk(100)], &[fs(20.0)]), 100.0);
+        assert_eq!(
+            calculate_disk_score(&[disk(100), disk(100)], &[fs(20.0)]),
+            100.0
+        );
     }
 
     #[test]

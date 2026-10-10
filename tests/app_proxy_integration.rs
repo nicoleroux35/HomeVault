@@ -68,7 +68,14 @@ async fn test_app_proxy_end_to_end() {
     let base = format!("http://127.0.0.1:{proxy_port}");
 
     // 1. Plain forward, no auth required.
-    let body = client.get(format!("{base}/ping")).send().await.unwrap().text().await.unwrap();
+    let body = client
+        .get(format!("{base}/ping"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
     assert_eq!(body, "pong");
 
     // 2. Turn the auth gate on — a cookie-less request is redirected.

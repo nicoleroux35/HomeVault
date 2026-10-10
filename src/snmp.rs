@@ -403,7 +403,10 @@ mod tests {
         let stats = parse_storage_stats(output);
         assert_eq!(stats.len(), 2);
 
-        let mem = stats.iter().find(|s| s.mount_point == "Physical memory").unwrap();
+        let mem = stats
+            .iter()
+            .find(|s| s.mount_point == "Physical memory")
+            .unwrap();
         assert_eq!(mem.total, 12159548 * 1024);
         assert_eq!(mem.used, 9632492 * 1024);
         assert_eq!(mem.available, (12159548 - 9632492) * 1024);

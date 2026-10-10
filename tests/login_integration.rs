@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the Login / Auth API endpoints.
 //!
 //! Each test creates a fresh in-memory SQLite database, runs all embedded
@@ -21,9 +24,7 @@ use homevault::auth::AuthService;
 use homevault::config::PathGuard;
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{
-    auth::{
-        handle_login, handle_2fa_verify, handle_logout, handle_get_current_user,
-    },
+    auth::{handle_2fa_verify, handle_get_current_user, handle_login, handle_logout},
     security::handle_get_login_history,
     AppState,
 };
@@ -43,13 +44,15 @@ async fn setup_db() -> Database {
     let db = Database::new("sqlite::memory:")
         .await
         .expect("Failed to create in-memory database");
-    db.run_migrations()
-        .await
-        .expect("Failed to run migrations");
+    db.run_migrations().await.expect("Failed to run migrations");
     db
 }
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("Failed to create temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -418,7 +421,7 @@ async fn test_login_returns_is_admin_for_admin_user() {
     .await;
 
     assert!(body["success"].as_bool().unwrap_or(false));
-    assert_eq!(body["data"]["is_admin"].as_bool().unwrap_or(false), true);
+    assert!(body["data"]["is_admin"].as_bool().unwrap_or(false));
 }
 
 #[tokio::test]
@@ -435,7 +438,7 @@ async fn test_login_returns_false_is_admin_for_regular_user() {
     .await;
 
     assert!(body["success"].as_bool().unwrap_or(false));
-    assert_eq!(body["data"]["is_admin"].as_bool().unwrap_or(true), false);
+    assert!(!body["data"]["is_admin"].as_bool().unwrap_or(true));
 }
 
 #[tokio::test]
@@ -539,13 +542,7 @@ async fn test_logout_valid_token() {
     .await;
     let token = login_body["data"]["token"].as_str().unwrap();
 
-    let (status, body) = post_json_with_token(
-        &mut app,
-        "/api/auth/logout",
-        json!({}),
-        token,
-    )
-    .await;
+    let (status, body) = post_json_with_token(&mut app, "/api/auth/logout", json!({}), token).await;
 
     assert_eq!(status, StatusCode::OK);
     assert!(body["success"].as_bool().unwrap_or(false));
@@ -556,13 +553,8 @@ async fn test_logout_invalid_token() {
     let (state, _tmp, _lock) = setup_state().await;
     let mut app = login_router(state);
 
-    let (status, _) = post_json_with_token(
-        &mut app,
-        "/api/auth/logout",
-        json!({}),
-        "garbage-token",
-    )
-    .await;
+    let (status, _) =
+        post_json_with_token(&mut app, "/api/auth/logout", json!({}), "garbage-token").await;
 
     // Should still succeed (logout is idempotent) or return error
     // Both are acceptable — the key is it doesn't crash
@@ -702,7 +694,8 @@ async fn test_full_auth_flow() {
     assert_eq!(me_body["data"]["username"].as_str().unwrap(), "flowadmin");
 
     // Step 5: Logout
-    let (logout_status, _) = post_json_with_token(&mut app, "/api/auth/logout", json!({}), token).await;
+    let (logout_status, _) =
+        post_json_with_token(&mut app, "/api/auth/logout", json!({}), token).await;
     assert_eq!(logout_status, StatusCode::OK);
 
     // Step 6: /me fails after logout
@@ -750,10 +743,7 @@ async fn test_login_returns_csrf_token() {
 
     assert!(body["success"].as_bool().unwrap_or(false));
     let csrf = body["data"]["csrf_token"].as_str().unwrap_or("");
-    assert!(
-        !csrf.is_empty(),
-        "Should return a CSRF token"
-    );
+    assert!(!csrf.is_empty(), "Should return a CSRF token");
 }
 
 // ========================================================================
@@ -804,7 +794,7 @@ async fn test_login_with_2fa_enabled_returns_requires_2fa() {
 
     // The plain login endpoint must NOT issue a session for a 2FA account.
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    assert_eq!(body["data"]["requires_2fa"].as_bool().unwrap_or(false), true);
+    assert!(body["data"]["requires_2fa"].as_bool().unwrap_or(false));
     assert!(
         body["data"]["token"].as_str().unwrap_or("").is_empty(),
         "no session token before the second factor"
@@ -1096,10 +1086,13 @@ async fn test_me_returns_full_profile_fields() {
     assert_eq!(data["username"], "profileuser");
     assert_eq!(data["fullname"], "Full Name");
     assert_eq!(data["email"], "user@example.com");
-    assert_eq!(data["two_fa_enabled"].as_bool().unwrap_or(true), false);
-    assert!(data["role"].as_str().unwrap_or("").len() > 0);
+    assert!(!data["two_fa_enabled"].as_bool().unwrap_or(true));
+    assert!(!data["role"].as_str().unwrap_or("").is_empty());
     assert!(
-        data["avatar_url"].as_str().unwrap_or("").contains("profileuser"),
+        data["avatar_url"]
+            .as_str()
+            .unwrap_or("")
+            .contains("profileuser"),
         "avatar_url should reference the username"
     );
 }
@@ -1113,12 +1106,7 @@ async fn test_login_missing_password_field_rejected() {
     let (state, _tmp, _lock) = setup_state().await;
     let mut app = login_router(state);
 
-    let (status, _) = post_json(
-        &mut app,
-        "/api/auth/login",
-        json!({"username": "someone"}),
-    )
-    .await;
+    let (status, _) = post_json(&mut app, "/api/auth/login", json!({"username": "someone"})).await;
 
     // Missing a required field — serde rejects before the handler runs.
     assert!(status.is_client_error());
@@ -1145,7 +1133,7 @@ async fn test_login_ignores_unknown_extra_fields() {
     assert_eq!(status, StatusCode::OK);
     assert!(body["success"].as_bool().unwrap_or(false));
     // The bogus `is_admin: true` in the request must not be honoured.
-    assert_eq!(body["data"]["is_admin"].as_bool().unwrap_or(true), false);
+    assert!(!body["data"]["is_admin"].as_bool().unwrap_or(true));
 }
 
 #[tokio::test]
@@ -1218,7 +1206,12 @@ async fn test_csrf_rejects_authenticated_post_without_token() {
         .header("x-session-token", token.as_str())
         .body(axum::body::Body::from("{}"))
         .unwrap();
-    let resp = ServiceExt::<Req>::ready(&mut app).await.unwrap().call(req).await.unwrap();
+    let resp = ServiceExt::<Req>::ready(&mut app)
+        .await
+        .unwrap()
+        .call(req)
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
 
@@ -1309,7 +1302,13 @@ async fn insert_session(state: &AppState, token: &str, username: &str, expires_a
 async fn test_me_rejects_an_expired_session_token() {
     let (state, _tmp, _lock) = setup_state().await;
     create_test_user(&state, "expsess", "TestPass123").await;
-    insert_session(&state, "expired-token-xyz", "expsess", "2000-01-01T00:00:00+00:00").await;
+    insert_session(
+        &state,
+        "expired-token-xyz",
+        "expsess",
+        "2000-01-01T00:00:00+00:00",
+    )
+    .await;
     let mut app = login_router(state);
 
     let (status, _) = get_json_with_token(&mut app, "/api/auth/me", "expired-token-xyz").await;
@@ -1320,14 +1319,27 @@ async fn test_me_rejects_an_expired_session_token() {
 async fn test_refresh_session_extends_expiry() {
     let (state, _tmp, _lock) = setup_state().await;
     create_test_user(&state, "refreshme", "TestPass123").await;
-    insert_session(&state, "soon-token", "refreshme", "2999-01-01T00:00:00+00:00").await;
+    insert_session(
+        &state,
+        "soon-token",
+        "refreshme",
+        "2999-01-01T00:00:00+00:00",
+    )
+    .await;
 
     // A far-future placeholder, then refresh should reset it to now + lifetime,
     // i.e. *earlier* than the year-2999 placeholder.
     let before = session_expires_at(&state, "soon-token").await;
-    state.auth.refresh_session("soon-token").await.expect("refresh");
+    state
+        .auth
+        .refresh_session("soon-token")
+        .await
+        .expect("refresh");
     let after = session_expires_at(&state, "soon-token").await;
-    assert!(after < before, "refresh should rewrite expires_at to now + lifetime");
+    assert!(
+        after < before,
+        "refresh should rewrite expires_at to now + lifetime"
+    );
 
     // And the refreshed session is still valid right now.
     let mut app = login_router(state);
@@ -1357,7 +1369,10 @@ async fn test_cleanup_expired_sessions_removes_only_expired_rows() {
         .fetch_one(&*state.db.pool())
         .await
         .unwrap();
-    assert_eq!(remaining.0, 1, "only the non-expired session should survive");
+    assert_eq!(
+        remaining.0, 1,
+        "only the non-expired session should survive"
+    );
 }
 
 // ========================================================================
@@ -1420,9 +1435,9 @@ fn rate_limited_router(limiter: Arc<RateLimitState>) -> Router {
     async fn ok() -> &'static str {
         "ok"
     }
-    Router::new()
-        .route("/ping", axum::routing::get(ok))
-        .layer(axum::middleware::from_fn_with_state(limiter, rate_limit_middleware))
+    Router::new().route("/ping", axum::routing::get(ok)).layer(
+        axum::middleware::from_fn_with_state(limiter, rate_limit_middleware),
+    )
 }
 
 async fn ping_from_ip(router: &mut Router, ip: &str) -> StatusCode {
@@ -1511,14 +1526,12 @@ async fn test_setup_status_reports_hardware_changed_when_hash_file_mismatches() 
 
     let (status, body) = get_json(&mut app, "/api/auth/setup-status").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
+    assert!(
         body["data"]["hardware_changed"].as_bool().unwrap_or(false),
-        true,
         "a stale system-hash file must flip hardware_changed"
     );
-    assert_eq!(
-        body["data"]["is_first_run"].as_bool().unwrap_or(true),
-        false,
+    assert!(
+        !body["data"]["is_first_run"].as_bool().unwrap_or(true),
         "the setup-complete flag is present"
     );
 }
@@ -1540,10 +1553,7 @@ async fn test_setup_status_no_hardware_change_when_hash_matches() {
         .with_state(state);
 
     let (_, body) = get_json(&mut app, "/api/auth/setup-status").await;
-    assert_eq!(
-        body["data"]["hardware_changed"].as_bool().unwrap_or(true),
-        false
-    );
+    assert!(!body["data"]["hardware_changed"].as_bool().unwrap_or(true));
 }
 
 // ========================================================================
@@ -1632,7 +1642,10 @@ async fn test_login_history_persists_real_success_and_user_agent() {
     let fail_row = attempts.iter().find(|a| a["username"] == "histfail");
     let ok_row = attempts.iter().find(|a| a["username"] == "histok");
     assert!(fail_row.is_some(), "failed attempt must appear in history");
-    assert!(ok_row.is_some(), "successful attempt must appear in history");
+    assert!(
+        ok_row.is_some(),
+        "successful attempt must appear in history"
+    );
 
     let fail = fail_row.unwrap();
     assert_eq!(fail["success"], json!(false));

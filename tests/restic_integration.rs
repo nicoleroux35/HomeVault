@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the Backup (restic) API — `crate::handlers::restic`.
 //!
 //! 27 endpoints: repo CRUD, snapshots/stats/jobs, backup/restore/check/
@@ -19,6 +22,7 @@
 //!   * a clean 400 for a missing/unknown repo id, an invalid cron
 //!     expression, an empty policy/schedule name, or missing required
 //!     fields — all *before* any `restic` process is spawned.
+//!
 //! The **schedule** and **retention-policy** lifecycles are pure DB +
 //! `compute_next_run` (no restic at all), so those are covered end to end.
 //!
@@ -70,7 +74,11 @@ static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 // Harness
 // ---------------------------------------------------------------------------
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -119,7 +127,10 @@ fn restic_router(state: Arc<AppState>) -> Router {
             get(handle_restic_snapshots_list),
         )
         .route("/api/restic/repos/{id}/stats", get(handle_restic_stats))
-        .route("/api/restic/repos/{id}/jobs", get(handle_restic_backup_jobs))
+        .route(
+            "/api/restic/repos/{id}/jobs",
+            get(handle_restic_backup_jobs),
+        )
         .route("/api/restic/repos/{id}/unlock", post(handle_restic_unlock))
         .route("/api/restic/repos/{id}/prune", post(handle_restic_prune))
         .route("/api/restic/backup", post(handle_restic_backup_create))
@@ -247,7 +258,12 @@ fn msg(b: &Value) -> String {
         .to_string()
 }
 
-async fn admin_router() -> (Router, String, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn admin_router() -> (
+    Router,
+    String,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let (state, tmp, guard) = setup_state().await;
     create_test_user(&state, "admin1", "Password123!", 2).await;
     let mut router = restic_router(state);
@@ -270,17 +286,31 @@ fn mutation_endpoints() -> Vec<(Method, &'static str, Option<Value>)> {
         (
             Method::POST,
             "/api/restic/repos",
-            Some(json!({"name":"r","repository":"/tmp/r","password":"p","source_paths":["/tmp/s"]})),
+            Some(
+                json!({"name":"r","repository":"/tmp/r","password":"p","source_paths":["/tmp/s"]}),
+            ),
         ),
-        (Method::PUT, "/api/restic/repos/x", Some(json!({"name":"r2"}))),
+        (
+            Method::PUT,
+            "/api/restic/repos/x",
+            Some(json!({"name":"r2"})),
+        ),
         (Method::DELETE, "/api/restic/repos/x", None),
-        (Method::POST, "/api/restic/backup", Some(json!({"repo_id":"x"}))),
+        (
+            Method::POST,
+            "/api/restic/backup",
+            Some(json!({"repo_id":"x"})),
+        ),
         (
             Method::POST,
             "/api/restic/restore",
             Some(json!({"repo_id":"x","snapshot_id":"s","target":"/tmp/t"})),
         ),
-        (Method::POST, "/api/restic/forget", Some(json!({"repo_id":"x"}))),
+        (
+            Method::POST,
+            "/api/restic/forget",
+            Some(json!({"repo_id":"x"})),
+        ),
         (Method::POST, "/api/restic/repos/x/prune", None),
         (Method::POST, "/api/restic/repos/x/unlock", None),
         (
@@ -293,7 +323,11 @@ fn mutation_endpoints() -> Vec<(Method, &'static str, Option<Value>)> {
             "/api/restic/schedules",
             Some(json!({"repo_id":"x","name":"n","cron_expression":"0 3 * * *"})),
         ),
-        (Method::PUT, "/api/restic/schedules/x", Some(json!({"name":"n2"}))),
+        (
+            Method::PUT,
+            "/api/restic/schedules/x",
+            Some(json!({"name":"n2"})),
+        ),
         (Method::DELETE, "/api/restic/schedules/x", None),
         (
             Method::PUT,
@@ -395,7 +429,14 @@ async fn test_repos_list_include_password_requires_admin() {
     let token = login(&mut router, "reg", "Password123!").await;
 
     // plain list is fine for a non-admin
-    let (s, _) = send(&mut router, Method::GET, "/api/restic/repos", Some(&token), None).await;
+    let (s, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/restic/repos",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
 
     // ...but asking for the passwords is admin-only
@@ -425,7 +466,14 @@ async fn test_repos_list_password_is_redacted_without_the_flag_and_present_with_
     let token = login(&mut router, "admin1", "Password123!").await;
 
     // plain list (admin) — password must be redacted / not the real value
-    let (s, body) = send(&mut router, Method::GET, "/api/restic/repos", Some(&token), None).await;
+    let (s, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/restic/repos",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     let plain = &body["data"].as_array().unwrap()[0];
     assert_ne!(
@@ -463,9 +511,21 @@ async fn test_repo_scoped_endpoints_report_unknown_repo() {
         (Method::GET, "/api/restic/repos/ghost/stats", None),
         (Method::POST, "/api/restic/repos/ghost/unlock", None),
         (Method::POST, "/api/restic/repos/ghost/prune", None),
-        (Method::POST, "/api/restic/backup", Some(json!({"repo_id":"ghost"}))),
-        (Method::POST, "/api/restic/check", Some(json!({"repo_id":"ghost"}))),
-        (Method::POST, "/api/restic/forget", Some(json!({"repo_id":"ghost"}))),
+        (
+            Method::POST,
+            "/api/restic/backup",
+            Some(json!({"repo_id":"ghost"})),
+        ),
+        (
+            Method::POST,
+            "/api/restic/check",
+            Some(json!({"repo_id":"ghost"})),
+        ),
+        (
+            Method::POST,
+            "/api/restic/forget",
+            Some(json!({"repo_id":"ghost"})),
+        ),
         (
             Method::POST,
             "/api/restic/restore",
@@ -499,7 +559,11 @@ async fn test_repo_scoped_endpoints_report_unknown_repo() {
 #[tokio::test]
 async fn test_snapshot_delete_requires_both_ids() {
     let (mut router, token, _tmp, _g) = admin_router().await;
-    for b in [json!({}), json!({"repo_id":"x"}), json!({"snapshot_id":"s"})] {
+    for b in [
+        json!({}),
+        json!({"repo_id":"x"}),
+        json!({"snapshot_id":"s"}),
+    ] {
         let (s, body) = send(
             &mut router,
             Method::POST,
@@ -764,13 +828,27 @@ async fn test_schedule_lifecycle() {
 async fn test_available_and_version_shape() {
     let (mut router, token, _tmp, _g) = admin_router().await;
 
-    let (s, body) = send(&mut router, Method::GET, "/api/restic/available", Some(&token), None).await;
+    let (s, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/restic/available",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     assert!(body["data"]["available"].is_boolean());
 
     // version only succeeds when restic is installed; tolerate either
     // (a clean 400 from a missing CLI is a valid, non-panicking response).
-    let (s, _) = send(&mut router, Method::GET, "/api/restic/version", Some(&token), None).await;
+    let (s, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/restic/version",
+        Some(&token),
+        None,
+    )
+    .await;
     assert!(
         s == StatusCode::OK || s == StatusCode::BAD_REQUEST,
         "GET /api/restic/version should be OK or a clean 400 — got {s}"

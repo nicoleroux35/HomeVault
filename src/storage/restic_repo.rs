@@ -130,21 +130,19 @@ impl ResticRepository {
         let final_name = name.unwrap_or(&repo.name);
         let final_repository = repository.unwrap_or(&repo.repository);
         let final_password = password.unwrap_or(&repo.password);
-        let final_retention_policy_id = retention_policy_id
-            .or(repo.retention_policy_id.as_deref());
+        let final_retention_policy_id = retention_policy_id.or(repo.retention_policy_id.as_deref());
         let final_source_paths = source_paths
             .map(|s| serde_json::to_string(s).unwrap_or_else(|_| "[]".to_string()))
-            .unwrap_or_else(|| serde_json::to_string(&repo.source_paths).unwrap_or_else(|_| "[]".to_string()));
-        let final_exclude = exclude_patterns
-            .or(repo.exclude_patterns.as_deref());
+            .unwrap_or_else(|| {
+                serde_json::to_string(&repo.source_paths).unwrap_or_else(|_| "[]".to_string())
+            });
+        let final_exclude = exclude_patterns.or(repo.exclude_patterns.as_deref());
         let final_tags = tags.or(repo.tags.as_deref());
         let final_snapshot_source = snapshot_source.unwrap_or(&repo.snapshot_source);
-        let final_snapshot_pool = snapshot_pool
-            .or(repo.snapshot_pool.as_deref());
-        let final_snapshot_dataset = snapshot_dataset
-            .or(repo.snapshot_dataset.as_deref());
-        let final_snap_before = snapshot_create_before_backup
-            .unwrap_or(repo.snapshot_create_before_backup);
+        let final_snapshot_pool = snapshot_pool.or(repo.snapshot_pool.as_deref());
+        let final_snapshot_dataset = snapshot_dataset.or(repo.snapshot_dataset.as_deref());
+        let final_snap_before =
+            snapshot_create_before_backup.unwrap_or(repo.snapshot_create_before_backup);
         let now = Utc::now().to_rfc3339();
 
         sqlx::query(

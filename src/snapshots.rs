@@ -78,7 +78,10 @@ impl SnapshotService {
     }
 
     fn check_btrfs() -> Result<(), SnapError> {
-        let output = Command::new("sudo").arg("btrfs").args(["--version"]).output();
+        let output = Command::new("sudo")
+            .arg("btrfs")
+            .args(["--version"])
+            .output();
 
         match output {
             Ok(out) => {
@@ -111,7 +114,8 @@ impl SnapshotService {
     }
 
     fn list_zfs_snapshots(pool: &str) -> Result<Vec<Snapshot>, SnapError> {
-        let output = Command::new("sudo").arg("zfs")
+        let output = Command::new("sudo")
+            .arg("zfs")
             .args([
                 "list",
                 "-t",
@@ -148,7 +152,8 @@ impl SnapshotService {
     fn list_btrfs_snapshots(pool: &str) -> Result<Vec<Snapshot>, SnapError> {
         let mount_point = Self::resolve_btrfs_mount(pool)?;
 
-        let output = Command::new("sudo").arg("btrfs")
+        let output = Command::new("sudo")
+            .arg("btrfs")
             .args(["subvolume", "list", "-s", &mount_point])
             .output()
             .map_err(|e| SnapError::CommandFailed(e.to_string()))?;
@@ -195,7 +200,8 @@ impl SnapshotService {
         }
         args.push(snapshot_name.clone());
 
-        let output = Command::new("sudo").arg("zfs")
+        let output = Command::new("sudo")
+            .arg("zfs")
             .args(&args)
             .output()
             .map_err(|e| SnapError::CommandFailed(e.to_string()))?;
@@ -238,7 +244,8 @@ impl SnapshotService {
         args.push(source.to_string());
         args.push(snapshot_path.clone());
 
-        let output = Command::new("sudo").arg("btrfs")
+        let output = Command::new("sudo")
+            .arg("btrfs")
             .args(&args)
             .output()
             .map_err(|e| SnapError::CommandFailed(e.to_string()))?;
@@ -272,7 +279,8 @@ impl SnapshotService {
             format!("{}@{}", pool, name)
         };
 
-        let output = Command::new("sudo").arg("zfs")
+        let output = Command::new("sudo")
+            .arg("zfs")
             .args(["destroy", &snapshot_name])
             .output()
             .map_err(|e| SnapError::CommandFailed(e.to_string()))?;
@@ -291,7 +299,8 @@ impl SnapshotService {
         let mount_point = Self::resolve_btrfs_mount(pool)?;
         let path = format!("{}/.snapshots/{}", mount_point, name);
 
-        let output = Command::new("sudo").arg("btrfs")
+        let output = Command::new("sudo")
+            .arg("btrfs")
             .args(["subvolume", "delete", &path])
             .output()
             .map_err(|e| SnapError::CommandFailed(e.to_string()))?;
@@ -325,7 +334,8 @@ impl SnapshotService {
             format!("{}@{}", pool, name)
         };
 
-        let output = Command::new("sudo").arg("zfs")
+        let output = Command::new("sudo")
+            .arg("zfs")
             .args(["rollback", "-R", &snapshot_name])
             .output()
             .map_err(|e| SnapError::CommandFailed(e.to_string()))?;
@@ -376,7 +386,8 @@ impl SnapshotService {
             format!("{}@{}", pool, name)
         };
 
-        let output = Command::new("sudo").arg("zfs")
+        let output = Command::new("sudo")
+            .arg("zfs")
             .args([
                 "get",
                 "-H",

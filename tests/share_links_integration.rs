@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for Explorer "share by link"
 //! (`crate::handlers::share_links`):
 //!
@@ -15,10 +18,13 @@
 //!   cargo test --test share_links_integration
 //!   cargo test --test share_links_integration -- --nocapture
 
-use axum::{routing::{delete, get, post}, Router};
+use axum::{
+    routing::{delete, get, post},
+    Router,
+};
 use http::{Method, Request, StatusCode};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use tower::{Service, ServiceExt};
 
@@ -86,7 +92,10 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/auth/login", post(handle_login))
         .route("/api/explorer/shares", get(handle_share_links_list))
         .route("/api/explorer/shares", post(handle_share_link_create))
-        .route("/api/explorer/shares/{token}", delete(handle_share_link_delete))
+        .route(
+            "/api/explorer/shares/{token}",
+            delete(handle_share_link_delete),
+        )
         .route("/share/{token}", get(handle_share_link_download))
         .with_state(state)
 }
@@ -149,13 +158,13 @@ async fn send(
         .await
         .unwrap()
         .to_vec();
-    let json = serde_json::from_slice(&bytes)
-        .unwrap_or(json!({"raw": String::from_utf8_lossy(&bytes)}));
+    let json =
+        serde_json::from_slice(&bytes).unwrap_or(json!({"raw": String::from_utf8_lossy(&bytes)}));
     (status, json)
 }
 
 /// Creates a real file in the temp root and returns its absolute path.
-fn make_file(root: &PathBuf, name: &str, content: &str) -> String {
+fn make_file(root: &Path, name: &str, content: &str) -> String {
     let p = root.join(name);
     std::fs::write(&p, content).expect("write test file");
     p.to_string_lossy().to_string()
@@ -184,15 +193,36 @@ async fn test_share_links_require_auth() {
     )
     .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
-    let (s, _) = send(&mut router, Method::DELETE, "/api/explorer/shares/sometoken", None, None).await;
+    let (s, _) = send(
+        &mut router,
+        Method::DELETE,
+        "/api/explorer/shares/sometoken",
+        None,
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
 
     // Garbage token.
-    let (s, _) = send(&mut router, Method::GET, "/api/explorer/shares", Some("garbage"), None).await;
+    let (s, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/explorer/shares",
+        Some("garbage"),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
 
     // Valid session works.
-    let (s, body) = send(&mut router, Method::GET, "/api/explorer/shares", Some(&admin), None).await;
+    let (s, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/explorer/shares",
+        Some(&admin),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(body["data"], json!([]));
 }
@@ -229,7 +259,14 @@ async fn test_share_link_create_and_list() {
     assert_eq!(body["data"]["expired"], false);
 
     // The link shows up in the list.
-    let (s, body) = send(&mut router, Method::GET, "/api/explorer/shares", Some(&admin), None).await;
+    let (s, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/explorer/shares",
+        Some(&admin),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     let links = body["data"].as_array().expect("array");
     assert_eq!(links.len(), 1);
@@ -342,7 +379,10 @@ async fn test_share_link_public_download() {
         Some(json!({"path": file})),
     )
     .await;
-    let share_path = body["data"]["share_path"].as_str().expect("share_path").to_string();
+    let share_path = body["data"]["share_path"]
+        .as_str()
+        .expect("share_path")
+        .to_string();
 
     // No session at all — anyone mode allows it.
     let resp = ServiceExt::<Req>::ready(&mut router)
@@ -358,7 +398,9 @@ async fn test_share_link_public_download() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     assert_eq!(&bytes[..], b"SECRET-CONTENT-42");
 }
 
@@ -396,7 +438,9 @@ async fn test_share_link_supports_range_requests() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     assert_eq!(&bytes[..], &payload[100..200]);
 }
 
@@ -449,7 +493,7 @@ async fn test_share_link_unknown_and_deleted_token_404() {
         .call(
             Request::builder()
                 .method(Method::GET)
-                .uri(&format!("/share/{}", token))
+                .uri(format!("/share/{}", token))
                 .body(axum::body::Body::empty())
                 .unwrap(),
         )
@@ -476,11 +520,13 @@ async fn test_share_link_expired_not_downloadable() {
     )
     .await;
     let token = body["data"]["token"].as_str().unwrap().to_string();
-    sqlx::query("UPDATE explorer_share_links SET expires_at = '2000-01-01T00:00:00Z' WHERE token = ?")
-        .bind(&token)
-        .execute(&*h.state.db.pool())
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE explorer_share_links SET expires_at = '2000-01-01T00:00:00Z' WHERE token = ?",
+    )
+    .bind(&token)
+    .execute(&*h.state.db.pool())
+    .await
+    .unwrap();
 
     let resp = ServiceExt::<Req>::ready(&mut router)
         .await
@@ -488,7 +534,7 @@ async fn test_share_link_expired_not_downloadable() {
         .call(
             Request::builder()
                 .method(Method::GET)
-                .uri(&format!("/share/{}", token))
+                .uri(format!("/share/{}", token))
                 .body(axum::body::Body::empty())
                 .unwrap(),
         )
@@ -497,7 +543,14 @@ async fn test_share_link_expired_not_downloadable() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
     // It also no longer shows as downloadable from the list (expired flag).
-    let (_, body) = send(&mut router, Method::GET, "/api/explorer/shares", Some(&admin), None).await;
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/explorer/shares",
+        Some(&admin),
+        None,
+    )
+    .await;
     assert_eq!(body["data"][0]["expired"], true);
 }
 
@@ -673,6 +726,8 @@ async fn test_share_download_reachable_through_production_router() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     assert_eq!(&bytes[..], b"prod payload");
 }

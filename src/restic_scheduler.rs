@@ -76,7 +76,10 @@ fn normalize_crontab_dow(expr: &str) -> String {
         .map(map_component)
         .collect::<Vec<_>>()
         .join(",");
-    format!("{} {} {} {} {}", fields[0], fields[1], fields[2], fields[3], dow)
+    format!(
+        "{} {} {} {} {}",
+        fields[0], fields[1], fields[2], fields[3], dow
+    )
 }
 
 /// Runs forever, checking for due schedules every `POLL_INTERVAL_SECS`.
@@ -112,10 +115,7 @@ async fn run_due_schedules(state: &Arc<AppState>) -> Result<(), String> {
     Ok(())
 }
 
-async fn run_one_schedule(
-    state: &Arc<AppState>,
-    schedule: &ResticSchedule,
-) -> Result<(), String> {
+async fn run_one_schedule(state: &Arc<AppState>, schedule: &ResticSchedule) -> Result<(), String> {
     let repo_repo = ResticRepository::new(state.db.pool());
     let schedule_repo = ResticScheduleRepository::new(state.db.pool());
 
@@ -189,7 +189,10 @@ async fn run_one_schedule(
             }
             crate::events::log_event(format!(
                 "Scheduled backup '{}' completed for repository '{}' ({} files, {} bytes added)",
-                schedule.name, repo_config.name, result.total_files_processed, result.data_added_bytes
+                schedule.name,
+                repo_config.name,
+                result.total_files_processed,
+                result.data_added_bytes
             ));
             apply_retention(state, &repo_config).await;
             reschedule(&schedule_repo, schedule).await
@@ -209,7 +212,18 @@ async fn run_one_schedule(
                 .await
             {
                 let _ = repo_repo
-                    .update_backup_job(&db_job_id, "failed", 0, 0, 0, 0, 0, 0, 0, Some(&e.to_string()))
+                    .update_backup_job(
+                        &db_job_id,
+                        "failed",
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        Some(&e.to_string()),
+                    )
                     .await;
             }
             reschedule(&schedule_repo, schedule).await?;
@@ -392,10 +406,10 @@ mod tests {
         for bad in [
             "",
             "not a cron",
-            "0 3 * *",     // 4 fields
-            "60 * * * *",  // minute out of range
-            "0 25 * * *",  // hour out of range
-            "0 3 32 * *",  // day-of-month out of range
+            "0 3 * *",    // 4 fields
+            "60 * * * *", // minute out of range
+            "0 25 * * *", // hour out of range
+            "0 3 32 * *", // day-of-month out of range
         ] {
             assert!(
                 compute_next_run(bad, Utc::now()).is_err(),

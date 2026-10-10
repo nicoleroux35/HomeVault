@@ -294,7 +294,8 @@ pub async fn handle_disk_smart_capabilities(
     }))
 }
 
-/// Start a SMART self-test on a disk.
+/// Start a SMART self-test on a disk. Admin-only: this runs a real
+/// `smartctl -t` on the host device.
 #[axum_macros::debug_handler]
 pub async fn handle_disk_smart_test_start(
     State(state): State<Arc<AppState>>,
@@ -302,9 +303,10 @@ pub async fn handle_disk_smart_test_start(
     headers: HeaderMap,
     axum::Json(payload): axum::Json<serde_json::Value>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers).await {
-        return response;
-    }
+    let admin_username = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(response) => return response,
+    };
 
     let test_type = payload
         .get("test_type")
@@ -314,6 +316,10 @@ pub async fn handle_disk_smart_test_start(
     match DiskService::start_smart_test(&name, test_type).await {
         Ok(()) => {
             let remaining = DiskService::get_smart_test_remaining(&name).await;
+            crate::events::log_event(format!(
+                "Admin '{}' started a SMART {} test on disk '{}'",
+                admin_username, test_type, name
+            ));
             ResponseHelper::json_success(serde_json::json!({
                 "message": format!("SMART {} test started", test_type),
                 "estimated_remaining_minutes": remaining,

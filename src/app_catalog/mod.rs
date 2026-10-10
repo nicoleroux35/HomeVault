@@ -213,7 +213,12 @@ mod tests {
     fn test_builtin_catalog_loads() {
         let apps = scan_builtin();
         // The 15 migrated apps must all parse.
-        assert_eq!(apps.len(), 15, "expected 15 built-in apps, got {}", apps.len());
+        assert_eq!(
+            apps.len(),
+            15,
+            "expected 15 built-in apps, got {}",
+            apps.len()
+        );
         assert!(apps.iter().all(|a| a.store_id == BUILTIN_STORE_ID));
         assert!(apps.iter().any(|a| a.manifest.id == "jellyfin"));
     }
@@ -222,12 +227,20 @@ mod tests {
     fn test_builtin_apps_render() {
         for app in scan_builtin() {
             let (yaml, dir) = render(&app, 12345).unwrap();
-            assert!(yaml.contains("services:"), "{} has no services", app.bare_id());
+            assert!(
+                yaml.contains("services:"),
+                "{} has no services",
+                app.bare_id()
+            );
             assert!(!yaml.contains("{{"), "{} left a placeholder", app.bare_id());
             assert!(dir.ends_with(app.bare_id()));
             // home-assistant uses host networking and publishes no port.
             if app.bare_id() != "home-assistant" {
-                assert!(yaml.contains("12345:"), "{} did not bind the port", app.bare_id());
+                assert!(
+                    yaml.contains("12345:"),
+                    "{} did not bind the port",
+                    app.bare_id()
+                );
             }
         }
     }

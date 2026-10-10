@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use thiserror::Error;
 use tokio::sync::RwLock;
-use std::collections::HashMap;
 
 /// Name of the per-root trash directory files are moved into on delete.
 pub const TRASH_DIR_NAME: &str = ".homevault-trash";
@@ -47,7 +47,13 @@ impl CollisionStrategy {
     /// Parses the `?strategy=` query value; anything unrecognised (including
     /// `None`) means `Overwrite`, so existing callers are unaffected.
     pub fn parse(s: Option<&str>) -> Self {
-        match s.unwrap_or("").trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        match s
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase()
+            .replace('-', "_")
+            .as_str()
+        {
             "keep_both" | "keepboth" => Self::KeepBoth,
             "skip" => Self::Skip,
             _ => Self::Overwrite,
@@ -197,11 +203,9 @@ impl FileBrowser {
     pub async fn list_directory(path: &str) -> Result<DirectoryListing, BrowserError> {
         let path = path.to_string();
 
-        tokio::task::spawn_blocking(move || {
-            Self::list_directory_sync(&path)
-        })
-        .await
-        .map_err(|e| BrowserError::Io(std::io::Error::other(e.to_string())))?
+        tokio::task::spawn_blocking(move || Self::list_directory_sync(&path))
+            .await
+            .map_err(|e| BrowserError::Io(std::io::Error::other(e.to_string())))?
     }
 
     fn list_directory_sync(path: &str) -> Result<DirectoryListing, BrowserError> {
@@ -307,7 +311,11 @@ impl FileBrowser {
     }
 
     /// Recursive search for files matching a query
-    pub async fn search(path: &str, query: &str, max_results: usize) -> Result<Vec<FileInfo>, BrowserError> {
+    pub async fn search(
+        path: &str,
+        query: &str,
+        max_results: usize,
+    ) -> Result<Vec<FileInfo>, BrowserError> {
         let path = path.to_string();
         let query = query.to_lowercase();
         let max_results = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(max_results));
@@ -381,7 +389,8 @@ impl FileBrowser {
 
                 // Recurse into directories
                 if metadata.is_dir() && !name.starts_with('.') {
-                    let sub_results = Self::search_sync(&file_path, query, max_results, depth + 1, passwd_map);
+                    let sub_results =
+                        Self::search_sync(&file_path, query, max_results, depth + 1, passwd_map);
                     results.extend(sub_results);
                 }
             }
@@ -403,7 +412,9 @@ impl FileBrowser {
                             m.dev()
                         }
                         #[cfg(not(unix))]
-                        { 0u64 }
+                        {
+                            0u64
+                        }
                     }) {
                         if let Ok(parent_meta) = std::fs::metadata(parent) {
                             let parent_dev = {
@@ -413,7 +424,9 @@ impl FileBrowser {
                                     parent_meta.dev()
                                 }
                                 #[cfg(not(unix))]
-                                { 0u64 }
+                                {
+                                    0u64
+                                }
                             };
                             if current_dev != parent_dev {
                                 return Some(current.to_string_lossy().to_string());
@@ -428,10 +441,7 @@ impl FileBrowser {
     }
 
     fn detect_filesystem_sync(path: &str) -> Option<String> {
-        let output = Command::new("df")
-            .args(["-T", path])
-            .output()
-            .ok()?;
+        let output = Command::new("df").args(["-T", path]).output().ok()?;
 
         if !output.status.success() {
             return None;
@@ -448,10 +458,27 @@ impl FileBrowser {
                 if type_idx < values.len() {
                     let fs_type = values[type_idx].to_lowercase();
                     let pseudo = [
-                        "devtmpfs", "tmpfs", "devpts", "sysfs", "proc", "cgroup",
-                        "cgroup2", "pstore", "securityfs", "debugfs", "hugetlbfs",
-                        "mqueue", "fusectl", "configfs", "autofs", "fuse.portal",
-                        "overlay", "squashfs", "ramfs", "binfmt_misc", "fuseblk",
+                        "devtmpfs",
+                        "tmpfs",
+                        "devpts",
+                        "sysfs",
+                        "proc",
+                        "cgroup",
+                        "cgroup2",
+                        "pstore",
+                        "securityfs",
+                        "debugfs",
+                        "hugetlbfs",
+                        "mqueue",
+                        "fusectl",
+                        "configfs",
+                        "autofs",
+                        "fuse.portal",
+                        "overlay",
+                        "squashfs",
+                        "ramfs",
+                        "binfmt_misc",
+                        "fuseblk",
                     ];
                     if !fs_type.is_empty() && !pseudo.contains(&fs_type.as_str()) {
                         return Some(values[type_idx].to_string());
@@ -501,26 +528,28 @@ impl FileBrowser {
                 Self::fsync_parent_dir(Path::new(destination));
                 return Ok(());
             }
-            Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices
-                     || e.raw_os_error() == Some(libc::EXDEV ) => {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::CrossesDevices
+                    || e.raw_os_error() == Some(libc::EXDEV) =>
+            {
                 // Cross-device move: fall through to copy+delete
             }
             Err(e) => return Err(BrowserError::Io(e)),
         }
 
-            // Cross-device fallback
-            let src_path = Path::new(source);
-            if src_path.is_dir() {
-                Self::copy_dir_all(src_path, Path::new(destination))?;
-                std::fs::remove_dir_all(source)?;
-                Self::fsync_parent_dir(Path::new(destination));
-            } else {
-                // Verified copy first — only remove the source once a
-                // byte-identical, fsync'd copy is confirmed on disk.
-                Self::copy_file_verified(src_path, Path::new(destination))?;
-                std::fs::remove_file(source)?;
-                Self::fsync_parent_dir(Path::new(destination));
-            }
+        // Cross-device fallback
+        let src_path = Path::new(source);
+        if src_path.is_dir() {
+            Self::copy_dir_all(src_path, Path::new(destination))?;
+            std::fs::remove_dir_all(source)?;
+            Self::fsync_parent_dir(Path::new(destination));
+        } else {
+            // Verified copy first — only remove the source once a
+            // byte-identical, fsync'd copy is confirmed on disk.
+            Self::copy_file_verified(src_path, Path::new(destination))?;
+            std::fs::remove_file(source)?;
+            Self::fsync_parent_dir(Path::new(destination));
+        }
         Ok(())
     }
 
@@ -570,7 +599,10 @@ impl FileBrowser {
 
         let deleted_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let info_content = format!("Path={}\nDeletionDate={}\n", path, deleted_at);
-        std::fs::write(trash_root.join(format!("{}.trashinfo", trashed_name)), info_content)?;
+        std::fs::write(
+            trash_root.join(format!("{}.trashinfo", trashed_name)),
+            info_content,
+        )?;
 
         Ok(())
     }
@@ -604,7 +636,11 @@ impl FileBrowser {
                 }
             }
 
-            let id = file_name.splitn(2, '_').next().unwrap_or(&file_name).to_string();
+            let id = file_name
+                .split('_')
+                .next()
+                .unwrap_or(&file_name)
+                .to_string();
             let name = original_path
                 .rsplit('/')
                 .next()
@@ -706,7 +742,10 @@ impl FileBrowser {
             Err(e) => return Err(BrowserError::Io(e)),
         }
         Self::fsync_parent_dir(dest);
-        let trashed_name = trashed_path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let trashed_name = trashed_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         let _ = std::fs::remove_file(trash_root.join(format!("{}.trashinfo", trashed_name)));
 
         Ok(())
@@ -716,7 +755,10 @@ impl FileBrowser {
     pub fn purge_trash_item(trash_root: &Path, id: &str) -> Result<(), BrowserError> {
         let (trashed_path, _) = Self::find_trash_entry(trash_root, id)?;
         Self::delete_item(&trashed_path.to_string_lossy(), true)?;
-        let trashed_name = trashed_path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let trashed_name = trashed_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         let _ = std::fs::remove_file(trash_root.join(format!("{}.trashinfo", trashed_name)));
         Ok(())
     }
@@ -809,7 +851,11 @@ impl FileBrowser {
     /// single archive at `destination`. `format` is `"zip"` or anything else
     /// for the default `tar.gz`. The caller is responsible for checking that
     /// the required external tool (`tar`/`gzip` or `zip`) is installed.
-    pub fn compress_items(paths: &[String], destination: &str, format: &str) -> Result<(), BrowserError> {
+    pub fn compress_items(
+        paths: &[String],
+        destination: &str,
+        format: &str,
+    ) -> Result<(), BrowserError> {
         if paths.is_empty() {
             return Err(BrowserError::NotFound("No items to compress".to_string()));
         }
@@ -820,7 +866,11 @@ impl FileBrowser {
             .ok_or_else(|| BrowserError::NotFound("Invalid path".to_string()))?;
         let names: Vec<String> = paths
             .iter()
-            .filter_map(|p| Path::new(p).file_name().map(|n| n.to_string_lossy().to_string()))
+            .filter_map(|p| {
+                Path::new(p)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+            })
             .collect();
 
         let output = if format == "zip" {
@@ -1051,8 +1101,8 @@ impl FileBrowser {
     /// source SHA-256 on success; `tmp_dst` is left in place either way (the
     /// caller owns cleanup) so the hash can be verified against it.
     fn stream_copy_hashed(src: &Path, tmp_dst: &Path) -> Result<(u64, [u8; 32]), BrowserError> {
-        use std::io::{Read, Write};
         use sha2::{Digest, Sha256};
+        use std::io::{Read, Write};
 
         let mut reader = std::io::BufReader::new(std::fs::File::open(src)?);
         let mut writer = std::io::BufWriter::new(std::fs::File::create(tmp_dst)?);
@@ -1245,7 +1295,10 @@ mod transfer_tests {
         let dst = dir.path().join("dst.bin");
 
         let data: Vec<u8> = (0..100_000u32).map(|i| (i % 256) as u8).collect();
-        std::fs::File::create(&src).unwrap().write_all(&data).unwrap();
+        std::fs::File::create(&src)
+            .unwrap()
+            .write_all(&data)
+            .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1298,8 +1351,14 @@ mod transfer_tests {
             b"nested data"
         );
         let link_meta = std::fs::symlink_metadata(dst.join("link.txt")).unwrap();
-        assert!(link_meta.file_type().is_symlink(), "symlink must stay a symlink");
-        assert_eq!(std::fs::read_link(dst.join("link.txt")).unwrap(), Path::new("top.txt"));
+        assert!(
+            link_meta.file_type().is_symlink(),
+            "symlink must stay a symlink"
+        );
+        assert_eq!(
+            std::fs::read_link(dst.join("link.txt")).unwrap(),
+            Path::new("top.txt")
+        );
     }
 
     /// Overwriting an existing destination must go through the atomic
@@ -1324,7 +1383,11 @@ mod transfer_tests {
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().contains("hvtmp"))
             .collect();
-        assert!(leftover.is_empty(), "temp file(s) left behind: {:?}", leftover);
+        assert!(
+            leftover.is_empty(),
+            "temp file(s) left behind: {:?}",
+            leftover
+        );
     }
 
     /// `copy_dir_all_tracked` records exactly the paths it created (never a
@@ -1369,17 +1432,37 @@ mod collision_tests {
         // None and anything unrecognised must stay Overwrite so existing
         // callers that pass no `?strategy=` are unaffected.
         assert_eq!(CollisionStrategy::parse(None), CollisionStrategy::Overwrite);
-        assert_eq!(CollisionStrategy::parse(Some("")), CollisionStrategy::Overwrite);
-        assert_eq!(CollisionStrategy::parse(Some("garbage")), CollisionStrategy::Overwrite);
+        assert_eq!(
+            CollisionStrategy::parse(Some("")),
+            CollisionStrategy::Overwrite
+        );
+        assert_eq!(
+            CollisionStrategy::parse(Some("garbage")),
+            CollisionStrategy::Overwrite
+        );
     }
 
     #[test]
     fn test_collision_strategy_parse_accepts_the_known_values_case_and_dash_insensitive() {
-        for s in ["keep_both", "keepboth", "keep-both", "KEEP_BOTH", " Keep-Both "] {
-            assert_eq!(CollisionStrategy::parse(Some(s)), CollisionStrategy::KeepBoth, "{s:?}");
+        for s in [
+            "keep_both",
+            "keepboth",
+            "keep-both",
+            "KEEP_BOTH",
+            " Keep-Both ",
+        ] {
+            assert_eq!(
+                CollisionStrategy::parse(Some(s)),
+                CollisionStrategy::KeepBoth,
+                "{s:?}"
+            );
         }
         for s in ["skip", "SKIP", " skip "] {
-            assert_eq!(CollisionStrategy::parse(Some(s)), CollisionStrategy::Skip, "{s:?}");
+            assert_eq!(
+                CollisionStrategy::parse(Some(s)),
+                CollisionStrategy::Skip,
+                "{s:?}"
+            );
         }
     }
 
@@ -1395,11 +1478,17 @@ mod collision_tests {
         let dir = tempfile::tempdir().unwrap();
         let taken = dir.path().join("report.txt");
         std::fs::write(&taken, b"x").unwrap();
-        assert_eq!(non_colliding_path(&taken), dir.path().join("report (1).txt"));
+        assert_eq!(
+            non_colliding_path(&taken),
+            dir.path().join("report (1).txt")
+        );
 
         // With `(1)` also taken it must move on to `(2)`.
         std::fs::write(dir.path().join("report (1).txt"), b"x").unwrap();
-        assert_eq!(non_colliding_path(&taken), dir.path().join("report (2).txt"));
+        assert_eq!(
+            non_colliding_path(&taken),
+            dir.path().join("report (2).txt")
+        );
     }
 
     #[test]
@@ -1415,6 +1504,9 @@ mod collision_tests {
         let dir = tempfile::tempdir().unwrap();
         let taken = dir.path().join("archive.tar.gz");
         std::fs::write(&taken, b"x").unwrap();
-        assert_eq!(non_colliding_path(&taken), dir.path().join("archive.tar (1).gz"));
+        assert_eq!(
+            non_colliding_path(&taken),
+            dir.path().join("archive.tar (1).gz")
+        );
     }
 }

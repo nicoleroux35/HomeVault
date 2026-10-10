@@ -6,8 +6,8 @@ use axum::{
     Json, Router,
 };
 use http::header::{HeaderName, HeaderValue, CACHE_CONTROL};
-use std::net::SocketAddr;
 use serde_json::json;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
@@ -16,31 +16,34 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::handlers::chat::{
-    handle_chat_send, handle_chat_send_stream, handle_chat_models_list, handle_chat_models_pull,
-    handle_chat_model_get, handle_chat_model_set, handle_chat_models_recommend,
+    handle_chat_model_get, handle_chat_model_set, handle_chat_models_list, handle_chat_models_pull,
+    handle_chat_models_recommend, handle_chat_send, handle_chat_send_stream,
 };
 use crate::handlers::rag::{
-    handle_rag_status, handle_rag_index, handle_rag_search, handle_rag_documents,
+    handle_rag_documents, handle_rag_index, handle_rag_search, handle_rag_status,
 };
 use crate::handlers::{
-    auth::{
-        handle_2fa_setup, handle_2fa_verify, handle_get_current_user, handle_login, handle_logout,
-        handle_setup, handle_setup_status, handle_setup_verify_totp, handle_check_username,
-        handle_generate_recovery_code, handle_reset_password_recovery,
-        handle_verify_recovery_code,
-    },
     antivirus::{
         handle_antivirus_scan_cancel, handle_antivirus_scan_start, handle_antivirus_scans_list,
         handle_antivirus_settings_get, handle_antivirus_settings_update, handle_antivirus_status,
         handle_antivirus_threat_resolve, handle_antivirus_threats_list,
     },
-    avatars::{
-        handle_avatar_preview, handle_update_my_avatar, handle_user_avatar,
+    auth::{
+        handle_2fa_setup, handle_2fa_verify, handle_check_username, handle_generate_recovery_code,
+        handle_get_current_user, handle_login, handle_logout, handle_reset_password_recovery,
+        handle_setup, handle_setup_status, handle_setup_verify_totp, handle_verify_recovery_code,
     },
+    avatars::{handle_avatar_preview, handle_update_my_avatar, handle_user_avatar},
     cache::{
         handle_cache_mover_run, handle_cache_mover_runs, handle_cache_pools_get,
         handle_cache_settings_get, handle_cache_settings_update, handle_cache_share_create,
         handle_cache_share_delete, handle_cache_share_update, handle_cache_shares_list,
+    },
+    compose::{
+        handle_compose_available, handle_compose_create, handle_compose_delete, handle_compose_get,
+        handle_compose_get_config, handle_compose_list, handle_compose_restart,
+        handle_compose_services, handle_compose_start, handle_compose_stop, handle_compose_update,
+        handle_compose_validate,
     },
     dashboard::{
         handle_add_widget, handle_cpu_temperature, handle_dashboard_data, handle_disk_io_data,
@@ -50,21 +53,15 @@ use crate::handlers::{
         handle_update_widget_preference, handle_widget_data,
     },
     docker::{
-        handle_docker_container_logs, handle_docker_container_restart,
+        handle_docker_available, handle_docker_container_create, handle_docker_container_logs,
+        handle_docker_container_remove, handle_docker_container_restart,
         handle_docker_container_start, handle_docker_container_stop, handle_docker_containers_list,
-        handle_docker_containers_running, handle_docker_hub_search, handle_docker_images_list, handle_docker_info,
-        handle_docker_available, handle_docker_port_check, handle_docker_container_create, handle_docker_container_remove,
-        handle_docker_daemon_start, handle_docker_daemon_logs,
-        handle_docker_image_pull, handle_docker_image_remove,
-        handle_docker_networks_list, handle_docker_network_get, handle_docker_network_create,
-        handle_docker_network_connect, handle_docker_network_disconnect, handle_docker_network_remove,
-        handle_docker_network_prune,
-    },
-    compose::{
-        handle_compose_available, handle_compose_create, handle_compose_delete,
-        handle_compose_get, handle_compose_get_config, handle_compose_list, handle_compose_restart,
-        handle_compose_services, handle_compose_start, handle_compose_stop, handle_compose_update,
-        handle_compose_validate,
+        handle_docker_containers_running, handle_docker_daemon_logs, handle_docker_daemon_start,
+        handle_docker_hub_search, handle_docker_image_pull, handle_docker_image_remove,
+        handle_docker_images_list, handle_docker_info, handle_docker_network_connect,
+        handle_docker_network_create, handle_docker_network_disconnect, handle_docker_network_get,
+        handle_docker_network_prune, handle_docker_network_remove, handle_docker_networks_list,
+        handle_docker_port_check,
     },
     docker_catalog::{
         handle_catalog_gallery, handle_catalog_icon, handle_catalog_install, handle_catalog_list,
@@ -72,66 +69,60 @@ use crate::handlers::{
         handle_catalog_updates, handle_store_add, handle_store_delete, handle_store_sync,
         handle_stores_list,
     },
+    downloader::{
+        handle_downloader_add, handle_downloader_global_stat, handle_downloader_pause,
+        handle_downloader_remove, handle_downloader_start, handle_downloader_status,
+        handle_downloader_stop, handle_downloader_task, handle_downloader_tasks,
+        handle_downloader_unpause,
+    },
     encryption::{
         handle_encryption_available_devices, handle_encryption_create, handle_encryption_delete,
         handle_encryption_list, handle_encryption_lock, handle_encryption_unlock,
     },
+    explorer::{
+        handle_explorer_compress, handle_explorer_copy, handle_explorer_delete,
+        handle_explorer_disks, handle_explorer_download, handle_explorer_download_ticket,
+        handle_explorer_eject, handle_explorer_extract, handle_explorer_favorites_add,
+        handle_explorer_favorites_list, handle_explorer_favorites_remove, handle_explorer_list,
+        handle_explorer_mkdir, handle_explorer_move, handle_explorer_permissions,
+        handle_explorer_preview, handle_explorer_rename, handle_explorer_roots,
+        handle_explorer_save, handle_explorer_search, handle_explorer_snapshots,
+        handle_explorer_thumbnail, handle_explorer_thumbnail_ticket, handle_explorer_trash,
+        handle_explorer_trash_empty, handle_explorer_trash_list, handle_explorer_trash_purge,
+        handle_explorer_trash_restore, handle_explorer_upload, handle_explorer_upload_chunk,
+        handle_explorer_upload_complete, handle_explorer_upload_session_abort,
+        handle_explorer_upload_session_start, handle_explorer_watch, handle_explorer_watch_ticket,
+    },
     firewall::{
         handle_firewall_disable, handle_firewall_enable, handle_firewall_enable_preview,
         handle_firewall_rule_add, handle_firewall_rule_delete, handle_firewall_status,
-    },
-    notifications::{
-        handle_notification_delete, handle_notification_mark_read, handle_notifications_events,
-        handle_notifications_events_ticket, handle_notifications_list,
-        handle_notifications_mark_all_read, handle_notifications_unread_count,
-    },
-    ransomware::{
-        handle_ransomware_events_list, handle_ransomware_protected_path_add,
-        handle_ransomware_protected_path_delete, handle_ransomware_protected_paths_list,
-        handle_ransomware_settings_get, handle_ransomware_settings_update, handle_ransomware_status,
-    },
-    downloader::{
-        handle_downloader_status, handle_downloader_start, handle_downloader_stop,
-        handle_downloader_global_stat, handle_downloader_tasks, handle_downloader_add,
-        handle_downloader_pause, handle_downloader_unpause, handle_downloader_remove,
-        handle_downloader_task,
-    },
-    progress::{
-        handle_cancel_job, handle_get_job_status, handle_list_jobs, handle_progress_sse,
-    },
-    explorer::{
-        handle_explorer_compress, handle_explorer_copy, handle_explorer_delete, handle_explorer_disks,
-        handle_explorer_download, handle_explorer_download_ticket, handle_explorer_extract,
-        handle_explorer_list,
-        handle_explorer_eject, handle_explorer_favorites_add, handle_explorer_favorites_list,
-        handle_explorer_favorites_remove,
-        handle_explorer_mkdir, handle_explorer_move,
-        handle_explorer_permissions, handle_explorer_preview, handle_explorer_rename,
-        handle_explorer_roots, handle_explorer_save, handle_explorer_search,
-        handle_explorer_snapshots, handle_explorer_thumbnail, handle_explorer_thumbnail_ticket,
-        handle_explorer_trash,
-        handle_explorer_trash_empty, handle_explorer_trash_list, handle_explorer_trash_purge,
-        handle_explorer_trash_restore, handle_explorer_upload,
-        handle_explorer_upload_chunk, handle_explorer_upload_complete,
-        handle_explorer_upload_session_abort, handle_explorer_upload_session_start,
-        handle_explorer_watch, handle_explorer_watch_ticket,
-    },
-    share_links::{
-        handle_share_link_create, handle_share_link_delete, handle_share_link_download,
-        handle_share_links_list,
     },
     groups::{
         handle_group_add_member, handle_group_create, handle_group_delete, handle_group_get,
         handle_group_remove_member, handle_groups_list, handle_groups_list_users,
         handle_user_groups,
     },
+    journal::{
+        handle_journal_cleanup_settings_get, handle_journal_cleanup_settings_update,
+        handle_journal_clear, handle_journal_entries, handle_journal_sources,
+    },
     mdns::handle_mdns_status,
     monitor_layout::{handle_get_monitor_layout, handle_set_monitor_layout},
-    weather_location::{handle_get_weather_location, handle_set_weather_location},
+    notifications::{
+        handle_notification_delete, handle_notification_mark_read, handle_notifications_events,
+        handle_notifications_events_ticket, handle_notifications_list,
+        handle_notifications_mark_all_read, handle_notifications_unread_count,
+    },
     permissions::{
-        handle_share_permission_grant, handle_share_permissions_list,
-        handle_share_permission_revoke, handle_share_permissions_sync,
-        handle_user_permissions,
+        handle_share_permission_grant, handle_share_permission_revoke,
+        handle_share_permissions_list, handle_share_permissions_sync, handle_user_permissions,
+    },
+    progress::{handle_cancel_job, handle_get_job_status, handle_list_jobs, handle_progress_sse},
+    ransomware::{
+        handle_ransomware_events_list, handle_ransomware_protected_path_add,
+        handle_ransomware_protected_path_delete, handle_ransomware_protected_paths_list,
+        handle_ransomware_settings_get, handle_ransomware_settings_update,
+        handle_ransomware_status,
     },
     rclone::{
         handle_add_remote, handle_copy, handle_create_sync_job, handle_delete_remote,
@@ -141,30 +132,32 @@ use crate::handlers::{
     },
     restic::{
         handle_restic_available, handle_restic_backup_create, handle_restic_backup_jobs,
-        handle_restic_check, handle_restic_forget, handle_restic_prune,
-        handle_restic_repo_create, handle_restic_repo_delete, handle_restic_repo_get,
-        handle_restic_repos_list, handle_restic_repo_update, handle_restic_restore,
-        handle_restic_schedule_create, handle_restic_schedule_delete,
-        handle_restic_schedule_set_enabled, handle_restic_schedule_update,
-        handle_restic_schedules_list, handle_restic_snapshot_delete, handle_restic_snapshots_list,
-        handle_restic_stats, handle_restic_unlock, handle_restic_version,
-        handle_retention_policies_list, handle_retention_policy_create,
+        handle_restic_check, handle_restic_forget, handle_restic_prune, handle_restic_repo_create,
+        handle_restic_repo_delete, handle_restic_repo_get, handle_restic_repo_update,
+        handle_restic_repos_list, handle_restic_restore, handle_restic_schedule_create,
+        handle_restic_schedule_delete, handle_restic_schedule_set_enabled,
+        handle_restic_schedule_update, handle_restic_schedules_list, handle_restic_snapshot_delete,
+        handle_restic_snapshots_list, handle_restic_stats, handle_restic_unlock,
+        handle_restic_version, handle_retention_policies_list, handle_retention_policy_create,
         handle_retention_policy_delete, handle_retention_policy_update,
+    },
+    security::{
+        handle_get_active_sessions_count, handle_get_login_history, handle_get_my_sessions,
+        handle_get_user_login_history, handle_revoke_all_sessions, handle_revoke_sessions,
     },
     settings::{
         handle_all_settings_get, handle_appearance_settings_get, handle_appearance_settings_update,
-        handle_autostart_get, handle_autostart_update,
-        handle_email_settings_get, handle_email_settings_update, handle_email_test,
-        handle_general_settings_get, handle_general_settings_update,
-        handle_get_language, handle_get_translations, handle_notification_settings_get, handle_notification_settings_update,
-        handle_public_settings_get, handle_set_language, handle_settings_export, handle_settings_import,
-        handle_settings_reset, handle_update_settings_get, handle_update_settings_update,
-        handle_version_info,
+        handle_autostart_get, handle_autostart_update, handle_email_settings_get,
+        handle_email_settings_update, handle_email_test, handle_general_settings_get,
+        handle_general_settings_update, handle_get_language, handle_get_translations,
+        handle_notification_settings_get, handle_notification_settings_update,
+        handle_public_settings_get, handle_set_language, handle_settings_export,
+        handle_settings_import, handle_settings_reset, handle_update_settings_get,
+        handle_update_settings_update, handle_version_info,
     },
-    security::{
-        handle_get_my_sessions, handle_revoke_sessions, handle_revoke_all_sessions,
-        handle_get_login_history, handle_get_user_login_history,
-        handle_get_active_sessions_count,
+    share_links::{
+        handle_share_link_create, handle_share_link_delete, handle_share_link_download,
+        handle_share_links_list,
     },
     shares::{
         handle_ftp_config_get, handle_ftp_config_update, handle_nfs_config_get,
@@ -172,70 +165,63 @@ use crate::handlers::{
         handle_sftp_grantees_list, handle_sftp_key_set, handle_sftp_rebuild, handle_share_create,
         handle_share_delete, handle_share_get, handle_share_service_restart,
         handle_share_service_start, handle_share_service_stop, handle_share_toggle,
-        handle_share_update, handle_shares_list, handle_smb_config_get,
-        handle_smb_config_update, handle_webdav_config_get, handle_webdav_config_update,
-    },
-    syncthing::{
-        handle_syncthing_status, handle_syncthing_config, handle_syncthing_devices,
-        handle_syncthing_folders, handle_syncthing_connections, handle_syncthing_restart,
-        handle_syncthing_pause_device, handle_syncthing_resume_device,
-        handle_syncthing_scan_folder, handle_syncthing_errors,
+        handle_share_update, handle_shares_list, handle_smb_config_get, handle_smb_config_update,
+        handle_webdav_config_get, handle_webdav_config_update,
     },
     snmp::{
         handle_snmp_availability, handle_snmp_info, handle_snmp_interfaces,
         handle_snmp_settings_get, handle_snmp_settings_update, handle_snmp_storage,
     },
+    spa::serve_assets_file,
+    spa::serve_dist_file,
+    spa::serve_fonts_file,
     spa::serve_spa,
     spa::serve_sprite,
     spa::serve_sprite_unified,
-    spa::serve_dist_file,
-    spa::serve_assets_file,
-    spa::serve_fonts_file,
     spa::serve_static_file,
     spa::serve_wallpapers_file,
+    storage::{
+        handle_disk_smart_capabilities, handle_disk_smart_test_start,
+        handle_disk_smart_test_status, handle_disks_list, handle_partitions_list,
+        handle_raid_arrays_list, handle_raid_available_devices, handle_raid_create,
+        handle_raid_delete, handle_raid_rebuild, handle_removable_disks_list,
+        handle_virtual_disk_delete, handle_virtual_disk_scrub, handle_virtual_disks_list,
+    },
+    syncthing::{
+        handle_syncthing_config, handle_syncthing_connections, handle_syncthing_devices,
+        handle_syncthing_errors, handle_syncthing_folders, handle_syncthing_pause_device,
+        handle_syncthing_restart, handle_syncthing_resume_device, handle_syncthing_scan_folder,
+        handle_syncthing_status,
+    },
+    system::{handle_server_restart, handle_server_shutdown},
+    transfer_quotas::{
+        handle_transfer_quota_delete, handle_transfer_quota_get, handle_transfer_quota_set,
+        handle_transfer_quotas_list,
+    },
     ups::{
         handle_ups_availability, handle_ups_config_delete, handle_ups_config_list,
         handle_ups_config_save, handle_ups_list, handle_ups_status, handle_ups_variables,
     },
-    storage::{
-        handle_disk_smart_capabilities, handle_disk_smart_test_start,
-        handle_disk_smart_test_status, handle_disks_list,
-        handle_partitions_list, handle_raid_arrays_list, handle_raid_create,
-        handle_raid_delete, handle_raid_available_devices, handle_raid_rebuild,
-        handle_removable_disks_list, handle_virtual_disk_delete, handle_virtual_disk_scrub,
-        handle_virtual_disks_list,
-    },
-    system::{
-        handle_server_restart, handle_server_shutdown,
+    user_homes::{
+        handle_available_home_disks, handle_user_home_delete, handle_user_home_get,
+        handle_user_home_put,
     },
     users::{
         handle_admin_disable_2fa, handle_user_count, handle_user_create, handle_user_delete,
         handle_user_exists, handle_user_get, handle_user_set_locked, handle_user_update,
-        handle_user_update_password, handle_user_update_role,
-        handle_user_update_groups, handle_user_update_full,
-        handle_users_list,
+        handle_user_update_full, handle_user_update_groups, handle_user_update_password,
+        handle_user_update_role, handle_users_list,
     },
-    user_homes::{
-        handle_user_home_get, handle_user_home_put, handle_user_home_delete,
-        handle_available_home_disks,
-    },
+    weather_location::{handle_get_weather_location, handle_set_weather_location},
     widgets::{
         handle_widget_cpu_temp, handle_widget_cpu_usage, handle_widget_network_traffic,
         handle_widget_ram_usage, handle_widget_update_info,
-    },
-    journal::{
-        handle_journal_sources, handle_journal_entries, handle_journal_clear,
-        handle_journal_cleanup_settings_get, handle_journal_cleanup_settings_update,
-    },
-    transfer_quotas::{
-        handle_transfer_quota_get, handle_transfer_quotas_list,
-        handle_transfer_quota_set, handle_transfer_quota_delete,
     },
     AppState, AppStateArc,
 };
 
 use crate::handlers::rescue::create_rescue_router;
-use crate::health::{HealthService, SystemHealth, HealthStatus};
+use crate::health::{HealthService, HealthStatus, SystemHealth};
 
 /// Run all health checks and return CPU + memory usage.
 ///
@@ -254,7 +240,13 @@ pub async fn handle_health_endpoint(
         .get("x-session-token")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
-    if session_token.is_empty() || state.auth.get_username_from_token(session_token).await.is_none() {
+    if session_token.is_empty()
+        || state
+            .auth
+            .get_username_from_token(session_token)
+            .await
+            .is_none()
+    {
         return Json(json!({
             "success": false,
             "error": "No valid session token provided"
@@ -268,7 +260,12 @@ pub async fn handle_health_endpoint(
     let memory_usage = get_memory_usage();
 
     match health {
-        Ok(SystemHealth { overall_status, checks, timestamp, .. }) => {
+        Ok(SystemHealth {
+            overall_status,
+            checks,
+            timestamp,
+            ..
+        }) => {
             let status_str = match overall_status {
                 HealthStatus::Healthy => "healthy",
                 HealthStatus::Warning => "warning",
@@ -302,7 +299,7 @@ pub async fn handle_health_endpoint(
         Err(e) => Json(json!({
             "success": false,
             "error": e.to_string()
-        }))
+        })),
     }
 }
 
@@ -337,12 +334,14 @@ fn get_memory_usage() -> f64 {
 
         for line in content.lines() {
             if line.starts_with("MemTotal:") {
-                mem_total = line.split_whitespace()
+                mem_total = line
+                    .split_whitespace()
                     .nth(1)
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(0);
             } else if line.starts_with("MemAvailable:") {
-                mem_available = line.split_whitespace()
+                mem_available = line
+                    .split_whitespace()
                     .nth(1)
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(0);
@@ -374,7 +373,6 @@ async fn server_info(ConnectInfo(addr): ConnectInfo<SocketAddr>) -> Json<serde_j
         "display_address": display_ip
     }))
 }
-
 
 /// Build the axum [`Router`] with all API routes and middleware layers.
 pub fn create_app(state: AppStateArc) -> Router {
@@ -416,7 +414,10 @@ pub fn create_app(state: AppStateArc) -> Router {
         // System & Widgets
         .route("/api/widgets/cpu", get(handle_widget_cpu_usage))
         .route("/api/widgets/ram", get(handle_widget_ram_usage))
-        .route("/api/widgets/network-traffic", get(handle_widget_network_traffic))
+        .route(
+            "/api/widgets/network-traffic",
+            get(handle_widget_network_traffic),
+        )
         .route("/api/widgets/cpu-temp", get(handle_widget_cpu_temp))
         .route("/api/widgets/update-info", get(handle_widget_update_info))
         // Server control
@@ -442,11 +443,23 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/settings/email", put(handle_email_settings_update))
         .route("/api/settings/email/test", post(handle_email_test))
         // Settings - notifications
-        .route("/api/settings/notifications", get(handle_notification_settings_get))
-        .route("/api/settings/notifications", put(handle_notification_settings_update))
+        .route(
+            "/api/settings/notifications",
+            get(handle_notification_settings_get),
+        )
+        .route(
+            "/api/settings/notifications",
+            put(handle_notification_settings_update),
+        )
         // Settings - appearance
-        .route("/api/settings/appearance", get(handle_appearance_settings_get))
-        .route("/api/settings/appearance", put(handle_appearance_settings_update))
+        .route(
+            "/api/settings/appearance",
+            get(handle_appearance_settings_get),
+        )
+        .route(
+            "/api/settings/appearance",
+            put(handle_appearance_settings_update),
+        )
         // Settings - update checks
         .route("/api/settings/update", get(handle_update_settings_get))
         .route("/api/settings/update", put(handle_update_settings_update))
@@ -468,11 +481,23 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/settings/reset", post(handle_settings_reset))
         // Security - sessions and login history
         .route("/api/security/sessions", get(handle_get_my_sessions))
-        .route("/api/security/sessions/revoke", post(handle_revoke_sessions))
-        .route("/api/security/sessions/revoke-all", post(handle_revoke_all_sessions))
+        .route(
+            "/api/security/sessions/revoke",
+            post(handle_revoke_sessions),
+        )
+        .route(
+            "/api/security/sessions/revoke-all",
+            post(handle_revoke_all_sessions),
+        )
         .route("/api/security/login-history", get(handle_get_login_history))
-        .route("/api/security/login-history/{username}", get(handle_get_user_login_history))
-        .route("/api/security/active-sessions-count", get(handle_get_active_sessions_count))
+        .route(
+            "/api/security/login-history/{username}",
+            get(handle_get_user_login_history),
+        )
+        .route(
+            "/api/security/active-sessions-count",
+            get(handle_get_active_sessions_count),
+        )
         .route(
             "/api/monitor-layout",
             get(handle_get_monitor_layout).post(handle_set_monitor_layout),
@@ -489,7 +514,10 @@ pub fn create_app(state: AppStateArc) -> Router {
             get(handle_antivirus_settings_get).put(handle_antivirus_settings_update),
         )
         .route("/api/antivirus/scan", post(handle_antivirus_scan_start))
-        .route("/api/antivirus/scan/cancel", post(handle_antivirus_scan_cancel))
+        .route(
+            "/api/antivirus/scan/cancel",
+            post(handle_antivirus_scan_cancel),
+        )
         .route("/api/antivirus/scans", get(handle_antivirus_scans_list))
         .route("/api/antivirus/threats", get(handle_antivirus_threats_list))
         .route(
@@ -498,7 +526,10 @@ pub fn create_app(state: AppStateArc) -> Router {
         )
         // Firewall (ufw)
         .route("/api/firewall/status", get(handle_firewall_status))
-        .route("/api/firewall/enable/preview", get(handle_firewall_enable_preview))
+        .route(
+            "/api/firewall/enable/preview",
+            get(handle_firewall_enable_preview),
+        )
         .route("/api/firewall/enable", post(handle_firewall_enable))
         .route("/api/firewall/disable", post(handle_firewall_disable))
         .route(
@@ -537,8 +568,14 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/dashboard/network-traffic",
             get(handle_network_traffic_data),
         )
-        .route("/api/dashboard/cpu-temperature", get(handle_cpu_temperature))
-        .route("/api/dashboard/storage-volumes", get(handle_storage_volumes))
+        .route(
+            "/api/dashboard/cpu-temperature",
+            get(handle_cpu_temperature),
+        )
+        .route(
+            "/api/dashboard/storage-volumes",
+            get(handle_storage_volumes),
+        )
         .route(
             "/api/dashboard/widget-preferences",
             get(handle_get_widget_preferences).post(handle_update_widget_preference),
@@ -580,48 +617,42 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/docker/containers/{name}",
             delete(handle_docker_container_remove),
         )
-        .route(
-            "/api/docker/images/pull",
-            post(handle_docker_image_pull),
-        )
+        .route("/api/docker/images/pull", post(handle_docker_image_pull))
         .route(
             "/api/docker/images/{image_id}",
             delete(handle_docker_image_remove),
         )
-        .route(
-            "/api/docker/available",
-            get(handle_docker_available),
-        )
-        .route(
-            "/api/docker/daemon/start",
-            post(handle_docker_daemon_start),
-        )
-        .route(
-            "/api/docker/daemon/logs",
-            get(handle_docker_daemon_logs),
-        )
-        .route(
-            "/api/docker/port-check",
-            get(handle_docker_port_check),
-        )
-        .route(
-            "/api/docker/hub/search",
-            get(handle_docker_hub_search),
-        )
+        .route("/api/docker/available", get(handle_docker_available))
+        .route("/api/docker/daemon/start", post(handle_docker_daemon_start))
+        .route("/api/docker/daemon/logs", get(handle_docker_daemon_logs))
+        .route("/api/docker/port-check", get(handle_docker_port_check))
+        .route("/api/docker/hub/search", get(handle_docker_hub_search))
         // Docker Networks
         .route("/api/docker/networks", get(handle_docker_networks_list))
-        .route("/api/docker/networks/prune", post(handle_docker_network_prune))
-        .route("/api/docker/networks/{name}", get(handle_docker_network_get))
-        .route("/api/docker/networks/{name}", delete(handle_docker_network_remove))
+        .route(
+            "/api/docker/networks/prune",
+            post(handle_docker_network_prune),
+        )
+        .route(
+            "/api/docker/networks/{name}",
+            get(handle_docker_network_get),
+        )
+        .route(
+            "/api/docker/networks/{name}",
+            delete(handle_docker_network_remove),
+        )
         .route("/api/docker/networks", post(handle_docker_network_create))
-        .route("/api/docker/networks/connect", post(handle_docker_network_connect))
-        .route("/api/docker/networks/disconnect", post(handle_docker_network_disconnect))
+        .route(
+            "/api/docker/networks/connect",
+            post(handle_docker_network_connect),
+        )
+        .route(
+            "/api/docker/networks/disconnect",
+            post(handle_docker_network_disconnect),
+        )
         // Docker Compose
         .route("/api/docker/compose/projects", get(handle_compose_list))
-        .route(
-            "/api/docker/compose/projects",
-            post(handle_compose_create),
-        )
+        .route("/api/docker/compose/projects", post(handle_compose_create))
         .route(
             "/api/docker/compose/projects/{name}",
             get(handle_compose_get),
@@ -665,8 +696,14 @@ pub fn create_app(state: AppStateArc) -> Router {
         // Docker app catalog — manifest-driven one-click Compose templates
         .route("/api/docker/catalog", get(handle_catalog_list))
         .route("/api/docker/catalog/updates", get(handle_catalog_updates))
-        .route("/api/docker/catalog/{id}/update", post(handle_catalog_update))
-        .route("/api/docker/catalog/{id}/proxy", post(handle_catalog_proxy_config))
+        .route(
+            "/api/docker/catalog/{id}/update",
+            post(handle_catalog_update),
+        )
+        .route(
+            "/api/docker/catalog/{id}/proxy",
+            post(handle_catalog_proxy_config),
+        )
         .route("/api/docker/catalog/{id}/icon", get(handle_catalog_icon))
         .route(
             "/api/docker/catalog/{id}/gallery/{n}",
@@ -676,10 +713,7 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/docker/catalog/{id}/install",
             post(handle_catalog_install),
         )
-        .route(
-            "/api/docker/catalog/{id}",
-            delete(handle_catalog_uninstall),
-        )
+        .route("/api/docker/catalog/{id}", delete(handle_catalog_uninstall))
         // Community app stores (extra git-repo catalog sources)
         .route("/api/docker/stores", get(handle_stores_list))
         .route("/api/docker/stores", post(handle_store_add))
@@ -689,7 +723,10 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/downloader/status", get(handle_downloader_status))
         .route("/api/downloader/start", post(handle_downloader_start))
         .route("/api/downloader/stop", post(handle_downloader_stop))
-        .route("/api/downloader/global-stat", get(handle_downloader_global_stat))
+        .route(
+            "/api/downloader/global-stat",
+            get(handle_downloader_global_stat),
+        )
         .route("/api/downloader/tasks", get(handle_downloader_tasks))
         .route("/api/downloader/add", post(handle_downloader_add))
         .route("/api/downloader/pause", post(handle_downloader_pause))
@@ -698,20 +735,41 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/downloader/task/{gid}", get(handle_downloader_task))
         // Storage
         .route("/api/storage/disks", get(handle_disks_list))
-        .route("/api/storage/disks/{name}/smart/capabilities", get(handle_disk_smart_capabilities))
-        .route("/api/storage/disks/{name}/smart/test", get(handle_disk_smart_test_status))
-        .route("/api/storage/disks/{name}/smart/test", post(handle_disk_smart_test_start))
+        .route(
+            "/api/storage/disks/{name}/smart/capabilities",
+            get(handle_disk_smart_capabilities),
+        )
+        .route(
+            "/api/storage/disks/{name}/smart/test",
+            get(handle_disk_smart_test_status),
+        )
+        .route(
+            "/api/storage/disks/{name}/smart/test",
+            post(handle_disk_smart_test_start),
+        )
         .route("/api/storage/removable", get(handle_removable_disks_list))
         .route("/api/storage/partitions", get(handle_partitions_list))
         .route("/api/storage/raid", get(handle_raid_arrays_list))
         .route("/api/storage/raid", post(handle_raid_create))
-        .route("/api/storage/raid/devices", get(handle_raid_available_devices))
+        .route(
+            "/api/storage/raid/devices",
+            get(handle_raid_available_devices),
+        )
         .route("/api/storage/raid/{name}", delete(handle_raid_delete))
-        .route("/api/storage/raid/{name}/rebuild", post(handle_raid_rebuild))
+        .route(
+            "/api/storage/raid/{name}/rebuild",
+            post(handle_raid_rebuild),
+        )
         // Unified virtual-disk management (STORAGE): mdadm + ZFS + Btrfs
         .route("/api/storage/virtual-disks", get(handle_virtual_disks_list))
-        .route("/api/storage/virtual-disks/{name}", delete(handle_virtual_disk_delete))
-        .route("/api/storage/virtual-disks/{name}/scrub", post(handle_virtual_disk_scrub))
+        .route(
+            "/api/storage/virtual-disks/{name}",
+            delete(handle_virtual_disk_delete),
+        )
+        .route(
+            "/api/storage/virtual-disks/{name}/scrub",
+            post(handle_virtual_disk_scrub),
+        )
         // Cache tier (HomeVault write caching)
         .route("/api/cache/settings", get(handle_cache_settings_get))
         .route("/api/cache/settings", put(handle_cache_settings_update))
@@ -780,33 +838,81 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/explorer/rename", post(handle_explorer_rename))
         .route("/api/explorer/copy", post(handle_explorer_copy))
         .route("/api/explorer/move", post(handle_explorer_move))
-        .route("/api/explorer/permissions", get(handle_explorer_permissions))
-        .route("/api/explorer/permissions", post(handle_explorer_permissions))
+        .route(
+            "/api/explorer/permissions",
+            get(handle_explorer_permissions),
+        )
+        .route(
+            "/api/explorer/permissions",
+            post(handle_explorer_permissions),
+        )
         .route("/api/explorer/preview", get(handle_explorer_preview))
         .route("/api/explorer/extract", post(handle_explorer_extract))
         .route("/api/explorer/download", get(handle_explorer_download))
-        .route("/api/explorer/download-ticket", post(handle_explorer_download_ticket))
+        .route(
+            "/api/explorer/download-ticket",
+            post(handle_explorer_download_ticket),
+        )
         .route("/api/explorer/thumbnail", get(handle_explorer_thumbnail))
-        .route("/api/explorer/thumbnail-ticket", post(handle_explorer_thumbnail_ticket))
+        .route(
+            "/api/explorer/thumbnail-ticket",
+            post(handle_explorer_thumbnail_ticket),
+        )
         .route("/api/explorer/upload", post(handle_explorer_upload))
-        .route("/api/explorer/upload/session", post(handle_explorer_upload_session_start))
-        .route("/api/explorer/upload/session", delete(handle_explorer_upload_session_abort))
-        .route("/api/explorer/upload/chunk", post(handle_explorer_upload_chunk))
-        .route("/api/explorer/upload/complete", post(handle_explorer_upload_complete))
+        .route(
+            "/api/explorer/upload/session",
+            post(handle_explorer_upload_session_start),
+        )
+        .route(
+            "/api/explorer/upload/session",
+            delete(handle_explorer_upload_session_abort),
+        )
+        .route(
+            "/api/explorer/upload/chunk",
+            post(handle_explorer_upload_chunk),
+        )
+        .route(
+            "/api/explorer/upload/complete",
+            post(handle_explorer_upload_complete),
+        )
         .route("/api/explorer/compress", post(handle_explorer_compress))
         .route("/api/explorer/trash", post(handle_explorer_trash))
         .route("/api/explorer/trash", get(handle_explorer_trash_list))
-        .route("/api/explorer/trash", axum::routing::delete(handle_explorer_trash_empty))
-        .route("/api/explorer/trash/restore", post(handle_explorer_trash_restore))
-        .route("/api/explorer/trash/{id}", axum::routing::delete(handle_explorer_trash_purge))
-        .route("/api/explorer/favorites", get(handle_explorer_favorites_list))
-        .route("/api/explorer/favorites", post(handle_explorer_favorites_add))
-        .route("/api/explorer/favorites", delete(handle_explorer_favorites_remove))
+        .route(
+            "/api/explorer/trash",
+            axum::routing::delete(handle_explorer_trash_empty),
+        )
+        .route(
+            "/api/explorer/trash/restore",
+            post(handle_explorer_trash_restore),
+        )
+        .route(
+            "/api/explorer/trash/{id}",
+            axum::routing::delete(handle_explorer_trash_purge),
+        )
+        .route(
+            "/api/explorer/favorites",
+            get(handle_explorer_favorites_list),
+        )
+        .route(
+            "/api/explorer/favorites",
+            post(handle_explorer_favorites_add),
+        )
+        .route(
+            "/api/explorer/favorites",
+            delete(handle_explorer_favorites_remove),
+        )
         .route("/api/explorer/shares", get(handle_share_links_list))
         .route("/api/explorer/shares", post(handle_share_link_create))
-        .route("/api/explorer/shares/{token}", axum::routing::delete(handle_share_link_delete))
+        .route(
+            "/api/explorer/shares/{token}",
+            axum::routing::delete(handle_share_link_delete),
+        )
         .route("/api/explorer/watch", get(handle_explorer_watch))
-        .route("/api/explorer/watch/ticket", post(handle_explorer_watch_ticket))
+        .route(
+            "/api/explorer/watch/ticket",
+            post(handle_explorer_watch_ticket),
+        )
         // Shares
         .route("/api/shares", get(handle_shares_list))
         .route("/api/shares", post(handle_share_create))
@@ -899,10 +1005,7 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/users/{username}",
             axum::routing::put(handle_user_update),
         )
-        .route(
-            "/api/users/{username}/avatar.svg",
-            get(handle_user_avatar),
-        )
+        .route("/api/users/{username}/avatar.svg", get(handle_user_avatar))
         .route(
             "/api/users/{username}/full",
             axum::routing::put(handle_user_update_full),
@@ -977,14 +1080,23 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/progress/{job_id}", get(handle_progress_sse))
         .route("/api/progress/jobs", get(handle_list_jobs))
         .route("/api/progress/{job_id}/status", get(handle_get_job_status))
-        .route("/api/progress/{job_id}", axum::routing::delete(handle_cancel_job))
+        .route(
+            "/api/progress/{job_id}",
+            axum::routing::delete(handle_cancel_job),
+        )
         // Unified background-activity feed (desktop taskbar)
-        .route("/api/activity", get(crate::handlers::activity::handle_activity))
+        .route(
+            "/api/activity",
+            get(crate::handlers::activity::handle_activity),
+        )
         // Rclone
         .route("/api/rclone/status", get(handle_rclone_status))
         .route("/api/rclone/remotes", get(handle_list_remotes))
         .route("/api/rclone/remotes", post(handle_add_remote))
-        .route("/api/rclone/remotes/{name}", axum::routing::delete(handle_delete_remote))
+        .route(
+            "/api/rclone/remotes/{name}",
+            axum::routing::delete(handle_delete_remote),
+        )
         .route("/api/rclone/providers", get(handle_list_providers))
         .route("/api/rclone/mounts", get(handle_list_mounts))
         .route("/api/rclone/mount/start", post(handle_mount_start))
@@ -996,17 +1108,26 @@ pub fn create_app(state: AppStateArc) -> Router {
         // Sync jobs — persisted server-side (formerly localStorage in the UI)
         .route("/api/rclone/jobs", get(handle_list_sync_jobs))
         .route("/api/rclone/jobs", post(handle_create_sync_job))
-        .route("/api/rclone/jobs/{id}", axum::routing::delete(handle_delete_sync_job))
+        .route(
+            "/api/rclone/jobs/{id}",
+            axum::routing::delete(handle_delete_sync_job),
+        )
         .route("/api/rclone/jobs/{id}/run", post(handle_run_sync_job))
         // Syncthing
         .route("/api/syncthing/status", get(handle_syncthing_status))
         .route("/api/syncthing/config", get(handle_syncthing_config))
         .route("/api/syncthing/devices", get(handle_syncthing_devices))
         .route("/api/syncthing/folders", get(handle_syncthing_folders))
-        .route("/api/syncthing/connections", get(handle_syncthing_connections))
+        .route(
+            "/api/syncthing/connections",
+            get(handle_syncthing_connections),
+        )
         .route("/api/syncthing/restart", post(handle_syncthing_restart))
         .route("/api/syncthing/pause", post(handle_syncthing_pause_device))
-        .route("/api/syncthing/resume", post(handle_syncthing_resume_device))
+        .route(
+            "/api/syncthing/resume",
+            post(handle_syncthing_resume_device),
+        )
         .route("/api/syncthing/scan", post(handle_syncthing_scan_folder))
         .route("/api/syncthing/errors", get(handle_syncthing_errors))
         // Restic
@@ -1017,31 +1138,64 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/restic/repos/{id}", get(handle_restic_repo_get))
         .route("/api/restic/repos/{id}", put(handle_restic_repo_update))
         .route("/api/restic/repos/{id}", delete(handle_restic_repo_delete))
-        .route("/api/restic/repos/{id}/snapshots", get(handle_restic_snapshots_list))
+        .route(
+            "/api/restic/repos/{id}/snapshots",
+            get(handle_restic_snapshots_list),
+        )
         .route("/api/restic/repos/{id}/stats", get(handle_restic_stats))
-        .route("/api/restic/repos/{id}/jobs", get(handle_restic_backup_jobs))
+        .route(
+            "/api/restic/repos/{id}/jobs",
+            get(handle_restic_backup_jobs),
+        )
         .route("/api/restic/repos/{id}/unlock", post(handle_restic_unlock))
         .route("/api/restic/repos/{id}/prune", post(handle_restic_prune))
         .route("/api/restic/backup", post(handle_restic_backup_create))
         .route("/api/restic/restore", post(handle_restic_restore))
         .route("/api/restic/check", post(handle_restic_check))
         .route("/api/restic/forget", post(handle_restic_forget))
-        .route("/api/restic/snapshots/delete", post(handle_restic_snapshot_delete))
+        .route(
+            "/api/restic/snapshots/delete",
+            post(handle_restic_snapshot_delete),
+        )
         .route("/api/restic/schedules", get(handle_restic_schedules_list))
         .route("/api/restic/schedules", post(handle_restic_schedule_create))
-        .route("/api/restic/schedules/{id}", put(handle_restic_schedule_update))
-        .route("/api/restic/schedules/{id}", delete(handle_restic_schedule_delete))
-        .route("/api/restic/schedules/{id}/enabled", put(handle_restic_schedule_set_enabled))
-        .route("/api/restic/retention-policies", get(handle_retention_policies_list))
-        .route("/api/restic/retention-policies", post(handle_retention_policy_create))
-        .route("/api/restic/retention-policies/{id}", put(handle_retention_policy_update))
-        .route("/api/restic/retention-policies/{id}", delete(handle_retention_policy_delete))
+        .route(
+            "/api/restic/schedules/{id}",
+            put(handle_restic_schedule_update),
+        )
+        .route(
+            "/api/restic/schedules/{id}",
+            delete(handle_restic_schedule_delete),
+        )
+        .route(
+            "/api/restic/schedules/{id}/enabled",
+            put(handle_restic_schedule_set_enabled),
+        )
+        .route(
+            "/api/restic/retention-policies",
+            get(handle_retention_policies_list),
+        )
+        .route(
+            "/api/restic/retention-policies",
+            post(handle_retention_policy_create),
+        )
+        .route(
+            "/api/restic/retention-policies/{id}",
+            put(handle_retention_policy_update),
+        )
+        .route(
+            "/api/restic/retention-policies/{id}",
+            delete(handle_retention_policy_delete),
+        )
         // Chat AI Assistant
         .route("/api/chat/send", post(handle_chat_send))
         .route("/api/chat/send/stream", post(handle_chat_send_stream))
         .route("/api/chat/models", get(handle_chat_models_list))
         .route("/api/chat/models/pull", post(handle_chat_models_pull))
-        .route("/api/chat/models/recommend", get(handle_chat_models_recommend))
+        .route(
+            "/api/chat/models/recommend",
+            get(handle_chat_models_recommend),
+        )
         .route("/api/chat/model", get(handle_chat_model_get))
         .route("/api/chat/model", put(handle_chat_model_set))
         // RAG Knowledge Base
@@ -1053,34 +1207,103 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/journal/sources", get(handle_journal_sources))
         .route("/api/journal/entries", get(handle_journal_entries))
         .route("/api/journal/clear", delete(handle_journal_clear))
-        .route("/api/journal/cleanup-settings", get(handle_journal_cleanup_settings_get))
-        .route("/api/journal/cleanup-settings", put(handle_journal_cleanup_settings_update))
+        .route(
+            "/api/journal/cleanup-settings",
+            get(handle_journal_cleanup_settings_get),
+        )
+        .route(
+            "/api/journal/cleanup-settings",
+            put(handle_journal_cleanup_settings_update),
+        )
         // Upload/download transfer quotas (Users/Groups pages)
-        .route("/api/transfer-quotas/{subject_type}", get(handle_transfer_quotas_list))
-        .route("/api/transfer-quotas/{subject_type}/{subject_name}", get(handle_transfer_quota_get))
-        .route("/api/transfer-quotas/{subject_type}/{subject_name}", put(handle_transfer_quota_set))
-        .route("/api/transfer-quotas/{subject_type}/{subject_name}", delete(handle_transfer_quota_delete))
+        .route(
+            "/api/transfer-quotas/{subject_type}",
+            get(handle_transfer_quotas_list),
+        )
+        .route(
+            "/api/transfer-quotas/{subject_type}/{subject_name}",
+            get(handle_transfer_quota_get),
+        )
+        .route(
+            "/api/transfer-quotas/{subject_type}/{subject_name}",
+            put(handle_transfer_quota_set),
+        )
+        .route(
+            "/api/transfer-quotas/{subject_type}/{subject_name}",
+            delete(handle_transfer_quota_delete),
+        )
         // Virtual Machines (Incus) — every route is admin-only (see src/handlers/vm.rs)
-        .route("/api/vm/available", get(crate::handlers::vm::handle_vm_available))
-        .route("/api/vm/os-options", get(crate::handlers::vm::handle_vm_os_options))
+        .route(
+            "/api/vm/available",
+            get(crate::handlers::vm::handle_vm_available),
+        )
+        .route(
+            "/api/vm/os-options",
+            get(crate::handlers::vm::handle_vm_os_options),
+        )
         .route("/api/vm/list", get(crate::handlers::vm::handle_vm_list))
-        .route("/api/vm/create", post(crate::handlers::vm::handle_vm_create))
-        .route("/api/vm/console/ticket", post(crate::handlers::vm::handle_console_ticket))
+        .route(
+            "/api/vm/create",
+            post(crate::handlers::vm::handle_vm_create),
+        )
+        .route(
+            "/api/vm/console/ticket",
+            post(crate::handlers::vm::handle_console_ticket),
+        )
         .route("/api/vm/isos", get(crate::handlers::vm::handle_vm_isos))
-        .route("/api/vm/isos/download", post(crate::handlers::vm::handle_vm_iso_download))
-        .route("/api/vm/isos/virtio", post(crate::handlers::vm::handle_vm_iso_virtio))
-        .route("/api/vm/isos/{name}", delete(crate::handlers::vm::handle_vm_iso_delete))
-        .route("/api/vm/{name}/screen/ticket", post(crate::handlers::vm::handle_screen_ticket))
+        .route(
+            "/api/vm/isos/download",
+            post(crate::handlers::vm::handle_vm_iso_download),
+        )
+        .route(
+            "/api/vm/isos/virtio",
+            post(crate::handlers::vm::handle_vm_iso_virtio),
+        )
+        .route(
+            "/api/vm/isos/{name}",
+            delete(crate::handlers::vm::handle_vm_iso_delete),
+        )
+        .route(
+            "/api/vm/{name}/screen/ticket",
+            post(crate::handlers::vm::handle_screen_ticket),
+        )
         .route("/api/vm/{name}", get(crate::handlers::vm::handle_vm_get))
-        .route("/api/vm/{name}", delete(crate::handlers::vm::handle_vm_delete))
-        .route("/api/vm/{name}/start", put(crate::handlers::vm::handle_vm_start))
-        .route("/api/vm/{name}/stop", put(crate::handlers::vm::handle_vm_stop))
-        .route("/api/vm/{name}/restart", put(crate::handlers::vm::handle_vm_restart))
-        .route("/api/vm/{name}/config", put(crate::handlers::vm::handle_vm_config))
-        .route("/api/vm/{name}/snapshots", get(crate::handlers::vm::handle_vm_snapshots))
-        .route("/api/vm/{name}/snapshots", post(crate::handlers::vm::handle_vm_snapshot_create))
-        .route("/api/vm/{name}/snapshots/{snap}/restore", post(crate::handlers::vm::handle_vm_snapshot_restore))
-        .route("/api/vm/{name}/snapshots/{snap}", delete(crate::handlers::vm::handle_vm_snapshot_delete))
+        .route(
+            "/api/vm/{name}",
+            delete(crate::handlers::vm::handle_vm_delete),
+        )
+        .route(
+            "/api/vm/{name}/start",
+            put(crate::handlers::vm::handle_vm_start),
+        )
+        .route(
+            "/api/vm/{name}/stop",
+            put(crate::handlers::vm::handle_vm_stop),
+        )
+        .route(
+            "/api/vm/{name}/restart",
+            put(crate::handlers::vm::handle_vm_restart),
+        )
+        .route(
+            "/api/vm/{name}/config",
+            put(crate::handlers::vm::handle_vm_config),
+        )
+        .route(
+            "/api/vm/{name}/snapshots",
+            get(crate::handlers::vm::handle_vm_snapshots),
+        )
+        .route(
+            "/api/vm/{name}/snapshots",
+            post(crate::handlers::vm::handle_vm_snapshot_create),
+        )
+        .route(
+            "/api/vm/{name}/snapshots/{snap}/restore",
+            post(crate::handlers::vm::handle_vm_snapshot_restore),
+        )
+        .route(
+            "/api/vm/{name}/snapshots/{snap}",
+            delete(crate::handlers::vm::handle_vm_snapshot_delete),
+        )
         .with_state(state.clone());
 
     // Network sub-router: interface listing, WiFi, diagnostics, etc.
@@ -1099,10 +1322,22 @@ pub fn create_app(state: AppStateArc) -> Router {
     let spa = Router::new()
         .route("/sprite.svg", get(serve_sprite))
         .route("/sprite-unified.svg", get(serve_sprite_unified))
-        .route("/sprite-lucide.svg", get(|| serve_dist_file("sprite-lucide.svg", "image/svg+xml")))
-        .route("/manifest.json", get(|| serve_dist_file("manifest.json", "application/json")))
-        .route("/favicon.svg", get(|| serve_dist_file("favicon.svg", "image/svg+xml")))
-        .route("/sw.js", get(|| serve_dist_file("sw.js", "application/javascript")))
+        .route(
+            "/sprite-lucide.svg",
+            get(|| serve_dist_file("sprite-lucide.svg", "image/svg+xml")),
+        )
+        .route(
+            "/manifest.json",
+            get(|| serve_dist_file("manifest.json", "application/json")),
+        )
+        .route(
+            "/favicon.svg",
+            get(|| serve_dist_file("favicon.svg", "image/svg+xml")),
+        )
+        .route(
+            "/sw.js",
+            get(|| serve_dist_file("sw.js", "application/javascript")),
+        )
         // Bundled desktop wallpapers (embedded from `frontend/public/wallpapers/`).
         .route("/wallpapers/{*path}", get(serve_wallpapers_file))
         .fallback(serve_spa);
@@ -1184,7 +1419,7 @@ pub fn create_app(state: AppStateArc) -> Router {
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use crate::config::Settings;
     use crate::storage::Database;
-    use tracing_subscriber::layer::{SubscriberExt, Layer};
+    use tracing_subscriber::layer::{Layer, SubscriberExt};
     use tracing_subscriber::util::SubscriberInitExt;
 
     // Initialize tracing: terminal (stderr, WARN+ only — no user info leaked
@@ -1204,14 +1439,11 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let file_filter = tracing_subscriber::EnvFilter::new("info");
 
     tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_filter(
-                    tracing_subscriber::filter::FilterFn::new(|metadata| {
-                        metadata.level() <= &tracing::Level::WARN
-                    }),
-                ),
-        )
+        .with(tracing_subscriber::fmt::layer().with_filter(
+            tracing_subscriber::filter::FilterFn::new(|metadata| {
+                metadata.level() <= &tracing::Level::WARN
+            }),
+        ))
         .with(
             tracing_subscriber::fmt::layer()
                 .with_writer(file_writer)
@@ -1267,13 +1499,11 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let widgets = crate::storage::WidgetRepository::new(db.pool());
     let path_guard = crate::config::PathGuard::default();
     // Admin rate limiter: max 10 operations/min per admin.
-    let admin_rate_limiter = Arc::new(
-        crate::middleware::rate_limit::RateLimitState::new(10, 60)
-    );
+    let admin_rate_limiter = Arc::new(crate::middleware::rate_limit::RateLimitState::new(10, 60));
     let pty_manager = Arc::new(crate::handlers::terminal_pty::PtyManager::new());
-    let downloader = Arc::new(
-        tokio::sync::Mutex::new(crate::handlers::downloader::Aria2Process { child: None })
-    );
+    let downloader = Arc::new(tokio::sync::Mutex::new(
+        crate::handlers::downloader::Aria2Process { child: None },
+    ));
     let (ransomware_watch_tx, ransomware_watch_rx) =
         tokio::sync::mpsc::unbounded_channel::<crate::ransomware_watcher::WatchCommand>();
     let state = Arc::new(AppState {
@@ -1286,17 +1516,26 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         downloader,
         ransomware_watch_tx,
     });
-    tracing::info!("Core services ready (widgets, path guard, rate limiter, terminal manager, downloader)");
+    tracing::info!(
+        "Core services ready (widgets, path guard, rate limiter, terminal manager, downloader)"
+    );
 
     // Background schedulers — a `tokio::spawn` call itself can't fail, so
     // (unlike the checks above) there's no meaningful per-task success/error
     // to log here; a real failure inside one of these loops is already
     // logged from within it. One line instead of a pair per scheduler.
-    tokio::spawn(crate::ransomware_watcher::run_watcher_loop(state.clone(), ransomware_watch_rx));
+    tokio::spawn(crate::ransomware_watcher::run_watcher_loop(
+        state.clone(),
+        ransomware_watch_rx,
+    ));
     tokio::spawn(crate::restic_scheduler::run_scheduler_loop(state.clone()));
     tokio::spawn(crate::cache_scheduler::run_scheduler_loop(state.clone()));
-    tokio::spawn(crate::antivirus_scheduler::run_scheduler_loop(state.clone()));
-    tokio::spawn(crate::journal_cleanup_scheduler::run_scheduler_loop(state.clone()));
+    tokio::spawn(crate::antivirus_scheduler::run_scheduler_loop(
+        state.clone(),
+    ));
+    tokio::spawn(crate::journal_cleanup_scheduler::run_scheduler_loop(
+        state.clone(),
+    ));
     tracing::info!("Background schedulers started (ransomware watcher, backups, cache-tier mover, antivirus, journal cleanup)");
 
     let firewall_available = crate::firewall::ufw_available();
@@ -1305,7 +1544,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let app_port = crate::firewall::detect_app_port();
         tokio::task::spawn_blocking(move || {
             if let Err(e) = crate::firewall::ensure_mandatory_rules(ssh_port, app_port) {
-                tracing::warn!("Failed to (re)assert mandatory firewall rules at startup: {}", e);
+                tracing::warn!(
+                    "Failed to (re)assert mandatory firewall rules at startup: {}",
+                    e
+                );
             }
         });
     }
@@ -1332,14 +1574,19 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     ] {
         tokio::task::spawn_blocking(move || {
             if let Err(e) = crate::shares::SharesService::start_service(share_type.clone()) {
-                tracing::warn!("Failed to start '{}' share service at startup: {}", share_type, e);
+                tracing::warn!(
+                    "Failed to start '{}' share service at startup: {}",
+                    share_type,
+                    e
+                );
             }
         });
     }
     {
         let sftp_state = state.clone();
         tokio::spawn(async move {
-            if let Err(e) = crate::sftp::SftpJailService::rebuild_jails(sftp_state.db.pool()).await {
+            if let Err(e) = crate::sftp::SftpJailService::rebuild_jails(sftp_state.db.pool()).await
+            {
                 tracing::warn!("SFTP: jail rebuild failed at startup: {}", e);
             }
         });
@@ -1350,7 +1597,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // enabled/disabled. Link-local only, no-op when avahi-daemon is absent.
     tokio::spawn(crate::mdns::run_publisher_loop(settings.port));
 
-    tokio::spawn(crate::notification_engine::run_notification_loop(state.clone()));
+    tokio::spawn(crate::notification_engine::run_notification_loop(
+        state.clone(),
+    ));
 
     // Per-app reverse proxy: initialise with the pieces its tasks need, then
     // bring back a proxy for every catalog app that had one before restart.
@@ -1405,15 +1654,12 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let shutdown_handle = handle.clone();
                 tokio::spawn(async move {
                     let _ = tokio::signal::ctrl_c().await;
-                    shutdown_handle
-                        .graceful_shutdown(Some(std::time::Duration::from_secs(10)));
+                    shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
                 });
                 tokio::spawn(async move {
                     if let Err(e) = axum_server::bind_rustls(https_addr, rustls_config)
                         .handle(handle)
-                        .serve(
-                            https_app.into_make_service_with_connect_info::<SocketAddr>(),
-                        )
+                        .serve(https_app.into_make_service_with_connect_info::<SocketAddr>())
                         .await
                     {
                         tracing::error!("HTTPS listener on :{https_port} stopped: {e}");
@@ -1461,13 +1707,21 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // from the affected page's point of view, so that's checked and
     // reported separately from plain presence.
     let dependency_statuses = crate::dependencies::check_all().await;
-    for dep in dependency_statuses.iter().filter(|d| d.required && !d.installed) {
+    for dep in dependency_statuses
+        .iter()
+        .filter(|d| d.required && !d.installed)
+    {
         tracing::warn!(
             "Required package '{}' ({}) not found — {} will not work. See installer/install.sh.",
-            dep.package, dep.name, dep.used_by
+            dep.package,
+            dep.name,
+            dep.used_by
         );
     }
-    for dep in dependency_statuses.iter().filter(|d| d.installed && d.running == Some(false)) {
+    for dep in dependency_statuses
+        .iter()
+        .filter(|d| d.installed && d.running == Some(false))
+    {
         tracing::warn!(
             "'{}' is installed but its service isn't running — {} will not work until it's started.",
             dep.name, dep.used_by
@@ -1481,30 +1735,57 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     tracing::info!("----------------------------------------");
     tracing::info!("HomeVault v{} is ready", env!("CARGO_PKG_VERSION"));
-    tracing::info!("  Web UI:   http://{}:{}  (or http://localhost:{})", host, settings.port, settings.port);
+    tracing::info!(
+        "  Web UI:   http://{}:{}  (or http://localhost:{})",
+        host,
+        settings.port,
+        settings.port
+    );
     if let Some(https_port) = https_bound {
         let ci = crate::tls::certificate_info(&tls_settings);
         tracing::info!(
             "  HTTPS:    https://{}:{}  ({} certificate{}){}",
             host,
             https_port,
-            if ci.self_signed { "self-signed" } else { "provided" },
-            ci.not_after.as_deref().map(|d| format!(", expires {d}")).unwrap_or_default(),
-            if tls_settings.redirect { "  [HTTP redirects here]" } else { "" },
+            if ci.self_signed {
+                "self-signed"
+            } else {
+                "provided"
+            },
+            ci.not_after
+                .as_deref()
+                .map(|d| format!(", expires {d}"))
+                .unwrap_or_default(),
+            if tls_settings.redirect {
+                "  [HTTP redirects here]"
+            } else {
+                ""
+            },
         );
     }
     if crate::mdns::avahi_available() {
-        tracing::info!("  mDNS:     http://{}.local:{}", crate::mdns::MDNS_HOSTNAME, settings.port);
+        tracing::info!(
+            "  mDNS:     http://{}.local:{}",
+            crate::mdns::MDNS_HOSTNAME,
+            settings.port
+        );
     }
     tracing::info!(
         "  Optional integrations detected: {}",
-        if optional_ready.is_empty() { "none".to_string() } else { optional_ready.join(", ") }
+        if optional_ready.is_empty() {
+            "none".to_string()
+        } else {
+            optional_ready.join(", ")
+        }
     );
     tracing::info!("----------------------------------------");
 
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(shutdown_signal(state.pty_manager.clone()))
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal(state.pty_manager.clone()))
+    .await?;
 
     Ok(())
 }

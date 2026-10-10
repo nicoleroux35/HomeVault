@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the manifest-driven Docker app catalog and the
 //! community app-store endpoints (`crate::handlers::docker_catalog`).
 //!
@@ -37,7 +40,11 @@ static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 type Req = Request<axum::body::Body>;
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -75,9 +82,15 @@ fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/auth/login", post(handle_login))
         .route("/api/docker/catalog", get(handle_catalog_list))
-        .route("/api/docker/catalog/{id}/install", post(handle_catalog_install))
+        .route(
+            "/api/docker/catalog/{id}/install",
+            post(handle_catalog_install),
+        )
         .route("/api/docker/catalog/updates", get(handle_catalog_updates))
-        .route("/api/docker/catalog/{id}/update", post(handle_catalog_update))
+        .route(
+            "/api/docker/catalog/{id}/update",
+            post(handle_catalog_update),
+        )
         .route("/api/docker/stores", get(handle_stores_list))
         .route("/api/docker/stores", post(handle_store_add))
         .route("/api/docker/stores/{id}", delete(handle_store_delete))
@@ -99,7 +112,14 @@ async fn mk_user(state: &AppState, username: &str, password: &str, role_id: i64)
 }
 
 async fn login(router: &mut Router, username: &str, password: &str) -> String {
-    let (_, body) = send(router, Method::POST, "/api/auth/login", None, Some(json!({"username": username, "password": password}))).await;
+    let (_, body) = send(
+        router,
+        Method::POST,
+        "/api/auth/login",
+        None,
+        Some(json!({"username": username, "password": password})),
+    )
+    .await;
     body["data"]["token"].as_str().expect("token").to_string()
 }
 
@@ -121,10 +141,18 @@ async fn send(
     } else {
         req.body(axum::body::Body::empty()).unwrap()
     };
-    let resp = ServiceExt::<Req>::ready(router).await.unwrap().call(req).await.unwrap();
+    let resp = ServiceExt::<Req>::ready(router)
+        .await
+        .unwrap()
+        .call(req)
+        .await
+        .unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let json = serde_json::from_slice(&bytes).unwrap_or(json!({"raw": String::from_utf8_lossy(&bytes)}));
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json =
+        serde_json::from_slice(&bytes).unwrap_or(json!({"raw": String::from_utf8_lossy(&bytes)}));
     (status, json)
 }
 
@@ -143,12 +171,22 @@ async fn test_catalog_list_returns_builtin_apps() {
     let mut r = router(state);
     let token = login(&mut r, "u", "pw012345").await;
 
-    let (status, body) = send(&mut r, Method::GET, "/api/docker/catalog", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/docker/catalog",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], json!(true));
     let apps = body["data"].as_array().expect("array");
     assert_eq!(apps.len(), 15, "the 15 built-in apps must be listed");
-    let jellyfin = apps.iter().find(|a| a["app_id"] == "jellyfin").expect("jellyfin present");
+    let jellyfin = apps
+        .iter()
+        .find(|a| a["app_id"] == "jellyfin")
+        .expect("jellyfin present");
     assert_eq!(jellyfin["id"], "homevault:jellyfin");
     assert_eq!(jellyfin["store_id"], "homevault");
     assert!(jellyfin["description"].as_str().unwrap().len() > 5);
@@ -162,7 +200,14 @@ async fn test_stores_list_starts_empty() {
     let mut r = router(state);
     let token = login(&mut r, "u", "pw012345").await;
 
-    let (status, body) = send(&mut r, Method::GET, "/api/docker/stores", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/docker/stores",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"].as_array().unwrap().len(), 0);
 }
@@ -212,7 +257,14 @@ async fn test_store_delete_unknown_is_error() {
     let mut r = router(state);
     let token = login(&mut r, "admin", "pw012345").await;
 
-    let (_, body) = send(&mut r, Method::DELETE, "/api/docker/stores/ghost", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::DELETE,
+        "/api/docker/stores/ghost",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["success"], json!(false));
 }
 
@@ -223,7 +275,14 @@ async fn test_updates_endpoint_requires_admin() {
     let mut r = router(state);
     let token = login(&mut r, "plain", "pw012345").await;
 
-    let (status, _) = send(&mut r, Method::GET, "/api/docker/catalog/updates", Some(&token), None).await;
+    let (status, _) = send(
+        &mut r,
+        Method::GET,
+        "/api/docker/catalog/updates",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
@@ -234,7 +293,14 @@ async fn test_updates_endpoint_ok_for_admin_with_nothing_installed() {
     let mut r = router(state);
     let token = login(&mut r, "admin", "pw012345").await;
 
-    let (status, body) = send(&mut r, Method::GET, "/api/docker/catalog/updates", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/docker/catalog/updates",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"].as_array().map(|a| a.len()), Some(0));
 }
@@ -273,5 +339,8 @@ async fn test_install_unknown_app_is_error() {
     )
     .await;
     assert_eq!(body["success"], json!(false));
-    assert!(body["message"].as_str().unwrap_or_default().contains("Unknown"));
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("Unknown"));
 }

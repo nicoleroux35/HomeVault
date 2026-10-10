@@ -25,7 +25,9 @@ impl Default for AvSettings {
             // `/var/lib/homevault/quarantine` — an admin running with a
             // customized data directory would otherwise get a default
             // quarantine path outside it entirely.
-            quarantine_dir: crate::config::paths::quarantine_dir().to_string_lossy().to_string(),
+            quarantine_dir: crate::config::paths::quarantine_dir()
+                .to_string_lossy()
+                .to_string(),
             scheduled_scan_enabled: false,
             scheduled_scan_cron: "0 3 * * 0".to_string(),
             scheduled_scan_path: None,

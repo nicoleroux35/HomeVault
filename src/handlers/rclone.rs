@@ -865,7 +865,10 @@ pub async fn handle_mount_start(
     // but we create it explicitly for consistency with RAID/pools/encrypted
     // and to ensure proper permissions.
     if let Err(e) = std::fs::create_dir_all(&req.mount_point) {
-        return Json(ApiResponse::error(&format!("Failed to create mount point: {}", e)));
+        return Json(ApiResponse::error(&format!(
+            "Failed to create mount point: {}",
+            e
+        )));
     }
 
     if req.remote.is_empty() {
@@ -997,10 +1000,7 @@ pub async fn handle_sync(
 
 /// Shared core of [`handle_sync`] and [`handle_run_sync_job`]: validates the
 /// pair of paths and runs the `rclone sync` subprocess.
-async fn execute_sync(
-    admin_username: &str,
-    req: &SyncRequest,
-) -> Json<ApiResponse<String>> {
+async fn execute_sync(admin_username: &str, req: &SyncRequest) -> Json<ApiResponse<String>> {
     let mut args = vec!["sync".to_string()];
 
     // Determine path types
@@ -1150,7 +1150,12 @@ pub async fn handle_list_sync_jobs(
     let repo = SyncJobRepository::new(state.db.pool());
     let jobs = match repo.list_all().await {
         Ok(jobs) => jobs,
-        Err(e) => return Json(ApiResponse::error(&format!("Failed to list sync jobs: {}", e))),
+        Err(e) => {
+            return Json(ApiResponse::error(&format!(
+                "Failed to list sync jobs: {}",
+                e
+            )))
+        }
     };
     let views: Vec<SyncJobView> = jobs.into_iter().map(SyncJobView::from).collect();
     Json(ApiResponse::success(views))
@@ -1182,14 +1187,24 @@ pub async fn handle_create_sync_job(
     let repo = SyncJobRepository::new(state.db.pool());
     let id = match repo.insert(&job).await {
         Ok(id) => id,
-        Err(e) => return Json(ApiResponse::error(&format!("Failed to save sync job: {}", e))),
+        Err(e) => {
+            return Json(ApiResponse::error(&format!(
+                "Failed to save sync job: {}",
+                e
+            )))
+        }
     };
     let created = match repo.get_by_id(id).await {
         Ok(Some(job)) => job,
         Ok(None) => {
-                        return Json(ApiResponse::error("Sync job was not persisted"));
-                    }
-        Err(e) => return Json(ApiResponse::error(&format!("Failed to load sync job: {}", e))),
+            return Json(ApiResponse::error("Sync job was not persisted"));
+        }
+        Err(e) => {
+            return Json(ApiResponse::error(&format!(
+                "Failed to load sync job: {}",
+                e
+            )))
+        }
     };
     Json(ApiResponse::success(SyncJobView::from(created)))
 }
@@ -1208,7 +1223,10 @@ pub async fn handle_delete_sync_job(
     match repo.delete(id).await {
         Ok(true) => Json(ApiResponse::success(true)),
         Ok(false) => Json(ApiResponse::error("Sync job not found")),
-        Err(e) => Json(ApiResponse::error(&format!("Failed to delete sync job: {}", e))),
+        Err(e) => Json(ApiResponse::error(&format!(
+            "Failed to delete sync job: {}",
+            e
+        ))),
     }
 }
 
@@ -1228,7 +1246,12 @@ pub async fn handle_run_sync_job(
     let job = match repo.get_by_id(id).await {
         Ok(Some(job)) => job,
         Ok(None) => return Json(ApiResponse::error("Sync job not found")),
-        Err(e) => return Json(ApiResponse::error(&format!("Failed to load sync job: {}", e))),
+        Err(e) => {
+            return Json(ApiResponse::error(&format!(
+                "Failed to load sync job: {}",
+                e
+            )))
+        }
     };
 
     let req = SyncRequest {
@@ -1450,7 +1473,9 @@ pub async fn handle_add_remote(
     }
 
     if req.name.contains(':') || req.name.contains('[') || req.name.contains(']') {
-        return Json(ApiResponse::error("Remote name contains invalid characters"));
+        return Json(ApiResponse::error(
+            "Remote name contains invalid characters",
+        ));
     }
 
     // Reject a `config` value containing an embedded `[section]` line —
@@ -1466,17 +1491,25 @@ pub async fn handle_add_remote(
     }
 
     // Read existing config
-    let existing_config: String = tokio::fs::read_to_string(config_path).await.unwrap_or_default();
+    let existing_config: String = tokio::fs::read_to_string(config_path)
+        .await
+        .unwrap_or_default();
 
     // Check if remote already exists
     let remote_section = format!("[{}]", req.name);
     if existing_config.contains(&remote_section) {
-        return Json(ApiResponse::error(&format!("Remote '{}' already exists", req.name)));
+        return Json(ApiResponse::error(&format!(
+            "Remote '{}' already exists",
+            req.name
+        )));
     }
 
     // Build new remote section
     let new_section = if let Some(config) = &req.config {
-        format!("\n{}\ntype = {}\n{}\n", remote_section, req.provider, config)
+        format!(
+            "\n{}\ntype = {}\n{}\n",
+            remote_section, req.provider, config
+        )
     } else {
         format!("\n{}\ntype = {}\n", remote_section, req.provider)
     };
@@ -1645,7 +1678,10 @@ mod tests {
 
     #[test]
     fn test_provider_description_unknown_type_falls_back_to_custom() {
-        assert_eq!(get_provider_description("weirdcloud"), "weirdcloud (custom)");
+        assert_eq!(
+            get_provider_description("weirdcloud"),
+            "weirdcloud (custom)"
+        );
     }
 
     // -- parse_rclone_config (INI) ------------------------------------

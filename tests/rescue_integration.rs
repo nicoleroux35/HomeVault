@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the Rescue API endpoints (`crate::handlers::rescue`):
 //!
 //!   - GET  /api/rescue/tools
@@ -40,9 +43,9 @@ use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{
     auth::handle_login,
     rescue::{
-        handle_ddrescue_clone, handle_ddrescue_status, handle_mdadm_diagnose,
-        handle_mdadm_repair, handle_photorec_recover, handle_rescue_devices,
-        handle_rescue_tools_available, handle_testdisk_analyze, handle_testdisk_rebuild,
+        handle_ddrescue_clone, handle_ddrescue_status, handle_mdadm_diagnose, handle_mdadm_repair,
+        handle_photorec_recover, handle_rescue_devices, handle_rescue_tools_available,
+        handle_testdisk_analyze, handle_testdisk_rebuild,
     },
     AppState,
 };
@@ -57,7 +60,11 @@ static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 // Test harness
 // ---------------------------------------------------------------------------
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -693,10 +700,7 @@ async fn test_ddrescue_status_missing_mapfile_reports_not_running_cleanly() {
     let (status, body) = send(
         &mut router,
         Method::GET,
-        &format!(
-            "/api/rescue/ddrescue/status/{}",
-            urlencoding_lite(missing)
-        ),
+        &format!("/api/rescue/ddrescue/status/{}", urlencoding_lite(missing)),
         Some(&token),
         None,
     )

@@ -1,16 +1,20 @@
-use axum::{extract::{Path, State}, http::HeaderMap, Json, response::Response, Router};
+use axum::{
+    extract::{Path, State},
+    http::HeaderMap,
+    response::Response,
+    Json, Router,
+};
 use serde::{Deserialize, Serialize};
 
-use crate::network as net;
 use crate::handlers::admin_guard::{require_admin, require_auth};
 use crate::handlers::AppStateArc;
+use crate::network as net;
 use crate::utils::proc::ProcParser;
 use crate::utils::response::ResponseHelper;
 
 // Re-export network types for convenience
 pub use crate::network::{
-    InterfaceConfig, InterfaceType, InterfaceStatus, NetworkInterface, WifiConnection,
-    WifiNetwork,
+    InterfaceConfig, InterfaceStatus, InterfaceType, NetworkInterface, WifiConnection, WifiNetwork,
 };
 
 // ---------------------------------------------------------------------------
@@ -107,7 +111,10 @@ pub struct PublicIpResponse {
 /// repeatedly stall a Tokio worker thread for the combined duration of every
 /// subprocess spawned across every interface. Deported via `spawn_blocking`
 /// to keep the exact existing behavior while taking it off the async runtime.
-pub async fn handle_network_interfaces(State(state): State<AppStateArc>, headers: HeaderMap) -> Response {
+pub async fn handle_network_interfaces(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -129,10 +136,11 @@ pub async fn handle_network_interface_get(
         return response;
     }
 
-    let interface = match tokio::task::spawn_blocking(move || net::get_interface_details(&name)).await {
-        Ok(interface) => interface,
-        Err(e) => return ResponseHelper::json_error(format!("Internal error: {}", e)),
-    };
+    let interface =
+        match tokio::task::spawn_blocking(move || net::get_interface_details(&name)).await {
+            Ok(interface) => interface,
+            Err(e) => return ResponseHelper::json_error(format!("Internal error: {}", e)),
+        };
     ResponseHelper::json_success(InterfaceResponse { interface })
 }
 
@@ -169,7 +177,9 @@ pub async fn handle_network_interface_config_update(
         "dhcp" => net::IpMethod::Dhcp,
         "static" => net::IpMethod::Static,
         _ => {
-            return ResponseHelper::json_error("Invalid method. Use 'dhcp' or 'static'".to_string());
+            return ResponseHelper::json_error(
+                "Invalid method. Use 'dhcp' or 'static'".to_string(),
+            );
         }
     };
 
@@ -245,7 +255,10 @@ pub async fn handle_network_interface_state(
 }
 
 /// GET /api/network/wifi/scan - Scan for WiFi networks
-pub async fn handle_network_wifi_scan(State(state): State<AppStateArc>, headers: HeaderMap) -> Response {
+pub async fn handle_network_wifi_scan(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -261,19 +274,21 @@ pub async fn handle_network_wifi_scan(State(state): State<AppStateArc>, headers:
 ///
 /// Also polled every 10s alongside `handle_network_interfaces` while the
 /// Network page is open — same rationale for `spawn_blocking` as above.
-pub async fn handle_network_wifi_status(State(state): State<AppStateArc>, headers: HeaderMap) -> Response {
+pub async fn handle_network_wifi_status(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
 
-    let (interface, connected) = match tokio::task::spawn_blocking(|| {
-        (net::get_wifi_interface(), net::get_wifi_status())
-    })
-    .await
-    {
-        Ok(result) => result,
-        Err(e) => return ResponseHelper::json_error(format!("Internal error: {}", e)),
-    };
+    let (interface, connected) =
+        match tokio::task::spawn_blocking(|| (net::get_wifi_interface(), net::get_wifi_status()))
+            .await
+        {
+            Ok(result) => result,
+            Err(e) => return ResponseHelper::json_error(format!("Internal error: {}", e)),
+        };
     ResponseHelper::json_success(WifiStatusResponse {
         connected,
         interface,
@@ -354,7 +369,10 @@ pub async fn handle_network_wifi_disconnect(
 /// Involves several `ping`/`ip`/DNS lookups — genuinely blocking and slow
 /// enough (network round trips, not just local subprocess spawns) that it
 /// must never run directly on a Tokio worker thread.
-pub async fn handle_network_diagnostics(State(state): State<AppStateArc>, headers: HeaderMap) -> Response {
+pub async fn handle_network_diagnostics(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -377,7 +395,10 @@ pub async fn handle_network_diagnostics(State(state): State<AppStateArc>, header
 ///
 /// Also polled every 10s alongside `handle_network_interfaces` while the
 /// Network page is open — same rationale for `spawn_blocking` as above.
-pub async fn handle_network_summary(State(state): State<AppStateArc>, headers: HeaderMap) -> Response {
+pub async fn handle_network_summary(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -397,7 +418,10 @@ pub async fn handle_network_summary(State(state): State<AppStateArc>, headers: H
 }
 
 /// GET /api/network/services - Get status of network services (SMB, NFS, FTP, WebDAV, SSH)
-pub async fn handle_network_services(State(state): State<AppStateArc>, headers: HeaderMap) -> Response {
+pub async fn handle_network_services(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -448,7 +472,10 @@ pub fn create_network_router(state: AppStateArc) -> Router {
         )
         // WiFi — POST because triggering a scan is a mutation-like operation
         .route("/wifi/scan", axum::routing::post(handle_network_wifi_scan))
-        .route("/wifi/status", axum::routing::get(handle_network_wifi_status))
+        .route(
+            "/wifi/status",
+            axum::routing::get(handle_network_wifi_status),
+        )
         .route(
             "/wifi/connect",
             axum::routing::post(handle_network_wifi_connect),
@@ -458,7 +485,10 @@ pub fn create_network_router(state: AppStateArc) -> Router {
             axum::routing::post(handle_network_wifi_disconnect),
         )
         // Diagnostics & Summary
-        .route("/diagnostics", axum::routing::get(handle_network_diagnostics))
+        .route(
+            "/diagnostics",
+            axum::routing::get(handle_network_diagnostics),
+        )
         .route("/summary", axum::routing::get(handle_network_summary))
         .route("/services", axum::routing::get(handle_network_services))
         .route("/public-ip", axum::routing::get(handle_public_ip))

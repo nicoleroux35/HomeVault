@@ -1,6 +1,6 @@
 use crate::compose::ComposeManager;
-use crate::handlers::AppState;
 use crate::handlers::admin_guard::require_admin;
+use crate::handlers::AppState;
 use crate::utils::ResponseHelper;
 use axum::{extract::State, http::HeaderMap, response::Response};
 use std::sync::Arc;
@@ -108,9 +108,14 @@ pub async fn handle_compose_create(
         );
     }
 
-    if !req.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.') {
+    if !req
+        .name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    {
         return ResponseHelper::json_error(
-            "Invalid project name. Use letters, numbers, hyphens, underscores, and dots only.".to_string(),
+            "Invalid project name. Use letters, numbers, hyphens, underscores, and dots only."
+                .to_string(),
         );
     }
 

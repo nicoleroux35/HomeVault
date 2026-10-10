@@ -38,7 +38,11 @@ impl Default for SnmpSettings {
 const SNMP_STORAGE_KEY: &str = "snmp";
 
 fn snmp_storage() -> JsonStorage {
-    JsonStorage::new(crate::config::paths::base_dir().to_string_lossy().to_string())
+    JsonStorage::new(
+        crate::config::paths::base_dir()
+            .to_string_lossy()
+            .to_string(),
+    )
 }
 
 /// Persists the current settings to disk; failures are logged, not fatal —
@@ -59,7 +63,10 @@ pub fn reset_snmp_settings() {
 }
 
 static SNMP_SETTINGS: Lazy<RwLock<SnmpSettings>> = Lazy::new(|| {
-    let loaded = snmp_storage().load::<SnmpSettings>(SNMP_STORAGE_KEY).ok().flatten();
+    let loaded = snmp_storage()
+        .load::<SnmpSettings>(SNMP_STORAGE_KEY)
+        .ok()
+        .flatten();
     RwLock::new(loaded.unwrap_or_default())
 });
 
@@ -189,16 +196,22 @@ async fn require_admin(headers: &HeaderMap, state: &AppState) -> Option<Response
         .unwrap_or("");
 
     if session_token.is_empty() {
-        return Some(ResponseHelper::json_error("No session token provided".to_string()));
+        return Some(ResponseHelper::json_error(
+            "No session token provided".to_string(),
+        ));
     }
 
     match state.auth.get_session(session_token).await {
         Ok(session) => {
             if !session.is_admin {
-                return Some(ResponseHelper::json_error("Admin access required".to_string()));
+                return Some(ResponseHelper::json_error(
+                    "Admin access required".to_string(),
+                ));
             }
             None
         }
-        Err(_) => Some(ResponseHelper::json_unauthorized("Invalid session".to_string())),
+        Err(_) => Some(ResponseHelper::json_unauthorized(
+            "Invalid session".to_string(),
+        )),
     }
 }

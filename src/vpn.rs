@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::process::Command;
 use std::path::Path;
+use std::process::Command;
 
 // ---------------------------------------------------------------------------
 // Data structures
@@ -138,7 +138,10 @@ pub fn wireguard_available() -> bool {
 /// without it, a peer with a full-tunnel `AllowedIPs = 0.0.0.0/0` could
 /// reach the server itself but never get real internet access through it.
 fn detect_egress_interface() -> Option<String> {
-    let output = Command::new("ip").args(["route", "get", "1.1.1.1"]).output().ok()?;
+    let output = Command::new("ip")
+        .args(["route", "get", "1.1.1.1"])
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -259,7 +262,9 @@ pub struct WireGuardServerInfo {
 pub async fn get_wireguard_server_status() -> Result<WireGuardServerInfo, String> {
     let public_key = read_server_public_key()?;
     let running = is_wireguard_server_running();
-    let endpoint_host = crate::network::discover_public_ip().await.map(|ip| ip.to_string());
+    let endpoint_host = crate::network::discover_public_ip()
+        .await
+        .map(|ip| ip.to_string());
 
     Ok(WireGuardServerInfo {
         public_key,
@@ -311,7 +316,9 @@ pub fn generate_wireguard_keypair() -> Result<(String, String), String> {
         return Err("Failed to generate private key".to_string());
     }
 
-    let private_key = String::from_utf8_lossy(&private_output.stdout).trim().to_string();
+    let private_key = String::from_utf8_lossy(&private_output.stdout)
+        .trim()
+        .to_string();
     let public_key = derive_public_key(&private_key)?;
 
     Ok((private_key, public_key))
@@ -371,9 +378,15 @@ pub async fn create_wireguard_peer(peer_ip: &str) -> Result<WireGuardPeerProvisi
 
     let set_output = Command::new("sudo")
         .args([
-            "wg", "set", WG_INTERFACE, "peer", &peer_public_key,
-            "preshared-key", "/dev/stdin",
-            "allowed-ips", &format!("{}/32", peer_ip),
+            "wg",
+            "set",
+            WG_INTERFACE,
+            "peer",
+            &peer_public_key,
+            "preshared-key",
+            "/dev/stdin",
+            "allowed-ips",
+            &format!("{}/32", peer_ip),
         ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -416,10 +429,19 @@ pub async fn get_wireguard_peer_config(
     preshared_key: &str,
 ) -> Result<String, String> {
     let server = get_wireguard_server_status().await?;
-    Ok(build_client_config(private_key, peer_ip, &server, preshared_key))
+    Ok(build_client_config(
+        private_key,
+        peer_ip,
+        &server,
+        preshared_key,
+    ))
 }
 
-fn append_peer_to_server_config(public_key: &str, preshared_key: &str, peer_ip: &str) -> Result<(), String> {
+fn append_peer_to_server_config(
+    public_key: &str,
+    preshared_key: &str,
+    peer_ip: &str,
+) -> Result<(), String> {
     let block = format!(
         "[Peer]\nPublicKey = {}\nPresharedKey = {}\nAllowedIPs = {}/32\n\n",
         public_key, preshared_key, peer_ip
@@ -434,7 +456,10 @@ fn build_client_config(
     server: &WireGuardServerInfo,
     preshared_key: &str,
 ) -> String {
-    let endpoint_host = server.endpoint_host.clone().unwrap_or_else(|| "YOUR-SERVER-IP".to_string());
+    let endpoint_host = server
+        .endpoint_host
+        .clone()
+        .unwrap_or_else(|| "YOUR-SERVER-IP".to_string());
     format!(
         "[Interface]\n\
          PrivateKey = {private_key}\n\
@@ -491,7 +516,9 @@ pub struct WireGuardPeerLiveStatus {
 }
 
 pub fn list_wireguard_peer_live_status() -> Vec<WireGuardPeerLiveStatus> {
-    let output = Command::new("sudo").args(["wg", "show", WG_INTERFACE, "dump"]).output();
+    let output = Command::new("sudo")
+        .args(["wg", "show", WG_INTERFACE, "dump"])
+        .output();
 
     let mut statuses = Vec::new();
     if let Ok(output) = output {
@@ -532,9 +559,7 @@ pub fn list_openvpn_connections() -> Vec<VpnConnection> {
     let mut connections = Vec::new();
 
     // Check running OpenVPN processes
-    let output = Command::new("pgrep")
-        .args(["-a", "openvpn"])
-        .output();
+    let output = Command::new("pgrep").args(["-a", "openvpn"]).output();
 
     if let Ok(output) = output {
         if output.status.success() {
@@ -612,7 +637,8 @@ pub fn start_openvpn_connection(config: &OpenVPNConfig) -> Result<(), String> {
     // `openvpn --daemon` must run as root to create the tunnel.
     // The homevault service runs unprivileged, so it delegates via sudo.
     let mut cmd = Command::new("sudo");
-    cmd.arg("openvpn").args(["--config", config_path, "--daemon"]);
+    cmd.arg("openvpn")
+        .args(["--config", config_path, "--daemon"]);
 
     // Add auth credentials if provided
     if let Some((user, pass)) = &config.auth_user_pass {
@@ -659,9 +685,7 @@ pub fn stop_openvpn_connection(name: &str) -> Result<(), String> {
             }
             // The openvpn process runs as root, so the unprivileged
             // homevault service must delegate the kill to sudo.
-            let _ = Command::new("sudo")
-                .args(["kill", pid])
-                .output();
+            let _ = Command::new("sudo").args(["kill", pid]).output();
         }
     }
 
@@ -733,7 +757,9 @@ pub fn list_all_vpn_connections() -> Vec<VpnConnection> {
 /// Get an OpenVPN connection by ID (see `list_all_vpn_connections`'s own
 /// doc comment for why WireGuard isn't part of this generic lookup).
 pub fn get_vpn_connection(id: &str) -> Option<VpnConnection> {
-    list_openvpn_connections().into_iter().find(|conn| conn.id == id)
+    list_openvpn_connections()
+        .into_iter()
+        .find(|conn| conn.id == id)
 }
 
 /// Get system VPN capabilities
@@ -793,7 +819,10 @@ mod tests {
     #[test]
     fn test_extract_openvpn_config_name_ovpn_extension() {
         let line = "openvpn --config /etc/openvpn/client/office.ovpn --daemon";
-        assert_eq!(extract_openvpn_config_name(line), Some("office".to_string()));
+        assert_eq!(
+            extract_openvpn_config_name(line),
+            Some("office".to_string())
+        );
     }
 
     #[test]

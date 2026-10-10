@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the Network API endpoints (`crate::handlers::network`):
 //!
 //!   - GET  /api/network/interfaces
@@ -68,7 +71,11 @@ static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 // Test harness
 // ---------------------------------------------------------------------------
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -327,7 +334,12 @@ async fn test_read_endpoints_allow_any_valid_session_not_just_admin() {
         (Method::GET, "/api/network/services"),
     ] {
         let (status, _) = send(&mut router, method, uri, Some(&token), None).await;
-        assert_eq!(status, StatusCode::OK, "GET {} should allow a non-admin session", uri);
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "GET {} should allow a non-admin session",
+            uri
+        );
     }
 }
 

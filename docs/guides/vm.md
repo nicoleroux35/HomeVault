@@ -257,7 +257,7 @@ protocol as the Terminal app).
 - `frontend/src/lib/components/vm/VmConsole.svelte` — the shell console (xterm).
 - `frontend/src/lib/components/vm/VmScreen.svelte` — the graphical screen
   (noVNC, `@novnc/novnc`).
-- `frontend/src/components/theme/PathPickerField.svelte` — the ISO / driver
+- `frontend/src/lib/components/theme/PathPickerField.svelte` — the ISO / driver
   file pickers (`mode="file"`).
 - `frontend/src/lib/services/api.ts` — `getVm*` / `createVm` / `updateVmConfig`
   / `*VmSnapshot` / `getVmConsoleTicket` / `getVmScreenTicket`.

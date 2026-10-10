@@ -100,10 +100,11 @@ fn canonical_or_raw(requested: &str) -> String {
 pub fn consume_download_ticket(ticket: &str, requested: &str) -> Option<(String, String)> {
     let mut map = TICKETS.write();
     let entry = map.remove(ticket)?;
-    if entry.single_use && entry.issued_at.elapsed() < DOWNLOAD_TICKET_TTL {
-        if canonical_or_raw(requested) == entry.scope {
-            return Some((entry.username, entry.scope));
-        }
+    if entry.single_use
+        && entry.issued_at.elapsed() < DOWNLOAD_TICKET_TTL
+        && canonical_or_raw(requested) == entry.scope
+    {
+        return Some((entry.username, entry.scope));
     }
     None
 }

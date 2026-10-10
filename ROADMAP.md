@@ -1,22 +1,26 @@
 # Roadmap HomeVault
 
-Dernière mise à jour : 2026-07-21 — version actuelle : 1.0.0
+Dernière mise à jour : 2026-10-10 — version actuelle : 1.0.0
 
 ## État actuel
 
 HomeVault couvre aujourd'hui : tableau de bord, utilisateurs/groupes,
-stockage (disques/partitions/pools ZFS/Btrfs/chiffrement LUKS2), RAID
-(mdadm), partages (SMB/NFS/FTP/WebDAV/SFTP), explorateur de fichiers,
-sauvegardes (restic), synchronisation cloud (rclone), réseau, sécurité
+stockage (disques/partitions/disques virtuels ZFS-Btrfs-mdadm/chiffrement
+LUKS2/santé SMART), RAID (création mdadm/ZFS/Btrfs), partages
+(SMB/NFS/FTP/WebDAV/SFTP), explorateur de fichiers, sauvegardes (restic),
+synchronisation cloud (rclone), réseau, sécurité
 (antivirus/anti-ransomware/pare-feu), terminal web, VPN (WireGuard/
-OpenVPN), téléchargeur (aria2), Syncthing, assistant IA (Ollama), et une
-suite de widgets de bureau.
+OpenVPN), téléchargeur (aria2), Syncthing, Docker + catalogue
+d'applications, machines virtuelles (Incus), assistant IA (Ollama + RAG),
+santé, journal système, quotas de transfert, et une suite de widgets de
+bureau.
 
-Chaque page listée ci-dessus a fait l'objet d'un audit "conditions
+Chaque écran listé ci-dessus a fait l'objet d'un audit "conditions
 réelles" (backend réel, session réelle, navigateur réel quand possible)
-documenté dans `CLAUDE.md`, qui sert de référence historique — toute
-modification dans ces zones nécessite une confirmation explicite avant
-d'être appliquée.
+documenté dans `TESTING.md` et `docs/guides/`. Depuis le 2026-09-12 il n'y
+a plus de zones gelées (`CLAUDE.md` → "Design system governance") : chaque
+page reste modifiable, à condition de garder ses tests verts (Rust +
+Playwright E2E).
 
 > **Note sur la fiabilité de ce fichier :** la première version de cette
 > roadmap (2026-07-21, avant la passe de vérification ci-dessous) avait
@@ -37,8 +41,8 @@ a été corrigé le 2026-07-21, voir "Résolu" plus bas.
 ## Idées / backlog
 
 - Continuer d'auditer "en conditions réelles" (backend réel, pas de
-  mocks) toute nouvelle page avant de la considérer comme figée, en
-  suivant la méthodologie déjà appliquée à chaque section de `CLAUDE.md`.
+  mocks) toute nouvelle page, en suivant la méthodologie déjà appliquée à
+  chaque guide de `docs/guides/` (résultats dans `TESTING.md`).
 
 ## Résolu depuis la première version de ce fichier (vérifié 2026-07-21)
 
@@ -84,8 +88,9 @@ vérification :
 
 ## Processus
 
-- Toute modification d'une zone listée comme gelée dans `CLAUDE.md`
-  nécessite une confirmation explicite avant d'être appliquée.
+- Toute modification d'un écran audité doit garder ses tests verts
+  (Rust + Playwright E2E) — voir `CLAUDE.md` → "Design system
+  governance".
 - Les nouveaux rapports de vérification vont en addenda datés dans
   `CLAUDE.md`, pas dans un fichier séparé (règle "Keep the repository
   clean" en tête de `CLAUDE.md`).

@@ -1,6 +1,6 @@
+use crate::impl_repository;
 use crate::storage::database::DbError;
 use crate::storage::models::User;
-use crate::impl_repository;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 
@@ -106,11 +106,7 @@ impl UserRepository {
     }
 
     /// List users with pagination (newest-first).
-    pub async fn find_all_paginated(
-        &self,
-        limit: i64,
-        offset: i64,
-    ) -> Result<Vec<User>, DbError> {
+    pub async fn find_all_paginated(&self, limit: i64, offset: i64) -> Result<Vec<User>, DbError> {
         let users = sqlx::query_as::<_, User>(
             "SELECT username, password_hash, fullname, email, role_id, locked, created_at, avatar_seed
              FROM users
@@ -155,7 +151,8 @@ impl UserRepository {
 
         use sqlx::QueryBuilder;
 
-        let mut qb: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new("DELETE FROM users WHERE username IN (");
+        let mut qb: QueryBuilder<sqlx::Sqlite> =
+            QueryBuilder::new("DELETE FROM users WHERE username IN (");
         let mut separated = qb.separated(", ");
         for username in usernames {
             separated.push_bind(username);
@@ -189,7 +186,11 @@ impl UserRepository {
     }
 
     /// Update the DiceBear avatar seed for deterministic avatar generation.
-    pub async fn update_avatar_seed(&self, username: &str, avatar_seed: &str) -> Result<(), DbError> {
+    pub async fn update_avatar_seed(
+        &self,
+        username: &str,
+        avatar_seed: &str,
+    ) -> Result<(), DbError> {
         sqlx::query("UPDATE users SET avatar_seed = ? WHERE username = ?")
             .bind(avatar_seed)
             .bind(username)

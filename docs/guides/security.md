@@ -18,8 +18,10 @@ Handlers in `src/handlers/security.rs`.
 
 ## Frontend
 
-- Security UI: `frontend/src/lib/components/settings/SecuritySettings.svelte`
-  (and the Settings security card).
+- Security UI: the Settings security-category cards
+  (`frontend/src/lib/components/settings/TlsCard.svelte`,
+  `FirewallCard.svelte`, `AntivirusCard.svelte`, `AntiRansomwareCard.svelte`)
+  plus the login-history view in `frontend/src/routes/Account.svelte`.
 - `frontend/src/lib/services/api.ts`: `getMySessions`, `revokeSessions`,
   `revokeAllSessions`, `getLoginHistory`, `getUserLoginHistory`,
   `getActiveSessionsCount`.

@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the Security suite API — Antivirus (ClamAV),
 //! Anti-Ransomware (honeypots + rate detection), and Firewall (ufw):
 //!
@@ -60,7 +63,8 @@ use homevault::handlers::{
     ransomware::{
         handle_ransomware_events_list, handle_ransomware_protected_path_add,
         handle_ransomware_protected_path_delete, handle_ransomware_protected_paths_list,
-        handle_ransomware_settings_get, handle_ransomware_settings_update, handle_ransomware_status,
+        handle_ransomware_settings_get, handle_ransomware_settings_update,
+        handle_ransomware_status,
     },
     AppState,
 };
@@ -83,7 +87,11 @@ const EICAR: &str = concat!(
 // Test harness
 // ---------------------------------------------------------------------------
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -94,7 +102,10 @@ async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGua
     let widgets = WidgetRepository::new(db.pool());
     // Allow the OS temp root so a `tempfile::tempdir()` (created under /tmp on
     // Linux) passes `path_guard.validate`.
-    let path_guard = PathGuard::new(vec!["/tmp".to_string(), std::env::temp_dir().to_string_lossy().to_string()]);
+    let path_guard = PathGuard::new(vec![
+        "/tmp".to_string(),
+        std::env::temp_dir().to_string_lossy().to_string(),
+    ]);
     let admin_rate_limiter = Arc::new(RateLimitState::new(100, 60));
     let pty_manager = Arc::new(PtyManager::new());
     let downloader = Arc::new(tokio::sync::Mutex::new(
@@ -129,7 +140,10 @@ fn security_router(state: Arc<AppState>) -> Router {
             get(handle_antivirus_settings_get).put(handle_antivirus_settings_update),
         )
         .route("/api/antivirus/scan", post(handle_antivirus_scan_start))
-        .route("/api/antivirus/scan/cancel", post(handle_antivirus_scan_cancel))
+        .route(
+            "/api/antivirus/scan/cancel",
+            post(handle_antivirus_scan_cancel),
+        )
         .route("/api/antivirus/scans", get(handle_antivirus_scans_list))
         .route("/api/antivirus/threats", get(handle_antivirus_threats_list))
         .route(
@@ -138,7 +152,10 @@ fn security_router(state: Arc<AppState>) -> Router {
         )
         // firewall
         .route("/api/firewall/status", get(handle_firewall_status))
-        .route("/api/firewall/enable/preview", get(handle_firewall_enable_preview))
+        .route(
+            "/api/firewall/enable/preview",
+            get(handle_firewall_enable_preview),
+        )
         .route("/api/firewall/enable", post(handle_firewall_enable))
         .route("/api/firewall/disable", post(handle_firewall_disable))
         .route(
@@ -207,10 +224,18 @@ async fn send(
     } else {
         req.body(axum::body::Body::empty()).unwrap()
     };
-    let resp = ServiceExt::<Req>::ready(router).await.unwrap().call(req).await.unwrap();
+    let resp = ServiceExt::<Req>::ready(router)
+        .await
+        .unwrap()
+        .call(req)
+        .await
+        .unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let json = serde_json::from_slice(&bytes).unwrap_or(json!({"raw": String::from_utf8_lossy(&bytes)}));
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json =
+        serde_json::from_slice(&bytes).unwrap_or(json!({"raw": String::from_utf8_lossy(&bytes)}));
     (status, json)
 }
 
@@ -265,7 +290,11 @@ async fn test_all_reads_reject_missing_token() {
 async fn test_reads_reject_a_tampered_token() {
     let (state, _tmp, _g) = setup_state().await;
     let mut r = security_router(state);
-    for uri in ["/api/antivirus/status", "/api/firewall/status", "/api/ransomware/status"] {
+    for uri in [
+        "/api/antivirus/status",
+        "/api/firewall/status",
+        "/api/ransomware/status",
+    ] {
         let (status, body) = send(&mut r, Method::GET, uri, Some("not-a-token"), None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
         assert_eq!(body["success"], json!(false));
@@ -287,26 +316,70 @@ async fn test_mutations_require_admin_reads_do_not() {
         "/api/ransomware/settings",
     ] {
         let (status, _) = send(&mut r, Method::GET, uri, Some(&token), None).await;
-        assert_eq!(status, StatusCode::OK, "{uri} should be readable by any session");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{uri} should be readable by any session"
+        );
     }
 
     // Mutations: 403 for a non-admin.
     let muts: &[(Method, &str, Option<Value>)] = &[
-        (Method::PUT, "/api/antivirus/settings", Some(av_settings("/tmp/q", None))),
-        (Method::POST, "/api/antivirus/scan", Some(json!({"path": "/tmp"}))),
+        (
+            Method::PUT,
+            "/api/antivirus/settings",
+            Some(av_settings("/tmp/q", None)),
+        ),
+        (
+            Method::POST,
+            "/api/antivirus/scan",
+            Some(json!({"path": "/tmp"})),
+        ),
         (Method::POST, "/api/antivirus/scan/cancel", None),
-        (Method::POST, "/api/antivirus/threats/whatever/resolve", Some(json!({}))),
-        (Method::PUT, "/api/ransomware/settings", Some(rw_settings("alert_only"))),
-        (Method::POST, "/api/ransomware/protected-paths", Some(json!({"path": "/tmp"}))),
-        (Method::DELETE, "/api/ransomware/protected-paths/whatever", None),
-        (Method::POST, "/api/firewall/enable", Some(json!({"confirmed": true}))),
+        (
+            Method::POST,
+            "/api/antivirus/threats/whatever/resolve",
+            Some(json!({})),
+        ),
+        (
+            Method::PUT,
+            "/api/ransomware/settings",
+            Some(rw_settings("alert_only")),
+        ),
+        (
+            Method::POST,
+            "/api/ransomware/protected-paths",
+            Some(json!({"path": "/tmp"})),
+        ),
+        (
+            Method::DELETE,
+            "/api/ransomware/protected-paths/whatever",
+            None,
+        ),
+        (
+            Method::POST,
+            "/api/firewall/enable",
+            Some(json!({"confirmed": true})),
+        ),
         (Method::POST, "/api/firewall/disable", None),
-        (Method::POST, "/api/firewall/rules", Some(json!({"port": "443"}))),
-        (Method::DELETE, "/api/firewall/rules", Some(json!({"port": "443"}))),
+        (
+            Method::POST,
+            "/api/firewall/rules",
+            Some(json!({"port": "443"})),
+        ),
+        (
+            Method::DELETE,
+            "/api/firewall/rules",
+            Some(json!({"port": "443"})),
+        ),
     ];
     for (method, uri, body) in muts {
         let (status, resp) = send(&mut r, method.clone(), uri, Some(&token), body.clone()).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri} must be 403 for a non-admin");
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{method} {uri} must be 403 for a non-admin"
+        );
         assert_eq!(resp["success"], json!(false));
     }
 }
@@ -321,7 +394,14 @@ async fn test_antivirus_status_reports_binary_and_definitions() {
     create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
     let mut r = security_router(state);
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
-    let (status, body) = send(&mut r, Method::GET, "/api/antivirus/status", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/antivirus/status",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["data"]["clamscan_available"].is_boolean());
     assert!(body["data"]["definitions"]["available"].is_boolean());
@@ -345,7 +425,10 @@ async fn test_antivirus_settings_round_trip_and_path_guard() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body["message"].as_str().unwrap_or("").contains("allowed root"));
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("allowed root"));
 
     // A valid update persists and reads back.
     let (status, _) = send(
@@ -357,7 +440,14 @@ async fn test_antivirus_settings_round_trip_and_path_guard() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let (_, body) = send(&mut r, Method::GET, "/api/antivirus/settings", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/antivirus/settings",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["data"]["quarantine_dir"], json!("/tmp/hv-quarantine"));
     assert_eq!(body["data"]["scheduled_scan_path"], json!("/tmp"));
 }
@@ -370,7 +460,14 @@ async fn test_antivirus_scan_rejects_bad_paths_before_spawning_clamscan() {
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
 
     // Outside the path guard.
-    let (status, _) = send(&mut r, Method::POST, "/api/antivirus/scan", Some(&token), Some(json!({"path": "/etc"}))).await;
+    let (status, _) = send(
+        &mut r,
+        Method::POST,
+        "/api/antivirus/scan",
+        Some(&token),
+        Some(json!({"path": "/etc"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     // Inside the guard but nonexistent.
@@ -383,7 +480,10 @@ async fn test_antivirus_scan_rejects_bad_paths_before_spawning_clamscan() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body["message"].as_str().unwrap_or("").contains("does not exist"));
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("does not exist"));
 }
 
 #[tokio::test]
@@ -392,7 +492,14 @@ async fn test_antivirus_scan_cancel_when_idle_returns_false() {
     create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
     let mut r = security_router(state);
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
-    let (status, body) = send(&mut r, Method::POST, "/api/antivirus/scan/cancel", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/antivirus/scan/cancel",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["cancelled"], json!(false));
 }
@@ -412,7 +519,11 @@ async fn test_antivirus_threat_resolve_not_found() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body["message"].as_str().unwrap_or("").to_lowercase().contains("not found"));
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .to_lowercase()
+        .contains("not found"));
 }
 
 #[tokio::test]
@@ -466,12 +577,26 @@ async fn test_antivirus_real_eicar_scan_detects_and_quarantines() {
     let mut completed = false;
     for _ in 0..60 {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        let (_, scans) = send(&mut r, Method::GET, "/api/antivirus/scans", Some(&token), None).await;
+        let (_, scans) = send(
+            &mut r,
+            Method::GET,
+            "/api/antivirus/scans",
+            Some(&token),
+            None,
+        )
+        .await;
         if let Some(arr) = scans["data"].as_array() {
-            if arr.iter().any(|s| s["status"] == json!("completed") || s["status"] == json!("failed")) {
+            if arr
+                .iter()
+                .any(|s| s["status"] == json!("completed") || s["status"] == json!("failed"))
+            {
                 completed = true;
                 let last = &arr[0];
-                assert_eq!(last["status"], json!("completed"), "scan should complete cleanly: {last}");
+                assert_eq!(
+                    last["status"],
+                    json!("completed"),
+                    "scan should complete cleanly: {last}"
+                );
                 assert!(
                     last["threats_found"].as_i64().unwrap_or(0) >= 1,
                     "EICAR must be detected: {last}"
@@ -480,15 +605,32 @@ async fn test_antivirus_real_eicar_scan_detects_and_quarantines() {
             }
         }
     }
-    assert!(completed, "the scan never reached a terminal state within 30s");
+    assert!(
+        completed,
+        "the scan never reached a terminal state within 30s"
+    );
 
     // The threat is recorded and the file was moved into quarantine.
-    let (_, threats) = send(&mut r, Method::GET, "/api/antivirus/threats", Some(&token), None).await;
+    let (_, threats) = send(
+        &mut r,
+        Method::GET,
+        "/api/antivirus/threats",
+        Some(&token),
+        None,
+    )
+    .await;
     let arr = threats["data"].as_array().cloned().unwrap_or_default();
-    assert!(!arr.is_empty(), "a threat row must exist after an EICAR detection");
+    assert!(
+        !arr.is_empty(),
+        "a threat row must exist after an EICAR detection"
+    );
     let eicar = &arr[0];
     assert!(
-        eicar["signature_name"].as_str().unwrap_or("").to_lowercase().contains("eicar"),
+        eicar["signature_name"]
+            .as_str()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("eicar"),
         "signature should name EICAR: {eicar}"
     );
     assert_eq!(eicar["action"], json!("quarantined"));
@@ -522,7 +664,10 @@ async fn test_ransomware_settings_validates_auto_response() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body["message"].as_str().unwrap_or("").contains("auto_response"));
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("auto_response"));
 
     for valid in ["alert_only", "lock_account", "disable_share"] {
         let (status, _) = send(
@@ -535,7 +680,14 @@ async fn test_ransomware_settings_validates_auto_response() {
         .await;
         assert_eq!(status, StatusCode::OK, "{valid} should be accepted");
     }
-    let (_, body) = send(&mut r, Method::GET, "/api/ransomware/settings", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/ransomware/settings",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["data"]["auto_response"], json!("disable_share"));
 }
 
@@ -590,17 +742,37 @@ async fn test_ransomware_protected_path_real_honeypot_lifecycle() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let path_id = body["data"]["id"].as_str().expect("protected path id").to_string();
-    let honeypot_name = body["data"]["honeypot_filename"].as_str().expect("honeypot filename").to_string();
+    let path_id = body["data"]["id"]
+        .as_str()
+        .expect("protected path id")
+        .to_string();
+    let honeypot_name = body["data"]["honeypot_filename"]
+        .as_str()
+        .expect("honeypot filename")
+        .to_string();
     assert!(
         watched.join(&honeypot_name).exists(),
         "a real honeypot decoy file must have been written to disk"
     );
 
     // It shows up in the list and bumps the status count.
-    let (_, list) = send(&mut r, Method::GET, "/api/ransomware/protected-paths", Some(&token), None).await;
+    let (_, list) = send(
+        &mut r,
+        Method::GET,
+        "/api/ransomware/protected-paths",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(list["data"].as_array().map(|a| a.len()), Some(1));
-    let (_, st) = send(&mut r, Method::GET, "/api/ransomware/status", Some(&token), None).await;
+    let (_, st) = send(
+        &mut r,
+        Method::GET,
+        "/api/ransomware/status",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(st["data"]["protected_path_count"], json!(1));
 
     // Delete — the row and the decoy file are both gone.
@@ -613,8 +785,18 @@ async fn test_ransomware_protected_path_real_honeypot_lifecycle() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(!watched.join(&honeypot_name).exists(), "the honeypot file must be cleaned up on delete");
-    let (_, list) = send(&mut r, Method::GET, "/api/ransomware/protected-paths", Some(&token), None).await;
+    assert!(
+        !watched.join(&honeypot_name).exists(),
+        "the honeypot file must be cleaned up on delete"
+    );
+    let (_, list) = send(
+        &mut r,
+        Method::GET,
+        "/api/ransomware/protected-paths",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(list["data"].as_array().map(|a| a.len()), Some(0));
 }
 
@@ -642,7 +824,14 @@ async fn test_ransomware_events_list_is_empty_and_well_formed() {
     create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
     let mut r = security_router(state);
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
-    let (status, body) = send(&mut r, Method::GET, "/api/ransomware/events", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/ransomware/events",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"], json!([]));
 }
@@ -657,7 +846,14 @@ async fn test_firewall_status_is_always_well_formed() {
     create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
     let mut r = security_router(state);
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
-    let (status, body) = send(&mut r, Method::GET, "/api/firewall/status", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/firewall/status",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["data"]["available"].is_boolean());
     assert!(body["data"]["enabled"].is_boolean());
@@ -691,11 +887,21 @@ async fn test_firewall_enable_never_succeeds_without_confirmation_or_ufw() {
         // With a real ufw present, the rejection reason must be the missing
         // confirmation (this test still never sends `confirmed: true`).
         assert!(
-            body["message"].as_str().unwrap_or("").to_lowercase().contains("confirm"),
+            body["message"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("confirm"),
             "{body}"
         );
     } else {
-        assert!(body["message"].as_str().unwrap_or("").contains("not installed"), "{body}");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("not installed"),
+            "{body}"
+        );
     }
 }
 
@@ -724,13 +930,23 @@ async fn test_firewall_enable_preview_is_readable_by_any_session() {
     create_test_user(&state, "regular1", "Passw0rd!123", 1).await;
     let mut r = security_router(state);
     let token = login(&mut r, "regular1", "Passw0rd!123").await;
-    let (status, body) = send(&mut r, Method::GET, "/api/firewall/enable/preview", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/firewall/enable/preview",
+        Some(&token),
+        None,
+    )
+    .await;
     if homevault::firewall::ufw_available() {
         assert_eq!(status, StatusCode::OK);
         assert!(body["data"]["ssh_port"].is_number());
         assert!(body["data"]["app_port"].is_number());
     } else {
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body["message"].as_str().unwrap_or("").contains("not installed"));
+        assert!(body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("not installed"));
     }
 }

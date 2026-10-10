@@ -24,7 +24,11 @@ fn text(status: StatusCode, msg: &str) -> Response<BoxedBody> {
     Response::builder()
         .status(status)
         .header("content-type", "text/plain; charset=utf-8")
-        .body(Full::new(Bytes::from(msg.to_owned())).map_err(|e| Box::new(e) as _).boxed())
+        .body(
+            Full::new(Bytes::from(msg.to_owned()))
+                .map_err(|e| Box::new(e) as _)
+                .boxed(),
+        )
         .unwrap()
 }
 
@@ -178,7 +182,9 @@ pub async fn handle(
     rewrite_host(&mut req, ctx.target_port);
     let (mut parts, body) = req.into_parts();
     parts.uri = upstream_uri;
-    let boxed = body.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>).boxed();
+    let boxed = body
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        .boxed();
     let upstream_req = Request::from_parts(parts, boxed);
 
     match sender.send_request(upstream_req).await {

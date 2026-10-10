@@ -39,7 +39,8 @@ pub fn publish(notification: &Notification) {
     let _ = NOTIFICATION_BUS.send(notification.clone());
 }
 
-static TICKETS: LazyLock<RwLock<HashMap<String, Instant>>> = LazyLock::new(|| RwLock::new(HashMap::new()));
+static TICKETS: LazyLock<RwLock<HashMap<String, Instant>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Issues a new single-use ticket, opportunistically sweeping expired ones.
 pub fn issue_ticket() -> String {

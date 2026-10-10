@@ -944,24 +944,47 @@ test.describe('13 — Real lifecycle', () => {
     expect((await apiPost(page, adminTokens, `/api/explorer/delete?path=${q(dir)}`)).success).toBe(true);
   });
 
-  test('13.2 — trash moves an item out of its folder and into the trash list', async ({ page }) => {
-    // restore + purge-by-id are exercised in tests/explorer_integration.rs
-    // (single trash root, same filesystem). Against this live server they
-    // hit a known multi-trash-root bug (see the CLAUDE.md "bug found, not
-    // fixed" note), so this suite asserts only the trash move itself, which
-    // works, and never calls DELETE /api/explorer/trash (empty-all).
+  test('13.2 — trash, restore and purge-by-id round-trip through the trash', async ({ page }) => {
+    // Full lifecycle against the live server: the 2026-09-06 fix to
+    // `FileBrowser::find_trash_entry` (a missing trash root is now `NotFound`
+    // + try the next root, instead of propagating its `read_dir` error) is
+    // what makes restore/purge-by-id work when the root the file came from
+    // has no `.homevault-trash` yet. Before it this test had to stop at the
+    // trash move. Purge stays per-id — never `DELETE /api/explorer/trash`
+    // (empty-all), which would wipe a real deployment's bin.
     await gotoExplorer(page, adminTokens);
     const file = `${WORK}/trash-me-${Date.now().toString(36)}.txt`;
     await apiUpload(page, adminTokens, WORK, file.split('/').pop()!, 'bin me');
 
+    const inTrash = async () => {
+      const tr = await apiGet(page, adminTokens, '/api/explorer/trash');
+      return ((tr.data as any[]) || []).find((e) => e.original_path === file);
+    };
+    const inWork = async () => {
+      const dir = await apiGet(page, adminTokens, `/api/explorer/list?path=${q(WORK)}`);
+      return ((dir.data?.entries || []) as any[]).some((e) => e.path === file);
+    };
+
+    // 1. move to trash — gone from the folder, listed in the trash.
     expect((await apiPost(page, adminTokens, `/api/explorer/trash?path=${q(file)}`)).success).toBe(true);
-
-    const dir = await apiGet(page, adminTokens, `/api/explorer/list?path=${q(WORK)}`);
-    expect((dir.data?.entries || []).some((e: any) => e.path === file)).toBe(false);
-
-    const tr = await apiGet(page, adminTokens, '/api/explorer/trash');
-    const entry = (tr.data as any[]).find((e) => e.original_path === file);
+    expect(await inWork()).toBe(false);
+    const entry = await inTrash();
     expect(entry, 'the trashed file is listed in the trash with its original path').toBeTruthy();
+
+    // 2. restore by id — back at its original path, gone from the trash.
+    const restored = await apiPost(page, adminTokens, `/api/explorer/trash/restore?id=${q(entry.id)}`);
+    expect(restored.success, restored.message).toBe(true);
+    expect(await inWork()).toBe(true);
+    expect(await inTrash()).toBeFalsy();
+
+    // 3. trash again, then purge that one entry by id.
+    expect((await apiPost(page, adminTokens, `/api/explorer/trash?path=${q(file)}`)).success).toBe(true);
+    const again = await inTrash();
+    expect(again, 'the re-trashed file is listed again').toBeTruthy();
+    const purged = await apiDelete(page, adminTokens, `/api/explorer/trash/${q(again.id)}`);
+    expect(purged.success, purged.message).toBe(true);
+    expect(await inTrash(), 'the purged entry is gone from the trash listing').toBeFalsy();
+    expect(await inWork(), 'a purge must not resurrect the file').toBe(false);
   });
 
   test('13.3 — compress a selection then extract it back', async ({ page }) => {
