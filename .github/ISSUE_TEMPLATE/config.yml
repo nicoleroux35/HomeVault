@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/nicoleroux35/HomeVault/security/advisories/new
+    about: Do not file public issues for vulnerabilities. See SECURITY.md.
