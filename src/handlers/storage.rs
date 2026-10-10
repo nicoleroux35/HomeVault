@@ -8,10 +8,7 @@ use std::sync::Arc;
 
 /// Lists all physical disks detected on the system.
 #[axum_macros::debug_handler]
-pub async fn handle_disks_list(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn handle_disks_list(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -86,14 +83,9 @@ pub async fn handle_system_disk(
     }
 }
 
-
-
 /// Runs all system health checks and returns aggregated results.
 #[axum_macros::debug_handler]
-pub async fn handle_health_all(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn handle_health_all(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -212,7 +204,9 @@ pub async fn handle_raid_delete(
                 "Admin '{}' deleted RAID array '{}'",
                 admin_username, name
             ));
-            ResponseHelper::json_success(serde_json::json!({ "message": "RAID array deleted successfully" }))
+            ResponseHelper::json_success(
+                serde_json::json!({ "message": "RAID array deleted successfully" }),
+            )
         }
         Err(e) => ResponseHelper::json_error(format!("Failed to delete RAID: {}", e)),
     }
@@ -424,7 +418,9 @@ pub async fn handle_virtual_disk_delete(
     };
 
     let result = match kind {
-        crate::pools::PoolType::Mdadm => DiskService::delete_raid(&name).await.map_err(|e| e.to_string()),
+        crate::pools::PoolType::Mdadm => DiskService::delete_raid(&name)
+            .await
+            .map_err(|e| e.to_string()),
         crate::pools::PoolType::Zfs | crate::pools::PoolType::Btrfs => {
             let n = name.clone();
             let k = kind.clone();
@@ -475,7 +471,11 @@ pub async fn handle_virtual_disk_scrub(
             }
             crate::pools::PoolType::Mdadm => {
                 // Resolve the array device → mdX, then ask the kernel to check.
-                let dev = if n.starts_with("/dev/") { n.clone() } else { format!("/dev/md/{}", n) };
+                let dev = if n.starts_with("/dev/") {
+                    n.clone()
+                } else {
+                    format!("/dev/md/{}", n)
+                };
                 let md = std::fs::canonicalize(&dev)
                     .ok()
                     .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
@@ -503,7 +503,9 @@ pub async fn handle_virtual_disk_scrub(
                 "Admin '{}' started a consistency check on virtual disk '{}'",
                 admin_username, name
             ));
-            ResponseHelper::json_success(serde_json::json!({ "message": "Consistency check started" }))
+            ResponseHelper::json_success(
+                serde_json::json!({ "message": "Consistency check started" }),
+            )
         }
         Err(e) => ResponseHelper::json_error(format!("Failed to start check: {}", e)),
     }
@@ -533,5 +535,3 @@ mod tests {
         assert_eq!(vd_name("storage-pool"), "storage-pool");
     }
 }
-
-
