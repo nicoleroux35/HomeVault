@@ -221,8 +221,20 @@ pub fn delete_rule_by_spec(port: &str, protocol: &str, action: &str) -> Result<(
 /// HomeVault's own port and SSH. Safe to call repeatedly (ufw skips
 /// duplicate rules rather than erroring).
 pub fn ensure_mandatory_rules(ssh_port: u16, app_port: u16) -> Result<(), String> {
-    add_rule(&ssh_port.to_string(), "tcp", "allow", None, MANDATORY_SSH_COMMENT)?;
-    add_rule(&app_port.to_string(), "tcp", "allow", None, MANDATORY_APP_COMMENT)?;
+    add_rule(
+        &ssh_port.to_string(),
+        "tcp",
+        "allow",
+        None,
+        MANDATORY_SSH_COMMENT,
+    )?;
+    add_rule(
+        &app_port.to_string(),
+        "tcp",
+        "allow",
+        None,
+        MANDATORY_APP_COMMENT,
+    )?;
     Ok(())
 }
 
@@ -323,7 +335,10 @@ mod tests {
         let r = parse_added_rule_line(line, 1).unwrap();
         assert_eq!(r.port, "22");
         assert_eq!(r.comment.as_deref(), Some(MANDATORY_SSH_COMMENT));
-        assert!(r.is_mandatory, "the mandatory-ssh comment must flag the rule as protected");
+        assert!(
+            r.is_mandatory,
+            "the mandatory-ssh comment must flag the rule as protected"
+        );
     }
 
     #[test]
@@ -338,12 +353,19 @@ mod tests {
         let line = "ufw allow 443/tcp comment 'homevault-custom-allow-443'";
         let r = parse_added_rule_line(line, 1).unwrap();
         assert_eq!(r.comment.as_deref(), Some("homevault-custom-allow-443"));
-        assert!(!r.is_mandatory, "a non-mandatory comment must never protect a rule from deletion");
+        assert!(
+            !r.is_mandatory,
+            "a non-mandatory comment must never protect a rule from deletion"
+        );
     }
 
     #[test]
     fn test_parse_ignores_non_rule_lines() {
-        assert!(parse_added_rule_line("Added user rules (see 'ufw status' for running firewall):", 1).is_none());
+        assert!(parse_added_rule_line(
+            "Added user rules (see 'ufw status' for running firewall):",
+            1
+        )
+        .is_none());
         assert!(parse_added_rule_line("", 1).is_none());
         assert!(parse_added_rule_line("Status: active", 1).is_none());
     }

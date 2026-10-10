@@ -35,12 +35,11 @@ impl PasswordRecoveryCodeRepository {
 
     /// Return the stored recovery-code hash for a user, if one is set.
     pub async fn get_hash(&self, username: &str) -> Result<Option<String>, sqlx::Error> {
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT code_hash FROM password_recovery_codes WHERE username = ?",
-        )
-        .bind(username)
-        .fetch_optional(&*self.pool)
-        .await?;
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT code_hash FROM password_recovery_codes WHERE username = ?")
+                .bind(username)
+                .fetch_optional(&*self.pool)
+                .await?;
 
         Ok(row.map(|r| r.0))
     }

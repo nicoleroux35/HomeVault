@@ -162,9 +162,13 @@ pub async fn handle_user_create(
             }
 
             let rate_limit_key = format!("user_create:{}", session.username);
-            if state.admin_rate_limiter.check_rate_limit(&rate_limit_key).is_err() {
+            if state
+                .admin_rate_limiter
+                .check_rate_limit(&rate_limit_key)
+                .is_err()
+            {
                 return ResponseHelper::json_error(
-                    "Rate limit exceeded. Maximum 10 user creations per minute.".to_string()
+                    "Rate limit exceeded. Maximum 10 user creations per minute.".to_string(),
                 );
             }
 
@@ -185,12 +189,16 @@ pub async fn handle_user_create(
                     return ResponseHelper::json_error("Invalid email format".to_string());
                 }
                 if req.email.len() > 128 {
-                    return ResponseHelper::json_error("Email cannot exceed 128 characters".to_string());
+                    return ResponseHelper::json_error(
+                        "Email cannot exceed 128 characters".to_string(),
+                    );
                 }
             }
 
             if req.role_id != 1 && req.role_id != 2 {
-                return ResponseHelper::json_error("Invalid role_id: must be 1 (user) or 2 (admin)".to_string());
+                return ResponseHelper::json_error(
+                    "Invalid role_id: must be 1 (user) or 2 (admin)".to_string(),
+                );
             }
 
             if let Some(sz) = req.home_size_bytes {
@@ -203,19 +211,25 @@ pub async fn handle_user_create(
 
             match state.auth.get_user_count().await {
                 Ok(count) if count >= 10000 => {
-                    return ResponseHelper::json_error("Maximum users limit (10000) reached".to_string());
+                    return ResponseHelper::json_error(
+                        "Maximum users limit (10000) reached".to_string(),
+                    );
                 }
                 Err(e) => {
-                    return ResponseHelper::json_error(format!("Failed to check user count: {}", e));
+                    return ResponseHelper::json_error(format!(
+                        "Failed to check user count: {}",
+                        e
+                    ));
                 }
                 _ => {}
             }
 
             for group_name in &req.groups {
                 if GroupService::get_group(group_name).is_err() {
-                    return ResponseHelper::json_error(
-                        format!("Group '{}' does not exist", group_name)
-                    );
+                    return ResponseHelper::json_error(format!(
+                        "Group '{}' does not exist",
+                        group_name
+                    ));
                 }
             }
 
@@ -240,7 +254,11 @@ pub async fn handle_user_create(
                         "Admin '{}' created user '{}' (role: {})",
                         session.username,
                         req.username,
-                        if req.role_id == crate::storage::models::ADMIN_ROLE_ID { "admin" } else { "user" }
+                        if req.role_id == crate::storage::models::ADMIN_ROLE_ID {
+                            "admin"
+                        } else {
+                            "user"
+                        }
                     ));
 
                     // Add user to requested groups (the reserved admin group is managed
@@ -519,7 +537,11 @@ pub async fn handle_user_update_groups(
                 "Admin '{}' updated group membership for user '{}' (groups: {})",
                 session.username,
                 username,
-                if req.groups.is_empty() { "none".to_string() } else { req.groups.join(", ") }
+                if req.groups.is_empty() {
+                    "none".to_string()
+                } else {
+                    req.groups.join(", ")
+                }
             ));
 
             ResponseHelper::json_success("Group membership updated".to_string())
@@ -581,7 +603,10 @@ pub async fn handle_user_update_password(
                             session.username, username
                         ));
                     } else {
-                        crate::events::log_event(format!("User '{}' changed their password", username));
+                        crate::events::log_event(format!(
+                            "User '{}' changed their password",
+                            username
+                        ));
                     }
                     ResponseHelper::json_success("Password updated successfully".to_string())
                 }
@@ -617,22 +642,21 @@ pub async fn handle_user_update_role(
 
             if req.role_id != 1 && req.role_id != 2 {
                 return ResponseHelper::json_error(
-                    "Invalid role_id: must be 1 (user) or 2 (admin)".to_string()
+                    "Invalid role_id: must be 1 (user) or 2 (admin)".to_string(),
                 );
             }
 
-            if session.username == username && req.role_id != crate::storage::models::ADMIN_ROLE_ID {
+            if session.username == username && req.role_id != crate::storage::models::ADMIN_ROLE_ID
+            {
                 return ResponseHelper::json_error(
-                    "Cannot remove your own admin privileges".to_string()
+                    "Cannot remove your own admin privileges".to_string(),
                 );
             }
 
             let target = match state.auth.get_user(&username).await {
                 Ok(u) => u,
                 Err(_) => {
-                    return ResponseHelper::json_error(
-                        format!("User '{}' not found", username)
-                    );
+                    return ResponseHelper::json_error(format!("User '{}' not found", username));
                 }
             };
 
@@ -646,13 +670,15 @@ pub async fn handle_user_update_role(
                 match state.auth.count_admins().await {
                     Ok(admin_count) if admin_count <= 1 => {
                         return ResponseHelper::json_error(
-                            "Cannot remove last admin. Promote another user to admin first.".to_string()
+                            "Cannot remove last admin. Promote another user to admin first."
+                                .to_string(),
                         );
                     }
                     Err(e) => {
-                        return ResponseHelper::json_error(
-                            format!("Failed to check admin count: {}", e)
-                        );
+                        return ResponseHelper::json_error(format!(
+                            "Failed to check admin count: {}",
+                            e
+                        ));
                     }
                     _ => {}
                 }
@@ -664,7 +690,11 @@ pub async fn handle_user_update_role(
                         "Admin '{}' changed the role of user '{}' to {}",
                         session.username,
                         username,
-                        if req.role_id == crate::storage::models::ADMIN_ROLE_ID { "admin" } else { "user" }
+                        if req.role_id == crate::storage::models::ADMIN_ROLE_ID {
+                            "admin"
+                        } else {
+                            "user"
+                        }
                     ));
 
                     if req.role_id == crate::storage::models::ADMIN_ROLE_ID {
@@ -718,17 +748,16 @@ pub async fn handle_user_set_locked(
             // anything that could leave zero admins able to log in.
             if req.locked {
                 if session.username == username {
-                    return ResponseHelper::json_error(
-                        "Cannot lock your own account".to_string(),
-                    );
+                    return ResponseHelper::json_error("Cannot lock your own account".to_string());
                 }
 
                 let target = match state.auth.get_user(&username).await {
                     Ok(u) => u,
                     Err(_) => {
-                        return ResponseHelper::json_error(
-                            format!("User '{}' not found", username)
-                        );
+                        return ResponseHelper::json_error(format!(
+                            "User '{}' not found",
+                            username
+                        ));
                     }
                 };
 
@@ -747,9 +776,10 @@ pub async fn handle_user_set_locked(
                             }
                         }
                         Err(e) => {
-                            return ResponseHelper::json_error(
-                                format!("Failed to check admin count: {}", e)
-                            );
+                            return ResponseHelper::json_error(format!(
+                                "Failed to check admin count: {}",
+                                e
+                            ));
                         }
                     }
                 }
@@ -850,9 +880,7 @@ pub async fn handle_user_delete(
             let user = match state.auth.get_user(&username).await {
                 Ok(u) => u,
                 Err(_) => {
-                    return ResponseHelper::json_error(
-                        format!("User '{}' not found", username)
-                    );
+                    return ResponseHelper::json_error(format!("User '{}' not found", username));
                 }
             };
 
@@ -860,13 +888,14 @@ pub async fn handle_user_delete(
                 match state.auth.count_admins().await {
                     Ok(admin_count) if admin_count <= 1 => {
                         return ResponseHelper::json_error(
-                            "Cannot delete the last admin. Promote another user first.".to_string()
+                            "Cannot delete the last admin. Promote another user first.".to_string(),
                         );
                     }
                     Err(e) => {
-                        return ResponseHelper::json_error(
-                            format!("Failed to check admin count: {}", e)
-                        );
+                        return ResponseHelper::json_error(format!(
+                            "Failed to check admin count: {}",
+                            e
+                        ));
                     }
                     _ => {}
                 }
@@ -911,7 +940,11 @@ pub async fn handle_user_delete(
                     if let Some(ref path) = home.path {
                         match tokio::fs::remove_dir_all(path).await {
                             Ok(_) => {
-                                tracing::info!("Deleted home folder '{}' for user '{}'", path, username);
+                                tracing::info!(
+                                    "Deleted home folder '{}' for user '{}'",
+                                    path,
+                                    username
+                                );
                             }
                             Err(e) => {
                                 tracing::warn!("Failed to delete home folder '{}': {}", path, e);
@@ -928,7 +961,10 @@ pub async fn handle_user_delete(
                     // account created with this same username doesn't
                     // silently inherit a stale limit/usage from a
                     // completely different, deleted account.
-                    let quota_repo = crate::storage::transfer_quota_repo::TransferQuotaRepository::new(state.db.pool());
+                    let quota_repo =
+                        crate::storage::transfer_quota_repo::TransferQuotaRepository::new(
+                            state.db.pool(),
+                        );
                     let _ = quota_repo.delete("user", &username).await;
 
                     // Same reasoning as the transfer-quota cleanup just
@@ -944,7 +980,11 @@ pub async fn handle_user_delete(
                         "Admin '{}' deleted user '{}'{}",
                         session.username,
                         username,
-                        if query.delete_home_folder { " (including home folder)" } else { "" }
+                        if query.delete_home_folder {
+                            " (including home folder)"
+                        } else {
+                            ""
+                        }
                     ));
 
                     ResponseHelper::json_success("User deleted successfully".to_string())

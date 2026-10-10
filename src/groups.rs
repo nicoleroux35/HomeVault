@@ -179,8 +179,13 @@ impl GroupService {
         }
 
         // Strict whitelist: only alphanumeric, underscore, and hyphen allowed
-        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-            return Err("Group name can only contain letters, numbers, underscore and hyphen".to_string());
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(
+                "Group name can only contain letters, numbers, underscore and hyphen".to_string(),
+            );
         }
 
         // Block dangerous names
@@ -247,7 +252,9 @@ impl GroupService {
             if let Err(e) = Self::add_user_to_group(member, &full_name) {
                 tracing::warn!(
                     "Could not add initial member '{}' to new group '{}': {}",
-                    member, full_name, e
+                    member,
+                    full_name,
+                    e
                 );
             }
         }
@@ -319,7 +326,10 @@ impl GroupService {
             return Err(GroupError::CommandFailed(stderr.to_string()));
         }
 
-        tracing::info!("Provisioned Linux account '{}' for group management", username);
+        tracing::info!(
+            "Provisioned Linux account '{}' for group management",
+            username
+        );
         Ok(())
     }
 
@@ -435,13 +445,19 @@ mod tests {
 
     #[test]
     fn test_get_display_name_strips_prefix_only_when_present() {
-        assert_eq!(GroupService::get_display_name("homevault_developers"), "developers");
+        assert_eq!(
+            GroupService::get_display_name("homevault_developers"),
+            "developers"
+        );
         assert_eq!(GroupService::get_display_name("developers"), "developers");
     }
 
     #[test]
     fn test_get_full_group_name_is_idempotent() {
-        assert_eq!(GroupService::get_full_group_name("developers"), "homevault_developers");
+        assert_eq!(
+            GroupService::get_full_group_name("developers"),
+            "homevault_developers"
+        );
         assert_eq!(
             GroupService::get_full_group_name("homevault_developers"),
             "homevault_developers"

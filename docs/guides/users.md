@@ -25,7 +25,10 @@ Handlers in `src/handlers/users.rs`; models in `src/handlers/users_models.rs`.
 | `GET /users/count`, `/users/{username}/exists` | admin | |
 
 Home disk picker data: `GET /storage/available-home-disks` (`handle_available_home_disks`),
-returns each mount's `available_bytes` / `total_bytes`.
+returns each mount's `available_bytes` / `total_bytes`. Only **writable**
+filesystems are offered (`user_homes.rs::is_writable_home_filesystem` filters
+out `squashfs`/`iso9660`/`erofs`): read-only snap squashfs mounts report
+`available_bytes: 0`, which used to collapse the size slider to `min == max == 0`.
 
 ### Home directory location — disk or explicit folder (2026-09-08)
 
@@ -172,8 +175,8 @@ sheet is gone.
     (2) and `Downloader.svelte` (3). *(An earlier note in this file said 9 —
     that figure was never measured, it was carried over from the plan. The
     real number is 7.)*
-  - `npm run build` → **OK** (32 s); `static/dist/assets/Quotas-DbeDd7_t.js`
-    and `Users-CCVDHXRe.js` are emitted, so the app registry entry resolves.
+  - `npm run build` → **OK** (32 s); the built `static/dist/assets/` chunks
+    are emitted, so the app registry entry resolves.
   - `cargo build` → **OK** (9 m 55 s, no warnings).
   - **Two real defects were found by the check and fixed**: `Quotas.svelte`
     never imported `t` from `$lib/stores/i18n` (22 cascading errors), and its

@@ -1,5 +1,5 @@
-use crate::storage::database::DbError;
 use crate::impl_repository;
+use crate::storage::database::DbError;
 use chrono::Utc;
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -96,7 +96,7 @@ impl PasswordHistoryRepository {
     /// Check whether a specific hash exists in a user's history.
     pub async fn hash_exists(&self, username: &str, password_hash: &str) -> Result<bool, DbError> {
         let row: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM password_history WHERE username = ? AND password_hash = ?"
+            "SELECT COUNT(*) FROM password_history WHERE username = ? AND password_hash = ?",
         )
         .bind(username)
         .bind(password_hash)

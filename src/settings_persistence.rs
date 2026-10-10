@@ -1,11 +1,12 @@
 //! Settings persistence layer - saves settings to JSON files
-//! 
+//!
 //! This module provides automatic persistence for all HomeVault settings,
 //! ensuring configuration survives server restarts.
 
 use crate::handlers::settings::{
-    APPEARANCE_SETTINGS, EMAIL_SETTINGS, GENERAL_SETTINGS, NOTIFICATION_SETTINGS, UPDATE_SETTINGS,
-    AppearanceSettings, EmailSettings, GeneralSettings, NotificationSettings, UpdateFrequency, UpdateSettings,
+    AppearanceSettings, EmailSettings, GeneralSettings, NotificationSettings, UpdateFrequency,
+    UpdateSettings, APPEARANCE_SETTINGS, EMAIL_SETTINGS, GENERAL_SETTINGS, NOTIFICATION_SETTINGS,
+    UPDATE_SETTINGS,
 };
 use crate::storage::json::JsonStorage;
 use once_cell::sync::Lazy;
@@ -13,7 +14,8 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 /// Global settings persistence manager
-static SETTINGS_PERSISTENCE: Lazy<RwLock<Option<SettingsPersistence>>> = Lazy::new(|| RwLock::new(None));
+static SETTINGS_PERSISTENCE: Lazy<RwLock<Option<SettingsPersistence>>> =
+    Lazy::new(|| RwLock::new(None));
 
 /// Settings persistence data structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -101,7 +103,10 @@ impl PersistedSettings {
             enable_alerts: self.notifications.as_ref().and_then(|n| n.enable_alerts),
             alert_threshold: self.notifications.as_ref().and_then(|n| n.alert_threshold),
             smtp_enabled: self.notifications.as_ref().and_then(|n| n.smtp_enabled),
-            webhook_url: self.notifications.as_ref().and_then(|n| n.webhook_url.clone()),
+            webhook_url: self
+                .notifications
+                .as_ref()
+                .and_then(|n| n.webhook_url.clone()),
             webhook_enabled: self.notifications.as_ref().and_then(|n| n.webhook_enabled),
         }
     }
@@ -110,7 +115,10 @@ impl PersistedSettings {
         AppearanceSettings {
             theme: self.appearance.as_ref().and_then(|a| a.theme.clone()),
             wallpaper: self.appearance.as_ref().and_then(|a| a.wallpaper.clone()),
-            accent_color: self.appearance.as_ref().and_then(|a| a.accent_color.clone()),
+            accent_color: self
+                .appearance
+                .as_ref()
+                .and_then(|a| a.accent_color.clone()),
             density: self.appearance.as_ref().and_then(|a| a.density.clone()),
         }
     }
@@ -170,7 +178,9 @@ impl SettingsPersistence {
             ai: None,
         };
 
-        self.storage.save("settings", &settings).map_err(|e| e.to_string())
+        self.storage
+            .save("settings", &settings)
+            .map_err(|e| e.to_string())
     }
 
     /// Load all settings from disk
@@ -199,7 +209,9 @@ impl SettingsPersistence {
     /// Import settings from JSON string
     pub fn import(&self, json: &str) -> Result<PersistedSettings, String> {
         let settings: PersistedSettings = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        self.storage.save("settings", &settings).map_err(|e| e.to_string())?;
+        self.storage
+            .save("settings", &settings)
+            .map_err(|e| e.to_string())?;
         Ok(settings)
     }
 
@@ -267,7 +279,7 @@ fn apply_loaded_settings(loaded: &PersistedSettings) {
             settings.timezone = Some(tz.clone());
         }
     }
-    
+
     // Email settings
     if let Some(email) = &loaded.email {
         use crate::handlers::settings::EMAIL_SETTINGS;
@@ -291,7 +303,7 @@ fn apply_loaded_settings(loaded: &PersistedSettings) {
             settings.use_tls = Some(tls);
         }
     }
-    
+
     // Update settings
     if let Some(update) = &loaded.update {
         use crate::handlers::settings::UPDATE_SETTINGS;
@@ -300,7 +312,7 @@ fn apply_loaded_settings(loaded: &PersistedSettings) {
             settings.check_frequency = Some(freq);
         }
     }
-    
+
     // Notification settings
     if let Some(notif) = &loaded.notifications {
         use crate::handlers::settings::NOTIFICATION_SETTINGS;
@@ -324,7 +336,7 @@ fn apply_loaded_settings(loaded: &PersistedSettings) {
             settings.webhook_enabled = Some(webhook_enabled);
         }
     }
-    
+
     // Appearance settings
     if let Some(appearance) = &loaded.appearance {
         use crate::handlers::settings::APPEARANCE_SETTINGS;
@@ -363,9 +375,9 @@ pub fn save_ai_model(model: &str) {
 /// Load the AI model setting from persistence
 pub fn load_ai_model() -> Option<String> {
     let persistence = SETTINGS_PERSISTENCE.read();
-    persistence.as_ref().and_then(|p| {
-        p.load_all().ai.and_then(|a| a.model)
-    })
+    persistence
+        .as_ref()
+        .and_then(|p| p.load_all().ai.and_then(|a| a.model))
 }
 
 /// Save all current settings (called after any setting update)
@@ -377,7 +389,7 @@ pub fn save_all_settings() {
         let update = UPDATE_SETTINGS.read();
         let notifications = NOTIFICATION_SETTINGS.read();
         let appearance = APPEARANCE_SETTINGS.read();
-        
+
         let settings = PersistedSettings {
             general: Some(PersistedGeneral {
                 server_name: general.server_name.clone(),
@@ -410,7 +422,7 @@ pub fn save_all_settings() {
             }),
             ai: None,
         };
-        
+
         drop(general);
         drop(email);
         drop(update);
@@ -424,7 +436,7 @@ pub fn save_all_settings() {
             }),
             ..settings
         };
-        
+
         if let Err(e) = p.storage.save("settings", &settings_with_ai) {
             tracing::error!("Failed to persist settings: {}", e);
         } else {
@@ -540,7 +552,11 @@ mod tests {
     #[test]
     fn test_export_does_not_mutate_the_on_disk_password() {
         let (p, _dir) = persistence();
-        save(&p, &email_with_password("on-disk-secret"), &AppearanceSettings::default());
+        save(
+            &p,
+            &email_with_password("on-disk-secret"),
+            &AppearanceSettings::default(),
+        );
 
         let _ = p.export().expect("export");
 
@@ -588,7 +604,10 @@ mod tests {
 
         // …and it landed on p2's disk.
         assert_eq!(
-            p2.load_all().appearance.and_then(|x| x.accent_color).as_deref(),
+            p2.load_all()
+                .appearance
+                .and_then(|x| x.accent_color)
+                .as_deref(),
             Some("#e2725b")
         );
     }

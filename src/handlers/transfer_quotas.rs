@@ -31,8 +31,10 @@ pub async fn handle_transfer_quota_get(
     }
 
     if !valid_subject_type(&subject_type) {
-        return Json(json!({ "success": false, "error": "subject_type must be 'user' or 'group'" }))
-            .into_response();
+        return Json(
+            json!({ "success": false, "error": "subject_type must be 'user' or 'group'" }),
+        )
+        .into_response();
     }
 
     let repo = TransferQuotaRepository::new(state.db.pool());
@@ -59,8 +61,10 @@ pub async fn handle_transfer_quotas_list(
     }
 
     if !valid_subject_type(&subject_type) {
-        return Json(json!({ "success": false, "error": "subject_type must be 'user' or 'group'" }))
-            .into_response();
+        return Json(
+            json!({ "success": false, "error": "subject_type must be 'user' or 'group'" }),
+        )
+        .into_response();
     }
 
     let repo = TransferQuotaRepository::new(state.db.pool());
@@ -98,8 +102,10 @@ pub async fn handle_transfer_quota_set(
     };
 
     if !valid_subject_type(&subject_type) {
-        return Json(json!({ "success": false, "error": "subject_type must be 'user' or 'group'" }))
-            .into_response();
+        return Json(
+            json!({ "success": false, "error": "subject_type must be 'user' or 'group'" }),
+        )
+        .into_response();
     }
     if body.upload_limit_bytes < 0 || body.download_limit_bytes < 0 {
         return Json(json!({ "success": false, "error": "Quota limits cannot be negative" }))
@@ -124,8 +130,16 @@ pub async fn handle_transfer_quota_set(
                 admin_username,
                 subject_type,
                 subject_name,
-                if body.upload_enabled { format!("{} bytes", body.upload_limit_bytes) } else { "disabled".to_string() },
-                if body.download_enabled { format!("{} bytes", body.download_limit_bytes) } else { "disabled".to_string() },
+                if body.upload_enabled {
+                    format!("{} bytes", body.upload_limit_bytes)
+                } else {
+                    "disabled".to_string()
+                },
+                if body.download_enabled {
+                    format!("{} bytes", body.download_limit_bytes)
+                } else {
+                    "disabled".to_string()
+                },
             ));
             Json(json!({ "success": true, "data": quota })).into_response()
         }
@@ -150,8 +164,10 @@ pub async fn handle_transfer_quota_delete(
     };
 
     if !valid_subject_type(&subject_type) {
-        return Json(json!({ "success": false, "error": "subject_type must be 'user' or 'group'" }))
-            .into_response();
+        return Json(
+            json!({ "success": false, "error": "subject_type must be 'user' or 'group'" }),
+        )
+        .into_response();
     }
 
     let repo = TransferQuotaRepository::new(state.db.pool());

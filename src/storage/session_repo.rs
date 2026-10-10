@@ -1,6 +1,6 @@
+use crate::impl_repository;
 use crate::storage::database::DbError;
 use crate::storage::models::{Session, SessionRow};
-use crate::impl_repository;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 
@@ -118,7 +118,7 @@ impl SessionRepository {
             "SELECT token, username, ip_address, csrf_token, created_at, expires_at, is_admin
              FROM sessions
              WHERE username = ?
-             ORDER BY created_at DESC"
+             ORDER BY created_at DESC",
         )
         .bind(username)
         .fetch_all(self.pool.as_ref())
@@ -135,7 +135,8 @@ impl SessionRepository {
 
         use sqlx::QueryBuilder;
 
-        let mut qb: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new("DELETE FROM sessions WHERE token IN (");
+        let mut qb: QueryBuilder<sqlx::Sqlite> =
+            QueryBuilder::new("DELETE FROM sessions WHERE token IN (");
         let mut separated = qb.separated(", ");
         for token in tokens {
             separated.push_bind(token);

@@ -170,6 +170,28 @@ async function gotoDesktop(page: Page, tokens: Tokens, lang?: string) {
   await page.waitForSelector('.hv-user-pill', { timeout: 20_000 });
 }
 
+/**
+ * The desktop hydrates in two waves: the shell (topbar pill, dock) paints
+ * first, then `frontend/src/main.ts` fetches and injects the ~31k-node icon
+ * sprite (`<svg>` + ~7.6k `<symbol>` + ~23.6k `<path>`) and the monitor
+ * widgets mount. A DOM census taken inside that window reads ~500 nodes, so
+ * every later reading looks like a leak — the node-count tests in sections 9
+ * and 14 must wait for the second wave before taking their baseline.
+ * Same guard as `login.spec.ts::waitForIconSprite` and
+ * `desktop.spec.ts::waitForDomSettle`.
+ */
+async function waitForDomSettle(page: Page) {
+  let prev = -1;
+  for (let i = 0; i < 40; i++) {
+    const n = await page.evaluate(() => document.querySelectorAll('*').length);
+    // The >1000 guard refuses an early "stable" reading from inside the
+    // pre-hydration window itself (two polls can land on the same ~500).
+    if (n === prev && n > 1000) return;
+    prev = n;
+    await page.waitForTimeout(250);
+  }
+}
+
 /** Click the Applications launcher and open one app tile by its display name. */
 async function openLaunchpadApp(page: Page, appName: string) {
   await page.locator('.hv-dock-item[aria-label="Applications"]').click();
@@ -303,7 +325,13 @@ test.describe('2 — Create form fields', () => {
     await expect(el).toBeVisible();
     expect(await el.getAttribute('autocomplete')).toBe('off');
     await expect(win(page).locator('label[for="c-name"] span[aria-hidden="true"]')).toBeVisible();
-    await expect(win(page).locator('[data-testid="groups-hint"]')).toContainText('Lowercase letters, numbers, hyphens only.');
+    // The name field's help line is rendered by the shared `FormRow`
+    // (`help={$t('groups.name_hint')}`), not by a `groups-hint` div — that
+    // hook now only marks the member-search/quota lines further down, so the
+    // old locator matched nothing and the assertion was green-at-empty.
+    await expect(win(page).locator('.hv-form-row:has(#c-name) p')).toContainText(
+      'Lowercase letters, numbers, hyphens only.',
+    );
   });
 
   test('2.2 — every visible field has an associated <label>', async ({ page }) => {
@@ -704,6 +732,7 @@ test.describe('9 — Performance', () => {
     // cap would just be measuring the desktop shell, not this window, so
     // this checks the *delta* the Groups window itself adds.
     await gotoDesktop(page, adminTokens);
+    await waitForDomSettle(page);
     const before = await page.evaluate(() => document.querySelectorAll('*').length);
     await openLaunchpadApp(page, 'Groups');
     await page.waitForSelector('[data-testid="groups-page"] [data-testid="groups-row"]');
@@ -918,6 +947,7 @@ test.describe('14 — Memory regression', () => {
 
   test('14.1 — opening and closing the Groups window ×5 does not accumulate DOM nodes', async ({ page }) => {
     await gotoDesktop(page, adminTokens);
+    await waitForDomSettle(page);
     await openLaunchpadApp(page, 'Groups');
     await page.waitForSelector('[data-testid="groups-page"]');
     const count = () => page.evaluate(() => document.querySelectorAll('*').length);

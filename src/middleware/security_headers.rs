@@ -93,7 +93,7 @@ pub async fn security_headers_middleware(
         header::HeaderName::from_static("permissions-policy"),
         HeaderValue::from_static(
             "accelerometer=(), camera=(), geolocation=(), gyroscope=(), \
-             magnetometer=(), microphone=(), payment=(), usb=()"
+             magnetometer=(), microphone=(), payment=(), usb=()",
         ),
     );
 

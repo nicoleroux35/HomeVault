@@ -14,10 +14,7 @@ impl TransactionalService {
     }
 
     /// Insert a user row together with an initial password-history entry in one transaction.
-    pub async fn create_user_with_history(
-        &self,
-        user: &User,
-    ) -> Result<(), DbError> {
+    pub async fn create_user_with_history(&self, user: &User) -> Result<(), DbError> {
         let mut tx = self.pool.begin().await?;
 
         sqlx::query(
@@ -36,7 +33,7 @@ impl TransactionalService {
 
         // Record the password hash in the history table for reuse checks.
         sqlx::query(
-            "INSERT INTO password_history (username, password_hash, created_at) VALUES (?, ?, ?)"
+            "INSERT INTO password_history (username, password_hash, created_at) VALUES (?, ?, ?)",
         )
         .bind(&user.username)
         .bind(&user.password_hash)
@@ -60,7 +57,7 @@ impl TransactionalService {
 
         // Archive the old password hash before overwriting it.
         sqlx::query(
-            "INSERT INTO password_history (username, password_hash, created_at) VALUES (?, ?, ?)"
+            "INSERT INTO password_history (username, password_hash, created_at) VALUES (?, ?, ?)",
         )
         .bind(username)
         .bind(old_password_hash)
@@ -79,10 +76,7 @@ impl TransactionalService {
     }
 
     /// Delete a user and all of their associated data (sessions, widgets, etc.) in one transaction.
-    pub async fn delete_user_cascade(
-        &self,
-        username: &str,
-    ) -> Result<(), DbError> {
+    pub async fn delete_user_cascade(&self, username: &str) -> Result<(), DbError> {
         let mut tx = self.pool.begin().await?;
 
         sqlx::query("DELETE FROM sessions WHERE username = ?")
@@ -120,10 +114,7 @@ impl TransactionalService {
     }
 
     /// Delete multiple users and all their associated data in one transaction.
-    pub async fn delete_users_cascade_batch(
-        &self,
-        usernames: &[String],
-    ) -> Result<(), DbError> {
+    pub async fn delete_users_cascade_batch(&self, usernames: &[String]) -> Result<(), DbError> {
         if usernames.is_empty() {
             return Ok(());
         }
@@ -132,7 +123,8 @@ impl TransactionalService {
 
         let mut tx = self.pool.begin().await?;
 
-        let mut qb: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new("DELETE FROM sessions WHERE username IN (");
+        let mut qb: QueryBuilder<sqlx::Sqlite> =
+            QueryBuilder::new("DELETE FROM sessions WHERE username IN (");
         let mut separated = qb.separated(", ");
         for username in usernames {
             separated.push_bind(username);
@@ -140,7 +132,8 @@ impl TransactionalService {
         separated.push_unseparated(")");
         qb.build().execute(tx.as_mut()).await?;
 
-        let mut qb: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new("DELETE FROM widgets WHERE username IN (");
+        let mut qb: QueryBuilder<sqlx::Sqlite> =
+            QueryBuilder::new("DELETE FROM widgets WHERE username IN (");
         let mut separated = qb.separated(", ");
         for username in usernames {
             separated.push_bind(username);
@@ -148,7 +141,8 @@ impl TransactionalService {
         separated.push_unseparated(")");
         qb.build().execute(tx.as_mut()).await?;
 
-        let mut qb: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new("DELETE FROM password_history WHERE username IN (");
+        let mut qb: QueryBuilder<sqlx::Sqlite> =
+            QueryBuilder::new("DELETE FROM password_history WHERE username IN (");
         let mut separated = qb.separated(", ");
         for username in usernames {
             separated.push_bind(username);
@@ -156,7 +150,8 @@ impl TransactionalService {
         separated.push_unseparated(")");
         qb.build().execute(tx.as_mut()).await?;
 
-        let mut qb: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new("DELETE FROM login_attempts WHERE username IN (");
+        let mut qb: QueryBuilder<sqlx::Sqlite> =
+            QueryBuilder::new("DELETE FROM login_attempts WHERE username IN (");
         let mut separated = qb.separated(", ");
         for username in usernames {
             separated.push_bind(username);
@@ -164,7 +159,8 @@ impl TransactionalService {
         separated.push_unseparated(")");
         qb.build().execute(tx.as_mut()).await?;
 
-        let mut qb: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new("DELETE FROM user_2fa WHERE username IN (");
+        let mut qb: QueryBuilder<sqlx::Sqlite> =
+            QueryBuilder::new("DELETE FROM user_2fa WHERE username IN (");
         let mut separated = qb.separated(", ");
         for username in usernames {
             separated.push_bind(username);
@@ -172,7 +168,8 @@ impl TransactionalService {
         separated.push_unseparated(")");
         qb.build().execute(tx.as_mut()).await?;
 
-        let mut qb: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new("DELETE FROM users WHERE username IN (");
+        let mut qb: QueryBuilder<sqlx::Sqlite> =
+            QueryBuilder::new("DELETE FROM users WHERE username IN (");
         let mut separated = qb.separated(", ");
         for username in usernames {
             separated.push_bind(username);
@@ -211,10 +208,7 @@ impl TransactionalService {
     }
 
     /// Lock a user account and invalidate all of their sessions.
-    pub async fn lock_user_and_clear_sessions(
-        &self,
-        username: &str,
-    ) -> Result<(), DbError> {
+    pub async fn lock_user_and_clear_sessions(&self, username: &str) -> Result<(), DbError> {
         let mut tx = self.pool.begin().await?;
 
         sqlx::query("UPDATE users SET locked = 1 WHERE username = ?")

@@ -245,7 +245,9 @@ pub async fn handle_journal_cleanup_settings_update(
         .save_settings(body.auto_cleanup_enabled, body.interval_days)
         .await
     {
-        Ok(()) => Json(json!({ "success": true, "message": "Cleanup settings saved" })).into_response(),
+        Ok(()) => {
+            Json(json!({ "success": true, "message": "Cleanup settings saved" })).into_response()
+        }
         Err(e) => Json(json!({
             "success": false,
             "error": format!("Failed to save cleanup settings: {}", e)
@@ -288,7 +290,11 @@ pub(crate) fn clear_app_logs() -> Result<(), String> {
         };
 
         if name == active_name || name == "homevault.log" {
-            if let Err(e) = std::fs::OpenOptions::new().write(true).truncate(true).open(&path) {
+            if let Err(e) = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&path)
+            {
                 return Err(format!("Failed to truncate {}: {}", path.display(), e));
             }
         } else if let Err(e) = std::fs::remove_file(&path) {
@@ -460,17 +466,16 @@ fn read_entries(
             }
             cmd.arg(format!("-n{}", limit));
             cmd.arg("--output-fields=__REALTIME_TIMESTAMP,_SYSTEMD_UNIT,PRIORITY,_PID,MESSAGE");
-            cmd.output().map_err(|e| format!("Failed to run journalctl: {}", e))?
+            cmd.output()
+                .map_err(|e| format!("Failed to run journalctl: {}", e))?
         }
         _ => {
             // Text log from /var/log — only allow the whitelisted names.
             let path = text_log_path(source)?;
             let mut cmd = Command::new("sudo");
-            cmd.arg("tail")
-                .arg("-n")
-                .arg(limit.to_string())
-                .arg(path);
-            cmd.output().map_err(|e| format!("Failed to read log: {}", e))?
+            cmd.arg("tail").arg("-n").arg(limit.to_string()).arg(path);
+            cmd.output()
+                .map_err(|e| format!("Failed to read log: {}", e))?
         }
     };
 
@@ -509,10 +514,7 @@ fn read_entries(
                         .and_then(|p| p.as_str())
                         .and_then(|p| p.parse::<u8>().ok());
                     let priority_text = priority.map(priority_text).map(String::from);
-                    let pid = v
-                        .get("_PID")
-                        .and_then(|p| p.as_str())
-                        .map(String::from);
+                    let pid = v.get("_PID").and_then(|p| p.as_str()).map(String::from);
                     let unit = v
                         .get("_SYSTEMD_UNIT")
                         .and_then(|u| u.as_str())
@@ -627,11 +629,17 @@ mod tests {
     fn test_strip_target_prefix_extracts_a_real_module_path() {
         assert_eq!(
             strip_target_prefix("homevault::setup: creating admin account"),
-            (Some("homevault::setup".to_string()), "creating admin account".to_string())
+            (
+                Some("homevault::setup".to_string()),
+                "creating admin account".to_string()
+            )
         );
         assert_eq!(
             strip_target_prefix("homevault::event: Admin 'x' created a share"),
-            (Some("homevault::event".to_string()), "Admin 'x' created a share".to_string())
+            (
+                Some("homevault::event".to_string()),
+                "Admin 'x' created a share".to_string()
+            )
         );
     }
 
@@ -642,7 +650,10 @@ mod tests {
             strip_target_prefix("Connection from 10.0.0.1: refused"),
             (None, "Connection from 10.0.0.1: refused".to_string())
         );
-        assert_eq!(strip_target_prefix("no colon here"), (None, "no colon here".to_string()));
+        assert_eq!(
+            strip_target_prefix("no colon here"),
+            (None, "no colon here".to_string())
+        );
         // Capitalised first segment → not a snake_case module path.
         assert_eq!(
             strip_target_prefix("Warning: disk almost full"),
@@ -666,7 +677,13 @@ mod tests {
 
     #[test]
     fn test_parse_app_log_line_maps_every_level() {
-        for (lvl, prio) in [("ERROR", 3), ("WARN", 4), ("INFO", 6), ("DEBUG", 7), ("TRACE", 7)] {
+        for (lvl, prio) in [
+            ("ERROR", 3),
+            ("WARN", 4),
+            ("INFO", 6),
+            ("DEBUG", 7),
+            ("TRACE", 7),
+        ] {
             let e = parse_app_log_line(&format!("2026-07-17T10:30:00Z  {lvl} homevault::x: msg"));
             assert_eq!(e.priority, Some(prio), "{lvl}");
         }

@@ -21,7 +21,9 @@
 use crate::config::paths;
 use crate::groups::GroupService;
 use crate::permissions::PermissionService;
-use crate::shares::{append_file_as_root, write_file_as_root, Share, ShareType, SharesService, SftpConfig};
+use crate::shares::{
+    append_file_as_root, write_file_as_root, SftpConfig, Share, ShareType, SharesService,
+};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::process::Command;
@@ -60,15 +62,22 @@ pub struct SftpJailService;
 
 impl SftpJailService {
     fn ensure_group() -> Result<(), SftpError> {
-        let check = Command::new("getent").args(["group", SFTP_GROUP]).output()?;
+        let check = Command::new("getent")
+            .args(["group", SFTP_GROUP])
+            .output()?;
         if check.status.success() {
             return Ok(());
         }
-        let output = Command::new("sudo").args(["groupadd", SFTP_GROUP]).output()?;
+        let output = Command::new("sudo")
+            .args(["groupadd", SFTP_GROUP])
+            .output()?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if !stderr.contains("already exists") {
-                return Err(SftpError::CommandFailed(format!("groupadd failed: {}", stderr)));
+                return Err(SftpError::CommandFailed(format!(
+                    "groupadd failed: {}",
+                    stderr
+                )));
             }
         }
         Ok(())
@@ -92,7 +101,13 @@ impl SftpJailService {
         if !exists {
             let output = Command::new("sudo")
                 .args([
-                    "useradd", "-M", "-s", "/usr/sbin/nologin", "-G", SFTP_GROUP, username,
+                    "useradd",
+                    "-M",
+                    "-s",
+                    "/usr/sbin/nologin",
+                    "-G",
+                    SFTP_GROUP,
+                    username,
                 ])
                 .output()?;
             if !output.status.success() {
@@ -139,7 +154,10 @@ impl SftpJailService {
     fn unlock_password(username: &str) -> Result<(), SftpError> {
         let mut random_bytes = [0u8; 32];
         rand::Rng::fill_bytes(&mut rand::rng(), &mut random_bytes);
-        let random_password = random_bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+        let random_password = random_bytes
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>();
 
         let mut child = Command::new("sudo")
             .arg("chpasswd")
@@ -251,7 +269,10 @@ impl SftpJailService {
                 "No SSH host keys found under /etc/ssh — is openssh-server installed?".to_string(),
             ));
         }
-        let host_key_lines: String = host_keys.iter().map(|k| format!("HostKey {}\n", k)).collect();
+        let host_key_lines: String = host_keys
+            .iter()
+            .map(|k| format!("HostKey {}\n", k))
+            .collect();
 
         let sshd_config = format!(
             r#"Port {port}
@@ -288,8 +309,14 @@ Subsystem sftp internal-sftp
         );
         write_file_as_root(SFTP_SERVICE_FILE, &service)?;
 
-        let _ = Command::new("sudo").arg("systemctl").args(["daemon-reload"]).output();
-        let _ = Command::new("sudo").arg("systemctl").args(["enable", SFTP_SERVICE]).output();
+        let _ = Command::new("sudo")
+            .arg("systemctl")
+            .args(["daemon-reload"])
+            .output();
+        let _ = Command::new("sudo")
+            .arg("systemctl")
+            .args(["enable", SFTP_SERVICE])
+            .output();
 
         let is_active = Command::new("systemctl")
             .args(["is-active", "--quiet", SFTP_SERVICE])
@@ -297,7 +324,10 @@ Subsystem sftp internal-sftp
             .map(|s| s.success())
             .unwrap_or(false);
         if is_active {
-            let _ = Command::new("sudo").arg("systemctl").args(["restart", SFTP_SERVICE]).output();
+            let _ = Command::new("sudo")
+                .arg("systemctl")
+                .args(["restart", SFTP_SERVICE])
+                .output();
         }
 
         Ok(())
@@ -342,7 +372,10 @@ Subsystem sftp internal-sftp
             new_fstab.push('\n');
         }
         if let Err(e) = write_file_as_root(FSTAB_PATH, &new_fstab) {
-            warn!("SFTP: failed to remove fstab entry for {}:{}: {}", username, share_name, e);
+            warn!(
+                "SFTP: failed to remove fstab entry for {}:{}: {}",
+                username, share_name, e
+            );
         }
     }
 
@@ -369,12 +402,18 @@ Subsystem sftp internal-sftp
                 Self::remove_bind_mount(&entry.path(), username, &share_name);
             }
         }
-        let _ = Command::new("sudo").args(["rmdir", &jail.to_string_lossy()]).output();
+        let _ = Command::new("sudo")
+            .args(["rmdir", &jail.to_string_lossy()])
+            .output();
 
         let keys_dir = paths::sftp_keys_dir().join(username);
         let keys_file = keys_dir.join("authorized_keys");
-        let _ = Command::new("sudo").args(["rm", "-f", &keys_file.to_string_lossy()]).output();
-        let _ = Command::new("sudo").args(["rmdir", &keys_dir.to_string_lossy()]).output();
+        let _ = Command::new("sudo")
+            .args(["rm", "-f", &keys_file.to_string_lossy()])
+            .output();
+        let _ = Command::new("sudo")
+            .args(["rmdir", &keys_dir.to_string_lossy()])
+            .output();
 
         let _ = Command::new("sudo")
             .args(["gpasswd", "-d", username, SFTP_GROUP])
@@ -429,7 +468,8 @@ Subsystem sftp internal-sftp
     pub async fn rebuild_jails(pool: Arc<sqlx::SqlitePool>) -> Result<(), SftpError> {
         Self::ensure_group()?;
 
-        let shares = SharesService::get_shares().map_err(|e| SftpError::CommandFailed(e.to_string()))?;
+        let shares =
+            SharesService::get_shares().map_err(|e| SftpError::CommandFailed(e.to_string()))?;
         let sftp_shares: Vec<Share> = shares
             .into_iter()
             .filter(|s| s.share_type == ShareType::Sftp && s.enabled)
@@ -438,9 +478,10 @@ Subsystem sftp internal-sftp
         let mut desired: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
 
         for share in &sftp_shares {
-            let perms = PermissionService::list_share_permissions(&share.name, "sftp", Arc::clone(&pool))
-                .await
-                .map_err(|e| SftpError::CommandFailed(e.to_string()))?;
+            let perms =
+                PermissionService::list_share_permissions(&share.name, "sftp", Arc::clone(&pool))
+                    .await
+                    .map_err(|e| SftpError::CommandFailed(e.to_string()))?;
 
             let mut usernames: HashSet<String> = HashSet::new();
             for perm in &perms {
@@ -454,13 +495,19 @@ Subsystem sftp internal-sftp
             }
 
             for username in usernames {
-                desired.entry(username).or_default().push((share.name.clone(), share.path.clone()));
+                desired
+                    .entry(username)
+                    .or_default()
+                    .push((share.name.clone(), share.path.clone()));
             }
         }
 
         for (username, grants) in &desired {
             if let Err(e) = Self::ensure_linux_user(username) {
-                warn!("SFTP: failed to ensure Linux account for '{}': {}", username, e);
+                warn!(
+                    "SFTP: failed to ensure Linux account for '{}': {}",
+                    username, e
+                );
                 continue;
             }
             let jail = paths::sftp_jails_dir().join(username);
@@ -470,8 +517,13 @@ Subsystem sftp internal-sftp
             }
             for (share_name, share_path) in grants {
                 let mountpoint = jail.join(share_name);
-                if let Err(e) = Self::ensure_bind_mount(share_path, &mountpoint, username, share_name) {
-                    warn!("SFTP: failed to bind-mount '{}' for '{}': {}", share_name, username, e);
+                if let Err(e) =
+                    Self::ensure_bind_mount(share_path, &mountpoint, username, share_name)
+                {
+                    warn!(
+                        "SFTP: failed to bind-mount '{}' for '{}': {}",
+                        share_name, username, e
+                    );
                 }
             }
         }
@@ -494,7 +546,11 @@ Subsystem sftp internal-sftp
                         for mount_entry in mounts.flatten() {
                             let share_name = mount_entry.file_name().to_string_lossy().to_string();
                             if !desired_shares.contains(&share_name) {
-                                Self::remove_bind_mount(&mount_entry.path(), &username, &share_name);
+                                Self::remove_bind_mount(
+                                    &mount_entry.path(),
+                                    &username,
+                                    &share_name,
+                                );
                             }
                         }
                     }
@@ -517,14 +573,19 @@ Subsystem sftp internal-sftp
     /// List every user with SFTP access to at least one share, for the
     /// "SFTP Users" key-management panel.
     pub async fn list_grantees(pool: Arc<sqlx::SqlitePool>) -> Result<Vec<SftpGrantee>, SftpError> {
-        let shares = SharesService::get_shares().map_err(|e| SftpError::CommandFailed(e.to_string()))?;
-        let sftp_shares: Vec<Share> = shares.into_iter().filter(|s| s.share_type == ShareType::Sftp).collect();
+        let shares =
+            SharesService::get_shares().map_err(|e| SftpError::CommandFailed(e.to_string()))?;
+        let sftp_shares: Vec<Share> = shares
+            .into_iter()
+            .filter(|s| s.share_type == ShareType::Sftp)
+            .collect();
 
         let mut by_user: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for share in &sftp_shares {
-            let perms = PermissionService::list_share_permissions(&share.name, "sftp", Arc::clone(&pool))
-                .await
-                .map_err(|e| SftpError::CommandFailed(e.to_string()))?;
+            let perms =
+                PermissionService::list_share_permissions(&share.name, "sftp", Arc::clone(&pool))
+                    .await
+                    .map_err(|e| SftpError::CommandFailed(e.to_string()))?;
 
             let mut usernames: HashSet<String> = HashSet::new();
             for perm in &perms {
@@ -537,7 +598,10 @@ Subsystem sftp internal-sftp
                 }
             }
             for username in usernames {
-                by_user.entry(username).or_default().push(share.name.clone());
+                by_user
+                    .entry(username)
+                    .or_default()
+                    .push(share.name.clone());
             }
         }
 
@@ -561,8 +625,15 @@ Subsystem sftp internal-sftp
         Ok(by_user
             .into_iter()
             .map(|(username, shares)| {
-                let has_key = paths::sftp_keys_dir().join(&username).join("authorized_keys").exists();
-                SftpGrantee { username, shares, has_key }
+                let has_key = paths::sftp_keys_dir()
+                    .join(&username)
+                    .join("authorized_keys")
+                    .exists();
+                SftpGrantee {
+                    username,
+                    shares,
+                    has_key,
+                }
             })
             .collect())
     }
@@ -615,7 +686,8 @@ mod tests {
         // The whole point of this validator: a pasted value must never be
         // able to smuggle a second authorized_keys line or a forced-command
         // option past it.
-        let injection = "ssh-ed25519 AAAAvalidlooking key\ncommand=\"rm -rf /\" ssh-ed25519 AAAAevil";
+        let injection =
+            "ssh-ed25519 AAAAvalidlooking key\ncommand=\"rm -rf /\" ssh-ed25519 AAAAevil";
         assert!(SftpJailService::validate_public_key(injection).is_err());
         let cr = "ssh-ed25519 AAAAvalidlooking\rssh-rsa AAAAother";
         assert!(SftpJailService::validate_public_key(cr).is_err());

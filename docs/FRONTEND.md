@@ -24,10 +24,10 @@ launcher (`components/desktop/HvLaunchpad.svelte`), which renders directly from
 that array and cannot show an app that isn't really there. Apps opened from the
 launcher become draggable windows (`components/desktop/WindowFrame.svelte`).
 
-Routes: `Dashboard, Storage, Raid, Explorer, Docker, Network, Restic (Backup),
+Routes (27): `Dashboard, Storage, Raid, Explorer, Docker, Network, Restic (Backup),
 Users, Quotas, Groups, Shares, CloudSync, Syncthing, Health, Chat (AI Assistant),
 Downloader, Rescue, Terminal, Journal, Settings, Account, Login, SetupWizard,
-Desktop, VPN, Widgets, Privacy, System`.
+Desktop, VPN, Widgets, VirtualMachines`.
 
 > `Quotas` (2026-09-14) is the read-only transfer-quota overview — not to be
 > confused with the filesystem disk quotas on the Users home-folder card. See
@@ -50,11 +50,13 @@ knowledge) and a **design-system governance** rule: any design change to an
 audited screen must keep its tests green (Rust integration + Playwright E2E)
 and re-capture a reference screenshot.
 
-25 of 26 routes have **zero scoped `<style>`** (converted to Tailwind-on-tokens
-+ `data-testid` hooks; specs updated). The one exception is `Desktop.svelte`
+25 of 27 routes have **zero scoped `<style>`** (converted to Tailwind-on-tokens
++ `data-testid` hooks; specs updated). The two exceptions are `Desktop.svelte`
 (the shell): its scoped `<style>` is the shared desktop-chrome CSS (dock,
 topbar, launcher, windows, monitor widgets) — `hv-*` classes, 100%
-token-driven, deliberately not converted (see `docs/guides/design-system.md` §8).
+token-driven, deliberately not converted (see `docs/guides/design-system.md` §8) —
+and `Settings.svelte`, which keeps one small token-driven loader block
+(`.set-spinner`; the save-button skin lives in `SettingsSaveButton`).
 ## Design system
 
 The product has **one** design identity — "HomeVault Appliance" (2026-09-12),
@@ -277,16 +279,22 @@ Import pattern: `import { api } from '$lib/services/api';` then
 |------|----------------|
 | `auth.ts` | current user, session token, login/logout |
 | `i18n.ts` | active locale, `t(key)` lookup, translation map |
-| `theme.ts` | active theme/accent/density |
-| `toast.ts` | toast notifications |
+| `settingsDraft.svelte.ts` | Settings draft state (per-group baseline + dirty tracking + `saveAll()`); also holds the re-hydrated theme/accent |
+| `activityStore.ts` | activity taskbar state |
+| `weatherDisplayPrefs.ts` | weather widget display preferences |
 | `notifications.ts` | notification center |
 | `windowManager.ts` | open windows, focus/minimize/maximize, sizes |
 | `monitorStore.ts` | desktop monitor-tile catalog (Resource/RAID/Security/VPN/Downloader/Syncthing/Calendar/Docker/Weather/Sessions/Health) + per-tile visibility + `refreshMs`, all persisted to the `/api/monitor-layout` blob |
 | `widgetCatalog.ts` | `WIDGET_DEFS` — the 11 monitors (icon, accent, i18n keys, visibility key + setter), shared by `Widgets.svelte` and Settings > Widgets |
 | `weatherLocation.ts` | the Weather monitor's saved city (localStorage) |
-| `widgetData.ts` | `subscribeWidget` / `createWidgetPolling` shared infra |
-| `dashboard.ts` | live metrics |
 | `datetimeStore.ts`, `search.ts`, `wallpaper.ts`, `dragState.ts`, `explorerShareIntent.ts` | misc UI state |
+
+Widget polling infra (`subscribeWidget` / `createWidgetPolling`) lives in
+`components/desktop/widgetData.ts`, not in `stores/`. Toasts go through
+`svelte-sonner` (`toast()` + the `Toast` component mounted in `App.svelte`).
+Dashboard metrics are fetched directly via `api.ts`. There is no
+`stores/theme.ts`, `stores/toast.ts`, `stores/widgetData.ts` or
+`stores/dashboard.ts`.
 
 (`desktopWidgets.ts`, `DesktopWidget.svelte`, `widgetTheme.ts`,
 `WallpaperPicker.svelte` were removed — see [Widgets](./guides/widgets.md) and
@@ -302,7 +310,7 @@ Import pattern: `import { api } from '$lib/services/api';` then
   picker for new code), `UserAvatar`,
   `Alert`, `Toggle`, `Select`, `Input` (+ `WindowHeader` from
   `desktop/`), plus `Toast` (mounted once in `App.svelte`; `toast()` from
-  `svelte-sonner`) and `Drawer` (Vaul Svelte, mobile bottom-sheet). The
+  `svelte-sonner`) and `Drawer` (bits-ui `Dialog` mobile bottom-sheet). The
   interactive ones (`Button`, `Badge`, `Spinner`, `Modal`,
   `Toggle`, `Alert`, `Input`, `Checkbox`, `Radio`) wrap the shadcn-svelte
   components in `ui/` (Melt/bits-ui) — see "shadcn-svelte + Melt UI" above.

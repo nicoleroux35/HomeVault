@@ -119,6 +119,7 @@ smart_test_starting = "Starting..."
 smart_test_running = "Test in progress: %pct%% · %min% min remaining"
 smart_test_result = "Last test: %result%"
 smart_test_not_available = "SMART not available"
+smart_test_admin_only = "Starting a self-test is available to administrators only"
 disk_usage = "Disk Usage"
 unpartitioned = "Unpartitioned"
 

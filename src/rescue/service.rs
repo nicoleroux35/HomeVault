@@ -143,21 +143,28 @@ impl RescueService {
         let source_path = SecurityValidator::validate_block_device(source)?;
         let dest_path = SecurityValidator::validate_block_device(destination)?;
         let logfile = match &options.logfile {
-            Some(lf) => SecurityValidator::validate_log_path(lf)?.to_string_lossy().into_owned(),
+            Some(lf) => SecurityValidator::validate_log_path(lf)?
+                .to_string_lossy()
+                .into_owned(),
             None => "/tmp/ddrescue.log".to_string(),
         };
 
-        ProgressEmitter::progress(job_id, 0.0, &format!("Starting ddrescue: {} -> {}", source, destination));
+        ProgressEmitter::progress(
+            job_id,
+            0.0,
+            &format!("Starting ddrescue: {} -> {}", source, destination),
+        );
 
-        let mut args: Vec<String> = Vec::new();
-        args.push("-v".to_string());
         // destination is always a real block device (validated above, never
         // a regular file) — ddrescue refuses to write to one without
         // --force ("Output file exists and is not a regular file"), so
         // every device-to-device clone would otherwise fail immediately.
-        args.push("--force".to_string());
-        args.push("-b".to_string());
-        args.push(options.block_size.unwrap_or(512).to_string());
+        let mut args: Vec<String> = vec![
+            "-v".to_string(),
+            "--force".to_string(),
+            "-b".to_string(),
+            options.block_size.unwrap_or(512).to_string(),
+        ];
 
         if options.direct_io.unwrap_or(false) {
             args.push("--direct".to_string());
@@ -340,7 +347,10 @@ impl RescueService {
         }
     }
 
-    pub async fn testdisk_analyze(device: &str, _options: &TestDiskOptions) -> Result<TestDiskResult, RescueError> {
+    pub async fn testdisk_analyze(
+        device: &str,
+        _options: &TestDiskOptions,
+    ) -> Result<TestDiskResult, RescueError> {
         let device_path = SecurityValidator::validate_block_device(device)?;
 
         // `sudo`-wrapped: TestDisk opens the raw device (root:disk 0660).
@@ -403,7 +413,12 @@ impl RescueService {
                 };
                 partitions.push(PartitionEntry {
                     partition: toks[0].to_string(),
-                    size: format!("{} - {} ({} sectors)", toks[n - 3], toks[n - 2], toks[n - 1]),
+                    size: format!(
+                        "{} - {} ({} sectors)",
+                        toks[n - 3],
+                        toks[n - 2],
+                        toks[n - 1]
+                    ),
                     filesystem: toks[2..n - 3].join(" "),
                     status: status.to_string(),
                 });
@@ -413,7 +428,8 @@ impl RescueService {
                 // non-empty, is that partition's filesystem detail line.
                 let detail = line.trim();
                 if line.starts_with(char::is_whitespace) && !detail.is_empty() {
-                    partitions[idx].filesystem = format!("{} / {}", partitions[idx].filesystem, detail);
+                    partitions[idx].filesystem =
+                        format!("{} / {}", partitions[idx].filesystem, detail);
                 }
             }
         }
@@ -421,7 +437,10 @@ impl RescueService {
         partitions
     }
 
-    pub async fn testdisk_rebuild(device: &str, _options: &TestDiskOptions) -> Result<String, RescueError> {
+    pub async fn testdisk_rebuild(
+        device: &str,
+        _options: &TestDiskOptions,
+    ) -> Result<String, RescueError> {
         // Rebuilding a partition table is a real write to the raw disk — must
         // never run against an unvalidated or protected device.
         let device_path = SecurityValidator::validate_block_device(device)?;
@@ -465,8 +484,7 @@ impl RescueService {
             Ok(res) => res?,
             Err(_) => {
                 return Err(RescueError::Parse(
-                    "TestDisk scan did not finish within 5 minutes and was stopped."
-                        .to_string(),
+                    "TestDisk scan did not finish within 5 minutes and was stopped.".to_string(),
                 ));
             }
         };
@@ -515,7 +533,11 @@ impl RescueService {
         let output_path = SecurityValidator::validate_output_path(output_dir)?;
         tokio::fs::create_dir_all(&output_path).await?;
 
-        ProgressEmitter::progress(job_id, 0.0, &format!("Starting PhotoRec on {} -> {}", device, output_dir));
+        ProgressEmitter::progress(
+            job_id,
+            0.0,
+            &format!("Starting PhotoRec on {} -> {}", device, output_dir),
+        );
 
         // PhotoRec has no documented non-interactive mode in `--help`/`man` —
         // without /cmd it launches its full ncurses UI and just sits there
@@ -557,13 +579,14 @@ impl RescueService {
         }
         cmd_parts.push("search".to_string());
 
-        let mut args: Vec<String> = Vec::new();
-        args.push("/log".to_string());
-        args.push("/d".to_string());
-        args.push(output_path.to_string_lossy().into_owned());
-        args.push("/cmd".to_string());
-        args.push(device_path.to_string_lossy().into_owned());
-        args.push(cmd_parts.join(","));
+        let args: Vec<String> = vec![
+            "/log".to_string(),
+            "/d".to_string(),
+            output_path.to_string_lossy().into_owned(),
+            "/cmd".to_string(),
+            device_path.to_string_lossy().into_owned(),
+            cmd_parts.join(","),
+        ];
 
         // `sudo`-wrapped: PhotoRec reads the raw device. Recovered files land
         // in `output_path` owned by root — the reader below
@@ -622,7 +645,10 @@ impl RescueService {
             // at an empty folder. Find the actual one it just created.
             let result_dir = Self::find_latest_photorec_result_dir(&output_path)
                 .unwrap_or_else(|| output_dir.to_string());
-            ProgressEmitter::complete(job_id, &format!("PhotoRec recovery completed. Files saved to {}", result_dir));
+            ProgressEmitter::complete(
+                job_id,
+                &format!("PhotoRec recovery completed. Files saved to {}", result_dir),
+            );
         } else {
             ProgressEmitter::fail(job_id, "PhotoRec recovery failed");
             return Err(RescueError::Parse("PhotoRec recovery failed".to_string()));
@@ -681,11 +707,17 @@ impl RescueService {
         // mdadm requires root even for a read-only --detail (confirmed live:
         // "must be super-user to perform this action" otherwise) — delegated
         // to root via the sudoers NOPASSWD rule, same as ufw/wg/openvpn.
-        let output = Command::new("sudo").args(["mdadm", "--detail", &device]).output().await?;
+        let output = Command::new("sudo")
+            .args(["mdadm", "--detail", &device])
+            .output()
+            .await?;
         let stdout = String::from_utf8_lossy(&output.stdout);
 
         if !output.status.success() {
-            return Err(RescueError::Parse(format!("mdadm detail failed for {}", device)));
+            return Err(RescueError::Parse(format!(
+                "mdadm detail failed for {}",
+                device
+            )));
         }
 
         let mut diag = MdadmDiagnostic {
@@ -781,13 +813,20 @@ impl RescueService {
         }
 
         // Same root requirement as mdadm_diagnose above.
-        let output = Command::new("sudo").arg("mdadm").args(&args).output().await?;
+        let output = Command::new("sudo")
+            .arg("mdadm")
+            .args(&args)
+            .output()
+            .await?;
 
         if output.status.success() {
             Ok(format!("Repair started for {}", device))
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(RescueError::Parse(format!("Failed to repair {}: {}", device, stderr)))
+            Err(RescueError::Parse(format!(
+                "Failed to repair {}: {}",
+                device, stderr
+            )))
         }
     }
 }
@@ -893,12 +932,19 @@ Disk /dev/loop0 - 134 MB / 128 MiB - 262144 sectors
      ext4 blocksize=4096 Large_file Sparse_SB
 ";
         let parts = RescueService::parse_testdisk_output(out);
-        assert_eq!(parts.len(), 1, "exactly one partition, not a bogus second from the detail line");
+        assert_eq!(
+            parts.len(),
+            1,
+            "exactly one partition, not a bogus second from the detail line"
+        );
         assert_eq!(parts[0].partition, "1");
         assert_eq!(parts[0].status, "Primary");
         assert_eq!(parts[0].size, "2048 - 262143 (260096 sectors)");
         assert!(parts[0].filesystem.starts_with("Linux"));
-        assert!(parts[0].filesystem.contains("ext4"), "fs detail line folded in");
+        assert!(
+            parts[0].filesystem.contains("ext4"),
+            "fs detail line folded in"
+        );
     }
 
     #[test]

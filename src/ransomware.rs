@@ -27,8 +27,10 @@ pub async fn place_honeypot(dir: &Path) -> Result<String, String> {
     let path = dir.join(&filename);
     let name = filename.clone();
     tokio::task::spawn_blocking(move || {
-        std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create '{}': {}", dir.display(), e))?;
-        std::fs::write(&path, b"placeholder").map_err(|e| format!("Failed to write honeypot: {}", e))
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("Failed to create '{}': {}", dir.display(), e))?;
+        std::fs::write(&path, b"placeholder")
+            .map_err(|e| format!("Failed to write honeypot: {}", e))
     })
     .await
     .map_err(|e| format!("place_honeypot task panicked: {}", e))??;
@@ -61,12 +63,25 @@ pub async fn record_event(
     let response_taken = if settings.auto_response == "alert_only" {
         "alert_only".to_string()
     } else {
-        execute_response(state, &repo, protected_path_id, &settings.auto_response, suspected_username).await
+        execute_response(
+            state,
+            &repo,
+            protected_path_id,
+            &settings.auto_response,
+            suspected_username,
+        )
+        .await
     };
 
-    repo.record_event(protected_path_id, event_type, detail, suspected_username, &response_taken)
-        .await
-        .map_err(|e| e.to_string())?;
+    repo.record_event(
+        protected_path_id,
+        event_type,
+        detail,
+        suspected_username,
+        &response_taken,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     let notif_repo = NotificationRepository::new(state.db.pool());
     let title = match event_type {
@@ -76,8 +91,18 @@ pub async fn record_event(
         "mass_delete" => "Ransomware guard: mass file deletion detected",
         _ => "Ransomware guard: suspicious activity detected",
     };
-    let message = detail.map(|d| d.to_string()).unwrap_or_else(|| "Suspicious file activity detected.".to_string());
-    let _ = notif_repo.create(title, &message, "critical", "ransomware", "ransomware_watcher").await;
+    let message = detail
+        .map(|d| d.to_string())
+        .unwrap_or_else(|| "Suspicious file activity detected.".to_string());
+    let _ = notif_repo
+        .create(
+            title,
+            &message,
+            "critical",
+            "ransomware",
+            "ransomware_watcher",
+        )
+        .await;
 
     Ok(())
 }
@@ -97,7 +122,9 @@ async fn execute_response(
             let Ok(Some(protected)) = repo.get_protected_path(path_id).await else {
                 return "alert_only".to_string();
             };
-            let (Some(share_name), Some(share_type_str)) = (protected.share_name, protected.share_type) else {
+            let (Some(share_name), Some(share_type_str)) =
+                (protected.share_name, protected.share_type)
+            else {
                 return "alert_only".to_string();
             };
             let Some(share_type) = ShareType::parse(&share_type_str) else {
@@ -106,7 +133,11 @@ async fn execute_response(
             match SharesService::set_share_enabled(&share_name, share_type, false) {
                 Ok(()) => "disable_share".to_string(),
                 Err(e) => {
-                    tracing::warn!("Ransomware guard: failed to disable share '{}': {}", share_name, e);
+                    tracing::warn!(
+                        "Ransomware guard: failed to disable share '{}': {}",
+                        share_name,
+                        e
+                    );
                     "alert_only".to_string()
                 }
             }
@@ -118,7 +149,11 @@ async fn execute_response(
             match state.auth.set_user_locked(username, true).await {
                 Ok(()) => "lock_account".to_string(),
                 Err(e) => {
-                    tracing::warn!("Ransomware guard: failed to lock account '{}': {}", username, e);
+                    tracing::warn!(
+                        "Ransomware guard: failed to lock account '{}': {}",
+                        username,
+                        e
+                    );
                     "alert_only".to_string()
                 }
             }

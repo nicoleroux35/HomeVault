@@ -9,31 +9,34 @@ pinned; the invariants below still bind.
 
 ## Backend
 
-Handlers in `src/handlers/storage.rs` (non-RAID parts) and
-`src/handlers/snapshots.rs`. Disk enumeration in `src/disk.rs`
-(`DiskService::list_partitions` uses `lsblk -l`). Pool scanning/creation in
-`src/pools.rs` (`PoolService`); snapshot CRUD in `src/snapshots.rs`
-(`SnapshotService`).
+Handlers in `src/handlers/storage.rs` (non-RAID parts). Disk enumeration in
+`src/disk.rs` (`DiskService::list_partitions` uses `lsblk -l`). Pool
+scanning/creation in `src/pools.rs` (`PoolService`); snapshot logic in
+`src/snapshots.rs` (`SnapshotService`, consumed by the restic flows — the
+standalone `/snapshots/*` HTTP endpoints were removed, see
+[Snapshots](./snapshots.md)).
 
 | Endpoint | Auth | Notes |
 |----------|------|-------|
 | `GET /storage/disks` | auth | physical disks |
 | `GET /storage/removable` | auth | removable media |
 | `GET /storage/partitions` | auth | `lsblk -l` parse |
-| `GET /storage/pools` | auth | pools (ZFS, Btrfs only — `PoolType::Mdadm` is filtered out, see RAID/Storage separation below) |
-| `POST /storage/pools` | admin | create an advanced pool (below) |
-| `GET /storage/pools/{name}` | auth | pool detail |
-| `DELETE /storage/pools/{name}?pool_type=…` | admin | delete an advanced pool |
-| `GET /storage/pools/{name}/devices` | auth | member devices |
-| `GET /storage/pools/{name}/scrub/{pool_type}` | auth | scrub status |
-| `POST /storage/pools/{name}/scrub/{pool_type}` | admin | start a scrub |
-| `GET /storage/available-home-disks` | admin | home-folder disk picker (with free/total bytes) |
+| `GET /storage/available-home-disks` | auth | home-folder disk picker (with free/total bytes) |
 | `GET /storage/virtual-disks` | auth | **all** virtual disks — mdadm + ZFS + Btrfs (`PoolService::scan_pools`, mdadm `/dev/md/x` normalised to `x`) |
 | `DELETE /storage/virtual-disks/{name}` | admin | destroy — dispatches: mdadm → `DiskService::delete_raid`, ZFS/Btrfs → `PoolService::delete_pool` |
 | `POST /storage/virtual-disks/{name}/scrub` | admin | verify — ZFS/Btrfs → `PoolService::start_scrub`; mdadm → `echo check > /sys/block/mdX/md/sync_action` |
+| `GET /storage/disks/{name}/smart/capabilities` | auth | whether `smartctl` supports this disk |
+| `GET /storage/disks/{name}/smart/test` | auth | running SMART self-test status |
+| `POST /storage/disks/{name}/smart/test` | admin | start a SMART self-test — `test_type` whitelisted to `short`/`long`/`conveyance` in `DiskService::start_smart_test`; admin-only since it runs a real `smartctl -t` on the host (records an event-log entry). Non-admins see an explanatory message instead of the control |
+
+> The former `GET/POST /storage/pools*` endpoints were **removed** in the
+> 2026-09-07 RAID↔Storage re-scope (creation lives in the RAID app,
+> management in `virtual-disks` above). `PoolService` is still reached through
+> the virtual-disk and cache (`GET /cache/pools`) paths.
 
 Snapshots (separate guide: [Snapshots](./snapshots.md)):
-`GET/POST /snapshots/{pool}`, `DELETE/POST /snapshots/{pool}/{name}/rollback`.
+`GET /api/explorer/snapshots?path=`, restic snapshot endpoints, VM snapshot
+endpoints.
 
 Disk encryption (separate guide: [Disk Encryption](./encryption.md)):
 `GET /encryption/volumes`, `/encryption/available-devices`;
@@ -53,10 +56,10 @@ The split was **reversed**: the RAID app is creation-only, and Storage's
   `PoolType::Mdadm`** — the new handlers just never call them for mdadm. So
   `pools.rs` and its tests are unchanged; the reversal lives entirely in
   `storage.rs` + `Storage.svelte`.
-- The legacy `GET /storage/pools` still filters mdadm out (ZFS/Btrfs only);
-  `GET /storage/virtual-disks` is the "everything" view.
-- The **Cache tier**'s `GET /cache/pools` and `PoolService::scan_pools()`
-  return mdadm pools too — designating an existing array as the cache backing
+- The `virtual-disks` handlers never call the mdadm-rejecting `PoolService`
+  functions for mdadm — dispatch happens at the handler level. The **Cache
+  tier**'s `GET /cache/pools` and `PoolService::scan_pools()` return mdadm
+  pools too — designating an existing array as the cache backing
   disk is "use existing storage." See [Disk Cache Tier](./cache.md).
 
 ### Live-test fixes (2026-09-07)
@@ -71,9 +74,11 @@ as bytes; `get_zfs_mount_point` used the wrong `zpool get` property. New
 
 ## Advanced pools
 
-The Pools tab has a "Create advanced pool" flow for native ZFS or Btrfs pools
-(with snapshots, checksums, and scrub), independent of the RAID Manager's
-mdadm-only flow (which stays untouched — see [RAID](./raid.md)):
+Native ZFS/Btrfs pool creation (with snapshots, checksums, and scrub) lives
+in `PoolService` and is reached through the RAID creation flow and the
+virtual-disk/cache paths — the former Pools tab and its `/storage/pools*`
+endpoints were removed in the 2026-09-07 re-scope. The service mechanics,
+still binding:
 
 - `PoolService::create_pool(name, pool_type, raid_profile, devices, mount_point)`
   in `src/pools.rs`. Profiles: ZFS `stripe|mirror|raidz1|raidz2|raidz3`, Btrfs

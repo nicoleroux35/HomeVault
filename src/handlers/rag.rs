@@ -6,10 +6,10 @@
 //! - POST /api/rag/search          — semantic search (admin only, for debugging)
 //! - GET  /api/rag/documents       — list indexed documents (admin only)
 
-use axum::{extract::State, Json};
-use serde::{Deserialize, Serialize};
 use crate::handlers::AppState;
 use axum::http::HeaderMap;
+use axum::{extract::State, Json};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 // ── Request/Response types ───────────────────────────────────────────
@@ -187,7 +187,7 @@ pub async fn handle_rag_search(
     }
 
     // Generate embedding for the query
-    let embeddings = match crate::rag::generate_embeddings(&[req.query.clone()]).await {
+    let embeddings = match crate::rag::generate_embeddings(std::slice::from_ref(&req.query)).await {
         Ok(e) => e,
         Err(e) => {
             return Json(RagSearchResponse {

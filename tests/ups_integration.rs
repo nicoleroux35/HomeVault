@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the **UPS device configuration** endpoints —
 //! `crate::handlers::ups`:
 //!
@@ -17,7 +20,10 @@
 //! Run:
 //!   cargo test --test ups_integration
 
-use axum::{routing::{get, post}, Router};
+use axum::{
+    routing::{get, post},
+    Router,
+};
 use http::{Method, Request, StatusCode};
 use serde_json::{json, Value};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
@@ -78,7 +84,10 @@ fn ups_router(state: Arc<AppState>) -> Router {
             "/api/ups/config",
             get(handle_ups_config_list).post(handle_ups_config_save),
         )
-        .route("/api/ups/config/{name}", axum::routing::delete(handle_ups_config_delete))
+        .route(
+            "/api/ups/config/{name}",
+            axum::routing::delete(handle_ups_config_delete),
+        )
         .with_state(state)
 }
 
@@ -105,7 +114,10 @@ async fn login(router: &mut Router, username: &str) -> String {
         Some(json!({"username": username, "password": "Password123!"})),
     )
     .await;
-    body["data"]["token"].as_str().expect("login token").to_string()
+    body["data"]["token"]
+        .as_str()
+        .expect("login token")
+        .to_string()
 }
 
 async fn send(
@@ -167,7 +179,14 @@ async fn test_ups_config_rejects_invalid_session() {
     let (state, _tmp, _guard) = setup_state().await;
     let mut router = ups_router(state.clone());
 
-    let (status, _) = send(&mut router, Method::GET, "/api/ups/config", Some("bogus"), None).await;
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/ups/config",
+        Some("bogus"),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
@@ -178,7 +197,14 @@ async fn test_ups_config_requires_admin() {
     let mut router = ups_router(state.clone());
     let token = login(&mut router, "regular").await;
 
-    let (status, _) = send(&mut router, Method::GET, "/api/ups/config", Some(&token), None).await;
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/ups/config",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
     let (status, _) = send(
@@ -211,7 +237,14 @@ async fn test_ups_config_admin_can_list() {
 
     // Read-only: just verifies the route + guard + JSON shape. The underlying
     // file lives on the real host (`/etc/nut/ups.conf`).
-    let (status, body) = send(&mut router, Method::GET, "/api/ups/config", Some(&token), None).await;
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/ups/config",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], true);
     assert!(body["data"].is_array());

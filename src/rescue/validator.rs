@@ -8,13 +8,13 @@ pub struct SecurityValidator;
 impl SecurityValidator {
     /// List of system devices that should never be modified through rescue operations
     const PROTECTED_DEVICES: &'static [&'static str] = &[
-        "/dev/sda",     // Common primary boot device
+        "/dev/sda", // Common primary boot device
         "/dev/sda1",
         "/dev/sda2",
         "/dev/nvme0n1", // Common NVMe boot device
         "/dev/nvme0n1p1",
         "/dev/nvme0n1p2",
-        "/dev/vda",     // Common VM boot device
+        "/dev/vda", // Common VM boot device
         "/dev/vda1",
     ];
 
@@ -66,7 +66,8 @@ impl SecurityValidator {
             }
             name.to_string()
         } else {
-            name.trim_end_matches(|c: char| c.is_ascii_digit()).to_string()
+            name.trim_end_matches(|c: char| c.is_ascii_digit())
+                .to_string()
         }
     }
 
@@ -245,13 +246,25 @@ mod partition_suffix_tests {
 
     #[test]
     fn strips_nvme_and_mmcblk_partition_numbers_without_mangling_bare_disks() {
-        assert_eq!(SecurityValidator::strip_partition_suffix("nvme0n1p2"), "nvme0n1");
+        assert_eq!(
+            SecurityValidator::strip_partition_suffix("nvme0n1p2"),
+            "nvme0n1"
+        );
         // A bare namespace device (no partition) must be left untouched —
         // naively trimming trailing digits would wrongly turn this into
         // "nvme0n", which doesn't exist.
-        assert_eq!(SecurityValidator::strip_partition_suffix("nvme0n1"), "nvme0n1");
-        assert_eq!(SecurityValidator::strip_partition_suffix("mmcblk0p1"), "mmcblk0");
-        assert_eq!(SecurityValidator::strip_partition_suffix("mmcblk0"), "mmcblk0");
+        assert_eq!(
+            SecurityValidator::strip_partition_suffix("nvme0n1"),
+            "nvme0n1"
+        );
+        assert_eq!(
+            SecurityValidator::strip_partition_suffix("mmcblk0p1"),
+            "mmcblk0"
+        );
+        assert_eq!(
+            SecurityValidator::strip_partition_suffix("mmcblk0"),
+            "mmcblk0"
+        );
     }
 }
 
@@ -297,6 +310,9 @@ mod tests {
     fn test_validate_output_path_unauthorized() {
         let result = SecurityValidator::validate_output_path("/root/sensitive.log");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("must be in one of"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("must be in one of"));
     }
 }

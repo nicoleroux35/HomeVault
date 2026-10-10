@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the Account-related API endpoints:
 //!
 //!   - PUT  /api/users/{username}          (profile update — self)
@@ -25,7 +28,7 @@ use homevault::auth::AuthService;
 use homevault::config::PathGuard;
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{
-    auth::{handle_get_current_user, handle_login, handle_2fa_setup},
+    auth::{handle_2fa_setup, handle_get_current_user, handle_login},
     avatars::handle_update_my_avatar,
     users::{handle_user_update, handle_user_update_password},
     AppState,
@@ -46,13 +49,15 @@ async fn setup_db() -> Database {
     let db = Database::new("sqlite::memory:")
         .await
         .expect("Failed to create in-memory database");
-    db.run_migrations()
-        .await
-        .expect("Failed to run migrations");
+    db.run_migrations().await.expect("Failed to run migrations");
     db
 }
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("Failed to create temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -101,10 +106,7 @@ fn account_router(state: Arc<AppState>) -> Router {
             "/api/auth/me/avatar",
             axum::routing::post(handle_update_my_avatar),
         )
-        .route(
-            "/api/auth/2fa/setup",
-            axum::routing::post(handle_2fa_setup),
-        )
+        .route("/api/auth/2fa/setup", axum::routing::post(handle_2fa_setup))
         .with_state(state)
 }
 
@@ -248,18 +250,12 @@ async fn get_json_with_token(router: &mut Router, path: &str, token: &str) -> (S
 /// Decode base32 per RFC 4648 (same table as auth/service.rs).
 fn decode_base32(data: &str) -> Vec<u8> {
     const DECODE_TABLE: [i8; 128] = [
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, 26, 27, 28, 29, 30, 31, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 1, 2, 3, 4,
+        5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
         -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-        -1, -1, -1, -1, -1, -1, 26, 27, 28, 29, 30,
-        31, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0,
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
-        12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
-        23, 24, 25, -1, -1, -1, -1, -1, -1, -1, -1,
-        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-        -1, -1, -1, -1, -1, -1, -1,
     ];
 
     let data_upper = data.to_uppercase();
@@ -381,7 +377,10 @@ async fn test_update_other_user_denied_for_non_admin() {
 
     // Non-admin cannot update another user — handler returns 200 with success:false
     if status == StatusCode::OK {
-        assert_eq!(body["success"], false, "Non-admin must not update another user");
+        assert_eq!(
+            body["success"], false,
+            "Non-admin must not update another user"
+        );
     } else {
         assert!(status.is_client_error());
     }
@@ -475,7 +474,10 @@ async fn test_password_change_missing_current_password() {
 
     // Non-admin must provide current_password
     if status == StatusCode::OK {
-        assert_eq!(body["success"], false, "Missing current_password should fail");
+        assert_eq!(
+            body["success"], false,
+            "Missing current_password should fail"
+        );
     } else {
         assert!(status.is_client_error());
     }
@@ -589,13 +591,8 @@ async fn test_avatar_regeneration_no_seed_generates_random() {
     let mut app = account_router(state);
     let token = login(&mut app, "ivan", "Passw0rd!").await;
 
-    let (status, body) = post_json_with_token(
-        &mut app,
-        "/api/auth/me/avatar",
-        json!({}),
-        &token,
-    )
-    .await;
+    let (status, body) =
+        post_json_with_token(&mut app, "/api/auth/me/avatar", json!({}), &token).await;
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], true);
@@ -609,13 +606,8 @@ async fn test_avatar_no_token() {
     create_test_user(&state, "judy", "Passw0rd!", 1).await;
     let mut app = account_router(state);
 
-    let (status, body) = post_json_with_token(
-        &mut app,
-        "/api/auth/me/avatar",
-        json!({"seed": "test"}),
-        "",
-    )
-    .await;
+    let (status, body) =
+        post_json_with_token(&mut app, "/api/auth/me/avatar", json!({"seed": "test"}), "").await;
 
     if status == StatusCode::OK {
         assert_eq!(body["success"], false, "Missing token should fail");
@@ -755,7 +747,10 @@ async fn test_2fa_verify_missing_password() {
     .await;
 
     if status == StatusCode::OK {
-        assert_eq!(body["success"], false, "Missing password should be rejected");
+        assert_eq!(
+            body["success"], false,
+            "Missing password should be rejected"
+        );
     } else {
         assert!(status.is_client_error());
     }
@@ -907,7 +902,10 @@ async fn test_2fa_disable_wrong_password() {
     .await;
 
     if status == StatusCode::OK {
-        assert_eq!(body["success"], false, "Wrong password should prevent disable");
+        assert_eq!(
+            body["success"], false,
+            "Wrong password should prevent disable"
+        );
     } else {
         assert!(status.is_client_error());
     }
@@ -959,7 +957,10 @@ async fn test_2fa_disable_missing_password() {
     .await;
 
     if status == StatusCode::OK {
-        assert_eq!(body["success"], false, "Missing password should prevent disable");
+        assert_eq!(
+            body["success"], false,
+            "Missing password should prevent disable"
+        );
     } else {
         assert!(status.is_client_error());
     }
@@ -1024,7 +1025,10 @@ async fn test_2fa_verify_without_generate() {
     .await;
 
     if status == StatusCode::OK {
-        assert_eq!(body["success"], false, "Verify without generate should fail");
+        assert_eq!(
+            body["success"], false,
+            "Verify without generate should fail"
+        );
     } else {
         assert!(status.is_client_error());
     }

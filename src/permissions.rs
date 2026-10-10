@@ -82,9 +82,22 @@ impl PermissionService {
     pub fn validate_permission_string(perm: &str) -> bool {
         matches!(
             perm.to_lowercase().as_str(),
-            "r" | "read" | "w" | "write" | "x" | "execute" |
-            "rw" | "wr" | "readwrite" | "rx" | "xr" |
-            "wx" | "xw" | "rwx" | "rxw" | "all" | "full"
+            "r" | "read"
+                | "w"
+                | "write"
+                | "x"
+                | "execute"
+                | "rw"
+                | "wr"
+                | "readwrite"
+                | "rx"
+                | "xr"
+                | "wx"
+                | "xw"
+                | "rwx"
+                | "rxw"
+                | "all"
+                | "full"
         )
     }
 
@@ -201,9 +214,12 @@ impl PermissionService {
         pool: Arc<sqlx::SqlitePool>,
     ) -> Result<(), PermissionError> {
         Self::revoke_all_permissions(share_path)?;
-        Self::apply_share_permissions(share_name, share_type, share_path, pool)
-            .await?;
-        tracing::info!("Synced permissions for share '{}' ({})", share_name, share_type);
+        Self::apply_share_permissions(share_name, share_type, share_path, pool).await?;
+        tracing::info!(
+            "Synced permissions for share '{}' ({})",
+            share_name,
+            share_type
+        );
         Ok(())
     }
 
@@ -242,28 +258,31 @@ impl PermissionService {
             match user_repo.find_by_username(grantee_name).await {
                 Ok(Some(_)) => {}
                 Ok(None) => {
-                    return Err(PermissionError::NotFound(
-                        format!("User '{}' not found", grantee_name)
-                    ));
+                    return Err(PermissionError::NotFound(format!(
+                        "User '{}' not found",
+                        grantee_name
+                    )));
                 }
                 Err(e) => {
                     return Err(PermissionError::Share(format!(
-                        "Failed to verify user existence: {}", e
+                        "Failed to verify user existence: {}",
+                        e
                     )));
                 }
             }
-        } else if grantee_type == "group"
-            && GroupService::get_group(grantee_name).is_err() {
-                return Err(PermissionError::NotFound(
-                    format!("Group '{}' not found", grantee_name)
-                ));
-            }
+        } else if grantee_type == "group" && GroupService::get_group(grantee_name).is_err() {
+            return Err(PermissionError::NotFound(format!(
+                "Group '{}' not found",
+                grantee_name
+            )));
+        }
 
         // Validate share path exists on disk
         if !std::path::Path::new(share_path).exists() {
-            return Err(PermissionError::NotFound(
-                format!("Share path '{}' does not exist", share_path)
-            ));
+            return Err(PermissionError::NotFound(format!(
+                "Share path '{}' does not exist",
+                share_path
+            )));
         }
 
         // Apply the ACL to the real filesystem path *before* persisting to the
@@ -400,7 +419,11 @@ mod tests {
     fn test_parse_permission_read_variants() {
         for s in ["r", "R", "read", "READ"] {
             let p = PermissionService::parse_permission(s).unwrap();
-            assert_eq!((p.read, p.write, p.execute), (true, false, false), "input {s:?}");
+            assert_eq!(
+                (p.read, p.write, p.execute),
+                (true, false, false),
+                "input {s:?}"
+            );
         }
     }
 
@@ -408,7 +431,11 @@ mod tests {
     fn test_parse_permission_write_variants() {
         for s in ["w", "write"] {
             let p = PermissionService::parse_permission(s).unwrap();
-            assert_eq!((p.read, p.write, p.execute), (false, true, false), "input {s:?}");
+            assert_eq!(
+                (p.read, p.write, p.execute),
+                (false, true, false),
+                "input {s:?}"
+            );
         }
     }
 
@@ -416,7 +443,11 @@ mod tests {
     fn test_parse_permission_execute_variants() {
         for s in ["x", "execute"] {
             let p = PermissionService::parse_permission(s).unwrap();
-            assert_eq!((p.read, p.write, p.execute), (false, false, true), "input {s:?}");
+            assert_eq!(
+                (p.read, p.write, p.execute),
+                (false, false, true),
+                "input {s:?}"
+            );
         }
     }
 
@@ -424,7 +455,11 @@ mod tests {
     fn test_parse_permission_readwrite_variants() {
         for s in ["rw", "wr", "readwrite", "RW"] {
             let p = PermissionService::parse_permission(s).unwrap();
-            assert_eq!((p.read, p.write, p.execute), (true, true, false), "input {s:?}");
+            assert_eq!(
+                (p.read, p.write, p.execute),
+                (true, true, false),
+                "input {s:?}"
+            );
         }
     }
 
@@ -432,7 +467,11 @@ mod tests {
     fn test_parse_permission_full_variants() {
         for s in ["rwx", "rxw", "all", "full", "RWX"] {
             let p = PermissionService::parse_permission(s).unwrap();
-            assert_eq!((p.read, p.write, p.execute), (true, true, true), "input {s:?}");
+            assert_eq!(
+                (p.read, p.write, p.execute),
+                (true, true, true),
+                "input {s:?}"
+            );
         }
     }
 
@@ -462,7 +501,11 @@ mod tests {
         for read in [false, true] {
             for write in [false, true] {
                 for execute in [false, true] {
-                    let perms = AclPermissions { read, write, execute };
+                    let perms = AclPermissions {
+                        read,
+                        write,
+                        execute,
+                    };
                     let s = PermissionService::permission_to_string(&perms);
                     if !read && !write && !execute {
                         assert_eq!(s, "");
@@ -485,13 +528,36 @@ mod tests {
         // broader — pin down exactly what it accepts so a future edit that
         // narrows or widens it is caught.
         for ok in [
-            "r", "read", "w", "write", "x", "execute", "rw", "wr", "readwrite", "rx", "xr", "wx",
-            "xw", "rwx", "rxw", "all", "full", "RWX", "Read",
+            "r",
+            "read",
+            "w",
+            "write",
+            "x",
+            "execute",
+            "rw",
+            "wr",
+            "readwrite",
+            "rx",
+            "xr",
+            "wx",
+            "xw",
+            "rwx",
+            "rxw",
+            "all",
+            "full",
+            "RWX",
+            "Read",
         ] {
-            assert!(PermissionService::validate_permission_string(ok), "{ok:?} should be valid");
+            assert!(
+                PermissionService::validate_permission_string(ok),
+                "{ok:?} should be valid"
+            );
         }
         for bad in ["", " ", "rwxx", "z", "0755", "r-x", "rwt"] {
-            assert!(!PermissionService::validate_permission_string(bad), "{bad:?} should be invalid");
+            assert!(
+                !PermissionService::validate_permission_string(bad),
+                "{bad:?} should be invalid"
+            );
         }
     }
 

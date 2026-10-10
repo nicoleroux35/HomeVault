@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the Terminal (native PTY) HTTP surface —
 //! `crate::handlers::terminal_pty::create_terminal_router`, nested under
 //! `/api/terminal` in production:
@@ -41,7 +44,11 @@ type Req = Request<axum::body::Body>;
 
 static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -329,7 +336,14 @@ async fn test_close_an_unknown_tab_is_a_clean_success() {
 async fn test_ws_is_a_websocket_endpoint_and_refuses_a_plain_get() {
     let (state, _tmp, _g) = setup_state().await;
     let mut router = terminal_router(state);
-    let (status, _) = send(&mut router, Method::GET, "/api/terminal/ws?ticket=x", &[], None).await;
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/terminal/ws?ticket=x",
+        &[],
+        None,
+    )
+    .await;
     // Not 200 / not 101 — the extractor turns a non-upgrade request away.
     assert!(status.is_client_error(), "got {status}");
 }

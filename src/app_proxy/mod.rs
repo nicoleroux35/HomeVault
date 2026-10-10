@@ -185,9 +185,8 @@ impl AppProxyManager {
     }
 
     fn pick_port(&self, preferred: Option<u16>, in_use: &[u16]) -> Option<u16> {
-        let free = |p: u16| {
-            !in_use.contains(&p) && crate::docker::DockerService::check_port(p).available
-        };
+        let free =
+            |p: u16| !in_use.contains(&p) && crate::docker::DockerService::check_port(p).available;
         if let Some(p) = preferred {
             if (PROXY_PORT_START..=PROXY_PORT_END).contains(&p) && free(p) {
                 return Some(p);

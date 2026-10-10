@@ -131,10 +131,15 @@ async fn pam_login_succeeds_for_a_real_linux_account() {
     // Correct password authenticates via the PAM fallback (user is not in the
     // DB). Regression guard for fix #1 (the PyPAM exit-code inversion).
     let ok = auth.authenticate(user, pass, "127.0.0.1", None).await;
-    assert!(matches!(ok, Ok(true)), "PAM auth should succeed, got {ok:?}");
+    assert!(
+        matches!(ok, Ok(true)),
+        "PAM auth should succeed, got {ok:?}"
+    );
 
     // Wrong password fails.
-    let bad = auth.authenticate(user, "totally-wrong", "127.0.0.1", None).await;
+    let bad = auth
+        .authenticate(user, "totally-wrong", "127.0.0.1", None)
+        .await;
     assert!(bad.is_err(), "wrong password must fail, got {bad:?}");
 
     delete_linux_user(user);
@@ -155,7 +160,12 @@ async fn pam_user_in_sudo_group_is_promoted_to_admin() {
     }
     // Put the account in a privileged group (`create_session` checks
     // sudo/admin/wheel/homevault_admin).
-    let grp = if Command::new("getent").args(["group", "sudo"]).status().map(|s| s.success()).unwrap_or(false) {
+    let grp = if Command::new("getent")
+        .args(["group", "sudo"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+    {
         "sudo"
     } else {
         "wheel"
@@ -165,7 +175,10 @@ async fn pam_user_in_sudo_group_is_promoted_to_admin() {
     let auth = in_memory_auth().await;
     // `authenticate` upserts the mirrored `users` row (fix #2) with role_id
     // derived from host group membership.
-    assert!(matches!(auth.authenticate(user, pass, "127.0.0.1", None).await, Ok(true)));
+    assert!(matches!(
+        auth.authenticate(user, pass, "127.0.0.1", None).await,
+        Ok(true)
+    ));
 
     let session = auth
         .create_session(user.to_string(), "127.0.0.1".to_string(), false)
@@ -177,7 +190,10 @@ async fn pam_user_in_sudo_group_is_promoted_to_admin() {
     );
 
     // A second login still works (sentinel-hash fall-through to PAM).
-    assert!(matches!(auth.authenticate(user, pass, "127.0.0.1", None).await, Ok(true)));
+    assert!(matches!(
+        auth.authenticate(user, pass, "127.0.0.1", None).await,
+        Ok(true)
+    ));
 
     delete_linux_user(user);
 }

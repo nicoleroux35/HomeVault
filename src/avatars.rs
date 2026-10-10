@@ -75,13 +75,9 @@ pub fn normalize_seed(input: &str) -> Option<String> {
 pub fn render(seed: &str, size: Option<u32>) -> Result<String, AvatarError> {
     // `Style` does not implement Clone, so we just borrow from the lazily
     // parsed singleton instead of cloning it.
-    let style: &Style = MINIAVS_STYLE
-        .as_ref()
-        .map_err(|e| e.clone())?;
+    let style: &Style = MINIAVS_STYLE.as_ref().map_err(|e| e.clone())?;
 
-    let safe_size = size
-        .unwrap_or(DEFAULT_SIZE)
-        .clamp(32, 512);
+    let safe_size = size.unwrap_or(DEFAULT_SIZE).clamp(32, 512);
 
     let avatar = Avatar::new(
         style,

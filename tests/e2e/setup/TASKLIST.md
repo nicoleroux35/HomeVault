@@ -1,6 +1,7 @@
 # Setup Wizard — Test Tasklist
 
 > Last validated: 2026-09-01 · Firefox · all layers green
+> (E2E count re-verified 2026-10-10: 90 `test(` + 2 `test.slow` = 92 runtime; spec edited 2026-09-28 since)
 
 ## Summary
 
@@ -8,7 +9,7 @@
 |-------|------|-------|--------|
 | Backend unit | `src/setup.rs` | 43 | ✅ 43/43 |
 | Backend integration | `tests/setup_integration.rs` | 28 | ✅ 28/28 |
-| Frontend E2E | `tests/e2e/setup/setup.spec.ts` | 93 | ✅ 93/93 |
+| Frontend E2E | `tests/e2e/setup/setup.spec.ts` | 90 `test(` + 2 `test.slow` = 92 runtime | ✅ last green 2026-09-01 |
 | **Total** | | **164** | ✅ |
 
 **2026-09-01 restructure.** The E2E suite had ~40 tests that silently no-op'd:

@@ -1,17 +1,18 @@
 # "My Account" page — Test Tasklist
 
 > Screen: `frontend/src/routes/Account.svelte` (opened from the desktop
-> top-bar user menu — it is not a route). Covered by the **"My Account"
-> page — frozen** section of the root `CLAUDE.md`. These tests only add
-> coverage; no production file was changed. If a test starts failing
-> because of a real product change, stop and report it rather than
-> loosening the assertion.
+> top-bar user menu — it is not a route). No routes or screens have been
+> frozen since 2026-09-12 (`CLAUDE.md` → "Design system governance"), so
+> the audit invariants below stay binding while the file itself stays
+> editable. These tests only add coverage; no production file was changed.
+> If a test starts failing because of a real product change, stop and
+> report it rather than loosening the assertion.
 
 ## Summary
 
 | Layer | File | Tests | Status |
 |-------|------|-------|--------|
-| Frontend E2E | `tests/e2e/account/account.spec.ts` | 67 | ⏳ first run pending |
+| Frontend E2E | `tests/e2e/account/account.spec.ts` | 72 | ⏳ first run pending |
 
 The backend endpoints the page uses (`GET /api/auth/me`,
 `POST /api/auth/me/avatar`, `POST /api/auth/2fa/setup`,
@@ -186,7 +187,7 @@ suites; each mutating suite owns its own account.
 ## Observations for the page owner (not fixed — frozen area)
 
 - The 2FA enrol step shows the **secret key + an `otpauth://` link**, not a
-  rendered QR image. `SCREENS.md` §4 ("QR code") overstates this.
+  rendered QR image. `SCREENS.md` §4 ("My Account") overstates this.
 - `profileSuccess` in `Account.svelte` is declared and cleared but never
   assigned — a successful profile save shows no explicit confirmation
   message (the identity card updating is the only feedback). The

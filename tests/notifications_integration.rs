@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the Notifications API — `crate::handlers::notifications`:
 //!
 //!   GET    /api/notifications              (list recent — any session)
@@ -15,7 +18,10 @@
 //! Run:
 //!   cargo test --test notifications_integration
 
-use axum::{routing::{delete, get, post}, Router};
+use axum::{
+    routing::{delete, get, post},
+    Router,
+};
 use http::{Method, Request, StatusCode};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -27,8 +33,8 @@ use homevault::auth::AuthService;
 use homevault::config::PathGuard;
 use homevault::handlers::notifications::{
     handle_notification_delete, handle_notification_mark_read, handle_notifications_events,
-    handle_notifications_events_ticket, handle_notifications_list, handle_notifications_mark_all_read,
-    handle_notifications_unread_count,
+    handle_notifications_events_ticket, handle_notifications_list,
+    handle_notifications_mark_all_read, handle_notifications_unread_count,
 };
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{auth::handle_login, AppState};
@@ -39,7 +45,11 @@ type Req = Request<axum::body::Body>;
 
 static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -164,12 +174,7 @@ async fn send(
 }
 
 /// Insert a notification row directly into the DB.
-async fn insert_notification(
-    state: &AppState,
-    title: &str,
-    severity: &str,
-    read: bool,
-) -> String {
+async fn insert_notification(state: &AppState, title: &str, severity: &str, read: bool) -> String {
     let id = uuid::Uuid::new_v4().to_string();
     let read_at = if read {
         Some("2026-01-01T00:00:00Z".to_string())
@@ -200,8 +205,14 @@ async fn test_notifications_list_requires_a_session() {
     let mut r = notifications_router(state);
     let (status, _) = send(&mut r, Method::GET, "/api/notifications", None, None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    let (status, _) =
-        send(&mut r, Method::GET, "/api/notifications", Some("nope"), None).await;
+    let (status, _) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications",
+        Some("nope"),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
@@ -209,8 +220,14 @@ async fn test_notifications_list_requires_a_session() {
 async fn test_unread_count_requires_a_session() {
     let (state, _tmp, _guard) = setup_state().await;
     let mut r = notifications_router(state);
-    let (status, _) =
-        send(&mut r, Method::GET, "/api/notifications/unread-count", None, None).await;
+    let (status, _) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications/unread-count",
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -218,8 +235,14 @@ async fn test_unread_count_requires_a_session() {
 async fn test_mark_all_read_requires_a_session() {
     let (state, _tmp, _guard) = setup_state().await;
     let mut r = notifications_router(state);
-    let (status, _) =
-        send(&mut r, Method::POST, "/api/notifications/read-all", None, None).await;
+    let (status, _) = send(
+        &mut r,
+        Method::POST,
+        "/api/notifications/read-all",
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -227,8 +250,14 @@ async fn test_mark_all_read_requires_a_session() {
 async fn test_mark_read_requires_a_session() {
     let (state, _tmp, _guard) = setup_state().await;
     let mut r = notifications_router(state);
-    let (status, _) =
-        send(&mut r, Method::POST, "/api/notifications/fake-id/read", None, None).await;
+    let (status, _) = send(
+        &mut r,
+        Method::POST,
+        "/api/notifications/fake-id/read",
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -236,8 +265,14 @@ async fn test_mark_read_requires_a_session() {
 async fn test_delete_requires_a_session() {
     let (state, _tmp, _guard) = setup_state().await;
     let mut r = notifications_router(state);
-    let (status, _) =
-        send(&mut r, Method::DELETE, "/api/notifications/fake-id", None, None).await;
+    let (status, _) = send(
+        &mut r,
+        Method::DELETE,
+        "/api/notifications/fake-id",
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -245,8 +280,14 @@ async fn test_delete_requires_a_session() {
 async fn test_events_ticket_requires_a_session() {
     let (state, _tmp, _guard) = setup_state().await;
     let mut r = notifications_router(state);
-    let (status, _) =
-        send(&mut r, Method::POST, "/api/notifications/events/ticket", None, None).await;
+    let (status, _) = send(
+        &mut r,
+        Method::POST,
+        "/api/notifications/events/ticket",
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -261,7 +302,14 @@ async fn test_list_returns_empty_when_no_notifications() {
     let mut r = notifications_router(state);
     let token = login(&mut r, "u", "Password123!").await;
 
-    let (status, body) = send(&mut r, Method::GET, "/api/notifications", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], json!(true));
     assert_eq!(body["data"].as_array().map(|a| a.len()), Some(0));
@@ -280,11 +328,25 @@ async fn test_list_returns_notifications_and_unread_count_tracks_reads() {
     let _id3 = insert_notification(&state, "already-read", "info", true).await;
 
     // Unread count = 2.
-    let (_, body) = send(&mut r, Method::GET, "/api/notifications/unread-count", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications/unread-count",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["data"]["count"], 2);
 
     // List returns all 3 (newest first).
-    let (_, body) = send(&mut r, Method::GET, "/api/notifications", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["data"].as_array().unwrap().len(), 3);
 
     // Mark one as read.
@@ -299,15 +361,36 @@ async fn test_list_returns_notifications_and_unread_count_tracks_reads() {
     assert_eq!(status, StatusCode::OK);
 
     // Unread count drops to 1.
-    let (_, body) = send(&mut r, Method::GET, "/api/notifications/unread-count", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications/unread-count",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["data"]["count"], 1);
 
     // Mark all as read.
-    let (status, _) = send(&mut r, Method::POST, "/api/notifications/read-all", Some(&token), None).await;
+    let (status, _) = send(
+        &mut r,
+        Method::POST,
+        "/api/notifications/read-all",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 
     // Unread count is now 0.
-    let (_, body) = send(&mut r, Method::GET, "/api/notifications/unread-count", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications/unread-count",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["data"]["count"], 0);
 }
 
@@ -321,7 +404,14 @@ async fn test_delete_removes_notification() {
     let id = insert_notification(&state, "to-delete", "error", false).await;
 
     // Confirm it exists.
-    let (_, body) = send(&mut r, Method::GET, "/api/notifications/unread-count", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications/unread-count",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["data"]["count"], 1);
 
     // Delete it.
@@ -336,7 +426,14 @@ async fn test_delete_removes_notification() {
     assert_eq!(status, StatusCode::OK);
 
     // Gone.
-    let (_, body) = send(&mut r, Method::GET, "/api/notifications/unread-count", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications/unread-count",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["data"]["count"], 0);
 }
 
@@ -414,6 +511,13 @@ async fn test_events_endpoint_rejects_missing_ticket() {
 async fn test_events_endpoint_rejects_invalid_ticket() {
     let (state, _tmp, _guard) = setup_state().await;
     let mut r = notifications_router(state);
-    let (status, _) = send(&mut r, Method::GET, "/api/events?ticket=invalid", None, None).await;
+    let (status, _) = send(
+        &mut r,
+        Method::GET,
+        "/api/events?ticket=invalid",
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

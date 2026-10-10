@@ -44,17 +44,23 @@ async fn require_admin(headers: &HeaderMap, state: &AppState) -> Option<Response
         .unwrap_or("");
 
     if session_token.is_empty() {
-        return Some(ResponseHelper::json_error("No session token provided".to_string()));
+        return Some(ResponseHelper::json_error(
+            "No session token provided".to_string(),
+        ));
     }
 
     match state.auth.get_session(session_token).await {
         Ok(session) => {
             if !session.is_admin {
-                return Some(ResponseHelper::json_error("Admin access required".to_string()));
+                return Some(ResponseHelper::json_error(
+                    "Admin access required".to_string(),
+                ));
             }
             None
         }
-        Err(_) => Some(ResponseHelper::json_unauthorized("Invalid session".to_string())),
+        Err(_) => Some(ResponseHelper::json_unauthorized(
+            "Invalid session".to_string(),
+        )),
     }
 }
 
@@ -73,8 +79,7 @@ pub async fn handle_share_permissions_list(
         return ResponseHelper::json_error("Invalid share type".to_string());
     }
 
-    match PermissionService::list_share_permissions(&share_name, &share_type, state.db.pool())
-        .await
+    match PermissionService::list_share_permissions(&share_name, &share_type, state.db.pool()).await
     {
         Ok(perms) => ResponseHelper::json_success(perms),
         Err(e) => ResponseHelper::json_error(format!("Failed to list permissions: {}", e)),

@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the Weather Location API — `crate::handlers::weather_location`:
 //!
 //!   GET  /api/weather-location  (any session)
@@ -10,7 +13,10 @@
 //! Run:
 //!   cargo test --test weather_location_integration
 
-use axum::{routing::{get, post}, Router};
+use axum::{
+    routing::{get, post},
+    Router,
+};
 use http::{Method, Request, StatusCode};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -20,10 +26,10 @@ use tower::{Service, ServiceExt};
 
 use homevault::auth::AuthService;
 use homevault::config::PathGuard;
+use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::weather_location::{
     handle_get_weather_location, handle_set_weather_location,
 };
-use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{auth::handle_login, AppState};
 use homevault::middleware::rate_limit::RateLimitState;
 use homevault::storage::{Database, WidgetRepository};
@@ -32,7 +38,11 @@ type Req = Request<axum::body::Body>;
 
 static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -150,8 +160,14 @@ async fn test_get_weather_location_requires_session() {
     let (status, _) = send(&mut r, Method::GET, "/api/weather-location", None, None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    let (status, _) =
-        send(&mut r, Method::GET, "/api/weather-location", Some("nope"), None).await;
+    let (status, _) = send(
+        &mut r,
+        Method::GET,
+        "/api/weather-location",
+        Some("nope"),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
@@ -192,10 +208,20 @@ async fn test_weather_location_null_until_saved() {
     let mut r = weather_router(state);
     let token = login(&mut r, "u", "Password123!").await;
 
-    let (status, body) = send(&mut r, Method::GET, "/api/weather-location", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/weather-location",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], json!(true));
-    assert!(body["data"]["location_json"].is_null(), "should be null before first save: {body}");
+    assert!(
+        body["data"]["location_json"].is_null(),
+        "should be null before first save: {body}"
+    );
 }
 
 #[tokio::test]
@@ -216,7 +242,14 @@ async fn test_weather_location_set_and_get_round_trip() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    let (_, body) = send(&mut r, Method::GET, "/api/weather-location", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/weather-location",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["data"]["location_json"], location);
 }
 
@@ -244,14 +277,22 @@ async fn test_weather_location_upsert_overwrites() {
         assert_eq!(status, StatusCode::OK);
     }
 
-    let (_, body) = send(&mut r, Method::GET, "/api/weather-location", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/weather-location",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["data"]["location_json"], r#"{"city":"Berlin"}"#);
 
     // Still only one row per user (upsert, not append).
-    let rows: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user_weather_location WHERE username = 'u'")
-        .fetch_one(state.db.pool().as_ref())
-        .await
-        .unwrap();
+    let rows: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM user_weather_location WHERE username = 'u'")
+            .fetch_one(state.db.pool().as_ref())
+            .await
+            .unwrap();
     assert_eq!(rows.0, 1);
 }
 
@@ -278,10 +319,27 @@ async fn test_weather_location_isolation_between_users() {
     .await;
 
     // Bob has no location yet.
-    let (_, body) = send(&mut r, Method::GET, "/api/weather-location", Some(&bob), None).await;
-    assert!(body["data"]["location_json"].is_null(), "bob must not see alice's location: {body}");
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/weather-location",
+        Some(&bob),
+        None,
+    )
+    .await;
+    assert!(
+        body["data"]["location_json"].is_null(),
+        "bob must not see alice's location: {body}"
+    );
 
     // Alice's location is hers.
-    let (_, body) = send(&mut r, Method::GET, "/api/weather-location", Some(&alice), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/weather-location",
+        Some(&alice),
+        None,
+    )
+    .await;
     assert_eq!(body["data"]["location_json"], r#"{"city":"Antwerp"}"#);
 }

@@ -11,7 +11,7 @@ desktop UI.
 
 ## Frontend
 
-- Theme state: `frontend/src/lib/stores/theme.ts` (active theme, accent, density).
+- Theme state: `frontend/src/lib/stores/settingsDraft.svelte.ts` (active theme, accent, density — staged in the draft, flushed by the rail-footer Save button).
 - Design tokens: `frontend/src/lib/styles/theme/tokens.css` (CSS custom properties
   consumed throughout `theme/*.svelte` primitives).
 - Theme registry/toggle: `frontend/src/lib/components/theme/ThemeToggle.svelte`,

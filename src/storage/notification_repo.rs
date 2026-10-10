@@ -88,11 +88,12 @@ impl NotificationRepository {
 
     pub async fn mark_read(&self, id: &str) -> Result<bool, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
-        let result = sqlx::query("UPDATE notifications SET read_at = ? WHERE id = ? AND read_at IS NULL")
-            .bind(&now)
-            .bind(id)
-            .execute(self.pool.as_ref())
-            .await?;
+        let result =
+            sqlx::query("UPDATE notifications SET read_at = ? WHERE id = ? AND read_at IS NULL")
+                .bind(&now)
+                .bind(id)
+                .execute(self.pool.as_ref())
+                .await?;
         Ok(result.rows_affected() > 0)
     }
 

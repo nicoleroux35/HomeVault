@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the Syncthing API — `crate::handlers::syncthing`.
 //!
 //! 10 endpoints: status, config, devices, folders, connections, errors
@@ -57,7 +60,11 @@ type Req = Request<axum::body::Body>;
 
 static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -105,7 +112,10 @@ fn syncthing_router(state: Arc<AppState>) -> Router {
         .route("/api/syncthing/errors", get(handle_syncthing_errors))
         .route("/api/syncthing/restart", post(handle_syncthing_restart))
         .route("/api/syncthing/pause", post(handle_syncthing_pause_device))
-        .route("/api/syncthing/resume", post(handle_syncthing_resume_device))
+        .route(
+            "/api/syncthing/resume",
+            post(handle_syncthing_resume_device),
+        )
         .route("/api/syncthing/scan", post(handle_syncthing_scan_folder))
         .with_state(state)
 }
@@ -175,7 +185,10 @@ async fn send(
 fn denied(body: &Value, fragment: &str) {
     assert_eq!(body["success"], false, "expected denied, got {body}");
     let err = body["error"].as_str().unwrap_or_default();
-    assert!(err.contains(fragment), "error {err:?} should contain {fragment:?}");
+    assert!(
+        err.contains(fragment),
+        "error {err:?} should contain {fragment:?}"
+    );
 }
 
 /// (method, uri, body) for every endpoint, with a body valid for its extractor.

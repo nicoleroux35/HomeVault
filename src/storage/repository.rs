@@ -1,17 +1,17 @@
-use sqlx::{SqlitePool, Transaction, Sqlite};
-use std::sync::Arc;
-use std::future::Future;
 use crate::storage::database::DbError;
+use sqlx::{Sqlite, SqlitePool, Transaction};
+use std::future::Future;
+use std::sync::Arc;
 
 /// Common trait for all repositories, standardising pool access and transactions.
 pub trait Repository: Clone + Send + Sync {
     fn pool(&self) -> Arc<SqlitePool>;
 
     /// Begin a new database transaction.
-    fn begin_transaction(&self) -> impl Future<Output = Result<Transaction<'static, Sqlite>, DbError>> + Send {
-        async move {
-            Ok(self.pool().begin().await?)
-        }
+    fn begin_transaction(
+        &self,
+    ) -> impl Future<Output = Result<Transaction<'static, Sqlite>, DbError>> + Send {
+        async move { Ok(self.pool().begin().await?) }
     }
 }
 

@@ -60,10 +60,11 @@ pub fn slug_from_url(url: &str) -> String {
 /// `ssh`/`scp`-style remote - keeps a store URL from being, say, a local
 /// `file://` path or a `--upload-pack` option smuggled in.
 pub fn validate_git_url(url: &str) -> Result<(), String> {
-    let ok = (url.starts_with("https://") || url.starts_with("http://") || url.starts_with("git://"))
-        && !url.contains(char::is_whitespace)
-        && !url.starts_with("http://-")
-        && !url.starts_with("https://-");
+    let ok =
+        (url.starts_with("https://") || url.starts_with("http://") || url.starts_with("git://"))
+            && !url.contains(char::is_whitespace)
+            && !url.starts_with("http://-")
+            && !url.starts_with("https://-");
     if ok {
         Ok(())
     } else {
@@ -141,8 +142,14 @@ mod tests {
 
     #[test]
     fn test_slug_from_url() {
-        assert_eq!(slug_from_url("https://github.com/acme/cool-apps.git"), "cool-apps");
-        assert_eq!(slug_from_url("https://git.example.com/x/MyStore/"), "mystore");
+        assert_eq!(
+            slug_from_url("https://github.com/acme/cool-apps.git"),
+            "cool-apps"
+        );
+        assert_eq!(
+            slug_from_url("https://git.example.com/x/MyStore/"),
+            "mystore"
+        );
         assert_eq!(slug_from_url("https://host/a/b/c_d"), "c-d");
     }
 

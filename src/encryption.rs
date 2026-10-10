@@ -72,17 +72,32 @@ pub async fn format_and_open(
     )
     .await?;
 
-    run_with_stdin("cryptsetup", &["open", device, mapper_name, "--key-file", "-"], passphrase).await
+    run_with_stdin(
+        "cryptsetup",
+        &["open", device, mapper_name, "--key-file", "-"],
+        passphrase,
+    )
+    .await
 }
 
 /// Unlocks an already-formatted LUKS device under `mapper_name`.
-pub async fn open(device: &str, mapper_name: &str, passphrase: &str) -> Result<(), EncryptionError> {
-    run_with_stdin("cryptsetup", &["open", device, mapper_name, "--key-file", "-"], passphrase).await
+pub async fn open(
+    device: &str,
+    mapper_name: &str,
+    passphrase: &str,
+) -> Result<(), EncryptionError> {
+    run_with_stdin(
+        "cryptsetup",
+        &["open", device, mapper_name, "--key-file", "-"],
+        passphrase,
+    )
+    .await
 }
 
 /// Locks (closes) a mapper device. Idempotent — succeeds even if already closed.
 pub async fn close(mapper_name: &str) -> Result<(), EncryptionError> {
-    let output = Command::new("sudo").arg("cryptsetup")
+    let output = Command::new("sudo")
+        .arg("cryptsetup")
         .args(["close", mapper_name])
         .output()
         .await?;
@@ -99,7 +114,8 @@ pub async fn close(mapper_name: &str) -> Result<(), EncryptionError> {
 
 /// Returns true if `mapper_name` is currently open/unlocked.
 pub async fn is_open(mapper_name: &str) -> bool {
-    Command::new("sudo").arg("cryptsetup")
+    Command::new("sudo")
+        .arg("cryptsetup")
         .args(["status", mapper_name])
         .output()
         .await
@@ -109,7 +125,8 @@ pub async fn is_open(mapper_name: &str) -> bool {
 
 /// Returns the LUKS UUID of a formatted device.
 pub async fn luks_uuid(device: &str) -> Result<String, EncryptionError> {
-    let output = Command::new("sudo").arg("cryptsetup")
+    let output = Command::new("sudo")
+        .arg("cryptsetup")
         .args(["luksUUID", device])
         .output()
         .await?;
@@ -125,12 +142,20 @@ pub async fn mount(mapper_name: &str, mount_point: &str) -> Result<(), Encryptio
     // `sudo mkdir`, not `std::fs::create_dir_all` — this runs under
     // ENCRYPTED_MOUNT_BASE, root-owned, and sudo only wraps external Command
     // invocations, not Rust's own syscalls (same fix as pools.rs).
-    let mkdir_output = Command::new("sudo").arg("mkdir").args(["-p", mount_point]).output().await?;
+    let mkdir_output = Command::new("sudo")
+        .arg("mkdir")
+        .args(["-p", mount_point])
+        .output()
+        .await?;
     if !mkdir_output.status.success() {
         let stderr = String::from_utf8_lossy(&mkdir_output.stderr);
-        return Err(EncryptionError::CommandFailed(format!("Failed to create mount point: {}", stderr.trim())));
+        return Err(EncryptionError::CommandFailed(format!(
+            "Failed to create mount point: {}",
+            stderr.trim()
+        )));
     }
-    let output = Command::new("sudo").arg("mount")
+    let output = Command::new("sudo")
+        .arg("mount")
         .args([&format!("/dev/mapper/{}", mapper_name), mount_point])
         .output()
         .await?;
@@ -143,7 +168,11 @@ pub async fn mount(mapper_name: &str, mount_point: &str) -> Result<(), Encryptio
 
 /// Unmounts a mount point. Idempotent — succeeds even if not mounted.
 pub async fn unmount(mount_point: &str) -> Result<(), EncryptionError> {
-    let output = Command::new("sudo").arg("umount").arg(mount_point).output().await?;
+    let output = Command::new("sudo")
+        .arg("umount")
+        .arg(mount_point)
+        .output()
+        .await?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("not mounted") {
@@ -169,7 +198,8 @@ pub async fn change_passphrase(
 /// Permanently destroys a LUKS volume's key slots, making its data
 /// unrecoverable. Callers must lock the volume first if it's open.
 pub async fn erase(device: &str) -> Result<(), EncryptionError> {
-    let output = Command::new("sudo").arg("cryptsetup")
+    let output = Command::new("sudo")
+        .arg("cryptsetup")
         .args(["erase", "--batch-mode", device])
         .output()
         .await?;
@@ -218,7 +248,12 @@ fn write_file_as_root(path: &str, content: &str) -> std::io::Result<()> {
 /// Adds a `noauto` fstab entry (marked so it can be cleanly removed later)
 /// pointing at the mapper device. `noauto` is deliberate: the volume must
 /// never be auto-mounted at boot since it's still locked at that point.
-pub fn append_fstab_entry(mapper_name: &str, mount_point: &str, filesystem: &str, label: &str) -> Result<(), EncryptionError> {
+pub fn append_fstab_entry(
+    mapper_name: &str,
+    mount_point: &str,
+    filesystem: &str,
+    label: &str,
+) -> Result<(), EncryptionError> {
     let marker = fstab_marker(label);
     let existing = std::fs::read_to_string("/etc/fstab").unwrap_or_default();
     if existing.contains(&marker) {

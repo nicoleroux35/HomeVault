@@ -15,7 +15,7 @@
 //!   moved back to the cache.
 
 use crate::pools::PoolService;
-use crate::shares::{Share, ShareType, SharesService, ShareUpdate};
+use crate::shares::{Share, ShareType, ShareUpdate, SharesService};
 use crate::sse::ProgressEmitter;
 use crate::storage::cache_repo::{CacheRepository, CacheSettings, CacheShare};
 use crate::storage::NotificationRepository;
@@ -129,14 +129,14 @@ impl CacheService {
             .as_ref()
             .ok_or_else(|| "No cache pool configured".to_string())?;
 
-        let cache_mount =
-            Self::pool_mount_point(cache_pool).ok_or_else(|| format!("Cache pool '{}' is not mounted", cache_pool))?;
+        let cache_mount = Self::pool_mount_point(cache_pool)
+            .ok_or_else(|| format!("Cache pool '{}' is not mounted", cache_pool))?;
 
         let excludes: Vec<String> = settings
             .mover_excludes
             .as_deref()
             .map(|s| {
-                s.split(|c| c == ',' || c == ' ' || c == '\n' || c == '\t')
+                s.split([',', ' ', '\n', '\t'])
                     .map(str::trim)
                     .filter(|x| !x.is_empty())
                     .map(str::to_string)
@@ -159,7 +159,10 @@ impl CacheService {
                 ProgressEmitter::progress(
                     jid,
                     (i as f64 / total) * 100.0,
-                    &format!("Moving cache share '{}' (mode: {})", share.name, share.cache_mode),
+                    &format!(
+                        "Moving cache share '{}' (mode: {})",
+                        share.name, share.cache_mode
+                    ),
                 );
             }
 
@@ -181,7 +184,11 @@ impl CacheService {
             let mode = match CacheMode::parse(&share.cache_mode) {
                 Some(m) => m,
                 None => {
-                    tracing::warn!("Cache share '{}' has unknown mode '{}'", share.name, share.cache_mode);
+                    tracing::warn!(
+                        "Cache share '{}' has unknown mode '{}'",
+                        share.name,
+                        share.cache_mode
+                    );
                     continue;
                 }
             };
@@ -190,7 +197,9 @@ impl CacheService {
                 CacheMode::No => {
                     // Data belongs on the array; move anything still on cache.
                     if Self::dir_has_content(&cache_dir) {
-                        Self::rsync_move(&cache_dir, &array_dir, true, &excludes, bwlimit, age_days)?
+                        Self::rsync_move(
+                            &cache_dir, &array_dir, true, &excludes, bwlimit, age_days,
+                        )?
                     } else {
                         (0, 0)
                     }
@@ -198,7 +207,9 @@ impl CacheService {
                 CacheMode::Yes => {
                     // Drain cache to array.
                     if Self::dir_has_content(&cache_dir) {
-                        Self::rsync_move(&cache_dir, &array_dir, true, &excludes, bwlimit, age_days)?
+                        Self::rsync_move(
+                            &cache_dir, &array_dir, true, &excludes, bwlimit, age_days,
+                        )?
                     } else {
                         (0, 0)
                     }
@@ -206,25 +217,33 @@ impl CacheService {
                 CacheMode::Only => {
                     // Data belongs on cache; move anything on the array back.
                     if Self::dir_has_content(&array_dir) {
-                        Self::rsync_move(&array_dir, &cache_dir, true, &excludes, bwlimit, age_days)?
+                        Self::rsync_move(
+                            &array_dir, &cache_dir, true, &excludes, bwlimit, age_days,
+                        )?
                     } else {
                         (0, 0)
                     }
                 }
                 CacheMode::Prefer => {
-                    let cache_full =
-                        is_cache_full(Self::pool_usage_pct(&cache_mount), settings.min_free_percent);
+                    let cache_full = is_cache_full(
+                        Self::pool_usage_pct(&cache_mount),
+                        settings.min_free_percent,
+                    );
                     if cache_full {
                         // Cache is (nearly) full: drain to the array.
                         if Self::dir_has_content(&cache_dir) {
-                            Self::rsync_move(&cache_dir, &array_dir, true, &excludes, bwlimit, age_days)?
+                            Self::rsync_move(
+                                &cache_dir, &array_dir, true, &excludes, bwlimit, age_days,
+                            )?
                         } else {
                             (0, 0)
                         }
                     } else {
                         // Cache has room: keep/promote data onto cache.
                         if Self::dir_has_content(&array_dir) {
-                            Self::rsync_move(&array_dir, &cache_dir, true, &excludes, bwlimit, age_days)?
+                            Self::rsync_move(
+                                &array_dir, &cache_dir, true, &excludes, bwlimit, age_days,
+                            )?
                         } else {
                             (0, 0)
                         }
@@ -269,8 +288,8 @@ impl CacheService {
                     let used: u64 = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
                     let avail: u64 = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
                     let total = used + avail;
-                    if total > 0 {
-                        return (used * 100) / total;
+                    if let Some(pct) = (used * 100).checked_div(total) {
+                        return pct;
                     }
                 }
             }
@@ -296,13 +315,22 @@ impl CacheService {
         std::fs::create_dir_all(dst).map_err(|e| format!("create_dir {}: {}", dst, e))?;
         std::fs::create_dir_all(src).map_err(|e| format!("create_dir {}: {}", src, e))?;
 
-        let src_slash = if src.ends_with('/') { src.to_string() } else { format!("{}/", src) };
-        let dst_slash = if dst.ends_with('/') { dst.to_string() } else { format!("{}/", dst) };
+        let src_slash = if src.ends_with('/') {
+            src.to_string()
+        } else {
+            format!("{}/", src)
+        };
+        let dst_slash = if dst.ends_with('/') {
+            dst.to_string()
+        } else {
+            format!("{}/", dst)
+        };
 
         // When an age filter is set, build the list of files older than N days
         // (relative paths) and let rsync transfer only those via --files-from.
         let age_list = if min_age_days > 0 {
-            let list_path = std::env::temp_dir().join(format!("homevault-cache-age-{}.txt", Uuid::new_v4()));
+            let list_path =
+                std::env::temp_dir().join(format!("homevault-cache-age-{}.txt", Uuid::new_v4()));
             let out = Command::new("find")
                 .args([
                     &src_slash,
@@ -316,7 +344,8 @@ impl CacheService {
                 .output();
             match out {
                 Ok(o) if o.status.success() => {
-                    std::fs::write(&list_path, &o.stdout).map_err(|e| format!("write age list: {}", e))?;
+                    std::fs::write(&list_path, &o.stdout)
+                        .map_err(|e| format!("write age list: {}", e))?;
                     Some(list_path)
                 }
                 Ok(o) => {
@@ -430,11 +459,21 @@ impl CacheService {
     async fn notify_mover(pool: Arc<sqlx::SqlitePool>, success: bool, detail: &str) {
         let repo = NotificationRepository::new(pool);
         let (title, severity, message) = if success {
-            ("Cache mover completed", "info", format!("Mover finished. {}", detail))
+            (
+                "Cache mover completed",
+                "info",
+                format!("Mover finished. {}", detail),
+            )
         } else {
-            ("Cache mover failed", "error", format!("Mover failed: {}", detail))
+            (
+                "Cache mover failed",
+                "error",
+                format!("Mover failed: {}", detail),
+            )
         };
-        let _ = repo.create(title, &message, severity, "cache", "cache-mover").await;
+        let _ = repo
+            .create(title, &message, severity, "cache", "cache-mover")
+            .await;
     }
 
     /// Human-readable byte count for notifications.
@@ -624,14 +663,22 @@ mod tests {
 
     #[test]
     fn test_cache_mode_as_str_roundtrips() {
-        for m in [CacheMode::Yes, CacheMode::No, CacheMode::Prefer, CacheMode::Only] {
+        for m in [
+            CacheMode::Yes,
+            CacheMode::No,
+            CacheMode::Prefer,
+            CacheMode::Only,
+        ] {
             assert_eq!(CacheMode::parse(m.as_str()), Some(m));
         }
     }
 
     #[test]
     fn test_cache_mode_serde_is_lowercase() {
-        assert_eq!(serde_json::to_string(&CacheMode::Prefer).unwrap(), "\"prefer\"");
+        assert_eq!(
+            serde_json::to_string(&CacheMode::Prefer).unwrap(),
+            "\"prefer\""
+        );
         assert_eq!(
             serde_json::from_str::<CacheMode>("\"only\"").unwrap(),
             CacheMode::Only

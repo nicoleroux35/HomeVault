@@ -320,7 +320,11 @@ impl SharesService {
     }
 
     /// Update fields on an existing share. Dispatches to the protocol-specific handler.
-    pub fn update_share(name: &str, share_type: ShareType, update: ShareUpdate) -> Result<(), ShareError> {
+    pub fn update_share(
+        name: &str,
+        share_type: ShareType,
+        update: ShareUpdate,
+    ) -> Result<(), ShareError> {
         match share_type {
             ShareType::Smb => Self::update_smb_share(name, update),
             ShareType::Nfs => Self::update_nfs_share(name, update),
@@ -427,7 +431,10 @@ impl SharesService {
                     if let Some(entry) = shares.get_mut(&filename) {
                         entry["enabled"] = serde_json::json!(enabled);
                     }
-                    write_file_as_root(&shares_path.to_string_lossy(), &serde_json::to_string_pretty(&shares)?)?;
+                    write_file_as_root(
+                        &shares_path.to_string_lossy(),
+                        &serde_json::to_string_pretty(&shares)?,
+                    )?;
                 }
             }
         }
@@ -452,7 +459,10 @@ impl SharesService {
         if let Some(parent) = path.parent() {
             mkdir_as_root(parent)?;
         }
-        write_file_as_root(&path.to_string_lossy(), &serde_json::to_string_pretty(config)?)?;
+        write_file_as_root(
+            &path.to_string_lossy(),
+            &serde_json::to_string_pretty(config)?,
+        )?;
         Self::apply_smb_config(config)?;
         Ok(())
     }
@@ -469,7 +479,10 @@ impl SharesService {
             );
             write_file_as_root(smb_conf, &content)?;
         } else {
-            let mut lines: Vec<String> = fs::read_to_string(smb_conf)?.lines().map(String::from).collect();
+            let mut lines: Vec<String> = fs::read_to_string(smb_conf)?
+                .lines()
+                .map(String::from)
+                .collect();
             let mut in_global = false;
             let mut global_end = 0;
 
@@ -479,7 +492,10 @@ impl SharesService {
                     in_global = true;
                     continue;
                 }
-                if in_global && trimmed.starts_with('[') && !trimmed.eq_ignore_ascii_case("[global]") {
+                if in_global
+                    && trimmed.starts_with('[')
+                    && !trimmed.eq_ignore_ascii_case("[global]")
+                {
                     global_end = i;
                     break;
                 }
@@ -491,7 +507,15 @@ impl SharesService {
             if in_global {
                 let mut insert_after = global_end;
                 // Remove existing global params we manage
-                let managed_keys = ["workgroup", "security", "server min protocol", "server max protocol", "guest ok", "create mask", "directory mask"];
+                let managed_keys = [
+                    "workgroup",
+                    "security",
+                    "server min protocol",
+                    "server max protocol",
+                    "guest ok",
+                    "create mask",
+                    "directory mask",
+                ];
                 for key in &managed_keys {
                     lines.retain(|l| {
                         let t = l.trim();
@@ -515,14 +539,23 @@ impl SharesService {
                         new_global_end = i + 1;
                     }
                 }
-                insert_after = if found_global { new_global_end } else { insert_after };
+                insert_after = if found_global {
+                    new_global_end
+                } else {
+                    insert_after
+                };
 
-                let new_params = [format!("  workgroup = {}", config.workgroup),
+                let new_params = [
+                    format!("  workgroup = {}", config.workgroup),
                     format!("  security = {}", config.security_mode),
                     format!("  server min protocol = {}", config.protocol_version),
-                    format!("  guest ok = {}", if config.allow_guest { "yes" } else { "no" }),
+                    format!(
+                        "  guest ok = {}",
+                        if config.allow_guest { "yes" } else { "no" }
+                    ),
                     format!("  create mask = {}", config.create_mask),
-                    format!("  directory mask = {}", config.directory_mask)];
+                    format!("  directory mask = {}", config.directory_mask),
+                ];
                 for (offset, param) in new_params.iter().enumerate() {
                     lines.insert(insert_after + offset, param.clone());
                 }
@@ -530,7 +563,11 @@ impl SharesService {
             write_file_as_root(smb_conf, &lines.join("\n"))?;
         }
 
-        if let Err(e) = Command::new("sudo").arg("systemctl").args(["reload", "smbd"]).output() {
+        if let Err(e) = Command::new("sudo")
+            .arg("systemctl")
+            .args(["reload", "smbd"])
+            .output()
+        {
             warn!("Failed to reload smbd after applying SMB config: {}", e);
         }
         Ok(())
@@ -553,7 +590,10 @@ impl SharesService {
         if let Some(parent) = path.parent() {
             mkdir_as_root(parent)?;
         }
-        write_file_as_root(&path.to_string_lossy(), &serde_json::to_string_pretty(config)?)?;
+        write_file_as_root(
+            &path.to_string_lossy(),
+            &serde_json::to_string_pretty(config)?,
+        )?;
         Ok(())
     }
 
@@ -570,10 +610,15 @@ impl SharesService {
             .arg("systemctl")
             .args(["start", service_name])
             .output()
-            .map_err(|e| ShareError::CommandFailed(format!("Failed to start {}: {}", service_name, e)))?;
+            .map_err(|e| {
+                ShareError::CommandFailed(format!("Failed to start {}: {}", service_name, e))
+            })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(ShareError::CommandFailed(format!("Failed to start {}: {}", service_name, stderr)));
+            return Err(ShareError::CommandFailed(format!(
+                "Failed to start {}: {}",
+                service_name, stderr
+            )));
         }
         Ok(())
     }
@@ -591,10 +636,15 @@ impl SharesService {
             .arg("systemctl")
             .args(["stop", service_name])
             .output()
-            .map_err(|e| ShareError::CommandFailed(format!("Failed to stop {}: {}", service_name, e)))?;
+            .map_err(|e| {
+                ShareError::CommandFailed(format!("Failed to stop {}: {}", service_name, e))
+            })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(ShareError::CommandFailed(format!("Failed to stop {}: {}", service_name, stderr)));
+            return Err(ShareError::CommandFailed(format!(
+                "Failed to stop {}: {}",
+                service_name, stderr
+            )));
         }
         Ok(())
     }
@@ -612,10 +662,15 @@ impl SharesService {
             .arg("systemctl")
             .args(["restart", service_name])
             .output()
-            .map_err(|e| ShareError::CommandFailed(format!("Failed to restart {}: {}", service_name, e)))?;
+            .map_err(|e| {
+                ShareError::CommandFailed(format!("Failed to restart {}: {}", service_name, e))
+            })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(ShareError::CommandFailed(format!("Failed to restart {}: {}", service_name, stderr)));
+            return Err(ShareError::CommandFailed(format!(
+                "Failed to restart {}: {}",
+                service_name, stderr
+            )));
         }
         Ok(())
     }
@@ -637,7 +692,10 @@ impl SharesService {
         if let Some(parent) = path.parent() {
             mkdir_as_root(parent)?;
         }
-        write_file_as_root(&path.to_string_lossy(), &serde_json::to_string_pretty(config)?)?;
+        write_file_as_root(
+            &path.to_string_lossy(),
+            &serde_json::to_string_pretty(config)?,
+        )?;
         Self::apply_ftp_config(config)?;
         Ok(())
     }
@@ -682,13 +740,18 @@ ssl_sslv2=NO
 ssl_sslv3=NO
 rsa_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem
 rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
-"#.to_string();
+"#
+            .to_string();
             write_file_as_root(vsftpd_conf, &format!("{}\n{}", content, tls_conf))?;
         } else {
             write_file_as_root(vsftpd_conf, &content)?;
         }
 
-        if let Err(e) = Command::new("sudo").arg("systemctl").args(["reload", "vsftpd"]).output() {
+        if let Err(e) = Command::new("sudo")
+            .arg("systemctl")
+            .args(["reload", "vsftpd"])
+            .output()
+        {
             warn!("Failed to reload vsftpd: {}", e);
         }
         Ok(())
@@ -711,7 +774,10 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
         if let Some(parent) = path.parent() {
             mkdir_as_root(parent)?;
         }
-        write_file_as_root(&path.to_string_lossy(), &serde_json::to_string_pretty(config)?)?;
+        write_file_as_root(
+            &path.to_string_lossy(),
+            &serde_json::to_string_pretty(config)?,
+        )?;
         Self::apply_webdav_config(config)?;
         Ok(())
     }
@@ -796,10 +862,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     http.server.HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
-"#.to_string();
+"#
+        .to_string();
 
         write_file_as_root(webdav_py, &py_content)?;
-        let _ = Command::new("sudo").args(["chmod", "+x", webdav_py]).output();
+        let _ = Command::new("sudo")
+            .args(["chmod", "+x", webdav_py])
+            .output();
 
         // Write systemd service
         let svc = format!(
@@ -807,14 +876,28 @@ if __name__ == "__main__":
             webdav_py
         );
         write_file_as_root(webdav_service, &svc)?;
-        let _ = Command::new("sudo").arg("systemctl").args(["daemon-reload"]).output();
-        let _ = Command::new("sudo").arg("systemctl").args(["enable", "homevault-webdav"]).output();
+        let _ = Command::new("sudo")
+            .arg("systemctl")
+            .args(["daemon-reload"])
+            .output();
+        let _ = Command::new("sudo")
+            .arg("systemctl")
+            .args(["enable", "homevault-webdav"])
+            .output();
 
         // Try to restart or start
-        let restart = Command::new("sudo").arg("systemctl").args(["restart", "homevault-webdav"]).output();
+        let restart = Command::new("sudo")
+            .arg("systemctl")
+            .args(["restart", "homevault-webdav"])
+            .output();
         match restart {
             Ok(o) if o.status.success() => {}
-            _ => { let _ = Command::new("sudo").arg("systemctl").args(["start", "homevault-webdav"]).output(); }
+            _ => {
+                let _ = Command::new("sudo")
+                    .arg("systemctl")
+                    .args(["start", "homevault-webdav"])
+                    .output();
+            }
         }
         Ok(())
     }
@@ -837,7 +920,10 @@ if __name__ == "__main__":
         if let Some(parent) = path.parent() {
             mkdir_as_root(parent)?;
         }
-        write_file_as_root(&path.to_string_lossy(), &serde_json::to_string_pretty(config)?)?;
+        write_file_as_root(
+            &path.to_string_lossy(),
+            &serde_json::to_string_pretty(config)?,
+        )?;
         crate::sftp::SftpJailService::apply_config(config)
             .map_err(|e| ShareError::CommandFailed(e.to_string()))?;
         Ok(())
@@ -910,7 +996,10 @@ if __name__ == "__main__":
         });
 
         shares.insert(key, entry);
-        write_file_as_root(&shares_path.to_string_lossy(), &serde_json::to_string_pretty(&shares)?)?;
+        write_file_as_root(
+            &shares_path.to_string_lossy(),
+            &serde_json::to_string_pretty(&shares)?,
+        )?;
         Ok(())
     }
 
@@ -937,7 +1026,10 @@ if __name__ == "__main__":
         });
 
         shares.insert(key, entry);
-        write_file_as_root(&shares_path.to_string_lossy(), &serde_json::to_string_pretty(&shares)?)?;
+        write_file_as_root(
+            &shares_path.to_string_lossy(),
+            &serde_json::to_string_pretty(&shares)?,
+        )?;
         Ok(())
     }
 
@@ -964,7 +1056,10 @@ if __name__ == "__main__":
         });
 
         shares.insert(key, entry);
-        write_file_as_root(&shares_path.to_string_lossy(), &serde_json::to_string_pretty(&shares)?)?;
+        write_file_as_root(
+            &shares_path.to_string_lossy(),
+            &serde_json::to_string_pretty(&shares)?,
+        )?;
         Ok(())
     }
 
@@ -1324,7 +1419,10 @@ if __name__ == "__main__":
         let mut shares: HashMap<String, serde_json::Value> =
             serde_json::from_slice(&fs::read(&shares_path)?).unwrap_or_default();
         shares.remove(&format!("{}.json", name));
-        write_file_as_root(&shares_path.to_string_lossy(), &serde_json::to_string_pretty(&shares)?)?;
+        write_file_as_root(
+            &shares_path.to_string_lossy(),
+            &serde_json::to_string_pretty(&shares)?,
+        )?;
         Ok(())
     }
 
@@ -1337,7 +1435,10 @@ if __name__ == "__main__":
         let mut shares: HashMap<String, serde_json::Value> =
             serde_json::from_slice(&fs::read(&shares_path)?).unwrap_or_default();
         shares.remove(&format!("{}.json", name));
-        write_file_as_root(&shares_path.to_string_lossy(), &serde_json::to_string_pretty(&shares)?)?;
+        write_file_as_root(
+            &shares_path.to_string_lossy(),
+            &serde_json::to_string_pretty(&shares)?,
+        )?;
         Ok(())
     }
 
@@ -1350,7 +1451,10 @@ if __name__ == "__main__":
         let mut shares: HashMap<String, serde_json::Value> =
             serde_json::from_slice(&fs::read(&shares_path)?).unwrap_or_default();
         shares.remove(&format!("{}.json", name));
-        write_file_as_root(&shares_path.to_string_lossy(), &serde_json::to_string_pretty(&shares)?)?;
+        write_file_as_root(
+            &shares_path.to_string_lossy(),
+            &serde_json::to_string_pretty(&shares)?,
+        )?;
         Ok(())
     }
 
@@ -1372,8 +1476,11 @@ if __name__ == "__main__":
 
             if let Some(ref path) = update.path {
                 if let Some(idx) = new_content.find("path = ") {
-                    let line_end = new_content[idx..].find('\n').unwrap_or(new_content.len() - idx);
-                    new_content = format!("{}path = {}{}",
+                    let line_end = new_content[idx..]
+                        .find('\n')
+                        .unwrap_or(new_content.len() - idx);
+                    new_content = format!(
+                        "{}path = {}{}",
                         &new_content[..idx],
                         path,
                         &new_content[idx + line_end..]
@@ -1383,8 +1490,11 @@ if __name__ == "__main__":
 
             if let Some(ref comment) = update.comment {
                 if let Some(idx) = new_content.find("comment = ") {
-                    let line_end = new_content[idx..].find('\n').unwrap_or(new_content.len() - idx);
-                    new_content = format!("{}comment = {}{}",
+                    let line_end = new_content[idx..]
+                        .find('\n')
+                        .unwrap_or(new_content.len() - idx);
+                    new_content = format!(
+                        "{}comment = {}{}",
                         &new_content[..idx],
                         comment,
                         &new_content[idx + line_end..]
@@ -1477,7 +1587,10 @@ if __name__ == "__main__":
             .output()
             .map(|o| o.status.success())
         {
-            warn!("Failed to reload NFS exports after updating share {}: {}", name, e);
+            warn!(
+                "Failed to reload NFS exports after updating share {}: {}",
+                name, e
+            );
         }
 
         Ok(())
@@ -1506,7 +1619,10 @@ if __name__ == "__main__":
             if let Some(options) = update.options {
                 entry["options"] = serde_json::json!(options);
             }
-            write_file_as_root(&shares_path.to_string_lossy(), &serde_json::to_string_pretty(&shares)?)?;
+            write_file_as_root(
+                &shares_path.to_string_lossy(),
+                &serde_json::to_string_pretty(&shares)?,
+            )?;
         } else {
             return Err(ShareError::NotFound(name.to_string()));
         }
@@ -1537,7 +1653,10 @@ if __name__ == "__main__":
             if let Some(options) = update.options {
                 entry["options"] = serde_json::json!(options);
             }
-            write_file_as_root(&shares_path.to_string_lossy(), &serde_json::to_string_pretty(&shares)?)?;
+            write_file_as_root(
+                &shares_path.to_string_lossy(),
+                &serde_json::to_string_pretty(&shares)?,
+            )?;
         } else {
             return Err(ShareError::NotFound(name.to_string()));
         }
@@ -1568,7 +1687,10 @@ if __name__ == "__main__":
             if let Some(options) = update.options {
                 entry["options"] = serde_json::json!(options);
             }
-            write_file_as_root(&shares_path.to_string_lossy(), &serde_json::to_string_pretty(&shares)?)?;
+            write_file_as_root(
+                &shares_path.to_string_lossy(),
+                &serde_json::to_string_pretty(&shares)?,
+            )?;
         } else {
             return Err(ShareError::NotFound(name.to_string()));
         }
@@ -1613,7 +1735,9 @@ mod tests {
 
     #[test]
     fn test_sharetype_parse_rejects_unknown() {
-        for s in ["", "http", "s3", "webdavs", "ftps", "ssh", "scp", "nfsv4", " smb"] {
+        for s in [
+            "", "http", "s3", "webdavs", "ftps", "ssh", "scp", "nfsv4", " smb",
+        ] {
             assert_eq!(ShareType::parse(s), None, "{s:?} must not parse");
         }
     }
@@ -1649,7 +1773,11 @@ mod tests {
             ShareType::Webdav,
             ShareType::Sftp,
         ] {
-            assert_eq!(ShareType::parse(t.as_str()), Some(t.clone()), "round-trip for {t}");
+            assert_eq!(
+                ShareType::parse(t.as_str()),
+                Some(t.clone()),
+                "round-trip for {t}"
+            );
         }
     }
 
@@ -1674,7 +1802,10 @@ mod tests {
     fn test_nfs_config_default() {
         let d = NfsConfig::default();
         assert_eq!(d.networks, vec!["*".to_string()]);
-        assert_eq!(d.root_squash, "root_squash", "root must be squashed by default");
+        assert_eq!(
+            d.root_squash, "root_squash",
+            "root must be squashed by default"
+        );
         assert_eq!(d.version, "4");
     }
 

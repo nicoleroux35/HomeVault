@@ -274,8 +274,8 @@ screen:
   initial load must never PUT/POST. (The sub-cards' *action* buttons — a UFW
   enable, a cert swap, a ClamAV quarantine delete — are immediate by design
   and unrelated to parameter persistence.)
-- Appearance changes update `frontend/src/lib/stores/theme.ts` /
-  `wallpaper.ts` live; `--hv-primary` re-hydrates from the saved accent at boot.
+- Appearance changes update `frontend/src/lib/stores/settingsDraft.svelte.ts`
+  (draft) / `wallpaper.ts` live; `--hv-primary` re-hydrates from the saved accent at boot.
 - Wallpaper-tile selection state uses the reactive `$: selectedWpUrl` (not a
   helper fn) so `class:is-selected`, `aria-checked`, and the check badge all
   update on click — see `CLAUDE.md` Settings section.

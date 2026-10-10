@@ -71,11 +71,14 @@ pub async fn serve_static_file(Path(path): Path<String>) -> Response {
 
 /// Serve the SPA index.html for all non-API routes
 pub async fn serve_spa() -> Response {
-    match STATIC_DIR.get_file("dist/index.html").and_then(|f| f.contents_utf8()) {
+    match STATIC_DIR
+        .get_file("dist/index.html")
+        .and_then(|f| f.contents_utf8())
+    {
         Some(content) => Html(content).into_response(),
         None => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to load application. Please rebuild the frontend."
+            "Failed to load application. Please rebuild the frontend.",
         )
             .into_response(),
     }

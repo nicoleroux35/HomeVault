@@ -69,6 +69,7 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 | POST | `/settings/reset` | admin | reset to defaults |
 | GET/PUT | `/settings/tls` | admin | built-in HTTPS config + cert info; PUT returns `requires_restart` |
 | POST | `/settings/tls/regenerate` | admin | force self-signed cert regeneration |
+| GET/PUT | `/settings/autostart` | admin | start-on-boot (systemd) for `homevault.service` |
 
 ## Security — `security/*` (auth)
 
@@ -174,14 +175,16 @@ home directory (best-effort — recorded even if the FS lacks `usrquota`). See
 | GET | `/storage/raid` | auth | `handle_raid_arrays_list` — legacy; Storage's Virtual-disks tab is preferred |
 | DELETE | `/storage/raid/{name}` | admin | `handle_raid_delete` — legacy |
 | POST | `/storage/raid/{name}/rebuild` | admin | `handle_raid_rebuild` — reused by Storage's Rebuild button |
-| GET | `/storage/pools` | auth | `handle_pools_list` (ZFS, Btrfs only — mdadm filtered out; see [Storage](./guides/storage.md#raid--storage-boundary-inverted-2026-09-06)) |
-| POST | `/storage/pools` | admin | `handle_advanced_pool_create` — creates a native ZFS or Btrfs pool (see [Storage](./guides/storage.md#advanced-pools)) |
-| GET | `/storage/pools/{name}` | auth | `handle_pool_get` |
-| DELETE | `/storage/pools/{name}?pool_type=zfs\|btrfs\|mdadm` | admin | `handle_advanced_pool_delete` — for Btrfs this wipes every member device |
-| GET | `/storage/pools/{name}/devices` | auth | `handle_pool_devices` |
-| GET | `/storage/pools/{name}/scrub/{pool_type}` | auth | `handle_pool_scrub_status` |
-| POST | `/storage/pools/{name}/scrub/{pool_type}` | admin | `handle_pool_scrub_start` |
 | GET | `/storage/available-home-disks` | auth | `handle_available_home_disks` (valid session, not admin) |
+| GET | `/storage/disks/{name}/smart/capabilities` | auth | `handle_disk_smart_capabilities` — whether `smartctl` supports this disk |
+| GET | `/storage/disks/{name}/smart/test` | auth | `handle_disk_smart_test_status` — running self-test status |
+| POST | `/storage/disks/{name}/smart/test` | admin | `handle_disk_smart_test_start` — start a SMART self-test (`test_type` is whitelisted to `short`/`long`/`conveyance`); logs the admin actor to the event log |
+
+> The former `/storage/pools*` endpoints (`handle_pools_list`,
+> `handle_advanced_pool_create`, `handle_pool_get`, …) were **removed** in the
+> 2026-09-07 RAID↔Storage re-scope: Storage manages every virtual disk via
+> `virtual-disks` above, RAID only creates. `src/pools.rs` (`PoolService`) is
+> still reached through the virtual-disk and cache paths.
 
 ## Disk Encryption — `encryption/*`
 
@@ -207,15 +210,15 @@ the passphrase through this API. See [guides/encryption.md](./guides/encryption.
 | GET | `/explorer/roots` | auth | `handle_explorer_roots` — labelled sidebar roots (`{path, kind, name}`): the session user's home, each PathGuard root, then every mounted virtual disk (`kind:"virtualdisk"`) |
 | GET | `/explorer/search` | auth | `?path=&query=&max_results=` |
 | GET | `/explorer/disks` | auth | `handle_explorer_disks` — mounted volumes grouped `system\|internal\|raid\|external\|cloud\|network`; per entry `mount_point`/`filesystem`/`size_bytes`/`used_bytes` + optional `label`/`vendor`/`model`/`serial` |
-| POST | `/explorer/mkdir` | auth | `{ path }` |
-| POST | `/explorer/delete` | **admin** | `{ path }` — permanent; internal use only now, see `/explorer/trash` |
-| POST | `/explorer/rename` | auth | `{ path, new_name }` — **both** paths are path-guard validated |
+| POST | `/explorer/mkdir` | auth | `?path=` |
+| POST | `/explorer/delete` | **admin** | `?path=` — permanent; internal use only now, see `/explorer/trash` |
+| POST | `/explorer/rename` | auth | `?path=&new_name=` — **both** paths are path-guard validated |
 | POST | `/explorer/save` | auth | `handle_explorer_save` — inline text/code editor, atomic temp-file + rename, 5 MB cap |
-| POST | `/explorer/copy` | auth | `{ source, destination }` + `?strategy=overwrite\|keep_both\|skip`; directories return `{job_id, sse_url}`; every file is SHA-256 verified end-to-end |
-| POST | `/explorer/move` | auth | `{ source, destination }` + `?strategy=`; same job pattern; source deleted only after a verified copy |
-| GET/POST | `/explorer/permissions` | auth | read/set POSIX mode |
+| POST | `/explorer/copy` | auth | `?source=&destination=&strategy=overwrite\|keep_both\|skip`; directories return `{job_id, sse_url}`; every file is SHA-256 verified end-to-end |
+| POST | `/explorer/move` | auth | `?source=&destination=&strategy=`; same job pattern; source deleted only after a verified copy |
+| GET/POST | `/explorer/permissions` | auth | `?path=&mode=` — read/set POSIX mode |
 | GET | `/explorer/preview` | auth | text/image preview; `previewable: false` for non-text binaries |
-| POST | `/explorer/extract` | auth | `{ path, destination }` |
+| POST | `/explorer/extract` | auth | `?path=&destination=` |
 | POST | `/explorer/compress` | auth | JSON body `{ paths: string[], destination, format? }` |
 | GET | `/explorer/download` | auth \| ticket | raw file download; `?ticket=` (single-use, from `/explorer/download-ticket`) *or* `x-session-token` header — **never** the session token in a URL; HTTP `Range` (206), `X-Content-Sha256` digest header for files ≤ 64 MB; 429 if the transfer quota is exhausted |
 | POST | `/explorer/download-ticket` | auth | `?path=` — mint a single-use 60 s download ticket (checks path + download quota) |
@@ -226,8 +229,8 @@ the passphrase through this API. See [guides/encryption.md](./guides/encryption.
 | DELETE | `/explorer/upload/session` | auth | `?session_id=` — abort a resumable upload, remove the partial temp file |
 | POST | `/explorer/upload/chunk` | auth | raw body + `?session_id=&offset=` — write one chunk at the server's authoritative offset (409 + current offset on mismatch) |
 | POST | `/explorer/upload/complete` | auth | `?session_id=` — fsync + SHA-256 + atomic rename into place, then debit the quota |
-| POST/GET/DELETE | `/explorer/trash` | auth | move to trash / list trash / empty trash |
-| POST | `/explorer/trash/restore` | auth | `{ id }` (cross-device EXDEV fallback) |
+| POST/GET/DELETE | `/explorer/trash` | auth | `?path=` (POST) — move to trash / list trash / empty trash |
+| POST | `/explorer/trash/restore` | auth | `?id=` (cross-device EXDEV fallback) |
 | DELETE | `/explorer/trash/{id}` | auth | permanently delete one trashed item |
 | GET | `/explorer/snapshots` | auth | `?path=` — lists ZFS snapshots covering that path with a `browse_path` under `.zfs/snapshot/…` (read-only browsing) |
 | POST | `/explorer/eject` | admin | `?path=<mount>` — safe-eject a removable drive (guarded to removable block devices only) |
@@ -469,25 +472,23 @@ Every Downloader endpoint calls `require_admin_request`, so **all** are admin-on
 (`status`, `global-stat`, `tasks`, `task/{gid}`, `start`, `stop`, `add`, `pause`,
 `unpause`, `remove`). There are no read-only `auth` endpoints here.
 
-## Snapshots — `/snapshots/{pool}`
+## Snapshots
 
-> Previously **every** handler in `src/handlers/snapshots.rs` took no
-> `State`/`HeaderMap` at all, so all six endpoints — including destructive
-> delete/rollback — were reachable with **no session token whatsoever**. Fixed:
-> reads use `require_auth`, mutations use `require_admin`.
-
-| Method | Path | Auth |
-|--------|------|------|
-| GET | `/snapshots/availability` | auth |
-| GET | `/snapshots/{pool}` | auth |
-| POST | `/snapshots/{pool}` | admin |
-| GET | `/snapshots/{pool}/{name}/info` | auth |
-| DELETE | `/snapshots/{pool}/{name}` | admin |
-| POST | `/snapshots/{pool}/{name}/rollback` | admin |
-
-See [Storage](./guides/storage.md#advanced-pools) for the real Btrfs/ZFS
-rollback limitation (Btrfs rollback of the default mounted subvolume isn't
-supported and returns a clear error, not a silent no-op).
+> The standalone `/snapshots/{pool}` endpoints and `src/handlers/snapshots.rs`
+> were **removed** — every handler there took no `State`/`HeaderMap`, so all
+> six endpoints (including destructive delete/rollback) were reachable with
+> **no session token whatsoever**. Snapshot functionality now lives where it
+> is scoped:
+>
+> | Area | Endpoints |
+> |------|-----------|
+> | Explorer (ZFS, read-only browsing) | `GET /explorer/snapshots?path=` (lists covering snapshots with a `browse_path` under `.zfs/snapshot/…`) |
+> | Backups (restic) | `GET /restic/repos/{id}/snapshots`, `POST /restic/snapshots/delete` |
+> | Virtual machines | `GET/POST /vm/{name}/snapshots`, `POST /vm/{name}/snapshots/{snap}/restore`, `DELETE /vm/{name}/snapshots/{snap}` |
+>
+> See [Storage](./guides/storage.md) for the Btrfs/ZFS rollback limitation
+> (Btrfs rollback of the default mounted subvolume isn't supported and returns
+> a clear error, not a silent no-op).
 
 ## Progress (SSE) — `progress/*` (`auth`)
 
