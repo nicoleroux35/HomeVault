@@ -31,7 +31,7 @@
     "@melt-ui/svelte": "^0.86.6",
     "@novnc/novnc": "^1.7.0",
     "@phosphor-icons/web": "^2.1.2",
-    "@tabler/icons-svelte": "^3.44.0",
+    "@tabler/icons-svelte": "^3.49.0",
     "bits-ui": "^2.19.2",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
