@@ -1,11 +1,7 @@
 use crate::handlers::admin_guard::require_auth;
 use crate::handlers::AppState;
 use crate::utils::{ProcParser, ResponseHelper};
-use axum::{
-    extract::State,
-    http::HeaderMap,
-    response::Response,
-};
+use axum::{extract::State, http::HeaderMap, response::Response};
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -63,7 +59,10 @@ pub struct UpdateInfoResponse {
 }
 
 /// Returns CPU usage percentage, load averages, and core count for the dashboard widget.
-pub async fn handle_widget_cpu_usage(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_widget_cpu_usage(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -133,7 +132,10 @@ pub async fn handle_widget_cpu_usage(State(state): State<Arc<AppState>>, headers
 }
 
 /// Returns RAM usage percentage and memory breakdown for the dashboard widget.
-pub async fn handle_widget_ram_usage(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_widget_ram_usage(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -167,7 +169,10 @@ static PREV_NETWORK_STATS: Lazy<RwLock<HashMap<String, (u64, u64, u64)>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
 /// Returns network traffic rates (RX/TX) per second for the dashboard widget.
-pub async fn handle_widget_network_traffic(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_widget_network_traffic(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -223,7 +228,10 @@ pub async fn handle_widget_network_traffic(State(state): State<Arc<AppState>>, h
 }
 
 /// Returns CPU temperature in Celsius for the dashboard widget.
-pub async fn handle_widget_cpu_temp(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_widget_cpu_temp(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -290,17 +298,14 @@ pub async fn handle_widget_update_info(
         }
     }
 
-    let (has_app_update, app_latest_version) =
-        match std::env::var("UPDATE_CHECK_URL") {
-            Ok(url) if !url.trim().is_empty() => {
-                match fetch_update_manifest(&url).await {
-                    Some(latest) if is_newer_version(&app_version, &latest) => (true, Some(latest)),
-                    Some(_) => (false, None),
-                    None => (false, None),
-                }
-            }
-            _ => (false, None),
-        };
+    let (has_app_update, app_latest_version) = match std::env::var("UPDATE_CHECK_URL") {
+        Ok(url) if !url.trim().is_empty() => match fetch_update_manifest(&url).await {
+            Some(latest) if is_newer_version(&app_version, &latest) => (true, Some(latest)),
+            Some(_) => (false, None),
+            None => (false, None),
+        },
+        _ => (false, None),
+    };
 
     {
         let mut cache = UPDATE_CACHE.write();
@@ -406,8 +411,8 @@ mod tests {
         assert!(is_newer_version("1.2.3", "v1.2.4"));
         assert!(!is_newer_version("v1.2.4", "1.2.4"));
         // Non-numeric suffixes (rc/beta) are ignored, numeric prefix wins.
-        assert!(is_newer_version("1.2.3", "1.2.3-rc.1") == false);
-        assert!(is_newer_version("1.2.3-rc.1", "1.2.3") == false);
-        assert!(is_newer_version("1.2.2-rc.1", "1.2.3") == true);
+        assert!(!is_newer_version("1.2.3", "1.2.3-rc.1"));
+        assert!(!is_newer_version("1.2.3-rc.1", "1.2.3"));
+        assert!(is_newer_version("1.2.2-rc.1", "1.2.3"));
     }
 }

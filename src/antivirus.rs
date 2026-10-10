@@ -153,13 +153,22 @@ pub async fn run_scan(
                     )
                     .await;
             }
-            repo.finish_scan(&scan.id, "completed", summary.files_scanned, summary.threats_found, None)
-                .await
-                .map_err(|e| e.to_string())?;
+            repo.finish_scan(
+                &scan.id,
+                "completed",
+                summary.files_scanned,
+                summary.threats_found,
+                None,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
             let _ = repo.set_last_scan_at(&Utc::now().to_rfc3339()).await;
 
             if let Some(jid) = &job_id {
-                ProgressEmitter::complete(jid, &format!("Scan complete: {} threats found", summary.threats_found));
+                ProgressEmitter::complete(
+                    jid,
+                    &format!("Scan complete: {} threats found", summary.threats_found),
+                );
                 ProgressEmitter::remove(jid);
             }
             notify_scan(pool, summary.threats_found, &scan_path).await;
@@ -210,14 +219,21 @@ async fn run_clamscan(
         *AV_SCAN_PID.lock() = Some(pid);
     }
 
-    let stdout = child.stdout.take().ok_or("Failed to capture clamscan stdout")?;
-    let stderr = child.stderr.take().ok_or("Failed to capture clamscan stderr")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("Failed to capture clamscan stdout")?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("Failed to capture clamscan stderr")?;
     // Drained concurrently with stdout below so a chatty stderr (e.g. missing
     // virus database, permission errors) can't fill its OS pipe buffer and
     // deadlock the child while we're only reading stdout.
     let stderr_task = tokio::spawn(async move {
         let mut buf = String::new();
-        let _ = tokio::io::AsyncReadExt::read_to_string(&mut BufReader::new(stderr), &mut buf).await;
+        let _ =
+            tokio::io::AsyncReadExt::read_to_string(&mut BufReader::new(stderr), &mut buf).await;
         buf
     });
     let mut reader = BufReader::new(stdout).lines();
@@ -235,7 +251,11 @@ async fn run_clamscan(
                     // clamscan gives no total up front; report an indeterminate
                     // 50% while running so the UI shows activity, not a stall.
                     50.0,
-                    &format!("{} files scanned, {} threats found", files_scanned, threats.len()),
+                    &format!(
+                        "{} files scanned, {} threats found",
+                        files_scanned,
+                        threats.len()
+                    ),
                 );
             }
         } else if let Some(jid) = job_id {
@@ -282,9 +302,15 @@ async fn run_clamscan(
             // real cause and misled admins into checking the wrong thing.
             let detail = stderr_text.trim();
             if detail.is_empty() {
-                Err(format!("clamscan reported an error scanning '{}'", scan_path))
+                Err(format!(
+                    "clamscan reported an error scanning '{}'",
+                    scan_path
+                ))
             } else {
-                Err(format!("clamscan reported an error scanning '{}': {}", scan_path, detail))
+                Err(format!(
+                    "clamscan reported an error scanning '{}': {}",
+                    scan_path, detail
+                ))
             }
         }
         None => Err("Scan was cancelled".to_string()),
@@ -346,7 +372,11 @@ pub async fn cancel_scan() -> bool {
 }
 
 /// Delete a quarantined file's on-disk copy and mark the threat resolved.
-pub async fn resolve_threat(pool: Arc<sqlx::SqlitePool>, threat_id: &str, delete: bool) -> Result<(), String> {
+pub async fn resolve_threat(
+    pool: Arc<sqlx::SqlitePool>,
+    threat_id: &str,
+    delete: bool,
+) -> Result<(), String> {
     let repo = AntivirusRepository::new(pool);
     let threat = repo
         .get_threat(threat_id)
@@ -361,7 +391,9 @@ pub async fn resolve_threat(pool: Arc<sqlx::SqlitePool>, threat_id: &str, delete
         }
     }
 
-    repo.resolve_threat(threat_id).await.map_err(|e| e.to_string())
+    repo.resolve_threat(threat_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 async fn notify_scan(pool: Arc<sqlx::SqlitePool>, threats_found: u64, scan_path: &str) {
@@ -370,7 +402,10 @@ async fn notify_scan(pool: Arc<sqlx::SqlitePool>, threats_found: u64, scan_path:
         (
             "Antivirus scan found threats",
             "critical",
-            format!("{} threat(s) found and quarantined while scanning '{}'.", threats_found, scan_path),
+            format!(
+                "{} threat(s) found and quarantined while scanning '{}'.",
+                threats_found, scan_path
+            ),
         )
     } else {
         (
@@ -379,13 +414,18 @@ async fn notify_scan(pool: Arc<sqlx::SqlitePool>, threats_found: u64, scan_path:
             format!("No threats found scanning '{}'.", scan_path),
         )
     };
-    let _ = repo.create(title, &message, severity, "antivirus", "antivirus_scan").await;
+    let _ = repo
+        .create(title, &message, severity, "antivirus", "antivirus_scan")
+        .await;
 }
 
 /// Registers a new SSE progress job for a scan (a `Custom` job type — no
 /// dedicated antivirus variant exists on `JobType` yet).
 pub fn create_scan_job() -> String {
-    PROGRESS_MANAGER.create_job(JobType::Custom("antivirus_scan".to_string()), "Starting antivirus scan")
+    PROGRESS_MANAGER.create_job(
+        JobType::Custom("antivirus_scan".to_string()),
+        "Starting antivirus scan",
+    )
 }
 
 #[cfg(test)]
@@ -449,7 +489,10 @@ mod tests {
         let (action, qpath) =
             resolve_move_status(&original.to_string_lossy(), &quarantine.to_string_lossy());
         assert_eq!(action, "quarantined");
-        assert_eq!(qpath, Some(quarantine.join("eicar.com").to_string_lossy().to_string()));
+        assert_eq!(
+            qpath,
+            Some(quarantine.join("eicar.com").to_string_lossy().to_string())
+        );
     }
 
     #[test]

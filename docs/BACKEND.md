@@ -8,15 +8,20 @@ src/
   web/mod.rs            Router assembly + server startup (create_app, run)
   handlers/mod.rs       AppState definition (shared services)
   handlers/             One module per domain (auth, users, user_homes, groups,
-                        dashboard, storage, encryption, snapshots, shares,
+                        dashboard, storage, encryption, shares,
                         permissions, network, chat, rag, restic, docker, compose,
                         docker_catalog, rclone, syncthing, downloader, journal,
-                        quotas, transfer_quotas, security, settings, avatars,
+                        transfer_quotas, security, settings, avatars,
                         ups, snmp, monitor_layout, weather_location, terminal_pty,
                         rescue, antivirus, firewall, ransomware, cache,
-                        notifications, progress, system, …)
+                        notifications, progress, system, share_links,
+                        users_models, widgets, …) — `handlers/quotas.rs` and
+                        `handlers/snapshots.rs` were removed (see
+                        [transfer-quotas](./guides/transfer-quotas.md) and
+                        [Snapshots](./guides/snapshots.md)).
   storage/              SQLx repositories (user_repo, group_repo, user_home_repo,
-                        restic_repo, transfer_quota_repo, quota_repo,
+                        restic_repo, transfer_quota_repo, sync_job_repo,
+                        share_link_repo,
                         journal_cleanup_repo, favorite_repo, app_store_repo, …)
   auth/                 AuthService, session creation, 2FA/TOTP, middleware
   config/               Settings, paths, PathGuard
@@ -36,6 +41,13 @@ src/
   quota.rs              Per-user home-directory disk limit (setquota -u).
                         The per-group setquota -g feature was removed 2026-09-09.
   transfer_quota.rs     Per-user/group upload/download caps (Explorer only)
+  autostart.rs          Start-on-boot (systemd) state for `homevault.service`
+  avatars.rs            Offline avatar generation (local PRNG, no API calls)
+  compose.rs            Docker Compose project management
+  docker.rs             Docker daemon wrapper
+  logging.rs            Rotating file log appender
+  media_ticket.rs       Short-lived media access tickets
+  setup.rs              First-run setup-wizard state machine
   notification_engine.rs  Background loop: health/backup/app-update -> notifications
   restic.rs / restic_scheduler.rs   Restic wrapper + cron backup scheduler loop
   antivirus.rs / antivirus_scheduler.rs   ClamAV scan + scheduled scans
@@ -93,7 +105,7 @@ Notable handlers (see `API.md` for the full map):
 - `handlers/auth.rs` — login, 2FA verify/setup, password reset, setup, current user.
 - `handlers/users.rs`, `handlers/groups.rs` — account & group management.
 - `handlers/dashboard.rs` — system metrics + widget CRUD.
-- `handlers/storage.rs` — disks/partitions/RAID/pools (also serves RAID handlers).
+- `handlers/storage.rs` — disks/partitions/RAID/virtual-disks/SMART (also serves RAID handlers).
 - `handlers/shares.rs`, `handlers/permissions.rs` — file shares + ACLs.
 - `handlers/network.rs` (`create_network_router`), `handlers/vpn.rs`
   (`create_vpn_router`), `handlers/rescue.rs` (`create_rescue_router`),
@@ -115,8 +127,8 @@ Notable handlers (see `API.md` for the full map):
 - `handlers/docker.rs`, `handlers/compose.rs`, `handlers/docker_catalog.rs`
   (manifest-driven; the app packages live in `catalog/`, the logic in
   `src/app_catalog/*`, the per-app proxy in `src/app_proxy/*`),
-  `handlers/rclone.rs`, `handlers/syncthing.rs`, `handlers/downloader.rs`,
-  `handlers/snapshots.rs`, `handlers/security.rs`,
+   `handlers/rclone.rs`, `handlers/syncthing.rs`, `handlers/downloader.rs`,
+   `handlers/security.rs`,
   `handlers/settings.rs`, `handlers/avatars.rs`, `handlers/ups.rs`,
   `handlers/snmp.rs`. (`handlers/wallpapers.rs` was removed 2026-09-04 — the
   15 bundled wallpapers are static assets, not an API.)
@@ -146,7 +158,7 @@ Notable handlers (see `API.md` for the full map):
 ## Storage / repository layer
 
 `src/storage/` holds SQLx repositories. Each repo wraps a pool and provides typed
-async CRUD. Migrations are in `sqlx/migrations/` (**001–034**), embedded in the
+async CRUD. Migrations are in `sqlx/migrations/` (**001–036**), embedded in the
 binary via `include_dir!` and applied at startup. `storage/database.rs::Database::run_migrations`
 runs each pending file once (tracked in `_hv_migrations`); the hand-rolled SQL
 statement splitter tracks `--` line comments explicitly, so a semicolon inside a
@@ -156,7 +168,9 @@ default roles. Recent migrations: `027_app_stores.sql`,
 (the old email reset flow was deleted), `030_drop_user_wallpapers.sql`,
 `031_explorer_favorites.sql`, `032_user_home_size.sql` (`user_homes.size_limit_bytes`),
 `033_rag_knowledge_base.sql` (RAG documents, chunks, index status),
-`034_explorer_share_links.sql` (Explorer "share by link").
+`034_explorer_share_links.sql` (Explorer "share by link"),
+`035_login_attempts_success_user_agent.sql` (user-agent on successful logins),
+`036_sync_jobs.sql` (background sync job tracking).
 
 All repositories share a common `Repository` trait (`src/storage/repository.rs`)
 exposing standard CRUD (`find_by_id`, `find_all`, `create`, `update`, `delete`,
@@ -203,8 +217,10 @@ for common queries are created by the migrations.
   allowed roots.
 
 See **Deployment model** in [Architecture](./ARCHITECTURE.md): the process runs
-as root, no `homevault` service account, no generated sudoers file — but every
-privileged shell-out stays `sudo`-wrapped.
+as root, no `homevault` service account, no generated sudoers file —
+privileged shell-outs stay `sudo`-wrapped, except `quota.rs`'s bare
+`setquota` (deliberate: the process runs as root, documented in
+`src/quota.rs`).
 
 ## Auth & sessions (`src/auth/`)
 
@@ -230,7 +246,7 @@ privileged shell-out stays `sudo`-wrapped.
 
 Loads the embedded `src/i18n/{en,fr,es,de}.toml` content (compiled in with
 `include_str!` — no data files needed at runtime). `init_i18n(None)` is called
-in `run()` (`src/web/mod.rs:1170`). Frontend fetches the active map via
+in `run()` (`src/web/mod.rs`, grep for `init_i18n`). Frontend fetches the active map via
 `GET /translations` (mounted at `/api/translations` in
 `src/web/mod.rs`, **not** `/api/settings/translations`). See [i18n](./I18N.md).
 

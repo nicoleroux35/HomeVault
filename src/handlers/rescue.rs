@@ -1,12 +1,13 @@
+use crate::sse::{JobType, PROGRESS_MANAGER};
 use axum::{extract::Path, extract::State, http::HeaderMap, response::Response, Json, Router};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use crate::sse::{JobType, PROGRESS_MANAGER};
 
 use crate::handlers::admin_guard::require_admin;
 use crate::handlers::AppStateArc;
 use crate::rescue::{
-    RescueService, SecurityValidator, DdrescueOptions, TestDiskOptions, PhotoRecOptions, MdadmOptions,
+    DdrescueOptions, MdadmOptions, PhotoRecOptions, RescueService, SecurityValidator,
+    TestDiskOptions,
 };
 use crate::sse::ProgressEmitter;
 use crate::utils::ResponseHelper;
@@ -180,7 +181,10 @@ pub async fn handle_ddrescue_clone(
     let source = payload.source.clone();
     let dest = payload.destination.clone();
     let mut options: DdrescueOptions = payload.into();
-    let logfile = options.logfile.clone().unwrap_or_else(|| format!("/tmp/ddrescue_{}.log", &job_id));
+    let logfile = options
+        .logfile
+        .clone()
+        .unwrap_or_else(|| format!("/tmp/ddrescue_{}.log", job_id));
     // Without this, the service function falls back to its own generic
     // "/tmp/ddrescue.log" default (never the per-job path computed above),
     // so every run with no explicit logfile shares one mapfile — confirmed
@@ -398,12 +402,30 @@ pub fn create_rescue_router(state: AppStateArc) -> Router {
     Router::new()
         .route("/tools", axum::routing::get(handle_rescue_tools_available))
         .route("/devices", axum::routing::get(handle_rescue_devices))
-        .route("/ddrescue/clone", axum::routing::post(handle_ddrescue_clone))
-        .route("/ddrescue/status/{logfile}", axum::routing::get(handle_ddrescue_status))
-        .route("/testdisk/analyze", axum::routing::post(handle_testdisk_analyze))
-        .route("/testdisk/rebuild", axum::routing::post(handle_testdisk_rebuild))
-        .route("/photorec/recover", axum::routing::post(handle_photorec_recover))
-        .route("/mdadm/diagnose", axum::routing::post(handle_mdadm_diagnose))
+        .route(
+            "/ddrescue/clone",
+            axum::routing::post(handle_ddrescue_clone),
+        )
+        .route(
+            "/ddrescue/status/{logfile}",
+            axum::routing::get(handle_ddrescue_status),
+        )
+        .route(
+            "/testdisk/analyze",
+            axum::routing::post(handle_testdisk_analyze),
+        )
+        .route(
+            "/testdisk/rebuild",
+            axum::routing::post(handle_testdisk_rebuild),
+        )
+        .route(
+            "/photorec/recover",
+            axum::routing::post(handle_photorec_recover),
+        )
+        .route(
+            "/mdadm/diagnose",
+            axum::routing::post(handle_mdadm_diagnose),
+        )
         .route("/mdadm/repair", axum::routing::post(handle_mdadm_repair))
         .with_state(state)
 }

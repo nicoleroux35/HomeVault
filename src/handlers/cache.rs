@@ -5,7 +5,7 @@ use crate::handlers::admin_guard::{require_admin, require_auth};
 use crate::handlers::AppState;
 use crate::pools::PoolService;
 use crate::shares::{Share, ShareType, SharesService};
-use crate::storage::cache_repo::{CacheRepository, CacheShare};
+use crate::storage::cache_repo::{CacheRepository, CacheSettings, CacheShare};
 use crate::utils::ResponseHelper;
 use axum::{extract::State, http::HeaderMap, response::Response};
 use std::sync::Arc;
@@ -54,11 +54,13 @@ pub async fn handle_cache_settings_update(
     let repo = CacheRepository::new(state.db.pool());
     let current = match repo.get_settings().await {
         Ok(s) => s,
-        Err(e) => return ResponseHelper::json_error(format!("Failed to load cache settings: {}", e)),
+        Err(e) => {
+            return ResponseHelper::json_error(format!("Failed to load cache settings: {}", e))
+        }
     };
 
     if let Some(ref cron) = payload.mover_cron {
-        if cron.trim().split_whitespace().count() != 5 {
+        if cron.split_whitespace().count() != 5 {
             return ResponseHelper::json_error(
                 "Mover schedule must be a 5-field cron expression (min hour day-of-month month day-of-week)".to_string(),
             );
@@ -76,19 +78,25 @@ pub async fn handle_cache_settings_update(
 
     if let Some(mfp) = payload.min_free_percent {
         if mfp > 100 {
-            return ResponseHelper::json_error("min_free_percent must be between 0 and 100".to_string());
+            return ResponseHelper::json_error(
+                "min_free_percent must be between 0 and 100".to_string(),
+            );
         }
     }
 
     if let Some(age) = payload.mover_age_days {
         if age > 3650 {
-            return ResponseHelper::json_error("mover_age_days must be between 0 and 3650".to_string());
+            return ResponseHelper::json_error(
+                "mover_age_days must be between 0 and 3650".to_string(),
+            );
         }
     }
 
     if let Some(bw) = payload.mover_bwlimit {
         if bw > 10_000_000 {
-            return ResponseHelper::json_error("mover_bwlimit must be between 0 and 10,000,000 KB/s".to_string());
+            return ResponseHelper::json_error(
+                "mover_bwlimit must be between 0 and 10,000,000 KB/s".to_string(),
+            );
         }
     }
 
@@ -100,20 +108,21 @@ pub async fn handle_cache_settings_update(
     let mover_excludes = payload.mover_excludes.clone().or(current.mover_excludes);
     let mover_bwlimit = payload.mover_bwlimit.unwrap_or(current.mover_bwlimit);
 
-    match repo
-        .save_settings(
-            cache_pool.as_deref(),
-            &mover_cron,
-            mover_enabled,
-            min_free_percent,
-            current.mover_last_run_at.as_deref(),
-            mover_age_days,
-            mover_excludes.as_deref(),
-            mover_bwlimit,
-        )
-        .await
-    {
-        Ok(_) => ResponseHelper::json_success(serde_json::json!({ "message": "Cache settings saved" })),
+    let settings = CacheSettings {
+        cache_pool,
+        mover_cron,
+        mover_enabled,
+        min_free_percent,
+        mover_last_run_at: current.mover_last_run_at,
+        mover_age_days,
+        mover_excludes,
+        mover_bwlimit,
+    };
+
+    match repo.save_settings(&settings).await {
+        Ok(_) => {
+            ResponseHelper::json_success(serde_json::json!({ "message": "Cache settings saved" }))
+        }
         Err(e) => ResponseHelper::json_error(format!("Failed to save cache settings: {}", e)),
     }
 }
@@ -187,39 +196,63 @@ pub async fn handle_cache_share_create(
     }
 
     let name = payload.name.trim();
-    if name.is_empty() || name.len() > 64 || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+    if name.is_empty()
+        || name.len() > 64
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
         return ResponseHelper::json_error(
             "Cache share name must be 1-64 characters (letters, digits, - or _)".to_string(),
         );
     }
     let Some(mode) = CacheMode::parse(&payload.cache_mode) else {
-        return ResponseHelper::json_error("cache_mode must be one of: yes, no, prefer, only".to_string());
+        return ResponseHelper::json_error(
+            "cache_mode must be one of: yes, no, prefer, only".to_string(),
+        );
     };
 
     let repo = CacheRepository::new(state.db.pool());
 
-    if repo.get_share(name).await.map(|s| s.is_some()).unwrap_or(false) {
+    if repo
+        .get_share(name)
+        .await
+        .map(|s| s.is_some())
+        .unwrap_or(false)
+    {
         return ResponseHelper::json_error(format!("Cache share '{}' already exists", name));
     }
 
     // Validate target pool exists.
     let pools = PoolService::scan_pools().unwrap_or_default();
     if !pools.iter().any(|p| p.name == payload.target_pool) {
-        return ResponseHelper::json_error(format!("Target pool '{}' does not exist", payload.target_pool));
+        return ResponseHelper::json_error(format!(
+            "Target pool '{}' does not exist",
+            payload.target_pool
+        ));
     }
     // Validate cache pool is configured.
     let settings = match repo.get_settings().await {
         Ok(s) => s,
-        Err(e) => return ResponseHelper::json_error(format!("Failed to load cache settings: {}", e)),
+        Err(e) => {
+            return ResponseHelper::json_error(format!("Failed to load cache settings: {}", e))
+        }
     };
     let Some(cache_pool) = settings.cache_pool else {
-        return ResponseHelper::json_error("No cache pool configured. Set one in Cache settings first.".to_string());
+        return ResponseHelper::json_error(
+            "No cache pool configured. Set one in Cache settings first.".to_string(),
+        );
     };
     if payload.target_pool == cache_pool {
-        return ResponseHelper::json_error("Target pool cannot be the same as the cache pool".to_string());
+        return ResponseHelper::json_error(
+            "Target pool cannot be the same as the cache pool".to_string(),
+        );
     }
 
-    match repo.create_share(name, mode.as_str(), &payload.target_pool).await {
+    match repo
+        .create_share(name, mode.as_str(), &payload.target_pool)
+        .await
+    {
         Ok(share) => {
             // Best-effort: create an SMB export at the active path.
             create_or_update_smb_export(&share, &cache_pool, &payload.target_pool);
@@ -251,13 +284,20 @@ pub async fn handle_cache_share_update(
 
     if let Some(ref m) = payload.cache_mode {
         if CacheMode::parse(m).is_none() {
-            return ResponseHelper::json_error("cache_mode must be one of: yes, no, prefer, only".to_string());
+            return ResponseHelper::json_error(
+                "cache_mode must be one of: yes, no, prefer, only".to_string(),
+            );
         }
     }
 
     let repo = CacheRepository::new(state.db.pool());
     match repo
-        .update_share(&name, payload.cache_mode.as_deref(), payload.target_pool.as_deref(), payload.enabled)
+        .update_share(
+            &name,
+            payload.cache_mode.as_deref(),
+            payload.target_pool.as_deref(),
+            payload.enabled,
+        )
         .await
     {
         Ok(Some(share)) => {
@@ -363,16 +403,24 @@ fn create_or_update_smb_export(share: &CacheShare, cache_pool: &str, target_pool
     };
 
     // Try update first (in case it already exists), then create.
-    if SharesService::update_share(&share.name, ShareType::Smb, crate::shares::ShareUpdate {
-        path: Some(smb_share.path.clone()),
-        enabled: Some(share.enabled),
-        comment: Some(smb_share.comment.clone()),
-        options: Some(vec![]),
-    })
+    if SharesService::update_share(
+        &share.name,
+        ShareType::Smb,
+        crate::shares::ShareUpdate {
+            path: Some(smb_share.path.clone()),
+            enabled: Some(share.enabled),
+            comment: Some(smb_share.comment.clone()),
+            options: Some(vec![]),
+        },
+    )
     .is_err()
     {
         if let Err(e) = SharesService::create_share(&smb_share) {
-            tracing::warn!("Failed to create SMB export for cache share '{}': {}", share.name, e);
+            tracing::warn!(
+                "Failed to create SMB export for cache share '{}': {}",
+                share.name,
+                e
+            );
         }
     }
 }
@@ -382,6 +430,9 @@ struct CacheServiceMount;
 impl CacheServiceMount {
     fn mount_of(pool_name: &str) -> Option<String> {
         let pools = PoolService::scan_pools().ok()?;
-        pools.into_iter().find(|p| p.name == pool_name).and_then(|p| p.mount_point)
+        pools
+            .into_iter()
+            .find(|p| p.name == pool_name)
+            .and_then(|p| p.mount_point)
     }
 }

@@ -110,7 +110,10 @@ impl FirewallRepository {
         Ok(())
     }
 
-    pub async fn list_change_log(&self, limit: i64) -> Result<Vec<FirewallChangeLogEntry>, sqlx::Error> {
+    pub async fn list_change_log(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<FirewallChangeLogEntry>, sqlx::Error> {
         let rows = sqlx::query_as::<_, FirewallChangeLogRow>(
             "SELECT id, action, rule_description, performed_by, created_at FROM firewall_change_log ORDER BY created_at DESC LIMIT ?",
         )

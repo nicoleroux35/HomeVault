@@ -91,7 +91,9 @@ pub struct TlsSettings {
 impl TlsSettings {
     /// The effective HTTPS port (applies the default).
     pub fn effective_https_port(&self) -> u16 {
-        self.https_port.filter(|p| *p != 0).unwrap_or(DEFAULT_HTTPS_PORT)
+        self.https_port
+            .filter(|p| *p != 0)
+            .unwrap_or(DEFAULT_HTTPS_PORT)
     }
 }
 
@@ -115,7 +117,11 @@ pub struct CertInfo {
 // --------------------------------------------------------------------------
 
 fn store() -> JsonStorage {
-    JsonStorage::new(crate::config::paths::base_dir().to_string_lossy().to_string())
+    JsonStorage::new(
+        crate::config::paths::base_dir()
+            .to_string_lossy()
+            .to_string(),
+    )
 }
 
 /// Load the effective TLS settings: the persisted file if the admin has saved
@@ -128,9 +134,12 @@ pub fn load_settings() -> TlsSettings {
 }
 
 fn env_flag(name: &str) -> Option<bool> {
-    std::env::var(name)
-        .ok()
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+    std::env::var(name).ok().map(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 fn from_env() -> TlsSettings {
@@ -344,9 +353,12 @@ fn validate_pem_path(path: &str, what: &str) -> Result<(), String> {
     if path.chars().any(|c| c.is_control()) {
         return Err(format!("{what} path contains control characters"));
     }
-    if p.components()
-        .any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir))
-    {
+    if p.components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::ParentDir | std::path::Component::CurDir
+        )
+    }) {
         return Err(format!("{what} path must not contain '.' or '..' segments"));
     }
     let meta = std::fs::metadata(p).map_err(|e| format!("{what} file is not readable: {e}"))?;
@@ -369,11 +381,7 @@ pub fn validate_settings(new: &TlsSettings, http_port: u16) -> Result<(), String
     }
 
     if new.enabled && new.mode == TlsMode::Manual {
-        let cert = new
-            .cert_path
-            .as_deref()
-            .unwrap_or("")
-            .trim();
+        let cert = new.cert_path.as_deref().unwrap_or("").trim();
         let key = new.key_path.as_deref().unwrap_or("").trim();
         if cert.is_empty() || key.is_empty() {
             return Err("a certificate and a private key path are both required".to_string());
@@ -437,7 +445,9 @@ fn read_cert_info(cert_path: &std::path::Path) -> CertInfo {
             if let Ok(Some(ext)) = cert.subject_alternative_name() {
                 for name in &ext.value.general_names {
                     match name {
-                        x509_parser::extensions::GeneralName::DNSName(n) => sans.push(n.to_string()),
+                        x509_parser::extensions::GeneralName::DNSName(n) => {
+                            sans.push(n.to_string())
+                        }
                         x509_parser::extensions::GeneralName::IPAddress(b) => {
                             sans.push(fmt_ip(b));
                         }
@@ -447,8 +457,7 @@ fn read_cert_info(cert_path: &std::path::Path) -> CertInfo {
             }
             let not_after = cert.validity().not_after.to_datetime();
             let not_before = cert.validity().not_before.to_datetime();
-            let days_remaining =
-                (not_after - time::OffsetDateTime::now_utc()).whole_days();
+            let days_remaining = (not_after - time::OffsetDateTime::now_utc()).whole_days();
             let subject = cert.subject().to_string();
             let issuer = cert.issuer().to_string();
             CertInfo {
@@ -456,8 +465,12 @@ fn read_cert_info(cert_path: &std::path::Path) -> CertInfo {
                 subject,
                 issuer,
                 sans,
-                not_before: not_before.format(&time::format_description::well_known::Rfc3339).ok(),
-                not_after: not_after.format(&time::format_description::well_known::Rfc3339).ok(),
+                not_before: not_before
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .ok(),
+                not_after: not_after
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .ok(),
                 days_remaining: Some(days_remaining),
                 error: None,
             }
@@ -486,7 +499,11 @@ fn fmt_ip(bytes: &[u8]) -> String {
 pub fn certificate_info(settings: &TlsSettings) -> CertInfo {
     let path = match settings.mode {
         TlsMode::SelfSigned => self_signed_cert_path(),
-        TlsMode::Manual => match settings.cert_path.as_deref().filter(|s| !s.trim().is_empty()) {
+        TlsMode::Manual => match settings
+            .cert_path
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+        {
             Some(p) => PathBuf::from(p),
             None => {
                 return CertInfo {

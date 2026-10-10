@@ -1,5 +1,5 @@
-use crate::storage::database::DbError;
 use crate::impl_repository;
+use crate::storage::database::DbError;
 use chrono::Utc;
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -34,7 +34,9 @@ pub struct NewSyncJob {
 
 impl NewSyncJob {
     pub fn validate(&self) -> Result<(), String> {
-        if self.name.trim().is_empty() || self.source.trim().is_empty() || self.destination.trim().is_empty()
+        if self.name.trim().is_empty()
+            || self.source.trim().is_empty()
+            || self.destination.trim().is_empty()
         {
             return Err("name, source and destination are required".to_string());
         }

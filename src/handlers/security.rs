@@ -158,7 +158,7 @@ pub async fn handle_revoke_all_sessions(
     };
 
     let session_repo = SessionRepository::new(state.db.pool());
-    
+
     // Get all sessions except current
     let all_sessions = match session_repo.find_all_by_username(&username).await {
         Ok(s) => s,
@@ -203,20 +203,18 @@ pub async fn handle_get_login_history(
     }
 
     // Verify admin
-    let _admin_user = match crate::handlers::auth::require_admin(
-        State(state.clone()),
-        headers.clone(),
-    )
-    .await
-    {
-        Ok(u) => u,
-        Err(resp) => return resp,
-    };
+    let _admin_user =
+        match crate::handlers::auth::require_admin(State(state.clone()), headers.clone()).await {
+            Ok(u) => u,
+            Err(resp) => return resp,
+        };
 
     let attempt_repo = LoginAttemptRepository::new(state.db.pool());
     let attempts = match attempt_repo.get_all_recent(100).await {
         Ok(a) => a,
-        Err(e) => return ResponseHelper::json_error(format!("Failed to fetch login history: {}", e)),
+        Err(e) => {
+            return ResponseHelper::json_error(format!("Failed to fetch login history: {}", e))
+        }
     };
 
     let attempt_infos: Vec<LoginAttemptInfo> = attempts
@@ -294,7 +292,7 @@ pub async fn handle_get_user_login_history(
     };
 
     let is_admin = state.auth.is_admin(&requesting_user).await;
-    
+
     // Non-admins can only view their own history
     if !is_admin && requesting_user != username {
         return ResponseHelper::json_forbidden("Access denied".to_string());
@@ -303,7 +301,9 @@ pub async fn handle_get_user_login_history(
     let attempt_repo = LoginAttemptRepository::new(state.db.pool());
     let attempts = match attempt_repo.get_recent_attempts(&username, 50).await {
         Ok(a) => a,
-        Err(e) => return ResponseHelper::json_error(format!("Failed to fetch login history: {}", e)),
+        Err(e) => {
+            return ResponseHelper::json_error(format!("Failed to fetch login history: {}", e))
+        }
     };
 
     let attempt_infos: Vec<LoginAttemptInfo> = attempts

@@ -33,7 +33,10 @@ impl UserHomeRepository {
     }
 
     /// Look up a user's home configuration.
-    pub async fn find_by_username(&self, username: &str) -> Result<Option<UserHome>, crate::storage::DbError> {
+    pub async fn find_by_username(
+        &self,
+        username: &str,
+    ) -> Result<Option<UserHome>, crate::storage::DbError> {
         let home = sqlx::query_as::<_, UserHome>(
             "SELECT username, enabled, disk, path, created_at, size_limit_bytes FROM user_homes WHERE username = ?",
         )

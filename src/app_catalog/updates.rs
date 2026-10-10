@@ -106,7 +106,9 @@ fn normalize_registry(host: &str) -> String {
 /// Parse the `Www-Authenticate: Bearer realm="…",service="…",scope="…"`
 /// challenge into `(realm, service, scope)`.
 pub fn parse_bearer_challenge(header: &str) -> Option<(String, Option<String>, Option<String>)> {
-    let rest = header.strip_prefix("Bearer ").or_else(|| header.strip_prefix("bearer "))?;
+    let rest = header
+        .strip_prefix("Bearer ")
+        .or_else(|| header.strip_prefix("bearer "))?;
     let mut realm = None;
     let mut service = None;
     let mut scope = None;
@@ -150,9 +152,19 @@ pub async fn remote_image_digest(client: &reqwest::Client, image: &str) -> Optio
                   application/vnd.docker.distribution.manifest.v2+json";
 
     // First try unauthenticated; on 401 follow the bearer challenge.
-    let resp = client.head(&manifest_url).header("Accept", accept).send().await.ok()?;
+    let resp = client
+        .head(&manifest_url)
+        .header("Accept", accept)
+        .send()
+        .await
+        .ok()?;
     let resp = if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        let challenge = resp.headers().get("www-authenticate")?.to_str().ok()?.to_string();
+        let challenge = resp
+            .headers()
+            .get("www-authenticate")?
+            .to_str()
+            .ok()?
+            .to_string();
         let (realm, service, _) = parse_bearer_challenge(&challenge)?;
         let mut token_url = url::Url::parse(&realm).ok()?;
         token_url
@@ -197,7 +209,9 @@ fn http_client() -> reqwest::Client {
 }
 
 /// Check every installed catalog app for image and package updates.
-pub async fn check_installed_apps(enabled_stores: &[app_catalog::EnabledStore]) -> Vec<AppUpdateStatus> {
+pub async fn check_installed_apps(
+    enabled_stores: &[app_catalog::EnabledStore],
+) -> Vec<AppUpdateStatus> {
     let apps = app_catalog::list_apps(enabled_stores);
     let client = http_client();
     let mut out = Vec::new();
@@ -224,7 +238,12 @@ pub async fn check_installed_apps(enabled_stores: &[app_catalog::EnabledStore]) 
                 (Some(l), Some(r)) => l != r,
                 _ => false,
             };
-            images.push(ImageUpdate { image, local_digest: local, remote_digest: remote, update_available });
+            images.push(ImageUpdate {
+                image,
+                local_digest: local,
+                remote_digest: remote,
+                update_available,
+            });
         }
         let image_update_available = images.iter().any(|i| i.update_available);
 
@@ -271,7 +290,9 @@ fn project_images(project: &str) -> Vec<String> {
 
 fn read_installed_version(install_key: &str) -> Option<String> {
     let raw = std::fs::read_to_string(
-        crate::config::paths::apps_dir().join(install_key).join(".install.toml"),
+        crate::config::paths::apps_dir()
+            .join(install_key)
+            .join(".install.toml"),
     )
     .ok()?;
     let v: toml::Value = raw.parse().ok()?;

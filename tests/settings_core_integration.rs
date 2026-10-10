@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the **Settings core** — `crate::handlers::settings`
 //! (everything except the AI Assistant card and the 3 security cards, which
 //! have their own suites):
@@ -46,9 +49,10 @@ use homevault::config::PathGuard;
 use homevault::handlers::settings::{
     handle_all_settings_get, handle_appearance_settings_get, handle_appearance_settings_update,
     handle_email_settings_get, handle_email_settings_update, handle_get_language,
-    handle_notification_settings_get, handle_notification_settings_update, handle_public_settings_get,
-    handle_set_language, handle_settings_export, handle_settings_import, handle_settings_reset,
-    handle_update_settings_get, handle_update_settings_update,
+    handle_notification_settings_get, handle_notification_settings_update,
+    handle_public_settings_get, handle_set_language, handle_settings_export,
+    handle_settings_import, handle_settings_reset, handle_update_settings_get,
+    handle_update_settings_update,
 };
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{auth::handle_login, AppState};
@@ -59,7 +63,11 @@ type Req = Request<axum::body::Body>;
 
 static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -214,7 +222,11 @@ fn admin_write_endpoints() -> Vec<(Method, &'static str, Value)> {
         (Method::PUT, "/api/settings/email", json!({})),
         (Method::PUT, "/api/settings/notifications", json!({})),
         (Method::PUT, "/api/settings/update", json!({})),
-        (Method::POST, "/api/settings/language", json!({"language": "en"})),
+        (
+            Method::POST,
+            "/api/settings/language",
+            json!({"language": "en"}),
+        ),
         (Method::POST, "/api/settings/import", json!({"data": {}})),
         (Method::POST, "/api/settings/reset", json!({})),
     ]
@@ -246,9 +258,19 @@ async fn test_writes_reject_missing_and_bogus_token() {
         let (status, _) = send(&mut router, method.clone(), uri, None, Some(body.clone())).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{method} {uri} no token");
 
-        let (status, _) =
-            send(&mut router, method.clone(), uri, Some("nope"), Some(body.clone())).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri} bogus token");
+        let (status, _) = send(
+            &mut router,
+            method.clone(),
+            uri,
+            Some("nope"),
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{method} {uri} bogus token"
+        );
     }
 }
 
@@ -281,12 +303,25 @@ async fn test_get_language_allows_any_session_but_still_needs_one() {
     create_test_user(&state, "regular", "Password123!", 1).await;
     let mut router = settings_router(state);
 
-    let (status, _) = send(&mut router, Method::GET, "/api/settings/language", None, None).await;
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/language",
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     let token = login(&mut router, "regular", "Password123!").await;
-    let (status, body) =
-        send(&mut router, Method::GET, "/api/settings/language", Some(&token), None).await;
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/language",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["data"]["language"].is_string());
 }
@@ -347,7 +382,14 @@ async fn test_appearance_put_then_get_round_trips_all_four_fields() {
     assert_eq!(got["data"]["density"], "compact");
 
     // …and the aggregate endpoint reflects the same values.
-    let (_, all) = send(&mut router, Method::GET, "/api/settings", Some(&token), None).await;
+    let (_, all) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(all["data"]["appearance"]["accent_color"], "#e2725b");
     assert_eq!(all["data"]["appearance"]["density"], "compact");
 }
@@ -420,7 +462,14 @@ async fn test_settings_export_redacts_the_smtp_password() {
     assert_eq!(status, StatusCode::OK);
 
     // GET /api/settings/email already omits the password entirely.
-    let (_, email) = send(&mut router, Method::GET, "/api/settings/email", Some(&token), None).await;
+    let (_, email) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/email",
+        Some(&token),
+        None,
+    )
+    .await;
     assert!(email["data"].get("smtp_password").is_none(), "{email}");
     assert_eq!(email["data"]["smtp_server"], "mail.example.com");
 
@@ -428,11 +477,20 @@ async fn test_settings_export_redacts_the_smtp_password() {
     // `handle_settings_export` nests the settings blob one level under `data`
     // (`{success, data:{success, data:<settings>}}`), so the email block is at
     // `["data"]["data"]["email"]`.
-    let (status, export) =
-        send(&mut router, Method::GET, "/api/settings/export", Some(&token), None).await;
+    let (status, export) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/export",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let blob = &export["data"]["data"];
-    assert_eq!(blob["email"]["smtp_server"], "mail.example.com", "sanity: {export}");
+    assert_eq!(
+        blob["email"]["smtp_server"], "mail.example.com",
+        "sanity: {export}"
+    );
     assert_eq!(blob["email"]["smtp_password"], Value::Null);
     assert!(
         !export.to_string().contains(secret),
@@ -472,10 +530,19 @@ async fn test_export_then_import_round_trips_and_keeps_the_password() {
     // Export (password redacted), then import that same blob back. The import
     // handler wants the bare settings object, which the export nests at
     // `["data"]["data"]`.
-    let (_, export) =
-        send(&mut router, Method::GET, "/api/settings/export", Some(&token), None).await;
+    let (_, export) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/export",
+        Some(&token),
+        None,
+    )
+    .await;
     let blob = export["data"]["data"].clone();
-    assert!(blob["appearance"].is_object(), "sanity: exported blob shape: {export}");
+    assert!(
+        blob["appearance"].is_object(),
+        "sanity: exported blob shape: {export}"
+    );
 
     let (status, body) = send(
         &mut router,
@@ -502,9 +569,18 @@ async fn test_export_then_import_round_trips_and_keeps_the_password() {
 
     // …and re-exporting still shows the email server (importing a redacted
     // `null` password did not wipe the block).
-    let (_, export2) =
-        send(&mut router, Method::GET, "/api/settings/export", Some(&token), None).await;
-    assert_eq!(export2["data"]["data"]["email"]["smtp_server"], "mail.example.com");
+    let (_, export2) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/export",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(
+        export2["data"]["data"]["email"]["smtp_server"],
+        "mail.example.com"
+    );
 }
 
 #[tokio::test]
@@ -531,7 +607,14 @@ async fn test_settings_reset_restores_the_shipped_defaults() {
     )
     .await;
 
-    let (status, _) = send(&mut router, Method::POST, "/api/settings/reset", Some(&token), None).await;
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/settings/reset",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 
     let (_, appearance) = send(
@@ -546,7 +629,14 @@ async fn test_settings_reset_restores_the_shipped_defaults() {
     assert_eq!(appearance["data"]["density"], "comfortable");
 
     // G2: the update-check default is back to Manual (no auto GitHub call).
-    let (_, update) = send(&mut router, Method::GET, "/api/settings/update", Some(&token), None).await;
+    let (_, update) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/update",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(update["data"]["check_frequency"], "manual");
 }
 
@@ -580,7 +670,14 @@ async fn test_appearance_put_rewrites_the_legacy_default_accent() {
     assert_eq!(appearance["data"]["accent_color"], "#1E62AE");
 
     // The aggregate every Settings window seeds from agrees.
-    let (_, all) = send(&mut router, Method::GET, "/api/settings", Some(&token), None).await;
+    let (_, all) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(all["data"]["appearance"]["accent_color"], "#1E62AE");
 }
 

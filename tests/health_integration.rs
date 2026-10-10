@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the Health page's API — `GET /api/health`
 //! (`homevault::web::handle_health_endpoint`).
 //!
@@ -60,7 +63,11 @@ const EXPECTED_CHECKS: [&str; 8] = [
 
 const VALID_STATUSES: [&str; 4] = ["healthy", "warning", "unhealthy", "unknown"];
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -170,9 +177,9 @@ async fn send(
 /// the per-check statuses in the response, to assert the aggregate is
 /// consistent with what it aggregates.
 fn expected_overall(statuses: &[&str]) -> &'static str {
-    if statuses.iter().any(|s| *s == "unhealthy") {
+    if statuses.contains(&"unhealthy") {
         "unhealthy"
-    } else if statuses.iter().any(|s| *s == "warning") {
+    } else if statuses.contains(&"warning") {
         "warning"
     } else if !statuses.is_empty() && statuses.iter().all(|s| *s == "healthy") {
         "healthy"

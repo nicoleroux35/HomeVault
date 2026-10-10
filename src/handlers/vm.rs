@@ -22,11 +22,9 @@
 //! never lies about state; `create` is the exception — it runs as a tracked
 //! background job (image downloads take minutes).
 
-use crate::handlers::AppState;
 use crate::handlers::admin_guard::require_admin;
-use crate::incus::{
-    self, ExecSession, IncusError, IncusInstance, IncusService, STATUS_RUNNING,
-};
+use crate::handlers::AppState;
+use crate::incus::{self, ExecSession, IncusError, IncusInstance, IncusService, STATUS_RUNNING};
 use crate::sse::{JobType, PROGRESS_MANAGER};
 use crate::utils::ResponseHelper;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -299,7 +297,10 @@ fn alloc_vnc_display() -> Option<u16> {
 // ── Handlers ────────────────────────────────────────────────────────────────
 
 /// GET /api/vm/available
-pub async fn handle_vm_available(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_vm_available(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(e) = require_admin(&state, &headers).await {
         return e;
     }
@@ -346,7 +347,9 @@ pub async fn handle_vm_get(
         Ok(i) => i,
         Err(e) => return incus_err(e),
     };
-    let snaps = IncusService::list_snapshots(&name).await.unwrap_or_default();
+    let snaps = IncusService::list_snapshots(&name)
+        .await
+        .unwrap_or_default();
 
     let mut info = instance_to_info(&inst);
     info.snapshot_count = snaps.len();
@@ -422,7 +425,10 @@ pub async fn handle_vm_create(
 
     // Machine already there?
     if IncusService::get_instance(&name).await.is_ok() {
-        return ResponseHelper::json_error(format!("A machine called \"{}\" already exists.", name));
+        return ResponseHelper::json_error(format!(
+            "A machine called \"{}\" already exists.",
+            name
+        ));
     }
 
     let (mut cpu, mut mem, mut disk) = size_preset(&req.size);
@@ -443,7 +449,12 @@ pub async fn handle_vm_create(
             Err(e) => return ResponseHelper::json_error(e),
         };
         let windows = req.iso_os.as_deref() == Some("windows");
-        let drivers = match req.drivers_iso_path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let drivers = match req
+            .drivers_iso_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             Some(p) => match validate_local_iso(p) {
                 Ok(p) => Some(p),
                 Err(e) => return ResponseHelper::json_error(format!("Driver ISO: {e}")),
@@ -539,7 +550,11 @@ pub async fn handle_vm_create(
             devices.insert("vtpm".to_string(), serde_json::json!({ "type": "tpm" }));
         }
 
-        let label = if windows { "Windows (ISO)" } else { "Linux (ISO)" };
+        let label = if windows {
+            "Windows (ISO)"
+        } else {
+            "Linux (ISO)"
+        };
         let tpm_note = if tpm_wanted && !tpm_added {
             Some("created without a TPM 2.0 — Windows 11 needs one; install `swtpm-tools` (or update Incus) and recreate.".to_string())
         } else {
@@ -579,14 +594,19 @@ pub async fn handle_vm_create(
             Ok(o) => o,
             Err(e) => return e,
         };
-        if !os
-            .kinds
-            .contains(&if kind == "virtual-machine" { "vm" } else { "container" })
-        {
+        if !os.kinds.contains(&if kind == "virtual-machine" {
+            "vm"
+        } else {
+            "container"
+        }) {
             return ResponseHelper::json_error(format!(
                 "{} is only available as a {}.",
                 os.label,
-                if os.kinds.contains(&"vm") { "virtual machine" } else { "container" }
+                if os.kinds.contains(&"vm") {
+                    "virtual machine"
+                } else {
+                    "container"
+                }
             ));
         }
         let username = req.username.trim().to_lowercase();
@@ -670,7 +690,10 @@ pub async fn handle_vm_create(
         };
         if op.is_empty() {
             PROGRESS_MANAGER.complete_job(&job, &ready_msg(tpm_note.as_deref()));
-            crate::events::log_event(format!("VM '{}' ({}) created by {}", job_name, job_label, admin));
+            crate::events::log_event(format!(
+                "VM '{}' ({}) created by {}",
+                job_name, job_label, admin
+            ));
             return;
         }
         let mut outcome = IncusService::wait_for_operation(&op, CREATE_WAIT_SECS).await;
@@ -698,7 +721,10 @@ pub async fn handle_vm_create(
                 b2.config.insert(VNC_KEY.to_string(), fresh.to_string());
             }
             if let Ok(op2) = IncusService::create_instance(&b2).await {
-                if IncusService::wait_for_operation(&op2, CREATE_WAIT_SECS).await.is_ok() {
+                if IncusService::wait_for_operation(&op2, CREATE_WAIT_SECS)
+                    .await
+                    .is_ok()
+                {
                     PROGRESS_MANAGER.complete_job(
                         &job,
                         &format!(
@@ -721,7 +747,10 @@ pub async fn handle_vm_create(
         match outcome {
             Ok(()) => {
                 PROGRESS_MANAGER.complete_job(&job, &ready_msg(tpm_note.as_deref()));
-                crate::events::log_event(format!("VM '{}' ({}) created by {}", job_name, job_label, admin));
+                crate::events::log_event(format!(
+                    "VM '{}' ({}) created by {}",
+                    job_name, job_label, admin
+                ));
             }
             Err(e) => {
                 let reason = e.to_string();
@@ -963,7 +992,8 @@ pub async fn handle_vm_snapshot_create(
     let snap = req.name.trim();
     if !valid_snapshot_name(snap) {
         return ResponseHelper::json_error(
-            "The snapshot name may only contain letters, digits, dots, dashes and underscores.".to_string(),
+            "The snapshot name may only contain letters, digits, dots, dashes and underscores."
+                .to_string(),
         );
     }
     match IncusService::create_snapshot(&name, snap, req.stateful).await {
@@ -1123,9 +1153,7 @@ pub async fn handle_screen_ticket(
         Err(e) => return incus_err(e),
     };
     if vnc_display(&inst).is_none() {
-        return ResponseHelper::json_error(
-            "This machine has no graphical screen.".to_string(),
-        );
+        return ResponseHelper::json_error("This machine has no graphical screen.".to_string());
     }
     if inst.status_code != STATUS_RUNNING {
         return ResponseHelper::json_error("Start the machine to open its screen.".to_string());
@@ -1155,7 +1183,11 @@ pub async fn handle_screen_ws(
     let display = match IncusService::get_instance(&vm).await {
         Ok(inst) => match vnc_display(&inst) {
             Some(d) if inst.status_code == STATUS_RUNNING => d,
-            _ => return ResponseHelper::json_error("The machine's screen is not available.".to_string()),
+            _ => {
+                return ResponseHelper::json_error(
+                    "The machine's screen is not available.".to_string(),
+                )
+            }
         },
         Err(e) => return incus_err(e),
     };
@@ -1184,9 +1216,7 @@ async fn screen_relay(browser: WebSocket, username: String, vm: String, display:
         Err(e) => {
             let (mut tx, _rx) = browser.split();
             let _ = tx
-                .send(Message::Text(
-                    format!("screen unavailable: {e}").into(),
-                ))
+                .send(Message::Text(format!("screen unavailable: {e}").into()))
                 .await;
             let _ = tx.close().await;
             return;
@@ -1275,7 +1305,8 @@ fn ensure_iso_dir() -> Result<std::path::PathBuf, String> {
             if let Ok(m) = std::fs::metadata(p) {
                 let mode = m.permissions().mode();
                 if mode & 0o001 == 0 {
-                    let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode | 0o001));
+                    let _ =
+                        std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode | 0o001));
                 }
             }
         }
@@ -1328,7 +1359,7 @@ pub async fn handle_vm_isos(State(state): State<Arc<AppState>>, headers: HeaderM
             });
         }
     }
-    list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    list.sort_by_key(|a| a.name.to_lowercase());
     ResponseHelper::json_success(list)
 }
 
@@ -1344,23 +1375,23 @@ pub async fn handle_vm_iso_download(
     };
     let url = req.url.trim().to_string();
     if !url.starts_with("https://") || url.len() > 2048 {
-        return ResponseHelper::json_error("The download link must be an https:// address.".to_string());
+        return ResponseHelper::json_error(
+            "The download link must be an https:// address.".to_string(),
+        );
     }
-    let name = req
-        .name
-        .as_deref()
-        .and_then(safe_iso_name)
-        .or_else(|| {
-            url.split('?')
-                .next()
-                .and_then(|u| u.rsplit('/').next())
-                .and_then(safe_iso_name)
-        });
+    let name = req.name.as_deref().and_then(safe_iso_name).or_else(|| {
+        url.split('?')
+            .next()
+            .and_then(|u| u.rsplit('/').next())
+            .and_then(safe_iso_name)
+    });
     let name = match name {
         Some(n) => n,
-        None => return ResponseHelper::json_error(
-            "Give the download a name ending in .iso (letters, digits, dashes).".to_string(),
-        ),
+        None => {
+            return ResponseHelper::json_error(
+                "Give the download a name ending in .iso (letters, digits, dashes).".to_string(),
+            )
+        }
     };
     start_iso_download(&admin, &url, &name)
 }
@@ -1547,24 +1578,20 @@ async fn console_relay(browser: WebSocket, username: String, vm: String, cols: u
         }
     };
 
-    let data_ws = match IncusService::open_operation_ws(
-        &session.operation_id,
-        &session.fd_0_secret,
-    )
-    .await
-    {
-        Ok(w) => w,
-        Err(e) => {
-            let (mut tx, _rx) = browser.split();
-            let _ = tx
-                .send(Message::Text(
-                    format!("\r\n\x1b[31mConsole connection failed: {e}\x1b[0m\r\n").into(),
-                ))
-                .await;
-            let _ = tx.close().await;
-            return;
-        }
-    };
+    let data_ws =
+        match IncusService::open_operation_ws(&session.operation_id, &session.fd_0_secret).await {
+            Ok(w) => w,
+            Err(e) => {
+                let (mut tx, _rx) = browser.split();
+                let _ = tx
+                    .send(Message::Text(
+                        format!("\r\n\x1b[31mConsole connection failed: {e}\x1b[0m\r\n").into(),
+                    ))
+                    .await;
+                let _ = tx.close().await;
+                return;
+            }
+        };
     // Control channel is optional — resize just won't work without it.
     let control_ws = if session.control_secret.is_empty() {
         None
@@ -1583,7 +1610,7 @@ async fn console_relay(browser: WebSocket, username: String, vm: String, cols: u
         while let Some(msg) = incus_rx.next().await {
             match msg {
                 Ok(TMessage::Binary(b)) => {
-                    if browser_tx.send(Message::Binary(b.into())).await.is_err() {
+                    if browser_tx.send(Message::Binary(b)).await.is_err() {
                         break;
                     }
                 }
@@ -1609,7 +1636,11 @@ async fn console_relay(browser: WebSocket, username: String, vm: String, cols: u
         while let Some(Ok(msg)) = browser_rx.next().await {
             match msg {
                 Message::Binary(b) => {
-                    if incus_tx.send(TMessage::Binary(b.to_vec().into())).await.is_err() {
+                    if incus_tx
+                        .send(TMessage::Binary(b.to_vec().into()))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -1719,9 +1750,7 @@ fn parse_size_to_mib(s: &str) -> Option<u64> {
     if s.ends_with('%') || s.is_empty() {
         return None;
     }
-    let (num, unit): (String, String) = s
-        .chars()
-        .partition(|c| c.is_ascii_digit() || *c == '.');
+    let (num, unit): (String, String) = s.chars().partition(|c| c.is_ascii_digit() || *c == '.');
     let value: f64 = num.parse().ok()?;
     let mib = match unit.trim().to_lowercase().as_str() {
         "" | "b" => value / (1024.0 * 1024.0),
@@ -1841,8 +1870,7 @@ fn validate_local_iso(path: &str) -> Result<String, String> {
     if !path.to_ascii_lowercase().ends_with(".iso") {
         return Err("Choose a file that ends in .iso".to_string());
     }
-    let canon = std::fs::canonicalize(p)
-        .map_err(|_| "That ISO file was not found.".to_string())?;
+    let canon = std::fs::canonicalize(p).map_err(|_| "That ISO file was not found.".to_string())?;
     let meta = std::fs::metadata(&canon).map_err(|_| "That ISO file was not found.".to_string())?;
     if !meta.is_file() {
         return Err("That path is not a file.".to_string());
@@ -1940,17 +1968,20 @@ fn swtpm_available() -> bool {
 
 fn which(bin: &str) -> bool {
     std::env::var_os("PATH")
-        .map(|paths| {
-            std::env::split_paths(&paths).any(|dir| dir.join(bin).is_file())
-        })
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(bin).is_file()))
         .unwrap_or(false)
 }
 
+// `Response` is axum's canonical error type; boxing it would ripple
+// through every call site for no real benefit, so allow the lint here.
+#[allow(clippy::result_large_err)]
 fn os_or_error(id: &str) -> Result<&'static incus::OsOption, Response> {
     incus::os_catalogue()
         .iter()
         .find(|o| o.id == id)
-        .ok_or_else(|| ResponseHelper::json_error("Pick an operating system from the list.".to_string()))
+        .ok_or_else(|| {
+            ResponseHelper::json_error("Pick an operating system from the list.".to_string())
+        })
 }
 
 fn incus_err(e: IncusError) -> Response {
@@ -2105,16 +2136,26 @@ mod tests {
     #[test]
     fn test_validate_local_iso() {
         // shape checks (these fail before touching the filesystem)
-        assert!(validate_local_iso("relative/path.iso").unwrap_err().contains("absolute"));
-        assert!(validate_local_iso("/srv/iso/../secret.iso").unwrap_err().contains("not valid"));
-        assert!(validate_local_iso("/srv/iso/ubuntu.img").unwrap_err().contains(".iso"));
-        assert!(validate_local_iso("/nope/does-not-exist.iso").unwrap_err().contains("not found"));
+        assert!(validate_local_iso("relative/path.iso")
+            .unwrap_err()
+            .contains("absolute"));
+        assert!(validate_local_iso("/srv/iso/../secret.iso")
+            .unwrap_err()
+            .contains("not valid"));
+        assert!(validate_local_iso("/srv/iso/ubuntu.img")
+            .unwrap_err()
+            .contains(".iso"));
+        assert!(validate_local_iso("/nope/does-not-exist.iso")
+            .unwrap_err()
+            .contains("not found"));
 
         // a real small temp file: rejected for size, accepted once big enough
         let dir = std::env::temp_dir();
         let small = dir.join("hv-vmtest-small.iso");
         std::fs::write(&small, b"tiny").unwrap();
-        assert!(validate_local_iso(small.to_str().unwrap()).unwrap_err().contains("too small"));
+        assert!(validate_local_iso(small.to_str().unwrap())
+            .unwrap_err()
+            .contains("too small"));
         let big = dir.join("hv-vmtest-big.iso");
         std::fs::write(&big, vec![0u8; 12_000_000]).unwrap();
         let ok = validate_local_iso(big.to_str().unwrap()).unwrap();
@@ -2131,8 +2172,14 @@ mod tests {
 
     #[test]
     fn test_safe_iso_name() {
-        assert_eq!(safe_iso_name("ubuntu-24.04.iso").as_deref(), Some("ubuntu-24.04.iso"));
-        assert_eq!(safe_iso_name("virtio-win.iso").as_deref(), Some("virtio-win.iso"));
+        assert_eq!(
+            safe_iso_name("ubuntu-24.04.iso").as_deref(),
+            Some("ubuntu-24.04.iso")
+        );
+        assert_eq!(
+            safe_iso_name("virtio-win.iso").as_deref(),
+            Some("virtio-win.iso")
+        );
         assert!(safe_iso_name("../etc/passwd").is_none());
         assert!(safe_iso_name("a/b.iso").is_none());
         assert!(safe_iso_name("no-extension").is_none());

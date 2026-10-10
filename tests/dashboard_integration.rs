@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the Dashboard API — `crate::handlers::{dashboard,
 //! widgets}`:
 //!
@@ -45,8 +48,9 @@ use homevault::config::PathGuard;
 use homevault::handlers::dashboard::{
     handle_add_widget, handle_cpu_temperature, handle_dashboard_data, handle_disk_io_data,
     handle_get_all_widgets, handle_get_widget_preferences, handle_health_data,
-    handle_network_traffic_data, handle_remove_widget, handle_reorder_widgets, handle_server_details,
-    handle_storage_data, handle_storage_volumes, handle_update_widget_preference, handle_widget_data,
+    handle_network_traffic_data, handle_remove_widget, handle_reorder_widgets,
+    handle_server_details, handle_storage_data, handle_storage_volumes,
+    handle_update_widget_preference, handle_widget_data,
 };
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::widgets::{
@@ -61,7 +65,11 @@ type Req = Request<axum::body::Body>;
 
 static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -105,15 +113,24 @@ fn dashboard_router(state: Arc<AppState>) -> Router {
             "/api/dashboard/widget/{id}",
             get(handle_widget_data).delete(handle_remove_widget),
         )
-        .route("/api/dashboard/widgets/reorder", post(handle_reorder_widgets))
+        .route(
+            "/api/dashboard/widgets/reorder",
+            post(handle_reorder_widgets),
+        )
         .route(
             "/api/dashboard/network-traffic",
             get(handle_network_traffic_data),
         )
         .route("/api/dashboard/disk-io", get(handle_disk_io_data))
         .route("/api/dashboard/storage", get(handle_storage_data))
-        .route("/api/dashboard/cpu-temperature", get(handle_cpu_temperature))
-        .route("/api/dashboard/storage-volumes", get(handle_storage_volumes))
+        .route(
+            "/api/dashboard/cpu-temperature",
+            get(handle_cpu_temperature),
+        )
+        .route(
+            "/api/dashboard/storage-volumes",
+            get(handle_storage_volumes),
+        )
         .route("/api/dashboard/health", get(handle_health_data))
         .route("/api/dashboard/server-details", get(handle_server_details))
         .route(
@@ -261,8 +278,7 @@ async fn test_widget_crud_endpoints_reject_missing_token() {
     for (method, uri, body) in cases {
         let (status, _) = send(&mut router, method.clone(), uri, None, body.clone()).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{method} {uri}");
-        let (status, _) =
-            send(&mut router, method.clone(), uri, Some("nope"), body.clone()).await;
+        let (status, _) = send(&mut router, method.clone(), uri, Some("nope"), body.clone()).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri}");
     }
 }
@@ -322,7 +338,14 @@ async fn test_dashboard_data_has_the_expected_shape() {
     let mut router = dashboard_router(state);
     let token = login(&mut router, "u", "Password123!").await;
 
-    let (_, body) = send(&mut router, Method::GET, "/api/dashboard/data", Some(&token), None).await;
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/dashboard/data",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["data"]["app_name"], "HomeVault");
     assert_eq!(body["data"]["status"], "ok");
     assert!(body["data"]["widgets"].is_array());
@@ -371,9 +394,7 @@ async fn test_widget_add_list_reorder_remove_lifecycle() {
     let mut router = dashboard_router(state);
     let token = login(&mut router, "u", "Password123!").await;
 
-    let add = |id: &str, row: u32, col: u32| {
-        json!({"id": id, "wtype": "cpu", "title": id, "size": "1x1", "row": row, "col": col})
-    };
+    let add = |id: &str, row: u32, col: u32| json!({"id": id, "wtype": "cpu", "title": id, "size": "1x1", "row": row, "col": col});
 
     for (id, r, c) in [("alpha", 1, 1), ("beta", 1, 2)] {
         let (status, body) = send(
@@ -388,8 +409,20 @@ async fn test_widget_add_list_reorder_remove_lifecycle() {
     }
 
     // Both show up in the widget list and on the dashboard payload.
-    let (_, body) = send(&mut router, Method::GET, "/api/dashboard/widgets", Some(&token), None).await;
-    let ids: Vec<&str> = body["data"].as_array().unwrap().iter().filter_map(|w| w["id"].as_str()).collect();
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/dashboard/widgets",
+        Some(&token),
+        None,
+    )
+    .await;
+    let ids: Vec<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|w| w["id"].as_str())
+        .collect();
     assert!(ids.contains(&"alpha") && ids.contains(&"beta"), "{ids:?}");
 
     // Adding the same id again is rejected.
@@ -402,7 +435,10 @@ async fn test_widget_add_list_reorder_remove_lifecycle() {
     )
     .await;
     assert_eq!(body["success"], json!(false));
-    assert!(body["message"].as_str().unwrap_or("").contains("already exists"));
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("already exists"));
 
     // Reorder puts beta first (index 0 → row 1 col 1), alpha second.
     let (status, _) = send(
@@ -414,7 +450,14 @@ async fn test_widget_add_list_reorder_remove_lifecycle() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let (_, body) = send(&mut router, Method::GET, "/api/dashboard/widgets", Some(&token), None).await;
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/dashboard/widgets",
+        Some(&token),
+        None,
+    )
+    .await;
     let first = body["data"][0]["id"].as_str().unwrap();
     assert_eq!(first, "beta", "reorder should sort beta to row 1 col 1");
 
@@ -428,8 +471,20 @@ async fn test_widget_add_list_reorder_remove_lifecycle() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let (_, body) = send(&mut router, Method::GET, "/api/dashboard/widgets", Some(&token), None).await;
-    let ids: Vec<&str> = body["data"].as_array().unwrap().iter().filter_map(|w| w["id"].as_str()).collect();
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/dashboard/widgets",
+        Some(&token),
+        None,
+    )
+    .await;
+    let ids: Vec<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|w| w["id"].as_str())
+        .collect();
     assert_eq!(ids, vec!["beta"]);
 }
 
@@ -499,7 +554,11 @@ async fn test_widget_preferences_upsert_round_trip() {
         None,
     )
     .await;
-    assert_eq!(body["data"].as_array().unwrap().len(), 1, "upsert must not duplicate");
+    assert_eq!(
+        body["data"].as_array().unwrap().len(),
+        1,
+        "upsert must not duplicate"
+    );
     assert_eq!(body["data"][0]["position_x"], 9);
     assert_eq!(body["data"][0]["is_visible"], true);
 }

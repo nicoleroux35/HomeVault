@@ -70,8 +70,10 @@ use homevault::handlers::{
         handle_encryption_list, handle_encryption_lock, handle_encryption_unlock,
     },
     storage::{
-        handle_disks_list, handle_partitions_list, handle_removable_disks_list,
-        handle_virtual_disk_delete, handle_virtual_disk_scrub, handle_virtual_disks_list,
+        handle_disk_smart_capabilities, handle_disk_smart_test_start,
+        handle_disk_smart_test_status, handle_disks_list, handle_partitions_list,
+        handle_removable_disks_list, handle_virtual_disk_delete, handle_virtual_disk_scrub,
+        handle_virtual_disks_list,
     },
     AppState,
 };
@@ -144,6 +146,14 @@ fn storage_router(state: Arc<AppState>) -> Router {
         .route("/api/cache/shares/{name}", delete(handle_cache_share_delete))
         .route("/api/cache/mover/run", post(handle_cache_mover_run))
         .route("/api/cache/mover/runs", get(handle_cache_mover_runs))
+        .route(
+            "/api/storage/disks/{name}/smart/capabilities",
+            get(handle_disk_smart_capabilities),
+        )
+        .route(
+            "/api/storage/disks/{name}/smart/test",
+            get(handle_disk_smart_test_status).post(handle_disk_smart_test_start),
+        )
         .route("/api/encryption/volumes", get(handle_encryption_list))
         .route("/api/encryption/volumes", post(handle_encryption_create))
         .route(
@@ -248,6 +258,8 @@ fn read_endpoints() -> Vec<(Method, &'static str)> {
         (Method::GET, "/api/encryption/volumes"),
         (Method::GET, "/api/encryption/available-devices"),
         (Method::GET, "/api/storage/virtual-disks"),
+        (Method::GET, "/api/storage/disks/sda/smart/capabilities"),
+        (Method::GET, "/api/storage/disks/sda/smart/test"),
     ]
 }
 
@@ -289,6 +301,11 @@ fn write_endpoints() -> Vec<(Method, &'static str, Option<Value>)> {
         ),
         (Method::DELETE, "/api/storage/virtual-disks/ghost", None),
         (Method::POST, "/api/storage/virtual-disks/ghost/scrub", None),
+        (
+            Method::POST,
+            "/api/storage/disks/sda/smart/test",
+            Some(json!({"test_type": "short"})),
+        ),
     ]
 }
 

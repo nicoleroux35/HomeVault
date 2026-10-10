@@ -93,7 +93,8 @@ impl PoolService {
     }
 
     pub fn create_zfs_pool(name: &str, devices: &[&str]) -> Result<(), PoolError> {
-        let output = Command::new("sudo").arg("zpool")
+        let output = Command::new("sudo")
+            .arg("zpool")
             .args(["create", name])
             .args(devices)
             .output()?;
@@ -109,7 +110,8 @@ impl PoolService {
     pub fn delete_pool(name: &str, pool_type: PoolType) -> Result<(), PoolError> {
         match pool_type {
             PoolType::Zfs => {
-                let output = Command::new("sudo").arg("zpool")
+                let output = Command::new("sudo")
+                    .arg("zpool")
                     .args(["destroy", "-f", name])
                     .output()?;
 
@@ -142,7 +144,10 @@ impl PoolService {
                 Self::remove_pool_fstab_entry(&format!("# homevault-pool:{}", name));
 
                 for dev in &devices {
-                    let _ = Command::new("sudo").arg("wipefs").args(["-a", &dev.device]).output();
+                    let _ = Command::new("sudo")
+                        .arg("wipefs")
+                        .args(["-a", &dev.device])
+                        .output();
                 }
 
                 if let Some(mp) = mount_point {
@@ -163,7 +168,10 @@ impl PoolService {
     pub fn start_scrub(name: &str, pool_type: PoolType) -> Result<(), PoolError> {
         match pool_type {
             PoolType::Zfs => {
-                let output = Command::new("sudo").arg("zpool").args(["scrub", name]).output()?;
+                let output = Command::new("sudo")
+                    .arg("zpool")
+                    .args(["scrub", name])
+                    .output()?;
 
                 if !output.status.success() {
                     return Err(PoolError::CommandFailed(
@@ -183,11 +191,11 @@ impl PoolService {
                 ))
             }
             PoolType::Btrfs => {
-                let mount_point = Self::btrfs_mount_point(name).ok_or_else(|| {
-                    PoolError::PoolNotFound(format!("{} is not mounted", name))
-                })?;
+                let mount_point = Self::btrfs_mount_point(name)
+                    .ok_or_else(|| PoolError::PoolNotFound(format!("{} is not mounted", name)))?;
 
-                let output = Command::new("sudo").arg("btrfs")
+                let output = Command::new("sudo")
+                    .arg("btrfs")
                     .args(["scrub", "start", &mount_point])
                     .output()?;
 
@@ -209,7 +217,10 @@ impl PoolService {
     pub fn get_scrub_status(name: &str, pool_type: PoolType) -> Result<String, PoolError> {
         match pool_type {
             PoolType::Zfs => {
-                let output = Command::new("sudo").arg("zpool").args(["status", name]).output()?;
+                let output = Command::new("sudo")
+                    .arg("zpool")
+                    .args(["status", name])
+                    .output()?;
 
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
@@ -233,7 +244,8 @@ impl PoolService {
                     return Ok("Not available".to_string());
                 };
 
-                let output = Command::new("sudo").arg("btrfs")
+                let output = Command::new("sudo")
+                    .arg("btrfs")
                     .args(["scrub", "status", &mount_point])
                     .output()?;
 
@@ -285,15 +297,16 @@ impl PoolService {
             }
             "btrfs" => {
                 if valid_disks.is_empty() {
-                    return Err(PoolError::Parse("Btrfs requires at least 1 disk".to_string()));
-                }
-            }
-            "mdadm"
-                if valid_disks.len() < 2 => {
                     return Err(PoolError::Parse(
-                        "MDADM requires at least 2 disks".to_string(),
+                        "Btrfs requires at least 1 disk".to_string(),
                     ));
                 }
+            }
+            "mdadm" if valid_disks.len() < 2 => {
+                return Err(PoolError::Parse(
+                    "MDADM requires at least 2 disks".to_string(),
+                ));
+            }
             _ => {}
         }
 
@@ -306,7 +319,8 @@ impl PoolService {
         // `zpool` is an optional package (see installer/install.sh) — a
         // system without ZFS installed simply has no ZFS pools, it's not
         // an error condition for the rest of the pool list.
-        let output = match Command::new("sudo").arg("zpool")
+        let output = match Command::new("sudo")
+            .arg("zpool")
             .args([
                 "list",
                 "-H",
@@ -359,7 +373,11 @@ impl PoolService {
         // work (see the `handle_pools_list` doc comment in handlers/storage.rs
         // for why cache-tier is intentionally exempt from the "no RAID in
         // Storage" rule).
-        let output = match Command::new("sudo").arg("mdadm").args(["--detail", "--scan"]).output() {
+        let output = match Command::new("sudo")
+            .arg("mdadm")
+            .args(["--detail", "--scan"])
+            .output()
+        {
             Ok(o) => o,
             Err(_) => return Ok(Vec::new()),
         };
@@ -410,7 +428,8 @@ impl PoolService {
     }
 
     fn get_zfs_devices(name: &str) -> Result<Vec<PoolDevice>, PoolError> {
-        let output = Command::new("sudo").arg("zpool")
+        let output = Command::new("sudo")
+            .arg("zpool")
             .args(["status", name, "-P", "-L"])
             .output()?;
 
@@ -451,7 +470,8 @@ impl PoolService {
     // ("cannot open ...: No such file or directory") — confirmed live this
     // silently zeroed out every mdadm pool's reported size/devices/profile.
     fn get_mdadm_devices(name: &str) -> Result<Vec<PoolDevice>, PoolError> {
-        let output = Command::new("sudo").arg("mdadm")
+        let output = Command::new("sudo")
+            .arg("mdadm")
             .args(["--detail", name])
             .output()?;
 
@@ -480,7 +500,10 @@ impl PoolService {
                 Some(dev) if dev.starts_with("/dev/") => {
                     let state = parts
                         .iter()
-                        .find(|t| ["active", "spare", "faulty", "rebuilding", "sync"].contains(&t.to_lowercase().as_str()))
+                        .find(|t| {
+                            ["active", "spare", "faulty", "rebuilding", "sync"]
+                                .contains(&t.to_lowercase().as_str())
+                        })
                         .copied()
                         .unwrap_or("active");
                     devices.push(PoolDevice {
@@ -505,7 +528,8 @@ impl PoolService {
         // `mountpoint` is a ZFS *dataset* property (`zfs get`), not a pool
         // property — `zpool get mountpoint` errors out with "invalid
         // property", which left every ZFS pool showing as unmounted.
-        let output = Command::new("sudo").arg("zfs")
+        let output = Command::new("sudo")
+            .arg("zfs")
             .args(["get", "-H", "-o", "value", "mountpoint", name])
             .output()
             .ok()?;
@@ -530,9 +554,7 @@ impl PoolService {
         for line in mounts.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
             let Some(dev) = parts.first() else { continue };
-            let hit = *dev == name
-                || canonical.as_deref() == Some(*dev)
-                || dev.contains(name);
+            let hit = *dev == name || canonical.as_deref() == Some(*dev) || dev.contains(name);
             if hit {
                 return Some(parts.get(1).unwrap_or(&"").to_string());
             }
@@ -555,7 +577,8 @@ impl PoolService {
     }
 
     fn get_mdadm_size(name: &str) -> Result<u64, PoolError> {
-        let output = Command::new("sudo").arg("mdadm")
+        let output = Command::new("sudo")
+            .arg("mdadm")
             .args(["--detail", name])
             .output()?;
 
@@ -581,7 +604,8 @@ impl PoolService {
 
     /// Extracts the mdadm RAID level (e.g. "raid1") from `mdadm --detail`.
     fn get_mdadm_raid_profile(name: &str) -> Option<String> {
-        let output = Command::new("sudo").arg("mdadm")
+        let output = Command::new("sudo")
+            .arg("mdadm")
             .args(["--detail", name])
             .output()
             .ok()?;
@@ -600,7 +624,11 @@ impl PoolService {
     /// Extracts the ZFS pool's redundancy profile (mirror/raidzN/stripe)
     /// from `zpool status`'s `config:` section.
     fn get_zfs_raid_profile(name: &str) -> Option<String> {
-        let output = Command::new("sudo").arg("zpool").args(["status", name]).output().ok()?;
+        let output = Command::new("sudo")
+            .arg("zpool")
+            .args(["status", name])
+            .output()
+            .ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
 
         let mut in_config = false;
@@ -641,7 +669,11 @@ impl PoolService {
     /// Scans Btrfs filesystems (each one is its own "pool" — Btrfs has no
     /// separate pool/filesystem distinction like ZFS).
     fn scan_btrfs_pools() -> Result<Vec<PoolInfo>, PoolError> {
-        let output = match Command::new("sudo").arg("btrfs").args(["filesystem", "show"]).output() {
+        let output = match Command::new("sudo")
+            .arg("btrfs")
+            .args(["filesystem", "show"])
+            .output()
+        {
             Ok(o) => o,
             Err(_) => return Ok(Vec::new()),
         };
@@ -672,9 +704,18 @@ impl PoolService {
                 // `Label: 'name' uuid: ...` or `Label: none  uuid: ...`
                 let after = trimmed.trim_start_matches("Label:").trim();
                 let label = if after.starts_with('\'') {
-                    after.trim_start_matches('\'').split('\'').next().unwrap_or("").to_string()
+                    after
+                        .trim_start_matches('\'')
+                        .split('\'')
+                        .next()
+                        .unwrap_or("")
+                        .to_string()
                 } else {
-                    after.split_whitespace().next().unwrap_or("unknown").to_string()
+                    after
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("unknown")
+                        .to_string()
                 };
                 current_label = Some(label);
             } else if trimmed.starts_with("devid") {
@@ -699,7 +740,11 @@ impl PoolService {
         }
 
         if let Some(label) = current_label.take() {
-            pools.push(Self::build_btrfs_pool_info(label, &current_devices, missing));
+            pools.push(Self::build_btrfs_pool_info(
+                label,
+                &current_devices,
+                missing,
+            ));
         }
 
         Ok(pools)
@@ -721,9 +766,15 @@ impl PoolService {
             size_bytes,
             used_bytes,
             available_bytes,
-            health: if missing { "degraded".to_string() } else { "clean".to_string() },
+            health: if missing {
+                "degraded".to_string()
+            } else {
+                "clean".to_string()
+            },
             device_count: devices.len(),
-            raid_profile: mount_point.as_deref().and_then(Self::get_btrfs_raid_profile),
+            raid_profile: mount_point
+                .as_deref()
+                .and_then(Self::get_btrfs_raid_profile),
             mount_point,
         }
     }
@@ -731,7 +782,11 @@ impl PoolService {
     /// Reads the Btrfs "Data" redundancy profile (e.g. "RAID1", "single")
     /// for a mounted filesystem via `btrfs filesystem df`.
     fn get_btrfs_raid_profile(mount_point: &str) -> Option<String> {
-        let output = Command::new("sudo").arg("btrfs").args(["filesystem", "df", mount_point]).output().ok()?;
+        let output = Command::new("sudo")
+            .arg("btrfs")
+            .args(["filesystem", "df", mount_point])
+            .output()
+            .ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
 
         for line in stdout.lines() {
@@ -746,7 +801,11 @@ impl PoolService {
     /// Finds a Btrfs filesystem's mount point by matching any of its member
     /// devices against `/proc/mounts` (same idiom as `get_mdadm_mount_point`).
     pub(crate) fn btrfs_mount_point(name: &str) -> Option<String> {
-        let output = Command::new("sudo").arg("btrfs").args(["filesystem", "show", name]).output().ok()?;
+        let output = Command::new("sudo")
+            .arg("btrfs")
+            .args(["filesystem", "show", name])
+            .output()
+            .ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
 
         let mut member_devices = Vec::new();
@@ -762,7 +821,9 @@ impl PoolService {
         let mounts = std::fs::read_to_string("/proc/mounts").ok()?;
         for line in mounts.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            let Some(device) = parts.first() else { continue };
+            let Some(device) = parts.first() else {
+                continue;
+            };
             let Some(fstype) = parts.get(2) else { continue };
             if *fstype == "btrfs" && member_devices.iter().any(|d| d == device) {
                 return parts.get(1).map(|s| s.to_string());
@@ -773,7 +834,8 @@ impl PoolService {
 
     /// Reads used/free bytes for a mounted Btrfs filesystem.
     fn get_btrfs_usage(mount_point: &str) -> Option<(u64, u64)> {
-        let output = Command::new("sudo").arg("btrfs")
+        let output = Command::new("sudo")
+            .arg("btrfs")
             .args(["filesystem", "usage", "-b", mount_point])
             .output()
             .ok()?;
@@ -784,11 +846,10 @@ impl PoolService {
         for line in stdout.lines() {
             let trimmed = line.trim();
             if let Some(v) = trimmed.strip_prefix("Used:") {
-                used = v.trim().split_whitespace().next().and_then(|s| s.parse().ok());
+                used = v.split_whitespace().next().and_then(|s| s.parse().ok());
             } else if trimmed.starts_with("Free (estimated):") {
                 free = trimmed
                     .trim_start_matches("Free (estimated):")
-                    .trim()
                     .split_whitespace()
                     .next()
                     .and_then(|s| s.parse().ok());
@@ -803,7 +864,8 @@ impl PoolService {
 
     /// Lists `devid`/path/size entries for a named Btrfs filesystem.
     fn get_btrfs_devices(name: &str) -> Result<Vec<PoolDevice>, PoolError> {
-        let output = Command::new("sudo").arg("btrfs")
+        let output = Command::new("sudo")
+            .arg("btrfs")
             .args(["filesystem", "show", name])
             .output()?;
 
@@ -820,7 +882,7 @@ impl PoolService {
                 continue;
             }
             let parts: Vec<&str> = trimmed.split_whitespace().collect();
-            let has_path = parts.iter().any(|p| *p == "path");
+            let has_path = parts.contains(&"path");
             let path = if has_path {
                 parts.last().map(|s| s.to_string())
             } else {
@@ -841,7 +903,11 @@ impl PoolService {
             devices.push(PoolDevice {
                 name: path.clone().unwrap_or_else(|| format!("devid-{}", devid)),
                 device: path.unwrap_or_else(|| "missing".to_string()),
-                state: if has_path { "active".to_string() } else { "missing".to_string() },
+                state: if has_path {
+                    "active".to_string()
+                } else {
+                    "missing".to_string()
+                },
                 size_bytes: size,
             });
         }
@@ -931,9 +997,14 @@ impl PoolService {
     /// does (kept as an independent copy since that code is frozen).
     fn validate_pool_name(name: &str) -> Result<(), PoolError> {
         if name.is_empty() || name.len() > 32 {
-            return Err(PoolError::Parse("Pool name must be 1-32 characters".to_string()));
+            return Err(PoolError::Parse(
+                "Pool name must be 1-32 characters".to_string(),
+            ));
         }
-        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
             return Err(PoolError::Parse(
                 "Pool name can only contain alphanumeric, dash and underscore characters"
                     .to_string(),
@@ -1003,7 +1074,13 @@ impl PoolService {
 
         let device_paths: Vec<String> = devices
             .iter()
-            .map(|d| if d.starts_with("/dev/") { d.clone() } else { format!("/dev/{}", d) })
+            .map(|d| {
+                if d.starts_with("/dev/") {
+                    d.clone()
+                } else {
+                    format!("/dev/{}", d)
+                }
+            })
             .collect();
 
         let target_mount = mount_point
@@ -1011,8 +1088,12 @@ impl PoolService {
             .unwrap_or_else(|| format!("{}/{}", crate::config::paths::POOLS_MOUNT_BASE, name));
 
         match pool_type {
-            PoolType::Zfs => Self::create_zfs_advanced_pool(name, raid_profile, &device_paths, &target_mount),
-            PoolType::Btrfs => Self::create_btrfs_advanced_pool(name, raid_profile, &device_paths, &target_mount),
+            PoolType::Zfs => {
+                Self::create_zfs_advanced_pool(name, raid_profile, &device_paths, &target_mount)
+            }
+            PoolType::Btrfs => {
+                Self::create_btrfs_advanced_pool(name, raid_profile, &device_paths, &target_mount)
+            }
             _ => unreachable!(),
         }
     }
@@ -1057,11 +1138,15 @@ impl PoolService {
             other => other,
         };
 
-        let mut args: Vec<&str> = vec!["-f", "-d", raid_profile, "-m", metadata_profile, "-L", name];
+        let mut args: Vec<&str> =
+            vec!["-f", "-d", raid_profile, "-m", metadata_profile, "-L", name];
         let device_refs: Vec<&str> = devices.iter().map(|s| s.as_str()).collect();
         args.extend(device_refs);
 
-        let output = Command::new("sudo").arg("mkfs.btrfs").args(&args).output()?;
+        let output = Command::new("sudo")
+            .arg("mkfs.btrfs")
+            .args(&args)
+            .output()?;
         if !output.status.success() {
             return Err(PoolError::CommandFailed(
                 String::from_utf8_lossy(&output.stderr).to_string(),
@@ -1072,14 +1157,20 @@ impl PoolService {
         // the unprivileged homevault process directly and fails outright
         // under /mnt (root-owned, confirmed live), since sudo only wraps
         // external Command invocations, not Rust's own syscalls.
-        let mkdir_output = Command::new("sudo").arg("mkdir").args(["-p", mount_point]).output()?;
+        let mkdir_output = Command::new("sudo")
+            .arg("mkdir")
+            .args(["-p", mount_point])
+            .output()?;
         if !mkdir_output.status.success() {
             return Err(PoolError::CommandFailed(format!(
                 "Failed to create mount point: {}",
                 String::from_utf8_lossy(&mkdir_output.stderr)
             )));
         }
-        let mount_output = Command::new("sudo").arg("mount").args([&devices[0], mount_point]).output()?;
+        let mount_output = Command::new("sudo")
+            .arg("mount")
+            .args([&devices[0], mount_point])
+            .output()?;
         if !mount_output.status.success() {
             return Err(PoolError::CommandFailed(format!(
                 "Pool created but failed to mount: {}",
@@ -1088,8 +1179,14 @@ impl PoolService {
         }
 
         let marker = format!("# homevault-pool:{}", name);
-        if let Ok(uuid_output) = Command::new("sudo").arg("blkid").args(["-s", "UUID", "-o", "value", &devices[0]]).output() {
-            let uuid = String::from_utf8_lossy(&uuid_output.stdout).trim().to_string();
+        if let Ok(uuid_output) = Command::new("sudo")
+            .arg("blkid")
+            .args(["-s", "UUID", "-o", "value", &devices[0]])
+            .output()
+        {
+            let uuid = String::from_utf8_lossy(&uuid_output.stdout)
+                .trim()
+                .to_string();
             if !uuid.is_empty() {
                 let fstab_line = format!("UUID={} {} btrfs defaults,nofail 0 2", uuid, mount_point);
                 let _ = Self::append_pool_fstab_entry(&marker, &fstab_line);
@@ -1224,8 +1321,14 @@ mod tests {
     #[test]
     fn test_pool_type_serialization() {
         assert_eq!(serde_json::to_string(&PoolType::Zfs).unwrap(), "\"Zfs\"");
-        assert_eq!(serde_json::to_string(&PoolType::Mdadm).unwrap(), "\"Mdadm\"");
-        assert_eq!(serde_json::to_string(&PoolType::Btrfs).unwrap(), "\"Btrfs\"");
+        assert_eq!(
+            serde_json::to_string(&PoolType::Mdadm).unwrap(),
+            "\"Mdadm\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PoolType::Btrfs).unwrap(),
+            "\"Btrfs\""
+        );
     }
 
     #[test]
@@ -1265,7 +1368,14 @@ mod tests {
 
     #[test]
     fn test_validate_pool_name_rejects_shell_and_path_metacharacters() {
-        for bad in ["../etc", "tank; rm -rf /", "a b", "pool$(id)", "p/../q", "tank\n"] {
+        for bad in [
+            "../etc",
+            "tank; rm -rf /",
+            "a b",
+            "pool$(id)",
+            "p/../q",
+            "tank\n",
+        ] {
             assert!(
                 PoolService::validate_pool_name(bad).is_err(),
                 "{bad:?} must be rejected"
@@ -1277,13 +1387,34 @@ mod tests {
 
     #[test]
     fn test_min_devices_for_profile_known_profiles() {
-        assert_eq!(PoolService::min_devices_for_profile(&PoolType::Btrfs, "single"), 1);
-        assert_eq!(PoolService::min_devices_for_profile(&PoolType::Btrfs, "raid1"), 2);
-        assert_eq!(PoolService::min_devices_for_profile(&PoolType::Btrfs, "raid10"), 4);
-        assert_eq!(PoolService::min_devices_for_profile(&PoolType::Zfs, "stripe"), 1);
-        assert_eq!(PoolService::min_devices_for_profile(&PoolType::Zfs, "mirror"), 2);
-        assert_eq!(PoolService::min_devices_for_profile(&PoolType::Zfs, "raidz1"), 3);
-        assert_eq!(PoolService::min_devices_for_profile(&PoolType::Zfs, "raidz3"), 5);
+        assert_eq!(
+            PoolService::min_devices_for_profile(&PoolType::Btrfs, "single"),
+            1
+        );
+        assert_eq!(
+            PoolService::min_devices_for_profile(&PoolType::Btrfs, "raid1"),
+            2
+        );
+        assert_eq!(
+            PoolService::min_devices_for_profile(&PoolType::Btrfs, "raid10"),
+            4
+        );
+        assert_eq!(
+            PoolService::min_devices_for_profile(&PoolType::Zfs, "stripe"),
+            1
+        );
+        assert_eq!(
+            PoolService::min_devices_for_profile(&PoolType::Zfs, "mirror"),
+            2
+        );
+        assert_eq!(
+            PoolService::min_devices_for_profile(&PoolType::Zfs, "raidz1"),
+            3
+        );
+        assert_eq!(
+            PoolService::min_devices_for_profile(&PoolType::Zfs, "raidz3"),
+            5
+        );
     }
 
     #[test]
@@ -1336,7 +1467,10 @@ mod tests {
     #[test]
     fn test_start_scrub_refuses_mdadm_without_running_a_command() {
         let err = PoolService::start_scrub("md0", PoolType::Mdadm).unwrap_err();
-        assert!(err.to_string().contains("managed by the RAID app"), "got: {err}");
+        assert!(
+            err.to_string().contains("managed by the RAID app"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -1363,8 +1497,8 @@ mod tests {
     #[test]
     fn test_create_pool_rejects_mdadm_and_unknown_types() {
         for ty in [PoolType::Mdadm, PoolType::Unknown] {
-            let err = PoolService::create_pool("tank", ty, "mirror", &["hv-a".into()], None)
-                .unwrap_err();
+            let err =
+                PoolService::create_pool("tank", ty, "mirror", &["hv-a".into()], None).unwrap_err();
             assert!(
                 err.to_string().contains("only support ZFS or Btrfs"),
                 "got: {err}"

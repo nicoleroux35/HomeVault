@@ -260,8 +260,8 @@ impl DockerService {
         // the wall-clock time is ~max(...) instead of the sum. Stats are only
         // spawned when requested (see the `include_stats` doc above).
         let (stats, local_images, networks) = std::thread::scope(|s| {
-            let stats_h = include_stats.then(|| s.spawn(|| Self::get_container_stats()));
-            let images_h = s.spawn(|| Self::get_local_image_tags());
+            let stats_h = include_stats.then(|| s.spawn(Self::get_container_stats));
+            let images_h = s.spawn(Self::get_local_image_tags);
 
             let net_h: Vec<_> = ids
                 .iter()
@@ -302,7 +302,8 @@ impl DockerService {
                 let image_full = parts[2].to_string();
                 let update_available = Self::check_update_available(&image_full, &local_images);
 
-                let compose_project = parts.get(7)
+                let compose_project = parts
+                    .get(7)
                     .filter(|s| !s.trim().is_empty())
                     .map(|s| s.trim().to_string());
 
@@ -336,7 +337,8 @@ impl DockerService {
 
     /// Fetch live per-container resource stats via `docker stats --no-stream`
     /// (memory, CPU, cumulative network I/O, cumulative block I/O).
-    fn get_container_stats() -> Result<std::collections::HashMap<String, ContainerStats>, DockerError> {
+    fn get_container_stats(
+    ) -> Result<std::collections::HashMap<String, ContainerStats>, DockerError> {
         let output = Command::new("docker")
             .args([
                 "stats",
@@ -400,10 +402,8 @@ impl DockerService {
             (n, 1_000_000.0)
         } else if let Some(n) = v.strip_suffix("kB").or_else(|| v.strip_suffix("KB")) {
             (n, 1_000.0)
-        } else if let Some(n) = v.strip_suffix("B") {
-            (n, 1.0)
         } else {
-            return None;
+            (v.strip_suffix("B")?, 1.0)
         };
         num.trim().parse::<f64>().ok().map(|f| (f * mult) as u64)
     }
@@ -415,13 +415,32 @@ impl DockerService {
         let value_str = parts.first().unwrap_or(&"").trim();
 
         if value_str.ends_with("GiB") || value_str.ends_with("GB") {
-            let num: f64 = value_str.replace("GiB", "").replace("GB", "").trim().parse().ok()?;
+            let num: f64 = value_str
+                .replace("GiB", "")
+                .replace("GB", "")
+                .trim()
+                .parse()
+                .ok()?;
             Some((num * 1024.0) as u64)
         } else if value_str.ends_with("MiB") || value_str.ends_with("MB") {
-            let num: f64 = value_str.replace("MiB", "").replace("MB", "").trim().parse().ok()?;
+            let num: f64 = value_str
+                .replace("MiB", "")
+                .replace("MB", "")
+                .trim()
+                .parse()
+                .ok()?;
             Some(num as u64)
-        } else if value_str.ends_with("KiB") || value_str.ends_with("KB") || value_str.ends_with("kB") {
-            let num: f64 = value_str.replace("KiB", "").replace("KB", "").replace("kB", "").trim().parse().ok()?;
+        } else if value_str.ends_with("KiB")
+            || value_str.ends_with("KB")
+            || value_str.ends_with("kB")
+        {
+            let num: f64 = value_str
+                .replace("KiB", "")
+                .replace("KB", "")
+                .replace("kB", "")
+                .trim()
+                .parse()
+                .ok()?;
             Some((num / 1024.0) as u64)
         } else if value_str.ends_with("B") {
             let num: f64 = value_str.replace("B", "").trim().parse().ok()?;
@@ -459,7 +478,10 @@ impl DockerService {
     }
 
     /// Return `true` if a different tag (or `:latest`) of the image exists locally but the current one doesn't.
-    fn check_update_available(image: &str, local_images: &std::collections::HashSet<String>) -> bool {
+    fn check_update_available(
+        image: &str,
+        local_images: &std::collections::HashSet<String>,
+    ) -> bool {
         let image_clean = image.split('@').next().unwrap_or(image).trim().to_string();
 
         if local_images.contains(&image_clean) {
@@ -509,7 +531,8 @@ impl DockerService {
                 let image_full = parts[2].to_string();
                 let update_available = Self::check_update_available(&image_full, &local_images);
 
-                let compose_project = parts.get(7)
+                let compose_project = parts
+                    .get(7)
                     .filter(|s| !s.trim().is_empty())
                     .map(|s| s.trim().to_string());
 
@@ -676,13 +699,21 @@ impl DockerService {
 
     /// Create and start a new container from the given request.
     pub fn create_container(req: &CreateContainerRequest) -> Result<(), DockerError> {
-        let mut args = vec!["run".to_string(), "-d".to_string(), "--name".to_string(), req.name.clone()];
+        let mut args = vec![
+            "run".to_string(),
+            "-d".to_string(),
+            "--name".to_string(),
+            req.name.clone(),
+        ];
 
         // Add port mappings
         for port in &req.ports {
             args.push("-p".to_string());
             let proto = if port.protocol == "udp" { "udp" } else { "tcp" };
-            args.push(format!("{}:{}/{}", port.host_port, port.container_port, proto));
+            args.push(format!(
+                "{}:{}/{}",
+                port.host_port, port.container_port, proto
+            ));
         }
 
         // Add volume mappings
@@ -907,7 +938,12 @@ impl DockerService {
     /// Get networks a container is connected to via `docker inspect`.
     fn get_container_networks(container_id: &str) -> Vec<String> {
         let output = Command::new("docker")
-            .args(["inspect", "--format", "{{.NetworkSettings.Networks}}", container_id])
+            .args([
+                "inspect",
+                "--format",
+                "{{.NetworkSettings.Networks}}",
+                container_id,
+            ])
             .output();
 
         match output {
@@ -918,16 +954,18 @@ impl DockerService {
                 if raw.is_empty() {
                     return vec![];
                 }
-                raw.split(' ').filter_map(|part| {
-                    let parts: Vec<&str> = part.split(':').collect();
-                    if parts.len() >= 2 {
-                        let name = parts[0].trim().to_string();
-                        if !name.is_empty() {
-                            return Some(name);
+                raw.split(' ')
+                    .filter_map(|part| {
+                        let parts: Vec<&str> = part.split(':').collect();
+                        if parts.len() >= 2 {
+                            let name = parts[0].trim().to_string();
+                            if !name.is_empty() {
+                                return Some(name);
+                            }
                         }
-                    }
-                    None
-                }).collect()
+                        None
+                    })
+                    .collect()
             }
             _ => vec![],
         }
@@ -984,7 +1022,8 @@ impl DockerService {
                 continue;
             };
             for m in Self::parse_ports(ports_str) {
-                map.entry(m.host_port).or_insert_with(|| name.trim().to_string());
+                map.entry(m.host_port)
+                    .or_insert_with(|| name.trim().to_string());
             }
         }
         map
@@ -992,14 +1031,21 @@ impl DockerService {
 
     /// The TCP port HomeVault's own web server listens on (env `PORT`, else 8080).
     fn homevault_port() -> u16 {
-        std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080)
+        std::env::var("PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(8080)
     }
 
     /// Check whether `port` is free to publish a container on — against the
     /// host's bound ports, other Docker containers, and HomeVault itself.
     pub fn check_port(port: u16) -> PortStatus {
         if port == 0 {
-            return PortStatus { available: false, used_by: Some("host".into()), detail: None };
+            return PortStatus {
+                available: false,
+                used_by: Some("host".into()),
+                detail: None,
+            };
         }
 
         // Attribute to a container first (most useful message), then to
@@ -1012,12 +1058,24 @@ impl DockerService {
             };
         }
         if port == Self::homevault_port() {
-            return PortStatus { available: false, used_by: Some("homevault".into()), detail: None };
+            return PortStatus {
+                available: false,
+                used_by: Some("homevault".into()),
+                detail: None,
+            };
         }
         if Self::host_bound_ports().contains(&port) {
-            return PortStatus { available: false, used_by: Some("host".into()), detail: None };
+            return PortStatus {
+                available: false,
+                used_by: Some("host".into()),
+                detail: None,
+            };
         }
-        PortStatus { available: true, used_by: None, detail: None }
+        PortStatus {
+            available: true,
+            used_by: None,
+            detail: None,
+        }
     }
 
     /// Start the Docker daemon via systemd. `homevault` is only in the `docker`
@@ -1091,7 +1149,12 @@ pub struct DockerNetwork {
 /// List all Docker networks.
 pub fn get_networks() -> Result<Vec<DockerNetwork>, DockerError> {
     let output = Command::new("docker")
-        .args(["network", "ls", "--format", "{{.ID}}|{{.Name}}|{{.Driver}}|{{.Scope}}"])
+        .args([
+            "network",
+            "ls",
+            "--format",
+            "{{.ID}}|{{.Name}}|{{.Driver}}|{{.Scope}}",
+        ])
         .output()?;
 
     if !output.status.success() {
@@ -1131,7 +1194,13 @@ pub fn get_networks() -> Result<Vec<DockerNetwork>, DockerError> {
 /// Get a single Docker network by name or ID with full details.
 pub fn get_network(name: &str) -> Result<DockerNetwork, DockerError> {
     let output = Command::new("docker")
-        .args(["network", "inspect", name, "--format", "{{.ID}}|{{.Name}}|{{.Driver}}|{{.Scope}}|{{.Internal}}"])
+        .args([
+            "network",
+            "inspect",
+            name,
+            "--format",
+            "{{.ID}}|{{.Name}}|{{.Driver}}|{{.Scope}}|{{.Internal}}",
+        ])
         .output()?;
 
     if !output.status.success() {
@@ -1144,7 +1213,9 @@ pub fn get_network(name: &str) -> Result<DockerNetwork, DockerError> {
     let parts: Vec<&str> = line.split('|').collect();
 
     if parts.len() < 5 {
-        return Err(DockerError::CommandFailed("Failed to parse network info".to_string()));
+        return Err(DockerError::CommandFailed(
+            "Failed to parse network info".to_string(),
+        ));
     }
 
     let net_id = parts[0].trim();
@@ -1170,8 +1241,11 @@ pub fn get_network(name: &str) -> Result<DockerNetwork, DockerError> {
 fn get_network_containers(network_id: &str) -> Vec<String> {
     let output = Command::new("docker")
         .args([
-            "network", "inspect", network_id,
-            "--format", "{{range $k, $v := .Containers}}{{$k}} {{end}}",
+            "network",
+            "inspect",
+            network_id,
+            "--format",
+            "{{range $k, $v := .Containers}}{{$k}} {{end}}",
         ])
         .output();
 
@@ -1189,7 +1263,10 @@ fn get_network_containers(network_id: &str) -> Vec<String> {
                         .output()
                         .ok()?;
                     if out.status.success() {
-                        let name = String::from_utf8_lossy(&out.stdout).trim().trim_start_matches('/').to_string();
+                        let name = String::from_utf8_lossy(&out.stdout)
+                            .trim()
+                            .trim_start_matches('/')
+                            .to_string();
                         Some(name)
                     } else {
                         Some(id.to_string())
@@ -1205,7 +1282,9 @@ fn get_network_containers(network_id: &str) -> Vec<String> {
 fn get_network_ipam(network_id: &str) -> (Option<String>, Option<String>, bool) {
     let output = Command::new("docker")
         .args([
-            "network", "inspect", network_id,
+            "network",
+            "inspect",
+            network_id,
             "--format",
             "{{(index .IPAM.Config 0).Subnet}}|{{(index .IPAM.Config 0).Gateway}}|{{.Internal}}",
         ])
@@ -1215,8 +1294,14 @@ fn get_network_ipam(network_id: &str) -> (Option<String>, Option<String>, bool) 
         Ok(o) if o.status.success() => {
             let raw = String::from_utf8_lossy(&o.stdout).trim().to_string();
             let parts: Vec<&str> = raw.split('|').collect();
-            let subnet = parts.first().filter(|s| !s.is_empty()).map(|s| s.to_string());
-            let gateway = parts.get(1).filter(|s| !s.is_empty()).map(|s| s.to_string());
+            let subnet = parts
+                .first()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let gateway = parts
+                .get(1)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
             let internal = parts.get(2).map(|s| s.trim() == "true").unwrap_or(false);
             (subnet, gateway, internal)
         }
@@ -1225,7 +1310,13 @@ fn get_network_ipam(network_id: &str) -> (Option<String>, Option<String>, bool) 
 }
 
 /// Create a Docker network.
-pub fn create_network(name: &str, driver: &str, subnet: Option<&str>, gateway: Option<&str>, internal: bool) -> Result<(), DockerError> {
+pub fn create_network(
+    name: &str,
+    driver: &str,
+    subnet: Option<&str>,
+    gateway: Option<&str>,
+    internal: bool,
+) -> Result<(), DockerError> {
     let mut args = vec!["network".to_string(), "create".to_string()];
 
     if let Some(sub) = subnet {
@@ -1295,7 +1386,10 @@ pub fn connect_container_to_network(container: &str, network: &str) -> Result<()
 }
 
 /// Disconnect a container from a network.
-pub fn disconnect_container_from_network(container: &str, network: &str) -> Result<(), DockerError> {
+pub fn disconnect_container_from_network(
+    container: &str,
+    network: &str,
+) -> Result<(), DockerError> {
     let output = Command::new("docker")
         .args(["network", "disconnect", network, container])
         .output()?;
@@ -1317,7 +1411,11 @@ mod tests {
     fn test_parse_ports_published_ipv4_and_ipv6_deduped() {
         // The real `docker ps` output for a `-p 8096:8096` container.
         let got = DockerService::parse_ports("0.0.0.0:8096->8096/tcp, [::]:8096->8096/tcp");
-        assert_eq!(got.len(), 1, "IPv4 + IPv6 lines must collapse to one mapping");
+        assert_eq!(
+            got.len(),
+            1,
+            "IPv4 + IPv6 lines must collapse to one mapping"
+        );
         assert_eq!(got[0].host_port, 8096);
         assert_eq!(got[0].container_port, 8096);
         assert_eq!(got[0].protocol, "tcp");
@@ -1355,10 +1453,22 @@ mod tests {
 
     #[test]
     fn test_port_from_socket_addr() {
-        assert_eq!(DockerService::port_from_socket_addr("0.0.0.0:8096"), Some(8096));
-        assert_eq!(DockerService::port_from_socket_addr("[::]:8096"), Some(8096));
-        assert_eq!(DockerService::port_from_socket_addr("[::1]:6010"), Some(6010));
-        assert_eq!(DockerService::port_from_socket_addr("127.0.0.1:53"), Some(53));
+        assert_eq!(
+            DockerService::port_from_socket_addr("0.0.0.0:8096"),
+            Some(8096)
+        );
+        assert_eq!(
+            DockerService::port_from_socket_addr("[::]:8096"),
+            Some(8096)
+        );
+        assert_eq!(
+            DockerService::port_from_socket_addr("[::1]:6010"),
+            Some(6010)
+        );
+        assert_eq!(
+            DockerService::port_from_socket_addr("127.0.0.1:53"),
+            Some(53)
+        );
         assert_eq!(DockerService::port_from_socket_addr("*:22"), Some(22));
         assert_eq!(DockerService::port_from_socket_addr("0.0.0.0:*"), None);
         assert_eq!(DockerService::port_from_socket_addr("garbage"), None);

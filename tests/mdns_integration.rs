@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for `GET /api/mdns/status` (`crate::handlers::mdns`).
 //!
 //! Fresh in-memory SQLite + all migrations per test, a minimal Axum router,
@@ -7,7 +10,10 @@
 //!
 //! Run: cargo test --test mdns_integration
 
-use axum::{routing::{get, post}, Router};
+use axum::{
+    routing::{get, post},
+    Router,
+};
 use http::{Method, Request, StatusCode};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -25,7 +31,11 @@ use homevault::storage::{Database, WidgetRepository};
 static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 type Req = Request<axum::body::Body>;
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -99,10 +109,18 @@ async fn send(
     } else {
         req.body(axum::body::Body::empty()).unwrap()
     };
-    let resp = ServiceExt::<Req>::ready(router).await.unwrap().call(req).await.unwrap();
+    let resp = ServiceExt::<Req>::ready(router)
+        .await
+        .unwrap()
+        .call(req)
+        .await
+        .unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let json = serde_json::from_slice(&bytes).unwrap_or(json!({"raw": String::from_utf8_lossy(&bytes)}));
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json =
+        serde_json::from_slice(&bytes).unwrap_or(json!({"raw": String::from_utf8_lossy(&bytes)}));
     (status, json)
 }
 
@@ -130,8 +148,14 @@ async fn test_mdns_status_requires_a_session() {
 async fn test_mdns_status_rejects_bad_token() {
     let (state, _tmp, _g) = setup_state().await;
     let mut r = router(state);
-    let (status, _) =
-        send(&mut r, Method::GET, "/api/mdns/status", Some("not-a-real-token"), None).await;
+    let (status, _) = send(
+        &mut r,
+        Method::GET,
+        "/api/mdns/status",
+        Some("not-a-real-token"),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
@@ -150,7 +174,10 @@ async fn test_mdns_status_returns_canonical_address_for_any_user() {
     assert_eq!(d["fqdn"], json!("homevault.local"));
     assert_eq!(d["http_url"], json!("http://homevault.local:8080"));
     let services = d["services"].as_array().expect("services array");
-    assert!(services.iter().any(|s| s == "_http._tcp"), "web UI is always advertised");
+    assert!(
+        services.iter().any(|s| s == "_http._tcp"),
+        "web UI is always advertised"
+    );
     // `available`/`running` are host-dependent (Avahi may or may not be
     // installed in CI) — just assert they are booleans and consistent.
     assert!(d["available"].is_boolean());

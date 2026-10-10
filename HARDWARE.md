@@ -99,7 +99,7 @@ qu'elle n'est pas configurée. Ajoutez son coût à la configuration de base.
 |---|---|---|---|
 | **Antivirus (ClamAV)** | **+1 à 1,5 Go** | +2 Go (signatures) | `clamd` garde toute la base en mémoire |
 | **ZFS** (disques virtuels) | **+1 Go minimum**, idéalement +1 Go par To de pool | — | 64 bits obligatoire ; **8 Go de RAM recommandés** pour des pools multi‑To. Btrfs et mdadm n'ont pas ce besoin |
-| **Chiffrement LUMS2 (cryptsetup)** | négligeable | — | Coût CPU à l'écriture/lecture |
+| **Chiffrement LUKS2 (cryptsetup)** | négligeable | — | Coût CPU à l'écriture/lecture |
 | **Assistant IA (Ollama)** | **+4 Go minimum** | +2 à 30 Go selon le modèle | Aucun modèle téléchargé automatiquement. gemma3:1b ≈ 2 Go RAM ; modèle 7–8B ≈ 8–16 Go RAM. GPU facultatif |
 | **Docker** (applications) | selon les conteneurs | +1 Go (moteur) + images | À ne pas installer si non utilisé — l'app reste alors simplement inactive |
 | **Sauvegardes `restic`** | +100 à 500 Mo pendant un job | dépôt séparé | Pic mémoire proportionnel au volume |

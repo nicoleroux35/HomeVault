@@ -118,6 +118,7 @@ smart_test_starting = "Lancement..."
 smart_test_running = "Test en cours : %pct%% · %min% min restantes"
 smart_test_result = "Dernier test : %result%"
 smart_test_not_available = "SMART non disponible"
+smart_test_admin_only = "Le lancement d'un test est réservé aux administrateurs"
 disk_usage = "Utilisation du disque"
 unpartitioned = "Non partitionné"
 

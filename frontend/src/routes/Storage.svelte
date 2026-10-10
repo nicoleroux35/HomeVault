@@ -9,6 +9,7 @@
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
   import { IconServer, IconDatabase, IconThermometer, IconUsb, IconActivity, IconLock, IconLockOpen, IconShieldCheckered, IconTrash, IconBolt, IconPlus, IconPlayerPlay, IconClock, IconAlertTriangle, IconStack, IconTool } from '@tabler/icons-svelte';
   import { t, translate } from '$lib/stores/i18n';
+  import { isAdmin } from '$lib/stores/auth';
 
   interface PhysicalDisk {
     name: string;
@@ -1092,6 +1093,8 @@
             <div class="py-3"><Spinner size="sm" /></div>
           {:else if !smartCapabilities.available}
             <div class="flex items-center gap-1.5 text-xs text-[var(--hv-shell-text)]"><IconAlertTriangle size={14} /> <span>{$t('storage.smart_test_not_available')}</span></div>
+          {:else if !$isAdmin}
+            <div class="flex items-center gap-1.5 text-xs text-[var(--hv-shell-text-2)]"><IconShieldCheckered size={14} /> <span>{$t('storage.smart_test_admin_only')}</span></div>
           {:else if smartTestStatus?.in_progress}
             <div>
               <div class={usageTrack}><div class="h-full rounded-full bg-[var(--hv-primary)]" style="width:{100 - (smartTestStatus?.progress_pct ?? 0)}%"></div></div>

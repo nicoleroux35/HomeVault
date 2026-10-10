@@ -85,7 +85,10 @@ pub struct ReposQuery {
     pub include_password: Option<bool>,
 }
 
-pub async fn handle_restic_available(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_restic_available(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -95,7 +98,10 @@ pub async fn handle_restic_available(State(state): State<Arc<AppState>>, headers
     }))
 }
 
-pub async fn handle_restic_version(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_restic_version(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -182,9 +188,7 @@ pub async fn handle_restic_repo_create(
             &req.source_paths,
             req.exclude_patterns.as_deref(),
             req.tags.as_deref(),
-            req.snapshot_source
-                .as_deref()
-                .unwrap_or("directory"),
+            req.snapshot_source.as_deref().unwrap_or("directory"),
             req.snapshot_pool.as_deref(),
             req.snapshot_dataset.as_deref(),
             req.snapshot_create_before_backup.unwrap_or(false),
@@ -333,10 +337,8 @@ pub async fn handle_restic_backup_create(
         admin_username, repo_config.name
     ));
 
-    let job_id = ProgressEmitter::backup(
-        &repo_config.source_paths.join(","),
-        &repo_config.repository,
-    );
+    let job_id =
+        ProgressEmitter::backup(&repo_config.source_paths.join(","), &repo_config.repository);
     ProgressEmitter::progress(&job_id, 5.0, "Starting restic backup...");
 
     let result = if repo_config.snapshot_create_before_backup {
@@ -345,9 +347,9 @@ pub async fn handle_restic_backup_create(
             .snapshot_dataset
             .as_deref()
             .unwrap_or("zpool/data");
-        let snap_name = req.snapshot_name.unwrap_or_else(|| {
-            format!("restic-{}", chrono::Utc::now().format("%Y%m%d_%H%M%S"))
-        });
+        let snap_name = req
+            .snapshot_name
+            .unwrap_or_else(|| format!("restic-{}", chrono::Utc::now().format("%Y%m%d_%H%M%S")));
 
         ProgressEmitter::progress(&job_id, 15.0, "Creating filesystem snapshot...");
         ResticService::create_backup_with_snapshot(
@@ -408,7 +410,9 @@ pub async fn handle_restic_backup_create(
             ProgressEmitter::complete(&job_id, "Restic backup completed successfully");
             crate::events::log_event(format!(
                 "Backup completed for repository '{}' ({} files, {} bytes added)",
-                repo_config.name, backup_result.total_files_processed, backup_result.data_added_bytes
+                repo_config.name,
+                backup_result.total_files_processed,
+                backup_result.data_added_bytes
             ));
             ResponseHelper::json_success(serde_json::json!({
                 "result": backup_result,
@@ -430,7 +434,18 @@ pub async fn handle_restic_backup_create(
                 .await
             {
                 let _ = repo_repo
-                    .update_backup_job(&db_job_id, "failed", 0, 0, 0, 0, 0, 0, 0, Some(&e.to_string()))
+                    .update_backup_job(
+                        &db_job_id,
+                        "failed",
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        Some(&e.to_string()),
+                    )
                     .await;
             }
 
@@ -511,11 +526,14 @@ pub async fn handle_restic_check(
 
     match ResticService::check_repo(&repo_config, req.read_data.unwrap_or(false)) {
         Ok(result) => {
-            ProgressEmitter::complete(&job_id, if result.healthy {
-                "Repository is healthy"
-            } else {
-                "Repository check found issues"
-            });
+            ProgressEmitter::complete(
+                &job_id,
+                if result.healthy {
+                    "Repository is healthy"
+                } else {
+                    "Repository check found issues"
+                },
+            );
             ResponseHelper::json_success(serde_json::json!({
                 "check": result,
                 "job_id": job_id
@@ -652,7 +670,10 @@ pub async fn handle_restic_snapshot_delete(
     }
 
     let repo_id = req.get("repo_id").and_then(|v| v.as_str()).unwrap_or("");
-    let snapshot_id = req.get("snapshot_id").and_then(|v| v.as_str()).unwrap_or("");
+    let snapshot_id = req
+        .get("snapshot_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
     if repo_id.is_empty() || snapshot_id.is_empty() {
         return ResponseHelper::json_error("repo_id and snapshot_id are required".to_string());
@@ -736,7 +757,8 @@ pub async fn handle_retention_policy_create(
         Ok(policy) => {
             crate::events::log_event(format!(
                 "Admin '{}' created backup retention policy '{}'",
-                admin_username, req.name.trim()
+                admin_username,
+                req.name.trim()
             ));
             ResponseHelper::json_success(policy)
         }

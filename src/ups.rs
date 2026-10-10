@@ -153,7 +153,10 @@ impl UpsService {
                     // hardware plugged in, or the usbhid-ups `port = auto`
                     // driver still retrying) is the normal state of the
                     // auto-detection config — not a warning.
-                    debug!("UPS {} is configured but its driver is not connected", ups.name);
+                    debug!(
+                        "UPS {} is configured but its driver is not connected",
+                        ups.name
+                    );
                 }
                 Err(e) => {
                     warn!("Failed to get status for UPS {}: {}", ups.name, e);
@@ -612,13 +615,22 @@ maxretry = 3
         };
         assert!(validate_ups_entry(&ok).is_ok());
 
-        let bad_name = UpsConfigEntry { name: "a b".into(), ..ok.clone() };
+        let bad_name = UpsConfigEntry {
+            name: "a b".into(),
+            ..ok.clone()
+        };
         assert!(validate_ups_entry(&bad_name).is_err());
 
-        let bad_driver = UpsConfigEntry { driver: "../../bin/sh".into(), ..ok.clone() };
+        let bad_driver = UpsConfigEntry {
+            driver: "../../bin/sh".into(),
+            ..ok.clone()
+        };
         assert!(validate_ups_entry(&bad_driver).is_err());
 
-        let bad_port = UpsConfigEntry { port: "a b".into(), ..ok.clone() };
+        let bad_port = UpsConfigEntry {
+            port: "a b".into(),
+            ..ok.clone()
+        };
         assert!(validate_ups_entry(&bad_port).is_err());
 
         let traversal = UpsConfigEntry {
@@ -628,7 +640,10 @@ maxretry = 3
         };
         assert!(validate_ups_entry(&traversal).is_err());
 
-        let empty_port = UpsConfigEntry { port: String::new(), ..ok.clone() };
+        let empty_port = UpsConfigEntry {
+            port: String::new(),
+            ..ok.clone()
+        };
         assert!(validate_ups_entry(&empty_port).is_err());
     }
 }

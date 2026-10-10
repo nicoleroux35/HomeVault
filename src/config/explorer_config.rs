@@ -41,7 +41,11 @@ impl ExplorerSettings {
         }
 
         // Auto-detect common mount points if no custom roots are configured
-        if settings.allowed_roots.iter().all(|r| !Path::new(r).exists()) {
+        if settings
+            .allowed_roots
+            .iter()
+            .all(|r| !Path::new(r).exists())
+        {
             let auto_roots = Self::detect_mount_points();
             if !auto_roots.is_empty() {
                 tracing::info!("Auto-detected mount points for explorer: {:?}", auto_roots);
@@ -85,8 +89,8 @@ impl ExplorerSettings {
         for candidate in candidates {
             let p = Path::new(candidate);
             if p.exists() && p.is_dir() {
-        // Ensure the directory is readable by the current process.
-        if std::fs::read_dir(p).is_ok() {
+                // Ensure the directory is readable by the current process.
+                if std::fs::read_dir(p).is_ok() {
                     mounts.push(candidate.to_string());
                 }
             }
@@ -101,18 +105,42 @@ impl ExplorerSettings {
                     // Only include real filesystem mounts (not pseudo filesystems)
                     let fs_type = parts.get(2).unwrap_or(&"");
                     let skip_types = [
-                        "sysfs", "proc", "devtmpfs", "devpts", "tmpfs", "securityfs",
-                        "cgroup", "cgroup2", "pstore", "bpf", "tracefs", "debugfs",
-                        "hugetlbfs", "mqueue", "fusectl", "configfs", "ramfs",
-                        "fuse.portal", "autofs", "binfmt_misc", "overlay", "rpc_pipefs",
-                        "nfsd", "procfs", "sysfs", "devpts"
+                        "sysfs",
+                        "proc",
+                        "devtmpfs",
+                        "devpts",
+                        "tmpfs",
+                        "securityfs",
+                        "cgroup",
+                        "cgroup2",
+                        "pstore",
+                        "bpf",
+                        "tracefs",
+                        "debugfs",
+                        "hugetlbfs",
+                        "mqueue",
+                        "fusectl",
+                        "configfs",
+                        "ramfs",
+                        "fuse.portal",
+                        "autofs",
+                        "binfmt_misc",
+                        "overlay",
+                        "rpc_pipefs",
+                        "nfsd",
+                        "procfs",
+                        "sysfs",
+                        "devpts",
                     ];
                     if !skip_types.contains(fs_type) {
                         let mp = Path::new(mount_point);
-                        if mp.exists() && mp.is_dir() && !mounts.contains(&mount_point.to_string())
-                            && std::fs::read_dir(mp).is_ok() {
-                                mounts.push(mount_point.to_string());
-                            }
+                        if mp.exists()
+                            && mp.is_dir()
+                            && !mounts.contains(&mount_point.to_string())
+                            && std::fs::read_dir(mp).is_ok()
+                        {
+                            mounts.push(mount_point.to_string());
+                        }
                     }
                 }
             }
@@ -210,9 +238,9 @@ impl PathGuard {
 
     /// Check if the resolved path is under any allowed root
     fn is_under_root(&self, path: &PathBuf) -> bool {
-        self.allowed_roots.iter().any(|root| {
-            path.starts_with(root) || path == root
-        })
+        self.allowed_roots
+            .iter()
+            .any(|root| path.starts_with(root) || path == root)
     }
 
     /// Get the list of allowed roots (for UI display)
@@ -246,7 +274,9 @@ mod tests {
         // Path traversal attempts should be blocked
         assert!(guard.validate(&format!("{}/../etc/passwd", root)).is_none());
         assert!(guard.validate("/etc/shadow").is_none());
-        assert!(guard.validate(&format!("{}/../../root/.ssh", root)).is_none());
+        assert!(guard
+            .validate(&format!("{}/../../root/.ssh", root))
+            .is_none());
     }
 
     #[test]
@@ -257,7 +287,9 @@ mod tests {
 
         // Valid paths under allowed root should pass
         assert!(guard.validate(&root).is_some());
-        assert!(guard.validate(&format!("{}/subdir/file.txt", root)).is_some());
+        assert!(guard
+            .validate(&format!("{}/subdir/file.txt", root))
+            .is_some());
     }
 
     #[test]

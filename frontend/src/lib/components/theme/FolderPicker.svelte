@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';
+  import { focusTrap } from '$lib/utils/focusTrap';
   import { t, translate } from '$lib/stores/i18n';
   import { IconFolderOpen, IconFolder, IconServer, IconChevronRight, IconHome, IconArrowUp, IconLoader, IconShieldCheckered, IconUsb, IconCloud, IconX, IconFile as FileIcon } from '@tabler/icons-svelte';
 
@@ -166,8 +167,15 @@
     onclose?.();
   }
 
-  function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') close();
+  // Portal the overlay to <body>: it is `position: fixed`, and a desktop
+  // window is a transformed / `overflow: hidden` ancestor — inside one the
+  // overlay resolves against the window box instead of the viewport, so a
+  // modal taller than the window was clipped at the top and its close button
+  // became unreachable (confirmed live: `.hv-docker-monitor` intercepted the
+  // click). Same rationale as `FloatingPathPicker` / `VmConsole`.
+  function portal(node: HTMLElement) {
+    document.body.appendChild(node);
+    return { destroy() { node.remove(); } };
   }
 
   function formatSize(bytes: number): string {
@@ -186,7 +194,15 @@
 {#if open}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="hv-fp-overlay" onclick={close} onkeydown={handleKeydown} role="dialog" tabindex="-1" aria-modal="true">
+  <div
+    class="hv-fp-overlay"
+    onclick={close}
+    use:portal
+    use:focusTrap={{ escape: close }}
+    role="dialog"
+    tabindex="-1"
+    aria-modal="true"
+  >
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="hv-fp-modal" onclick={(e) => e.stopPropagation()}>

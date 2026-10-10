@@ -231,6 +231,28 @@ async function gotoDesktop(page: Page, tokens: Tokens, lang?: string) {
   await page.waitForSelector('.hv-user-pill', { timeout: 20_000 });
 }
 
+/**
+ * The desktop hydrates in two waves: the shell (topbar pill, dock) paints
+ * first, then `frontend/src/main.ts` fetches and injects the ~31k-node icon
+ * sprite (`<svg>` + ~7.6k `<symbol>` + ~23.6k `<path>`) and the monitor
+ * widgets mount. A DOM census taken inside that window reads ~500 nodes, so
+ * every later reading looks like a leak — the node-count tests in sections 9
+ * and 14 must wait for the second wave before taking their baseline.
+ * Same guard as `login.spec.ts::waitForIconSprite` and
+ * `desktop.spec.ts::waitForDomSettle`.
+ */
+async function waitForDomSettle(page: Page) {
+  let prev = -1;
+  for (let i = 0; i < 40; i++) {
+    const n = await page.evaluate(() => document.querySelectorAll('*').length);
+    // The >1000 guard refuses an early "stable" reading from inside the
+    // pre-hydration window itself (two polls can land on the same ~500).
+    if (n === prev && n > 1000) return;
+    prev = n;
+    await page.waitForTimeout(250);
+  }
+}
+
 /** Click the Applications launcher and open one app tile by its display name. */
 async function openLaunchpadApp(page: Page, appName: string) {
   await page.locator('.hv-dock-item[aria-label="Applications"]').click();
@@ -443,10 +465,26 @@ test.describe('3 — Validation', () => {
     await win(page).getByRole('button', { name: 'New user' }).first().click();
   });
 
-  test('3.1 — empty username → "Identifier required."', async ({ page }) => {
+  test('3.1 — empty username → the field reports itself missing (native validation)', async ({ page }) => {
+    // Both create-form inputs carry `required`, so the browser blocks the
+    // submit before the JS guard in `handleCreate()` can run — the same
+    // contract `login.spec.ts` 3.1/3.3 asserts for the login form. The old
+    // assertion waited for the JS `users-err` slot, which never renders for
+    // an empty value, so it could only ever fail (or pass vacuously).
+    let apiCalled = false;
+    page.on('request', (r) => {
+      if (r.url().includes('/api/users') && r.request().method() === 'POST') apiCalled = true;
+    });
     await win(page).locator('#c-password').fill('SomePassw0rd!');
     await win(page).getByRole('button', { name: 'Create account' }).click();
-    await expect(win(page).locator('[data-testid="users-err"]')).toHaveText('Identifier required.');
+    await page.waitForTimeout(500);
+
+    expect(apiCalled, 'no create request may fire for an empty username').toBe(false);
+    const missing = await win(page).locator('#c-username').evaluate(
+      (el) => (el as HTMLInputElement).validity.valueMissing,
+    );
+    expect(missing).toBe(true);
+    await expect(win(page).locator('#c-username')).toBeVisible();
   });
 
   test('3.2 — whitespace-only username is treated as empty', async ({ page }) => {
@@ -456,10 +494,16 @@ test.describe('3 — Validation', () => {
     await expect(win(page).locator('[data-testid="users-err"]')).toHaveText('Identifier required.');
   });
 
-  test('3.3 — empty password → "Password required."', async ({ page }) => {
+  test('3.3 — empty password → the field reports itself missing (native validation)', async ({ page }) => {
     await win(page).locator('#c-username').fill(uniq('val_'));
     await win(page).getByRole('button', { name: 'Create account' }).click();
-    await expect(win(page).locator('[data-testid="users-err"]')).toHaveText('Password required.');
+    await page.waitForTimeout(500);
+
+    const missing = await win(page).locator('#c-password').evaluate(
+      (el) => (el as HTMLInputElement).validity.valueMissing,
+    );
+    expect(missing).toBe(true);
+    await expect(win(page).locator('#c-username')).toBeVisible();
   });
 
   test('3.4 — a too-short password → "8 characters minimum."', async ({ page }) => {
@@ -506,11 +550,15 @@ test.describe('4 — Interactions', () => {
     await gotoUsers(page, adminTokens);
     await win(page).getByRole('button', { name: 'New user' }).first().click();
     const chip = win(page).locator('[data-testid="users-chip"]', { hasText: sharedGroup });
-    await expect(chip).not.toHaveClass(/on/);
+    // `aria-pressed` is the chip's real accessible state (the `on` class is
+    // only a styling hook). The old `/on/`-free `/on/` pattern matched
+    // the `font-medium` utility in `chipRow`, so both assertions were
+    // vacuous — the toggle was never actually exercised.
+    await expect(chip).toHaveAttribute('aria-pressed', 'false');
     await chip.click();
-    await expect(chip).toHaveClass(/on/);
+    await expect(chip).toHaveAttribute('aria-pressed', 'true');
     await chip.click();
-    await expect(chip).not.toHaveClass(/on/);
+    await expect(chip).toHaveAttribute('aria-pressed', 'false');
   });
 
   test('4.4 — enabling the home-folder toggle reveals the disk picker or a hint', async ({ page }) => {
@@ -970,6 +1018,7 @@ test.describe('9 — Performance', () => {
     // cap would just be measuring the desktop shell, not this window, so
     // this checks the *delta* the Users window itself adds.
     await gotoDesktop(page, adminTokens);
+    await waitForDomSettle(page);
     const before = await page.evaluate(() => document.querySelectorAll('*').length);
     await openLaunchpadApp(page, 'Users');
     await page.waitForSelector('[data-testid="users-page"] [data-testid="users-tile"]');
@@ -1288,13 +1337,36 @@ test.describe('15 — i18n', () => {
 // for every role (admin included) — the server applies the quota regardless.
 
 test.describe('16 — Home directory size limit', () => {
+  /**
+   * Pick the first offered disk that actually has free space.
+   *
+   * The picker used to list every mounted partition, including the read-only
+   * squashfs images every snap package mounts on a loop device (16 of them on
+   * a stock Ubuntu dev host). Picking one of those left the size slider with
+   * `min == max == 0` and no live readout. `handle_available_home_disks` now
+   * filters those out (see `is_writable_home_filesystem`), but the tests still
+   * choose by free space so they describe the feature rather than whichever
+   * partition happens to be listed first on the host.
+   */
   async function openCreateHomeOnDisk(page: Page) {
     await gotoUsers(page, adminTokens);
     await win(page).getByRole('button', { name: 'New user' }).first().click();
     await win(page).locator('[data-testid="users-switch"]').first().click(); // home toggle
     const disks = win(page).locator('[data-testid="users-disk-grid"] [data-testid="users-disk"]');
     await expect(disks.first()).toBeVisible();
-    await disks.first().click();
+
+    const count = await disks.count();
+    for (let i = 0; i < count; i++) {
+      const disk = disks.nth(i);
+      const free = (await disk.locator('span').last().innerText().catch(() => '')).trim();
+      // The free-space line reads e.g. "123.4 GB free · ext4"; a 0-byte mount
+      // renders the `formatBytes(0)` placeholder ("— free").
+      if (free && !free.startsWith('—') && !/^0\b/.test(free)) {
+        await disk.click();
+        return;
+      }
+    }
+    test.skip(true, 'no mounted partition with free space on this host');
   }
 
   test('16.1 — picking a disk (role=user) reveals the size slider + readout', async ({ page }) => {
@@ -1312,14 +1384,22 @@ test.describe('16 — Home directory size limit', () => {
 
     const max = Number(await range.getAttribute('max'));
     const min = Number(await range.getAttribute('min'));
+    const step = Number(await range.getAttribute('step'));
     expect(max).toBeGreaterThan(min);
+
+    // A range input only accepts values on the `min + n·step` grid, and the
+    // free-space byte count never lands on it — `fill(String(max))` raised
+    // "Malformed value" (the old assertion never ran: the test used to die
+    // earlier on a 0-byte mount). Snap to the highest valid step instead.
+    const top = min + Math.floor((max - min) / step) * step;
+    expect(top).toBeGreaterThan(min);
 
     await range.fill(String(min));
     const allocLow = (await alloc.innerText()).trim();
     const remLow = (await rem.innerText()).trim();
 
-    await range.fill(String(max));
-    expect(Number(await range.inputValue())).toBe(max);
+    await range.fill(String(top));
+    expect(Number(await range.inputValue())).toBe(top);
     // Raising the slider raises the allocated figure and lowers the remaining
     // one — both readouts track it live.
     await expect(alloc).not.toHaveText(allocLow);
@@ -1362,18 +1442,36 @@ test.describe('16 — Home directory size limit', () => {
       await gotoUsers(page, adminTokens);
       await win(page).getByRole('button', { name: 'New user' }).first().click();
       await win(page).locator('#c-username').fill(username);
+      // `handle_user_create` requires a non-empty fullname (unlike the
+      // wizard and the update path, which accept it empty) — every other
+      // create flow in this suite supplies one.
+      await win(page).locator('#c-fullname').fill('Home Size Probe');
       await win(page).locator('#c-password').fill('BrandNewPassw0rd!');
       await win(page).locator('[data-testid="users-switch"]').first().click();
       const disks = win(page).locator('[data-testid="users-disk-grid"] [data-testid="users-disk"]');
       await expect(disks.first()).toBeVisible();
-      await disks.first().click();
+      // Same free-space rule as `openCreateHomeOnDisk`: a 0-byte mount would
+      // give the slider `min == max == 0` and the create would be untestable.
+      const diskCount = await disks.count();
+      let picked = false;
+      for (let i = 0; i < diskCount; i++) {
+        const free = (await disks.nth(i).locator('span').last().innerText().catch(() => '')).trim();
+        if (free && !free.startsWith('—') && !/^0\b/.test(free)) { await disks.nth(i).click(); picked = true; break; }
+      }
+      test.skip(!picked, 'no mounted partition with free space on this host');
       await win(page).locator('[data-testid="users-homesize-range"]').fill(
         String(await win(page).locator('[data-testid="users-homesize-range"]').getAttribute('min')),
       );
       await win(page).getByRole('button', { name: 'Create account' }).click();
-      // The account row lands; the size limit itself needs a real Linux
-      // account to enforce (out of scope for a synthetic E2E user).
-      await expect(win(page).locator('[data-testid="users-tile"]', { hasText: username })).toBeVisible({ timeout: 8_000 });
+      // The create succeeded (no error slot, form replaced by the new user's
+      // detail pane). Asserting the rail tile instead does not work here: the
+      // window is narrower than the 760px master-detail breakpoint, so with a
+      // detail open the rail is hidden and the tile is not rendered at all.
+      // The size limit itself needs a real Linux account to enforce (out of
+      // scope for a synthetic E2E user) — covered by users_integration.rs.
+      await expect(win(page).locator('[data-testid="users-detail-h1"]')).toHaveText('Home Size Probe', { timeout: 8_000 });
+      await expect(win(page).locator('[data-testid="users-err"]')).toHaveCount(0);
+      await expect(win(page).locator('#c-username')).toHaveCount(0);
     } finally {
       await deleteUser(sharedCtx, adminHeaders, username);
     }

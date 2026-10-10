@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the admin Groups-management API endpoints:
 //!
 //!   - GET    /api/groups/users              (list all users, for the member picker)
@@ -64,13 +67,15 @@ async fn setup_db() -> Database {
     let db = Database::new("sqlite::memory:")
         .await
         .expect("Failed to create in-memory database");
-    db.run_migrations()
-        .await
-        .expect("Failed to run migrations");
+    db.run_migrations().await.expect("Failed to run migrations");
     db
 }
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("Failed to create temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -192,8 +197,8 @@ async fn send(
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
-    let json = serde_json::from_slice(&bytes)
-        .unwrap_or(json!({"raw": String::from_utf8_lossy(&bytes)}));
+    let json =
+        serde_json::from_slice(&bytes).unwrap_or(json!({"raw": String::from_utf8_lossy(&bytes)}));
     (status, json)
 }
 
@@ -427,7 +432,14 @@ async fn test_group_delete_admin_group_protected_regardless_of_display_or_full_n
     create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
     let mut r = groups_router(state);
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
-    let (_, body) = send(&mut r, Method::DELETE, "/api/groups/admin", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::DELETE,
+        "/api/groups/admin",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["success"], json!(false));
 }
 
@@ -624,7 +636,14 @@ async fn test_group_remove_member_fails_cleanly_without_sudo() {
 async fn test_user_groups_no_token() {
     let (state, _tmp, _g) = setup_state().await;
     let mut r = groups_router(state);
-    let (_, body) = send(&mut r, Method::GET, "/api/users/regular1/groups", None, None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/users/regular1/groups",
+        None,
+        None,
+    )
+    .await;
     assert_eq!(body["success"], json!(false));
 }
 

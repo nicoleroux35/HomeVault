@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the AI Assistant (Chat) API — `crate::handlers::chat`.
 //!
 //! 7 endpoints:
@@ -65,7 +68,11 @@ type Req = Request<axum::body::Body>;
 
 static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -106,7 +113,10 @@ fn chat_router(state: Arc<AppState>) -> Router {
         .route("/api/chat/send/stream", post(handle_chat_send_stream))
         .route("/api/chat/models", get(handle_chat_models_list))
         .route("/api/chat/models/pull", post(handle_chat_models_pull))
-        .route("/api/chat/models/recommend", get(handle_chat_models_recommend))
+        .route(
+            "/api/chat/models/recommend",
+            get(handle_chat_models_recommend),
+        )
         .route("/api/chat/model", get(handle_chat_model_get))
         .route("/api/chat/model", put(handle_chat_model_set))
         .with_state(state)
@@ -366,7 +376,10 @@ async fn test_pull_and_model_set_reject_missing_or_empty_name() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(err_text(&body).to_lowercase().contains("modèle") || err_text(&body).to_lowercase().contains("model"));
+    assert!(
+        err_text(&body).to_lowercase().contains("modèle")
+            || err_text(&body).to_lowercase().contains("model")
+    );
 
     let (status, _) = send(
         &mut router,
@@ -398,7 +411,14 @@ async fn test_model_set_for_admin_updates_the_active_model_then_restore() {
     let token = login(&mut router, "admin1", "Password123!").await;
 
     // capture the current model so we can put it back (process-global)
-    let (_, before) = send(&mut router, Method::GET, "/api/chat/model", Some(&token), None).await;
+    let (_, before) = send(
+        &mut router,
+        Method::GET,
+        "/api/chat/model",
+        Some(&token),
+        None,
+    )
+    .await;
     let original = before["data"]["model"].as_str().unwrap().to_string();
 
     let (status, body) = send(
@@ -412,7 +432,14 @@ async fn test_model_set_for_admin_updates_the_active_model_then_restore() {
     assert_eq!(status, StatusCode::OK);
     assert!(body["success"] == true || body["message"].as_str().is_some());
 
-    let (_, after) = send(&mut router, Method::GET, "/api/chat/model", Some(&token), None).await;
+    let (_, after) = send(
+        &mut router,
+        Method::GET,
+        "/api/chat/model",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(after["data"]["model"], "llama3.2:3b");
 
     // restore
@@ -449,7 +476,10 @@ async fn test_recommend_requires_a_session() {
     assert_eq!(body["success"], false);
     // no host details leaked to an unauthenticated caller
     assert_eq!(body["data"]["system"]["total_ram_gb"].as_u64(), Some(0));
-    assert!(body["data"]["recommendations"].as_array().unwrap().is_empty());
+    assert!(body["data"]["recommendations"]
+        .as_array()
+        .unwrap()
+        .is_empty());
 
     let (_, body) = send(
         &mut router,

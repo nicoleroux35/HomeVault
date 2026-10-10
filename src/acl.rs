@@ -158,9 +158,10 @@ impl AclService {
 
         for forbidden in FORBIDDEN_PATHS {
             if canonical_str.starts_with(forbidden) {
-                return Err(AclError::CommandFailed(
-                    format!("Access denied: '{}' is a protected system path", path)
-                ));
+                return Err(AclError::CommandFailed(format!(
+                    "Access denied: '{}' is a protected system path",
+                    path
+                )));
             }
         }
 
@@ -171,10 +172,10 @@ impl AclService {
             .any(|prefix| canonical_str.starts_with(prefix));
 
         if !is_allowed {
-            return Err(AclError::CommandFailed(
-                format!("Path '{}' is outside allowed directories. Allowed: {:?}",
-                    path, allowed)
-            ));
+            return Err(AclError::CommandFailed(format!(
+                "Path '{}' is outside allowed directories. Allowed: {:?}",
+                path, allowed
+            )));
         }
 
         Ok(())
@@ -376,7 +377,10 @@ impl AclService {
     pub fn remove_all_acl(path: &str) -> Result<(), AclError> {
         Self::validate_acl_path(path)?;
 
-        let output = Command::new("sudo").arg("setfacl").args(["-b", path]).output()?;
+        let output = Command::new("sudo")
+            .arg("setfacl")
+            .args(["-b", path])
+            .output()?;
 
         if !output.status.success() {
             return Err(AclError::CommandFailed(

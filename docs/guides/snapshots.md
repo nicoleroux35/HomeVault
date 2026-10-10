@@ -4,38 +4,32 @@
 
 ## Backend
 
-Handlers in `src/handlers/snapshots.rs`, business logic in `src/snapshots.rs`
-(`SnapshotService`, ZFS-first / Btrfs-fallback dispatch).
+Business logic in `src/snapshots.rs` (`SnapshotService`, ZFS-first /
+Btrfs-fallback dispatch), consumed by the restic backup flows
+(`src/restic.rs`).
 
-> **Fixed:** every handler here used to take no `State`/`HeaderMap` at all —
-> all six endpoints, including destructive delete/rollback, were reachable
-> with **no session token whatsoever**. Reads now use `require_auth`,
-> mutations use `require_admin`.
-
-| Endpoint | Method | Auth | Notes |
-|----------|--------|------|-------|
-| `/snapshots/availability` | GET | auth | whether ZFS/Btrfs tools are installed |
-| `/snapshots/{pool}` | GET | auth | list snapshots for a pool |
-| `/snapshots/{pool}` | POST | admin | create (`{ name, dataset?, recursive }`) |
-| `/snapshots/{pool}/{name}/info` | GET | auth | ZFS-only detailed properties |
-| `/snapshots/{pool}/{name}` | DELETE | admin | delete |
-| `/snapshots/{pool}/{name}/rollback` | POST | admin | roll back to snapshot |
-
-`{pool}` is the pool **name** as reported by `GET /storage/pools` — for ZFS
-that's also the dataset identifier `zfs` commands expect, but Btrfs has no
-such identifier, so every Btrfs-specific function in `SnapshotService`
-resolves it to a real mount point first via
-`PoolService::btrfs_mount_point` before shelling out.
+> **Removed:** the standalone `/snapshots/{pool}` HTTP endpoints
+> (`src/handlers/snapshots.rs`) are gone — every handler there took no
+> `State`/`HeaderMap` at all, so all six endpoints, including destructive
+> delete/rollback, were reachable with **no session token whatsoever**.
+> Snapshot access is now scoped where it belongs:
+>
+> | Area | Endpoints | Auth |
+> |------|-----------|------|
+> | Explorer (ZFS, read-only) | `GET /api/explorer/snapshots?path=` — lists covering snapshots with a `browse_path` under `.zfs/snapshot/…` | auth |
+> | Backups (restic) | `GET /restic/repos/{id}/snapshots`, `POST /restic/snapshots/delete` | auth / admin |
+> | Virtual machines | `GET/POST /vm/{name}/snapshots`, `POST …/restore`, `DELETE …/{snap}` | admin |
 
 ## Frontend
 
-- Snapshot UI lives within `frontend/src/routes/Storage.svelte`, as a
-  per-pool expandable panel in the Pools tab (Zfs/Btrfs pools only).
-- `frontend/src/lib/services/api.ts`: `getSnapshotsAvailability`,
-  `getSnapshots`, `createSnapshot`, `deleteSnapshot`, `rollbackSnapshot`.
-- Translation keys: `storage.snapshots_panel_title`, `storage.snapshot_create`,
-  `storage.snapshot_rollback`, `storage.snapshot_delete_confirm`,
-  `storage.snapshot_rollback_confirm`, `storage.snapshot_none` (all 4 locales).
+- Snapshot UI lives in the Explorer (`Explorer.svelte`, read-only `.zfs`
+  browsing), Restic (`Restic.svelte`) and Virtual Machines
+  (`VirtualMachines.svelte`) routes — there is no standalone Snapshots
+  screen and no Pools tab in `Storage.svelte`.
+- Translation keys: `restic.*snapshot*` / `restic.tab_snapshots` (backup
+  snapshots), `explorer.no_snapshots` / `explorer.snapshot_readonly` /
+  `explorer.snapshot_exit` (read-only `.zfs` browsing), `vm.snapshots_title`
+  (saved states) — all 4 locales at key parity.
 
 ## Invariants
 

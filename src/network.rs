@@ -324,7 +324,11 @@ pub fn scan_wifi_networks() -> Vec<WifiNetwork> {
     // control socket is root-owned and the homevault service is unprivileged.
     let scan_trigger = wpa_cli(&wifi_iface, &["scan"]).output();
     if let Err(e) = &scan_trigger {
-        tracing::error!("scan_wifi_networks: failed to trigger scan on {}: {}", wifi_iface, e);
+        tracing::error!(
+            "scan_wifi_networks: failed to trigger scan on {}: {}",
+            wifi_iface,
+            e
+        );
     } else if let Ok(out) = &scan_trigger {
         if !out.status.success() {
             tracing::warn!(
@@ -360,7 +364,10 @@ pub fn wifi_connect(ssid: &str, password: &str, security: &str) -> Result<(), St
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::error!("wifi_connect: wpa_cli add_network failed (stderr: {})", stderr);
+        tracing::error!(
+            "wifi_connect: wpa_cli add_network failed (stderr: {})",
+            stderr
+        );
         return Err(format!("Failed to add WiFi network: {}", stderr));
     }
 
@@ -374,12 +381,9 @@ pub fn wifi_connect(ssid: &str, password: &str, security: &str) -> Result<(), St
     let quoted_password = quote_wpa_value(password);
 
     let set_arg = |arg: &str, value: &str| -> Result<(), String> {
-        let out = wpa_cli(
-            &wifi_iface,
-            &["set_network", &network_id, arg, value],
-        )
-        .output()
-        .map_err(|e| e.to_string())?;
+        let out = wpa_cli(&wifi_iface, &["set_network", &network_id, arg, value])
+            .output()
+            .map_err(|e| e.to_string())?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
             tracing::error!(
@@ -425,7 +429,10 @@ pub fn wifi_connect(ssid: &str, password: &str, security: &str) -> Result<(), St
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::error!("wifi_connect: wpa_cli enable_network failed (stderr: {})", stderr);
+        tracing::error!(
+            "wifi_connect: wpa_cli enable_network failed (stderr: {})",
+            stderr
+        );
         return Err(format!("Failed to enable WiFi network: {}", stderr));
     }
 
@@ -461,7 +468,10 @@ pub fn wifi_disconnect(ssid: &str) -> Result<(), String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::error!("wifi_disconnect: wpa_cli list_networks failed (stderr: {})", stderr);
+        tracing::error!(
+            "wifi_disconnect: wpa_cli list_networks failed (stderr: {})",
+            stderr
+        );
         return Err(format!("Failed to list networks: {}", stderr));
     }
 
@@ -523,12 +533,8 @@ pub fn apply_interface_config(name: &str, config: &InterfaceConfig) -> Result<()
     match config.method {
         IpMethod::Dhcp => {
             // Use dhclient for DHCP
-            let _output = ip_sudo("dhclient")
-                .args(["-r", name])
-                .output();
-            let _ = ip_sudo("ip")
-                .args(["addr", "flush", "dev", name])
-                .output();
+            let _output = ip_sudo("dhclient").args(["-r", name]).output();
+            let _ = ip_sudo("ip").args(["addr", "flush", "dev", name]).output();
             let output = ip_sudo("dhclient")
                 .args([name])
                 .output()
@@ -602,7 +608,11 @@ pub fn apply_interface_config(name: &str, config: &InterfaceConfig) -> Result<()
 }
 
 /// Apply IPv6 configuration to an interface
-fn apply_ipv6_config(name: &str, method: &Ipv6Method, config: &InterfaceConfig) -> Result<(), String> {
+fn apply_ipv6_config(
+    name: &str,
+    method: &Ipv6Method,
+    config: &InterfaceConfig,
+) -> Result<(), String> {
     // `/proc/sys/net/ipv6/conf/<name>/*` is root-owned — a direct
     // `std::fs::write` `EACCES`es for a non-root process (was `let _ =`'d,
     // so it failed silently). `name` is already validated against the real
@@ -649,7 +659,14 @@ fn apply_ipv6_config(name: &str, method: &Ipv6Method, config: &InterfaceConfig) 
 
             // Set static IPv6
             let output = ip_sudo("ip")
-                .args(["-6", "addr", "add", &format!("{}/{}", ipv6, prefix), "dev", name])
+                .args([
+                    "-6",
+                    "addr",
+                    "add",
+                    &format!("{}/{}", ipv6, prefix),
+                    "dev",
+                    name,
+                ])
                 .output()
                 .map_err(|e| e.to_string())?;
 
@@ -737,14 +754,18 @@ pub fn get_interface_config(name: &str) -> InterfaceConfig {
 
 fn detect_ipv6_method(name: &str) -> Ipv6Method {
     // Check if IPv6 is disabled
-    if let Ok(content) = std::fs::read_to_string(format!("/proc/sys/net/ipv6/conf/{}/disable_ipv6", name)) {
+    if let Ok(content) =
+        std::fs::read_to_string(format!("/proc/sys/net/ipv6/conf/{}/disable_ipv6", name))
+    {
         if content.trim() == "1" {
             return Ipv6Method::Disabled;
         }
     }
 
     // Check if autoconf is enabled (SLAAC)
-    if let Ok(content) = std::fs::read_to_string(format!("/proc/sys/net/ipv6/conf/{}/autoconf", name)) {
+    if let Ok(content) =
+        std::fs::read_to_string(format!("/proc/sys/net/ipv6/conf/{}/autoconf", name))
+    {
         if content.trim() == "1" {
             return Ipv6Method::Auto;
         }
@@ -890,7 +911,10 @@ fn ping_host(host: &str) -> Option<u64> {
     for line in text.lines() {
         if let Some(pos) = line.find("time=") {
             let rest = &line[pos + 5..];
-            let ms_str: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+            let ms_str: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
             if let Ok(ms) = ms_str.parse::<f64>() {
                 return Some(ms as u64);
             }
@@ -1205,12 +1229,9 @@ fn read_ethtool(name: &str) -> (Option<u32>, Option<String>) {
 }
 
 fn read_interface_driver(name: &str) -> Option<String> {
-    std::fs::read_to_string(format!(
-        "/sys/class/net/{}/device/driver/module/name",
-        name
-    ))
-    .ok()
-    .map(|s| s.trim().to_string())
+    std::fs::read_to_string(format!("/sys/class/net/{}/device/driver/module/name", name))
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 // `current_ssid` is a parameter (rather than calling `get_current_wifi_ssid()`
@@ -1259,7 +1280,11 @@ fn parse_wifi_scan_results(text: &str, current_ssid: Option<&str>) -> Vec<WifiNe
     networks
 }
 
-fn parse_wpa_list_networks(text: &str, _iface: &str, current_ssid: Option<&str>) -> Vec<WifiNetwork> {
+fn parse_wpa_list_networks(
+    text: &str,
+    _iface: &str,
+    current_ssid: Option<&str>,
+) -> Vec<WifiNetwork> {
     let mut networks = Vec::new();
 
     for line in text.lines().skip(1) {
@@ -1341,9 +1366,9 @@ fn wifi_signal_to_percent(dbm: i32) -> u8 {
 
 fn freq_to_channel(freq_mhz: u32) -> u32 {
     if (2412..=2484).contains(&freq_mhz) {
-        (freq_mhz - 2407) / 5 
+        (freq_mhz - 2407) / 5
     } else if (5170..=5825).contains(&freq_mhz) {
-        (freq_mhz - 5000) / 5 
+        (freq_mhz - 5000) / 5
     } else {
         0
     }
@@ -1441,10 +1466,7 @@ fn has_dhcp_lease(name: &str) -> bool {
     // UI (informational), and the two lease-file checks above already cover
     // the common case, so left as-is pending a real regex dependency or a
     // proper `ps`-output split — flagging here as a known gap.
-    let output = Command::new("ps")
-        .args(["aux"])
-        .output()
-        .ok();
+    let output = Command::new("ps").args(["aux"]).output().ok();
 
     if let Some(out) = output {
         let text = String::from_utf8_lossy(&out.stdout);
@@ -1522,7 +1544,12 @@ mod tests {
     fn test_netmask_prefix_roundtrip() {
         for prefix in [0u8, 1, 8, 16, 24, 25, 30, 31, 32] {
             let netmask = prefix_to_netmask(prefix);
-            assert_eq!(netmask_to_prefix(&netmask), prefix, "roundtrip failed for /{}", prefix);
+            assert_eq!(
+                netmask_to_prefix(&netmask),
+                prefix,
+                "roundtrip failed for /{}",
+                prefix
+            );
         }
     }
 
@@ -1696,12 +1723,20 @@ mod tests {
 
     #[test]
     fn test_build_resolv_conf_replaces_nameservers_keeps_the_rest() {
-        let existing = "# generated\nsearch lan\noptions edns0\nnameserver 1.1.1.1\nnameserver 8.8.8.8\n";
-        let out = build_resolv_conf(existing, &["9.9.9.9".into(), "149.112.112.112".into()], false);
+        let existing =
+            "# generated\nsearch lan\noptions edns0\nnameserver 1.1.1.1\nnameserver 8.8.8.8\n";
+        let out = build_resolv_conf(
+            existing,
+            &["9.9.9.9".into(), "149.112.112.112".into()],
+            false,
+        );
         assert!(out.contains("search lan"), "search line kept");
         assert!(out.contains("options edns0"), "options line kept");
         assert!(out.contains("# generated"), "comment kept");
-        assert!(!out.contains("1.1.1.1") && !out.contains("8.8.8.8"), "old nameservers dropped");
+        assert!(
+            !out.contains("1.1.1.1") && !out.contains("8.8.8.8"),
+            "old nameservers dropped"
+        );
         assert!(out.contains("nameserver 9.9.9.9"));
         assert!(out.contains("nameserver 149.112.112.112"));
     }
@@ -1710,13 +1745,23 @@ mod tests {
     fn test_build_resolv_conf_append_keeps_existing_nameservers() {
         let existing = "nameserver 1.1.1.1\n";
         let out = build_resolv_conf(existing, &["2606:4700:4700::1111".into()], true);
-        assert!(out.contains("nameserver 1.1.1.1"), "existing kept on append");
-        assert!(out.contains("nameserver 2606:4700:4700::1111"), "ipv6 ns added");
+        assert!(
+            out.contains("nameserver 1.1.1.1"),
+            "existing kept on append"
+        );
+        assert!(
+            out.contains("nameserver 2606:4700:4700::1111"),
+            "ipv6 ns added"
+        );
     }
 
     #[test]
     fn test_build_resolv_conf_drops_invalid_entries() {
-        let out = build_resolv_conf("", &["not-an-ip".into(), "10.0.0.1".into(), "".into()], false);
+        let out = build_resolv_conf(
+            "",
+            &["not-an-ip".into(), "10.0.0.1".into(), "".into()],
+            false,
+        );
         assert_eq!(out, "nameserver 10.0.0.1\n");
     }
 }

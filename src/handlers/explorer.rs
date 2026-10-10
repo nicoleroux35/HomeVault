@@ -12,12 +12,15 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 
 use crate::browser::{FileBrowser, TRASH_DIR_NAME};
 use crate::handlers::AppState;
 use crate::utils::ResponseHelper;
+
+/// Disk identity triple `(model, transport, size)` keyed by bare kernel name.
+type DiskIdentity = (Option<String>, Option<String>, Option<String>);
 
 #[derive(Debug, Deserialize)]
 pub struct ExplorerSearchQuery {
@@ -135,7 +138,13 @@ pub(crate) fn content_type_for_path(path: &std::path::Path) -> &'static str {
 /// (quotes, backslashes, control characters).
 pub(crate) fn sanitize_download_filename(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_control() || c == '"' || c == '\\' { '_' } else { c })
+        .map(|c| {
+            if c.is_control() || c == '"' || c == '\\' {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect()
 }
 
@@ -210,7 +219,13 @@ pub(crate) async fn file_sha256(path: &std::path::Path) -> Option<String> {
             }
             hasher.update(&buf[..n]);
         }
-        Some(hasher.finalize().iter().map(|b| format!("{:02x}", b)).collect())
+        Some(
+            hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect(),
+        )
     })
     .await
     .ok()
@@ -238,12 +253,18 @@ pub(crate) fn file_response_headers(
         .header("Content-Length", length.to_string())
         .header(
             "Content-Disposition",
-            format!("attachment; filename=\"{}\"", sanitize_download_filename(filename)),
+            format!(
+                "attachment; filename=\"{}\"",
+                sanitize_download_filename(filename)
+            ),
         )
         .header("Accept-Ranges", "bytes")
         .header("X-Content-Type-Options", "nosniff");
     if let Some((start, end)) = range {
-        builder = builder.header("Content-Range", format!("bytes {}-{}/{}", start, end, total));
+        builder = builder.header(
+            "Content-Range",
+            format!("bytes {}-{}/{}", start, end, total),
+        );
     }
     if let Some(d) = digest {
         builder = builder.header("X-Content-Sha256", d);
@@ -338,7 +359,12 @@ fn spawn_tracked_move_job(source: String, destination: String, owner: String) ->
     (job_id.clone(), format!("/api/progress/{}", job_id))
 }
 
-async fn run_tracked_copy(job_id: &str, source: &str, destination: &str, delete_source_after: bool) {
+async fn run_tracked_copy(
+    job_id: &str,
+    source: &str,
+    destination: &str,
+    delete_source_after: bool,
+) {
     use crate::sse::ProgressEmitter;
 
     let count_path = std::path::PathBuf::from(source);
@@ -356,7 +382,11 @@ async fn run_tracked_copy(job_id: &str, source: &str, destination: &str, delete_
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             let c = copied_poll.load(std::sync::atomic::Ordering::Relaxed);
-            let pct = if total > 0 { ((c as f64 / total as f64) * 100.0).min(99.0) } else { 50.0 };
+            let pct = if total > 0 {
+                ((c as f64 / total as f64) * 100.0).min(99.0)
+            } else {
+                50.0
+            };
             ProgressEmitter::progress(&jid_poll, pct, &format!("{}/{} files", c, total));
         }
     });
@@ -380,20 +410,27 @@ async fn run_tracked_copy(job_id: &str, source: &str, destination: &str, delete_
 
     poll_handle.abort();
 
-    let (copy_result, mut created): (Result<(), crate::browser::BrowserError>, Vec<std::path::PathBuf>) =
-        match copy_result {
-            Ok(pair) => pair,
-            Err(e) => (Err(crate::browser::BrowserError::Io(std::io::Error::other(e.to_string()))), Vec::new()),
-        };
+    let (copy_result, mut created): (
+        Result<(), crate::browser::BrowserError>,
+        Vec<std::path::PathBuf>,
+    ) = match copy_result {
+        Ok(pair) => pair,
+        Err(e) => (
+            Err(crate::browser::BrowserError::Io(std::io::Error::other(
+                e.to_string(),
+            ))),
+            Vec::new(),
+        ),
+    };
 
     let source_owned = source.to_string();
     let final_result: Result<(), String> = match copy_result {
-        Ok(()) if delete_source_after => tokio::task::spawn_blocking(move || {
-            FileBrowser::delete_item(&source_owned, true)
-        })
-        .await
-        .map_err(|e| e.to_string())
-        .and_then(|r| r.map_err(|e| e.to_string())),
+        Ok(()) if delete_source_after => {
+            tokio::task::spawn_blocking(move || FileBrowser::delete_item(&source_owned, true))
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r.map_err(|e| e.to_string()))
+        }
         Ok(()) => Ok(()),
         Err(e) => Err(e.to_string()),
     };
@@ -587,7 +624,11 @@ fn collect_block_device_meta() -> std::collections::HashMap<String, BlockDeviceM
     };
 
     let output = match std::process::Command::new("lsblk")
-        .args(["-P", "-o", "PATH,NAME,PKNAME,TYPE,LABEL,MODEL,SERIAL,VENDOR"])
+        .args([
+            "-P",
+            "-o",
+            "PATH,NAME,PKNAME,TYPE,LABEL,MODEL,SERIAL,VENDOR",
+        ])
         .output()
     {
         Ok(o) if o.status.success() => o,
@@ -596,8 +637,7 @@ fn collect_block_device_meta() -> std::collections::HashMap<String, BlockDeviceM
     let text = String::from_utf8_lossy(&output.stdout);
 
     // First pass: disk identity keyed by bare NAME (e.g. "nvme0n1", "sda").
-    let mut disk_ident: HashMap<String, (Option<String>, Option<String>, Option<String>)> =
-        HashMap::new();
+    let mut disk_ident: HashMap<String, DiskIdentity> = HashMap::new();
     let rows: Vec<HashMap<String, String>> = text
         .lines()
         .map(parse_lsblk_pairs)
@@ -608,7 +648,11 @@ fn collect_block_device_meta() -> std::collections::HashMap<String, BlockDeviceM
             if let Some(name) = f.get("NAME") {
                 disk_ident.insert(
                     name.clone(),
-                    (clean(f.get("VENDOR")), clean(f.get("MODEL")), clean(f.get("SERIAL"))),
+                    (
+                        clean(f.get("VENDOR")),
+                        clean(f.get("MODEL")),
+                        clean(f.get("SERIAL")),
+                    ),
                 );
             }
         }
@@ -671,7 +715,10 @@ pub async fn handle_explorer_list(
         Ok(session) => match validate_path_access(&state, &path, &session) {
             Some(p) => p,
             None => {
-                tracing::warn!("Explorer list blocked: path '{}' outside allowed roots", path);
+                tracing::warn!(
+                    "Explorer list blocked: path '{}' outside allowed roots",
+                    path
+                );
                 return ResponseHelper::json_error(
                     "Access denied: path outside allowed directory".to_string(),
                 );
@@ -702,13 +749,20 @@ pub async fn handle_explorer_search(
         return ResponseHelper::json_error("No session token provided".to_string());
     }
 
-    let path = if params.path.starts_with('/') { params.path.clone() } else { format!("/{}", params.path) };
+    let path = if params.path.starts_with('/') {
+        params.path.clone()
+    } else {
+        format!("/{}", params.path)
+    };
 
     let safe_path = match state.auth.get_session(session_token).await {
         Ok(session) => match validate_path_access(&state, &path, &session) {
             Some(p) => p,
             None => {
-                tracing::warn!("Explorer search blocked: path '{}' outside allowed roots", path);
+                tracing::warn!(
+                    "Explorer search blocked: path '{}' outside allowed roots",
+                    path
+                );
                 return ResponseHelper::json_error(
                     "Access denied: path outside allowed directory".to_string(),
                 );
@@ -751,7 +805,10 @@ pub async fn handle_explorer_mkdir(
             let validated = match validate_path_access(&state, &params.path, &session) {
                 Some(p) => p,
                 None => {
-                    tracing::warn!("Explorer mkdir blocked: path '{}' outside allowed roots", params.path);
+                    tracing::warn!(
+                        "Explorer mkdir blocked: path '{}' outside allowed roots",
+                        params.path
+                    );
                     return ResponseHelper::json_error(
                         "Access denied: path outside allowed directory".to_string(),
                     );
@@ -759,12 +816,16 @@ pub async fn handle_explorer_mkdir(
             };
             let path = validated.to_string_lossy().into_owned();
             match tokio::task::spawn_blocking(move || FileBrowser::create_directory(&path)).await {
-                Ok(Ok(_)) => ResponseHelper::json_success(serde_json::json!({"message": "Directory created successfully"})),
-                Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to create directory: {}", e)),
+                Ok(Ok(_)) => ResponseHelper::json_success(
+                    serde_json::json!({"message": "Directory created successfully"}),
+                ),
+                Ok(Err(e)) => {
+                    ResponseHelper::json_error(format!("Failed to create directory: {}", e))
+                }
                 Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
             }
         }
-        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
+        Err(_) => ResponseHelper::json_unauthorized("Session invalid".to_string()),
     }
 }
 
@@ -797,7 +858,9 @@ pub async fn handle_explorer_delete(
 
     let path = params.path.clone();
     match tokio::task::spawn_blocking(move || FileBrowser::delete_item(&path, true)).await {
-        Ok(Ok(_)) => ResponseHelper::json_success(serde_json::json!({"message": "Item deleted successfully"})),
+        Ok(Ok(_)) => ResponseHelper::json_success(
+            serde_json::json!({"message": "Item deleted successfully"}),
+        ),
         Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to delete item: {}", e)),
         Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
     }
@@ -843,15 +906,14 @@ pub async fn handle_explorer_download(
         let session = match state.auth.get_session(session_token).await {
             Ok(s) => s,
             Err(_) => {
-                return (
-                    StatusCode::UNAUTHORIZED,
-                    "Session invalid".to_string(),
-                )
-                    .into_response();
+                return (StatusCode::UNAUTHORIZED, "Session invalid".to_string()).into_response();
             }
         };
         let Some(validated) = validate_path_access(&state, &params.path, &session) else {
-            tracing::warn!("Explorer download blocked: path '{}' outside allowed roots", params.path);
+            tracing::warn!(
+                "Explorer download blocked: path '{}' outside allowed roots",
+                params.path
+            );
             return (
                 StatusCode::FORBIDDEN,
                 "Access denied: path outside allowed directory".to_string(),
@@ -865,7 +927,11 @@ pub async fn handle_explorer_download(
         return (StatusCode::NOT_FOUND, "File not found".to_string()).into_response();
     }
     if file_path.is_dir() {
-        return (StatusCode::BAD_REQUEST, "Cannot download directory".to_string()).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            "Cannot download directory".to_string(),
+        )
+            .into_response();
     }
 
     // 2. Open + stat.
@@ -1005,18 +1071,23 @@ pub async fn handle_explorer_download_ticket(
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
     let Some(path) = validate_path_access(&state, &params.path, &session) else {
-        tracing::warn!("Download ticket blocked: path '{}' outside allowed roots", params.path);
-        return ResponseHelper::json_forbidden("Access denied: path outside allowed directory".to_string());
+        tracing::warn!(
+            "Download ticket blocked: path '{}' outside allowed roots",
+            params.path
+        );
+        return ResponseHelper::json_forbidden(
+            "Access denied: path outside allowed directory".to_string(),
+        );
     };
     if !path.is_file() {
         return ResponseHelper::json_error("File not found".to_string());
     }
 
     let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    let quotas = match crate::transfer_quota::applicable_download_quotas(state.db.pool(), &session.username).await {
-        Ok(q) => q,
-        Err(_) => Vec::new(),
-    };
+    let quotas =
+        crate::transfer_quota::applicable_download_quotas(state.db.pool(), &session.username)
+            .await
+            .unwrap_or_default();
     let _guard = crate::transfer_quota::acquire_quota_locks(&quotas).await;
     if let Err(exceeded) = crate::transfer_quota::check_quota(&quotas, size) {
         return (StatusCode::TOO_MANY_REQUESTS, exceeded.to_string()).into_response();
@@ -1056,8 +1127,13 @@ pub async fn handle_explorer_upload(
     let upload_path = match validate_path_access(&state, &params.path, &session) {
         Some(p) => p,
         None => {
-            tracing::warn!("Explorer upload blocked: path '{}' outside allowed roots", params.path);
-            return ResponseHelper::json_error("Access denied: path outside allowed directory".to_string());
+            tracing::warn!(
+                "Explorer upload blocked: path '{}' outside allowed roots",
+                params.path
+            );
+            return ResponseHelper::json_error(
+                "Access denied: path outside allowed directory".to_string(),
+            );
         }
     };
 
@@ -1068,13 +1144,20 @@ pub async fn handle_explorer_upload(
     // the limit before the first check would otherwise fire again. The
     // per-subject lock is held for the whole request so two concurrent
     // uploads of the same subject can't both pass a check on stale usage.
-    let upload_quotas = match crate::transfer_quota::applicable_upload_quotas(state.db.pool(), &session.username).await {
-        Ok(q) => q,
-        Err(e) => {
-            tracing::warn!("Failed to load upload quota for '{}': {}", session.username, e);
-            Vec::new()
-        }
-    };
+    let upload_quotas =
+        match crate::transfer_quota::applicable_upload_quotas(state.db.pool(), &session.username)
+            .await
+        {
+            Ok(q) => q,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to load upload quota for '{}': {}",
+                    session.username,
+                    e
+                );
+                Vec::new()
+            }
+        };
     let _quota_guard = crate::transfer_quota::acquire_quota_locks(&upload_quotas).await;
     if let Err(exceeded) = crate::transfer_quota::check_quota(&upload_quotas, 0) {
         return ResponseHelper::json_error(exceeded.to_string());
@@ -1166,8 +1249,7 @@ pub async fn handle_explorer_upload(
             Err(e) => {
                 return ResponseHelper::json_error(format!(
                     "Failed to create file {}: {}",
-                    filename,
-                    e
+                    filename, e
                 ));
             }
         };
@@ -1199,8 +1281,7 @@ pub async fn handle_explorer_upload(
                             let _ = tokio::fs::remove_file(&tmp_path).await;
                             return ResponseHelper::json_error(format!(
                                 "Failed to write file {}: {}",
-                                filename,
-                                e
+                                filename, e
                             ));
                         }
                     }
@@ -1210,8 +1291,7 @@ pub async fn handle_explorer_upload(
                     let _ = tokio::fs::remove_file(&tmp_path).await;
                     return ResponseHelper::json_error(format!(
                         "Failed to read upload data for {}: {}",
-                        filename,
-                        e
+                        filename, e
                     ));
                 }
             }
@@ -1229,7 +1309,11 @@ pub async fn handle_explorer_upload(
         }
         drop(file);
 
-        let checksum = hasher.finalize().iter().map(|b| format!("{:02x}", b)).collect::<String>();
+        let checksum = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>();
 
         // If the client sent an expected checksum, enforce it (single-file
         // uploads only — a multi-file upload can't map one header to many).
@@ -1270,7 +1354,13 @@ pub async fn handle_explorer_upload(
         uploaded_checksums.push(checksum);
     }
 
-    crate::transfer_quota::record_usage(state.db.pool(), &upload_quotas, session_upload_bytes, true).await;
+    crate::transfer_quota::record_usage(
+        state.db.pool(),
+        &upload_quotas,
+        session_upload_bytes,
+        true,
+    )
+    .await;
 
     ResponseHelper::json_success(serde_json::json!({
         "message": format!("Uploaded {} file(s)", uploaded_files.len()),
@@ -1382,7 +1472,9 @@ pub async fn handle_explorer_upload_session_start(
                 "Upload session blocked: path '{}' outside allowed roots",
                 params.path
             );
-            return ResponseHelper::json_error("Access denied: path outside allowed directory".to_string());
+            return ResponseHelper::json_error(
+                "Access denied: path outside allowed directory".to_string(),
+            );
         }
     };
     if !dir.is_dir() {
@@ -1400,11 +1492,16 @@ pub async fn handle_explorer_upload_session_start(
 
     // Quota: reject an over-limit file before creating anything.
     let upload_quotas =
-        match crate::transfer_quota::applicable_upload_quotas(state.db.pool(), &session.username).await
+        match crate::transfer_quota::applicable_upload_quotas(state.db.pool(), &session.username)
+            .await
         {
             Ok(q) => q,
             Err(e) => {
-                tracing::warn!("Failed to load upload quota for '{}': {}", session.username, e);
+                tracing::warn!(
+                    "Failed to load upload quota for '{}': {}",
+                    session.username,
+                    e
+                );
                 Vec::new()
             }
         };
@@ -1484,11 +1581,9 @@ pub async fn handle_explorer_upload_chunk(
     // Per-chunk quota re-check against current (possibly updated by other
     // completed transfers) usage.
     let upload_quotas =
-        match crate::transfer_quota::applicable_upload_quotas(state.db.pool(), &session.username).await
-        {
-            Ok(q) => q,
-            Err(_) => Vec::new(),
-        };
+        crate::transfer_quota::applicable_upload_quotas(state.db.pool(), &session.username)
+            .await
+            .unwrap_or_default();
     let _guard = crate::transfer_quota::acquire_quota_locks(&upload_quotas).await;
     if let Err(exceeded) = crate::transfer_quota::check_quota(&upload_quotas, session.total_bytes) {
         return (StatusCode::TOO_MANY_REQUESTS, exceeded.to_string()).into_response();
@@ -1509,10 +1604,9 @@ pub async fn handle_explorer_upload_chunk(
     .await;
     match write_result {
         Ok(()) => {
-            UPLOAD_SESSIONS
-                .lock()
-                .get_mut(&params.session_id)
-                .map(|s| s.offset = next);
+            if let Some(s) = UPLOAD_SESSIONS.lock().get_mut(&params.session_id) {
+                s.offset = next;
+            }
             ResponseHelper::json_success(serde_json::json!({ "offset": next }))
         }
         Err(e) => ResponseHelper::json_error(format!("Failed to write chunk: {}", e)),
@@ -1540,7 +1634,11 @@ pub async fn handle_explorer_upload_complete(
         let map = UPLOAD_SESSIONS.lock();
         match map.get(&params.session_id) {
             Some(s) => s.clone(),
-            None => return ResponseHelper::json_error("Upload session not found or expired".to_string()),
+            None => {
+                return ResponseHelper::json_error(
+                    "Upload session not found or expired".to_string(),
+                )
+            }
         }
     };
 
@@ -1552,11 +1650,9 @@ pub async fn handle_explorer_upload_complete(
     }
 
     let upload_quotas =
-        match crate::transfer_quota::applicable_upload_quotas(state.db.pool(), &session.username).await
-        {
-            Ok(q) => q,
-            Err(_) => Vec::new(),
-        };
+        crate::transfer_quota::applicable_upload_quotas(state.db.pool(), &session.username)
+            .await
+            .unwrap_or_default();
     let guard = crate::transfer_quota::acquire_quota_locks(&upload_quotas).await;
     if let Err(exceeded) = crate::transfer_quota::check_quota(&upload_quotas, session.total_bytes) {
         return (StatusCode::TOO_MANY_REQUESTS, exceeded.to_string()).into_response();
@@ -1575,9 +1671,12 @@ pub async fn handle_explorer_upload_complete(
     let finalize_result =
         tokio::task::spawn_blocking(move || -> Result<(String, PathBuf), String> {
             use sha2::{Digest, Sha256};
-            let file = std::fs::OpenOptions::new().write(true).open(&tmp_path_for_finalize)
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&tmp_path_for_finalize)
                 .map_err(|e| format!("Failed to open upload slot: {}", e))?;
-            file.sync_all().map_err(|e| format!("Failed to sync upload slot: {}", e))?;
+            file.sync_all()
+                .map_err(|e| format!("Failed to sync upload slot: {}", e))?;
 
             let mut hasher = Sha256::new();
             let mut reader = std::io::BufReader::new(
@@ -1591,8 +1690,11 @@ pub async fn handle_explorer_upload_complete(
                 }
                 hasher.update(&buf[..n]);
             }
-            let checksum =
-                hasher.finalize().iter().map(|b| format!("{:02x}", b)).collect::<String>();
+            let checksum = hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>();
 
             if let Some(expected) = &expected {
                 if expected != &checksum {
@@ -1717,7 +1819,9 @@ pub async fn handle_explorer_rename(
     match tokio::task::spawn_blocking(move || FileBrowser::rename_item(&path, &new_name)).await {
         Ok(Ok(_)) => {
             FileBrowser::fsync_parent_dir(&new_path);
-            ResponseHelper::json_success(serde_json::json!({"message": "Item renamed successfully"}))
+            ResponseHelper::json_success(
+                serde_json::json!({"message": "Item renamed successfully"}),
+            )
         }
         Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to rename item: {}", e)),
         Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
@@ -1776,7 +1880,9 @@ pub async fn handle_explorer_copy(
                 _ => {
                     tracing::warn!("Explorer copy blocked: source='{}' or destination='{}' outside allowed roots",
                         params.source, params.destination);
-                    return ResponseHelper::json_error("Access denied: path outside allowed directory".to_string());
+                    return ResponseHelper::json_error(
+                        "Access denied: path outside allowed directory".to_string(),
+                    );
                 }
             }
         }
@@ -1806,7 +1912,9 @@ pub async fn handle_explorer_copy(
     }
 
     match tokio::task::spawn_blocking(move || FileBrowser::copy_item(&source, &destination)).await {
-        Ok(Ok(_)) => ResponseHelper::json_success(serde_json::json!({"message": "Item copied successfully"})),
+        Ok(Ok(_)) => {
+            ResponseHelper::json_success(serde_json::json!({"message": "Item copied successfully"}))
+        }
         Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to copy item: {}", e)),
         Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
     }
@@ -1841,7 +1949,9 @@ pub async fn handle_explorer_move(
                 _ => {
                     tracing::warn!("Explorer move blocked: source='{}' or destination='{}' outside allowed roots",
                         params.source, params.destination);
-                    return ResponseHelper::json_error("Access denied: path outside allowed directory".to_string());
+                    return ResponseHelper::json_error(
+                        "Access denied: path outside allowed directory".to_string(),
+                    );
                 }
             }
         }
@@ -1869,7 +1979,9 @@ pub async fn handle_explorer_move(
             tokio::task::spawn_blocking(move || std::fs::rename(&rename_src, &rename_dst)).await;
 
         if let Ok(Ok(())) = rename_result {
-            return ResponseHelper::json_success(serde_json::json!({"message": "Item moved successfully"}));
+            return ResponseHelper::json_success(
+                serde_json::json!({"message": "Item moved successfully"}),
+            );
         }
 
         tracing::warn!("Atomic directory move failed (cross-filesystem?), falling back to a tracked copy+delete job");
@@ -1896,7 +2008,9 @@ pub async fn handle_explorer_move(
     .await;
 
     match result {
-        Ok(Ok(_)) => ResponseHelper::json_success(serde_json::json!({"message": "Item moved successfully"})),
+        Ok(Ok(_)) => {
+            ResponseHelper::json_success(serde_json::json!({"message": "Item moved successfully"}))
+        }
         Ok(Err(e)) => ResponseHelper::json_error(e),
         Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
     }
@@ -1923,14 +2037,20 @@ pub async fn handle_explorer_preview(
             let validated = match validate_path_access(&state, &params.path, &session) {
                 Some(p) => p,
                 None => {
-                    tracing::warn!("Explorer preview blocked: path '{}' outside allowed roots", params.path);
+                    tracing::warn!(
+                        "Explorer preview blocked: path '{}' outside allowed roots",
+                        params.path
+                    );
                     return ResponseHelper::json_error(
                         "Access denied: path outside allowed directory".to_string(),
                     );
                 }
             };
             let path = validated.to_string_lossy().into_owned();
-            let result = tokio::task::spawn_blocking(move || FileBrowser::preview_file(&path, 10 * 1024 * 1024)).await;
+            let result = tokio::task::spawn_blocking(move || {
+                FileBrowser::preview_file(&path, 10 * 1024 * 1024)
+            })
+            .await;
 
             match result {
                 Ok(Ok(preview)) => ResponseHelper::json_success(preview),
@@ -1938,7 +2058,7 @@ pub async fn handle_explorer_preview(
                 Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
             }
         }
-        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
+        Err(_) => ResponseHelper::json_unauthorized("Session invalid".to_string()),
     }
 }
 
@@ -1962,7 +2082,10 @@ pub async fn handle_explorer_permissions(
         Ok(session) => match validate_path_access(&state, &params.path, &session) {
             Some(p) => p,
             None => {
-                tracing::warn!("Explorer permissions blocked: path '{}' outside allowed roots", params.path);
+                tracing::warn!(
+                    "Explorer permissions blocked: path '{}' outside allowed roots",
+                    params.path
+                );
                 return ResponseHelper::json_error(
                     "Access denied: path outside allowed directory".to_string(),
                 );
@@ -1977,7 +2100,7 @@ pub async fn handle_explorer_permissions(
         if mode.len() < 3 || mode.len() > 4 || !mode.chars().all(|c| ('0'..='7').contains(&c)) {
             tracing::warn!("Explorer permissions blocked: invalid mode '{}'", mode);
             return ResponseHelper::json_error(
-                "Invalid mode format: must be 3-4 octal digits (e.g. 755, 0644)".to_string()
+                "Invalid mode format: must be 3-4 octal digits (e.g. 755, 0644)".to_string(),
             );
         }
 
@@ -1989,8 +2112,12 @@ pub async fn handle_explorer_permissions(
         .await;
 
         match result {
-            Ok(Ok(_)) => ResponseHelper::json_success(serde_json::json!({"message": "Permissions changed successfully"})),
-            Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to change permissions: {}", e)),
+            Ok(Ok(_)) => ResponseHelper::json_success(
+                serde_json::json!({"message": "Permissions changed successfully"}),
+            ),
+            Ok(Err(e)) => {
+                ResponseHelper::json_error(format!("Failed to change permissions: {}", e))
+            }
             Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
         }
     } else {
@@ -2002,7 +2129,9 @@ pub async fn handle_explorer_permissions(
         .await;
 
         match result {
-            Ok(Ok(permissions)) => ResponseHelper::json_success(serde_json::json!({"permissions": permissions})),
+            Ok(Ok(permissions)) => {
+                ResponseHelper::json_success(serde_json::json!({"permissions": permissions}))
+            }
             Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to get permissions: {}", e)),
             Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
         }
@@ -2037,7 +2166,9 @@ pub async fn handle_explorer_extract(
                 _ => {
                     tracing::warn!("Explorer extract blocked: path='{}' or destination='{}' outside allowed roots",
                         params.path, params.destination);
-                    return ResponseHelper::json_error("Access denied: path outside allowed directory".to_string());
+                    return ResponseHelper::json_error(
+                        "Access denied: path outside allowed directory".to_string(),
+                    );
                 }
             }
         }
@@ -2066,7 +2197,12 @@ pub async fn handle_explorer_extract(
                 _ => "unzip",
             }
         };
-        if Command::new("which").arg(required_tool).output().map(|o| !o.status.success()).unwrap_or(true) {
+        if Command::new("which")
+            .arg(required_tool)
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
             return Err(format!(
                 "Cannot extract this archive: '{}' is not installed on this server",
                 required_tool
@@ -2085,52 +2221,45 @@ pub async fn handle_explorer_extract(
         } else {
             match extension {
                 // bz2
-                "bz2" => {
-                    Command::new("tar")
-                        .arg("-xjf")
-                        .arg(&archive_path)
-                        .arg("-C")
-                        .arg(&destination)
-                        .output()
-                }
+                "bz2" => Command::new("tar")
+                    .arg("-xjf")
+                    .arg(&archive_path)
+                    .arg("-C")
+                    .arg(&destination)
+                    .output(),
                 // xz
-                "xz" => {
-                    Command::new("tar")
-                        .arg("-xJf")
-                        .arg(&archive_path)
-                        .arg("-C")
-                        .arg(&destination)
-                        .output()
-                }
+                "xz" => Command::new("tar")
+                    .arg("-xJf")
+                    .arg(&archive_path)
+                    .arg("-C")
+                    .arg(&destination)
+                    .output(),
                 // zip
-                "zip" => {
-                    Command::new("unzip")
-                        .arg("-o")
-                        .arg(&archive_path)
-                        .arg("-d")
-                        .arg(&destination)
-                        .output()
-                }
+                "zip" => Command::new("unzip")
+                    .arg("-o")
+                    .arg(&archive_path)
+                    .arg("-d")
+                    .arg(&destination)
+                    .output(),
                 // 7z
-                "7z" => {
-                    Command::new("7z")
-                        .arg("x")
-                        .arg(&archive_path)
-                        .arg(format!("-o{}", destination))
-                        .output()
-                }
+                "7z" => Command::new("7z")
+                    .arg("x")
+                    .arg(&archive_path)
+                    .arg(format!("-o{}", destination))
+                    .output(),
                 // tar (no compression)
-                "tar" => {
-                    Command::new("tar")
-                        .arg("-xf")
-                        .arg(&archive_path)
-                        .arg("-C")
-                        .arg(&destination)
-                        .output()
-                }
+                "tar" => Command::new("tar")
+                    .arg("-xf")
+                    .arg(&archive_path)
+                    .arg("-C")
+                    .arg(&destination)
+                    .output(),
                 // gzip single file
                 "gz" => {
-                    let stem = file_path.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
+                    let stem = file_path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("output");
                     let output_file = std::path::Path::new(&destination).join(stem);
                     Command::new("gunzip")
                         .arg("-c")
@@ -2139,18 +2268,20 @@ pub async fn handle_explorer_extract(
                         .and_then(|out| {
                             let stdout = out.stdout.clone();
                             std::fs::write(&output_file, stdout)?;
-                            Ok(std::process::Output { status: out.status, stdout: out.stdout, stderr: out.stderr })
+                            Ok(std::process::Output {
+                                status: out.status,
+                                stdout: out.stdout,
+                                stderr: out.stderr,
+                            })
                         })
                 }
                 // Default: try unzip
-                _ => {
-                    Command::new("unzip")
-                        .arg("-o")
-                        .arg(&archive_path)
-                        .arg("-d")
-                        .arg(&destination)
-                        .output()
-                }
+                _ => Command::new("unzip")
+                    .arg("-o")
+                    .arg(&archive_path)
+                    .arg("-d")
+                    .arg(&destination)
+                    .output(),
             }
         };
 
@@ -2159,7 +2290,9 @@ pub async fn handle_explorer_extract(
     .await;
 
     match result {
-        Ok(Ok(_)) => ResponseHelper::json_success(serde_json::json!({"message": "Archive extracted successfully"})),
+        Ok(Ok(_)) => ResponseHelper::json_success(
+            serde_json::json!({"message": "Archive extracted successfully"}),
+        ),
         Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to extract archive: {}", e)),
         Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
     }
@@ -2222,16 +2355,15 @@ pub async fn handle_explorer_thumbnail(
         let session = match state.auth.get_session(session_token).await {
             Ok(s) => s,
             Err(_) => {
-                return (
-                    StatusCode::UNAUTHORIZED,
-                    "Session invalid".to_string(),
-                )
-                    .into_response();
+                return (StatusCode::UNAUTHORIZED, "Session invalid".to_string()).into_response();
             }
         };
         // Validate path is within allowed roots
         let Some(validated) = validate_path_access(&state, &params.path, &session) else {
-            tracing::warn!("Explorer thumbnail blocked: path '{}' outside allowed roots", params.path);
+            tracing::warn!(
+                "Explorer thumbnail blocked: path '{}' outside allowed roots",
+                params.path
+            );
             return (
                 StatusCode::FORBIDDEN,
                 "Access denied: path outside allowed directory".to_string(),
@@ -2242,21 +2374,18 @@ pub async fn handle_explorer_thumbnail(
     };
 
     if !file_path.exists() {
-        return (
-            StatusCode::NOT_FOUND,
-            "File not found".to_string(),
-        ).into_response();
+        return (StatusCode::NOT_FOUND, "File not found".to_string()).into_response();
     }
 
     // Check if it's an image file
     let extension = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let is_image = matches!(extension, "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg");
+    let is_image = matches!(
+        extension,
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg"
+    );
 
     if !is_image {
-        return (
-            StatusCode::BAD_REQUEST,
-            "Not an image file".to_string(),
-        ).into_response();
+        return (StatusCode::BAD_REQUEST, "Not an image file".to_string()).into_response();
     }
 
     // SVGs are already small vectors — serve them directly rather than
@@ -2368,7 +2497,8 @@ fn strip_partition_suffix(name: &str) -> String {
         }
         name.to_string()
     } else {
-        name.trim_end_matches(|c: char| c.is_ascii_digit()).to_string()
+        name.trim_end_matches(|c: char| c.is_ascii_digit())
+            .to_string()
     }
 }
 
@@ -2449,11 +2579,21 @@ pub async fn handle_explorer_disks(
                 let filesystem = parts[2];
 
                 // Skip virtual filesystems
-                if filesystem == "proc" || filesystem == "sysfs" || filesystem == "devtmpfs" 
-                    || filesystem == "tmpfs" || filesystem == "cgroup" || filesystem == "cgroup2"
-                    || filesystem == "pstore" || filesystem == "efivarfs" || filesystem == "configfs"
-                    || filesystem == "debugfs" || filesystem == "tracefs" || filesystem == "hugetlbfs"
-                    || filesystem == "mqueue" || filesystem == "securityfs" {
+                if filesystem == "proc"
+                    || filesystem == "sysfs"
+                    || filesystem == "devtmpfs"
+                    || filesystem == "tmpfs"
+                    || filesystem == "cgroup"
+                    || filesystem == "cgroup2"
+                    || filesystem == "pstore"
+                    || filesystem == "efivarfs"
+                    || filesystem == "configfs"
+                    || filesystem == "debugfs"
+                    || filesystem == "tracefs"
+                    || filesystem == "hugetlbfs"
+                    || filesystem == "mqueue"
+                    || filesystem == "securityfs"
+                {
                     continue;
                 }
 
@@ -2461,26 +2601,29 @@ pub async fn handle_explorer_disks(
                 let (size_bytes, used_bytes) = match std::fs::metadata(mount_point) {
                     Ok(_) => {
                         use std::process::Command;
-                        match Command::new("df")
-                            .arg("-B1")
-                            .arg(mount_point)
-                            .output() {
+                        match Command::new("df").arg("-B1").arg(mount_point).output() {
                             Ok(output) => {
                                 let output_str = String::from_utf8_lossy(&output.stdout);
                                 let lines: Vec<&str> = output_str.lines().collect();
                                 if lines.len() >= 2 {
                                     let parts: Vec<&str> = lines[1].split_whitespace().collect();
-                                    let total = parts.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-                                    let used = parts.get(2).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+                                    let total = parts
+                                        .get(1)
+                                        .and_then(|s| s.parse::<u64>().ok())
+                                        .unwrap_or(0);
+                                    let used = parts
+                                        .get(2)
+                                        .and_then(|s| s.parse::<u64>().ok())
+                                        .unwrap_or(0);
                                     (total, used)
                                 } else {
                                     (0, 0)
                                 }
                             }
-                            Err(_) => (0, 0)
+                            Err(_) => (0, 0),
                         }
                     }
-                    Err(_) => (0, 0)
+                    Err(_) => (0, 0),
                 };
 
                 // Determine category
@@ -2584,7 +2727,10 @@ pub async fn handle_explorer_compress(
                 match validate_path_access(&state, p, &session) {
                     Some(canonical) => sources_valid.push(canonical),
                     None => {
-                        tracing::warn!("Explorer compress blocked: source '{}' outside allowed roots", p);
+                        tracing::warn!(
+                            "Explorer compress blocked: source '{}' outside allowed roots",
+                            p
+                        );
                         return ResponseHelper::json_error(
                             "Access denied: path outside allowed directory".to_string(),
                         );
@@ -2592,7 +2738,10 @@ pub async fn handle_explorer_compress(
                 }
             }
             let Some(dst) = dest_valid else {
-                tracing::warn!("Explorer compress blocked: destination='{}' outside allowed roots", payload.destination);
+                tracing::warn!(
+                    "Explorer compress blocked: destination='{}' outside allowed roots",
+                    payload.destination
+                );
                 return ResponseHelper::json_error(
                     "Access denied: path outside allowed directory".to_string(),
                 );
@@ -2618,7 +2767,10 @@ pub async fn handle_explorer_compress(
                 .map(|o| o.status.success())
                 .unwrap_or(false);
             if !has_zip {
-                return Err("Cannot create a .zip archive: 'zip' is not installed on this server".to_string());
+                return Err(
+                    "Cannot create a .zip archive: 'zip' is not installed on this server"
+                        .to_string(),
+                );
             }
         }
         FileBrowser::compress_items(&paths, &destination, &format).map_err(|e| e.to_string())
@@ -2626,7 +2778,9 @@ pub async fn handle_explorer_compress(
     .await;
 
     match result {
-        Ok(Ok(_)) => ResponseHelper::json_success(serde_json::json!({"message": "Archive created successfully"})),
+        Ok(Ok(_)) => ResponseHelper::json_success(
+            serde_json::json!({"message": "Archive created successfully"}),
+        ),
         Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to create archive: {}", e)),
         Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
     }
@@ -2656,7 +2810,10 @@ pub async fn handle_explorer_trash(
             let validated = match validate_path_access(&state, &params.path, &session) {
                 Some(p) => p,
                 None => {
-                    tracing::warn!("Explorer trash blocked: path '{}' outside allowed roots", params.path);
+                    tracing::warn!(
+                        "Explorer trash blocked: path '{}' outside allowed roots",
+                        params.path
+                    );
                     return ResponseHelper::json_error(
                         "Access denied: path outside allowed directory".to_string(),
                     );
@@ -2664,15 +2821,21 @@ pub async fn handle_explorer_trash(
             };
             let trash_root = resolve_trash_root(&state, &validated.to_string_lossy());
             let path = validated.to_string_lossy().into_owned();
-            let result = tokio::task::spawn_blocking(move || FileBrowser::trash_item(&path, &trash_root)).await;
+            let result =
+                tokio::task::spawn_blocking(move || FileBrowser::trash_item(&path, &trash_root))
+                    .await;
 
             match result {
-                Ok(Ok(_)) => ResponseHelper::json_success(serde_json::json!({"message": "Item moved to trash"})),
-                Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to move item to trash: {}", e)),
+                Ok(Ok(_)) => ResponseHelper::json_success(
+                    serde_json::json!({"message": "Item moved to trash"}),
+                ),
+                Ok(Err(e)) => {
+                    ResponseHelper::json_error(format!("Failed to move item to trash: {}", e))
+                }
                 Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
             }
         }
-        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
+        Err(_) => ResponseHelper::json_unauthorized("Session invalid".to_string()),
     }
 }
 
@@ -2794,7 +2957,9 @@ pub async fn handle_explorer_trash_purge(
     .await;
 
     match result {
-        Ok(Ok(_)) => ResponseHelper::json_success(serde_json::json!({"message": "Item permanently deleted"})),
+        Ok(Ok(_)) => {
+            ResponseHelper::json_success(serde_json::json!({"message": "Item permanently deleted"}))
+        }
         Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to purge item: {}", e)),
         Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
     }
@@ -2874,7 +3039,10 @@ pub async fn handle_explorer_save(
         Ok(session) => match validate_path_access(&state, &payload.path, &session) {
             Some(p) => p,
             None => {
-                tracing::warn!("Explorer save blocked: path '{}' outside allowed roots", payload.path);
+                tracing::warn!(
+                    "Explorer save blocked: path '{}' outside allowed roots",
+                    payload.path
+                );
                 return ResponseHelper::json_error(
                     "Access denied: path outside allowed directory".to_string(),
                 );
@@ -3159,10 +3327,10 @@ pub async fn handle_explorer_snapshots(
                 }
             };
             let target = validated.to_string_lossy().into_owned();
-            return render_snapshots(target).await;
+            render_snapshots(target).await
         }
-        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
-    };
+        Err(_) => ResponseHelper::json_unauthorized("Session invalid".to_string()),
+    }
 }
 
 /// Runs the ZFS snapshot listing for a validated target path and builds the
@@ -3207,7 +3375,17 @@ async fn render_snapshots(target: String) -> Response {
 
         let out = std::process::Command::new("sudo")
             .args([
-                "zfs", "list", "-H", "-p", "-t", "snapshot", "-o", "name,creation", "-r", "-d", "1",
+                "zfs",
+                "list",
+                "-H",
+                "-p",
+                "-t",
+                "snapshot",
+                "-o",
+                "name,creation",
+                "-r",
+                "-d",
+                "1",
             ])
             .arg(&dataset)
             .output();
@@ -3318,8 +3496,7 @@ pub async fn handle_explorer_favorites_add(
     let label = req.label.unwrap_or_else(|| {
         req.path
             .split('/')
-            .filter(|s| !s.is_empty())
-            .next_back()
+            .rfind(|s| !s.is_empty())
             .unwrap_or(&req.path)
             .to_string()
     });
@@ -3387,9 +3564,7 @@ pub struct WatchQuery {
 
 /// GET /api/explorer/watch?ticket=...&path=... — SSE stream of filesystem
 /// events for the given directory.
-pub async fn handle_explorer_watch(
-    Query(query): Query<WatchQuery>,
-) -> Response {
+pub async fn handle_explorer_watch(Query(query): Query<WatchQuery>) -> Response {
     use axum::response::sse::{Event, Sse};
     use std::convert::Infallible;
     use std::time::Duration;
@@ -3440,16 +3615,31 @@ mod tests {
 
     #[test]
     fn test_sanitize_upload_filename_keeps_a_plain_name() {
-        assert_eq!(sanitize_upload_filename("report.pdf").as_deref(), Some("report.pdf"));
-        assert_eq!(sanitize_upload_filename("  spaced.txt  ").as_deref(), Some("spaced.txt"));
+        assert_eq!(
+            sanitize_upload_filename("report.pdf").as_deref(),
+            Some("report.pdf")
+        );
+        assert_eq!(
+            sanitize_upload_filename("  spaced.txt  ").as_deref(),
+            Some("spaced.txt")
+        );
     }
 
     #[test]
     fn test_sanitize_upload_filename_strips_any_directory_component() {
         // A traversal attempt collapses to its final path component.
-        assert_eq!(sanitize_upload_filename("../../evil.sh").as_deref(), Some("evil.sh"));
-        assert_eq!(sanitize_upload_filename("/etc/passwd").as_deref(), Some("passwd"));
-        assert_eq!(sanitize_upload_filename("a/b/c/d.txt").as_deref(), Some("d.txt"));
+        assert_eq!(
+            sanitize_upload_filename("../../evil.sh").as_deref(),
+            Some("evil.sh")
+        );
+        assert_eq!(
+            sanitize_upload_filename("/etc/passwd").as_deref(),
+            Some("passwd")
+        );
+        assert_eq!(
+            sanitize_upload_filename("a/b/c/d.txt").as_deref(),
+            Some("d.txt")
+        );
     }
 
     #[test]
@@ -3469,7 +3659,10 @@ mod tests {
 
     #[test]
     fn test_sanitize_upload_filename_keeps_a_leading_dot_file() {
-        assert_eq!(sanitize_upload_filename(".gitignore").as_deref(), Some(".gitignore"));
+        assert_eq!(
+            sanitize_upload_filename(".gitignore").as_deref(),
+            Some(".gitignore")
+        );
     }
 
     // --- strip_partition_suffix: partition → parent block device ---
@@ -3572,32 +3765,57 @@ mod tests {
 
     #[test]
     fn test_parse_range_basic_and_open_ended() {
-        let (s, e) = parse_range(&headers_with_range("bytes=10-19"), 100).unwrap().unwrap();
+        let (s, e) = parse_range(&headers_with_range("bytes=10-19"), 100)
+            .unwrap()
+            .unwrap();
         assert_eq!((s, e), (10, 19));
-        let (s, e) = parse_range(&headers_with_range("bytes=90-"), 100).unwrap().unwrap();
+        let (s, e) = parse_range(&headers_with_range("bytes=90-"), 100)
+            .unwrap()
+            .unwrap();
         assert_eq!((s, e), (90, 99));
     }
 
     #[test]
     fn test_parse_range_end_clamped_to_file_size() {
-        let (s, e) = parse_range(&headers_with_range("bytes=50-999"), 100).unwrap().unwrap();
+        let (s, e) = parse_range(&headers_with_range("bytes=50-999"), 100)
+            .unwrap()
+            .unwrap();
         assert_eq!((s, e), (50, 99));
     }
 
     #[test]
     fn test_parse_range_suffix_form_is_last_n_bytes() {
-        let (s, e) = parse_range(&headers_with_range("bytes=-20"), 100).unwrap().unwrap();
+        let (s, e) = parse_range(&headers_with_range("bytes=-20"), 100)
+            .unwrap()
+            .unwrap();
         assert_eq!((s, e), (80, 99));
     }
 
     #[test]
     fn test_parse_range_unsatisfiable_or_malformed_is_err() {
-        assert!(parse_range(&headers_with_range("bytes=100-"), 100).is_err(), "start == total");
-        assert!(parse_range(&headers_with_range("bytes=20-10"), 100).is_err(), "end < start");
-        assert!(parse_range(&headers_with_range("bytes=0-1,3-4"), 100).is_err(), "multi-range");
-        assert!(parse_range(&headers_with_range("items=0-1"), 100).is_err(), "wrong unit");
-        assert!(parse_range(&headers_with_range("bytes=abc"), 100).is_err(), "garbage");
-        assert!(parse_range(&headers_with_range("bytes=0-"), 0).is_err(), "empty file");
+        assert!(
+            parse_range(&headers_with_range("bytes=100-"), 100).is_err(),
+            "start == total"
+        );
+        assert!(
+            parse_range(&headers_with_range("bytes=20-10"), 100).is_err(),
+            "end < start"
+        );
+        assert!(
+            parse_range(&headers_with_range("bytes=0-1,3-4"), 100).is_err(),
+            "multi-range"
+        );
+        assert!(
+            parse_range(&headers_with_range("items=0-1"), 100).is_err(),
+            "wrong unit"
+        );
+        assert!(
+            parse_range(&headers_with_range("bytes=abc"), 100).is_err(),
+            "garbage"
+        );
+        assert!(
+            parse_range(&headers_with_range("bytes=0-"), 0).is_err(),
+            "empty file"
+        );
     }
 }
-

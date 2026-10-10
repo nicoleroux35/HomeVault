@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the RAID app's API — the RAID-specific endpoints
 //! that live in `crate::handlers::storage`:
 //!
@@ -41,8 +44,8 @@ use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{
     auth::handle_login,
     storage::{
-        handle_raid_available_devices, handle_raid_create, handle_raid_delete,
-        handle_raid_arrays_list, handle_raid_rebuild,
+        handle_raid_arrays_list, handle_raid_available_devices, handle_raid_create,
+        handle_raid_delete, handle_raid_rebuild,
     },
     AppState,
 };
@@ -53,7 +56,11 @@ type Req = Request<axum::body::Body>;
 
 static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -92,9 +99,15 @@ fn raid_router(state: Arc<AppState>) -> Router {
         .route("/api/auth/login", post(handle_login))
         .route("/api/storage/raid", get(handle_raid_arrays_list))
         .route("/api/storage/raid", post(handle_raid_create))
-        .route("/api/storage/raid/devices", get(handle_raid_available_devices))
+        .route(
+            "/api/storage/raid/devices",
+            get(handle_raid_available_devices),
+        )
         .route("/api/storage/raid/{name}", delete(handle_raid_delete))
-        .route("/api/storage/raid/{name}/rebuild", post(handle_raid_rebuild))
+        .route(
+            "/api/storage/raid/{name}/rebuild",
+            post(handle_raid_rebuild),
+        )
         .with_state(state)
 }
 
@@ -190,7 +203,11 @@ fn write_endpoints() -> Vec<(Method, &'static str, Option<Value>)> {
     vec![
         (Method::POST, "/api/storage/raid", Some(create_body())),
         (Method::DELETE, "/api/storage/raid/hvtest", None),
-        (Method::POST, "/api/storage/raid/hvtest/rebuild", Some(json!({}))),
+        (
+            Method::POST,
+            "/api/storage/raid/hvtest/rebuild",
+            Some(json!({})),
+        ),
     ]
 }
 
@@ -223,7 +240,10 @@ async fn test_read_endpoints_allow_any_valid_session() {
     for (method, uri) in read_endpoints() {
         let (status, body) = send(&mut router, method.clone(), uri, Some(&token), None).await;
         assert_eq!(status, StatusCode::OK, "{method} {uri}");
-        assert!(body["data"].is_array(), "{uri} should return an array: {body}");
+        assert!(
+            body["data"].is_array(),
+            "{uri} should return an array: {body}"
+        );
     }
 }
 

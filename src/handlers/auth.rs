@@ -2,8 +2,8 @@ use crate::auth::service::AuthError;
 use crate::handlers::AppState;
 use crate::setup::SetupService;
 use crate::storage::models::{
-    ADMIN_ROLE_ID, LoginRequest, LoginResponse, SetupRequest, SetupStatusResponse,
-    TwoFactorSetupRequest, TwoFactorVerifyRequest,
+    LoginRequest, LoginResponse, SetupRequest, SetupStatusResponse, TwoFactorSetupRequest,
+    TwoFactorVerifyRequest, ADMIN_ROLE_ID,
 };
 use crate::utils::ResponseHelper;
 use axum::{extract::State, http::HeaderMap, response::Response};
@@ -82,6 +82,9 @@ pub fn extract_client_ip(headers: &HeaderMap) -> String {
 /// Guards a handler to admins only.
 ///
 /// Returns `Ok(username)` on success or an error response on failure.
+// `Response` is axum's canonical error type; boxing it would ripple
+// through every call site for no real benefit, so allow the lint here.
+#[allow(clippy::result_large_err)]
 pub async fn require_admin(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -123,9 +126,7 @@ pub async fn handle_login(
     req: axum::extract::Json<LoginRequest>,
 ) -> Response {
     let ip_address = extract_client_ip(&headers);
-    let user_agent = headers
-        .get("user-agent")
-        .and_then(|h| h.to_str().ok());
+    let user_agent = headers.get("user-agent").and_then(|h| h.to_str().ok());
 
     match state
         .auth
@@ -230,9 +231,7 @@ pub async fn handle_2fa_verify(
     req: axum::extract::Json<TwoFactorVerifyRequest>,
 ) -> Response {
     let ip_address = extract_client_ip(&headers);
-    let user_agent = headers
-        .get("user-agent")
-        .and_then(|h| h.to_str().ok());
+    let user_agent = headers.get("user-agent").and_then(|h| h.to_str().ok());
 
     match state
         .auth
@@ -337,7 +336,11 @@ pub async fn handle_2fa_setup(
             let repo = crate::storage::User2faRepository::new(state.db.pool());
             let pending = match repo.get_by_username(&username).await {
                 Ok(Some(p)) => p,
-                _ => return ResponseHelper::json_error("No pending 2FA secret. Generate one first.".to_string()),
+                _ => {
+                    return ResponseHelper::json_error(
+                        "No pending 2FA secret. Generate one first.".to_string(),
+                    )
+                }
             };
             let secret = pending.totp_secret_encrypted;
 
@@ -564,10 +567,8 @@ pub async fn handle_setup_verify_totp(
         return ResponseHelper::json_forbidden("Setup already complete".to_string());
     }
 
-    let valid = crate::auth::service::AuthService::verify_totp_code_with_secret(
-        &req.secret,
-        &req.code,
-    );
+    let valid =
+        crate::auth::service::AuthService::verify_totp_code_with_secret(&req.secret, &req.code);
     ResponseHelper::json_success(serde_json::json!({ "valid": valid }))
 }
 
@@ -615,9 +616,7 @@ pub async fn handle_setup(
             || !crate::auth::service::AuthService::verify_totp_code_with_secret(secret, code)
         {
             SetupService::cleanup_setup_lock();
-            return ResponseHelper::json_error(
-                "Invalid two-factor verification code".to_string(),
-            );
+            return ResponseHelper::json_error("Invalid two-factor verification code".to_string());
         }
     }
 
@@ -682,11 +681,17 @@ pub async fn handle_setup(
     }
 
     if let Err(e) = state.db.ensure_admin_group().await {
-        tracing::warn!("Failed to ensure admin group: {}. Continuing without system group integration.", e);
+        tracing::warn!(
+            "Failed to ensure admin group: {}. Continuing without system group integration.",
+            e
+        );
     }
 
     if let Err(e) = state.db.sync_admin_user_to_group(&req.username).await {
-        tracing::warn!("Failed to sync admin user to group: {}. Continuing without system group integration.", e);
+        tracing::warn!(
+            "Failed to sync admin user to group: {}. Continuing without system group integration.",
+            e
+        );
     }
 
     if let Err(e) = state.db.create_admin_home_directory(&req.username).await {
@@ -771,7 +776,11 @@ pub async fn handle_setup(
                 "totp_enabled": totp_enabled,
                 "backup_codes": backup_codes,
             });
-            crate::app_proxy::cookie::attach_session(ResponseHelper::json_success(data), &token, false)
+            crate::app_proxy::cookie::attach_session(
+                ResponseHelper::json_success(data),
+                &token,
+                false,
+            )
         }
         Err(e) => {
             tracing::error!("Setup complete but failed to create session: {}", e);

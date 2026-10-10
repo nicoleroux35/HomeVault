@@ -1,5 +1,5 @@
 //! Server-Sent Events (SSE) Module
-//! 
+//!
 //! This module provides SSE functionality for real-time progress updates
 //! and event streaming to clients.
 

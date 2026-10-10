@@ -4,8 +4,8 @@ use sqlx::FromRow;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 
-use crate::storage::database::DbError;
 use crate::impl_repository;
+use crate::storage::database::DbError;
 
 /// Database row from `hv_groups`.
 #[derive(Debug, Clone, FromRow)]
@@ -115,7 +115,7 @@ impl HvGroupRepository {
         let full_name = format!("homevault_{}", name);
 
         sqlx::query(
-            "INSERT INTO hv_groups (name, full_name, description, created_at) VALUES (?, ?, ?, ?)"
+            "INSERT INTO hv_groups (name, full_name, description, created_at) VALUES (?, ?, ?, ?)",
         )
         .bind(name)
         .bind(&full_name)
@@ -124,9 +124,7 @@ impl HvGroupRepository {
         .execute(self.pool.as_ref())
         .await?;
 
-        self.find_by_name(name)
-            .await?
-            .ok_or(DbError::NotFound)
+        self.find_by_name(name).await?.ok_or(DbError::NotFound)
     }
 
     /// Set the POSIX GID for a group (after OS-level group creation).
@@ -184,7 +182,11 @@ impl HvGroupRepository {
     }
 
     /// Update a group's description.
-    pub async fn update_description(&self, name: &str, description: Option<&str>) -> Result<(), DbError> {
+    pub async fn update_description(
+        &self,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<(), DbError> {
         sqlx::query("UPDATE hv_groups SET description = ? WHERE name = ?")
             .bind(description)
             .bind(name)

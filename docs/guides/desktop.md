@@ -156,7 +156,9 @@ screenshot when its chrome moves.
   `frontend/src/routes/Widgets.svelte`'s `widgetDefs`. The Weather panel
   additionally reads/writes `frontend/src/lib/stores/weatherLocation.ts`
   and calls Open-Meteo directly from the browser (no backend proxy).
-- Shortcuts: `frontend/src/lib/stores/desktopShortcuts.ts`.
+- Shortcuts: global keyboard shortcuts live in `frontend/src/routes/Desktop.svelte`
+  (`handleGlobalKeydown` — Ctrl/Cmd+K search, Escape closes panels); there is
+  no separate shortcuts store.
 
 ## Launcher (Launchpad, Figma "Sans titre" node `23:6646`, 2026-09-16)
 

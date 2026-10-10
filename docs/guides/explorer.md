@@ -21,14 +21,14 @@ non-admins are restricted to the configured `allowed_roots`.
 | `/explorer/list` | GET | `?path=` | directory listing |
 | `/explorer/search` | GET | `?path=&query=&max_results=` | recursive search, wired into the UI's search box (see below) |
 | `/explorer/disks` | GET | — | mounted volumes grouped `system\|internal\|raid\|external\|cloud\|network`; each entry carries `mount_point`, `filesystem`, `size_bytes`, `used_bytes`, plus optional `label` (FS label) + `vendor`/`model`/`serial` of the parent block device (one `lsblk -P` pass, `collect_block_device_meta`, added 2026-09-09 for the folder picker's sidebar). `FolderPicker.svelte` ignores the extra fields. |
-| `/explorer/mkdir` | POST | `{ path }` | create folder |
-| `/explorer/delete` | POST | `{ path }` | **admin-only** permanent delete — internal use only now (purge/empty-trash), the UI's Delete button calls `/explorer/trash` instead |
-| `/explorer/rename` | POST | `{ path, new_name }` | rename — **both** the source and the destination (a full path) are path-guard validated, so a rename can't move a file out of the allowed roots |
-| `/explorer/copy` | POST | `{ source, destination }` | copy; for a **directory** source, starts a tracked background job instead of blocking (see Advanced pool/job pattern below) |
-| `/explorer/move` | POST | `{ source, destination }` | move; for a directory, tries an instant atomic rename first, only uses a tracked job as a cross-filesystem fallback |
-| `/explorer/permissions` | GET/POST | `{ path, mode? }` | read/set POSIX mode |
+| `/explorer/mkdir` | POST | `?path=` | create folder |
+| `/explorer/delete` | POST | `?path=` | **admin-only** permanent delete — internal use only now (purge/empty-trash), the UI's Delete button calls `/explorer/trash` instead |
+| `/explorer/rename` | POST | `?path=&new_name=` | rename — **both** the source and the destination (a full path) are path-guard validated, so a rename can't move a file out of the allowed roots |
+| `/explorer/copy` | POST | `?source=&destination=` | copy; for a **directory** source, starts a tracked background job instead of blocking (see Advanced pool/job pattern below) |
+| `/explorer/move` | POST | `?source=&destination=` | move; for a directory, tries an instant atomic rename first, only uses a tracked job as a cross-filesystem fallback |
+| `/explorer/permissions` | GET/POST | `?path=&mode=` | read/set POSIX mode |
 | `/explorer/preview` | GET | `?path=` | text/image preview; `previewable: false` (no `content`) for anything that isn't text-like or an image |
-| `/explorer/extract` | POST | `{ path, destination }` | extract archive; checks the required tool (`tar`/`unzip`/`7z`/`gunzip`) is installed first and returns a clear error instead of a raw exec failure |
+| `/explorer/extract` | POST | `?path=&destination=` | extract archive; checks the required tool (`tar`/`unzip`/`7z`/`gunzip`) is installed first and returns a clear error instead of a raw exec failure |
 | `/explorer/compress` | POST (JSON body) | `{ paths: string[], destination, format? }` | create an archive from one or more items sharing the same parent dir; `format` is `"zip"` (only if a `zip` binary is detected) or the default `"tar.gz"` |
 | `/explorer/download` | GET | `?path=&ticket=` | raw file (stream); HTTP `Range` support (206) for resumable downloads / video seeking; `X-Content-Sha256` digest header for files ≤ 64 MB; rejected with 429 before the stream starts if the caller's [transfer quota](./transfer-quotas.md) is exhausted. Auth is either the `x-session-token` header or a short-lived **download ticket** (never the session token in a URL) |
 | `/explorer/download-ticket` | POST | `?path=` | mint a single-use, 60-second download ticket (checks the path *and* the caller's download quota up-front, so an over-quota download surfaces as an error before the browser starts it) |
@@ -39,8 +39,8 @@ non-admins are restricted to the configured `allowed_roots`.
 | `/explorer/upload/session` | DELETE | `?session_id=` | abort a resumable upload and remove its partial temp file |
 | `/explorer/upload/chunk` | POST | raw body + `?session_id=&offset=` | write one chunk at the server's authoritative offset; an out-of-order chunk is rejected with a 409 carrying the current offset so the client can resume |
 | `/explorer/upload/complete` | POST | `?session_id=` | fsync + SHA-256 the temp file, resolve the collision strategy, atomically rename it into place and debit the quota (re-checked under the quota lock) |
-| `/explorer/trash` | POST / GET / DELETE | `{ path }` / — / — | move to trash / list everything in trash / empty trash |
-| `/explorer/trash/restore` | POST | `{ id }` | move a trashed item back to its original path (cross-device EXDEV fallback) |
+| `/explorer/trash` | POST / GET / DELETE | `?path=` / — / — | move to trash / list everything in trash / empty trash |
+| `/explorer/trash/restore` | POST | `?id=` | move a trashed item back to its original path (cross-device EXDEV fallback) |
 | `/explorer/trash/{id}` | DELETE | — | permanently delete one trashed item |
 | `/explorer/roots` | GET | — | labelled sidebar roots: `[{path, kind, name}]` — session user's home, each PathGuard root (`kind` = users/shares/media/appdata/system/storage), then every mounted virtual disk (`kind:"virtualdisk"`) |
 | `/explorer/save` | POST | `{ path, content }` | inline text/code editor — atomic temp-file + rename, 5 MB cap |
@@ -232,7 +232,11 @@ a misleading half-populated tree.
   `translate()`.
 - Destination picking for copy/move/extract uses the shared
   `frontend/src/lib/components/theme/FolderPicker.svelte` (also now fully
-  translated) instead of a raw `prompt()`.
+  translated) instead of a raw `prompt()`. The picker overlay is
+  `position: fixed`, so it **portals to `<body>`** (`use:portal`) and traps
+  focus (`use:focusTrap`) — inside the Explorer's transformed /
+  `overflow: hidden` window the 640px modal was clipped and its close button
+  was covered by `.hv-docker-monitor`.
 - Drag-and-drop upload onto the file list, in addition to the existing
   button → hidden `<input type="file">` flow (both call the same
   `uploadFiles`/`api.uploadFile`).

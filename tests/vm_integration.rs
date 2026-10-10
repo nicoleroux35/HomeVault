@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the Virtual Machines (Incus-backed) API.
 //!
 //!   GET    /api/vm/available
@@ -42,7 +45,7 @@ use tower::{Service, ServiceExt};
 use homevault::auth::AuthService;
 use homevault::config::PathGuard;
 use homevault::handlers::terminal_pty::PtyManager;
-use homevault::incus::IncusService;use homevault::handlers::{
+use homevault::handlers::{
     auth::handle_login,
     vm::{
         handle_console_ticket, handle_screen_ticket, handle_vm_available, handle_vm_config,
@@ -52,6 +55,7 @@ use homevault::incus::IncusService;use homevault::handlers::{
     },
     AppState,
 };
+use homevault::incus::IncusService;
 use homevault::middleware::rate_limit::RateLimitState;
 use homevault::storage::{Database, WidgetRepository};
 
@@ -59,7 +63,11 @@ type Req = Request<axum::body::Body>;
 
 static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -286,8 +294,14 @@ async fn available_reports_the_real_incus_state() {
     let (state, _tmp, _guard) = setup_state().await;
     let mut router = vm_router(state.clone());
     let token = admin_token(&state, &mut router).await;
-    let (status, body) =
-        send(&mut router, Method::GET, "/api/vm/available", Some(&token), None).await;
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/vm/available",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], true);
     // adapts to the host: Incus may or may not be reachable here
@@ -302,8 +316,14 @@ async fn os_options_returns_the_catalogue() {
     let (state, _tmp, _guard) = setup_state().await;
     let mut router = vm_router(state.clone());
     let token = admin_token(&state, &mut router).await;
-    let (status, body) =
-        send(&mut router, Method::GET, "/api/vm/os-options", Some(&token), None).await;
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/vm/os-options",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], true);
     let list = body["data"].as_array().expect("array");
@@ -311,7 +331,9 @@ async fn os_options_returns_the_catalogue() {
     assert!(list.iter().any(|o| o["id"] == "ubuntu-24.04"));
     assert_eq!(list.iter().filter(|o| o["recommended"] == true).count(), 1);
     // every entry carries a plain-language blurb
-    assert!(list.iter().all(|o| o["blurb"].as_str().map(|s| !s.is_empty()).unwrap_or(false)));
+    assert!(list
+        .iter()
+        .all(|o| o["blurb"].as_str().map(|s| !s.is_empty()).unwrap_or(false)));
 }
 
 #[tokio::test]
@@ -329,7 +351,10 @@ async fn list_handles_incus_cleanly() {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["success"], false);
         let msg = body["message"].as_str().unwrap_or("");
-        assert!(msg.to_lowercase().contains("incus"), "friendly message: {msg}");
+        assert!(
+            msg.to_lowercase().contains("incus"),
+            "friendly message: {msg}"
+        );
         // no stack trace / socket path leak
         assert!(!msg.contains("/var/lib/incus"));
     }
@@ -338,7 +363,14 @@ async fn list_handles_incus_cleanly() {
 // ── 4. Create validation (runs before any Incus call) ─────────────────────
 
 async fn create_err(router: &mut Router, token: &str, body: Value) -> String {
-    let (status, resp) = send(router, Method::POST, "/api/vm/create", Some(token), Some(body)).await;
+    let (status, resp) = send(
+        router,
+        Method::POST,
+        "/api/vm/create",
+        Some(token),
+        Some(body),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(resp["success"], false);
     resp["message"].as_str().unwrap_or("").to_string()

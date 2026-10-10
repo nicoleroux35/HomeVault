@@ -1,7 +1,7 @@
 //! HTTP handlers for system notifications (health alerts, backup results).
 
-use crate::handlers::AppState;
 use crate::handlers::admin_guard::require_auth;
+use crate::handlers::AppState;
 use crate::storage::NotificationRepository;
 use crate::utils::ResponseHelper;
 use axum::{
@@ -13,7 +13,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Lists the most recent notifications (newest first).
-pub async fn handle_notifications_list(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_notifications_list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -119,7 +122,9 @@ pub struct NotificationsEventsQuery {
 /// updates instantly instead of waiting for the next 30s poll. Requires a
 /// valid ticket from `handle_notifications_events_ticket` (see that
 /// handler's doc comment for why).
-pub async fn handle_notifications_events(Query(query): Query<NotificationsEventsQuery>) -> impl IntoResponse {
+pub async fn handle_notifications_events(
+    Query(query): Query<NotificationsEventsQuery>,
+) -> impl IntoResponse {
     use axum::response::sse::{Event, Sse};
     use tokio::sync::broadcast::error::RecvError;
     use tokio::time::interval;

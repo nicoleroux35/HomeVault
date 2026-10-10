@@ -51,7 +51,7 @@ visibles à partir de 901px, icône seule en dessous — la cible tactile reste
 
 ### Quai d'applications (Dock)
 - Apps épinglées, dans l'ordre du dock : Tableau de bord, Terminal, Docker,
-  Santé, Assistant IA, Applications (le lanceur), Paramètres
+  Santé, Assistant IA, Paramètres (`PINNED_DOCK_APP_IDS`)
 - Apps en cours d'exécution / minimisées avec animation de restauration
 
 ### Barre de tâches (Activity taskbar)
@@ -68,37 +68,37 @@ visibles à partir de 901px, icône seule en dessous — la cible tactile reste
 - Barre de recherche avec correspondance floue sur les noms/descriptions des apps
 - Navigation au clavier (flèches + Entrée)
 
-### 27 applications disponibles
+### 24 applications disponibles
 
 | # | Application | Catégorie | Description |
 |---|---|---|---|
 | 1 | Dashboard | Système | Vue d'ensemble et statistiques en temps réel |
-| 2 | Stockage (Storage) | Stockage | Disques, volumes et pools |
-| 3 | RAID Arrays | Stockage | Gestion des baies RAID |
+| 2 | Stockage (Storage) | Stockage | Disques, volumes virtuels, chiffrement, cache |
+| 3 | RAID | Stockage | Création de disques virtuels (mdadm/ZFS/Btrfs) |
 | 4 | Explorateur (Explorer) | Stockage | Navigation dans les fichiers partagés |
-| 5 | Docker | Système | Conteneurs et images |
+| 5 | Docker | Système | Conteneurs, images et catalogue d'applications |
 | 6 | Réseau (Network) | Réseau | Interfaces et routage |
 | 7 | VPN | Réseau | Accès WireGuard et OpenVPN |
-| 8 | Sauvegarde (Backup) | Stockage | Snapshots et restaurations |
+| 8 | Sauvegarde (Backup) | Stockage | Dépôts, snapshots et restaurations (restic) |
 | 9 | Utilisateurs | Système | Comptes et permissions |
 | 10 | Groupes | Système | Groupes d'utilisateurs et rôles |
 | 11 | Quotas | Système | Aperçu en lecture seule des quotas de transfert |
-| 12 | Partages (Shares) | Stockage | Partages réseau |
-| 13 | Cloud Sync | Réseau | Stockage cloud distant |
+| 12 | Partages (Shares) | Stockage | Partages réseau (SMB/NFS/FTP/WebDAV/SFTP) |
+| 13 | Cloud Sync | Réseau | Stockage cloud distant (rclone) |
 | 14 | Syncthing | Réseau | Synchronisation continue de fichiers |
 | 15 | Santé (Health) | Surveillance | État du système et alertes |
 | 16 | Assistant IA (Chat) | Productivité | Conversation avec l'assistant IA |
-| 17 | Télécharger (Downloader) | Productivité | Gestion des téléchargements |
+| 17 | Télécharger (Downloader) | Productivité | Gestion des téléchargements (aria2) |
 | 18 | Rescue | Système | Récupération et réparation |
 | 19 | Widgets | Système | Ajouter/supprimer des widgets du bureau |
-| 20 | Journal système | Surveillance | Journaux système centralisés et événements |
+| 20 | Journal système | Surveillance | Journaux système et événements d'audit |
 | 21 | Terminal | Système | Terminal PTY complet |
 | 22 | Paramètres | Système | Configuration du serveur |
 | 23 | Mon compte | Système | Profil et sécurité personnel |
-| 24 | Stockage (Storage) | Stockage | Disques, volumes, chiffrement, cache |
-| 25 | RAID | Stockage | Tableaux RAID |
-| 26 | Parts/Protocoles | Stockage | SMB, NFS, FTP, WebDAV, SFTP |
-| 27 | Machines virtuelles (Virtual Machines) | Système | VMs et conteneurs système via Incus — assistant guidé, console shell, instantanés |
+| 24 | Machines virtuelles (Virtual Machines) | Système | VMs et conteneurs via Incus — assistant guidé, console shell, écran graphique, instantanés |
+
+> Soit 21 entrées dans `appDefs` + Terminal + Paramètres + Mon compte.
+> Les 27 routes Svelte = ces 24 apps + Login + Assistant de configuration + Desktop.
 
 ### Widgets de surveillance flottants (11 panneaux)
 
@@ -481,7 +481,22 @@ et dans l'écran Groupes.
 
 ---
 
-## 23. Rescue
+## 23. Machines virtuelles (Virtual Machines)
+
+**Fonctionnalités :**
+- Liste des machines (VMs + conteneurs système) : nom, type, état, adresse IPv4, profils
+- Assistant de création en deux modes : image cloud du catalogue OS ou ISO locale
+- Préconfigurations : nombre de CPU, mémoire, taille de disque
+- Identifiant de connexion initial semé via cloud-init (mot de passe haché SHA-512 crypt)
+- Cycle de vie : démarrage, arrêt, redémarrage, suppression (avec attente d'opération)
+- Instantanés : création, liste, restauration, suppression
+- Console shell (xterm) relayée en WebSocket
+- Écran graphique (noVNC) avec ticket à usage unique de 20 s
+- Téléchargement du pilote VirtIO (fedorapeople.org)
+
+---
+
+## 24. Rescue
 
 **4 outils (mode Simple/Avancé pour chacun) :**
 
@@ -509,7 +524,7 @@ et dans l'écran Groupes.
 
 ---
 
-## 24. Assistant IA (Chat)
+## 25. Assistant IA (Chat)
 
 **Fonctionnalités :**
 - Interface de conversation avec bulles de messages
@@ -524,7 +539,7 @@ et dans l'écran Groupes.
 
 ---
 
-## 25. Widgets
+## 26. Widgets
 
 **Fonctionnalités :**
 - Catalogue de 11 widgets de surveillance
@@ -547,7 +562,7 @@ et dans l'écran Groupes.
 
 ---
 
-## 26. Paramètres (Settings)
+## 27. Paramètres (Settings)
 
 **8 catégories dans la barre latérale** (regroupées 2026-09-09 depuis 12 onglets plats, re-thémées 2026-09-14 d'après la maquette Figma « Settings Screen ») :
 
@@ -575,11 +590,11 @@ et dans l'écran Groupes.
 |---|---|
 | Authentification / Configuration | 2 (Login, Assistant de configuration) |
 | Bureau | 1 (Desktop + 11 widgets flottants + recherche + notifications) |
-| Système | 6 (Dashboard, Utilisateurs, Quotas, Groupes, Mon compte, Terminal) |
-| Stockage | 5 (Stockage, RAID, Explorateur, Parts/Protocoles, Sauvegarde) |
-| Réseau | 4 (Réseau, VPN, Cloud Sync, Syncthing) |
+| Système | 7 (Dashboard, Utilisateurs, Quotas, Groupes, Mon compte, Terminal, Machines virtuelles) |
+| Stockage | 4 (Stockage, RAID, Explorateur, Sauvegarde — Partages ∈ Stockage côté registre bureau, ouverture possible via Explorateur) |
+| Réseau | 4 (Réseau, VPN, Cloud Sync, Syncthing) + 1 (Partages) |
 | Surveillance | 2 (Santé, Journal système) |
 | Productivité | 2 (Assistant IA, Télécharger) |
 | Infrastructure | 2 (Docker, Rescue) |
 | Configuration | 1 (Paramètres — 8 catégories) |
-| **Total** | **26 écrans principaux** |
+| **Total** | **27 écrans principaux** (= les 24 apps du bureau + Login + Assistant de configuration + Desktop) |

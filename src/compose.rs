@@ -54,13 +54,21 @@ impl ComposeManager {
     /// this same way; this makes that check apply everywhere, not just there.
     fn validate_name(name: &str) -> Result<(), ComposeError> {
         let valid = !name.is_empty()
-            && name.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
-            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+            && name
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphanumeric())
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
             && !name.contains("..");
         if valid {
             Ok(())
         } else {
-            Err(ComposeError::CommandFailed(format!("Invalid project name: {}", name)))
+            Err(ComposeError::CommandFailed(format!(
+                "Invalid project name: {}",
+                name
+            )))
         }
     }
 
@@ -118,14 +126,16 @@ impl ComposeManager {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
-                    let name = path.file_name()
+                    let name = path
+                        .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("")
                         .to_string();
 
                     let config_path = path.join("docker-compose.yml");
                     let services = Self::get_services_from_config(&config_path).unwrap_or_default();
-                    let status = Self::get_project_status(&name).unwrap_or_else(|_| "unknown".to_string());
+                    let status =
+                        Self::get_project_status(&name).unwrap_or_else(|_| "unknown".to_string());
 
                     projects.push(ComposeProject {
                         name,
@@ -155,7 +165,13 @@ impl ComposeManager {
             }
             if trimmed.ends_with(':') && !trimmed.starts_with('#') {
                 let service_name = trimmed.trim_end_matches(':').to_string();
-                if !service_name.is_empty() && service_name.chars().next().map(|c| c.is_lowercase()).unwrap_or(false) {
+                if !service_name.is_empty()
+                    && service_name
+                        .chars()
+                        .next()
+                        .map(|c| c.is_lowercase())
+                        .unwrap_or(false)
+                {
                     services.push(service_name);
                 }
             }
@@ -261,9 +277,10 @@ impl ComposeManager {
         let project_dir = Self::get_compose_dir().join(name);
 
         if project_dir.exists() {
-            return Err(ComposeError::CommandFailed(
-                format!("Project '{}' already exists", name)
-            ));
+            return Err(ComposeError::CommandFailed(format!(
+                "Project '{}' already exists",
+                name
+            )));
         }
 
         std::fs::create_dir_all(&project_dir)?;
@@ -316,7 +333,7 @@ impl ComposeManager {
 
         if !output.status.success() {
             return Err(ComposeError::CommandFailed(
-                String::from_utf8_lossy(&output.stderr).to_string()
+                String::from_utf8_lossy(&output.stderr).to_string(),
             ));
         }
 
@@ -338,7 +355,7 @@ impl ComposeManager {
 
         if !output.status.success() {
             return Err(ComposeError::CommandFailed(
-                String::from_utf8_lossy(&output.stderr).to_string()
+                String::from_utf8_lossy(&output.stderr).to_string(),
             ));
         }
 
@@ -374,7 +391,10 @@ impl ComposeManager {
         // deserializing straight into ContainerService's lowercase fields
         // silently produced an empty list on every modern Compose.
         let str_field = |v: &serde_json::Value, key: &str| {
-            v.get(key).and_then(|x| x.as_str()).unwrap_or("").to_string()
+            v.get(key)
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string()
         };
         let services = Self::parse_ps_output(&stdout)
             .iter()
@@ -445,7 +465,8 @@ mod tests {
 
     #[test]
     fn test_status_from_ps_all_stopped() {
-        let out = "{\"Service\":\"a\",\"State\":\"exited\"}\n{\"Service\":\"b\",\"State\":\"created\"}";
+        let out =
+            "{\"Service\":\"a\",\"State\":\"exited\"}\n{\"Service\":\"b\",\"State\":\"created\"}";
         let states = ComposeManager::parse_ps_output(out);
         assert_eq!(ComposeManager::status_from_ps(&states), "stopped");
     }

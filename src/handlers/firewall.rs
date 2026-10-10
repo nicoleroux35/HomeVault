@@ -23,7 +23,10 @@ fn unavailable() -> Response {
 }
 
 /// `GET /api/firewall/status`
-pub async fn handle_firewall_status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_firewall_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -49,7 +52,10 @@ pub async fn handle_firewall_status(State(state): State<Arc<AppState>>, headers:
 /// `GET /api/firewall/enable/preview` — shows exactly what enabling would
 /// activate (the mandatory rules plus whatever custom rules already exist),
 /// so the confirmation UI never has to guess.
-pub async fn handle_firewall_enable_preview(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_firewall_enable_preview(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -60,7 +66,9 @@ pub async fn handle_firewall_enable_preview(State(state): State<Arc<AppState>>, 
 
     let ssh_port = firewall::detect_ssh_port();
     let app_port = firewall::detect_app_port();
-    let existing_rules = firewall::get_status().map(|(_, rules)| rules).unwrap_or_default();
+    let existing_rules = firewall::get_status()
+        .map(|(_, rules)| rules)
+        .unwrap_or_default();
 
     ResponseHelper::json_success(serde_json::json!({
         "ssh_port": ssh_port,
@@ -92,7 +100,9 @@ pub async fn handle_firewall_enable(
         return unavailable();
     }
     if !body.confirmed {
-        return ResponseHelper::json_error("Enabling the firewall requires explicit confirmation".to_string());
+        return ResponseHelper::json_error(
+            "Enabling the firewall requires explicit confirmation".to_string(),
+        );
     }
 
     let ssh_port = firewall::detect_ssh_port();
@@ -107,7 +117,12 @@ pub async fn handle_firewall_enable(
 
     let repo = FirewallRepository::new(state.db.pool());
     let _ = repo
-        .save_state(true, ssh_port, app_port, Some(&chrono::Utc::now().to_rfc3339()))
+        .save_state(
+            true,
+            ssh_port,
+            app_port,
+            Some(&chrono::Utc::now().to_rfc3339()),
+        )
         .await;
     let _ = repo.record_change("enabled", None, &username).await;
     crate::events::log_event_warn(format!("Admin '{}' enabled the firewall", username));
@@ -116,7 +131,10 @@ pub async fn handle_firewall_enable(
 }
 
 /// `POST /api/firewall/disable`
-pub async fn handle_firewall_disable(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_firewall_disable(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     let username = match require_admin(&state, &headers).await {
         Ok(u) => u,
         Err(response) => return response,
@@ -132,7 +150,12 @@ pub async fn handle_firewall_disable(State(state): State<Arc<AppState>>, headers
     let repo = FirewallRepository::new(state.db.pool());
     let settings = repo.get_settings().await.unwrap_or_default();
     let _ = repo
-        .save_state(false, settings.ssh_port, settings.app_port, settings.confirmed_at.as_deref())
+        .save_state(
+            false,
+            settings.ssh_port,
+            settings.app_port,
+            settings.confirmed_at.as_deref(),
+        )
         .await;
     let _ = repo.record_change("disabled", None, &username).await;
     crate::events::log_event_warn(format!("Admin '{}' disabled the firewall", username));
@@ -177,13 +200,21 @@ pub async fn handle_firewall_rule_add(
     }
 
     let comment = format!("homevault-custom-{}-{}", body.action, body.port);
-    if let Err(e) = firewall::add_rule(&body.port, &body.protocol, &body.action, body.source.as_deref(), &comment) {
+    if let Err(e) = firewall::add_rule(
+        &body.port,
+        &body.protocol,
+        &body.action,
+        body.source.as_deref(),
+        &comment,
+    ) {
         return ResponseHelper::json_error(format!("Failed to add rule: {}", e));
     }
 
     let repo = FirewallRepository::new(state.db.pool());
     let description = format!("{} {}/{}", body.action, body.port, body.protocol);
-    let _ = repo.record_change("rule_added", Some(&description), &username).await;
+    let _ = repo
+        .record_change("rule_added", Some(&description), &username)
+        .await;
     crate::events::log_event(format!(
         "Admin '{}' added firewall rule: {}",
         username, description
@@ -221,7 +252,9 @@ pub async fn handle_firewall_rule_delete(
 
     let rules = match firewall::get_status() {
         Ok((_, rules)) => rules,
-        Err(e) => return ResponseHelper::json_error(format!("Failed to read firewall status: {}", e)),
+        Err(e) => {
+            return ResponseHelper::json_error(format!("Failed to read firewall status: {}", e))
+        }
     };
 
     let target = rules.iter().find(|r| {
@@ -244,7 +277,9 @@ pub async fn handle_firewall_rule_delete(
 
     let repo = FirewallRepository::new(state.db.pool());
     let description = format!("{} {}/{}", body.action, body.port, body.protocol);
-    let _ = repo.record_change("rule_deleted", Some(&description), &username).await;
+    let _ = repo
+        .record_change("rule_deleted", Some(&description), &username)
+        .await;
     crate::events::log_event(format!(
         "Admin '{}' deleted firewall rule: {}",
         username, description

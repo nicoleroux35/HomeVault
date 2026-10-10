@@ -159,7 +159,8 @@ the Chat AI with relevant context. It must stay healthy and documented:
   add a new indexer function in `src/rag_indexers.rs`, register it in
   `index_all()`, add an endpoint if needed, and update the guide.
 - **Migration 033** creates the RAG tables. Any schema change needs a new
-  migration (034+) and the migration count must be updated in `docs/BACKEND.md`.
+  migration (latest is 036 — see `sqlx/migrations/`) and the migration count
+  must be updated in `docs/BACKEND.md`.
 - `docs/guides/rag.md` is **not frozen** — update it in the same change that
   modifies RAG behavior.
 
@@ -558,7 +559,7 @@ The WS closing must **not** kill the PTY — only `close_tab`, `reap_stale`,
 `kill_session`, `cleanup_all` kill (reconnect support). Per-user cap
 `MAX_TABS_PER_USER = 8` + the 30-min idle reaper (`SESSION_IDLE_TIMEOUT` via
 `PtySession.attached`/`idle_since` + `DetachGuard`) bound orphaned shells.
-`terminal` must stay in `WindowFrame.svelte`'s `OWN_HEADER_APPS` (`:312`) — the
+`terminal` must stay in `WindowFrame.svelte`'s `OWN_HEADER_APPS` (`:324`) — the
 app ships its own `<WindowHeader>`, and leaving it out stacks a blank duplicate
 header (the bug `quotas` shipped on 2026-09-14, caught by E2E `14.9`). Window
 dragging is **generic, not per-app**: `WindowFrame` drags from any
@@ -666,6 +667,24 @@ before handing it to the `cron` crate (`1=Sun…7=Sat`).
   anchor click. `check_quota` compares in `u128` (an `as i64` on a huge value
   goes negative and slips under the limit). Transfer quotas meter **only**
   Explorer transfers — SMB/NFS/FTP/WebDAV are separate daemons.
+- **Quotas screen live-audited 2026-10-07** — it was the last screen with no
+  live audit and no green E2E run. `tests/e2e/quotas/quotas.spec.ts` is now
+  green end-to-end (**38/38**, Firefox, scratch `PORT=` + isolated
+  `DATA_DIRECTORY`, no real data; reference count `npx playwright test --list
+  --project=firefox` = 38, `grep -cE '^\s*test\('` = 36 — the responsive
+  360/768/1920 loop is one line → three tests). The screen
+  (`frontend/src/routes/Quotas.svelte`, app id `quotas`) was checked live on the
+  same server: launcher open, icon+title-only header, the three
+  mutually-exclusive `aria-pressed` filter chips, the seeded row's `used/limit`
+  progress bar (`aria-valuenow="50"` on 50 Mo / 100 Mo) **plus** *Unlimited* on
+  a disabled direction, and **Manage in Users** emitting `hv-open-app`
+  (`detail.id = 'users'`) without leaving `/desktop` or closing Quotas. **No
+  dead selector was fixed** — the spec was written after the 2026-09-12
+  Appliance migration and already targets `data-testid`; it passed as-is. Still
+  open (out of this pass's scope): the screen has **no dedicated Rust
+  integration file** — its `GET /transfer-quotas/{type}` endpoint stays covered
+  by `transfer_quota.rs` + `explorer_integration.rs`. `TESTING.md` row 6 and the
+  summary carry the same date.
 - `mkdir`/`delete`/`rename`/`copy`/`move`/`extract`/`permissions`/`preview`
   handlers wrap their sync filesystem/`Command` work in `spawn_blocking`.
 

@@ -104,12 +104,17 @@ impl PtySession {
 
     /// Called by `handle_socket` on attach / detach.
     fn mark_attached(&self) {
-        self.attached.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.attached
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         *self.idle_since.lock().unwrap() = None;
     }
 
     fn mark_detached(&self) {
-        if self.attached.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) == 1 {
+        if self
+            .attached
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
+            == 1
+        {
             *self.idle_since.lock().unwrap() = Some(Instant::now());
         }
     }
@@ -219,7 +224,11 @@ impl PtyManager {
             .await
             .retain(|_, (u, _, _)| u != username);
         if killed > 0 {
-            tracing::info!("Killed {} terminal tab(s) for deleted user {}", killed, username);
+            tracing::info!(
+                "Killed {} terminal tab(s) for deleted user {}",
+                killed,
+                username
+            );
         }
     }
 
@@ -237,7 +246,11 @@ impl PtyManager {
     /// and show a truthful prompt. `sudo -u <user> -i` may run the shell as a
     /// descendant of the child we spawned, so walk the process tree a few
     /// levels and use the deepest cwd we can read.
-    pub async fn get_session_cwd(&self, username: &str, tab_id: &str) -> Option<std::path::PathBuf> {
+    pub async fn get_session_cwd(
+        &self,
+        username: &str,
+        tab_id: &str,
+    ) -> Option<std::path::PathBuf> {
         let key = (username.to_string(), tab_id.to_string());
         let session = self.sessions.read().await.get(&key)?.clone();
         let pid = session.child.lock().unwrap().process_id()?;
@@ -275,7 +288,10 @@ impl PtyManager {
         let now = Instant::now();
         let mut tickets = self.tickets.write().await;
         tickets.retain(|_, (_, _, issued_at)| now.duration_since(*issued_at) < TICKET_TTL);
-        tickets.insert(ticket.clone(), (username.to_string(), tab_id.to_string(), now));
+        tickets.insert(
+            ticket.clone(),
+            (username.to_string(), tab_id.to_string(), now),
+        );
         ticket
     }
 
@@ -303,7 +319,9 @@ fn generate_ticket() -> String {
     let mut rng = rand::rng();
     let mut buf = [0u8; 32];
     rng.fill_bytes(&mut buf);
-    buf.iter().map(|b| CHARSET[(*b as usize) % CHARSET.len()] as char).collect()
+    buf.iter()
+        .map(|b| CHARSET[(*b as usize) % CHARSET.len()] as char)
+        .collect()
 }
 
 /// Reads `/proc/<pid>/cwd` — the process's real working directory. Returns
@@ -354,7 +372,10 @@ fn descendant_pids(pid: u32) -> Vec<u32> {
 /// HOME, shell and environment.
 fn spawn_session(username: &str) -> Result<Arc<PtySession>, String> {
     if !crate::setup::SetupService::is_valid_username(username) {
-        return Err(format!("Invalid username for terminal session: {}", username));
+        return Err(format!(
+            "Invalid username for terminal session: {}",
+            username
+        ));
     }
 
     let pty_system = native_pty_system();
@@ -477,6 +498,9 @@ struct TabQuery {
     tab: Option<String>,
 }
 
+// `Response` is axum's canonical error type; boxing it would ripple
+// through every call site for no real benefit, so allow the lint here.
+#[allow(clippy::result_large_err)]
 fn resolve_tab_id(tab: Option<String>) -> Result<String, Response> {
     let tab_id = tab.unwrap_or_else(|| "default".to_string());
     if is_valid_tab_id(&tab_id) {
@@ -514,7 +538,11 @@ async fn handle_terminal_ticket(
     };
 
     if !state.auth.is_admin(&username).await {
-        return (StatusCode::FORBIDDEN, "Admin privileges required for terminal access").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "Admin privileges required for terminal access",
+        )
+            .into_response();
     }
 
     let tab_id = match resolve_tab_id(query.tab) {
@@ -576,8 +604,17 @@ async fn handle_terminal_ls(
 
     // The caller must have a live session for this tab — an arbitrary admin
     // can't list directories unless they actually hold a terminal tab open.
-    if state.pty_manager.get_session_cwd(&username, &tab_id).await.is_none() {
-        return (StatusCode::NOT_FOUND, "No live terminal session for this tab").into_response();
+    if state
+        .pty_manager
+        .get_session_cwd(&username, &tab_id)
+        .await
+        .is_none()
+    {
+        return (
+            StatusCode::NOT_FOUND,
+            "No live terminal session for this tab",
+        )
+            .into_response();
     }
 
     let path = query.path.trim();
@@ -597,7 +634,9 @@ async fn handle_terminal_ls(
         return (StatusCode::BAD_REQUEST, "Cannot read directory").into_response();
     };
     for item in rd.flatten().take(500) {
-        let Ok(name) = item.file_name().into_string() else { continue };
+        let Ok(name) = item.file_name().into_string() else {
+            continue;
+        };
         if name.is_empty() {
             continue;
         }
@@ -623,7 +662,11 @@ async fn authed_admin(state: &Arc<AppState>, headers: &HeaderMap) -> Result<Stri
     if session_token.is_empty() {
         return Err(());
     }
-    let username = state.auth.get_username_from_token(session_token).await.ok_or(())?;
+    let username = state
+        .auth
+        .get_username_from_token(session_token)
+        .await
+        .ok_or(())?;
     if state.auth.is_admin(&username).await {
         Ok(username)
     } else {
@@ -639,7 +682,11 @@ async fn admin_gate_failure(state: &Arc<AppState>, headers: &HeaderMap) -> Respo
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
     let has_session = !session_token.is_empty()
-        && state.auth.get_username_from_token(session_token).await.is_some();
+        && state
+            .auth
+            .get_username_from_token(session_token)
+            .await
+            .is_some();
     if has_session {
         (StatusCode::FORBIDDEN, "Admin privileges required").into_response()
     } else {
@@ -669,7 +716,11 @@ async fn handle_terminal_close(
     };
 
     if !state.auth.is_admin(&username).await {
-        return (StatusCode::FORBIDDEN, "Admin privileges required for terminal access").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "Admin privileges required for terminal access",
+        )
+            .into_response();
     }
 
     let tab_id = match resolve_tab_id(query.tab) {
@@ -691,7 +742,11 @@ async fn terminal_ws_handler(
     };
 
     let Some((username, tab_id)) = state.pty_manager.consume_ticket(&ticket).await else {
-        return (StatusCode::UNAUTHORIZED, "Invalid or expired terminal ticket").into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired terminal ticket",
+        )
+            .into_response();
     };
 
     // Defense in depth: re-check admin status at connect time even though the
@@ -699,7 +754,11 @@ async fn terminal_ws_handler(
     // handle_group_add_member uses for the admin group).
     if !state.auth.is_admin(&username).await {
         tracing::warn!("Non-admin user '{}' denied access to terminal", username);
-        return (StatusCode::FORBIDDEN, "Admin privileges required for terminal access").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "Admin privileges required for terminal access",
+        )
+            .into_response();
     }
 
     ws.on_upgrade(move |socket| handle_socket(socket, state, username, tab_id))
@@ -743,7 +802,12 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, username: String
     // context instead of a blank screen while it waits for new live output.
     {
         let buffered: Vec<u8> = session.scrollback.lock().unwrap().iter().copied().collect();
-        if !buffered.is_empty() && ws_tx.send(Message::Binary(Bytes::from(buffered))).await.is_err() {
+        if !buffered.is_empty()
+            && ws_tx
+                .send(Message::Binary(Bytes::from(buffered)))
+                .await
+                .is_err()
+        {
             return;
         }
     }
@@ -831,7 +895,15 @@ mod tests {
     fn test_is_valid_tab_id_rejects_empty_overlong_and_odd_bytes() {
         assert!(!is_valid_tab_id(""));
         assert!(!is_valid_tab_id(&"x".repeat(65)));
-        for bad in ["has space", "slash/id", "dot.id", "colon:id", "quote\"id", "emoji\u{1F600}", "a\nb"] {
+        for bad in [
+            "has space",
+            "slash/id",
+            "dot.id",
+            "colon:id",
+            "quote\"id",
+            "emoji\u{1F600}",
+            "a\nb",
+        ] {
             assert!(!is_valid_tab_id(bad), "{bad:?} must be rejected");
         }
     }
@@ -897,12 +969,11 @@ mod tests {
     #[tokio::test]
     async fn test_issuing_many_tickets_keeps_them_all_valid_within_ttl() {
         let mgr = PtyManager::new();
-        let tickets: Vec<String> =
-            futures_util::future::join_all((0..10).map(|i| {
-                let mgr = &mgr;
-                async move { mgr.issue_ticket("carol", &format!("tab-{i}")).await }
-            }))
-            .await;
+        let tickets: Vec<String> = futures_util::future::join_all((0..10).map(|i| {
+            let mgr = &mgr;
+            async move { mgr.issue_ticket("carol", &format!("tab-{i}")).await }
+        }))
+        .await;
         for (i, t) in tickets.iter().enumerate() {
             assert_eq!(
                 mgr.consume_ticket(t).await,
@@ -922,7 +993,10 @@ mod tests {
 
         mgr.kill_session("dave").await;
 
-        assert!(mgr.consume_ticket(&a1).await.is_none(), "dave's ticket must be gone");
+        assert!(
+            mgr.consume_ticket(&a1).await.is_none(),
+            "dave's ticket must be gone"
+        );
         assert!(mgr.consume_ticket(&a2).await.is_none());
         assert_eq!(
             mgr.consume_ticket(&b1).await,
@@ -952,8 +1026,7 @@ mod tests {
         let r: ResizeMessage = serde_json::from_str(r#"{"cols":120,"rows":40}"#).unwrap();
         assert_eq!((r.cols, r.rows), (120, 40));
 
-        let q: TerminalWsQuery =
-            serde_json::from_str(r#"{"ticket":"abc"}"#).unwrap();
+        let q: TerminalWsQuery = serde_json::from_str(r#"{"ticket":"abc"}"#).unwrap();
         assert_eq!(q.ticket.as_deref(), Some("abc"));
         let q2: TerminalWsQuery = serde_json::from_str("{}").unwrap();
         assert!(q2.ticket.is_none());

@@ -1,5 +1,5 @@
-use crate::storage::database::DbError;
 use crate::impl_repository;
+use crate::storage::database::DbError;
 use chrono::{Duration, Utc};
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -128,7 +128,7 @@ impl LoginAttemptRepository {
              FROM login_attempts
              WHERE username = ?
              ORDER BY attempted_at DESC
-             LIMIT ?"
+             LIMIT ?",
         )
         .bind(username)
         .bind(limit)
@@ -144,7 +144,7 @@ impl LoginAttemptRepository {
             "SELECT id, username, ip_address, success, user_agent, attempted_at
              FROM login_attempts
              ORDER BY attempted_at DESC
-             LIMIT ?"
+             LIMIT ?",
         )
         .bind(limit)
         .fetch_all(self.pool.as_ref())

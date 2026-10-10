@@ -467,9 +467,16 @@ impl IncusService {
     /// return (`/1.0/operations/<uuid>`). A non-200 operation status becomes
     /// `IncusError::Operation(reason)`.
     pub async fn wait_for_operation(op_id: &str, timeout_secs: u64) -> Result<(), IncusError> {
-        let path = format!("{}/wait?timeout={}", op_id.trim_end_matches('/'), timeout_secs);
+        let path = format!(
+            "{}/wait?timeout={}",
+            op_id.trim_end_matches('/'),
+            timeout_secs
+        );
         let v = Self::request_json("GET", &path, None).await?;
-        let meta = v.get("metadata").cloned().unwrap_or(serde_json::Value::Null);
+        let meta = v
+            .get("metadata")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         let code = meta
             .get("status_code")
             .and_then(|c| c.as_u64())
@@ -576,7 +583,9 @@ impl IncusService {
         .await
         {
             Ok(r) => r,
-            Err(_) => Err(IncusError::Transport("Incus did not respond in time".to_string())),
+            Err(_) => Err(IncusError::Transport(
+                "Incus did not respond in time".to_string(),
+            )),
         }
     }
 
@@ -857,7 +866,10 @@ mod tests {
         assert!(ud.starts_with("#cloud-config\n"));
         assert!(ud.contains("name: alice"));
         assert!(ud.contains("ssh_pwauth: true"));
-        assert!(ud.contains("passwd: \"$6$"), "expected a SHA-512 crypt hash");
+        assert!(
+            ud.contains("passwd: \"$6$"),
+            "expected a SHA-512 crypt hash"
+        );
         assert!(
             !ud.contains("s3cr3t-p@ss"),
             "plaintext password leaked into cloud-init"
@@ -868,23 +880,18 @@ mod tests {
             .find_map(|l| l.trim().strip_prefix("passwd: \""))
             .map(|s| s.trim_end_matches('"'))
             .unwrap();
-        assert!(
-            sha_crypt::ShaCrypt::SHA512
-                .verify_password(
-                    b"s3cr3t-p@ss",
-                    sha_crypt::PasswordHashRef::new(hash).expect("valid MCF hash")
-                )
-                .is_ok()
-        );
+        assert!(sha_crypt::ShaCrypt::SHA512
+            .verify_password(
+                b"s3cr3t-p@ss",
+                sha_crypt::PasswordHashRef::new(hash).expect("valid MCF hash")
+            )
+            .is_ok());
     }
 
     #[test]
     fn incus_error_status_codes() {
         assert_eq!(IncusError::NotAvailable.status_code(), 503);
-        assert_eq!(
-            IncusError::InstanceNotFound("x".into()).status_code(),
-            404
-        );
+        assert_eq!(IncusError::InstanceNotFound("x".into()).status_code(), 404);
         assert_eq!(IncusError::Http(409, "taken".into()).status_code(), 409);
         assert_eq!(IncusError::Operation("boom".into()).status_code(), 500);
     }

@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the SNMP API — `crate::handlers::snmp`:
 //!
 //!   GET /api/snmp/availability  (admin)
@@ -25,8 +28,8 @@ use tower::{Service, ServiceExt};
 use homevault::auth::AuthService;
 use homevault::config::PathGuard;
 use homevault::handlers::snmp::{
-    handle_snmp_availability, handle_snmp_info, handle_snmp_interfaces,
-    handle_snmp_settings_get, handle_snmp_settings_update, handle_snmp_storage,
+    handle_snmp_availability, handle_snmp_info, handle_snmp_interfaces, handle_snmp_settings_get,
+    handle_snmp_settings_update, handle_snmp_storage,
 };
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{auth::handle_login, AppState};
@@ -37,7 +40,11 @@ type Req = Request<axum::body::Body>;
 
 static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -179,7 +186,11 @@ async fn test_snmp_endpoints_reject_bogus_token() {
     let mut r = snmp_router(state);
     for (uri, method) in admin_endpoints() {
         let (status, _) = send(&mut r, method.clone(), uri, Some("nope"), None).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri} (bad token)");
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{method} {uri} (bad token)"
+        );
     }
 }
 
@@ -191,7 +202,11 @@ async fn test_snmp_endpoints_reject_non_admin() {
     let token = login(&mut r, "regular", "Password123!").await;
     for (uri, method) in admin_endpoints() {
         let (status, _) = send(&mut r, method.clone(), uri, Some(&token), None).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{method} {uri} (non-admin)");
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{method} {uri} (non-admin)"
+        );
     }
 }
 
@@ -206,7 +221,14 @@ async fn test_snmp_availability_returns_success() {
     let mut r = snmp_router(state);
     let token = login(&mut r, "admin", "Password123!").await;
 
-    let (status, body) = send(&mut r, Method::GET, "/api/snmp/availability", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/snmp/availability",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], json!(true));
     assert!(body["data"]["available"].is_boolean());
@@ -224,7 +246,14 @@ async fn test_snmp_settings_default_and_update() {
     let token = login(&mut r, "admin", "Password123!").await;
 
     // Default settings.
-    let (status, body) = send(&mut r, Method::GET, "/api/snmp/settings", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/snmp/settings",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["community"], "public");
     assert_eq!(body["data"]["version"], "2c");
@@ -241,7 +270,14 @@ async fn test_snmp_settings_default_and_update() {
     assert_eq!(status, StatusCode::OK);
 
     // Verify update took effect.
-    let (_, body) = send(&mut r, Method::GET, "/api/snmp/settings", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/snmp/settings",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["data"]["community"], "private");
     assert_eq!(body["data"]["version"], "2c"); // unchanged
 }
@@ -259,7 +295,11 @@ async fn test_snmp_read_endpoints_never_500() {
 
     // These will fail if snmpget isn't installed, but should return a clean
     // error response (400 with success:false), not a 500.
-    for uri in ["/api/snmp/info", "/api/snmp/interfaces", "/api/snmp/storage"] {
+    for uri in [
+        "/api/snmp/info",
+        "/api/snmp/interfaces",
+        "/api/snmp/storage",
+    ] {
         let (status, body) = send(&mut r, Method::GET, uri, Some(&token), None).await;
         // 200 if SNMP is available, 400 if not — either is fine, never 500.
         assert!(

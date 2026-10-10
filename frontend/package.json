@@ -1,7 +1,14 @@
 {
-  "name": "frontend",
+  "name": "homevault-frontend",
   "private": true,
   "version": "1.0.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nicoleroux35/HomeVault.git",
+    "directory": "frontend"
+  },
+  "homepage": "https://github.com/nicoleroux35/HomeVault",
   "type": "module",
   "scripts": {
     "dev": "vite",

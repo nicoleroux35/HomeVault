@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the SSE progress API — `crate::handlers::progress`:
 //!
 //!   - GET    /api/progress/{job_id}          (SSE stream)
@@ -38,9 +41,7 @@ use homevault::config::PathGuard;
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{
     auth::handle_login,
-    progress::{
-        handle_cancel_job, handle_get_job_status, handle_list_jobs, handle_progress_sse,
-    },
+    progress::{handle_cancel_job, handle_get_job_status, handle_list_jobs, handle_progress_sse},
     AppState,
 };
 use homevault::middleware::rate_limit::RateLimitState;
@@ -52,7 +53,11 @@ type Req = Request<axum::body::Body>;
 
 static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -271,7 +276,11 @@ async fn job_status_and_cancel_reject_garbage_token() {
         (Method::DELETE, "/api/progress/deadbeef"),
     ] {
         let (status, _) = send(&mut r, method.clone(), uri, Some("bogus"), None).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri} must be 401");
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{method} {uri} must be 401"
+        );
     }
 }
 
@@ -291,7 +300,10 @@ async fn responses_carry_security_headers() {
         .get("content-security-policy")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    assert!(csp.contains("frame-ancestors 'none'"), "CSP must be present: {csp:?}");
+    assert!(
+        csp.contains("frame-ancestors 'none'"),
+        "CSP must be present: {csp:?}"
+    );
     assert!(csp.contains("default-src 'self'"));
 
     assert_eq!(

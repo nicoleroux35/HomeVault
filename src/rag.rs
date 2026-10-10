@@ -174,8 +174,10 @@ pub fn embedding_to_bytes(embedding: &[f32]) -> Vec<u8> {
 /// Deserialize f32 vector from BLOB bytes.
 pub fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 
@@ -319,21 +321,27 @@ pub async fn search_similar(
         })
         .collect();
 
-    scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    scored.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     scored.truncate(top_k);
     Ok(scored)
 }
 
+/// Raw `rag_index_status` row: `(last_indexed_at, total_documents, total_chunks, embedding_model, status)`.
+type RagStatusRow = (Option<String>, i32, i32, Option<String>, Option<String>);
+
 /// Get index status.
 pub async fn get_index_status(pool: &SqlitePool) -> Result<RagIndexStatus, String> {
-    let row: Option<(Option<String>, i32, i32, Option<String>, Option<String>)> =
-        sqlx::query_as(
-            "SELECT last_indexed_at, total_documents, total_chunks, embedding_model, status
+    let row: Option<RagStatusRow> = sqlx::query_as(
+        "SELECT last_indexed_at, total_documents, total_chunks, embedding_model, status
              FROM rag_index_status WHERE id = 1",
-        )
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| e.to_string())?;
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
 
     match row {
         Some((at, docs, chunks, model, status)) => Ok(RagIndexStatus {

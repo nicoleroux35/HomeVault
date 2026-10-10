@@ -35,9 +35,9 @@ pub fn attach_session(mut resp: Response, token: &str, remember_me: bool) -> Res
 
 /// Attach the expiry cookie to a logout response.
 pub fn clear_session(mut resp: Response) -> Response {
-    if let Ok(v) =
-        HeaderValue::from_str(&format!("{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"))
-    {
+    if let Ok(v) = HeaderValue::from_str(&format!(
+        "{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+    )) {
         resp.headers_mut().append(SET_COOKIE, v);
     }
     resp
