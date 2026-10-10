@@ -238,6 +238,9 @@ jobs:
           cp /tmp/hv-e2e.log hv-e2e-server.log 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always()
+        # Evidence only — a full artifact quota must not turn green tests
+        # red (see e2e-playwright.yml).
+        continue-on-error: true
         with:
           name: playwright-report
           # Cap retention (see e2e-playwright.yml): hundreds of MB per run
