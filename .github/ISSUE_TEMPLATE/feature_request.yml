@@ -1,0 +1,30 @@
+name: Feature request
+description: Propose a HomeVault feature or improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user need is unmet today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should change, including affected screens or endpoints?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: privacy
+    attributes:
+      label: Personal data impact
+      description: Per CLAUDE.md, new personal-data storage needs a purpose, lawful basis, and retention story.
+      options:
+        - No personal data involved
+        - Involves personal data (explained in the proposal)

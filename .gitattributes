@@ -1,0 +1,6 @@
+# Normalize line endings and diff behaviour for a true GitHub checkout.
+* text=auto eol=lf
+
+*.rs text diff=rust
+*.svelte text diff=html
+*.{png,jpg,jpeg,webp,ico,mp3,wav,ogg,flac} binary
