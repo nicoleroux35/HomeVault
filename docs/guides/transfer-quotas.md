@@ -59,7 +59,7 @@ feature as covering shares.
 
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
-| GET | `/transfer-quotas/{subject_type}` | auth | list every configured quota for every user or every group (no current frontend caller — a built, working foundation for a possible future "quota overview" table) |
+| GET | `/transfer-quotas/{subject_type}` | auth | list every configured quota for every user or every group (consumed by the read-only **Quotas** app's two parallel calls and by the Users overview modal — see below) |
 | GET | `/transfer-quotas/{subject_type}/{subject_name}` | auth | one subject's quota |
 | PUT | `/transfer-quotas/{subject_type}/{subject_name}` | admin | set limits |
 | DELETE | `/transfer-quotas/{subject_type}/{subject_name}` | admin | remove |
@@ -121,6 +121,17 @@ dedicated destination of the Users rail's **Quota view** button, and it fronts
   glyph). Fixed 2026-09-14 by adding `'quotas'`; E2E `desktop.spec.ts` `14.9`
   now walks a sample of the registry asserting one `.hv-winhdr` per window, so
   the next new app can't repeat it. **Add every new app id to that set.**
+- **Verified live + E2E-guarded (2026-10-07).** `tests/e2e/quotas/quotas.spec.ts`
+  runs green end-to-end (38/38, Firefox, scratch `PORT=` + isolated
+  `DATA_DIRECTORY`) and the screen was audited live on the same server: launcher
+  open, icon+title-only header, the three mutually-exclusive filter chips, the
+  seeded `used/limit` progress bar (50 Mo / 100 Mo → `aria-valuenow="50"`) plus
+  *Unlimited* on a disabled direction, and the **Manage in Users** hand-off
+  (`hv-open-app`) reaching the Users window without leaving `/desktop` or
+  closing Quotas. The suite is read-only — it seeds and restores its single
+  quota row through the admin API in `beforeAll`/`afterAll`, never through the
+  UI. No dead selector needed fixing: the spec targets `data-testid` and was
+  written after the 2026-09-12 Appliance migration.
 
 ## Invariants
 

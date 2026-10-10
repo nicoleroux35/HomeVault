@@ -3,7 +3,8 @@ use crate::utils::ResponseHelper;
 use axum::{
     extract::{Query, State},
     http::HeaderMap,
-    response::Response, Json,
+    response::Response,
+    Json,
 };
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
@@ -109,7 +110,13 @@ impl Default for GeneralSettings {
 fn sanitize_hostname(name: &str) -> String {
     let mapped: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect();
     let mut collapsed = String::with_capacity(mapped.len());
     let mut last_was_hyphen = false;
@@ -267,17 +274,20 @@ pub struct UpdateCheckResult {
 }
 
 // Public settings accessors for external modules
-pub static GENERAL_SETTINGS: Lazy<RwLock<GeneralSettings>> = Lazy::new(|| RwLock::new(GeneralSettings::default()));
+pub static GENERAL_SETTINGS: Lazy<RwLock<GeneralSettings>> =
+    Lazy::new(|| RwLock::new(GeneralSettings::default()));
 
-pub static EMAIL_SETTINGS: Lazy<RwLock<EmailSettings>> = Lazy::new(|| RwLock::new(EmailSettings::default()));
+pub static EMAIL_SETTINGS: Lazy<RwLock<EmailSettings>> =
+    Lazy::new(|| RwLock::new(EmailSettings::default()));
 
-pub static UPDATE_SETTINGS: Lazy<RwLock<UpdateSettings>> = Lazy::new(|| RwLock::new(UpdateSettings::default()));
+pub static UPDATE_SETTINGS: Lazy<RwLock<UpdateSettings>> =
+    Lazy::new(|| RwLock::new(UpdateSettings::default()));
 
-pub static NOTIFICATION_SETTINGS: Lazy<RwLock<NotificationSettings>> = Lazy::new(|| RwLock::new(NotificationSettings::default()));
+pub static NOTIFICATION_SETTINGS: Lazy<RwLock<NotificationSettings>> =
+    Lazy::new(|| RwLock::new(NotificationSettings::default()));
 
-pub static APPEARANCE_SETTINGS: Lazy<RwLock<AppearanceSettings>> = Lazy::new(|| {
-    RwLock::new(AppearanceSettings::default())
-});
+pub static APPEARANCE_SETTINGS: Lazy<RwLock<AppearanceSettings>> =
+    Lazy::new(|| RwLock::new(AppearanceSettings::default()));
 
 pub static LAST_UPDATE_CHECK: Lazy<RwLock<Option<u64>>> = Lazy::new(|| RwLock::new(None));
 
@@ -364,7 +374,7 @@ pub async fn handle_get_translations(
     let locale = params
         .lang
         .filter(|l| ["en", "fr", "es", "de"].contains(&l.as_str()))
-        .unwrap_or_else(|| I18n::get_locale());
+        .unwrap_or_else(I18n::get_locale);
 
     Json(I18n::get_translations(&locale))
 }
@@ -684,7 +694,10 @@ pub async fn handle_email_test(State(state): State<Arc<AppState>>, headers: Head
         smtp_port: settings.smtp_port.unwrap_or(587),
         smtp_username: settings.smtp_username.clone().unwrap_or_default(),
         smtp_password: settings.smtp_password.clone().unwrap_or_default(),
-        from_address: settings.from_address.clone().unwrap_or_else(|| "homevault@localhost".to_string()),
+        from_address: settings
+            .from_address
+            .clone()
+            .unwrap_or_else(|| "homevault@localhost".to_string()),
         from_name: "HomeVault".to_string(),
         use_tls: settings.use_tls.unwrap_or(true),
     };
@@ -693,7 +706,8 @@ pub async fn handle_email_test(State(state): State<Arc<AppState>>, headers: Head
     let recipient_email = NOTIFICATION_SETTINGS.read().email.clone();
     let Some(recipient_email) = recipient_email else {
         return ResponseHelper::json_error(
-            "No notification email address configured. Set one under Notifications first.".to_string(),
+            "No notification email address configured. Set one under Notifications first."
+                .to_string(),
         );
     };
 
@@ -744,7 +758,10 @@ pub async fn handle_update_settings_update(
     // Persist settings
     crate::settings_persistence::save_all_settings();
 
-    crate::events::log_event(format!("Admin '{}' saved Update settings", session.username));
+    crate::events::log_event(format!(
+        "Admin '{}' saved Update settings",
+        session.username
+    ));
     ResponseHelper::json_success(serde_json::json!({
         "success": true,
         "message": t("settings.settings_saved")
@@ -955,7 +972,10 @@ pub async fn handle_notification_settings_update(
     // Persist settings
     crate::settings_persistence::save_all_settings();
 
-    crate::events::log_event(format!("Admin '{}' saved Notification settings", session.username));
+    crate::events::log_event(format!(
+        "Admin '{}' saved Notification settings",
+        session.username
+    ));
     ResponseHelper::json_success(serde_json::json!({
         "success": true,
         "message": t("settings.settings_saved")
@@ -1038,7 +1058,10 @@ pub async fn handle_appearance_settings_update(
     // Persist settings
     crate::settings_persistence::save_all_settings();
 
-    crate::events::log_event(format!("Admin '{}' saved Appearance settings", session.username));
+    crate::events::log_event(format!(
+        "Admin '{}' saved Appearance settings",
+        session.username
+    ));
     ResponseHelper::json_success(serde_json::json!({
         "success": true,
         "message": t("settings.settings_saved")
@@ -1223,7 +1246,10 @@ pub async fn handle_settings_import(
 
     match import_settings(&json) {
         Ok(_) => {
-            crate::events::log_event_warn(format!("Admin '{}' imported settings", session.username));
+            crate::events::log_event_warn(format!(
+                "Admin '{}' imported settings",
+                session.username
+            ));
             ResponseHelper::json_success(serde_json::json!({
                 "success": true,
                 "message": t("settings.settings_imported"),
@@ -1340,8 +1366,14 @@ mod tests {
     fn test_sanitize_hostname_collapses_and_trims_hyphens() {
         assert_eq!(sanitize_hostname("a  b"), "a-b");
         assert_eq!(sanitize_hostname("__weird__name__"), "weird-name");
-        assert_eq!(sanitize_hostname("-leading-and-trailing-"), "leading-and-trailing");
-        assert_eq!(sanitize_hostname("dots.and.slashes/here"), "dots-and-slashes-here");
+        assert_eq!(
+            sanitize_hostname("-leading-and-trailing-"),
+            "leading-and-trailing"
+        );
+        assert_eq!(
+            sanitize_hostname("dots.and.slashes/here"),
+            "dots-and-slashes-here"
+        );
     }
 
     #[test]

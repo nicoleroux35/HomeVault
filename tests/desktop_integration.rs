@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the Desktop shell's own backend surface.
 //!
 //! The desktop shell (`frontend/src/routes/Desktop.svelte`) is almost
@@ -40,7 +43,11 @@ type Req = Request<axum::body::Body>;
 
 static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -174,7 +181,11 @@ async fn test_power_endpoints_reject_a_non_admin_session() {
     let token = login(&mut r, "regular", "Password123!").await;
     for uri in POWER_ENDPOINTS {
         let (status, body) = send(&mut r, Method::POST, uri, Some(&token), None).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{uri} must be admin-only: {body}");
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{uri} must be admin-only: {body}"
+        );
     }
     // Never sent with an admin token — that would spawn `shutdown` for real.
 }

@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the System Journal API (`crate::handlers::journal`):
 //!
 //!   GET    /api/journal/sources           (list log sources — any session)
@@ -26,7 +29,6 @@ use axum::{
     routing::{delete, get},
     Router,
 };
-use chrono::Utc;
 use http::{Method, Request, StatusCode};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -196,7 +198,11 @@ async fn send(
 async fn test_read_endpoints_require_a_session() {
     let h = setup().await;
     let mut r = journal_router(h.state.clone());
-    for uri in ["/api/journal/sources", "/api/journal/entries", "/api/journal/cleanup-settings"] {
+    for uri in [
+        "/api/journal/sources",
+        "/api/journal/entries",
+        "/api/journal/cleanup-settings",
+    ] {
         let (status, _) = send(&mut r, Method::GET, uri, None, None).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{uri} (no token)");
         let (status, _) = send(&mut r, Method::GET, uri, Some("nope"), None).await;
@@ -238,10 +244,22 @@ async fn test_sources_always_lists_app_and_system() {
     let mut r = journal_router(h.state.clone());
     let token = login(&mut r, "u", "Password123!").await;
 
-    let (status, body) = send(&mut r, Method::GET, "/api/journal/sources", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/journal/sources",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], json!(true));
-    let ids: Vec<&str> = body["data"].as_array().unwrap().iter().filter_map(|s| s["id"].as_str()).collect();
+    let ids: Vec<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["id"].as_str())
+        .collect();
     assert!(ids.contains(&"app"), "{ids:?}");
     assert!(ids.contains(&"system"), "{ids:?}");
     // A /var/log text source is only advertised if the file exists — never asserted here.
@@ -393,7 +411,8 @@ async fn test_clear_removes_only_our_own_log_files() {
             .unwrap_or_else(|e| panic!("read {}: {}", name, e));
         assert_eq!(contents, "", "{name} should be truncated to empty");
     }
-    let foreign = std::fs::read_to_string(h.data_dir.join("logs").join("something-else.log")).unwrap();
+    let foreign =
+        std::fs::read_to_string(h.data_dir.join("logs").join("something-else.log")).unwrap();
     assert_eq!(foreign, "keep me\n");
 }
 
@@ -404,7 +423,14 @@ async fn test_clear_is_a_clean_success_when_there_is_nothing_to_clear() {
     let mut r = journal_router(h.state.clone());
     let token = login(&mut r, "admin1", "Password123!").await;
 
-    let (status, body) = send(&mut r, Method::DELETE, "/api/journal/clear", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::DELETE,
+        "/api/journal/clear",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], json!(true));
 }
@@ -450,7 +476,14 @@ async fn test_cleanup_settings_round_trip_and_clamp() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let (_, body) = send(&mut r, Method::GET, "/api/journal/cleanup-settings", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/journal/cleanup-settings",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["data"]["auto_cleanup_enabled"], json!(false));
     assert_eq!(body["data"]["interval_days"], json!(14));
 
@@ -464,6 +497,13 @@ async fn test_cleanup_settings_round_trip_and_clamp() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let (_, body) = send(&mut r, Method::GET, "/api/journal/cleanup-settings", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/journal/cleanup-settings",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["data"]["interval_days"], json!(1));
 }

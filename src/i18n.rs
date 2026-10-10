@@ -137,7 +137,10 @@ pub fn init_i18n(translations_path: Option<&Path>) {
                 Ok(content) => match toml::from_str::<toml::Value>(&content) {
                     Ok(parsed) => {
                         let flat = flatten_toml(&parsed, "");
-                        translations.entry(locale.to_string()).or_default().extend(flat);
+                        translations
+                            .entry(locale.to_string())
+                            .or_default()
+                            .extend(flat);
                         info!("Loaded translation override for locale: {}", locale);
                     }
                     Err(e) => {
@@ -172,7 +175,12 @@ const DE_TOML: &str = include_str!("i18n/de.toml");
 /// re-opening `src/i18n/*.toml` beside the process — a path that only exists
 /// in a source checkout, never on a deployed host.
 pub fn embedded_translation_sources() -> Vec<(&'static str, &'static str)> {
-    vec![("en", EN_TOML), ("fr", FR_TOML), ("es", ES_TOML), ("de", DE_TOML)]
+    vec![
+        ("en", EN_TOML),
+        ("fr", FR_TOML),
+        ("es", ES_TOML),
+        ("de", DE_TOML),
+    ]
 }
 
 fn load_embedded_translations() {
@@ -182,7 +190,10 @@ fn load_embedded_translations() {
         match toml::from_str::<toml::Value>(toml_src) {
             Ok(parsed) => {
                 let flat = flatten_toml(&parsed, "");
-                translations.entry(locale.to_string()).or_default().extend(flat);
+                translations
+                    .entry(locale.to_string())
+                    .or_default()
+                    .extend(flat);
             }
             Err(e) => {
                 warn!("Failed to parse embedded {}.toml: {}", locale, e);

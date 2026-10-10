@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the Setup Wizard API endpoints.
 //!
 //! Each test creates a fresh in-memory SQLite database, runs all embedded
@@ -25,9 +28,7 @@ static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 use homevault::config::PathGuard;
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{
-    auth::{
-        handle_check_username, handle_setup, handle_setup_status, handle_setup_verify_totp,
-    },
+    auth::{handle_check_username, handle_setup, handle_setup_status, handle_setup_verify_totp},
     AppState,
 };
 use homevault::middleware::rate_limit::RateLimitState;
@@ -45,14 +46,16 @@ async fn setup_db() -> Database {
     let db = Database::new("sqlite::memory:")
         .await
         .expect("Failed to create in-memory database");
-    db.run_migrations()
-        .await
-        .expect("Failed to run migrations");
+    db.run_migrations().await.expect("Failed to run migrations");
     db
 }
 
 /// Build a minimal AppState with a temp DATA_DIRECTORY for lock/flag files.
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("Failed to create temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -90,10 +93,7 @@ fn test_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/auth/setup-status", get(handle_setup_status))
         .route("/api/auth/check-username", get(handle_check_username))
-        .route(
-            "/api/auth/setup",
-            axum::routing::post(handle_setup),
-        )
+        .route("/api/auth/setup", axum::routing::post(handle_setup))
         .route(
             "/api/auth/setup/verify-totp",
             axum::routing::post(handle_setup_verify_totp),
@@ -119,24 +119,18 @@ async fn get_json(router: &mut Router, path: &str) -> (StatusCode, Value) {
     let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
-    let json: Value = serde_json::from_slice(&body)
-        .unwrap_or(json!({"raw": String::from_utf8_lossy(&body)}));
+    let json: Value =
+        serde_json::from_slice(&body).unwrap_or(json!({"raw": String::from_utf8_lossy(&body)}));
     (status, json)
 }
 
 /// Helper: send a POST request with JSON body and return (status, body JSON).
-async fn post_json(
-    router: &mut Router,
-    path: &str,
-    body: Value,
-) -> (StatusCode, Value) {
+async fn post_json(router: &mut Router, path: &str, body: Value) -> (StatusCode, Value) {
     let req = Request::builder()
         .method(Method::POST)
         .uri(path)
         .header("content-type", "application/json")
-        .body(axum::body::Body::from(
-            serde_json::to_vec(&body).unwrap(),
-        ))
+        .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
         .unwrap();
 
     let resp = ServiceExt::<Req>::ready(router)
@@ -163,14 +157,13 @@ async fn test_setup_status_first_run() {
     let (state, _tmp, _lock) = setup_state().await;
     let mut app = test_router(state);
 
-    let (status, body) =
-        get_json(&mut app, "/api/auth/setup-status").await;
+    let (status, body) = get_json(&mut app, "/api/auth/setup-status").await;
 
     assert_eq!(status, StatusCode::OK);
     assert!(body["success"].as_bool().unwrap_or(false));
     let data = &body["data"];
-    assert_eq!(data["is_first_run"].as_bool().unwrap(), true);
-    assert_eq!(data["is_setup_valid"].as_bool().unwrap(), false);
+    assert!(data["is_first_run"].as_bool().unwrap());
+    assert!(!data["is_setup_valid"].as_bool().unwrap());
 }
 
 #[tokio::test]
@@ -178,8 +171,7 @@ async fn test_setup_status_has_sudo_available_field() {
     let (state, _tmp, _lock) = setup_state().await;
     let mut app = test_router(state);
 
-    let (_, body) =
-        get_json(&mut app, "/api/auth/setup-status").await;
+    let (_, body) = get_json(&mut app, "/api/auth/setup-status").await;
     let data = &body["data"];
     assert!(
         data.get("sudo_available").is_some(),
@@ -192,14 +184,10 @@ async fn test_setup_status_has_machine_id() {
     let (state, _tmp, _lock) = setup_state().await;
     let mut app = test_router(state);
 
-    let (_, body) =
-        get_json(&mut app, "/api/auth/setup-status").await;
+    let (_, body) = get_json(&mut app, "/api/auth/setup-status").await;
     let data = &body["data"];
     let machine_id = data["server_machine_id"].as_str().unwrap_or("");
-    assert!(
-        !machine_id.is_empty(),
-        "machine_id should not be empty"
-    );
+    assert!(!machine_id.is_empty(), "machine_id should not be empty");
 }
 
 // ========================================================================
@@ -211,18 +199,11 @@ async fn test_check_username_available() {
     let (state, _tmp, _lock) = setup_state().await;
     let mut app = test_router(state);
 
-    let (status, body) = get_json(
-        &mut app,
-        "/api/auth/check-username?username=newuser",
-    )
-    .await;
+    let (status, body) = get_json(&mut app, "/api/auth/check-username?username=newuser").await;
 
     assert_eq!(status, StatusCode::OK);
     assert!(body["success"].as_bool().unwrap_or(false));
-    assert_eq!(
-        body["data"]["available"].as_bool().unwrap(),
-        true
-    );
+    assert!(body["data"]["available"].as_bool().unwrap());
 }
 
 #[tokio::test]
@@ -230,17 +211,10 @@ async fn test_check_username_reserved_root() {
     let (state, _tmp, _lock) = setup_state().await;
     let mut app = test_router(state);
 
-    let (status, body) = get_json(
-        &mut app,
-        "/api/auth/check-username?username=root",
-    )
-    .await;
+    let (status, body) = get_json(&mut app, "/api/auth/check-username?username=root").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        body["data"]["available"].as_bool().unwrap(),
-        false
-    );
+    assert!(!body["data"]["available"].as_bool().unwrap());
     let reason = body["data"]["reason"].as_str().unwrap_or("");
     assert!(
         !reason.is_empty(),
@@ -253,15 +227,8 @@ async fn test_check_username_reserved_admin() {
     let (state, _tmp, _lock) = setup_state().await;
     let mut app = test_router(state);
 
-    let (_, body) = get_json(
-        &mut app,
-        "/api/auth/check-username?username=admin",
-    )
-    .await;
-    assert_eq!(
-        body["data"]["available"].as_bool().unwrap(),
-        false
-    );
+    let (_, body) = get_json(&mut app, "/api/auth/check-username?username=admin").await;
+    assert!(!body["data"]["available"].as_bool().unwrap());
 }
 
 #[tokio::test]
@@ -269,15 +236,8 @@ async fn test_check_username_too_short() {
     let (state, _tmp, _lock) = setup_state().await;
     let mut app = test_router(state);
 
-    let (_, body) = get_json(
-        &mut app,
-        "/api/auth/check-username?username=ab",
-    )
-    .await;
-    assert_eq!(
-        body["data"]["available"].as_bool().unwrap(),
-        false
-    );
+    let (_, body) = get_json(&mut app, "/api/auth/check-username?username=ab").await;
+    assert!(!body["data"]["available"].as_bool().unwrap());
 }
 
 #[tokio::test]
@@ -285,15 +245,8 @@ async fn test_check_username_invalid_chars() {
     let (state, _tmp, _lock) = setup_state().await;
     let mut app = test_router(state);
 
-    let (_, body) = get_json(
-        &mut app,
-        "/api/auth/check-username?username=user+name",
-    )
-    .await;
-    assert_eq!(
-        body["data"]["available"].as_bool().unwrap(),
-        false
-    );
+    let (_, body) = get_json(&mut app, "/api/auth/check-username?username=user+name").await;
+    assert!(!body["data"]["available"].as_bool().unwrap());
 }
 
 // ========================================================================
@@ -373,11 +326,7 @@ async fn test_setup_weak_password_no_digit() {
 
     assert_ne!(status, StatusCode::OK);
     let msg = body["message"].as_str().unwrap_or("");
-    assert!(
-        msg.contains("digit"),
-        "Expected digit error, got: {}",
-        msg
-    );
+    assert!(msg.contains("digit"), "Expected digit error, got: {}", msg);
 }
 
 #[tokio::test]
@@ -421,27 +370,16 @@ async fn test_setup_creates_admin_and_returns_session() {
     )
     .await;
 
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "Setup should succeed: {:?}",
-        body
-    );
+    assert_eq!(status, StatusCode::OK, "Setup should succeed: {:?}", body);
     assert!(body["success"].as_bool().unwrap_or(false));
 
     let data = &body["data"];
     assert!(
-        data["token"].as_str().unwrap_or("").len() > 0,
+        !data["token"].as_str().unwrap_or("").is_empty(),
         "Should return a session token"
     );
-    assert_eq!(
-        data["username"].as_str().unwrap_or(""),
-        "firstadmin"
-    );
-    assert_eq!(
-        data["is_admin"].as_bool().unwrap_or(false),
-        true
-    );
+    assert_eq!(data["username"].as_str().unwrap_or(""), "firstadmin");
+    assert!(data["is_admin"].as_bool().unwrap_or(false));
 }
 
 #[tokio::test]
@@ -450,12 +388,8 @@ async fn test_setup_marks_first_run_false() {
     let mut app = test_router(Arc::clone(&state));
 
     // Before setup
-    let (_, before) =
-        get_json(&mut app, "/api/auth/setup-status").await;
-    assert_eq!(
-        before["data"]["is_first_run"].as_bool().unwrap(),
-        true
-    );
+    let (_, before) = get_json(&mut app, "/api/auth/setup-status").await;
+    assert!(before["data"]["is_first_run"].as_bool().unwrap());
 
     // Do setup
     post_json(
@@ -467,12 +401,8 @@ async fn test_setup_marks_first_run_false() {
 
     // After setup — same state, same in-memory DB
     let mut app2 = test_router(state);
-    let (_, after) =
-        get_json(&mut app2, "/api/auth/setup-status").await;
-    assert_eq!(
-        after["data"]["is_first_run"].as_bool().unwrap(),
-        false
-    );
+    let (_, after) = get_json(&mut app2, "/api/auth/setup-status").await;
+    assert!(!after["data"]["is_first_run"].as_bool().unwrap());
 }
 
 #[tokio::test]
@@ -582,15 +512,8 @@ async fn test_check_username_taken_after_setup() {
     .await;
 
     // Check if "firstadmin" is now taken
-    let (_, body) = get_json(
-        &mut app,
-        "/api/auth/check-username?username=firstadmin",
-    )
-    .await;
-    assert_eq!(
-        body["data"]["available"].as_bool().unwrap(),
-        false
-    );
+    let (_, body) = get_json(&mut app, "/api/auth/check-username?username=firstadmin").await;
+    assert!(!body["data"]["available"].as_bool().unwrap());
     let reason = body["data"]["reason"].as_str().unwrap_or("");
     assert!(
         reason.contains("already") || reason.contains("exists"),
@@ -611,15 +534,8 @@ async fn test_check_username_different_one_still_available() {
     )
     .await;
 
-    let (_, body) = get_json(
-        &mut app,
-        "/api/auth/check-username?username=newuser",
-    )
-    .await;
-    assert_eq!(
-        body["data"]["available"].as_bool().unwrap(),
-        true
-    );
+    let (_, body) = get_json(&mut app, "/api/auth/check-username?username=newuser").await;
+    assert!(body["data"]["available"].as_bool().unwrap());
 }
 
 // ========================================================================
@@ -632,23 +548,12 @@ async fn test_full_setup_flow() {
     let mut app = test_router(state);
 
     // Step 1: Check status — should be first run
-    let (_, status_body) =
-        get_json(&mut app, "/api/auth/setup-status").await;
-    assert_eq!(
-        status_body["data"]["is_first_run"].as_bool().unwrap(),
-        true
-    );
+    let (_, status_body) = get_json(&mut app, "/api/auth/setup-status").await;
+    assert!(status_body["data"]["is_first_run"].as_bool().unwrap());
 
     // Step 2: Check username availability
-    let (_, check_body) = get_json(
-        &mut app,
-        "/api/auth/check-username?username=firstadmin",
-    )
-    .await;
-    assert_eq!(
-        check_body["data"]["available"].as_bool().unwrap(),
-        true
-    );
+    let (_, check_body) = get_json(&mut app, "/api/auth/check-username?username=firstadmin").await;
+    assert!(check_body["data"]["available"].as_bool().unwrap());
 
     // Step 3: Create admin
     let (setup_status, setup_body) = post_json(
@@ -666,23 +571,12 @@ async fn test_full_setup_flow() {
     assert!(!token.is_empty());
 
     // Step 4: Verify username is now taken
-    let (_, taken_body) = get_json(
-        &mut app,
-        "/api/auth/check-username?username=firstadmin",
-    )
-    .await;
-    assert_eq!(
-        taken_body["data"]["available"].as_bool().unwrap(),
-        false
-    );
+    let (_, taken_body) = get_json(&mut app, "/api/auth/check-username?username=firstadmin").await;
+    assert!(!taken_body["data"]["available"].as_bool().unwrap());
 
     // Step 5: Verify setup status is no longer first run
-    let (_, final_status) =
-        get_json(&mut app, "/api/auth/setup-status").await;
-    assert_eq!(
-        final_status["data"]["is_first_run"].as_bool().unwrap(),
-        false
-    );
+    let (_, final_status) = get_json(&mut app, "/api/auth/setup-status").await;
+    assert!(!final_status["data"]["is_first_run"].as_bool().unwrap());
 }
 
 // ========================================================================
@@ -834,7 +728,7 @@ fn b32_decode(input: &str) -> Vec<u8> {
 /// `AuthService::generate_totp` exactly (RFC 6238, HMAC-SHA1, dynamic
 /// truncation), so tests can produce codes the server actually accepts.
 fn totp_at(secret: &str, at_secs: u64) -> String {
-    use hmac::{Hmac, Mac, KeyInit};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha1::Sha1;
     type HmacSha1 = Hmac<Sha1>;
 
@@ -874,9 +768,8 @@ async fn test_verify_totp_accepts_the_correct_code() {
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
+    assert!(
         body["data"]["valid"].as_bool().unwrap_or(false),
-        true,
         "the current TOTP code must verify: {:?}",
         body
     );
@@ -895,7 +788,7 @@ async fn test_verify_totp_rejects_a_wrong_code() {
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["data"]["valid"].as_bool().unwrap_or(true), false);
+    assert!(!body["data"]["valid"].as_bool().unwrap_or(true));
 }
 
 #[tokio::test]
@@ -987,12 +880,16 @@ async fn test_setup_with_valid_totp_enables_2fa_and_returns_backup_codes() {
         "setup with a valid TOTP must succeed: {:?}",
         body
     );
-    assert_eq!(body["data"]["totp_enabled"].as_bool().unwrap_or(false), true);
+    assert!(body["data"]["totp_enabled"].as_bool().unwrap_or(false));
     let backup_count = body["data"]["backup_codes"]
         .as_array()
         .map(|a| a.len())
         .unwrap_or(0);
-    assert!(backup_count >= 8, "expected ≥8 backup codes, got {}", backup_count);
+    assert!(
+        backup_count >= 8,
+        "expected ≥8 backup codes, got {}",
+        backup_count
+    );
 
     // The exact secret the admin scanned is stored, enabled, with 8 codes.
     let (stored_secret, enabled): (String, bool) =
@@ -1027,7 +924,7 @@ async fn test_setup_ignores_lone_totp_secret_without_code() {
         "a secret without a code must be ignored, not rejected: {:?}",
         body
     );
-    assert_eq!(body["data"]["totp_enabled"].as_bool().unwrap_or(true), false);
+    assert!(!body["data"]["totp_enabled"].as_bool().unwrap_or(true));
 
     let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user_2fa")
         .fetch_one(&*state.db.pool())
@@ -1062,7 +959,9 @@ async fn test_concurrent_setup_only_one_succeeds() {
                 .unwrap();
             let resp = app.oneshot(req).await.unwrap();
             let status = resp.status();
-            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
             let json: Value = serde_json::from_slice(&bytes).unwrap_or(json!({}));
             (status, json)
         })
@@ -1075,7 +974,10 @@ async fn test_concurrent_setup_only_one_succeeds() {
         .iter()
         .filter(|(_, body)| body["success"].as_bool().unwrap_or(false))
         .count();
-    assert_eq!(successes, 1, "exactly one concurrent setup call must succeed");
+    assert_eq!(
+        successes, 1,
+        "exactly one concurrent setup call must succeed"
+    );
 
     // The loser is told setup is already running / done, not a generic 500.
     let loser = results

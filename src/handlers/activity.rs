@@ -112,8 +112,8 @@ fn activity_task_from_aria2(t: Aria2Task) -> Option<ActivityTask> {
     }
     let completed: u64 = t.completed_length.parse().unwrap_or(0);
     let total: u64 = t.total_length.parse().unwrap_or(0);
-    let progress = (total > 0)
-        .then(|| ((completed as f64 / total as f64) * 100.0).clamp(0.0, 100.0));
+    let progress =
+        (total > 0).then(|| ((completed as f64 / total as f64) * 100.0).clamp(0.0, 100.0));
     let speed: u64 = t.download_speed.parse().unwrap_or(0);
     let detail = (speed > 0).then(|| format!("{}/s", format_bytes(speed)));
     let kind = if t.bittorrent.is_some() {
@@ -184,7 +184,10 @@ async fn aria2_tell_active() -> Result<Vec<Aria2Task>, String> {
             .unwrap_or("unknown error")
             .to_string());
     }
-    let result = json.get("result").cloned().unwrap_or(serde_json::Value::Null);
+    let result = json
+        .get("result")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     serde_json::from_value(result).map_err(|e| format!("aria2 task decode failed: {e}"))
 }
 
@@ -237,7 +240,10 @@ mod tests {
             uris: if uri.is_empty() {
                 vec![]
             } else {
-                vec![Aria2Uri { uri: uri.into(), status: "used".into() }]
+                vec![Aria2Uri {
+                    uri: uri.into(),
+                    status: "used".into(),
+                }]
             },
         }
     }
@@ -278,7 +284,9 @@ mod tests {
     #[test]
     fn test_from_aria2_uses_bittorrent_name() {
         let mut t = task("active");
-        t.bittorrent = Some(Aria2BtInfo { name: "ubuntu.iso".into() });
+        t.bittorrent = Some(Aria2BtInfo {
+            name: "ubuntu.iso".into(),
+        });
         t.files = vec![file("/tmp/xyz.part", "")];
         assert_eq!(activity_task_from_aria2(t).unwrap().label, "ubuntu.iso");
     }
@@ -325,7 +333,10 @@ mod tests {
     fn test_from_aria2_torrent_vs_url_kind() {
         let mut bt = task("active");
         bt.bittorrent = Some(Aria2BtInfo { name: "x".into() });
-        assert_eq!(activity_task_from_aria2(bt).unwrap().kind, "download_torrent");
+        assert_eq!(
+            activity_task_from_aria2(bt).unwrap().kind,
+            "download_torrent"
+        );
         let mut url = task("active");
         url.files = vec![file("/tmp/a.bin", "http://h/a.bin")];
         assert_eq!(activity_task_from_aria2(url).unwrap().kind, "download_url");

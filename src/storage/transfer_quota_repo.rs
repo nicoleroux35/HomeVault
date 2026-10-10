@@ -50,7 +50,11 @@ impl TransferQuotaRepository {
 
     /// Load a subject's quota, returning the disabled/unlimited default if
     /// no row has been saved for it yet.
-    pub async fn get(&self, subject_type: &str, subject_name: &str) -> Result<TransferQuota, sqlx::Error> {
+    pub async fn get(
+        &self,
+        subject_type: &str,
+        subject_name: &str,
+    ) -> Result<TransferQuota, sqlx::Error> {
         let row = sqlx::query_as::<_, TransferQuotaRow>(
             "SELECT subject_type, subject_name, upload_enabled, upload_limit_bytes, upload_used_bytes, \
              download_enabled, download_limit_bytes, download_used_bytes, updated_at \
@@ -135,7 +139,12 @@ impl TransferQuotaRepository {
 
     /// Add `bytes` to a subject's recorded upload usage. No-op if the
     /// subject has no saved quota row (nothing to add to).
-    pub async fn add_upload_usage(&self, subject_type: &str, subject_name: &str, bytes: i64) -> Result<(), sqlx::Error> {
+    pub async fn add_upload_usage(
+        &self,
+        subject_type: &str,
+        subject_name: &str,
+        bytes: i64,
+    ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "UPDATE transfer_quotas SET upload_used_bytes = upload_used_bytes + ? \
              WHERE subject_type = ? AND subject_name = ?",
@@ -150,7 +159,12 @@ impl TransferQuotaRepository {
 
     /// Add `bytes` to a subject's recorded download usage. No-op if the
     /// subject has no saved quota row.
-    pub async fn add_download_usage(&self, subject_type: &str, subject_name: &str, bytes: i64) -> Result<(), sqlx::Error> {
+    pub async fn add_download_usage(
+        &self,
+        subject_type: &str,
+        subject_name: &str,
+        bytes: i64,
+    ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "UPDATE transfer_quotas SET download_used_bytes = download_used_bytes + ? \
              WHERE subject_type = ? AND subject_name = ?",

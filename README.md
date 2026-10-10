@@ -1,5 +1,8 @@
 # HomeVault
 
+[![CI](https://github.com/nicoleroux35/HomeVault/actions/workflows/ci.yml/badge.svg)](https://github.com/nicoleroux35/HomeVault/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 HomeVault est un serveur personnel qui vous permet d'administrer, stocker et
 partager vos données depuis une interface web simple et accessible. Il se
 compose d'un backend écrit en Rust et d'un frontend moderne en Svelte.
@@ -22,6 +25,14 @@ compose d'un backend écrit en Rust et d'un frontend moderne en Svelte.
   connexion.
 - **Sécurité** : antivirus (ClamAV), protection anti-ransomware et pare-feu
   (ufw).
+- **Docker et catalogue d'applications** : conteneurs, piles Compose et
+  catalogue d'apps en un clic.
+- **Machines virtuelles** : VMs et conteneurs Incus, images cloud, console.
+- **VPN** : WireGuard et OpenVPN, synchronisation Syncthing, téléchargeur
+  aria2.
+- **Assistant IA** : chat local via Ollama, base de connaissances RAG.
+- **Santé, journal et quotas** : supervision système, journal d'événements
+  et quotas de transfert.
 - **Terminal** : accédez à un terminal sécurisé directement dans le navigateur.
 - **Paramètres** : personnalisez l'apparence, les notifications, les mises à
   jour et plus encore.
@@ -104,6 +115,20 @@ guidera pour créer le compte administrateur. Commandes utiles :
 | `installer/` | Script d'installation et fichiers systemd            |
 | `static/`    | Ressources statiques servies par le backend          |
 | `docs/`      | Documentation complémentaire                         |
+| `tests/`     | Tests d'intégration Rust + suites E2E Playwright     |
+| `catalog/`   | Catalogue d'applications Docker                      |
+| `scripts/`   | Scripts utilitaires                                  |
+
+## Développement
+
+```bash
+cargo test                         # backend : unit + integration
+cd frontend && npm run check && npm run build   # frontend : types + build
+npx playwright test tests/e2e/<screen>/         # E2E d'un écran
+```
+
+Contributions : voir [`CONTRIBUTING.md`](CONTRIBUTING.md). Sécurité : voir
+[`SECURITY.md`](SECURITY.md). Changements : voir [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Roadmap
 
@@ -117,4 +142,4 @@ L'interface est disponible en **français**, **anglais**, **allemand** et
 
 ## Licence
 
-Consultez les fichiers du dépôt pour plus d'informations sur la licence.
+Distribué sous licence [MIT](LICENSE). Copyright (c) 2026 HomeVault Team.

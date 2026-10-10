@@ -34,9 +34,7 @@ pub async fn handle_groups_list_users(
                     let list: Vec<_> = users.into_iter().map(|u| u.username).collect();
                     ResponseHelper::json_success(list)
                 }
-                Err(e) => {
-                    ResponseHelper::json_error(format!("Failed to list users: {}", e))
-                }
+                Err(e) => ResponseHelper::json_error(format!("Failed to list users: {}", e)),
             }
         }
         Err(_) => ResponseHelper::json_unauthorized("Invalid session".to_string()),
@@ -174,7 +172,8 @@ pub async fn handle_group_delete(
             // created with this same display name doesn't silently
             // inherit a stale limit/usage from a completely different,
             // deleted group.
-            let quota_repo = crate::storage::transfer_quota_repo::TransferQuotaRepository::new(state.db.pool());
+            let quota_repo =
+                crate::storage::transfer_quota_repo::TransferQuotaRepository::new(state.db.pool());
             let _ = quota_repo.delete("group", &name).await;
 
             crate::events::log_event_warn(format!(

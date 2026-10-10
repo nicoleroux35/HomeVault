@@ -8,11 +8,11 @@
 //! page) is never touched.
 
 use crate::email::{EmailConfig, EmailRecipient, EmailService, SystemAlertEmail};
-use crate::handlers::AppState;
 use crate::handlers::settings::{EMAIL_SETTINGS, NOTIFICATION_SETTINGS};
+use crate::handlers::AppState;
 use crate::health::{HealthService, HealthStatus};
-use crate::storage::NotificationRepository;
 use crate::storage::restic_repo::ResticRepository;
+use crate::storage::NotificationRepository;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -90,7 +90,10 @@ async fn check_app_updates(state: &Arc<AppState>, engine_state: &Arc<Mutex<Engin
                 to_notify.push((
                     u.name.clone(),
                     if u.package_update_available {
-                        format!("A new version of {} is available (v{})", u.name, u.available_version)
+                        format!(
+                            "A new version of {} is available (v{})",
+                            u.name, u.available_version
+                        )
                     } else {
                         format!("A newer image is available for {}", u.name)
                     },
@@ -130,7 +133,10 @@ async fn check_health(state: &Arc<AppState>, engine_state: &Arc<Mutex<EngineStat
     let mut to_notify = Vec::new();
 
     for check in &checks {
-        if matches!(check.status, HealthStatus::Warning | HealthStatus::Unhealthy) {
+        if matches!(
+            check.status,
+            HealthStatus::Warning | HealthStatus::Unhealthy
+        ) {
             current_problems.insert(check.name.clone());
         }
     }
@@ -138,20 +144,43 @@ async fn check_health(state: &Arc<AppState>, engine_state: &Arc<Mutex<EngineStat
     {
         let mut guard = engine_state.lock().await;
         for check in &checks {
-            let is_problem = matches!(check.status, HealthStatus::Warning | HealthStatus::Unhealthy);
+            let is_problem = matches!(
+                check.status,
+                HealthStatus::Warning | HealthStatus::Unhealthy
+            );
             let was_open = guard.open_health_problems.contains(&check.name);
             if is_problem && !was_open {
-                let severity = if check.status == HealthStatus::Unhealthy { "error" } else { "warning" };
-                to_notify.push((check.name.clone(), check.message.clone(), severity.to_string()));
+                let severity = if check.status == HealthStatus::Unhealthy {
+                    "error"
+                } else {
+                    "warning"
+                };
+                to_notify.push((
+                    check.name.clone(),
+                    check.message.clone(),
+                    severity.to_string(),
+                ));
             } else if !is_problem && was_open {
-                to_notify.push((check.name.clone(), format!("{}: resolved", check.name), "info".to_string()));
+                to_notify.push((
+                    check.name.clone(),
+                    format!("{}: resolved", check.name),
+                    "info".to_string(),
+                ));
             }
         }
         guard.open_health_problems = current_problems;
     }
 
     for (name, message, severity) in to_notify {
-        notify(state, &format!("Health: {}", name), &message, &severity, "health", "health_engine").await;
+        notify(
+            state,
+            &format!("Health: {}", name),
+            &message,
+            &severity,
+            "health",
+            "health_engine",
+        )
+        .await;
     }
 }
 
@@ -169,7 +198,11 @@ async fn check_backup_jobs(state: &Arc<AppState>, engine_state: &Arc<Mutex<Engin
         let jobs = match repo_repo.list_backup_jobs(&repo.id, 5).await {
             Ok(j) => j,
             Err(e) => {
-                tracing::warn!("Notification engine: failed to list backup jobs for {}: {}", repo.name, e);
+                tracing::warn!(
+                    "Notification engine: failed to list backup jobs for {}: {}",
+                    repo.name,
+                    e
+                );
                 continue;
             }
         };
@@ -184,24 +217,48 @@ async fn check_backup_jobs(state: &Arc<AppState>, engine_state: &Arc<Mutex<Engin
         if already_seen {
             continue;
         }
-        guard.last_seen_job_id.insert(repo.id.clone(), latest.id.clone());
+        guard
+            .last_seen_job_id
+            .insert(repo.id.clone(), latest.id.clone());
         drop(guard);
 
-        let severity = if latest.status == "failed" { "error" } else { "info" };
+        let severity = if latest.status == "failed" {
+            "error"
+        } else {
+            "info"
+        };
         let message = if latest.status == "failed" {
             format!("Backup '{}' failed", repo.name)
         } else {
             format!("Backup '{}' completed", repo.name)
         };
-        notify(state, &format!("Backup: {}", repo.name), &message, severity, "backup", "backup_engine").await;
+        notify(
+            state,
+            &format!("Backup: {}", repo.name),
+            &message,
+            severity,
+            "backup",
+            "backup_engine",
+        )
+        .await;
     }
 }
 
 /// Persists a notification and, if configured, dispatches it via email
 /// and/or webhook.
-async fn notify(state: &Arc<AppState>, title: &str, message: &str, severity: &str, category: &str, source: &str) {
+async fn notify(
+    state: &Arc<AppState>,
+    title: &str,
+    message: &str,
+    severity: &str,
+    category: &str,
+    source: &str,
+) {
     let repo = NotificationRepository::new(state.db.pool());
-    if let Err(e) = repo.create(title, message, severity, category, source).await {
+    if let Err(e) = repo
+        .create(title, message, severity, category, source)
+        .await
+    {
         tracing::warn!("Notification engine: failed to persist notification: {}", e);
         return;
     }
@@ -231,7 +288,10 @@ async fn notify(state: &Arc<AppState>, title: &str, message: &str, severity: &st
                 smtp_port: email_settings.smtp_port.unwrap_or(587),
                 smtp_username: email_settings.smtp_username.clone().unwrap_or_default(),
                 smtp_password: email_settings.smtp_password.clone().unwrap_or_default(),
-                from_address: email_settings.from_address.clone().unwrap_or_else(|| "homevault@localhost".to_string()),
+                from_address: email_settings
+                    .from_address
+                    .clone()
+                    .unwrap_or_else(|| "homevault@localhost".to_string()),
                 from_name: "HomeVault".to_string(),
                 use_tls: email_settings.use_tls.unwrap_or(true),
             };
@@ -241,7 +301,10 @@ async fn notify(state: &Arc<AppState>, title: &str, message: &str, severity: &st
                 message: message.to_string(),
                 details: None,
             };
-            let recipient = EmailRecipient { email: email.clone(), name: None };
+            let recipient = EmailRecipient {
+                email: email.clone(),
+                name: None,
+            };
             if let Err(e) = EmailService::send_system_alert(&alert, &[recipient], &config) {
                 tracing::warn!("Notification engine: failed to send alert email: {}", e);
             }

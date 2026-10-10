@@ -71,9 +71,10 @@ fn share_acquire(token: &str, bytes: u64) -> bool {
     let now = Instant::now();
     let mut map = SHARE_BUCKETS.lock();
     map.retain(|_, b| now.duration_since(b.last) < Duration::from_secs(300));
-    let bucket = map
-        .entry(token.to_string())
-        .or_insert(ShareBucket { tokens: SHARE_RATE_CAPACITY, last: now });
+    let bucket = map.entry(token.to_string()).or_insert(ShareBucket {
+        tokens: SHARE_RATE_CAPACITY,
+        last: now,
+    });
     let elapsed = now.duration_since(bucket.last).as_secs_f64();
     bucket.tokens = (bucket.tokens + elapsed * SHARE_RATE_REFILL).min(SHARE_RATE_CAPACITY);
     bucket.last = now;
@@ -235,8 +236,10 @@ pub async fn handle_share_link_create(
             path,
             session.username
         );
-        return ResponseHelper::json_forbidden("Access denied: path outside allowed directory".to_string())
-            .into_response();
+        return ResponseHelper::json_forbidden(
+            "Access denied: path outside allowed directory".to_string(),
+        )
+        .into_response();
     };
     let canonical = std::fs::canonicalize(&canonical)
         .map(|p| p.to_string_lossy().into_owned())
@@ -263,7 +266,7 @@ pub async fn handle_share_link_create(
         .into_response();
     }
     let expires_days = req.expires_days.unwrap_or(DEFAULT_EXPIRY_DAYS);
-    if expires_days < 0 || expires_days > 3650 {
+    if !(0..=3650).contains(&expires_days) {
         return ResponseHelper::json_error("expires_days must be between 0 and 3650".to_string())
             .into_response();
     }
@@ -272,7 +275,13 @@ pub async fn handle_share_link_create(
     let token = generate_share_token();
     let expires_at = compute_expiry(expires_days);
     match repo
-        .create(&session.username, &token, &path, &mode, expires_at.as_deref())
+        .create(
+            &session.username,
+            &token,
+            &path,
+            &mode,
+            expires_at.as_deref(),
+        )
         .await
     {
         Ok(link) => {
@@ -308,7 +317,9 @@ pub async fn handle_share_link_delete(
     // Owners revoke their own links; admins may revoke any link.
     let is_admin = state.auth.is_admin(&username).await;
     if link.username != username && !is_admin {
-        return ResponseHelper::json_forbidden("You can only revoke your own share links".to_string());
+        return ResponseHelper::json_forbidden(
+            "You can only revoke your own share links".to_string(),
+        );
     }
 
     match repo.delete(&token).await {
@@ -379,7 +390,9 @@ pub async fn handle_share_link_download(
     };
     let metadata = match file.metadata().await {
         Ok(m) => m,
-        Err(_) => return ResponseHelper::json_error("Share link not found".to_string()).into_response(),
+        Err(_) => {
+            return ResponseHelper::json_error("Share link not found".to_string()).into_response()
+        }
     };
     let total = metadata.len();
 

@@ -1,6 +1,7 @@
 use axum::{
     extract::{Path, State},
-    http::HeaderMap, Json,
+    http::HeaderMap,
+    Json,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -25,10 +26,18 @@ pub struct ApiResponse<T: Serialize> {
 
 impl<T: Serialize> ApiResponse<T> {
     pub fn success(data: T) -> Self {
-        Self { success: true, data: Some(data), error: None }
+        Self {
+            success: true,
+            data: Some(data),
+            error: None,
+        }
     }
     pub fn error(msg: &str) -> Self {
-        Self { success: false, data: None, error: Some(msg.to_string()) }
+        Self {
+            success: false,
+            data: None,
+            error: Some(msg.to_string()),
+        }
     }
 }
 
@@ -110,7 +119,10 @@ pub struct GidRequest {
     pub gid: String,
 }
 
-async fn aria2_rpc(method: &str, params: Vec<serde_json::Value>) -> Result<serde_json::Value, String> {
+async fn aria2_rpc(
+    method: &str,
+    params: Vec<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": "homevault",
@@ -132,10 +144,17 @@ async fn aria2_rpc(method: &str, params: Vec<serde_json::Value>) -> Result<serde
         .map_err(|e| format!("aria2 RPC parse failed: {}", e))?;
 
     if let Some(error) = result.get("error") {
-        return Err(error.get("message").and_then(|m| m.as_str()).unwrap_or("unknown error").to_string());
+        return Err(error
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown error")
+            .to_string());
     }
 
-    Ok(result.get("result").cloned().unwrap_or(serde_json::Value::Null))
+    Ok(result
+        .get("result")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null))
 }
 
 async fn find_aria2() -> Option<String> {
@@ -164,8 +183,9 @@ async fn ensure_aria2_running(state: &Aria2State) -> Result<(), String> {
         return Ok(());
     }
 
-    let aria2_path = find_aria2().await
-        .ok_or_else(|| "aria2c not found on system. Install with: sudo apt install aria2".to_string())?;
+    let aria2_path = find_aria2().await.ok_or_else(|| {
+        "aria2c not found on system. Install with: sudo apt install aria2".to_string()
+    })?;
 
     let _ = tokio::fs::create_dir_all("/tmp/aria2-downloads").await;
 
@@ -259,12 +279,10 @@ pub async fn handle_downloader_global_stat(
     }
 
     match aria2_rpc("aria2.getGlobalStat", vec![]).await {
-        Ok(val) => {
-            match serde_json::from_value::<Aria2GlobalStat>(val) {
-                Ok(stat) => Json(ApiResponse::success(stat)),
-                Err(e) => Json(ApiResponse::error(&format!("parse error: {}", e))),
-            }
-        }
+        Ok(val) => match serde_json::from_value::<Aria2GlobalStat>(val) {
+            Ok(stat) => Json(ApiResponse::success(stat)),
+            Err(e) => Json(ApiResponse::error(&format!("parse error: {}", e))),
+        },
         Err(e) => Json(ApiResponse::error(&e)),
     }
 }
@@ -301,7 +319,12 @@ pub async fn handle_downloader_tasks(
         Err(e) => last_error = Some(e),
     }
 
-    match aria2_rpc("aria2.tellWaiting", vec![serde_json::json!(0), serde_json::json!(50)]).await {
+    match aria2_rpc(
+        "aria2.tellWaiting",
+        vec![serde_json::json!(0), serde_json::json!(50)],
+    )
+    .await
+    {
         Ok(waiting) => {
             any_succeeded = true;
             if let Ok(mut waiting_tasks) = serde_json::from_value::<Vec<Aria2Task>>(waiting) {
@@ -311,7 +334,12 @@ pub async fn handle_downloader_tasks(
         Err(e) => last_error = Some(e),
     }
 
-    match aria2_rpc("aria2.tellStopped", vec![serde_json::json!(0), serde_json::json!(50)]).await {
+    match aria2_rpc(
+        "aria2.tellStopped",
+        vec![serde_json::json!(0), serde_json::json!(50)],
+    )
+    .await
+    {
         Ok(stopped) => {
             any_succeeded = true;
             if let Ok(mut stopped_tasks) = serde_json::from_value::<Vec<Aria2Task>>(stopped) {
@@ -351,10 +379,7 @@ pub async fn handle_downloader_add(
         options["out"] = serde_json::json!(out);
     }
 
-    let params = vec![
-        serde_json::json!([req.uri]),
-        options,
-    ];
+    let params = vec![serde_json::json!([req.uri]), options];
 
     match aria2_rpc("aria2.addUri", params).await {
         Ok(val) => {
@@ -444,7 +469,12 @@ pub async fn handle_downloader_remove(
                 let gid = val.as_str().unwrap_or("unknown").to_string();
                 Json(ApiResponse::success(gid))
             }
-            Err(_) => match aria2_rpc("aria2.removeDownloadResult", vec![serde_json::json!(req.gid)]).await {
+            Err(_) => match aria2_rpc(
+                "aria2.removeDownloadResult",
+                vec![serde_json::json!(req.gid)],
+            )
+            .await
+            {
                 Ok(_) => Json(ApiResponse::success(req.gid.clone())),
                 Err(e) => Json(ApiResponse::error(&e)),
             },
@@ -465,12 +495,10 @@ pub async fn handle_downloader_task(
     }
 
     match aria2_rpc("aria2.tellStatus", vec![serde_json::json!(gid)]).await {
-        Ok(val) => {
-            match serde_json::from_value::<Aria2Task>(val) {
-                Ok(task) => Json(ApiResponse::success(task)),
-                Err(e) => Json(ApiResponse::error(&format!("parse error: {}", e))),
-            }
-        }
+        Ok(val) => match serde_json::from_value::<Aria2Task>(val) {
+            Ok(task) => Json(ApiResponse::success(task)),
+            Err(e) => Json(ApiResponse::error(&format!("parse error: {}", e))),
+        },
         Err(e) => Json(ApiResponse::error(&e)),
     }
 }
@@ -496,7 +524,10 @@ async fn require_admin_request(
     };
 
     if !state.auth.is_admin(&username).await {
-        return Err((403, "Admin privileges required for this operation".to_string()));
+        return Err((
+            403,
+            "Admin privileges required for this operation".to_string(),
+        ));
     }
 
     Ok(username)
@@ -636,7 +667,10 @@ mod tests {
         ] {
             assert!(v.get(key).is_some(), "serialized task missing `{key}`");
         }
-        assert!(v.get("totalLength").is_none(), "must not leak camelCase to the frontend");
+        assert!(
+            v.get("totalLength").is_none(),
+            "must not leak camelCase to the frontend"
+        );
         assert_eq!(v["files"][0]["completed_length"], "25966");
         assert!(v["files"][0].get("completedLength").is_none());
     }
@@ -653,7 +687,10 @@ mod tests {
             "files":[],"dir":"/downloads"
         }"#;
         let task: Aria2Task = serde_json::from_str(raw).expect("must parse a torrent task");
-        assert_eq!(task.bittorrent.as_ref().map(|b| b.name.as_str()), Some("ubuntu-24.04.iso"));
+        assert_eq!(
+            task.bittorrent.as_ref().map(|b| b.name.as_str()),
+            Some("ubuntu-24.04.iso")
+        );
         assert_eq!(task.error_message, None);
     }
 

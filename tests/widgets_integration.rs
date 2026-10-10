@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the Widgets app's backend surface:
 //!
 //!   GET|POST /api/monitor-layout              (per-account layout blob — any session)
@@ -14,7 +17,10 @@
 //! Run:
 //!   cargo test --test widgets_integration
 
-use axum::{routing::{get, post}, Router};
+use axum::{
+    routing::{get, post},
+    Router,
+};
 use chrono::{Duration, Utc};
 use http::{Method, Request, StatusCode};
 use serde_json::{json, Value};
@@ -37,7 +43,11 @@ type Req = Request<axum::body::Body>;
 
 static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -102,7 +112,12 @@ async fn create_test_user(state: &AppState, username: &str, password: &str, role
 
 /// Insert a bare session row directly (bypassing the login flow) — used to
 /// build specific active/expired/duplicate situations for the count.
-async fn insert_session(state: &AppState, username: &str, token: &str, expires_at: chrono::DateTime<Utc>) {
+async fn insert_session(
+    state: &AppState,
+    username: &str,
+    token: &str,
+    expires_at: chrono::DateTime<Utc>,
+) {
     sqlx::query(
         "INSERT INTO sessions (token, username, ip_address, csrf_token, created_at, expires_at, is_admin)
          VALUES (?, ?, '127.0.0.1', 'csrf', ?, ?, 0)",
@@ -176,10 +191,23 @@ async fn test_monitor_layout_requires_a_session() {
         (Method::GET, None),
         (Method::POST, Some(json!({"layout_json": "{}"}))),
     ] {
-        let (status, _) = send(&mut r, method.clone(), "/api/monitor-layout", None, body.clone()).await;
+        let (status, _) = send(
+            &mut r,
+            method.clone(),
+            "/api/monitor-layout",
+            None,
+            body.clone(),
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{method} (no token)");
-        let (status, _) =
-            send(&mut r, method.clone(), "/api/monitor-layout", Some("nope"), body).await;
+        let (status, _) = send(
+            &mut r,
+            method.clone(),
+            "/api/monitor-layout",
+            Some("nope"),
+            body,
+        )
+        .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} (bad token)");
     }
 }
@@ -195,7 +223,14 @@ async fn test_monitor_layout_is_null_until_saved_then_round_trips() {
     let mut r = widgets_router(state);
     let token = login(&mut r, "u", "Password123!").await;
 
-    let (status, body) = send(&mut r, Method::GET, "/api/monitor-layout", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/monitor-layout",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["data"]["layout_json"].is_null(), "{body}");
 
@@ -210,7 +245,14 @@ async fn test_monitor_layout_is_null_until_saved_then_round_trips() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    let (_, body) = send(&mut r, Method::GET, "/api/monitor-layout", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/monitor-layout",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["data"]["layout_json"], blob);
 }
 
@@ -235,7 +277,14 @@ async fn test_monitor_layout_round_trips_a_blob_without_refresh_ms() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    let (_, body) = send(&mut r, Method::GET, "/api/monitor-layout", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/monitor-layout",
+        Some(&token),
+        None,
+    )
+    .await;
     let stored = body["data"]["layout_json"].as_str().expect("layout_json");
     assert_eq!(stored, legacy);
     // No key was invented server-side — the frontend is what defaults it.
@@ -265,7 +314,14 @@ async fn test_monitor_layout_persists_a_changed_refresh_ms() {
         .await;
         assert_eq!(status, StatusCode::OK);
 
-        let (_, body) = send(&mut r, Method::GET, "/api/monitor-layout", Some(&token), None).await;
+        let (_, body) = send(
+            &mut r,
+            Method::GET,
+            "/api/monitor-layout",
+            Some(&token),
+            None,
+        )
+        .await;
         let stored: Value =
             serde_json::from_str(body["data"]["layout_json"].as_str().expect("layout_json"))
                 .expect("stored layout_json must be valid JSON");
@@ -293,7 +349,14 @@ async fn test_monitor_layout_upsert_keeps_one_row_per_user() {
         .await;
         assert_eq!(status, StatusCode::OK);
     }
-    let (_, body) = send(&mut r, Method::GET, "/api/monitor-layout", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/monitor-layout",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["data"]["layout_json"], r#"{"v":3}"#);
 
     // Three POSTs, one row — proves it's an upsert, not an append.
@@ -325,7 +388,10 @@ async fn test_monitor_layout_is_scoped_per_account() {
     assert_eq!(status, StatusCode::OK);
 
     let (_, body) = send(&mut r, Method::GET, "/api/monitor-layout", Some(&bob), None).await;
-    assert!(body["data"]["layout_json"].is_null(), "bob must not see alice's layout: {body}");
+    assert!(
+        body["data"]["layout_json"].is_null(),
+        "bob must not see alice's layout: {body}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -338,15 +404,34 @@ async fn test_active_sessions_count_is_admin_only() {
     create_test_user(&state, "regular", "Password123!", 1).await;
     let mut r = widgets_router(state);
 
-    let (status, _) = send(&mut r, Method::GET, "/api/security/active-sessions-count", None, None).await;
+    let (status, _) = send(
+        &mut r,
+        Method::GET,
+        "/api/security/active-sessions-count",
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    let (status, _) =
-        send(&mut r, Method::GET, "/api/security/active-sessions-count", Some("nope"), None).await;
+    let (status, _) = send(
+        &mut r,
+        Method::GET,
+        "/api/security/active-sessions-count",
+        Some("nope"),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     let token = login(&mut r, "regular", "Password123!").await;
-    let (status, _) =
-        send(&mut r, Method::GET, "/api/security/active-sessions-count", Some(&token), None).await;
+    let (status, _) = send(
+        &mut r,
+        Method::GET,
+        "/api/security/active-sessions-count",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
@@ -377,16 +462,34 @@ async fn test_active_sessions_count_dedupes_users_and_ignores_expired() {
     assert_eq!(base, 1);
 
     // Two distinct users with a valid session each → +2.
-    insert_session(&state, "alice", "sess-alice-1", Utc::now() + Duration::hours(1)).await;
+    insert_session(
+        &state,
+        "alice",
+        "sess-alice-1",
+        Utc::now() + Duration::hours(1),
+    )
+    .await;
     insert_session(&state, "bob", "sess-bob-1", Utc::now() + Duration::hours(1)).await;
     assert_eq!(active_count(&mut r, &token).await, base + 2);
 
     // A second session for alice (another tab/device) → still counts once.
-    insert_session(&state, "alice", "sess-alice-2", Utc::now() + Duration::hours(1)).await;
+    insert_session(
+        &state,
+        "alice",
+        "sess-alice-2",
+        Utc::now() + Duration::hours(1),
+    )
+    .await;
     assert_eq!(active_count(&mut r, &token).await, base + 2);
 
     // An already-expired session for carol → not counted.
-    insert_session(&state, "carol", "sess-carol-1", Utc::now() - Duration::hours(1)).await;
+    insert_session(
+        &state,
+        "carol",
+        "sess-carol-1",
+        Utc::now() - Duration::hours(1),
+    )
+    .await;
     assert_eq!(active_count(&mut r, &token).await, base + 2);
 }
 
@@ -401,7 +504,14 @@ async fn test_update_info_requires_auth_and_reports_no_false_update() {
     let mut app = widgets_router(state);
 
     // Unauthenticated callers are rejected.
-    let (status, _) = send(&mut app, Method::GET, "/api/widgets/update-info", None, None).await;
+    let (status, _) = send(
+        &mut app,
+        Method::GET,
+        "/api/widgets/update-info",
+        None,
+        None,
+    )
+    .await;
     assert!(status.is_client_error(), "expected 4xx, got {}", status);
 
     let token = login(&mut app, "widgetuser", "WidgetPass123").await;
@@ -418,5 +528,8 @@ async fn test_update_info_requires_auth_and_reports_no_false_update() {
     // With no UPDATE_CHECK_URL configured the widget must not invent an update.
     assert_eq!(data["has_app_update"], json!(false));
     assert!(data["app_latest_version"].is_null());
-    assert!(!data["app_current_version"].as_str().unwrap_or("").is_empty());
+    assert!(!data["app_current_version"]
+        .as_str()
+        .unwrap_or("")
+        .is_empty());
 }

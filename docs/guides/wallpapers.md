@@ -2,7 +2,7 @@
 
 **Purpose:** Pick the desktop wallpaper from the 15 images bundled into the
 binary. **There is no upload feature** — it was removed 2026-09-04 (explicit
-request: "uniquement un choix de wallpapers déjà inclus").
+request: only a choice of pre-bundled wallpapers).
 
 ## Backend
 

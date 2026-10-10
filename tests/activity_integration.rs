@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the unified activity feed — `GET /api/activity`
 //! (`crate::handlers::activity::handle_activity`).
 //!
@@ -46,7 +49,11 @@ fn clear_jobs() {
     }
 }
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     clear_jobs();
     let tmp = tempfile::tempdir().expect("temp dir");
@@ -222,7 +229,10 @@ async fn activity_excludes_completed_job() {
     PROGRESS_MANAGER.complete_job(&id, "done");
 
     let (_, body) = send(&mut r, Method::GET, "/api/activity", Some(&token), None).await;
-    assert!(row_by_id(&body, &id).is_none(), "completed job must not appear");
+    assert!(
+        row_by_id(&body, &id).is_none(),
+        "completed job must not appear"
+    );
 }
 
 #[tokio::test]
@@ -236,7 +246,10 @@ async fn activity_excludes_failed_job() {
     PROGRESS_MANAGER.fail_job(&id, "disk full");
 
     let (_, body) = send(&mut r, Method::GET, "/api/activity", Some(&token), None).await;
-    assert!(row_by_id(&body, &id).is_none(), "failed job must not appear");
+    assert!(
+        row_by_id(&body, &id).is_none(),
+        "failed job must not appear"
+    );
 }
 
 #[tokio::test]
@@ -317,7 +330,10 @@ async fn activity_non_admin_no_foreign_path_leak() {
     PROGRESS_MANAGER.emit_progress(&bobs, 10.0, "/home/bob/private/secret-folder");
 
     let (_, body) = send(&mut r, Method::GET, "/api/activity", Some(&token), None).await;
-    assert!(row_by_id(&body, &bobs).is_none(), "another user's job is invisible");
+    assert!(
+        row_by_id(&body, &bobs).is_none(),
+        "another user's job is invisible"
+    );
     assert!(
         !body.to_string().contains("secret-folder"),
         "another user's path must never appear in the response"

@@ -22,22 +22,31 @@ async fn extract_session(state: &Arc<AppState>, headers: &HeaderMap) -> Option<S
     state.auth.get_username_from_token(token).await
 }
 
+// `Response` is axum's canonical error type; boxing it would ripple
+// through every call site for no real benefit, so allow the lint here.
+#[allow(clippy::result_large_err)]
 async fn require_admin(state: &Arc<AppState>, headers: &HeaderMap) -> Result<String, Response> {
     let token = headers
         .get("x-session-token")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
     if token.is_empty() {
-        return Err(ResponseHelper::json_error("No session token provided".to_string()));
+        return Err(ResponseHelper::json_error(
+            "No session token provided".to_string(),
+        ));
     }
     match state.auth.get_session(token).await {
         Ok(session) => {
             if !session.is_admin {
-                return Err(ResponseHelper::json_error("Admin access required".to_string()));
+                return Err(ResponseHelper::json_error(
+                    "Admin access required".to_string(),
+                ));
             }
             Ok(session.username)
         }
-        Err(_) => Err(ResponseHelper::json_unauthorized("Invalid session".to_string())),
+        Err(_) => Err(ResponseHelper::json_unauthorized(
+            "Invalid session".to_string(),
+        )),
     }
 }
 
@@ -48,15 +57,19 @@ pub(crate) fn build_home_path(disk_mount_point: &str, username: &str) -> String 
             .to_string_lossy()
             .into_owned()
     } else {
-        format!("{}/users/{}", disk_mount_point.trim_end_matches('/'), username)
+        format!(
+            "{}/users/{}",
+            disk_mount_point.trim_end_matches('/'),
+            username
+        )
     }
 }
 
 /// Roots a home folder must never sit at or under (OWASP path-traversal / SSRF
 /// hardening — an admin-supplied folder path is untrusted input).
 const FORBIDDEN_HOME_ROOTS: &[&str] = &[
-    "/bin", "/boot", "/dev", "/etc", "/lib", "/lib32", "/lib64", "/libx32",
-    "/proc", "/root", "/run", "/sbin", "/sys", "/usr", "/var",
+    "/bin", "/boot", "/dev", "/etc", "/lib", "/lib32", "/lib64", "/libx32", "/proc", "/root",
+    "/run", "/sbin", "/sys", "/usr", "/var",
 ];
 
 /// Validates an admin-supplied absolute home-directory path and returns the
@@ -107,7 +120,10 @@ pub(crate) fn validate_custom_home_path(raw: &str) -> Result<String, String> {
     let check = match std::fs::canonicalize(&resolved) {
         Ok(real) => {
             if !real.is_dir() {
-                return Err(format!("'{}' exists and is not a directory", resolved.display()));
+                return Err(format!(
+                    "'{}' exists and is not a directory",
+                    resolved.display()
+                ));
             }
             real
         }
@@ -185,27 +201,30 @@ pub(crate) async fn apply_home_folder(
         // uses to reopen it as a custom folder rather than a disk selection;
         // the quota still runs against the resolved containing `partition`.
         let picked = custom_path.map(str::trim).filter(|p| !p.is_empty());
-        let (home_path, partition, disk_label): (String, crate::disk::PartitionInfo, Option<String>) =
-            if let Some(raw) = picked {
-                let home_path = validate_custom_home_path(raw)?;
-                let partition = containing_partition(&home_path, &partitions)
-                    .cloned()
-                    .ok_or_else(|| {
-                        format!("Could not determine which disk contains '{}'", home_path)
-                    })?;
-                (home_path, partition, None)
-            } else {
-                let mount_point = disk.unwrap_or("/home");
-                let partition = partitions
-                    .iter()
-                    .find(|p| p.mount_point == mount_point || p.device == mount_point)
-                    .cloned()
-                    .ok_or_else(|| {
-                        format!("Disk/partition '{}' not found or not mounted", mount_point)
-                    })?;
-                let home_path = build_home_path(&partition.mount_point, username);
-                (home_path, partition, Some(mount_point.to_string()))
-            };
+        let (home_path, partition, disk_label): (
+            String,
+            crate::disk::PartitionInfo,
+            Option<String>,
+        ) = if let Some(raw) = picked {
+            let home_path = validate_custom_home_path(raw)?;
+            let partition = containing_partition(&home_path, &partitions)
+                .cloned()
+                .ok_or_else(|| {
+                    format!("Could not determine which disk contains '{}'", home_path)
+                })?;
+            (home_path, partition, None)
+        } else {
+            let mount_point = disk.unwrap_or("/home");
+            let partition = partitions
+                .iter()
+                .find(|p| p.mount_point == mount_point || p.device == mount_point)
+                .cloned()
+                .ok_or_else(|| {
+                    format!("Disk/partition '{}' not found or not mounted", mount_point)
+                })?;
+            let home_path = build_home_path(&partition.mount_point, username);
+            (home_path, partition, Some(mount_point.to_string()))
+        };
 
         // Create the directory
         tokio::fs::create_dir_all(&home_path)
@@ -232,8 +251,12 @@ pub(crate) async fn apply_home_folder(
             ));
         }
 
-        let uid = String::from_utf8_lossy(&uid_output.stdout).trim().to_string();
-        let gid = String::from_utf8_lossy(&gid_output.stdout).trim().to_string();
+        let uid = String::from_utf8_lossy(&uid_output.stdout)
+            .trim()
+            .to_string();
+        let gid = String::from_utf8_lossy(&gid_output.stdout)
+            .trim()
+            .to_string();
 
         let chown_output = tokio::process::Command::new("chown")
             .args(["-R", &format!("{}:{}", uid, gid), &home_path])
@@ -299,7 +322,11 @@ pub(crate) async fn apply_home_folder(
         return Ok(warning);
     } else {
         // Disable: remove from DB but keep the folder on disk
-        if let Some(existing) = repo.find_by_username(username).await.map_err(|e| e.to_string())? {
+        if let Some(existing) = repo
+            .find_by_username(username)
+            .await
+            .map_err(|e| e.to_string())?
+        {
             if existing.enabled {
                 let mut updated = existing;
                 updated.enabled = false;
@@ -421,7 +448,11 @@ pub async fn handle_user_home_delete(
     if let Some(ref home_path) = path {
         match tokio::fs::remove_dir_all(home_path).await {
             Ok(_) => {
-                tracing::info!("Deleted home folder '{}' for user '{}'", home_path, username);
+                tracing::info!(
+                    "Deleted home folder '{}' for user '{}'",
+                    home_path,
+                    username
+                );
             }
             Err(e) => {
                 tracing::warn!(
@@ -454,6 +485,18 @@ pub struct AvailableHomeDisksResponse {
     pub total_bytes: u64,
 }
 
+/// Read-only filesystems that can be mounted on a partition but can never
+/// hold a home folder. `squashfs` is the one that actually shows up on a
+/// stock Ubuntu/Debian host: every snap package mounts a read-only squashfs
+/// image on a loop device, so without this filter the picker offered
+/// `/snap/core20/<rev>`-style mounts with 0 bytes free (confirmed live —
+/// `lsblk` reported 16 of them on a dev host, and picking one left the size
+/// slider with `min == max == 0`). `iso9660`/`erofs` are the same story for
+/// mounted install media.
+fn is_writable_home_filesystem(filesystem: &str) -> bool {
+    !matches!(filesystem, "squashfs" | "iso9660" | "erofs")
+}
+
 /// Lists all mounted partitions that can be used as user home disks.
 #[axum_macros::debug_handler]
 pub async fn handle_available_home_disks(
@@ -468,6 +511,7 @@ pub async fn handle_available_home_disks(
         Ok(partitions) => {
             let disks: Vec<AvailableHomeDisksResponse> = partitions
                 .into_iter()
+                .filter(|p| is_writable_home_filesystem(&p.filesystem))
                 .map(|p| AvailableHomeDisksResponse {
                     device: p.device,
                     mount_point: p.mount_point,
@@ -485,6 +529,24 @@ pub async fn handle_available_home_disks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_writable_home_filesystem() {
+        // Real writable filesystems stay offered.
+        for fs in ["ext4", "xfs", "btrfs", "zfs", "f2fs", "vfat", "ntfs", "exfat", "unknown"] {
+            assert!(
+                is_writable_home_filesystem(fs),
+                "{fs} should be offered as a home disk"
+            );
+        }
+        // Read-only mounts (snap squashfs images, install media) never can.
+        for fs in ["squashfs", "iso9660", "erofs"] {
+            assert!(
+                !is_writable_home_filesystem(fs),
+                "{fs} must never be offered as a home disk"
+            );
+        }
+    }
 
     #[test]
     fn test_validate_custom_home_path_rejects_relative() {
@@ -562,7 +624,9 @@ mod tests {
             },
         ];
         assert_eq!(
-            containing_partition("/mnt/pool/users/x", &parts).unwrap().mount_point,
+            containing_partition("/mnt/pool/users/x", &parts)
+                .unwrap()
+                .mount_point,
             "/mnt/pool"
         );
         assert_eq!(

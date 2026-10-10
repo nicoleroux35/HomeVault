@@ -699,7 +699,9 @@ mod tests {
     fn test_check_memory_reports_a_bounded_percent_matching_its_status() {
         let c = HealthService::check_memory().unwrap();
         assert_eq!(c.name, "memory");
-        let pct = c.details.as_ref().unwrap()["usage_percent"].as_u64().unwrap();
+        let pct = c.details.as_ref().unwrap()["usage_percent"]
+            .as_u64()
+            .unwrap();
         assert!(pct <= 100, "usage_percent out of range: {pct}");
         let expected = if pct > 90 {
             HealthStatus::Unhealthy

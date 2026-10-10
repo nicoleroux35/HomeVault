@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the VPN API endpoints (`crate::handlers::vpn`):
 //!
 //!   - GET    /api/vpn/capabilities
@@ -67,7 +70,11 @@ static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 // Test harness
 // ---------------------------------------------------------------------------
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -116,10 +123,7 @@ fn vpn_router(state: Arc<AppState>) -> Router {
             delete(handle_wg_peer_revoke),
         )
         .route("/api/vpn/openvpn", post(handle_openvpn_create))
-        .route(
-            "/api/vpn/openvpn/{name}/start",
-            post(handle_openvpn_start),
-        )
+        .route("/api/vpn/openvpn/{name}/start", post(handle_openvpn_start))
         .route("/api/vpn/openvpn/{name}/stop", post(handle_openvpn_stop))
         .route("/api/vpn/openvpn/{name}", delete(handle_openvpn_delete))
         .with_state(state)
@@ -412,7 +416,10 @@ async fn test_wg_peer_create_rejects_control_characters() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body["error"].as_str().unwrap().contains("invalid characters"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("invalid characters"));
 }
 
 #[tokio::test]
@@ -500,10 +507,7 @@ async fn test_openvpn_create_rejects_path_traversal_name() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body["error"]
-        .as_str()
-        .unwrap()
-        .contains("letters, numbers"));
+    assert!(body["error"].as_str().unwrap().contains("letters, numbers"));
 }
 
 #[tokio::test]

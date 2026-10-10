@@ -4,8 +4,8 @@ use sqlx::FromRow;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 
-use crate::storage::database::DbError;
 use crate::impl_repository;
+use crate::storage::database::DbError;
 
 /// Database row from `share_permissions`.
 #[derive(Debug, Clone, FromRow)]
@@ -81,7 +81,11 @@ impl SharePermissionRepository {
     }
 
     /// List all permissions for a specific share.
-    pub async fn get_for_share(&self, share_name: &str, share_type: &str) -> Result<Vec<SharePermission>, DbError> {
+    pub async fn get_for_share(
+        &self,
+        share_name: &str,
+        share_type: &str,
+    ) -> Result<Vec<SharePermission>, DbError> {
         let perms = sqlx::query_as::<_, SharePermissionRow>(
             "SELECT id, share_name, share_type, grantee_type, grantee_name, permission, recursive, created_at, updated_at FROM share_permissions WHERE share_name = ? AND share_type = ?",
         )
@@ -94,7 +98,11 @@ impl SharePermissionRepository {
     }
 
     /// List all permissions assigned to a specific user or group.
-    pub async fn get_for_grantee(&self, grantee_type: &str, grantee_name: &str) -> Result<Vec<SharePermission>, DbError> {
+    pub async fn get_for_grantee(
+        &self,
+        grantee_type: &str,
+        grantee_name: &str,
+    ) -> Result<Vec<SharePermission>, DbError> {
         let perms = sqlx::query_as::<_, SharePermissionRow>(
             "SELECT id, share_name, share_type, grantee_type, grantee_name, permission, recursive, created_at, updated_at FROM share_permissions WHERE grantee_type = ? AND grantee_name = ?",
         )
@@ -151,13 +159,20 @@ impl SharePermissionRepository {
         .await?;
 
         let perms = self.get_for_share(share_name, share_type).await?;
-        perms.into_iter()
+        perms
+            .into_iter()
             .find(|p| p.grantee_type == grantee_type && p.grantee_name == grantee_name)
             .ok_or(DbError::NotFound)
     }
 
     /// Revoke a specific permission entry.
-    pub async fn delete(&self, share_name: &str, share_type: &str, grantee_type: &str, grantee_name: &str) -> Result<bool, DbError> {
+    pub async fn delete(
+        &self,
+        share_name: &str,
+        share_type: &str,
+        grantee_type: &str,
+        grantee_name: &str,
+    ) -> Result<bool, DbError> {
         let result = sqlx::query(
             "DELETE FROM share_permissions WHERE share_name = ? AND share_type = ? AND grantee_type = ? AND grantee_name = ?"
         )
@@ -172,23 +187,34 @@ impl SharePermissionRepository {
     }
 
     /// Remove all permissions for a share.
-    pub async fn delete_for_share(&self, share_name: &str, share_type: &str) -> Result<u64, DbError> {
-        let result = sqlx::query("DELETE FROM share_permissions WHERE share_name = ? AND share_type = ?")
-            .bind(share_name)
-            .bind(share_type)
-            .execute(self.pool.as_ref())
-            .await?;
+    pub async fn delete_for_share(
+        &self,
+        share_name: &str,
+        share_type: &str,
+    ) -> Result<u64, DbError> {
+        let result =
+            sqlx::query("DELETE FROM share_permissions WHERE share_name = ? AND share_type = ?")
+                .bind(share_name)
+                .bind(share_type)
+                .execute(self.pool.as_ref())
+                .await?;
 
         Ok(result.rows_affected())
     }
 
     /// Remove all permissions assigned to a particular user or group.
-    pub async fn delete_for_grantee(&self, grantee_type: &str, grantee_name: &str) -> Result<u64, DbError> {
-        let result = sqlx::query("DELETE FROM share_permissions WHERE grantee_type = ? AND grantee_name = ?")
-            .bind(grantee_type)
-            .bind(grantee_name)
-            .execute(self.pool.as_ref())
-            .await?;
+    pub async fn delete_for_grantee(
+        &self,
+        grantee_type: &str,
+        grantee_name: &str,
+    ) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "DELETE FROM share_permissions WHERE grantee_type = ? AND grantee_name = ?",
+        )
+        .bind(grantee_type)
+        .bind(grantee_name)
+        .execute(self.pool.as_ref())
+        .await?;
 
         Ok(result.rows_affected())
     }
@@ -215,7 +241,7 @@ impl SharePermissionRepository {
             "SELECT COUNT(*) FROM share_permissions
              WHERE share_name = ? AND share_type = ?
              AND grantee_type = ? AND grantee_name = ?
-             AND permission = ?"
+             AND permission = ?",
         )
         .bind(share_name)
         .bind(share_type)

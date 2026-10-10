@@ -1,6 +1,6 @@
+use crate::impl_repository;
 use crate::storage::database::DbError;
 use crate::storage::models::{Widget, WidgetRow};
-use crate::impl_repository;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 
@@ -148,7 +148,8 @@ impl WidgetRepository {
 
         use sqlx::QueryBuilder;
 
-        let mut qb: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new("DELETE FROM widgets WHERE id IN (");
+        let mut qb: QueryBuilder<sqlx::Sqlite> =
+            QueryBuilder::new("DELETE FROM widgets WHERE id IN (");
         let mut separated = qb.separated(", ");
         for id in ids {
             separated.push_bind(id);
@@ -169,7 +170,7 @@ impl WidgetRepository {
             "SELECT id, wtype, title, size, row_pos, col_pos, row_span, col_span, username
              FROM widgets
              ORDER BY row_pos, col_pos
-             LIMIT ? OFFSET ?"
+             LIMIT ? OFFSET ?",
         )
         .bind(limit)
         .bind(offset)

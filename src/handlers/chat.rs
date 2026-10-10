@@ -1,11 +1,11 @@
-use axum::{extract::State, Json};
-use serde::{Deserialize, Serialize};
 use crate::handlers::AppState;
 use crate::utils::ResponseHelper;
 use axum::http::HeaderMap;
 use axum::response::Response;
+use axum::{extract::State, Json};
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 // ── Chat (send message) ─────────────────────────────────────────────
@@ -178,11 +178,7 @@ fn session_error_message(language: &str) -> &'static str {
 
 /// Enrich the system prompt with RAG context from the knowledge base.
 /// If no index exists or embedding fails, falls back to the plain prompt.
-async fn system_prompt_with_rag(
-    language: &str,
-    message: &str,
-    pool: &sqlx::SqlitePool,
-) -> String {
+async fn system_prompt_with_rag(language: &str, message: &str, pool: &sqlx::SqlitePool) -> String {
     let base = system_prompt(language);
 
     // Try to generate query embedding and search
@@ -227,7 +223,9 @@ pub async fn handle_chat_send(
     }
 
     let model = AI_MODEL.read().clone();
-    let conv_id = req.conversation_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let conv_id = req
+        .conversation_id
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let mut ollama_messages: Vec<OllamaMessage> = Vec::new();
 
@@ -255,24 +253,20 @@ pub async fn handle_chat_send(
     };
 
     match send_to_ollama(&ollama_req).await {
-        Ok(response) => {
-            Json(ChatResponse {
-                success: true,
-                data: Some(ChatResponseData {
-                    reply: response.message.content,
-                    conversation_id: conv_id,
-                    model: response.model,
-                }),
-                error: None,
-            })
-        }
-        Err(e) => {
-            Json(ChatResponse {
-                success: false,
-                data: None,
-                error: Some(format!("AI communication error: {}", e)),
-            })
-        }
+        Ok(response) => Json(ChatResponse {
+            success: true,
+            data: Some(ChatResponseData {
+                reply: response.message.content,
+                conversation_id: conv_id,
+                model: response.model,
+            }),
+            error: None,
+        }),
+        Err(e) => Json(ChatResponse {
+            success: false,
+            data: None,
+            error: Some(format!("AI communication error: {}", e)),
+        }),
     }
 }
 
@@ -292,10 +286,14 @@ async fn send_to_ollama(req: &OllamaChatRequest) -> Result<OllamaChatResponse, S
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("Ollama a répondu avec le statut {}: {}", status, body));
+        return Err(format!(
+            "Ollama a répondu avec le statut {}: {}",
+            status, body
+        ));
     }
 
-    response.json::<OllamaChatResponse>()
+    response
+        .json::<OllamaChatResponse>()
         .await
         .map_err(|e| format!("Erreur de parsing de la réponse Ollama: {}", e))
 }
@@ -327,7 +325,10 @@ pub async fn handle_chat_send_stream(
     }
 
     let model = AI_MODEL.read().clone();
-    let conv_id = req.conversation_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let conv_id = req
+        .conversation_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let mut ollama_messages: Vec<OllamaMessage> = Vec::new();
     ollama_messages.push(OllamaMessage {
@@ -369,7 +370,10 @@ pub async fn handle_chat_send_stream(
         Ok(resp) => {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return ResponseHelper::json_error(format!("Ollama responded with status {}: {}", status, body));
+            return ResponseHelper::json_error(format!(
+                "Ollama responded with status {}: {}",
+                status, body
+            ));
         }
         Err(e) => return ResponseHelper::json_error(format!("Cannot reach Ollama: {}", e)),
     };
@@ -476,47 +480,42 @@ pub async fn handle_chat_models_list(
 
     let client = match client {
         Ok(c) => c,
-        Err(e) => return Json(ModelsListResponse {
-            success: false,
-            data: Some(ModelsListData {
-                models: vec![],
-                current: AI_MODEL.read().clone(),
-                ollama_running: false,
-            }),
-            error: Some(e),
-        }),
+        Err(e) => {
+            return Json(ModelsListResponse {
+                success: false,
+                data: Some(ModelsListData {
+                    models: vec![],
+                    current: AI_MODEL.read().clone(),
+                    ollama_running: false,
+                }),
+                error: Some(e),
+            })
+        }
     };
 
-    let response = client
-        .get(format!("{}/api/tags", OLLAMA_BASE))
-        .send()
-        .await;
+    let response = client.get(format!("{}/api/tags", OLLAMA_BASE)).send().await;
 
     match response {
-        Ok(resp) if resp.status().is_success() => {
-            match resp.json::<OllamaTagsResponse>().await {
-                Ok(tags) => {
-                    Json(ModelsListResponse {
-                        success: true,
-                        data: Some(ModelsListData {
-                            models: tags.models,
-                            current: AI_MODEL.read().clone(),
-                            ollama_running: true,
-                        }),
-                        error: None,
-                    })
-                }
-                Err(e) => Json(ModelsListResponse {
-                    success: false,
-                    data: Some(ModelsListData {
-                        models: vec![],
-                        current: AI_MODEL.read().clone(),
-                        ollama_running: true,
-                    }),
-                    error: Some(format!("Erreur de parsing: {}", e)),
+        Ok(resp) if resp.status().is_success() => match resp.json::<OllamaTagsResponse>().await {
+            Ok(tags) => Json(ModelsListResponse {
+                success: true,
+                data: Some(ModelsListData {
+                    models: tags.models,
+                    current: AI_MODEL.read().clone(),
+                    ollama_running: true,
                 }),
-            }
-        }
+                error: None,
+            }),
+            Err(e) => Json(ModelsListResponse {
+                success: false,
+                data: Some(ModelsListData {
+                    models: vec![],
+                    current: AI_MODEL.read().clone(),
+                    ollama_running: true,
+                }),
+                error: Some(format!("Erreur de parsing: {}", e)),
+            }),
+        },
         Ok(_) => Json(ModelsListResponse {
             success: false,
             data: Some(ModelsListData {
@@ -797,7 +796,8 @@ pub struct SystemSpecs {
 const MODEL_CATALOG: &[ModelRecommendation] = &[
     ModelRecommendation {
         name: "gemma3:1b",
-        description: "Ultra-léger, idéal pour machines modestes. Réponses rapides, français correct.",
+        description:
+            "Ultra-léger, idéal pour machines modestes. Réponses rapides, français correct.",
         min_ram_gb: 2,
         min_vram_gb: Some(1),
         requires_gpu: false,
@@ -928,7 +928,11 @@ fn detect_gpu() -> (Option<String>, Option<u64>) {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
                 if line.contains("VRAM Total Memory") {
-                    if let Some(val) = line.split(':').next_back().and_then(|s| s.trim().parse::<u64>().ok()) {
+                    if let Some(val) = line
+                        .split(':')
+                        .next_back()
+                        .and_then(|s| s.trim().parse::<u64>().ok())
+                    {
                         return (Some("AMD GPU".to_string()), Some(val));
                     }
                 }
@@ -1071,7 +1075,10 @@ mod tests {
     #[test]
     fn test_session_error_message_is_localised() {
         assert_eq!(session_error_message("fr"), "Session invalide ou manquante");
-        assert_eq!(session_error_message("de"), "Ungültige oder fehlende Sitzung");
+        assert_eq!(
+            session_error_message("de"),
+            "Ungültige oder fehlende Sitzung"
+        );
         assert_eq!(session_error_message("es"), "Sesión inválida o ausente");
         assert_eq!(session_error_message("en"), "Invalid or missing session");
         assert_eq!(session_error_message("ja"), "Invalid or missing session");

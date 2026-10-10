@@ -322,7 +322,10 @@ impl EmailService {
 
     /// Send a test email to verify the system is configured correctly,
     /// using the caller-supplied SMTP configuration.
-    pub fn send_test_email(recipient: &EmailRecipient, config: &EmailConfig) -> Result<(), EmailError> {
+    pub fn send_test_email(
+        recipient: &EmailRecipient,
+        config: &EmailConfig,
+    ) -> Result<(), EmailError> {
         let html_body = r#"
 <!DOCTYPE html>
 <html>

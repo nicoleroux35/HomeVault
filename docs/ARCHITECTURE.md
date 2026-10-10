@@ -13,7 +13,7 @@ There is no separate API process.
 - **Database**: SQLite file at `data/homevault.db` (path from
   `config::paths::database_path()`). Migrations in `sqlx/migrations/` are applied
   automatically at startup (`Database::run_migrations` in
-  `src/storage/database.rs:98`).
+  `src/storage/database.rs`, `pub async fn run_migrations`).
 
 ## Request flow
 
@@ -40,7 +40,8 @@ cargo build --release
 
 The server reads configuration from `config::Settings::load()` (see
 [Backend Structure](./BACKEND.md) → configuration). The listening port comes from
-`settings.port` and defaults to `0.0.0.0:<port>` (`src/web/mod.rs:1305`).
+`settings.port` and defaults to `0.0.0.0:<port>` (`src/web/mod.rs`, `run()` —
+grep for `0.0.0.0:`).
 
 Required OS tooling (used by various handlers, not needed to boot):
 `restic`, `mdadm`, `rclone`, `aria2c`, `docker`, `syncthing`, `ddrescue`,
@@ -95,12 +96,14 @@ Loops spawned in `run()` (`src/web/mod.rs`; line numbers drift, grep for
 
 **Terminal PTY cleanup**: on graceful shutdown the `shutdown_signal` handler
 calls `pty_manager.cleanup_all()` so shells never outlive the server
-(`src/web/mod.rs:1323`).
+(`src/web/mod.rs`, `shutdown_signal` at the bottom of the file).
 
 ## Middleware / cross-cutting
 
-- CORS: permissive `Any` (dev convenience) in `src/web/mod.rs:439`.
-- `RequestBodyLimitLayer`: 10 GiB (`src/web/mod.rs:1130`).
+- CORS: permissive `Any` (dev convenience) in `src/web/mod.rs` (grep for
+  `CorsLayer::new`).
+- `RequestBodyLimitLayer`: 10 GiB (`src/web/mod.rs`, grep for
+  `RequestBodyLimitLayer::new`).
 - CSRF protection: `middleware::csrf` — the SPA sends `X-CSRF-Token`.
 - Rate limiting: admin rate limiter 10 ops/min.
 - `fail2ban` and `security_headers` middleware in `src/middleware/`. HSTS is

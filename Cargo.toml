@@ -4,6 +4,12 @@ version = "1.0.0"
 edition = "2021"
 authors = ["HomeVault Team"]
 description = "Home server management application in Rust"
+license = "MIT"
+repository = "https://github.com/nicoleroux35/HomeVault"
+homepage = "https://github.com/nicoleroux35/HomeVault"
+readme = "README.md"
+keywords = ["nas", "homeserver", "axum", "svelte"]
+categories = ["web-programming"]
 
 [[bin]]
 name = "homevault"

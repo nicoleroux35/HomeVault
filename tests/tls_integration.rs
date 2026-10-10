@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the built-in HTTPS/TLS settings endpoints —
 //! `crate::handlers::tls`:
 //!
@@ -40,7 +43,11 @@ type Req = Request<axum::body::Body>;
 
 static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-async fn setup() -> (Router, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup() -> (
+    Router,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -384,7 +391,10 @@ async fn test_responses_never_contain_private_key_material() {
 
     for body in [regen, get] {
         let s = body.to_string();
-        assert!(!s.contains("PRIVATE KEY"), "response leaked key material: {s}");
+        assert!(
+            !s.contains("PRIVATE KEY"),
+            "response leaked key material: {s}"
+        );
         assert!(!s.contains("BEGIN EC"), "response leaked key material: {s}");
     }
 }

@@ -228,13 +228,14 @@ impl ProcParser {
         if let Ok(_content) = fs::read_to_string(&driver_path) {
             // Read the symlink target to get driver name
             if let Ok(path) = fs::read_link(&driver_path) {
-                return path.file_name()
+                return path
+                    .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("Unknown")
                     .to_string();
             }
         }
-        
+
         // Try ethtool for more detailed info
         if let Ok(output) = std::process::Command::new("ethtool")
             .arg("-i")
@@ -250,7 +251,7 @@ impl ProcParser {
                 }
             }
         }
-        
+
         "Unknown".to_string()
     }
 
@@ -267,7 +268,7 @@ impl ProcParser {
                 }
             }
         }
-        
+
         // Try ethtool for speed
         if let Ok(output) = std::process::Command::new("ethtool")
             .arg(iface_name)
@@ -282,7 +283,7 @@ impl ProcParser {
                 }
             }
         }
-        
+
         "Unknown".to_string()
     }
 
@@ -521,9 +522,8 @@ impl ProcParser {
             } else if line.starts_with("stepping") {
                 cpu_info.stepping = Self::extract_cpu_field(line);
             } else if line.starts_with("cpu MHz") {
-                cpu_info.frequency_mhz = Self::extract_cpu_field(line)
-                    .parse::<f64>()
-                    .unwrap_or(0.0);
+                cpu_info.frequency_mhz =
+                    Self::extract_cpu_field(line).parse::<f64>().unwrap_or(0.0);
             } else if line.starts_with("cache size") {
                 cpu_info.cache_size = Self::extract_cpu_field(line);
             } else if line.starts_with("physical id") {
@@ -531,13 +531,9 @@ impl ProcParser {
                     physical_id_set.insert(id);
                 }
             } else if line.starts_with("siblings") {
-                cpu_info.logical_cores = Self::extract_cpu_field(line)
-                    .parse::<u32>()
-                    .unwrap_or(1);
+                cpu_info.logical_cores = Self::extract_cpu_field(line).parse::<u32>().unwrap_or(1);
             } else if line.starts_with("cpu cores") {
-                cpu_info.physical_cores = Self::extract_cpu_field(line)
-                    .parse::<u32>()
-                    .unwrap_or(1);
+                cpu_info.physical_cores = Self::extract_cpu_field(line).parse::<u32>().unwrap_or(1);
             } else if line.starts_with("flags") || line.starts_with("Features") {
                 cpu_info.flags = Self::extract_cpu_field(line);
             }
@@ -563,10 +559,7 @@ impl ProcParser {
 
     /// Detect system architecture
     fn detect_architecture() -> String {
-        if let Ok(output) = std::process::Command::new("uname")
-            .arg("-m")
-            .output()
-        {
+        if let Ok(output) = std::process::Command::new("uname").arg("-m").output() {
             if output.status.success() {
                 return String::from_utf8_lossy(&output.stdout).trim().to_string();
             }
@@ -803,7 +796,11 @@ impl ProcParser {
             } else {
                 gpu.gpu_type = "Dedicated (AMD)".to_string();
             }
-        } else if model_lower.contains("nvidia") || model_lower.contains("geforce") || model_lower.contains("quadro") || model_lower.contains("tesla") {
+        } else if model_lower.contains("nvidia")
+            || model_lower.contains("geforce")
+            || model_lower.contains("quadro")
+            || model_lower.contains("tesla")
+        {
             gpu.gpu_type = "Dedicated (NVIDIA)".to_string();
         } else {
             gpu.gpu_type = "Unknown".to_string();
@@ -816,9 +813,7 @@ impl ProcParser {
     pub fn get_sensor_info() -> SensorInfo {
         let mut info = SensorInfo::default();
 
-        if let Ok(output) = std::process::Command::new("sensors")
-            .output()
-        {
+        if let Ok(output) = std::process::Command::new("sensors").output() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let mut current_adapter = String::new();
 
@@ -834,7 +829,8 @@ impl ProcParser {
                 } else if line.contains("MB") || line.contains("Motherboard") {
                     if line.contains("°C") {
                         if let Some(temp) = Self::parse_temp_line(line) {
-                            info.motherboard_temperatures.push((current_adapter.clone(), temp));
+                            info.motherboard_temperatures
+                                .push((current_adapter.clone(), temp));
                         }
                     }
                 } else if line.contains("fan") || line.contains("Fan") {
@@ -879,10 +875,7 @@ impl ProcParser {
         let mut info = UpsInfo::default();
 
         // List available UPS devices
-        if let Ok(output) = std::process::Command::new("upsc")
-            .args(["-l"])
-            .output()
-        {
+        if let Ok(output) = std::process::Command::new("upsc").args(["-l"]).output() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let ups_names: Vec<&str> = stdout.lines().collect();
 
@@ -892,9 +885,7 @@ impl ProcParser {
                 info.available = true;
 
                 // Get UPS status
-                if let Ok(status_output) = std::process::Command::new("upsc")
-                    .arg(ups_name)
-                    .output()
+                if let Ok(status_output) = std::process::Command::new("upsc").arg(ups_name).output()
                 {
                     let status_stdout = String::from_utf8_lossy(&status_output.stdout);
                     for line in status_stdout.lines() {
@@ -972,9 +963,17 @@ impl ProcParser {
                     if line.starts_with("ID=") {
                         info.os_name = line.replace("ID=", "").replace('"', "").trim().to_string();
                     } else if line.starts_with("VERSION=") {
-                        info.os_version = line.replace("VERSION=", "").replace('"', "").trim().to_string();
+                        info.os_version = line
+                            .replace("VERSION=", "")
+                            .replace('"', "")
+                            .trim()
+                            .to_string();
                     } else if line.starts_with("PRETTY_NAME=") {
-                        let pretty = line.replace("PRETTY_NAME=", "").replace('"', "").trim().to_string();
+                        let pretty = line
+                            .replace("PRETTY_NAME=", "")
+                            .replace('"', "")
+                            .trim()
+                            .to_string();
                         if info.os_name.is_empty() {
                             info.os_name = pretty.clone();
                         }
@@ -987,10 +986,7 @@ impl ProcParser {
         }
 
         // Get kernel version
-        if let Ok(output) = std::process::Command::new("uname")
-            .arg("-r")
-            .output()
-        {
+        if let Ok(output) = std::process::Command::new("uname").arg("-r").output() {
             info.kernel_version = String::from_utf8_lossy(&output.stdout).trim().to_string();
         }
 

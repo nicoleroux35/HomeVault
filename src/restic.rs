@@ -116,9 +116,7 @@ impl ResticService {
     }
 
     pub fn get_version() -> Result<String, ResticError> {
-        let output = Command::new("restic")
-            .arg("version")
-            .output()?;
+        let output = Command::new("restic").arg("version").output()?;
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
         } else {
@@ -242,10 +240,7 @@ impl ResticService {
             .lines()
             .filter(|l| !l.trim().is_empty())
             .filter_map(|l| serde_json::from_str::<HashMap<String, serde_json::Value>>(l).ok())
-            .filter(|v| {
-                v.get("message_type").and_then(|m| m.as_str()) != Some("status")
-            })
-            .next_back()
+            .rfind(|v| v.get("message_type").and_then(|m| m.as_str()) != Some("status"))
             .ok_or_else(|| {
                 ResticError::ParseError(format!(
                     "no summary object in restic backup output: {stdout}"
@@ -306,7 +301,12 @@ impl ResticService {
                 .output()
         };
 
-        let result = Self::create_backup(repo, std::slice::from_ref(&mount_point), exclude_patterns, tags);
+        let result = Self::create_backup(
+            repo,
+            std::slice::from_ref(&mount_point),
+            exclude_patterns,
+            tags,
+        );
 
         let _ = Command::new("umount").arg(&mount_point).output();
         let _ = std::fs::remove_dir(&mount_point);
@@ -316,9 +316,7 @@ impl ResticService {
         result
     }
 
-    pub fn list_snapshots(
-        repo: &ResticRepo,
-    ) -> Result<Vec<ResticSnapshot>, ResticError> {
+    pub fn list_snapshots(repo: &ResticRepo) -> Result<Vec<ResticSnapshot>, ResticError> {
         let mut cmd = Self::restic_cmd()?;
         Self::set_env(&mut cmd, repo);
         cmd.args(["snapshots", "--json"]);
@@ -330,8 +328,8 @@ impl ResticService {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let snapshots: Vec<ResticSnapshot> = serde_json::from_str(&stdout)
-            .map_err(|e| ResticError::ParseError(e.to_string()))?;
+        let snapshots: Vec<ResticSnapshot> =
+            serde_json::from_str(&stdout).map_err(|e| ResticError::ParseError(e.to_string()))?;
 
         Ok(snapshots)
     }
@@ -488,8 +486,8 @@ impl ResticService {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let raw: HashMap<String, serde_json::Value> = serde_json::from_str(&stdout)
-            .map_err(|e| ResticError::ParseError(e.to_string()))?;
+        let raw: HashMap<String, serde_json::Value> =
+            serde_json::from_str(&stdout).map_err(|e| ResticError::ParseError(e.to_string()))?;
 
         Ok(ResticStats {
             total_size: raw.get("total_size").and_then(|v| v.as_u64()).unwrap_or(0),
@@ -567,10 +565,7 @@ impl ResticService {
         }
     }
 
-    pub fn delete_snapshot(
-        repo: &ResticRepo,
-        snapshot_id: &str,
-    ) -> Result<(), ResticError> {
+    pub fn delete_snapshot(repo: &ResticRepo, snapshot_id: &str) -> Result<(), ResticError> {
         let mut cmd = Self::restic_cmd()?;
         Self::set_env(&mut cmd, repo);
         cmd.args(["forget", snapshot_id]);
@@ -608,11 +603,21 @@ mod tests {
     #[test]
     fn test_parse_backup_summary_picks_the_summary_line() {
         let s = ResticService::parse_backup_summary(BACKUP_JSON).expect("must parse");
-        assert_eq!(s.get("message_type").and_then(|v| v.as_str()), Some("summary"));
+        assert_eq!(
+            s.get("message_type").and_then(|v| v.as_str()),
+            Some("summary")
+        );
         assert_eq!(s.get("files_new").and_then(|v| v.as_u64()), Some(1));
         assert_eq!(s.get("data_added").and_then(|v| v.as_u64()), Some(419));
-        assert_eq!(s.get("total_bytes_processed").and_then(|v| v.as_u64()), Some(6));
-        assert!(s.get("snapshot_id").and_then(|v| v.as_str()).unwrap().starts_with("da0f81d6"));
+        assert_eq!(
+            s.get("total_bytes_processed").and_then(|v| v.as_u64()),
+            Some(6)
+        );
+        assert!(s
+            .get("snapshot_id")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .starts_with("da0f81d6"));
     }
 
     #[test]
@@ -642,14 +647,32 @@ mod tests {
         // End-to-end of the mapping in create_backup (minus the Command).
         let s = ResticService::parse_backup_summary(BACKUP_JSON).unwrap();
         let result = ResticBackupResult {
-            snapshot_id: s.get("snapshot_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            snapshot_id: s
+                .get("snapshot_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             files_new: s.get("files_new").and_then(|v| v.as_u64()).unwrap_or(0),
             files_changed: s.get("files_changed").and_then(|v| v.as_u64()).unwrap_or(0),
-            files_unmodified: s.get("files_unmodified").and_then(|v| v.as_u64()).unwrap_or(0),
+            files_unmodified: s
+                .get("files_unmodified")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
             data_added_bytes: s.get("data_added").and_then(|v| v.as_u64()).unwrap_or(0),
-            total_files_processed: s.get("total_files_processed").and_then(|v| v.as_u64()).unwrap_or(0),
-            total_bytes: s.get("total_bytes_processed").or_else(|| s.get("total_bytes")).and_then(|v| v.as_u64()).unwrap_or(0),
-            duration_secs: s.get("total_duration").and_then(|v| v.as_f64()).map(|d| d as u64).unwrap_or(0),
+            total_files_processed: s
+                .get("total_files_processed")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            total_bytes: s
+                .get("total_bytes_processed")
+                .or_else(|| s.get("total_bytes"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            duration_secs: s
+                .get("total_duration")
+                .and_then(|v| v.as_f64())
+                .map(|d| d as u64)
+                .unwrap_or(0),
         };
         assert_eq!(result.files_new, 1);
         assert_eq!(result.data_added_bytes, 419);
@@ -701,13 +724,22 @@ mod tests {
             duration_secs: 7,
         };
         let v = serde_json::to_value(&r).unwrap();
-        for k in ["snapshot_id", "files_new", "data_added_bytes", "total_files_processed", "duration_secs"] {
+        for k in [
+            "snapshot_id",
+            "files_new",
+            "data_added_bytes",
+            "total_files_processed",
+            "duration_secs",
+        ] {
             assert!(v.get(k).is_some(), "missing {k}");
         }
 
         let stats = ResticStats {
-            total_size: 1, total_file_count: 2, snapshots_count: 3,
-            total_blob_count: 4, compressed_size: 5,
+            total_size: 1,
+            total_file_count: 2,
+            snapshots_count: 3,
+            total_blob_count: 4,
+            compressed_size: 5,
         };
         let sv = serde_json::to_value(&stats).unwrap();
         assert_eq!(sv["snapshots_count"], 3);

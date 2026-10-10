@@ -16,7 +16,10 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 /// `GET /api/antivirus/status`
-pub async fn handle_antivirus_status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_antivirus_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -31,7 +34,10 @@ pub async fn handle_antivirus_status(State(state): State<Arc<AppState>>, headers
 }
 
 /// `GET /api/antivirus/settings`
-pub async fn handle_antivirus_settings_get(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_antivirus_settings_get(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -64,7 +70,9 @@ pub async fn handle_antivirus_settings_update(
 
     if let Some(path) = &body.scheduled_scan_path {
         if state.path_guard.validate(path).is_none() {
-            return ResponseHelper::json_error("Scheduled scan path is not within an allowed root".to_string());
+            return ResponseHelper::json_error(
+                "Scheduled scan path is not within an allowed root".to_string(),
+            );
         }
     }
 
@@ -134,7 +142,10 @@ pub async fn handle_antivirus_scan_start(
                 ));
             }
             Err(e) => {
-                crate::events::log_event_warn(format!("Antivirus scan of '{}' failed: {}", scan_path, e));
+                crate::events::log_event_warn(format!(
+                    "Antivirus scan of '{}' failed: {}",
+                    scan_path, e
+                ));
             }
         }
     });
@@ -143,7 +154,10 @@ pub async fn handle_antivirus_scan_start(
 }
 
 /// `POST /api/antivirus/scan/cancel`
-pub async fn handle_antivirus_scan_cancel(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_antivirus_scan_cancel(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_admin(&state, &headers).await {
         return response;
     }
@@ -153,7 +167,10 @@ pub async fn handle_antivirus_scan_cancel(State(state): State<Arc<AppState>>, he
 }
 
 /// `GET /api/antivirus/scans`
-pub async fn handle_antivirus_scans_list(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_antivirus_scans_list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -166,7 +183,10 @@ pub async fn handle_antivirus_scans_list(State(state): State<Arc<AppState>>, hea
 }
 
 /// `GET /api/antivirus/threats`
-pub async fn handle_antivirus_threats_list(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_antivirus_threats_list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -202,7 +222,11 @@ pub async fn handle_antivirus_threat_resolve(
                 "Admin '{}' resolved antivirus threat (id: {}){}",
                 admin_username,
                 threat_id,
-                if body.delete { " and deleted the file" } else { "" }
+                if body.delete {
+                    " and deleted the file"
+                } else {
+                    ""
+                }
             ));
             ResponseHelper::json_success(serde_json::json!({ "ok": true }))
         }

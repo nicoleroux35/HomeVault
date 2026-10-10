@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the Shares / Protocols API
 //! (`crate::handlers::shares` + `crate::handlers::permissions`):
 //!
@@ -32,6 +35,7 @@
 //!   * reject invalid input (bad protocol name, bad permission string, bad
 //!     grantee type, a share that doesn't exist) *before* any privileged
 //!     side effect — a clean error response, never a panic / 500.
+//!
 //! The read-only endpoints (share list, per-protocol config GET, SFTP
 //! grantee list, permission list) are safe to run for real and their
 //! success shape is asserted directly.
@@ -82,7 +86,11 @@ static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 // Test harness
 // ---------------------------------------------------------------------------
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -140,15 +148,24 @@ fn shares_router(state: Arc<AppState>) -> Router {
         .route("/api/shares/ftp/config", get(handle_ftp_config_get))
         .route("/api/shares/ftp/config", put(handle_ftp_config_update))
         .route("/api/shares/webdav/config", get(handle_webdav_config_get))
-        .route("/api/shares/webdav/config", put(handle_webdav_config_update))
+        .route(
+            "/api/shares/webdav/config",
+            put(handle_webdav_config_update),
+        )
         .route("/api/shares/sftp/config", get(handle_sftp_config_get))
         .route("/api/shares/sftp/config", put(handle_sftp_config_update))
         .route("/api/shares/sftp/users", get(handle_sftp_grantees_list))
         .route("/api/shares/sftp/users/key", put(handle_sftp_key_set))
         .route("/api/shares/sftp/rebuild", post(handle_sftp_rebuild))
         // service control
-        .route("/api/shares/{share_type}/start", post(handle_share_service_start))
-        .route("/api/shares/{share_type}/stop", post(handle_share_service_stop))
+        .route(
+            "/api/shares/{share_type}/start",
+            post(handle_share_service_start),
+        )
+        .route(
+            "/api/shares/{share_type}/stop",
+            post(handle_share_service_stop),
+        )
         .route(
             "/api/shares/{share_type}/restart",
             post(handle_share_service_restart),
@@ -293,26 +310,50 @@ async fn test_all_endpoints_reject_missing_token() {
 
     let cases: &[(Method, &str, Option<Value>)] = &[
         (Method::GET, "/api/shares", None),
-        (Method::POST, "/api/shares", Some(json!({"name":"x","share_type":"smb","path":"/tmp/x","comment":""}))),
+        (
+            Method::POST,
+            "/api/shares",
+            Some(json!({"name":"x","share_type":"smb","path":"/tmp/x","comment":""})),
+        ),
         (Method::GET, "/api/shares/x/smb", None),
-        (Method::PUT, "/api/shares/x/smb", Some(json!({"enabled": false}))),
+        (
+            Method::PUT,
+            "/api/shares/x/smb",
+            Some(json!({"enabled": false})),
+        ),
         (Method::PUT, "/api/shares/x/smb/toggle/false", None),
         (Method::DELETE, "/api/shares/x/smb", None),
         (Method::GET, "/api/shares/smb/config", None),
-        (Method::PUT, "/api/shares/smb/config", Some(valid_smb_config())),
+        (
+            Method::PUT,
+            "/api/shares/smb/config",
+            Some(valid_smb_config()),
+        ),
         (Method::GET, "/api/shares/nfs/config", None),
         (Method::GET, "/api/shares/ftp/config", None),
         (Method::GET, "/api/shares/webdav/config", None),
         (Method::GET, "/api/shares/sftp/config", None),
         (Method::GET, "/api/shares/sftp/users", None),
-        (Method::PUT, "/api/shares/sftp/users/key", Some(json!({"username":"x","public_key":"ssh-ed25519 AAAA x"}))),
+        (
+            Method::PUT,
+            "/api/shares/sftp/users/key",
+            Some(json!({"username":"x","public_key":"ssh-ed25519 AAAA x"})),
+        ),
         (Method::POST, "/api/shares/sftp/rebuild", None),
         (Method::POST, "/api/shares/smb/start", None),
         (Method::POST, "/api/shares/smb/stop", None),
         (Method::POST, "/api/shares/smb/restart", None),
         (Method::GET, "/api/shares/x/smb/permissions", None),
-        (Method::POST, "/api/shares/x/smb/permissions", Some(json!({"grantee_type":"user","grantee_name":"a","permission":"r"}))),
-        (Method::DELETE, "/api/shares/x/smb/permissions", Some(json!({"grantee_type":"user","grantee_name":"a"}))),
+        (
+            Method::POST,
+            "/api/shares/x/smb/permissions",
+            Some(json!({"grantee_type":"user","grantee_name":"a","permission":"r"})),
+        ),
+        (
+            Method::DELETE,
+            "/api/shares/x/smb/permissions",
+            Some(json!({"grantee_type":"user","grantee_name":"a"})),
+        ),
         (Method::POST, "/api/shares/x/smb/permissions/sync", None),
         (Method::GET, "/api/users/someone/permissions", None),
     ];
@@ -324,8 +365,16 @@ async fn test_all_endpoints_reject_missing_token() {
             json!(false),
             "{method} {uri} must reject a missing token"
         );
-        assert_ne!(status, StatusCode::OK, "{method} {uri} must not return 200 unauthenticated");
-        assert_ne!(status, StatusCode::INTERNAL_SERVER_ERROR, "{method} {uri} 500'd");
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "{method} {uri} must not return 200 unauthenticated"
+        );
+        assert_ne!(
+            status,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "{method} {uri} 500'd"
+        );
     }
 }
 
@@ -360,16 +409,32 @@ async fn test_share_endpoints_require_admin_not_just_a_session() {
 
     let cases: &[(Method, &str, Option<Value>)] = &[
         (Method::GET, "/api/shares", None),
-        (Method::POST, "/api/shares", Some(json!({"name":"x","share_type":"smb","path":"/tmp/x","comment":""}))),
+        (
+            Method::POST,
+            "/api/shares",
+            Some(json!({"name":"x","share_type":"smb","path":"/tmp/x","comment":""})),
+        ),
         (Method::GET, "/api/shares/x/smb", None),
-        (Method::PUT, "/api/shares/x/smb", Some(json!({"enabled": false}))),
+        (
+            Method::PUT,
+            "/api/shares/x/smb",
+            Some(json!({"enabled": false})),
+        ),
         (Method::DELETE, "/api/shares/x/smb", None),
         (Method::GET, "/api/shares/smb/config", None),
-        (Method::PUT, "/api/shares/nfs/config", Some(valid_nfs_config())),
+        (
+            Method::PUT,
+            "/api/shares/nfs/config",
+            Some(valid_nfs_config()),
+        ),
         (Method::GET, "/api/shares/sftp/users", None),
         (Method::POST, "/api/shares/smb/start", None),
         (Method::GET, "/api/shares/x/smb/permissions", None),
-        (Method::POST, "/api/shares/x/smb/permissions", Some(json!({"grantee_type":"user","grantee_name":"a","permission":"r"}))),
+        (
+            Method::POST,
+            "/api/shares/x/smb/permissions",
+            Some(json!({"grantee_type":"user","grantee_name":"a","permission":"r"})),
+        ),
     ];
 
     for (method, uri, body) in cases {
@@ -380,7 +445,11 @@ async fn test_share_endpoints_require_admin_not_just_a_session() {
             "{method} {uri} must be refused for a non-admin session"
         );
         assert!(
-            resp["message"].as_str().unwrap_or("").to_lowercase().contains("admin"),
+            resp["message"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("admin"),
             "{method} {uri} rejection message should mention admin access: {resp}"
         );
     }
@@ -404,7 +473,10 @@ async fn test_user_permissions_is_self_or_admin_only() {
     )
     .await;
     assert_eq!(body["success"], json!(false));
-    assert!(body["message"].as_str().unwrap_or("").contains("Access denied"));
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Access denied"));
 }
 
 // ===========================================================================
@@ -422,7 +494,10 @@ async fn test_shares_list_returns_an_array_for_an_admin() {
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
     let (status, body) = send(&mut r, Method::GET, "/api/shares", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body["data"].is_array(), "shares list must be an array: {body}");
+    assert!(
+        body["data"].is_array(),
+        "shares list must be an array: {body}"
+    );
 }
 
 #[tokio::test]
@@ -433,13 +508,27 @@ async fn test_every_protocol_config_get_returns_defaults_when_unconfigured() {
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
 
     // SMB
-    let (s, b) = send(&mut r, Method::GET, "/api/shares/smb/config", Some(&token), None).await;
+    let (s, b) = send(
+        &mut r,
+        Method::GET,
+        "/api/shares/smb/config",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(b["data"]["workgroup"], json!("WORKGROUP"));
     assert_eq!(b["data"]["allow_guest"], json!(false));
 
     // NFS
-    let (s, b) = send(&mut r, Method::GET, "/api/shares/nfs/config", Some(&token), None).await;
+    let (s, b) = send(
+        &mut r,
+        Method::GET,
+        "/api/shares/nfs/config",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(b["data"]["root_squash"], json!("root_squash"));
 
@@ -454,11 +543,21 @@ async fn test_every_protocol_config_get_returns_defaults_when_unconfigured() {
         )
         .await;
         assert_eq!(s, StatusCode::OK, "{proto} config get");
-        assert!(b["data"].is_object(), "{proto} config must be an object: {b}");
+        assert!(
+            b["data"].is_object(),
+            "{proto} config must be an object: {b}"
+        );
     }
 
     // SFTP — dedicated sshd instance must default to port 2222, never 22
-    let (s, b) = send(&mut r, Method::GET, "/api/shares/sftp/config", Some(&token), None).await;
+    let (s, b) = send(
+        &mut r,
+        Method::GET,
+        "/api/shares/sftp/config",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(b["data"]["port"], json!(2222));
 }
@@ -469,8 +568,14 @@ async fn test_sftp_grantees_list_is_empty_and_well_formed_when_nothing_is_provis
     create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
     let mut r = shares_router(state);
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
-    let (status, body) =
-        send(&mut r, Method::GET, "/api/shares/sftp/users", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/shares/sftp/users",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["data"].is_array());
     assert_eq!(body["data"].as_array().unwrap().len(), 0);
@@ -509,15 +614,27 @@ async fn test_bad_protocol_name_is_rejected_on_every_type_taking_route() {
 
     let cases: &[(Method, &str, Option<Value>)] = &[
         (Method::GET, "/api/shares/demo/bogusproto", None),
-        (Method::PUT, "/api/shares/demo/bogusproto", Some(json!({"enabled": true}))),
+        (
+            Method::PUT,
+            "/api/shares/demo/bogusproto",
+            Some(json!({"enabled": true})),
+        ),
         (Method::PUT, "/api/shares/demo/bogusproto/toggle/true", None),
         (Method::DELETE, "/api/shares/demo/bogusproto", None),
         (Method::POST, "/api/shares/bogusproto/start", None),
         (Method::POST, "/api/shares/bogusproto/stop", None),
         (Method::POST, "/api/shares/bogusproto/restart", None),
         (Method::GET, "/api/shares/demo/bogusproto/permissions", None),
-        (Method::POST, "/api/shares/demo/bogusproto/permissions", Some(json!({"grantee_type":"user","grantee_name":"a","permission":"r"}))),
-        (Method::POST, "/api/shares/demo/bogusproto/permissions/sync", None),
+        (
+            Method::POST,
+            "/api/shares/demo/bogusproto/permissions",
+            Some(json!({"grantee_type":"user","grantee_name":"a","permission":"r"})),
+        ),
+        (
+            Method::POST,
+            "/api/shares/demo/bogusproto/permissions/sync",
+            None,
+        ),
     ];
 
     for (method, uri, body) in cases {
@@ -525,7 +642,10 @@ async fn test_bad_protocol_name_is_rejected_on_every_type_taking_route() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{method} {uri}");
         assert_eq!(resp["success"], json!(false));
         assert!(
-            resp["message"].as_str().unwrap_or("").contains("Invalid share type"),
+            resp["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Invalid share type"),
             "{method} {uri}: {resp}"
         );
     }
@@ -569,7 +689,10 @@ async fn test_grant_rejects_an_invalid_permission_string() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["success"], json!(false));
-    assert!(body["message"].as_str().unwrap_or("").contains("Invalid permission"));
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Invalid permission"));
 }
 
 #[tokio::test]
@@ -588,7 +711,10 @@ async fn test_grant_rejects_an_invalid_grantee_type() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["success"], json!(false));
-    assert!(body["message"].as_str().unwrap_or("").contains("grantee_type"));
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("grantee_type"));
 }
 
 #[tokio::test]
@@ -609,7 +735,10 @@ async fn test_grant_on_a_nonexistent_share_fails_before_any_acl_write() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["success"], json!(false));
-    assert!(body["message"].as_str().unwrap_or("").contains("Share not found"));
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Share not found"));
 }
 
 #[tokio::test]
@@ -684,7 +813,11 @@ async fn test_update_or_delete_a_nonexistent_smb_share_is_a_clean_not_found() {
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
 
     for (method, uri, body) in [
-        (Method::PUT, "/api/shares/ghost/smb", Some(json!({"comment": "x"}))),
+        (
+            Method::PUT,
+            "/api/shares/ghost/smb",
+            Some(json!({"comment": "x"})),
+        ),
         (Method::DELETE, "/api/shares/ghost/smb", None),
     ] {
         let (status, resp) = send(&mut r, method.clone(), uri, Some(&token), body).await;
@@ -704,8 +837,14 @@ async fn test_delete_a_nonexistent_nfs_share_never_panics() {
     create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
     let mut r = shares_router(state);
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
-    let (status, body) =
-        send(&mut r, Method::DELETE, "/api/shares/ghost/nfs", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::DELETE,
+        "/api/shares/ghost/nfs",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_ne!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
     assert!(body.is_object());
 }
@@ -718,8 +857,14 @@ async fn test_sftp_rebuild_admin_path_never_500s() {
     create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
     let mut r = shares_router(state);
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
-    let (status, body) =
-        send(&mut r, Method::POST, "/api/shares/sftp/rebuild", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/shares/sftp/rebuild",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_ne!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
     // Success (a real `homevault-sftp` group already exists on this host) or
     // a clean failure are both acceptable; a panic / 500 is not.

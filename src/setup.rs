@@ -34,9 +34,32 @@ impl SetupService {
         crate::config::paths::system_hash_file()
     }
     const RESERVED_USERNAMES: &'static [&'static str] = &[
-        "root", "admin", "system", "daemon", "nobody", "www-data", "postgres", "mysql",
-        "ftp", "mail", "operator", "bin", "sys", "sync", "games", "man", "lp", "news",
-        "uucp", "proxy", "backup", "list", "irc", "gnats", "systemd", "messagebus",
+        "root",
+        "admin",
+        "system",
+        "daemon",
+        "nobody",
+        "www-data",
+        "postgres",
+        "mysql",
+        "ftp",
+        "mail",
+        "operator",
+        "bin",
+        "sys",
+        "sync",
+        "games",
+        "man",
+        "lp",
+        "news",
+        "uucp",
+        "proxy",
+        "backup",
+        "list",
+        "irc",
+        "gnats",
+        "systemd",
+        "messagebus",
     ];
 
     pub fn is_first_run() -> bool {
@@ -94,7 +117,11 @@ impl SetupService {
         hasher.update(std::env::consts::OS.as_bytes());
         hasher.update(std::env::consts::ARCH.as_bytes());
 
-        hasher.finalize().iter().map(|b| format!("{:02x}", b)).collect::<String>()
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>()
     }
 
     pub fn has_hardware_changed() -> bool {
@@ -265,10 +292,9 @@ impl SetupService {
             #[cfg(target_os = "linux")]
             {
                 use std::os::unix::fs::PermissionsExt;
-                if let Err(e) = std::fs::set_permissions(
-                    dir,
-                    std::fs::Permissions::from_mode(0o750),
-                ) {
+                if let Err(e) =
+                    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o750))
+                {
                     tracing::warn!("Could not set permissions on '{}': {}", dir, e);
                 }
             }
@@ -607,7 +633,9 @@ homevault ALL=(root) NOPASSWD: {systemctl} enable homevault, {systemctl} disable
                 {
                     Ok(output) => {
                         if output.status.success() {
-                            tracing::info!("Sudoers configuration created and validated successfully");
+                            tracing::info!(
+                                "Sudoers configuration created and validated successfully"
+                            );
                         } else {
                             tracing::error!("Sudoers syntax validation failed, removing file");
                             let _ = std::fs::remove_file("/etc/sudoers.d/homevault");
@@ -669,19 +697,31 @@ mod tests {
     #[test]
     fn test_validate_username_reserved_root() {
         let err = SetupService::validate_username("root").unwrap_err();
-        assert!(err.contains("reserved"), "Expected reserved error, got: {}", err);
+        assert!(
+            err.contains("reserved"),
+            "Expected reserved error, got: {}",
+            err
+        );
     }
 
     #[test]
     fn test_validate_username_reserved_admin() {
         let err = SetupService::validate_username("admin").unwrap_err();
-        assert!(err.contains("reserved"), "Expected reserved error, got: {}", err);
+        assert!(
+            err.contains("reserved"),
+            "Expected reserved error, got: {}",
+            err
+        );
     }
 
     #[test]
     fn test_validate_username_reserved_case_insensitive() {
         let err = SetupService::validate_username("ROOT").unwrap_err();
-        assert!(err.contains("reserved"), "Expected reserved error for uppercase, got: {}", err);
+        assert!(
+            err.contains("reserved"),
+            "Expected reserved error for uppercase, got: {}",
+            err
+        );
     }
 
     #[test]
@@ -698,31 +738,51 @@ mod tests {
     #[test]
     fn test_validate_username_starts_with_digit() {
         let err = SetupService::validate_username("1admin").unwrap_err();
-        assert!(err.contains("letter or underscore"), "Expected start-char error, got: {}", err);
+        assert!(
+            err.contains("letter or underscore"),
+            "Expected start-char error, got: {}",
+            err
+        );
     }
 
     #[test]
     fn test_validate_username_starts_with_hyphen() {
         let err = SetupService::validate_username("-admin").unwrap_err();
-        assert!(err.contains("letter or underscore"), "Expected start-char error, got: {}", err);
+        assert!(
+            err.contains("letter or underscore"),
+            "Expected start-char error, got: {}",
+            err
+        );
     }
 
     #[test]
     fn test_validate_username_invalid_chars_space() {
         let err = SetupService::validate_username("user name").unwrap_err();
-        assert!(err.contains("letters, numbers, and underscores"), "Expected char error, got: {}", err);
+        assert!(
+            err.contains("letters, numbers, and underscores"),
+            "Expected char error, got: {}",
+            err
+        );
     }
 
     #[test]
     fn test_validate_username_invalid_chars_hyphen() {
         let err = SetupService::validate_username("user-name").unwrap_err();
-        assert!(err.contains("letters, numbers, and underscores"), "Expected char error, got: {}", err);
+        assert!(
+            err.contains("letters, numbers, and underscores"),
+            "Expected char error, got: {}",
+            err
+        );
     }
 
     #[test]
     fn test_validate_username_invalid_chars_at() {
         let err = SetupService::validate_username("user@name").unwrap_err();
-        assert!(err.contains("letters, numbers, and underscores"), "Expected char error, got: {}", err);
+        assert!(
+            err.contains("letters, numbers, and underscores"),
+            "Expected char error, got: {}",
+            err
+        );
     }
 
     #[test]
@@ -807,13 +867,21 @@ mod tests {
     #[test]
     fn test_validate_password_no_uppercase() {
         let err = SetupService::validate_password("nouppercase1").unwrap_err();
-        assert!(err.contains("uppercase"), "Expected uppercase error, got: {}", err);
+        assert!(
+            err.contains("uppercase"),
+            "Expected uppercase error, got: {}",
+            err
+        );
     }
 
     #[test]
     fn test_validate_password_no_lowercase() {
         let err = SetupService::validate_password("NOLOWERCASE1").unwrap_err();
-        assert!(err.contains("lowercase"), "Expected lowercase error, got: {}", err);
+        assert!(
+            err.contains("lowercase"),
+            "Expected lowercase error, got: {}",
+            err
+        );
     }
 
     #[test]

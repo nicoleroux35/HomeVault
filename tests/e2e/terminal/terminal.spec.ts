@@ -440,7 +440,13 @@ test.describe('4 — Terminal content', () => {
 
   test('4.2 — terminal content has correct monospace font family', async ({ page }) => {
     await gotoTerminal(page, token, csrf);
-    const fontFamily = await page.locator('.hv-terminal-content').first().evaluate(
+    // xterm applies its `fontFamily` option ("'JetBrains Mono', ui-monospace,
+    // monospace" in `initTabTerminal`) to the rendered text grid, not to the
+    // host div — `.hv-terminal-content` is a bare container that inherits the
+    // app font, so asserting on it could only ever fail. `.xterm-rows` is
+    // where the glyphs actually paint.
+    await page.locator('.xterm-rows').first().waitFor({ state: 'attached', timeout: 10_000 });
+    const fontFamily = await page.locator('.xterm-rows').first().evaluate(
       (el) => getComputedStyle(el).fontFamily,
     );
     expect(fontFamily.toLowerCase()).toContain('monospace');

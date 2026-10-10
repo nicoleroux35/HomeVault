@@ -1157,10 +1157,12 @@ class ApiClient {
     return this.get('/explorer/disks', { cache: false });
   }
 
-  /** Low-level Explorer mutation wrapper: POST `body` as JSON to an
-   *  `/explorer/*` action endpoint. */
-  async explorerAction(endpoint: string, body: Record<string, string>) {
-    return this.post(endpoint, body);
+  /** Low-level Explorer mutation wrapper. Every `/explorer/*` action
+   *  handler reads its arguments from the query string (`Query<…>`), not a
+   *  JSON body, so `params` are serialised as `?key=value`. */
+  async explorerAction(endpoint: string, params: Record<string, string>) {
+    const qs = new URLSearchParams(params).toString();
+    return this.post(`${endpoint}?${qs}`);
   }
 
   /** Low-level Explorer GET wrapper for endpoints that take query params. */

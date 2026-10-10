@@ -61,17 +61,21 @@ struct CachedSettings {
 pub async fn run_watcher_loop(state: Arc<AppState>, mut rx: mpsc::UnboundedReceiver<WatchCommand>) {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
 
-    let mut watcher: RecommendedWatcher = match notify::recommended_watcher(move |res: notify::Result<Event>| {
-        if let Ok(event) = res {
-            let _ = event_tx.send(event);
-        }
-    }) {
-        Ok(w) => w,
-        Err(e) => {
-            tracing::warn!("Ransomware watcher: failed to create filesystem watcher: {}", e);
-            return;
-        }
-    };
+    let mut watcher: RecommendedWatcher =
+        match notify::recommended_watcher(move |res: notify::Result<Event>| {
+            if let Ok(event) = res {
+                let _ = event_tx.send(event);
+            }
+        }) {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::warn!(
+                    "Ransomware watcher: failed to create filesystem watcher: {}",
+                    e
+                );
+                return;
+            }
+        };
 
     let mut entries: HashMap<String, ProtectedEntry> = HashMap::new();
     let repo = RansomwareRepository::new(state.db.pool());
@@ -153,7 +157,10 @@ async fn load_cached_settings(repo: &RansomwareRepository) -> CachedSettings {
 /// Find the protected-path entry whose watched root is an ancestor of the
 /// event's path (there are only ever a handful of protected paths, so a
 /// linear scan is fine).
-fn find_owning_entry<'a>(entries: &'a HashMap<String, ProtectedEntry>, event_path: &Path) -> Option<(&'a str, &'a ProtectedEntry)> {
+fn find_owning_entry<'a>(
+    entries: &'a HashMap<String, ProtectedEntry>,
+    event_path: &Path,
+) -> Option<(&'a str, &'a ProtectedEntry)> {
     entries
         .iter()
         .find(|(_, e)| event_path.starts_with(&e.path))
@@ -184,7 +191,9 @@ async fn handle_event(
             continue;
         };
 
-        let filename = event_path.file_name().map(|f| f.to_string_lossy().to_string());
+        let filename = event_path
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string());
         if let (Some(honeypot), Some(name)) = (&entry.honeypot_filename, &filename) {
             if honeypot == name {
                 let now = Instant::now();
@@ -196,11 +205,18 @@ async fn handle_event(
                     continue;
                 }
                 let username = guess_owner(event_path);
-                let detail = format!("Honeypot file '{}' was touched in '{}'.", honeypot, entry.path.display());
+                let detail = format!(
+                    "Honeypot file '{}' was touched in '{}'.",
+                    honeypot,
+                    entry.path.display()
+                );
                 crate::events::log_event_warn(format!(
                     "Ransomware protection alert: {}{}",
                     detail,
-                    username.as_deref().map(|u| format!(" (by user '{}')", u)).unwrap_or_default()
+                    username
+                        .as_deref()
+                        .map(|u| format!(" (by user '{}')", u))
+                        .unwrap_or_default()
                 ));
                 if let Err(e) = ransomware::record_event(
                     state,
@@ -246,9 +262,20 @@ async fn handle_event(
             crate::events::log_event_warn(format!(
                 "Ransomware protection alert: {}{}",
                 detail,
-                username.as_deref().map(|u| format!(" (by user '{}')", u)).unwrap_or_default()
+                username
+                    .as_deref()
+                    .map(|u| format!(" (by user '{}')", u))
+                    .unwrap_or_default()
             ));
-            if let Err(e) = ransomware::record_event(state, Some(protected_id), event_type, Some(&detail), username.as_deref()).await {
+            if let Err(e) = ransomware::record_event(
+                state,
+                Some(protected_id),
+                event_type,
+                Some(&detail),
+                username.as_deref(),
+            )
+            .await
+            {
                 tracing::warn!("Ransomware watcher: failed to record rate event: {}", e);
             }
         }
@@ -300,7 +327,9 @@ mod tests {
     #[test]
     fn test_classify_event_modify_and_create_are_mass_modify() {
         assert_eq!(
-            classify_event(&EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Content))),
+            classify_event(&EventKind::Modify(ModifyKind::Data(
+                notify::event::DataChange::Content
+            ))),
             Some("mass_modify")
         );
         assert_eq!(
@@ -311,9 +340,14 @@ mod tests {
 
     #[test]
     fn test_classify_event_ignores_access_and_metadata_only() {
-        assert_eq!(classify_event(&EventKind::Access(notify::event::AccessKind::Read)), None);
         assert_eq!(
-            classify_event(&EventKind::Modify(ModifyKind::Metadata(MetadataKind::Permissions))),
+            classify_event(&EventKind::Access(notify::event::AccessKind::Read)),
+            None
+        );
+        assert_eq!(
+            classify_event(&EventKind::Modify(ModifyKind::Metadata(
+                MetadataKind::Permissions
+            ))),
             Some("mass_modify"),
             "a permissions change is still a Modify(_) and counts toward the burst"
         );

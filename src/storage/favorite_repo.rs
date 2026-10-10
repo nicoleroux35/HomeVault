@@ -1,5 +1,5 @@
-use crate::storage::database::DbError;
 use crate::impl_repository;
+use crate::storage::database::DbError;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 
@@ -33,18 +33,29 @@ impl FavoriteRepository {
         .fetch_all(self.pool.as_ref())
         .await?;
 
-        Ok(rows.into_iter().map(|(id, username, path, label, sort_order, created_at)| Favorite { id, username, path, label, sort_order, created_at }).collect())
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, username, path, label, sort_order, created_at)| Favorite {
+                    id,
+                    username,
+                    path,
+                    label,
+                    sort_order,
+                    created_at,
+                },
+            )
+            .collect())
     }
 
     pub async fn add(&self, username: &str, path: &str, label: &str) -> Result<Favorite, DbError> {
         // Find the max sort_order for this user
-        let max_order: Option<i32> = sqlx::query_scalar(
-            "SELECT MAX(sort_order) FROM explorer_favorites WHERE username = ?"
-        )
-        .bind(username)
-        .fetch_optional(self.pool.as_ref())
-        .await?
-        .flatten();
+        let max_order: Option<i32> =
+            sqlx::query_scalar("SELECT MAX(sort_order) FROM explorer_favorites WHERE username = ?")
+                .bind(username)
+                .fetch_optional(self.pool.as_ref())
+                .await?
+                .flatten();
 
         let next_order = max_order.unwrap_or(-1) + 1;
 
@@ -66,18 +77,25 @@ impl FavoriteRepository {
         .fetch_optional(self.pool.as_ref())
         .await?;
 
-        row.map(|(id, username, path, label, sort_order, created_at)| Favorite { id, username, path, label, sort_order, created_at })
-            .ok_or(DbError::NotFound)
+        row.map(
+            |(id, username, path, label, sort_order, created_at)| Favorite {
+                id,
+                username,
+                path,
+                label,
+                sort_order,
+                created_at,
+            },
+        )
+        .ok_or(DbError::NotFound)
     }
 
     pub async fn remove(&self, username: &str, path: &str) -> Result<(), DbError> {
-        let result = sqlx::query(
-            "DELETE FROM explorer_favorites WHERE username = ? AND path = ?"
-        )
-        .bind(username)
-        .bind(path)
-        .execute(self.pool.as_ref())
-        .await?;
+        let result = sqlx::query("DELETE FROM explorer_favorites WHERE username = ? AND path = ?")
+            .bind(username)
+            .bind(path)
+            .execute(self.pool.as_ref())
+            .await?;
 
         if result.rows_affected() == 0 {
             return Err(DbError::NotFound);
@@ -87,7 +105,7 @@ impl FavoriteRepository {
 
     pub async fn contains(&self, username: &str, path: &str) -> Result<bool, DbError> {
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM explorer_favorites WHERE username = ? AND path = ?"
+            "SELECT COUNT(*) FROM explorer_favorites WHERE username = ? AND path = ?",
         )
         .bind(username)
         .bind(path)

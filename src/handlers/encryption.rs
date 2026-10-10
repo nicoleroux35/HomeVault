@@ -2,8 +2,8 @@
 
 use crate::disk::DiskService;
 use crate::encryption;
-use crate::handlers::AppState;
 use crate::handlers::admin_guard::{require_admin, require_auth};
+use crate::handlers::AppState;
 use crate::storage::EncryptedVolumeRepository;
 use crate::utils::ResponseHelper;
 use axum::{
@@ -43,7 +43,10 @@ pub struct DeleteVolumeRequest {
 const VALID_FILESYSTEMS: &[&str] = &["ext4", "xfs", "btrfs"];
 
 /// Lists encrypted volumes with their live locked/unlocked status.
-pub async fn handle_encryption_list(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_encryption_list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -74,7 +77,12 @@ pub async fn handle_encryption_available_devices(
     }
 
     match DiskService::get_available_devices().await {
-        Ok(devices) => ResponseHelper::json_success(devices.into_iter().filter(|d| !d.in_use).collect::<Vec<_>>()),
+        Ok(devices) => ResponseHelper::json_success(
+            devices
+                .into_iter()
+                .filter(|d| !d.in_use)
+                .collect::<Vec<_>>(),
+        ),
         Err(e) => ResponseHelper::json_error(format!("Failed to list available devices: {}", e)),
     }
 }
@@ -99,7 +107,12 @@ pub async fn handle_encryption_create(
             req.filesystem
         ));
     }
-    if req.label.trim().is_empty() || !req.label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+    if req.label.trim().is_empty()
+        || !req
+            .label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
         return ResponseHelper::json_error(
             "Invalid label. Use letters, numbers, hyphens and underscores only.".to_string(),
         );
@@ -112,9 +125,7 @@ pub async fn handle_encryption_create(
     // `in_use`) may be encrypted — the same set the picker offers.
     match DiskService::get_available_devices().await {
         Ok(devices) => {
-            let ok = devices
-                .iter()
-                .any(|d| d.name == req.device && !d.in_use);
+            let ok = devices.iter().any(|d| d.name == req.device && !d.in_use);
             if !ok {
                 return ResponseHelper::json_error(format!(
                     "Device '{}' is not an available (present and unused) block device",
@@ -140,10 +151,17 @@ pub async fn handle_encryption_create(
         return ResponseHelper::json_error(format!("Failed to format encrypted volume: {}", e));
     }
 
-    let mount_point = format!("{}/{}", crate::config::paths::ENCRYPTED_MOUNT_BASE, req.label);
+    let mount_point = format!(
+        "{}/{}",
+        crate::config::paths::ENCRYPTED_MOUNT_BASE,
+        req.label
+    );
     if let Err(e) = encryption::mount(&mapper_name, &mount_point).await {
         let _ = encryption::close(&mapper_name).await;
-        return ResponseHelper::json_error(format!("Encrypted volume created but failed to mount: {}", e));
+        return ResponseHelper::json_error(format!(
+            "Encrypted volume created but failed to mount: {}",
+            e
+        ));
     }
 
     // Every failure branch from here on must unmount + close the mapper —
@@ -162,14 +180,26 @@ pub async fn handle_encryption_create(
         }
     };
 
-    if let Err(e) = encryption::append_fstab_entry(&mapper_name, &mount_point, &req.filesystem, &req.label) {
+    if let Err(e) =
+        encryption::append_fstab_entry(&mapper_name, &mount_point, &req.filesystem, &req.label)
+    {
         let _ = encryption::unmount(&mount_point).await;
         let _ = encryption::close(&mapper_name).await;
-        return ResponseHelper::json_error(format!("Volume created but failed to persist fstab entry: {}", e));
+        return ResponseHelper::json_error(format!(
+            "Volume created but failed to persist fstab entry: {}",
+            e
+        ));
     }
 
     match repo
-        .create(&req.device, &mapper_name, &uuid, &req.filesystem, &req.label, &mount_point)
+        .create(
+            &req.device,
+            &mapper_name,
+            &uuid,
+            &req.filesystem,
+            &req.label,
+            &mount_point,
+        )
         .await
     {
         Ok(volume) => {
@@ -206,7 +236,9 @@ pub async fn handle_encryption_unlock(
         Err(e) => return ResponseHelper::json_error(format!("Failed to look up volume: {}", e)),
     };
 
-    if let Err(e) = encryption::open(&volume.device_path, &volume.mapper_name, &req.passphrase).await {
+    if let Err(e) =
+        encryption::open(&volume.device_path, &volume.mapper_name, &req.passphrase).await
+    {
         return ResponseHelper::json_error(format!("Failed to unlock volume: {}", e));
     }
 

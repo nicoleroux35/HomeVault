@@ -379,7 +379,8 @@ impl AuthService {
                     return Ok(true);
                 }
 
-                self.record_failed_attempt(username, ip_address, user_agent).await?;
+                self.record_failed_attempt(username, ip_address, user_agent)
+                    .await?;
                 Err(AuthError::InvalidPassword)
             }
             None => {
@@ -403,7 +404,8 @@ impl AuthService {
                     self.clear_failed_attempts(username).await?;
                     Ok(true)
                 } else {
-                    self.record_failed_attempt(username, ip_address, user_agent).await?;
+                    self.record_failed_attempt(username, ip_address, user_agent)
+                        .await?;
                     Err(AuthError::InvalidPassword)
                 }
             }
@@ -422,7 +424,11 @@ impl AuthService {
         let is_admin = Self::user_belongs_to_admin_group(username)
             .await
             .unwrap_or(false);
-        let role_id = if is_admin { ADMIN_ROLE_ID } else { USER_ROLE_ID };
+        let role_id = if is_admin {
+            ADMIN_ROLE_ID
+        } else {
+            USER_ROLE_ID
+        };
 
         sqlx::query(
             "INSERT INTO users (username, password_hash, fullname, email, role_id, locked, created_at, avatar_seed)
@@ -535,8 +541,7 @@ except Exception as e:
                 if !backup_valid {
                     // TOTP/backup-code mismatch — audit it as a failed login
                     // without tripping the password-lockout counter.
-                    let login_attempt_repo =
-                        LoginAttemptRepository::new(Arc::clone(&self.pool));
+                    let login_attempt_repo = LoginAttemptRepository::new(Arc::clone(&self.pool));
                     login_attempt_repo
                         .record_attempt(username, ip_address, false, user_agent)
                         .await?;
@@ -724,12 +729,9 @@ except Exception as e:
         }
 
         let groups_output = String::from_utf8_lossy(&output.stdout);
-        Ok(groups_output.split_whitespace().any(|g| {
-            g == "sudo"
-                || g == "admin"
-                || g == "wheel"
-                || g == ADMIN_GROUP_NAME
-        }))
+        Ok(groups_output
+            .split_whitespace()
+            .any(|g| g == "sudo" || g == "admin" || g == "wheel" || g == ADMIN_GROUP_NAME))
     }
 
     pub async fn get_session(&self, token: &str) -> Result<Session, AuthError> {
@@ -1055,18 +1057,12 @@ except Exception as e:
         // `BASE32_CHARS` alphabet, or generated TOTP secrets containing
         // 'W'-'Z' silently decode to the wrong bytes and 2FA codes never match.
         const DECODE_TABLE: [i8; 128] = [
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, 26, 27, 28, 29, 30,
-            31, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0,
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
-            12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
-            23, 24, 25, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, -1,
+            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+            -1, -1, -1, -1, -1, -1, 26, 27, 28, 29, 30, 31, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0,
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+            25, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
         ];
 
         let data_upper = data.to_uppercase();
@@ -1103,7 +1099,7 @@ except Exception as e:
             Err(_) => return 0,
         };
 
-        use hmac::{Hmac, Mac, KeyInit};
+        use hmac::{Hmac, KeyInit, Mac};
         use sha1::Sha1;
         type HmacSha1 = Hmac<Sha1>;
 
@@ -1305,7 +1301,10 @@ mod base32_totp_tests {
         let encoded = AuthService::encode_base32(alphabet);
         let decoded = AuthService::decode_base32(&encoded).expect("valid base32");
         let re_encoded = AuthService::encode_base32(&decoded);
-        assert_eq!(re_encoded, encoded, "decode(encode(x)) must re-encode to the same string");
+        assert_eq!(
+            re_encoded, encoded,
+            "decode(encode(x)) must re-encode to the same string"
+        );
     }
 
     #[test]
@@ -1326,7 +1325,11 @@ mod base32_totp_tests {
         assert_eq!(groups.len(), 8, "expected 8 groups, got {:?}", groups);
         for g in groups {
             assert_eq!(g.len(), 4, "group '{}' is not 4 chars", g);
-            assert!(g.chars().all(|c| c.is_ascii_digit()), "group '{}' has non-digits", g);
+            assert!(
+                g.chars().all(|c| c.is_ascii_digit()),
+                "group '{}' has non-digits",
+                g
+            );
         }
     }
 
@@ -1369,7 +1372,10 @@ mod base32_totp_tests {
             .unwrap()
             .as_secs();
         let code = AuthService::generate_totp(&secret, now / 30);
-        assert!(AuthService::verify_totp_code_with_secret(&secret, &code.to_string()));
+        assert!(AuthService::verify_totp_code_with_secret(
+            &secret,
+            &code.to_string()
+        ));
     }
 
     #[test]
@@ -1381,7 +1387,10 @@ mod base32_totp_tests {
             .as_secs();
         let code = AuthService::generate_totp(&secret, now / 30);
         let wrong = (code + 1) % 1_000_000;
-        assert!(!AuthService::verify_totp_code_with_secret(&secret, &wrong.to_string()));
+        assert!(!AuthService::verify_totp_code_with_secret(
+            &secret,
+            &wrong.to_string()
+        ));
     }
 
     #[test]

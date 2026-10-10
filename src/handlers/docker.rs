@@ -1,8 +1,13 @@
-use crate::docker::{CreateContainerRequest, DockerService, PullImageRequest, self as docker_lib};
-use crate::handlers::AppState;
+use crate::docker::{self as docker_lib, CreateContainerRequest, DockerService, PullImageRequest};
 use crate::handlers::admin_guard::require_admin;
+use crate::handlers::AppState;
 use crate::utils::ResponseHelper;
-use axum::{extract::{Query, State}, http::HeaderMap, response::Response, Json};
+use axum::{
+    extract::{Query, State},
+    http::HeaderMap,
+    response::Response,
+    Json,
+};
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -298,7 +303,9 @@ pub async fn handle_docker_daemon_logs(
 
     match tokio::task::spawn_blocking(|| DockerService::get_daemon_logs(100)).await {
         Ok(Ok(logs)) => ResponseHelper::json_success(serde_json::json!({ "logs": logs })),
-        Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to read Docker daemon logs: {}", e)),
+        Ok(Err(e)) => {
+            ResponseHelper::json_error(format!("Failed to read Docker daemon logs: {}", e))
+        }
         Err(e) => ResponseHelper::json_error(format!("Task join error: {}", e)),
     }
 }
@@ -361,29 +368,32 @@ pub struct CreateContainerRequestRaw {
 
 impl From<CreateContainerRequestRaw> for CreateContainerRequest {
     fn from(raw: CreateContainerRequestRaw) -> Self {
-        let ports = raw.ports.map(|p| {
-            p.into_iter()
-                .filter_map(|v| {
-                    serde_json::from_value(v).ok()
-                })
-                .collect()
-        }).unwrap_or_default();
+        let ports = raw
+            .ports
+            .map(|p| {
+                p.into_iter()
+                    .filter_map(|v| serde_json::from_value(v).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
 
-        let volumes = raw.volumes.map(|v| {
-            v.into_iter()
-                .filter_map(|vol| {
-                    serde_json::from_value(vol).ok()
-                })
-                .collect()
-        }).unwrap_or_default();
+        let volumes = raw
+            .volumes
+            .map(|v| {
+                v.into_iter()
+                    .filter_map(|vol| serde_json::from_value(vol).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
 
-        let env = raw.env.map(|e| {
-            e.into_iter()
-                .filter_map(|env| {
-                    serde_json::from_value(env).ok()
-                })
-                .collect()
-        }).unwrap_or_default();
+        let env = raw
+            .env
+            .map(|e| {
+                e.into_iter()
+                    .filter_map(|env| serde_json::from_value(env).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
 
         CreateContainerRequest {
             name: raw.name,
@@ -447,9 +457,14 @@ pub async fn handle_docker_container_create(
             "Invalid container name. Must start with a letter or number.".to_string(),
         );
     }
-    if !req.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if !req
+        .name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         return ResponseHelper::json_error(
-            "Invalid container name. Use letters, numbers, hyphens, and underscores only.".to_string(),
+            "Invalid container name. Use letters, numbers, hyphens, and underscores only."
+                .to_string(),
         );
     }
 
@@ -868,11 +883,13 @@ pub async fn handle_docker_hub_search(
         Err(_) => return ResponseHelper::json_error("Invalid search URL".to_string()),
     };
 
-    let lib_resp = client.get(&lib_url)
+    let lib_resp = client
+        .get(&lib_url)
         .header("User-Agent", "HomeVault/1.0")
         .send()
         .await;
-    let all_resp = client.get(&all_url)
+    let all_resp = client
+        .get(&all_url)
         .header("User-Agent", "HomeVault/1.0")
         .send()
         .await;
@@ -903,7 +920,10 @@ pub async fn handle_docker_hub_search(
                         .as_str()
                         .or_else(|| r["name"].as_str())
                         .unwrap_or("");
-                    if !combined.iter().any(|c| c["name"].as_str() == Some(repo_name)) {
+                    if !combined
+                        .iter()
+                        .any(|c| c["name"].as_str() == Some(repo_name))
+                    {
                         combined.push(serde_json::json!({
                             "name": repo_name,
                             "description": r["description"].as_str().unwrap_or(""),

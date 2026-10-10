@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the Cloud Sync (rclone) API —
 //! `crate::handlers::rclone`.
 //!
@@ -18,6 +21,7 @@
 //!     invalid-name guard, and the empty-source/dest guards on sync/copy
 //!     all reject with a clean `{"success":false}` — no `rclone` spawned,
 //!     no file written.
+//!
 //! A real `add_remote` → list → `delete_remote` round-trip needs a
 //! writable `/etc/rclone.conf` (root on a real deployment) and is left to
 //! `tests/e2e/cloudsync/cloudsync.spec.ts` (opt-in there too).
@@ -65,7 +69,11 @@ static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 // Harness
 // ---------------------------------------------------------------------------
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -190,9 +198,15 @@ async fn send(
 }
 
 fn denied(body: &Value, fragment: &str) {
-    assert_eq!(body["success"], false, "expected a denied envelope, got {body}");
+    assert_eq!(
+        body["success"], false,
+        "expected a denied envelope, got {body}"
+    );
     let err = body["error"].as_str().unwrap_or_default();
-    assert!(err.contains(fragment), "error {err:?} should contain {fragment:?}");
+    assert!(
+        err.contains(fragment),
+        "error {err:?} should contain {fragment:?}"
+    );
 }
 
 /// Every endpoint with a body valid enough to reach the guard.
@@ -221,12 +235,16 @@ fn all_endpoints() -> Vec<(Method, &'static str, Option<Value>)> {
         (
             Method::POST,
             "/api/rclone/sync",
-            Some(json!({"source": "a", "destination": "b", "delete": false, "dry_run": true, "update": false})),
+            Some(
+                json!({"source": "a", "destination": "b", "delete": false, "dry_run": true, "update": false}),
+            ),
         ),
         (
             Method::POST,
             "/api/rclone/copy",
-            Some(json!({"source": "a", "destination": "b", "delete": false, "dry_run": true, "interactive": false})),
+            Some(
+                json!({"source": "a", "destination": "b", "delete": false, "dry_run": true, "interactive": false}),
+            ),
         ),
         (Method::GET, "/api/rclone/config", None),
         (
@@ -296,7 +314,10 @@ async fn test_mutations_and_config_read_require_admin() {
         if session_only {
             // a non-admin session is allowed here (no assertion on the
             // success flag — `rclone` may or may not be installed)
-            assert!(body.is_object(), "{m} {u} should answer for a valid session");
+            assert!(
+                body.is_object(),
+                "{m} {u} should answer for a valid session"
+            );
         } else {
             denied(&body, "Admin privileges required");
         }
@@ -313,13 +334,27 @@ async fn test_get_config_is_the_credential_leak_gate() {
     let mut router = rclone_router(state);
 
     let reg = login(&mut router, "reg", "Password123!").await;
-    let (_, body) = send(&mut router, Method::GET, "/api/rclone/config", Some(&reg), None).await;
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/rclone/config",
+        Some(&reg),
+        None,
+    )
+    .await;
     denied(&body, "Admin privileges required");
 
     // admin gets past the guard (the actual read may still fail if
     // /etc/rclone.conf is absent — that's fine, it's not a 403)
     let admin = login(&mut router, "admin1", "Password123!").await;
-    let (_, body) = send(&mut router, Method::GET, "/api/rclone/config", Some(&admin), None).await;
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/rclone/config",
+        Some(&admin),
+        None,
+    )
+    .await;
     let err = body["error"].as_str().unwrap_or_default();
     assert!(
         !err.contains("Admin privileges"),
@@ -331,7 +366,12 @@ async fn test_get_config_is_the_credential_leak_gate() {
 // 3. add_remote validation — nothing is written
 // ---------------------------------------------------------------------------
 
-async fn admin_router() -> (Router, String, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn admin_router() -> (
+    Router,
+    String,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let (state, tmp, guard) = setup_state().await;
     create_test_user(&state, "admin1", "Password123!", 2).await;
     let mut router = rclone_router(state);
@@ -505,12 +545,26 @@ async fn test_status_and_mounts_answer_for_a_plain_session() {
     let mut router = rclone_router(state);
     let token = login(&mut router, "reg", "Password123!").await;
 
-    let (status, body) = send(&mut router, Method::GET, "/api/rclone/status", Some(&token), None).await;
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/rclone/status",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], true);
     assert!(body["data"]["available"].is_boolean());
 
-    let (_, body) = send(&mut router, Method::GET, "/api/rclone/mounts", Some(&token), None).await;
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/rclone/mounts",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(body["success"], true);
     assert!(body["data"].is_array());
 }
@@ -530,12 +584,26 @@ async fn test_sync_jobs_crud_round_trip() {
     let reg = login(&mut router, "reg", "Password123!").await;
 
     // A fresh DB starts with no jobs.
-    let (_, body) = send(&mut router, Method::GET, "/api/rclone/jobs", Some(&admin), None).await;
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/rclone/jobs",
+        Some(&admin),
+        None,
+    )
+    .await;
     assert_eq!(body["success"], true);
     assert_eq!(body["data"].as_array().unwrap().len(), 0);
 
     // A non-admin session can list (read) but not create (mutation).
-    let (_, body) = send(&mut router, Method::GET, "/api/rclone/jobs", Some(&reg), None).await;
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/rclone/jobs",
+        Some(&reg),
+        None,
+    )
+    .await;
     assert_eq!(body["success"], true);
     let (_, body) = send(
         &mut router,
@@ -578,7 +646,14 @@ async fn test_sync_jobs_crud_round_trip() {
     assert_eq!(body["data"]["name"], "photos");
 
     // List reflects the new job; a second job round-trips the other direction.
-    let (_, body) = send(&mut router, Method::GET, "/api/rclone/jobs", Some(&admin), None).await;
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/rclone/jobs",
+        Some(&admin),
+        None,
+    )
+    .await;
     let jobs = body["data"].as_array().unwrap();
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0]["id"], json!(id));
@@ -617,7 +692,14 @@ async fn test_sync_jobs_crud_round_trip() {
     )
     .await;
     assert_eq!(body["success"], true);
-    let (_, body) = send(&mut router, Method::GET, "/api/rclone/jobs", Some(&admin), None).await;
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/rclone/jobs",
+        Some(&admin),
+        None,
+    )
+    .await;
     assert_eq!(body["data"].as_array().unwrap().len(), 0);
     let (_, body) = send(
         &mut router,

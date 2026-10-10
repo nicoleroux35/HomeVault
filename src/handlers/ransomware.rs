@@ -18,7 +18,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// `GET /api/ransomware/status`
-pub async fn handle_ransomware_status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_ransomware_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -33,7 +36,10 @@ pub async fn handle_ransomware_status(State(state): State<Arc<AppState>>, header
 }
 
 /// `GET /api/ransomware/settings`
-pub async fn handle_ransomware_settings_get(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_ransomware_settings_get(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -90,7 +96,10 @@ pub async fn handle_ransomware_settings_update(
 }
 
 /// `GET /api/ransomware/protected-paths`
-pub async fn handle_ransomware_protected_paths_list(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_ransomware_protected_paths_list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
@@ -139,7 +148,11 @@ pub async fn handle_ransomware_protected_path_add(
         match ransomware::place_honeypot(&resolved).await {
             Ok(name) => Some(name),
             Err(e) => {
-                tracing::warn!("Failed to place honeypot in '{}': {}", resolved.display(), e);
+                tracing::warn!(
+                    "Failed to place honeypot in '{}': {}",
+                    resolved.display(),
+                    e
+                );
                 None
             }
         }
@@ -150,7 +163,12 @@ pub async fn handle_ransomware_protected_path_add(
     let repo = RansomwareRepository::new(state.db.pool());
     let path_str = resolved.to_string_lossy().to_string();
     match repo
-        .add_protected_path(&path_str, body.share_name.as_deref(), body.share_type.as_deref(), honeypot_filename.as_deref())
+        .add_protected_path(
+            &path_str,
+            body.share_name.as_deref(),
+            body.share_type.as_deref(),
+            honeypot_filename.as_deref(),
+        )
         .await
     {
         Ok(protected) => {
@@ -184,12 +202,16 @@ pub async fn handle_ransomware_protected_path_delete(
     let existing = match repo.get_protected_path(&id).await {
         Ok(Some(p)) => p,
         Ok(None) => return ResponseHelper::json_error("Protected path not found".to_string()),
-        Err(e) => return ResponseHelper::json_error(format!("Failed to load protected path: {}", e)),
+        Err(e) => {
+            return ResponseHelper::json_error(format!("Failed to load protected path: {}", e))
+        }
     };
 
     match repo.remove_protected_path(&id).await {
         Ok(true) => {
-            let _ = state.ransomware_watch_tx.send(WatchCommand::RemovePath { id: id.clone() });
+            let _ = state
+                .ransomware_watch_tx
+                .send(WatchCommand::RemovePath { id: id.clone() });
             if let Some(filename) = &existing.honeypot_filename {
                 ransomware::remove_honeypot(&PathBuf::from(&existing.path), filename).await;
             }
@@ -205,7 +227,10 @@ pub async fn handle_ransomware_protected_path_delete(
 }
 
 /// `GET /api/ransomware/events`
-pub async fn handle_ransomware_events_list(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn handle_ransomware_events_list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }

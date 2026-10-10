@@ -1,3 +1,6 @@
+// Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
+// `await` points to serialize tests that mutate process environment variables.
+#![allow(clippy::await_holding_lock)]
 //! Integration tests for the Docker Compose handlers, focused on the
 //! `GET /api/docker/compose/projects/{name}/config` endpoint added for the
 //! Docker app's "Edit compose" button (a container's compose file is fetched,
@@ -36,7 +39,11 @@ static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 type Req = Request<axum::body::Body>;
 
-async fn setup_state() -> (Arc<AppState>, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+async fn setup_state() -> (
+    Arc<AppState>,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
@@ -129,15 +136,23 @@ async fn send(
     } else {
         req.body(axum::body::Body::empty()).unwrap()
     };
-    let resp = ServiceExt::<Req>::ready(router).await.unwrap().call(req).await.unwrap();
+    let resp = ServiceExt::<Req>::ready(router)
+        .await
+        .unwrap()
+        .call(req)
+        .await
+        .unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let json = serde_json::from_slice(&bytes)
-        .unwrap_or(json!({"raw": String::from_utf8_lossy(&bytes)}));
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json =
+        serde_json::from_slice(&bytes).unwrap_or(json!({"raw": String::from_utf8_lossy(&bytes)}));
     (status, json)
 }
 
-const SAMPLE_YAML: &str = "services:\n  web:\n    image: nginx:latest\n    ports:\n      - \"8080:80\"\n";
+const SAMPLE_YAML: &str =
+    "services:\n  web:\n    image: nginx:latest\n    ports:\n      - \"8080:80\"\n";
 
 #[tokio::test]
 async fn test_get_config_requires_admin() {
@@ -258,7 +273,11 @@ async fn test_get_config_unknown_project_fails_cleanly() {
         None,
     )
     .await;
-    assert_ne!(status, StatusCode::INTERNAL_SERVER_ERROR, "unknown project must not 500");
+    assert_ne!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "unknown project must not 500"
+    );
     assert_eq!(body["success"], json!(false));
 }
 
