@@ -18,15 +18,19 @@ export default defineConfig({
     cssMinify: 'lightningcss',
     rollupOptions: {
       output: {
+        // Order matters: `@lucide/svelte` and `@tabler/icons-svelte` both
+        // carry "svelte" in their path, so a bare `id.includes('svelte')`
+        // catch-all swallows the whole icon packs — that is what pushed the
+        // old `svelte-vendor` chunk past Vite's 500 kB warning. Match the icon
+        // packs first, then the framework runtime itself.
         manualChunks: (id: string) => {
-          if (id.includes('node_modules')) {
-            if (id.includes('svelte') || id.includes('svelte/')) {
-              return 'svelte-vendor';
-            }
-            if (id.includes('lucide')) {
-              return 'lucide';
-            }
+          if (!id.includes('node_modules')) return;
+          if (id.includes('@lucide/svelte')) return 'icons-lucide';
+          if (id.includes('@tabler/icons-svelte')) return 'icons-tabler';
+          if (id.includes('/svelte/') || id.includes('@sveltejs/')) {
+            return 'svelte-vendor';
           }
+          if (id.includes('svelte-sonner')) return 'svelte-vendor';
         },
       },
     },
