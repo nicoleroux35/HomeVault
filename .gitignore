@@ -37,6 +37,7 @@ data/
 .kombai/
 .playwright-mcp/
 .figma/
+.ai/
 
 # Dim Media (forked repo)
 /dim/
