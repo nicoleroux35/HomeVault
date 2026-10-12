@@ -5,14 +5,13 @@ use axum::{
     routing::{delete, get, post, put},
     Json, Router,
 };
-use http::header::{HeaderName, HeaderValue, CACHE_CONTROL};
+use http::header::{HeaderMap, HeaderName};
 use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::limit::RequestBodyLimitLayer;
-use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::handlers::chat::{
@@ -31,7 +30,8 @@ use crate::handlers::{
     auth::{
         handle_2fa_setup, handle_2fa_verify, handle_check_username, handle_generate_recovery_code,
         handle_get_current_user, handle_login, handle_logout, handle_reset_password_recovery,
-        handle_setup, handle_setup_status, handle_setup_verify_totp, handle_verify_recovery_code,
+        handle_setup, handle_setup_rebaseline, handle_setup_status, handle_setup_verify_totp,
+        handle_verify_recovery_code,
     },
     avatars::{handle_avatar_preview, handle_update_my_avatar, handle_user_avatar},
     cache::{
@@ -402,12 +402,11 @@ pub fn create_app(state: AppStateArc) -> Router {
             post(handle_generate_recovery_code),
         )
         .route("/api/auth/setup-status", get(handle_setup_status))
-        .route("/api/auth/check-username", get(handle_check_username))
-        .route("/api/auth/setup", post(handle_setup))
-        .route(
-            "/api/auth/setup/verify-totp",
-            post(handle_setup_verify_totp),
-        )
+        // The public first-run bootstrap routes (`setup`, `setup/verify-totp`,
+        // `check-username`) are registered separately below, behind the
+        // local-network guard. Re-baselining after a hardware change is
+        // admin-authenticated, so it needs no such guard.
+        .route("/api/auth/setup/rebaseline", post(handle_setup_rebaseline))
         // Avatars (offline generation via bundled dicebear crates)
         .route("/api/avatars/preview", get(handle_avatar_preview))
         .route("/api/auth/me/avatar", post(handle_update_my_avatar))
@@ -1306,6 +1305,23 @@ pub fn create_app(state: AppStateArc) -> Router {
         )
         .with_state(state.clone());
 
+    // First-run bootstrap endpoints. They are public by necessity (no admin
+    // exists yet), so `setup_guard_middleware` restricts them to loopback /
+    // private networks — otherwise the first client to reach a fresh appliance
+    // on a shared network could claim its admin account.
+    let setup_bootstrap = Router::new()
+        .route("/api/auth/setup", post(handle_setup))
+        .route(
+            "/api/auth/setup/verify-totp",
+            post(handle_setup_verify_totp),
+        )
+        .route("/api/auth/check-username", get(handle_check_username))
+        .route_layer(axum::middleware::from_fn(
+            crate::middleware::setup_guard_middleware,
+        ))
+        .with_state(state.clone());
+    let api = api.merge(setup_bootstrap);
+
     // Network sub-router: interface listing, WiFi, diagnostics, etc.
     let network_router = crate::handlers::network::create_network_router(state.clone());
     let api = api.nest("/api/network", network_router);
@@ -1324,22 +1340,37 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/sprite-unified.svg", get(serve_sprite_unified))
         .route(
             "/sprite-lucide.svg",
-            get(|| serve_dist_file("sprite-lucide.svg", "image/svg+xml")),
+            get(|headers: HeaderMap| serve_dist_file("sprite-lucide.svg", headers)),
         )
         .route(
             "/manifest.json",
-            get(|| serve_dist_file("manifest.json", "application/json")),
+            get(|headers: HeaderMap| serve_dist_file("manifest.json", headers)),
         )
         .route(
             "/favicon.svg",
-            get(|| serve_dist_file("favicon.svg", "image/svg+xml")),
+            get(|headers: HeaderMap| serve_dist_file("favicon.svg", headers)),
         )
         .route(
             "/sw.js",
-            get(|| serve_dist_file("sw.js", "application/javascript")),
+            get(|headers: HeaderMap| serve_dist_file("sw.js", headers)),
         )
         // Bundled desktop wallpapers (embedded from `frontend/public/wallpapers/`).
         .route("/wallpapers/{*path}", get(serve_wallpapers_file))
+        // Vite emits content-hashed filenames under /assets and /fonts (e.g.
+        // `index-DMTSp6tp.js`) — the content behind a given hashed name never
+        // changes, so `spa` marks it `immutable` for a year. Every one of
+        // these is served out of the frontend embedded in the binary at
+        // compile time (see `spa::STATIC_DIR`), which is what lets a bare
+        // copy of the binary serve the UI without also shipping
+        // `static/dist/` alongside it.
+        //
+        // These routes must stay in this router rather than being merged in
+        // from a separately-layered one: the main router below applies
+        // `CompressionLayer` and the security headers to everything, and the
+        // per-file caching lives in `spa`'s own handlers so a route can never
+        // be cached for a year by accident.
+        .route("/assets/{*path}", get(serve_assets_file))
+        .route("/fonts/{*path}", get(serve_fonts_file))
         .fallback(serve_spa);
 
     // Public share-link downloads (`/share/{token}`) live outside `/api` and
@@ -1373,33 +1404,13 @@ pub fn create_app(state: AppStateArc) -> Router {
         crate::middleware::csrf_middleware,
     ));
 
-    // Vite emits content-hashed filenames under /assets and /fonts (e.g.
-    // `index-DMTSp6tp.js`) — the content behind a given hashed name never
-    // changes, so the browser can cache it for a year without ever
-    // revalidating. `/static` and `/wallpapers` are NOT hashed
-    // (hand-authored / bundled files), so they keep the default
-    // (conditional-GET-only) caching behavior instead. This has to
-    // be its own Router with the cache-control layer applied *before*
-    // merging, since `Router::layer` applies to everything merged/nested so
-    // far — applying it after merging the API/SPA routers would incorrectly
-    // cache API responses and index.html for a year too.
-    //
-    // `/assets`, `/fonts`, and `/static` are all served from the frontend
-    // embedded into the binary at compile time (see `spa.rs::STATIC_DIR`)
-    // rather than `tower_http::services::ServeDir` reading real files off
-    // disk — this is what lets a bare copy of the binary serve the UI
-    // without also shipping `static/dist/` alongside it.
-    let cached_static = Router::new()
-        .route("/assets/{*path}", get(serve_assets_file))
-        .route("/fonts/{*path}", get(serve_fonts_file))
-        .layer(SetResponseHeaderLayer::if_not_present(
-            CACHE_CONTROL,
-            HeaderValue::from_static("public, max-age=31536000, immutable"),
-        ));
-
+    // Cache lifetimes are set per file by the `spa` handlers themselves (see
+    // `spa::asset_response` + `CACHE_IMMUTABLE` / `CACHE_REVALIDATE`), not by
+    // a blanket layer here: a layer applied after the merges below would also
+    // pin API responses and `index.html` for a year, which is exactly the
+    // stale-client bug the per-path policy avoids.
     api_with_terminal
         .merge(spa)
-        .merge(cached_static)
         .merge(public_share)
         .route("/static/{*path}", get(serve_static_file))
         .layer(cors)

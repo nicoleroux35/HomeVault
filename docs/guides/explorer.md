@@ -331,17 +331,45 @@ a misleading half-populated tree.
   directory move. Auth was verified via `curl`: every new endpoint rejects a
   request with no session token.
 
-## Known pre-existing issue (not fixed here, out of scope)
+## Progress reporting (fixed 2026-10-12)
 
-`ProgressManager::get_progress` (`src/sse/progress.rs`, used by the
-`GET /progress/{job_id}/status` REST endpoint, not the SSE stream) always
-returns a hardcoded `"Waiting..."` / 0% / Running placeholder for any job
-that exists in the map, rather than its real last-known state — it doesn't
-track/store the most recent `ProgressEvent` per job. This predates Explorer's
-use of the shared progress system (also affects `src/handlers/rescue.rs`'s
-job status polling) and wasn't introduced or fixed here; Explorer's own
-frontend uses the SSE stream (`api.subscribeToProgress`), not this REST
-endpoint, so it isn't affected in practice.
+Two defects in the shared progress system this screen depends on — both are
+fixed.
+
+`ProgressManager::get_progress` (`src/sse/progress.rs`, behind the
+`GET /progress/{job_id}/status` REST endpoint) used to return a hardcoded
+`"Waiting..."` / 0 % / `Running` placeholder for any job present in the map
+instead of its real last-known state. It now returns the job's `last_event` —
+the same snapshot the SSE stream and the activity feed carry — and `None` for an
+id that was never created or was already removed. Explorer's own frontend uses
+the SSE stream (`api.subscribeToProgress`), not this REST endpoint, so it was
+theoretical here, but the endpoint is public API and lied to any polling client
+(it also covered `src/handlers/rescue.rs`'s job status polling).
+
+**The SSE stream was *not* merely theoretical, though — a directory copy/move
+needed this fix to work.** `JobType` used internal tagging
+(`#[serde(tag = "type")]`) with a `Custom(String)` newtype variant, which serde
+cannot serialize at all (*"cannot serialize tagged newtype variant
+`JobType::Custom` containing a string"*). `explorer_copy` / `explorer_move` are
+`Custom` jobs — as are Docker install, antivirus, RAG, VM, rescue, cloud sync and
+Ollama pulls — so `handle_progress_sse`'s
+`serde_json::to_string(&event).unwrap_or_default()` sent an **empty** `data:`
+payload: `JSON.parse` throws in the browser, `onProgress` and `onDone` never
+fire, the `EventSource` error handler takes over, and `watchJob` resolves
+**false** for a copy that actually succeeded — frozen progress bar, stale
+directory listing, `success` counter stuck at 0. (Storage's cache mover is a
+built-in `CacheMover` job, so it kept working — the two SSE consumers disagreed,
+which is what hid the bug.) `GET /api/progress/jobs` also panicked inside the
+`json!` macro while any `Custom` job was tracked; the desktop taskbar was spared
+because the activity handler maps `JobType` to a slug (`job_type_kind`) and never
+serializes the enum. Fixed by **adjacent** tagging —
+`#[serde(tag = "type", content = "name", rename_all = "snake_case")]`: the
+built-in kinds keep their previous wire shape exactly (`{"type":"backup"}`), a
+feature job becomes `{"type":"custom","name":"explorer_copy"}`. Do not
+"simplify" it back to `tag` alone; the serde round-trip tests in
+`src/sse/progress.rs` guard it. The Explorer directory copy/move path itself
+should be re-run live to confirm the progress bar now animates and the listing
+refreshes (see `TESTING.md`).
 
 ## Related
 

@@ -1,600 +1,600 @@
-# HomeVault — Liste des écrans et fonctionnalités
+# HomeVault — List of screens and features
 
 ---
 
 ## 1. Login (`/login`) TESTS
 
-**Fonctionnalités :**
-- Formulaire username/mot de passe avec afficher/masquer le mot de passe
-- Coche « Se souvenir de moi »
-- Lien « Mot de passe oublié » — demande un token de réinitialisation
-- Flux de réinitialisation de mot de passe (via lien avec token)
-- Authentification à deux facteurs (2FA) — saisie du code TOTP 6 chiffres
-- Modal d'erreur avec messages traduits (identifiants invalides, compte verrouillé, rate limiting, TOTP invalide, timeout réseau)
-- État de connexion impossible avec bouton de reconnexion
-- Détection premier lancement — affiche l'Assistant de configuration à la place
+**Features:**
+- Username/password form with show/hide password
+- "Remember me" checkbox
+- "Forgot password" link — requests a reset token
+- Password reset flow (via link with token)
+- Two-factor authentication (2FA) — entry of the 6-digit TOTP code
+- Error modal with translated messages (invalid credentials, locked account, rate limiting, invalid TOTP, network timeout)
+- Unable-to-connect state with a reconnect button
+- First-launch detection — shows the Setup Wizard instead
 
 ---
 
-## 2. Assistant de configuration (Setup Wizard) TESTS
+## 2. Setup Wizard TESTS
 
-**Affiché dans la page Login au premier lancement.**
+**Shown on the Login page on first launch.**
 
-**Fonctionnalités (4 étapes) :**
-- Étape 0 — Accueil : présentation des fonctionnalités (comptes, chiffrement, sécurité)
-- Étape 1 — Compte : username, nom complet optionnel, sélection d'avatar (DiceBear)
-- Étape 2 — Mot de passe : saisie + confirmation avec indicateur de force en temps réel et checklist des exigences
-- Étape 3 — Vérification : résumé du compte, vérification de disponibilité du username côté serveur
-- Inscription 2FA (après création du compte) : affichage du secret TOTP, QR code, vérification, codes de secours
-- Stepper de progression avec animations
+**Features (4 steps):**
+- Step 0 — Welcome: presentation of the features (accounts, encryption, security)
+- Step 1 — Account: username, optional full name, avatar selection (DiceBear)
+- Step 2 — Password: entry + confirmation with a real-time strength indicator and a requirements checklist
+- Step 3 — Verification: account summary, server-side username availability check
+- 2FA enrollment (after account creation): display of the TOTP secret, QR code, verification, backup codes
+- Progress stepper with animations
 
 ---
 
-## 3. Bureau (Desktop) — `/desktop`
+## 3. Desktop — `/desktop`
 
-**Coquille principale de l'application.**
+**Main shell of the application.**
 
-### Barre supérieure (Topbar)
-- Chip utilisateur (avatar + nom) ; menu : Mon compte, Paramètres, Déconnexion
-- Affichage date/heure localisé (horloge + date)
-- Bouton **Réseau** (icône filaire/WiFi + libellé) avec popover IP locale + IP publique
-- Bouton **Widgets** : ouvre l'application Widgets
-- Bouton **Notifications** (icône + libellé) avec compteur et panneau déroulant —
-  le compteur est une pastille **ancrée au coin du bouton**, pas au libellé : elle
-  vit dans la bande au-dessus de la ligne de texte, donc un « 99+ » s'élargit
-  dans le vide sans jamais recouvrir le libellé
-- Bouton **Alimentation** : Déconnexion, Redémarrer le serveur, Éteindre le serveur
+### Topbar
+- User chip (avatar + name); menu: My account, Settings, Logout
+- Localized date/time display (clock + date)
+- **Network** button (wired/WiFi icon + label) with a popover for local IP + public IP
+- **Widgets** button: opens the Widgets app
+- **Notifications** button (icon + label) with a counter and a dropdown panel —
+  the counter is a badge **anchored to the corner of the button**, not to the label: it
+  lives in the band above the text line, so a "99+" widens
+  into empty space without ever covering the label
+- **Power** button: Logout, Restart the server, Shut down the server
 
-Les quatre boutons sont des puces **icône + libellé** (maquette DSM) : libellés
-visibles à partir de 901px, icône seule en dessous — la cible tactile reste
-44×44 dans les deux cas. Ordre : Réseau, Widgets, Notifications, Alimentation.
+The four buttons are **icon + label** chips (DSM mockup): labels
+visible from 901px, icon only below that — the touch target stays
+44×44 in both cases. Order: Network, Widgets, Notifications, Power.
 
-### Quai d'applications (Dock)
-- Apps épinglées, dans l'ordre du dock : Tableau de bord, Terminal, Docker,
-  Santé, Assistant IA, Paramètres (`PINNED_DOCK_APP_IDS`)
-- Apps en cours d'exécution / minimisées avec animation de restauration
+### Application dock
+- Pinned apps, in dock order: Dashboard, Terminal, Docker,
+  Health, AI Assistant, Settings (`PINNED_DOCK_APP_IDS`)
+- Running / minimized apps with a restore animation
 
-### Barre de tâches (Activity taskbar)
-- Bouton de dock transitoire (visible uniquement pendant une activité) avec
-  pastille = nombre de tâches actives ; clic → panneau au-dessus du dock
-- Une ligne par tâche : nom, barre de progression, % (barre coulissante si
-  progression indéterminée) — affichage seul
-- Sources : téléchargements aria2, copies/déplacements Explorateur, sauvegardes
-  Restic, scans antivirus, cache mover, install/màj Docker, clonage/récupération
-  Rescue, réindexation RAG, téléchargement modèle IA, sync cloud
-- Alimenté par `GET /api/activity` (poll 2 s) ; store `activityStore.ts`
+### Activity taskbar
+- Transient dock button (visible only during an activity) with a
+  badge = number of active tasks; click → panel above the dock
+- One line per task: name, progress bar, % (sliding bar if
+  progress is indeterminate) — display only
+- Sources: aria2 downloads, Explorer copies/moves, Restic backups,
+  antivirus scans, cache mover, Docker install/update, Rescue
+  clone/recovery, RAG reindexing, AI model download, cloud sync
+- Powered by `GET /api/activity` (2 s poll); store `activityStore.ts`
 
-### Recherche globale (Ctrl+K)
-- Barre de recherche avec correspondance floue sur les noms/descriptions des apps
-- Navigation au clavier (flèches + Entrée)
+### Global search (Ctrl+K)
+- Search bar with fuzzy matching on app names/descriptions
+- Keyboard navigation (arrows + Enter)
 
-### 24 applications disponibles
+### 24 available applications
 
-| # | Application | Catégorie | Description |
+| # | Application | Category | Description |
 |---|---|---|---|
-| 1 | Dashboard | Système | Vue d'ensemble et statistiques en temps réel |
-| 2 | Stockage (Storage) | Stockage | Disques, volumes virtuels, chiffrement, cache |
-| 3 | RAID | Stockage | Création de disques virtuels (mdadm/ZFS/Btrfs) |
-| 4 | Explorateur (Explorer) | Stockage | Navigation dans les fichiers partagés |
-| 5 | Docker | Système | Conteneurs, images et catalogue d'applications |
-| 6 | Réseau (Network) | Réseau | Interfaces et routage |
-| 7 | VPN | Réseau | Accès WireGuard et OpenVPN |
-| 8 | Sauvegarde (Backup) | Stockage | Dépôts, snapshots et restaurations (restic) |
-| 9 | Utilisateurs | Système | Comptes et permissions |
-| 10 | Groupes | Système | Groupes d'utilisateurs et rôles |
-| 11 | Quotas | Système | Aperçu en lecture seule des quotas de transfert |
-| 12 | Partages (Shares) | Stockage | Partages réseau (SMB/NFS/FTP/WebDAV/SFTP) |
-| 13 | Cloud Sync | Réseau | Stockage cloud distant (rclone) |
-| 14 | Syncthing | Réseau | Synchronisation continue de fichiers |
-| 15 | Santé (Health) | Surveillance | État du système et alertes |
-| 16 | Assistant IA (Chat) | Productivité | Conversation avec l'assistant IA |
-| 17 | Télécharger (Downloader) | Productivité | Gestion des téléchargements (aria2) |
-| 18 | Rescue | Système | Récupération et réparation |
-| 19 | Widgets | Système | Ajouter/supprimer des widgets du bureau |
-| 20 | Journal système | Surveillance | Journaux système et événements d'audit |
-| 21 | Terminal | Système | Terminal PTY complet |
-| 22 | Paramètres | Système | Configuration du serveur |
-| 23 | Mon compte | Système | Profil et sécurité personnel |
-| 24 | Machines virtuelles (Virtual Machines) | Système | VMs et conteneurs via Incus — assistant guidé, console shell, écran graphique, instantanés |
+| 1 | Dashboard | System | Overview and real-time statistics |
+| 2 | Storage | Storage | Disks, virtual volumes, encryption, cache |
+| 3 | RAID | Storage | Virtual disk creation (mdadm/ZFS/Btrfs) |
+| 4 | Explorer | Storage | Browsing of shared files |
+| 5 | Docker | System | Containers, images and application catalog |
+| 6 | Network | Network | Interfaces and routing |
+| 7 | VPN | Network | WireGuard and OpenVPN access |
+| 8 | Backup | Storage | Repositories, snapshots and restores (restic) |
+| 9 | Users | System | Accounts and permissions |
+| 10 | Groups | System | User groups and roles |
+| 11 | Quotas | System | Read-only overview of transfer quotas |
+| 12 | Shares | Storage | Network shares (SMB/NFS/FTP/WebDAV/SFTP) |
+| 13 | Cloud Sync | Network | Remote cloud storage (rclone) |
+| 14 | Syncthing | Network | Continuous file synchronization |
+| 15 | Health | Monitoring | System status and alerts |
+| 16 | AI Assistant (Chat) | Productivity | Conversation with the AI assistant |
+| 17 | Downloader | Productivity | Download management (aria2) |
+| 18 | Rescue | System | Recovery and repair |
+| 19 | Widgets | System | Add/remove desktop widgets |
+| 20 | System journal | Monitoring | System logs and audit events |
+| 21 | Terminal | System | Full PTY terminal |
+| 22 | Settings | System | Server configuration |
+| 23 | My account | System | Personal profile and security |
+| 24 | Virtual Machines | System | VMs and containers via Incus — guided wizard, shell console, graphical screen, snapshots |
 
-> Soit 21 entrées dans `appDefs` + Terminal + Paramètres + Mon compte.
-> Les 27 routes Svelte = ces 24 apps + Login + Assistant de configuration + Desktop.
+> That is 21 entries in `appDefs` + Terminal + Settings + My account.
+> The 27 Svelte routes = these 24 apps + Login + Setup Wizard + Desktop.
 
-### Widgets de surveillance flottants (11 panneaux)
+### Floating monitoring widgets (11 panels)
 
-Chaque widget est un panneau redimensionnable, déplaçable, avec persistance de position.
+Each widget is a resizable, movable panel, with position persistence.
 
-| # | Widget | Données affichées | Rafraîchissement |
+| # | Widget | Data displayed | Refresh |
 |---|---|---|---|
-| 1 | Moniteur de ressources | CPU, RAM, température, trafic réseau | 2s |
-| 2 | Moniteur RAID | État des baies RAID | 5s |
-| 3 | Moniteur Sécurité | Antivirus, pare-feu, anti-ransomware | 15s |
-| 4 | Moniteur VPN | Connexions WireGuard/OpenVPN | 15s |
-| 5 | Moniteur Downloader | Téléchargements en cours (aria2) | 5s |
-| 6 | Moniteur Syncthing | Appareils et dossiers synchronisés | 15s |
-| 7 | Moniteur Calendrier | Grille du mois en cours | — |
-| 8 | Moniteur Docker | Conteneurs en cours | 10s |
-| 9 | Moniteur Météo | Météo via Open-Meteo (navigateur) | 10 min |
-| 10 | Moniteur Sessions actives | Nombre d'utilisateurs connectés | 15s |
-| 11 | Moniteur Santé système | Compteur healthy/warning/critical | 15s |
+| 1 | Resource monitor | CPU, RAM, temperature, network traffic | 2s |
+| 2 | RAID monitor | RAID array status | 5s |
+| 3 | Security monitor | Antivirus, firewall, anti-ransomware | 15s |
+| 4 | VPN monitor | WireGuard/OpenVPN connections | 15s |
+| 5 | Downloader monitor | Ongoing downloads (aria2) | 5s |
+| 6 | Syncthing monitor | Synced devices and folders | 15s |
+| 7 | Calendar monitor | Grid of the current month | — |
+| 8 | Docker monitor | Running containers | 10s |
+| 9 | Weather monitor | Weather via Open-Meteo (browser) | 10 min |
+| 10 | Active sessions monitor | Number of connected users | 15s |
+| 11 | System health monitor | healthy/warning/critical counter | 15s |
 
-### Gestion des fenêtres d'apps
-- Fenêtres avec barre de titre, boutons minimiser/maximiser/fermer
-- Glisser-déposer, redimensionnement, snap au bord
-- Géométrie initiale adaptative (auto-maximise sous 820px)
-
----
-
-## 4. Mon compte (Account) TESTS
-
-**Fonctionnalités :**
-- Affichage du profil : avatar, username, nom complet, email, rôle, date de création
-- Régénération d'avatar
-- Édition du profil (nom complet, email)
-- Changement de mot de passe (invalide toutes les sessions → déconnexion automatique)
-- Inscription 2FA : secret TOTP, QR code, vérification, codes de secours
-- Désactivation 2FA (avec confirmation du mot de passe)
-- Affichage des codes de secours
+### App window management
+- Windows with a title bar, minimize/maximize/close buttons
+- Drag-and-drop, resizing, edge snapping
+- Adaptive initial geometry (auto-maximizes below 820px)
 
 ---
 
-## 5. Utilisateurs (Users)
+## 4. My account (Account) TESTS
 
-**Anatomie maître/détail (2026-09-14) :** rail de comptes à gauche, volet détail à
-droite ; en fenêtre étroite les deux volets s'échangent (seuil ≈ 1065px de fenêtre).
+**Features:**
+- Profile display: avatar, username, full name, email, role, creation date
+- Avatar regeneration
+- Profile editing (full name, email)
+- Password change (invalidates all sessions → automatic logout)
+- 2FA enrollment: TOTP secret, QR code, verification, backup codes
+- 2FA disabling (with password confirmation)
+- Display of backup codes
 
-**Fonctionnalités :**
-- Rail : bouton « Nouvel utilisateur », recherche, filtres (tous/actifs/verrouillés/admin),
-  compteur, une ligne par compte (avatar, nom, badge de rôle, `@username`, état verrouillé/actif)
-- Pied du rail : bouton « Vue des quotas » → ouvre l'app Quotas
-- Création d'utilisateur : username, mot de passe, nom complet, email, rôle, groupes, dossier personnel
-- Volet détail en 6 cartes, chacune dimensionnée par son contenu :
-  1. **Identité** — username en lecture seule (clé du compte), nom complet, email
-  2. **Rôle et groupes** — sélecteur de rôle + puces de groupes en lignes pleine largeur
-  3. **Dossier personnel** — activation, disque ou dossier explicite, curseur de taille + barre alloué/libre
-  4. **Quotas de transfert** — upload/download (bascule + valeur + unité + barre d'usage) et bouton « Tous les quotas »
-  5. **Sécurité** — 2FA (état + réinitialisation), changement de mot de passe
-  6. **Actions** — verrouiller/déverrouiller, supprimer (option conserver/supprimer le dossier)
-- Appartenance aux groupes : ajout/retrait ; `homevault_admin` en puce lecture seule dérivée du rôle
-- Changement de mot de passe (admin pour d'autres utilisateurs)
-- Suppression d'utilisateur (purge dossier personnel, jail SFTP, sessions, ligne de quota)
-- Activation/désactivation de la 2FA (récupération admin)
+---
+
+## 5. Users (Users)
+
+**Master/detail anatomy (2026-09-14):** account rail on the left, detail pane on
+the right; in a narrow window the two panes swap (threshold ≈ 1065px window width).
+
+**Features:**
+- Rail: "New user" button, search, filters (all/active/locked/admin),
+  counter, one row per account (avatar, name, role badge, `@username`, locked/active state)
+- Rail footer: "Quotas view" button → opens the Quotas app
+- User creation: username, password, full name, email, role, groups, home folder
+- Detail pane in 6 cards, each sized by its content:
+  1. **Identity** — read-only username (account key), full name, email
+  2. **Role and groups** — role selector + group chips in full-width rows
+  3. **Home folder** — enablement, explicit disk or folder, size slider + allocated/free bar
+  4. **Transfer quotas** — upload/download (toggle + value + unit + usage bar) and an "All quotas" button
+  5. **Security** — 2FA (state + reset), password change
+  6. **Actions** — lock/unlock, delete (option to keep/delete the folder)
+- Group membership: add/remove; `homevault_admin` as a read-only chip derived from the role
+- Password change (admin for other users)
+- User deletion (purges home folder, SFTP jail, sessions, quota row)
+- 2FA enable/disable (admin recovery)
 
 ---
 
 ## 6. Quotas (Quotas)
 
-**Écran en lecture seule — aucune écriture, aucun bouton d'édition.**
+**Read-only screen — no writes, no edit button.**
 
-**Fonctionnalités :**
-- Une ligne par sujet configuré : utilisateurs d'abord, puis groupes, triés par nom
-- Filtres : tous / utilisateurs / groupes
-- Par ligne : type de sujet, nom, date de dernière mise à jour
-- Par direction (upload, download) : octets utilisés / limite + barre de progression réelle
-- Une direction désactivée affiche « Illimité » (pas de limite, et non « zéro autorisé »)
-- Ligne de compteur : nombre de sujets, dont combien portent une limite
-- Bouton « Gérer dans Utilisateurs » → ouvre l'app Utilisateurs (événement `hv-open-app`)
+**Features:**
+- One row per configured subject: users first, then groups, sorted by name
+- Filters: all / users / groups
+- Per row: subject type, name, last update date
+- Per direction (upload, download): bytes used / limit + real progress bar
+- A disabled direction shows "Unlimited" (no limit, not "zero allowed")
+- Counter row: number of subjects, of which how many have a limit
+- "Manage in Users" button → opens the Users app (`hv-open-app` event)
 
-**Source de données :** `GET /transfer-quotas/{subject_type}` (une requête par type),
-le même endpoint que la modale « Tous les quotas » de l'écran Utilisateurs.
-L'écran est malgré tout réservé aux admins, comme Utilisateurs.
-L'édition des quotas reste dans la carte « Quotas de transfert » d'Utilisateurs
-et dans l'écran Groupes.
+**Data source:** `GET /transfer-quotas/{subject_type}` (one request per type),
+the same endpoint as the "All quotas" modal of the Users screen.
+The screen is nevertheless reserved for admins, like Users.
+Quota editing stays in the "Transfer quotas" card of Users
+and in the Groups screen.
 
 ---
 
-## 7. Groupes (Groups)
+## 7. Groups (Groups)
 
-**Fonctionnalités :**
-- Liste des groupes avec recherche, compteur de membres
-- Création de groupe : nom + membres initiaux
-- Gestion des membres : ajout/retrait d'utilisateurs avec recherche
-- Suppression de groupe (groupe `homevault_admin` protégé)
-- Gestion des quotas de transfert par groupe
+**Features:**
+- Group list with search, member counter
+- Group creation: name + initial members
+- Member management: add/remove users with search
+- Group deletion (`homevault_admin` group protected)
+- Management of transfer quotas per group
 
 ---
 
 ## 8. Dashboard
 
-**Fonctionnalités (rafraîchissement toutes les 5s) :**
-- Jauge de score de santé (SVG circulaire)
-- Ligne de statut LED : CPU, RAM, Disque, Réseau
-- Panneau CPU : modèle, fréquence, bars par cœur, température, nombre de cœurs/threads
-- Panneau Mémoire : barre d'utilisation, type/vitesse RAM, swap
-- Panneau GPU (un par GPU) : modèle, type (NVIDIA/AMD), utilisation, VRAM, fréquence, température, puissance
-- Panneau Carte mère : fabricant, modèle, version/date BIOS
-- Panneau Stockage : bars d'utilisation des systèmes de fichiers
-- Panneau Réseau : par interface — IP, MAC, vitesse, driver, RX/TX + taux en temps réel
-- Panneau Santé disques : comptage SMART healthy/total
-- Températures capteurs matériels
-- Bouton de rafraîchissement manuel
+**Features (refresh every 5s):**
+- Health score gauge (circular SVG)
+- LED status row: CPU, RAM, Disk, Network
+- CPU panel: model, frequency, per-core bars, temperature, core/thread count
+- Memory panel: usage bar, RAM type/speed, swap
+- GPU panel (one per GPU): model, type (NVIDIA/AMD), usage, VRAM, frequency, temperature, power
+- Motherboard panel: manufacturer, model, BIOS version/date
+- Storage panel: filesystem usage bars
+- Network panel: per interface — IP, MAC, speed, driver, RX/TX + real-time rate
+- Disk health panel: SMART healthy/total count
+- Hardware sensor temperatures
+- Manual refresh button
 
 ---
 
-## 9. Stockage (Storage)
+## 9. Storage
 
-**5 onglets :**
+**5 tabs:**
 
-### Disques physiques
-- Cartes de disques détaillées : nom, taille, vendeur, modèle, numéro de série, type, statut SMART, température
-- Modal avec table des partitions et diagramme circulaire
-- Tests SMART (court/long/conveyance)
+### Physical disks
+- Detailed disk cards: name, size, vendor, model, serial number, type, SMART status, temperature
+- Modal with a partition table and a pie chart
+- SMART tests (short/long/conveyance)
 
 ### Partitions
-- Liste de toutes les partitions avec point de montage, système de fichiers, taille, utilisé, disponible, pourcentage
+- List of all partitions with mount point, filesystem, size, used, available, percentage
 
-### Amovibles
-- Liste des disques USB/amovibles avec montage/démontage
+### Removable
+- List of USB/removable disks with mount/unmount
 
-### Chiffrement (LUKS2)
-- Volumes chiffrés (statut déverrouillage, mapper, point de montage)
-- Création de volume chiffré (périphérique, système de fichiers, étiquette, phrase secrète)
-- Verrouillage/déverrouillage, suppression
+### Encryption (LUKS2)
+- Encrypted volumes (unlock status, mapper, mount point)
+- Encrypted volume creation (device, filesystem, label, passphrase)
+- Lock/unlock, deletion
 
-### Niveau cache (Cache Tier)
-- Pool de cache sélectionnable (y compris RAID)
-- Planification du déplacement (cron, âge)
-- Mode cache par partage
-- Historique des déplacements
+### Cache Tier
+- Selectable cache pool (including RAID)
+- Move scheduling (cron, age)
+- Per-share cache mode
+- Move history
 
 ---
 
 ## 10. RAID
 
-**Fonctionnalités :**
-- Liste des baies RAID : nom, niveau, statut (healthy/dégradé/échoué), nombre de disques, taille/utilisé/libre
-- Création de RAID (assistant 3 étapes) : type (0/1/5/6/10), sélection des disques, nom + système de fichiers
-- Suppression de baie RAID
-- Reconstruction d'une baie dégradée : sélection du disque de remplacement
+**Features:**
+- RAID array list: name, level, status (healthy/degraded/failed), disk count, size/used/free
+- RAID creation (3-step wizard): type (0/1/5/6/10), disk selection, name + filesystem
+- RAID array deletion
+- Rebuild of a degraded array: selection of the replacement disk
 
 ---
 
-## 11. Santé (Health)
+## 11. Health
 
-**Fonctionnalités :**
-- 8 contrôles de santé affichés dans l'ordre :
-  - Authentification, Stockage, Mémoire, Espace disque, SMART disques, Réseau, Services, Températures
-- Chaque contrôle : icône de statut, label traduit, message, détails extensibles
-- Badge de statut global (healthy/warning/critical/unknown)
-- Bouton de rafraîchissement
+**Features:**
+- 8 health checks displayed in order:
+  - Authentication, Storage, Memory, Disk space, Disk SMART, Network, Services, Temperatures
+- Each check: status icon, translated label, message, expandable details
+- Global status badge (healthy/warning/critical/unknown)
+- Refresh button
 
 ---
 
 ## 12. Terminal
 
-**Fonctionnalités :**
-- Terminal PTY complet (xterm.js)
-- Connexion WebSocket avec ticket d'authentification
-- Reconnexion automatique
-- Redimensionnement adaptatif
-- Liens cliquables dans les sorties
-- Indicateur de statut (Connecté/Déconnecté)
+**Features:**
+- Full PTY terminal (xterm.js)
+- WebSocket connection with an authentication ticket
+- Automatic reconnection
+- Adaptive resizing
+- Clickable links in the output
+- Status indicator (Connected/Disconnected)
 
 ---
 
-## 13. Journal système (Journal)
+## 13. System journal (Journal)
 
-**Fonctionnalités :**
-- Sélecteur de source : `app` (journaux d'événements métier), `system` (journald), fichiers texte (syslog/auth.log/kern.log/daemon.log)
-- Liste des entrées : horodatage, unité, priorité, PID, message
-- Filtrage par unité, par priorité, recherche texte
-- Rafraîchissement automatique toggle
-- Effacement des journaux par source avec confirmation
-- Paramètres de nettoyage programmé (activation, intervalle en jours)
+**Features:**
+- Source selector: `app` (business event logs), `system` (journald), text files (syslog/auth.log/kern.log/daemon.log)
+- Entry list: timestamp, unit, priority, PID, message
+- Filtering by unit, by priority, text search
+- Auto-refresh toggle
+- Clearing of logs per source with confirmation
+- Scheduled cleanup settings (enablement, interval in days)
 
 ---
 
-## 14. Réseau (Network)
+## 14. Network
 
-**2 onglets :**
+**2 tabs:**
 
 ### Ethernet
-- Cartes d'interface : nom, type, MAC, statut, IPv4/IPv6, MTU, vitesse, duplex, driver, RX/TX + taux
-- Configuration : DHCP/Statique, IP/netmask/passerelle/DNS manuels
-- Résumé de connexion : IP locale, passerelle, DNS, IP publique
-- Diagnostics : accessibilité passerelle, test DNS, accessibilité Internet, latence
+- Interface cards: name, type, MAC, status, IPv4/IPv6, MTU, speed, duplex, driver, RX/TX + rate
+- Configuration: DHCP/Static, manual IP/netmask/gateway/DNS
+- Connection summary: local IP, gateway, DNS, public IP
+- Diagnostics: gateway reachability, DNS test, Internet reachability, latency
 
 ### WiFi
-- Liste des réseaux : SSID, force du signal, fréquence, canal, sécurité
-- Scan des réseaux
-- Connexion/déconnexion
-- Affichage de l'état WiFi
+- Network list: SSID, signal strength, frequency, channel, security
+- Network scan
+- Connect/disconnect
+- WiFi status display
 
 ---
 
 ## 15. VPN
 
-**2 onglets :**
+**2 tabs:**
 
 ### WireGuard
-- Statut serveur : clé publique, port d'écoute, état
-- Liste des pairs (appareils) : nom, IP, date de création, statut, dernier handshake
-- Ajout d'appareil : génération de config + QR code
-- Revisualisation de config/QR pour un pair existant
-- Suppression de pair
-- Démarrage/Arrêt du serveur
+- Server status: public key, listening port, state
+- Peer (device) list: name, IP, creation date, status, last handshake
+- Device addition: config generation + QR code
+- Re-view of config/QR for an existing peer
+- Peer deletion
+- Server start/stop
 
 ### OpenVPN
-- Liste des connexions : nom, statut, interface, IP locale/distant
-- Ajout de connexion : nom, fichier config, identifiants
-- Suppression, Démarrage/Arrêt
+- Connection list: name, status, interface, local/remote IP
+- Connection addition: name, config file, credentials
+- Deletion, start/stop
 
 ---
 
-## 16. Explorateur de fichiers (Explorer)
+## 16. File explorer (Explorer)
 
-**Fonctionnalités :**
-- Double vue : liste et grille
-- Navigation par dossier : fil d'Ariane, dossier parent, entrées avec taille, permissions, propriétaire
-- Barre latérale : disques physiques, amovibles, emplacements favoris
-- Opérations sur fichiers :
-  - Créer un dossier
-  - Renommer
-  - Supprimer (vers la corbeille)
-  - Copier / Déplacer (avec sélecteur de dossier)
-  - Téléverser des fichiers (avec barre de progression, quota-aware)
-  - Télécharger (quota-aware)
-- Prévisualisation de fichier texte
-- Gestion des permissions (chmod)
-- Recherche de fichiers
-- Tri : par nom, taille, date de modification
-- Système de corbeille : voir, restaurer, purger, vider
-- Extraction d'archives (.zip/.tar/.gz/.bz2/.xz)
-- Compression d'éléments sélectionnés
+**Features:**
+- Dual view: list and grid
+- Folder navigation: breadcrumb, parent folder, entries with size, permissions, owner
+- Sidebar: physical disks, removable disks, favorite locations
+- File operations:
+  - Create a folder
+  - Rename
+  - Delete (to the trash)
+  - Copy / Move (with a folder picker)
+  - Upload files (with a progress bar, quota-aware)
+  - Download (quota-aware)
+- Text file preview
+- Permission management (chmod)
+- File search
+- Sorting: by name, size, modification date
+- Trash system: view, restore, purge, empty
+- Archive extraction (.zip/.tar/.gz/.bz2/.xz)
+- Compression of selected items
 
 ---
 
-## 17. Parts/Protocoles (Shares)
+## 17. Shares/Protocols (Shares)
 
-**Fonctionnalités :**
+**Features:**
 
-### Liste des parts
-- Liste : nom, chemin, type (SMB/NFS/FTP/WebDAV/SFTP), statut activé, commentaire
-- Création de part : nom, chemin, type, commentaire
+### Share list
+- List: name, path, type (SMB/NFS/FTP/WebDAV/SFTP), enabled status, comment
+- Share creation: name, path, type, comment
 
-### Onglets de configuration (6 protocoles)
-- **Shares** — CRUD, démarrage/arrêt des services, badges de statut
-- **SMB** — workgroup, mode sécurité, version protocole, accès invité, options avancées
-- **NFS** — réseaux, accès par défaut, version, root squash, options custom
-- **FTP** — port, ports passifs, max clients, TLS, anonyme, chroot, message d'accueil
-- **WebDAV** — port, préfixe chemin, SSL, auth, compression, verrouillage, méthodes autorisées
-- **SFTP** — port, liste des bénéficiaires (utilisateur + parts + état clé), ajout d'utilisateur, ajout de clé publique, reconstruction des jails
+### Configuration tabs (6 protocols)
+- **Shares** — CRUD, service start/stop, status badges
+- **SMB** — workgroup, security mode, protocol version, guest access, advanced options
+- **NFS** — networks, default access, version, root squash, custom options
+- **FTP** — port, passive ports, max clients, TLS, anonymous, chroot, welcome message
+- **WebDAV** — port, path prefix, SSL, auth, compression, locking, allowed methods
+- **SFTP** — port, list of beneficiaries (user + shares + key state), user addition, public key addition, jail rebuild
 
-### Gestion des permissions
-- Voir les permissions actuelles (bénéficiaire, niveau r/rw, récursif)
-- Accorder une permission (sélecteur utilisateur/groupe)
-- Révoquer une permission
-- Synchroniser les permissions
+### Permission management
+- View current permissions (beneficiary, r/rw level, recursive)
+- Grant a permission (user/group selector)
+- Revoke a permission
+- Synchronize permissions
 
 ---
 
 ## 18. Cloud Sync (rclone)
 
-**3 onglets :**
+**3 tabs:**
 
 ### Remotes
-- Liste des remotes configurés (nom, type)
-- Ajout de remote : sélection du fournisseur, nom, config brute
-- Suppression de remote
-- Visualisation de la config rclone
+- List of configured remotes (name, type)
+- Remote addition: provider selection, name, raw config
+- Remote deletion
+- View of the rclone config
 
-### Montages
-- Liste des montages actifs : remote, point de montage, statut, PID
-- Monter/démonter un remote
+### Mounts
+- List of active mounts: remote, mount point, status, PID
+- Mount/unmount a remote
 
-### Synchronisation
-- Source (chemin local ou remote cloud)
-- Destination (remote cloud ou chemin local)
-- Direction : local→cloud, cloud→local, bidirectionnel
-- Mode test à blanc
-- Option suppression après sync
-- Exécution et statut
+### Synchronization
+- Source (local path or cloud remote)
+- Destination (cloud remote or local path)
+- Direction: local→cloud, cloud→local, bidirectional
+- Dry-run mode
+- Option to delete after sync
+- Execution and status
 
 ---
 
 ## 19. Docker
 
-**4 onglets :**
+**4 tabs:**
 
-### Conteneurs
-- Cartes de conteneurs : nom, image, statut, date de création, ports, mémoire/CPU, indicateurs d'available update
-- Démarrage/Arrêt/Redémarrage
-- Suppression
-- Journaux (flux en temps réel)
-- Édition du `docker-compose.yml` (conteneurs issus d'un projet Compose géré par HomeVault) : éditeur modal, validation de syntaxe, enregistrement, enregistrement + redéploiement
-- Création : nom, image, ports, volumes (chemin via FolderPicker), variables d'environnement, réseaux
-- Rafraîchissement toutes les 5s
+### Containers
+- Container cards: name, image, status, creation date, ports, memory/CPU, available-update indicators
+- Start/Stop/Restart
+- Deletion
+- Logs (real-time stream)
+- Editing of `docker-compose.yml` (containers from a Compose project managed by HomeVault): modal editor, syntax validation, save, save + redeploy
+- Creation: name, image, ports, volumes (path via FolderPicker), environment variables, networks
+- Refresh every 5s
 
 ### Images
-- Liste des images : dépôt, tag, taille, date
-- Téléchargement depuis Docker Hub (recherche + résultats)
-- Suppression
+- Image list: repository, tag, size, date
+- Download from Docker Hub (search + results)
+- Deletion
 
-### Réseaux
-- Liste des réseaux : nom, driver, scope, subnet, passerelle, conteneurs connectés
+### Networks
+- Network list: name, driver, scope, subnet, gateway, connected containers
 
-### Compose / Catalogue
-- Projets Compose : liste avec services et statut, démarrage/arrêt/redémarrage/suppression, édition du fichier compose
-- Catalogue d'apps : installation/désinstallation en un clic (Plex, Jellyfin, Nextcloud, Pi-hole, Vaultwarden, Home Assistant, Grafana, etc.)
+### Compose / Catalog
+- Compose projects: list with services and status, start/stop/restart/deletion, editing of the compose file
+- App catalog: one-click install/uninstall (Plex, Jellyfin, Nextcloud, Pi-hole, Vaultwarden, Home Assistant, Grafana, etc.)
 
 ---
 
 ## 20. Syncthing
 
-**3 onglets :**
+**3 tabs:**
 
-### Vue d'ensemble
-- Statut Syncthing : disponible, version, ID appareil, uptime
-- Statistiques rapides
-- Redémarrage/Pause/Reprise
+### Overview
+- Syncthing status: available, version, device ID, uptime
+- Quick statistics
+- Restart/Pause/Resume
 
-### Appareils
-- Liste des appareils : nom, ID, adresses, statut de connexion, version, complétion, données transférées
-- Pause/Reprise par appareil
+### Devices
+- Device list: name, ID, addresses, connection status, version, completion, data transferred
+- Pause/Resume per device
 
-### Dossiers
-- Liste des dossiers : label, chemin, statut, compteurs de fichiers, appareils connectés
-- Pause/Reprise par dossier
-- Scan manuel (déclenchement resync)
-
----
-
-## 21. Télécharger (Downloader)
-
-**Fonctionnalités :**
-- Statistiques globales : vitesse download/upload, nombre actifs/en attente/stoppés
-- Liste des tâches : GID, nom, statut, progression, vitesse, message d'erreur
-- Ajout d'URL avec répertoire de destination
-- Actions : pause, retrait, suppression (chaîne de fallback 3 étapes)
-- Icônes de statut : actif, en pause, terminé, erreur, en attente
-- Rafraîchissement toutes les 2s
+### Folders
+- Folder list: label, path, status, file counters, connected devices
+- Pause/Resume per folder
+- Manual scan (triggers resync)
 
 ---
 
-## 22. Sauvegarde / Restic
+## 21. Downloader
 
-**3 vues :**
+**Features:**
+- Global statistics: download/upload speed, number active/pending/stopped
+- Task list: GID, name, status, progress, speed, error message
+- URL addition with a destination directory
+- Actions: pause, remove, delete (3-step fallback chain)
+- Status icons: active, paused, completed, error, pending
+- Refresh every 2s
 
-### Liste des dépôts
-- Cartes de dépôts : nom, URL, chemins source, politique de rétention, nombre de snapshots, dernière sauvegarde
-- Création de dépôt : nom, URL, mot de passe, chemins source, patterns d'exclusion, tags, source (répertoire/snapshot pool), politique de rétention
-- Suppression de dépôt
+---
 
-### Détail d'un dépôt
+## 22. Backup / Restic
+
+**3 views:**
+
+### Repository list
+- Repository cards: name, URL, source paths, retention policy, snapshot count, last backup
+- Repository creation: name, URL, password, source paths, exclusion patterns, tags, source (directory/snapshot pool), retention policy
+- Repository deletion
+
+### Repository detail
 
 #### Snapshots
-- Liste des snapshots : ID, horodatage, chemins, hostname, tags
-- Navigation dans le contenu d'un snapshot
-- Restauration avec cible (FolderPicker), mode test à blanc
+- Snapshot list: ID, timestamp, paths, hostname, tags
+- Navigation inside a snapshot's content
+- Restore with a target (FolderPicker), dry-run mode
 
-#### Tâches (Jobs)
-- Historique des tâches : statut, fichiers, données, durée, erreurs
-- Déclenchement d'une nouvelle sauvegarde
-- Détails de tâche
+#### Jobs
+- Job history: status, files, data, duration, errors
+- Trigger of a new backup
+- Job details
 
-#### Planification
-- Sauvegardes planifiées : expression cron, activation, dernière/prochaine exécution
-- Création/édition/suppression de planifications
+#### Scheduling
+- Scheduled backups: cron expression, enablement, last/next run
+- Creation/editing/deletion of schedules
 
-### Politiques de rétention
-- Nombre max, âge max (jours), taille max (Go)
+### Retention policies
+- Max count, max age (days), max size (GB)
 
 ---
 
-## 23. Machines virtuelles (Virtual Machines)
+## 23. Virtual Machines
 
-**Fonctionnalités :**
-- Liste des machines (VMs + conteneurs système) : nom, type, état, adresse IPv4, profils
-- Assistant de création en deux modes : image cloud du catalogue OS ou ISO locale
-- Préconfigurations : nombre de CPU, mémoire, taille de disque
-- Identifiant de connexion initial semé via cloud-init (mot de passe haché SHA-512 crypt)
-- Cycle de vie : démarrage, arrêt, redémarrage, suppression (avec attente d'opération)
-- Instantanés : création, liste, restauration, suppression
-- Console shell (xterm) relayée en WebSocket
-- Écran graphique (noVNC) avec ticket à usage unique de 20 s
-- Téléchargement du pilote VirtIO (fedorapeople.org)
+**Features:**
+- Machine list (VMs + system containers): name, type, state, IPv4 address, profiles
+- Creation wizard in two modes: cloud image from the OS catalog or local ISO
+- Presets: CPU count, memory, disk size
+- Initial connection identifier seeded via cloud-init (SHA-512 crypt hashed password)
+- Lifecycle: start, stop, restart, deletion (with operation wait)
+- Snapshots: creation, list, restore, deletion
+- Shell console (xterm) relayed over WebSocket
+- Graphical screen (noVNC) with a single-use 20 s ticket
+- VirtIO driver download (fedorapeople.org)
 
 ---
 
 ## 24. Rescue
 
-**4 outils (mode Simple/Avancé pour chacun) :**
+**4 tools (Simple/Advanced mode for each):**
 
 ### ddrescue
-- Clonage/récupération de disques
-- Sélection source/destination (disque ou fichier image)
-- Options avancées : taille de bloc, passes de retry, I/O direct, inverse
-- Suivi de progression SSE
+- Disk cloning/recovery
+- Source/destination selection (disk or image file)
+- Advanced options: block size, retry passes, direct I/O, reverse
+- SSE progress tracking
 
 ### TestDisk
-- Analyse et reconstruction de partitions
-- Sélection du périphérique
-- Options : recherche profonde, chemin de log, mode forcé
+- Partition analysis and reconstruction
+- Device selection
+- Options: deep search, log path, forced mode
 
 ### PhotoRec
-- Récupération de fichiers
-- Sélection du périphérique/répertoire de sortie
-- Options : sélection de types de fichiers, conserver les fichiers corrompus, taille max
+- File recovery
+- Device/output directory selection
+- Options: file type selection, keep corrupted files, max size
 
 ### mdadm
-- Diagnostic et réparation de baies RAID
-- Nom de la baie, diagnostic affiché
-- Options : type d'action (repair/assemble), forcé, verbose
-- Réparation avec progression SSE
+- RAID array diagnostics and repair
+- Array name, displayed diagnostic
+- Options: action type (repair/assemble), forced, verbose
+- Repair with SSE progress
 
 ---
 
-## 25. Assistant IA (Chat)
+## 25. AI Assistant (Chat)
 
-**Fonctionnalités :**
-- Interface de conversation avec bulles de messages
-- Réponses en streaming (SSE) avec bouton annuler
-- Sélecteur de modèle
-- Historique des conversations (localStorage)
-- Copie des messages
-- Régénération de la réponse
-- Nouvelle conversation
-- Rendu Markdown dans les réponses
-- Prompt système localisé
+**Features:**
+- Conversation interface with message bubbles
+- Streaming responses (SSE) with a cancel button
+- Model selector
+- Conversation history (localStorage)
+- Message copying
+- Response regeneration
+- New conversation
+- Markdown rendering in responses
+- Localized system prompt
 
 ---
 
 ## 26. Widgets
 
-**Fonctionnalités :**
-- Catalogue de 11 widgets de surveillance
-- Chaque widget : icône, couleur, nom et description traduits
-- Toggle d'activation/désactivation (persisté)
-- Boutons « Tout afficher » / « Tout masquer » / « Réinitialiser »
+**Features:**
+- Catalog of 11 monitoring widgets
+- Each widget: translated icon, color, name and description
+- Enable/disable toggle (persisted)
+- "Show all" / "Hide all" / "Reset" buttons
 
-**Widgets disponibles :**
-1. Moniteur de ressources (CPU/RAM/Temp/Réseau)
-2. Moniteur RAID
-3. Moniteur Sécurité
-4. Moniteur VPN
-5. Moniteur Downloader
-6. Moniteur Syncthing
-7. Moniteur Calendrier
-8. Moniteur Docker
-9. Moniteur Météo
-10. Moniteur Sessions actives
-11. Moniteur Santé système
-
----
-
-## 27. Paramètres (Settings)
-
-**8 catégories dans la barre latérale** (regroupées 2026-09-09 depuis 12 onglets plats, re-thémées 2026-09-14 d'après la maquette Figma « Settings Screen ») :
-
-1. **Général** — Nom du serveur, langue (EN/FR/ES/DE), fuseau horaire, démarrage automatique
-2. **Sécurité** (4 cartes intégrées) :
-   - **HTTPS / TLS** — Activation du listener HTTPS intégré (port, certificat auto-signé ou fourni, redirection HTTP→HTTPS, infos certificat, régénération) ; s'applique après redémarrage
-   - **Antivirus (ClamAV)** — Statut, scans planifiés, exécution, historique, menaces, quarantine, mises à jour de définitions
-   - **Anti-Ransomware** — Activation/désactivation, honeypot, seuils, mode réponse auto, chemins protégés, historique
-   - **Pare-feu (ufw)** — Activation/désactivation avec prévisualisation, règles (port/protocol/action/source), protection des règles obligatoires
-3. **Apparence** — Fond d'écran (15 présets)
-4. **Widgets** — Moniteurs actifs (les 11 moniteurs réels, pilotés par `monitorStore` → `/api/monitor-layout`) + intervalle de rafraîchissement (2/5/10/30/60 s, stocké dans le même blob) + widget Météo (localisation Open-Meteo, champs d'affichage) — la Météo a été déplacée d'Apparence le 2026-09-09
-5. **Notifications** — Serveur e-mail/SMTP (serveur, port, identifiants, TLS, test d'envoi) + alertes (seuil, canaux) + webhook
-6. **Assistant IA** — Modèles Ollama, modèle actuel, recommandations selon RAM/GPU, installation rapide
-7. **Supervision** (2 cartes) :
-   - **Monitoring UPS** — Liste des UPS : batterie/autonomie/tension/charge/statut
-   - **SNMP** — Communauté, version, info système, interfaces, requêtes stockage
-   - _(la carte « Quotas fichiers » par groupe a été supprimée le 2026-09-09 — les quotas se gèrent depuis Utilisateurs/Groupes)_
-8. **Système** — Mises à jour logicielles (fréquence, version actuelle/dernière) + informations système (IP/port, plateforme, version) + gestion des données (export/import/reset des paramètres) + confidentialité (traitement local, cookies, hors-ligne)
+**Available widgets:**
+1. Resource monitor (CPU/RAM/Temp/Network)
+2. RAID monitor
+3. Security monitor
+4. VPN monitor
+5. Downloader monitor
+6. Syncthing monitor
+7. Calendar monitor
+8. Docker monitor
+9. Weather monitor
+10. Active sessions monitor
+11. System health monitor
 
 ---
 
-## Résumé par catégorie
+## 27. Settings
 
-| Catégorie | Nombre d'écrans |
+**8 categories in the sidebar** (grouped 2026-09-09 from 12 flat tabs, re-themed 2026-09-14 from the Figma mockup "Settings Screen"):
+
+1. **General** — Server name, language (EN/FR/ES/DE), time zone, automatic startup
+2. **Security** (4 merged cards):
+   - **HTTPS / TLS** — Enablement of the built-in HTTPS listener (port, self-signed or provided certificate, HTTP→HTTPS redirect, certificate info, regeneration); applies after restart
+   - **Antivirus (ClamAV)** — Status, scheduled scans, execution, history, threats, quarantine, definition updates
+   - **Anti-Ransomware** — Enable/disable, honeypot, thresholds, auto-response mode, protected paths, history
+   - **Firewall (ufw)** — Enable/disable with preview, rules (port/protocol/action/source), protection of mandatory rules
+3. **Appearance** — Wallpaper (15 presets)
+4. **Widgets** — Active monitors (the 11 real monitors, driven by `monitorStore` → `/api/monitor-layout`) + refresh interval (2/5/10/30/60 s, stored in the same blob) + Weather widget (Open-Meteo location, display fields) — Weather was moved out of Appearance on 2026-09-09
+5. **Notifications** — Email/SMTP server (server, port, credentials, TLS, send test) + alerts (threshold, channels) + webhook
+6. **AI Assistant** — Ollama models, current model, recommendations based on RAM/GPU, quick install
+7. **Monitoring** (2 cards):
+   - **UPS Monitoring** — UPS list: battery/runtime/voltage/load/status
+   - **SNMP** — Community, version, system info, interfaces, storage queries
+   - _(the per-group "File quotas" card was removed on 2026-09-09 — quotas are managed from Users/Groups)_
+8. **System** — Software updates (frequency, current/latest version) + system information (IP/port, platform, version) + data management (settings export/import/reset) + privacy (local processing, cookies, offline)
+
+---
+
+## Summary by category
+
+| Category | Number of screens |
 |---|---|
-| Authentification / Configuration | 2 (Login, Assistant de configuration) |
-| Bureau | 1 (Desktop + 11 widgets flottants + recherche + notifications) |
-| Système | 7 (Dashboard, Utilisateurs, Quotas, Groupes, Mon compte, Terminal, Machines virtuelles) |
-| Stockage | 4 (Stockage, RAID, Explorateur, Sauvegarde — Partages ∈ Stockage côté registre bureau, ouverture possible via Explorateur) |
-| Réseau | 4 (Réseau, VPN, Cloud Sync, Syncthing) + 1 (Partages) |
-| Surveillance | 2 (Santé, Journal système) |
-| Productivité | 2 (Assistant IA, Télécharger) |
+| Authentication / Setup | 2 (Login, Setup Wizard) |
+| Desktop | 1 (Desktop + 11 floating widgets + search + notifications) |
+| System | 7 (Dashboard, Users, Quotas, Groups, My account, Terminal, Virtual Machines) |
+| Storage | 4 (Storage, RAID, Explorer, Backup — Shares ∈ Storage on the desktop registry side, can be opened via Explorer) |
+| Network | 4 (Network, VPN, Cloud Sync, Syncthing) + 1 (Shares) |
+| Monitoring | 2 (Health, System journal) |
+| Productivity | 2 (AI Assistant, Downloader) |
 | Infrastructure | 2 (Docker, Rescue) |
-| Configuration | 1 (Paramètres — 8 catégories) |
-| **Total** | **27 écrans principaux** (= les 24 apps du bureau + Login + Assistant de configuration + Desktop) |
+| Configuration | 1 (Settings — 8 categories) |
+| **Total** | **27 main screens** (= the 24 desktop apps + Login + Setup Wizard + Desktop) |

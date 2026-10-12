@@ -1,39 +1,39 @@
-# 🎨 HOMEVAULT DESIGN SYSTEM v2.0 - RÉFÉRENCE COMPLÈTE
+# 🎨 HOMEVAULT DESIGN SYSTEM v2.0 - COMPLETE REFERENCE
 
-> ⚠️ **LEGACY / document historique.** Ce fichier décrit l'ancien thème « Cove »
-> (`--cove-*`) et une approche Material Design 3 qui ne correspondent plus au
-> système de design actuel du frontend (variables `--hv-*`, primitives dans
-> `frontend/src/lib/components/theme/`). Ne pas le suivre pour le développement
-> courant. La source de vérité des tokens est
+> ⚠️ **LEGACY / historical document.** This file describes the old "Cove" theme
+> (`--cove-*`) and a Material Design 3 approach that no longer match the
+> frontend's current design system (variables `--hv-*`, primitives in
+> `frontend/src/lib/components/theme/`). Do not follow it for current
+> development. The source of truth for the tokens is
 > `frontend/src/lib/styles/theme/tokens.css`.
 
-**Template Unique pour HomeVault**  
+**Single Template for HomeVault**  
 **Date:** 2026-07-02  
 **Version:** 2.0  
 **Stack:** Rust + Svelte + Lucide Icons
 
-> Ce fichier combine TOUTES les règles de design de `theme homevault/` pour servir de référence unique.
+> This file combines ALL the design rules of `theme homevault/` to serve as a single reference.
 
 ---
 
-## 📑 Table des Matières
+## 📑 Table of Contents
 
 1. [Design Tokens](#design-tokens)
-2. [Couleurs](#couleurs)
-3. [Typographie](#typographie)
-4. [Espacements](#espacements)
-5. [Composants](#composants)
+2. [Colors](#colors)
+3. [Typography](#typography)
+4. [Spacings](#spacings)
+5. [Components](#components)
 6. [Desktop](#desktop)
-7. [Fenêtres](#fenêtres)
+7. [Windows](#windows)
 8. [Login](#login)
 9. [Animations](#animations)
-10. [Exemples](#exemples)
+10. [Examples](#examples)
 
 ---
 
 ## 🎨 Design Tokens
 
-### Variables CSS Complete
+### Complete CSS Variables
 
 ```css
 :root {
@@ -313,31 +313,31 @@
 
 ---
 
-## 🎨 Couleurs
+## 🎨 Colors
 
-### Palette Principale
+### Main Palette
 
-#### Primary (Bleu)
-- **Primary:** `#2E72C9` - Couleur principale
-- **Primary Hover:** `#1e5bb8` - État hover
-- **Primary Light:** `rgba(46, 114, 201, 0.1)` - Background léger
+#### Primary (Blue)
+- **Primary:** `#2E72C9` - Main color
+- **Primary Hover:** `#1e5bb8` - Hover state
+- **Primary Light:** `rgba(46, 114, 201, 0.1)` - Light background
 
-**Usage:** Boutons principaux, liens, icônes, focus
+**Usage:** Main buttons, links, icons, focus
 
 #### Text
-- **Primary:** `#191c1e` - Texte principal
-- **Secondary:** `#434655` - Texte secondaire
-- **Tertiary:** `#6b7280` - Texte désactivé
+- **Primary:** `#191c1e` - Primary text
+- **Secondary:** `#434655` - Secondary text
+- **Tertiary:** `#6b7280` - Disabled text
 
 #### Background
-- **App:** `#f7f9fb` - Background principal
-- **Card:** `#ffffff` - Background cartes
-- **Surface:** `#eceef0` - Surfaces élevées
+- **App:** `#f7f9fb` - Main background
+- **Card:** `#ffffff` - Card background
+- **Surface:** `#eceef0` - Elevated surfaces
 
 #### Status
-- **Error:** `#ba1a1a` - Erreurs
-- **Success:** `#10b981` - Succès
-- **Warning:** `#f59e0b` - Avertissements
+- **Error:** `#ba1a1a` - Errors
+- **Success:** `#10b981` - Success
+- **Warning:** `#f59e0b` - Warnings
 
 ### Desktop Specific
 
@@ -353,59 +353,59 @@ background:
 ```
 
 #### Login Background
-- Plus clair que desktop
-- Gradient similaire mais moins prononcé
+- Lighter than desktop
+- Similar gradient but less pronounced
 
 ---
 
-## 📝 Typographie
+## 📝 Typography
 
 ### Font Family
 ```css
 font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 ```
 
-### Échelle de Tailles
+### Size Scale
 - **12px (xs):** Labels, badges, tooltips
-- **13px (sm):** Texte secondaire, captions
-- **14px (md/base):** Texte principal, inputs
-- **16px (lg):** Titres de section
-- **20px (xl):** Titres de page
-- **24px (2xl):** Titres principaux
-- **32px (3xl):** Titres hero
+- **13px (sm):** Secondary text, captions
+- **14px (md/base):** Primary text, inputs
+- **16px (lg):** Section titles
+- **20px (xl):** Page titles
+- **24px (2xl):** Main titles
+- **32px (3xl):** Hero titles
 
 ### Font Weights
-- **400 (normal):** Texte standard
+- **400 (normal):** Standard text
 - **500 (medium):** Labels, navigation
-- **600 (semibold):** Sous-titres, emphasis
-- **700 (bold):** Titres importants
+- **600 (semibold):** Subtitles, emphasis
+- **700 (bold):** Important titles
 
 ### Line Heights
-- **1.25:** Titres
-- **1.5:** Texte standard
-- **1.75:** Paragraphes longs
+- **1.25:** Titles
+- **1.5:** Standard text
+- **1.75:** Long paragraphs
 
 ---
 
-## 📐 Espacements
+## 📐 Spacings
 
-### Échelle (Base 4px)
-- **4px (xs):** Gaps minimaux, paddings serrés
-- **8px (sm):** Spacing entre éléments proches
-- **16px (md):** Spacing standard
+### Scale (Base 4px)
+- **4px (xs):** Minimal gaps, tight paddings
+- **8px (sm):** Spacing between close elements
+- **16px (md):** Standard spacing
 - **24px (lg):** Sections, cards
-- **32px (xl):** Grandes sections
+- **32px (xl):** Large sections
 - **64px (xxl):** Page margins
 
 ### Application
 - **Inputs:** Padding `0 12px`
 - **Buttons:** Padding `8px 16px` (md), `12px 20px` (lg)
-- **Cards:** Padding `16px`, `24px`, ou `32px`
+- **Cards:** Padding `16px`, `24px`, or `32px`
 - **Page margins:** `24px` minimum
 
 ---
 
-## 🧩 Composants
+## 🧩 Components
 
 ### Buttons
 
@@ -506,11 +506,11 @@ font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 ```
 
-**Éléments:**
+**Elements:**
 - Logo: 16px font-size, 700 weight, #2E72C9
 - Clock: Date (#6b7280) + "|" (#9ca3af) + Time (#191c1e)
-- Avatar: 32×32px circle, background #2E72C9, initiales
-- Buttons: 32×32px, transition background 0.15s
+- Avatar: 32×32px circle, background #2E72C9, initials
+- Buttons: 32×32px, background transition 0.15s
 
 ### Desktop Icons
 
@@ -645,7 +645,7 @@ font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 
 ---
 
-## 🪟 Fenêtres
+## 🪟 Windows
 
 ### Structure
 
@@ -718,7 +718,7 @@ font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 ```
 
-### Toolbar (56px, optionnel)
+### Toolbar (56px, optional)
 
 ```css
 .window-toolbar {
@@ -752,7 +752,7 @@ font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 --primary-login: #004ac6;
 ```
 
-Plus sombre que le primary desktop pour plus de contraste.
+Darker than the desktop primary for more contrast.
 
 ### Form
 
@@ -780,20 +780,20 @@ Plus sombre que le primary desktop pour plus de contraste.
 
 ## 🎬 Animations
 
-### Transitions Standards
+### Standard Transitions
 
 ```css
-/* Boutons */
+/* Buttons */
 transition: background 0.15s;
 
 /* Icons, transformations */
 transition: transform 0.2s;
 transition: all 0.2s;
 
-/* Dock (effet bounce) */
+/* Dock (bounce effect) */
 transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 
-/* Barres de progression */
+/* Progress bars */
 transition: width 0.5s ease;
 ```
 
@@ -811,7 +811,7 @@ transition: width 0.5s ease;
   }
 }
 
-/* Appliquer */
+/* Apply */
 .menu {
   animation: fadeIn 0.2s ease-in;
 }
@@ -838,7 +838,7 @@ transition: width 0.5s ease;
 
 ---
 
-## 📋 Exemples de Code
+## 📋 Code Examples
 
 ### Button Component
 
@@ -906,38 +906,38 @@ transition: width 0.5s ease;
 
 ---
 
-## ✅ Checklist de Conformité
+## ✅ Compliance Checklist
 
-### Pour chaque composant:
+### For each component:
 
-- [ ] Utilise les design tokens (variables CSS)
+- [ ] Uses the design tokens (CSS variables)
 - [ ] Font-family: 'Inter'
-- [ ] Couleur primary: #2E72C9 (ou #004ac6 pour login)
-- [ ] Couleur error: #ba1a1a
-- [ ] Spacing: multiples de 4px
+- [ ] Primary color: #2E72C9 (or #004ac6 for login)
+- [ ] Error color: #ba1a1a
+- [ ] Spacing: multiples of 4px
 - [ ] Border-radius: 6/8/12/16px
 - [ ] Transitions: 0.15s (buttons), 0.2s (standard), 0.3s (special)
-- [ ] Heights: 32/40/48/56/64px selon composant
-- [ ] Z-index: utilise les layers définis
-- [ ] Accessibilité: ARIA labels, keyboard nav
+- [ ] Heights: 32/40/48/56/64px depending on the component
+- [ ] Z-index: uses the defined layers
+- [ ] Accessibility: ARIA labels, keyboard nav
 
 ---
 
 ## 🎯 Quick Reference
 
-### Couleurs les Plus Utilisées
+### Most Used Colors
 - Primary: `#2E72C9`
 - Text: `#191c1e`
 - Background: `#f7f9fb`
 - Border: `#e5e7eb`
 - Error: `#ba1a1a`
 
-### Dimensions les Plus Utilisées
+### Most Used Dimensions
 - Input/Button: `40px`
 - Toolbar: `56px`
 - Topbar: `64px`
 - Card padding: `24px`
-- Gap standard: `16px`
+- Standard gap: `16px`
 
 ### Transitions
 - Fast: `0.15s` (buttons)
@@ -948,21 +948,21 @@ transition: width 0.5s ease;
 
 ## 📚 Sources
 
-Ce template combine:
-1. DESIGN_RULES.md (règles principales)
-2. DESKTOP_RULES.md (bureau)
-3. WINDOW_DESIGN_RULES.md (fenêtres)
-4. LOGIN_2FA_RULES.md (authentification)
-5. homevault-desktop.html (référence HTML)
-6. homevault-login-2fa.html (référence login)
+This template combines:
+1. DESIGN_RULES.md (main rules)
+2. DESKTOP_RULES.md (desktop)
+3. WINDOW_DESIGN_RULES.md (windows)
+4. LOGIN_2FA_RULES.md (authentication)
+5. homevault-desktop.html (HTML reference)
+6. homevault-login-2fa.html (login reference)
 
-**Total:** 15 fichiers sources, ~12000 lignes de règles
+**Total:** 15 source files, ~12000 lines of rules
 
 ---
 
 **Version:** 2.0  
 **Date:** 2026-07-02  
-**Status:** ✅ Complet et vérifié  
-**Utilisation:** Référence unique pour développement HomeVault
+**Status:** ✅ Complete and verified  
+**Usage:** Single reference for HomeVault development
 
-🎨 **Template de Design HomeVault - Référence Complète**
+🎨 **HomeVault Design Template - Complete Reference**

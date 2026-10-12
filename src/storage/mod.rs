@@ -23,6 +23,7 @@ pub mod repository;
 pub mod restic_repo;
 pub mod restic_schedule_repo;
 pub mod session_repo;
+pub mod setup_state_repo;
 pub mod share_link_repo;
 pub mod share_perm_repo;
 pub mod sync_job_repo;
@@ -59,6 +60,7 @@ pub use ransomware_repo::{
 pub use repository::Repository;
 pub use restic_schedule_repo::{ResticSchedule, ResticScheduleRepository};
 pub use session_repo::SessionRepository;
+pub use setup_state_repo::{SetupState, SetupStateRepository};
 pub use share_link_repo::{ShareLink, ShareLinkRepository};
 pub use share_perm_repo::SharePermissionRepository;
 pub use transactions::TransactionalService;

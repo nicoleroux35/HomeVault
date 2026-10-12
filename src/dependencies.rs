@@ -11,12 +11,11 @@
 //!
 //! Every `package` named below is asserted to appear in `installer/install.sh`
 //! by the test at the bottom of this file, so the two never drift apart. The
-//! same test module also keeps `install.sh`'s *embedded* copies of the systemd
-//! unit and of the udiskie automount config identical to the tracked
-//! `installer/homevault.service` and `installer/setup-automount.sh` — a
-//! `curl | sudo bash` install has no checkout on disk and therefore ships the
-//! embedded copy, which nothing would otherwise compare against the file the
-//! docs describe.
+//! same test module also pins the systemd unit and the udiskie automount
+//! config `install.sh` writes inline: `installer/install.sh` is the *only*
+//! installer file (a `curl | sudo bash` install has no checkout on disk), so
+//! those heredocs are the single source of truth — the tests assert their
+//! critical directives directly instead of comparing against a tracked file.
 //!
 //! For daemon-backed dependencies (docker, smbd, vsftpd, nfs-server,
 //! snmpd, the dedicated homevault-sftp instance), being *installed* isn't
@@ -984,10 +983,8 @@ mod tests {
         body
     }
 
-    /// Directives only. Comments and blank lines are excluded: they word the
-    /// same intent differently in the two copies (a comment inside a shell
-    /// heredoc has to escape what a plain file does not) and carry no
-    /// behaviour to keep in sync.
+    /// Directives only. Comments and blank lines are excluded: the heredocs
+    /// are shell snippets whose comments carry no behaviour to keep in sync.
     fn directives<'a>(lines: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
         lines
             .into_iter()
@@ -1002,69 +999,96 @@ mod tests {
     }
 
     #[test]
-    fn test_embedded_unit_matches_the_tracked_service_file() {
-        // A checkout install copies `installer/homevault.service` verbatim,
-        // but a `curl | sudo bash` install has no checkout on disk and gets
-        // the unit `install.sh` embeds instead — while CLAUDE.md and
-        // docs/ARCHITECTURE.md keep describing the tracked file. Keep the
-        // two in lockstep: every directive must exist on both sides, under
-        // each side's spelling of the same value (shell variable vs. the
-        // value it expands to).
+    fn test_install_sh_embeds_a_complete_systemd_unit() {
+        // `install.sh` is the only installer file: the systemd unit it writes
+        // inline (there is no sibling `homevault.service` any more) is the
+        // single source of truth. Pin the load-bearing directives — a silently
+        // dropped `ExecStart`/`EnvironmentFile`/... would otherwise only
+        // surface on a fresh deploy.
         let install = installer_file("install.sh");
-        let tracked = installer_file("homevault.service");
-
-        let to_source = |line: &str| {
-            line.replace("/opt/homevault", "$INSTALL_DIR")
-                .replace("/var/lib/homevault", "$DATA_DIR")
-                .replace("/etc/homevault.env", "$ENV_FILE")
-                .replace("PORT=8080", "PORT=$PORT")
-                .replace("HTTPS_PORT=8443", "HTTPS_PORT=$HTTPS_PORT")
-        };
-        let to_value = |line: &str| {
-            line.replace("$INSTALL_DIR", "/opt/homevault")
-                .replace("$DATA_DIR", "/var/lib/homevault")
-                .replace("$ENV_FILE", "/etc/homevault.env")
-                .replace("$HTTPS_PORT", "8443")
-                .replace("$PORT", "8080")
-        };
-
-        let embedded = directives(heredoc_body(&install, "cat > \"$SERVICE_FILE\" <<EOF"));
-        let tracked_dirs = directives(tracked.lines());
-
-        for want in tracked_dirs.iter().map(|l| to_source(l)) {
+        let unit = directives(heredoc_body(&install, "cat > \"$SERVICE_FILE\" <<EOF"));
+        for want in [
+            "Description=HomeVault Server",
+            "After=network.target",
+            "Type=simple",
+            "WorkingDirectory=$INSTALL_DIR",
+            "ExecStart=$INSTALL_DIR/homevault",
+            "Restart=on-failure",
+            "Environment=\"PORT=$PORT\"",
+            "Environment=\"DATA_DIRECTORY=$DATA_DIR\"",
+            "EnvironmentFile=-$ENV_FILE",
+            "WantedBy=multi-user.target",
+        ] {
             assert!(
-                embedded.iter().any(|have| *have == want),
-                "installer/homevault.service directive `{want}` is missing from the unit install.sh embeds"
+                unit.contains(&want),
+                "the systemd unit install.sh writes is missing `{want}`"
             );
         }
-        for have in &embedded {
-            let value = to_value(have);
+        // HomeVault deliberately runs as root (see docs/ARCHITECTURE.md):
+        // the unit must not grow a User=/Group= line.
+        assert!(
+            !unit
+                .iter()
+                .any(|l| l.starts_with("User=") || l.starts_with("Group=")),
+            "the HomeVault unit must not pin User=/Group= — it runs as root by design"
+        );
+    }
+
+    #[test]
+    fn test_install_sh_embeds_the_automount_config() {
+        // Same single-file contract as the unit above: the udiskie config and
+        // daemon unit are written inline, so assert their load-bearing keys.
+        let install = installer_file("install.sh");
+
+        let conf = directives(heredoc_body(
+            &install,
+            "cat > /etc/homevault/udiskie.conf <<",
+        ));
+        for want in [
+            "[General]",
+            "automount = true",
+            "ignore_internal = true",
+            "[Mount Options]",
+        ] {
             assert!(
-                tracked_dirs.iter().any(|want| *want == value),
-                "install.sh's embedded unit directive `{have}` does not exist in installer/homevault.service (`{value}`)"
+                conf.contains(&want),
+                "the udiskie config install.sh writes is missing `{want}`"
+            );
+        }
+
+        let service = directives(heredoc_body(
+            &install,
+            "cat > /etc/systemd/system/udiskie.service <<",
+        ));
+        for want in [
+            "After=udisks2.service",
+            "ExecStart=/usr/bin/udiskie -c /etc/homevault/udiskie.conf -n",
+        ] {
+            assert!(
+                service.contains(&want),
+                "the udiskie unit install.sh writes is missing `{want}`"
             );
         }
     }
 
     #[test]
-    fn test_embedded_automount_matches_the_tracked_helper() {
-        // Same drift risk as the unit above: the udiskie config and daemon
-        // unit are written inline so a piped install can configure
-        // automount, while a checkout runs `installer/setup-automount.sh`.
-        // The two bodies must stay byte-identical (no variable indirection
-        // here, so a plain equality check is the strongest one).
-        let install = installer_file("install.sh");
-        let helper = installer_file("setup-automount.sh");
-
-        for target in [
-            "/etc/homevault/udiskie.conf",
-            "/etc/systemd/system/udiskie.service",
+    fn test_install_sh_is_self_contained() {
+        // The retired siblings (`homevault.service`, `setup-automount.sh`,
+        // `optional-packages.conf`, the packaging `Makefile`) were folded into
+        // install.sh. It must never grow a dependency on one of them again —
+        // a piped `curl | sudo bash` install has no checkout on disk.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/installer/install.sh");
+        let install = std::fs::read_to_string(path).unwrap();
+        for sibling in [
+            "installer/homevault.service",
+            "installer/setup-automount.sh",
+            "installer/optional-packages.conf",
+            "installer/Makefile",
+            "SCRIPT_DIR",
         ] {
-            let marker = format!("cat > {target} <<");
-            assert_eq!(
-                heredoc_body(&install, &marker),
-                heredoc_body(&helper, &marker),
-                "install.sh's embedded {target} drifted from installer/setup-automount.sh — keep the two bodies identical"
+            assert!(
+                !install.contains(sibling),
+                "install.sh still references `{sibling}` — it must stay self-contained"
             );
         }
     }

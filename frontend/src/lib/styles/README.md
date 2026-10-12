@@ -1,17 +1,17 @@
 # Styles Directory
 
-## Fichiers
+## Files
 
-- `desktop-orchis-enhanced.css` - Styles CSS améliorés pour le desktop avec effets Orchis
+- `desktop-orchis-enhanced.css` - Enhanced CSS styles for the desktop with Orchis effects
 
 ## Usage
 
-Importer dans `main.ts` ou au niveau global :
+Import in `main.ts` or at the global level:
 
 \`\`\`typescript
 import '$lib/styles/desktop-orchis-enhanced.css';
 \`\`\`
 
-## Classes disponibles
+## Available classes
 
-Voir `desktop-orchis-enhanced.css` pour la liste complète des classes utilitaires.
+See `desktop-orchis-enhanced.css` for the full list of utility classes.

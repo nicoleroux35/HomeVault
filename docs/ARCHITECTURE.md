@@ -63,7 +63,15 @@ npm run check      # svelte-check (type checking)
 so after a frontend-only rebuild (`npm run build`) or a `.toml` edit, a plain
 `cargo build` is a no-op and the stale bundle stays embedded. Force it:
 `touch src/handlers/spa.rs` (frontend) / `touch src/i18n.rs` (i18n) before
-`cargo build --release`.
+`cargo build --release`. This covers the pre-compressed `.br` / `.gz` siblings
+too — they are written by `npm run build` (npm `postbuild`) *after* the last
+`cargo build` may have embedded `static/`, so a non-clean release build can
+silently ship uncompressed assets. `installer/install.sh --package` and
+`compile_backend_release.sh` build from clean, so releases are unaffected.
+
+`npm run build` also runs `prebuild` (`generate-sprite.mjs`, regenerating the
+icon sprite from the sources) — see
+[Frontend Structure](./FRONTEND.md) → Icon sprite.
 
 ### First run
 
@@ -136,10 +144,48 @@ feature (`handlers/wallpapers.rs`, `/api/wallpapers*`, `config::paths::wallpaper
 the `user_wallpapers` table) was removed 2026-09-04 — see
 [guides/wallpapers.md](./guides/wallpapers.md).
 
+### Asset caching, validators and pre-compression (`spa.rs`)
+
+`spa::build_assets()` walks the embedded tree once (lazily) into a
+`path → Asset` table, so a request costs one hash lookup. Two things are
+derived per file and matter for correctness:
+
+- **`ETag`** — a truncated SHA-256 of the *identity* bytes, with a `-br` /
+  `-gz` suffix per content coding. Without a validator a browser can never
+  issue `If-None-Match`, so before this change `/wallpapers/*.webp` (several
+  MB) and the icon sprite were re-downloaded on every visit. `spa` now answers
+  a matching `If-None-Match` with `304` and no body. Keep the per-coding ETags
+  distinct: a cache holding the identity body must not validate a `br`
+  request.
+- **`Cache-Control`**, chosen per route (there is deliberately **no** blanket
+  layer in `create_app` — one applied after the merges would also pin API
+  responses and `index.html` for a year):
+  - `CACHE_IMMUTABLE` (`public, max-age=31536000, immutable`) for
+    `/assets/*`, `/fonts/*` (content-hashed by Vite), `/wallpapers/*` and
+    `/static/*` (release-scoped, hand-authored).
+  - `CACHE_REVALIDATE` (`public, max-age=86400`) for `/sprite.svg` and
+    `/sprite-unified.svg`: their URL is fixed but their content is regenerated
+    from the sources on every build, so `immutable` would pin a stale sprite
+    (blank new icons) in every browser.
+  - none for `serve_dist_file` (`/manifest.json`, `/favicon.svg`, `/sw.js`) and
+    none for `serve_spa` (`index.html`): a stale `index.html` or `sw.js` would
+    strand an upgraded client on the previous release.
+
+**Pre-compressed variants.** `frontend/scripts/precompress-dist.mjs` (npm
+`postbuild`, so it runs after every `vite build`) writes a `.br` and a `.gz`
+sibling next to each compressible file under `static/dist`. The same
+`include_dir!` embeds them, and `spa` serves them when the client's
+`Accept-Encoding` allows, setting `Content-Encoding` + `Vary: accept-encoding`.
+The `Content-Encoding` header is also what makes
+`tower_http::compression::CompressionLayer` skip the response — it never
+re-compresses an already-encoded body — so the compressor is now only a
+fallback for files that were too small to bother with. Compressed siblings are
+never addressable directly (a `.br` path 404s).
+
 ## Deployment model (runs as root)
 
 Since commit `2d5ba40` (2026-09-04) there is **no dedicated `homevault` service
-account**. `installer/homevault.service` has no `User=`/`Group=` so systemd runs
+account**. The systemd unit `installer/install.sh` writes has no `User=`/`Group=` so systemd runs
 it as **root**; `installer/install.sh` only creates `/home/homevault` as a
 home-folder root and the first admin's real Linux account at setup. Consequences:
 
@@ -154,12 +200,27 @@ home-folder root and the first admin's real Linux account at setup. Consequences
   (e.g. `nicolas`), so `sudo`-needing features WARN at startup and degrade
   gracefully; that is expected in development.
 
+### Identity & first-run state (2026-10-13)
+
+The administrator accounts and the first-run setup state both live in the
+SQLite database at `{DATA_DIRECTORY}/data/homevault.db` (default
+`/var/lib/homevault/data`): `users` answers "does an admin exist?" and the
+singleton `setup_state` row (migration 037) holds the hardware fingerprint
+recorded at setup. There are **no** `.setup_complete`/`.system_hash` marker
+files any more. Pointing `DATA_DIRECTORY` at a persistent volume therefore
+makes the whole identity survive a reinstall of the system disk. See
+[Setup Wizard](./guides/setup-wizard.md).
+
 ## Installer — `installer/install.sh`
 
-One entry point, meant to be piped onto a fresh machine:
+A **single self-contained file** — the only installer in the repo. Packages,
+the systemd unit, the udiskie automount config, the download and the final
+verification all live in it; nothing is read from a sibling file (the retired
+`homevault.service`, `setup-automount.sh`, `optional-packages.conf` and
+packaging `Makefile` were folded in). Meant to be piped onto a fresh machine:
 
 ```bash
-curl -fsSL https://codeberg.org/nicleroux35/HomeVault-Svelt/raw/branch/main/installer/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/nicoleroux35/HomeVault/main/installer/install.sh | sudo bash
 ```
 
 Five steps, in order (`STEP_TOTAL` in the script):
@@ -172,9 +233,12 @@ Five steps, in order (`STEP_TOTAL` in the script):
    failing as a whole. Ollama (the AI assistant's runtime) is not an apt
    package: it is installed best-effort through its own official script, with
    no model downloaded.
-3. **Application** — downloads the release archive (`HV_RELEASE_URL`, or `$1`
-   for an already-downloaded file), extracts it to `/opt/homevault`, installs
-   the systemd unit and the udiskie automount, optionally enables HTTPS.
+3. **Application** — downloads the pre-built binary from the project's GitHub
+   Releases, as the per-architecture asset `homevault-<arch>.tar.gz`
+   (`HV_RELEASE_URL` overrides the URL, `HV_RELEASE_SHA256` optionally pins the
+   checksum, `$1` uses an already-downloaded file), extracts it to
+   `/opt/homevault`, writes the systemd unit and the udiskie automount, and
+   optionally enables HTTPS.
 4. **Verification** — re-checks the packages, the service, the HTTP endpoint on
    `PORT` and that the binary really landed in `/opt/homevault`. For Ollama it
    goes further than presence: the `ollama` unit must be active and
@@ -183,11 +247,25 @@ Five steps, in order (`STEP_TOTAL` in the script):
 5. **Done** — English summary plus the LAN address and the public address
    (the latter only works with port forwarding).
 
-Because a piped run has no checkout on disk, `install.sh` carries embedded
-copies of `installer/homevault.service` and of the udiskie automount config;
-`src/dependencies.rs`'s tests keep those copies identical to the tracked files.
-A checkout install (`sudo bash installer/install.sh`) copies/runs the tracked
-files verbatim instead.
+Maintainers produce the release assets with the same file, from a checkout
+(needs Rust + Node ≥ 20):
+
+```bash
+./installer/install.sh --package   # installer/release/homevault-<arch>.tar.gz (+ .sha256)
+```
+
+The archive is a single `homevault` binary that already contains the built UI,
+so both frontend build steps run before `cargo build` and are part of the
+release: `npm run build` regenerates the **subset** icon sprite (`prebuild`,
+see [FRONTEND.md](./FRONTEND.md) → Icon sprite) and writes the pre-compressed
+`.br` / `.gz` siblings (`postbuild`, see the SPA-serving section above).
+Skipping or reordering that would ship a full-sprite, on-the-fly-compressed
+binary.
+
+`src/dependencies.rs`'s tests keep the two sides honest: every package in the
+runtime inventory must appear in `install.sh`, the inline systemd unit and
+udiskie config must keep their load-bearing directives, and `install.sh` is
+asserted to stay free of any reference to a sibling installer file.
 
 ## Auth model (summary)
 

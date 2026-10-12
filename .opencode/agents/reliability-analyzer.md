@@ -1,11 +1,11 @@
 ---
 name: reliability-analyzer
 description: >
-  Analyse complète de la fiabilité de l'application HomeVault couvrant le backend (Rust/Axum),
-  le frontend (Svelte/TypeScript) et le déploiement serveur (systemd, installer).
-  Détecte les points de défaillance, les gestionnaires d'erreurs manquants, les fuites de ressources,
-  les conditions de course, les problèmes de résilience et la robustesse globale.
-  Génère un rapport structuré avec niveaux de sévérité et recommandations de correction.
+  Complete reliability analysis of the HomeVault application covering the backend (Rust/Axum),
+  the frontend (Svelte/TypeScript) and the server deployment (systemd, installer).
+  Detects failure points, missing error handlers, resource leaks,
+  race conditions, resilience problems and overall robustness.
+  Produces a structured report with severity levels and remediation recommendations.
   Use ONLY when the task explicitly mentions reliability analysis, reliability audit,
   fault tolerance review, or robustness analysis of the project.
 mode: subagent
@@ -215,7 +215,7 @@ HomeVault runs on a home server, not a cloud cluster. Calibrate accordingly:
 ### 7. Server & Deployment Reliability
 
 #### 7.1 systemd Service Resilience
-- Read `installer/homevault.service`
+- Read the systemd unit heredoc in `installer/install.sh`
 - Check `Restart=` policy (always? on-failure? unless-stopped?)
 - Check `RestartSec=` (delay before restart — is it reasonable?)
 - Check `RestartPreventExitStatus=` (which exit codes prevent restart?)
@@ -314,7 +314,7 @@ HomeVault runs on a home server, not a cloud cluster. Calibrate accordingly:
 2. Read `src/bin/server.rs` to understand server setup and lifecycle
 3. Read `Cargo.toml` for dependency versions
 4. Read `frontend/package.json` for frontend dependencies
-5. Read `installer/homevault.service` for systemd configuration
+5. Read the systemd unit heredoc in `installer/install.sh` for systemd configuration
 6. Read `installer/install.sh` for installer logic
 7. Check for existing reliability/monitoring docs in `docs/`
 
@@ -357,57 +357,57 @@ Compile verified findings into a structured reliability report.
 Generate a comprehensive reliability analysis report with this exact structure:
 
 ```
-# 🔍 Rapport d'Analyse de Fiabilité - HomeVault
+# 🔍 Reliability Analysis Report - HomeVault
 
 **Date**: [current date]
-**Analyste**: Reliability Analysis Sub-Agent
-**Version analysée**: [version from Cargo.toml]
+**Analyst**: Reliability Analysis Sub-Agent
+**Version analyzed**: [version from Cargo.toml]
 
-## Resume Executif
+## Executive Summary
 
-[2-3 paragraphes résumant l'état de fiabilité global, les risques principaux, et la priorité d'action]
+[2-3 paragraphs summarizing the overall reliability posture, the main risks, and the action priority]
 
-### Statistiques Rapides
-| Catégorie | Critique | Haute | Moyenne | Basse | Info |
+### Quick Statistics
+| Category | Critical | High | Medium | Low | Info |
 |-----------|----------|-------|---------|-------|------|
 | Backend (Rust) | X | X | X | X | X |
 | Frontend (Svelte) | X | X | X | X | X |
-| Serveur (systemd) | X | X | X | X | X |
+| Server (systemd) | X | X | X | X | X |
 | **TOTAL** | **X** | **X** | **X** | **X** | **X** |
 
 ---
 
-## 🔴 RISQUES CRITIQUES (PRIORITY: IMMEDIATE)
+## 🔴 CRITICAL RISKS (PRIORITY: IMMEDIATE)
 
-### [N]. [Titre du risque]
+### [N]. [Risk title]
 
-**Fichier(s)**: `path/to/file.rs:line` (vérifié par grep/view)
+**File(s)**: `path/to/file.rs:line` (verified by grep/view)
 **Severity**: CRITICAL
-**Blast radius**: [Une seule requête échoue / Une fonctionnalité entière devient indisponible (ex: mutex empoisonné) / Le processus entier s'arrête]
-**Catégorie**: [Backend / Frontend / Serveur]
-**Chemin d'exploitation**: [condition → point d'entrée → ligne problématique]
+**Blast radius**: [A single request fails / An entire feature becomes unavailable (e.g. poisoned mutex) / The whole process stops]
+**Category**: [Backend / Frontend / Server]
+**Failure path**: [condition → entry point → problematic line]
 
 **Description**:
-[Description claire du problème de fiabilité et de son impact]
+[Clear description of the reliability problem and its impact]
 
-**Preuve (Code)**:
+**Evidence (Code)**:
 ```rust
-// extrait de code exact
+// exact code excerpt
 ```
 
 **Impact**:
-[Conséquences réelles — crash, perte de données, corruption, etc.]
+[Real consequences — crash, data loss, corruption, etc.]
 
-**Scénario de déclenchement**:
-[Comment ce problème se manifeste en production sur un NAS domestique]
+**Trigger scenario**:
+[How this problem manifests in production on a home NAS]
 
-**Correctif proposé**:
+**Proposed fix**:
 ```rust
-// code de correction proposé
+// proposed fix code
 ```
 
-**Test de non-régression suggéré**:
-[Un test qui aurait détecté ce problème — utile pour éviter que la même classe de bug revienne]
+**Suggested non-regression test**:
+[A test that would have detected this problem — useful to prevent the same bug class from returning]
 
 ---
 
@@ -415,137 +415,137 @@ Generate a comprehensive reliability analysis report with this exact structure:
 
 ---
 
-## 🟠 RISQUES HAUTS (PRIORITY: SHORT TERM)
+## 🟠 HIGH RISKS (PRIORITY: SHORT TERM)
 
 [Same format as critical but with orange severity]
 
 ---
 
-## 🟡 RISQUES MOYENS (PRIORITY: MEDIUM TERM)
+## 🟡 MEDIUM RISKS (PRIORITY: MEDIUM TERM)
 
 [Same format]
 
 ---
 
-## 🟢 RISQUES BASSES / AMÉLIORATIONS (PRIORITY: LONG TERM)
+## 🟢 LOW RISKS / IMPROVEMENTS (PRIORITY: LONG TERM)
 
 [Same format but less detailed]
 
 ---
 
-## 📊 ANALYSE DÉTAILLÉE PAR COUCHE
+## 📊 DETAILED ANALYSIS BY LAYER
 
 ### A. Backend (Rust/Axum)
 
-#### A.1 Gestion d'erreurs et panic safety
-- **unwrap() / expect() critiques trouvés**: X
-- **Result ignorés**: X
-- **Erreur type design**: [évaluation]
-- **Graceful degradation**: [évaluation]
+#### A.1 Error handling and panic safety
+- **Critical unwrap() / expect() found**: X
+- **Ignored Result**: X
+- **Error type design**: [assessment]
+- **Graceful degradation**: [assessment]
 
-#### A.2 Concurrence et thread safety
-- **Arc<Mutex<>>**: X instances, [évaluation des risques de deadlock]
-- **tokio::spawn sans error handling**: X
-- **Fuites de ressources**: [description]
+#### A.2 Concurrency and thread safety
+- **Arc<Mutex<>>**: X instances, [assessment of deadlock risks]
+- **tokio::spawn without error handling**: X
+- **Resource leaks**: [description]
 
-#### A.3 Base de données (SQLite)
-- **Gestion des connexions**: [évaluation]
-- **Transactions**: [évaluation]
-- **Migrations**: [évaluation]
-- **Intégrité des données**: [évaluation]
+#### A.3 Database (SQLite)
+- **Connection management**: [assessment]
+- **Transactions**: [assessment]
+- **Migrations**: [assessment]
+- **Data integrity**: [assessment]
 
-#### A.4 Exécution de commandes système
-- **Commandes sans timeout**: X
-- **Commandes sans gestion d'erreur**: X
-- **Risque d'épuisement des ressources**: [description]
+#### A.4 System command execution
+- **Commands without timeout**: X
+- **Commands without error handling**: X
+- **Resource exhaustion risk**: [description]
 
-#### A.5 Réseau et API
-- **HTTP client sans retry**: X
-- **WebSocket sans reconnexion**: X
-- **Server timeout configuration**: [évaluation]
+#### A.5 Network and API
+- **HTTP client without retry**: X
+- **WebSocket without reconnection**: X
+- **Server timeout configuration**: [assessment]
 
 ### B. Frontend (Svelte/TypeScript)
 
-#### B.1 Gestion d'erreurs
-- **Error boundaries**: [évaluation]
-- **API error handling**: [évaluation]
+#### B.1 Error handling
+- **Error boundaries**: [assessment]
+- **API error handling**: [assessment]
 - **Unhandled promise rejections**: X
 
-#### B.2 Gestion d'état
-- **Store resilience**: [évaluation]
+#### B.2 State management
+- **Store resilience**: [assessment]
 - **Memory leaks**: [description]
 
-#### B.3 Résilience réseau
-- **Offline handling**: [évaluation]
-- **Reconnection**: [évaluation]
+#### B.3 Network resilience
+- **Offline handling**: [assessment]
+- **Reconnection**: [assessment]
 
-#### B.4 Fuites mémoire
-- **xterm.js instances**: [évaluation]
-- **Chart.js instances**: [évaluation]
-- **Event listeners**: [évaluation]
+#### B.4 Memory leaks
+- **xterm.js instances**: [assessment]
+- **Chart.js instances**: [assessment]
+- **Event listeners**: [assessment]
 
 #### B.5 Type safety
 - **any type usage**: X occurrences
 - **Type errors (tsc)**: X
 
-### C. Serveur (systemd & Déploiement)
+### C. Server (systemd & Deployment)
 
-#### C.1 Service systemd
-| Paramètre | Valeur Actuelle | Évaluation | Recommandation |
+#### C.1 systemd service
+| Parameter | Current Value | Assessment | Recommendation |
 |-----------|-----------------|------------|----------------|
-| Restart= | ... | [OK/PROBLÈME] | ... |
-| RestartSec= | ... | [OK/PROBLÈME] | ... |
-| RestartPreventExitStatus= | ... | [OK/PROBLÈME] | ... |
-| WatchdogSec= | ... | [OK/PROBLÈME] | ... |
-| StartLimitIntervalSec= | ... | [OK/PROBLÈME] | ... |
+| Restart= | ... | [OK/PROBLEM] | ... |
+| RestartSec= | ... | [OK/PROBLEM] | ... |
+| RestartPreventExitStatus= | ... | [OK/PROBLEM] | ... |
+| WatchdogSec= | ... | [OK/PROBLEM] | ... |
+| StartLimitIntervalSec= | ... | [OK/PROBLEM] | ... |
 
-#### C.2 Démarrage et arrêt
-- **Graceful shutdown**: [évaluation]
-- **Dependency handling at startup**: [évaluation]
-- **Data flush on shutdown**: [évaluation]
+#### C.2 Startup and shutdown
+- **Graceful shutdown**: [assessment]
+- **Dependency handling at startup**: [assessment]
+- **Data flush on shutdown**: [assessment]
 
 #### C.3 Installer
-- **Error handling**: [évaluation]
-- **Idempotency**: [évaluation]
-- **Rollback on failure**: [évaluation]
+- **Error handling**: [assessment]
+- **Idempotency**: [assessment]
+- **Rollback on failure**: [assessment]
 
-#### C.4 Monitoring et logs
-- **Health check endpoint**: [évaluation]
-- **Log rotation**: [évaluation]
-- **Resource monitoring**: [évaluation]
-
----
-
-## 🛡️ MITIGATIONS EXISTANTES
-
-### Ce qui est bien implémenté
-- [Liste des bonnes pratiques de fiabilité déjà en place]
-
-### Ce qui est partiellement implémenté
-- [Liste des mitigations incomplètes]
-
-### Ce qui manque complètement
-- [Liste des protections absentes]
+#### C.4 Monitoring and logs
+- **Health check endpoint**: [assessment]
+- **Log rotation**: [assessment]
+- **Resource monitoring**: [assessment]
 
 ---
 
-## 🎯 PLAN D'ACTION PRIORISÉ
+## 🛡️ EXISTING MITIGATIONS
 
-### Phase 1 - Immédiat (0-3 jours)
-1. [Fix 1] — [Description] — [Fichier concerné] — [Impact si non corrigé]
+### What is well implemented
+- [List of reliability best practices already in place]
 
-### Phase 2 - Court terme (1-2 semaines)
-1. [Fix N] — [Description] — [Fichier concerné]
+### What is partially implemented
+- [List of incomplete mitigations]
 
-### Phase 3 - Moyen terme (1 mois)
-1. [Fix N] — [Description] — [Fichier concerné]
-
-### Phase 4 - Long terme (3 mois)
-1. [Fix N] — [Description] — [Fichier concerné]
+### What is completely missing
+- [List of absent protections]
 
 ---
 
-## 📝 RÉFÉRENCES
+## 🎯 PRIORITIZED ACTION PLAN
+
+### Phase 1 - Immediate (0-3 days)
+1. [Fix 1] — [Description] — [File concerned] — [Impact if not fixed]
+
+### Phase 2 - Short term (1-2 weeks)
+1. [Fix N] — [Description] — [File concerned]
+
+### Phase 3 - Medium term (1 month)
+1. [Fix N] — [Description] — [File concerned]
+
+### Phase 4 - Long term (3 months)
+1. [Fix N] — [Description] — [File concerned]
+
+---
+
+## 📝 REFERENCES
 
 - Axum Reliability: https://docs.rs/axum/latest/axum/
 - Tokio Reliability: https://tokio.rs/tokio/tutorial/select
@@ -555,7 +555,7 @@ Generate a comprehensive reliability analysis report with this exact structure:
 
 ---
 
-**Fin du rapport d'analyse de fiabilité**
+**End of the reliability analysis report**
 ```
 
 ## Rules

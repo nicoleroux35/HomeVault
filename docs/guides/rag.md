@@ -44,7 +44,7 @@ context block to the system prompt. Falls back to plain prompt on embedding fail
 | Source | ID prefix | Content |
 |--------|-----------|---------|
 | App catalog | `catalog:<app_id>` | Manifest fields: name, description (4 langs), category, developer, website, port, GPU, arch |
-| Feature docs | `feature:<name>` | 20 feature guides: dashboard, explorer, storage, docker, virtual-machines, backup, users, quotas, shares, cloudsync, network, health, terminal, security, tls, vpn, rescue, settings, journal, activity |
+| Feature docs | `feature:<name>` | **45** feature docs — **one per guide in `docs/guides/`**, minus `design-system.md` (developer-only, deliberately excluded). The ids are not always the guide's filename (`backup` ← `backup-restic.md`, `virtual-machines` ← `vm.md`, `setup` ← `setup-wizard.md`, `cloudsync` ← `cloud-sync.md`). Full list, and the id → guide mapping that is asserted in both directions: `src/rag_indexers.rs::tests::FEATURE_GUIDES`. |
 | i18n translations | `i18n:<lang>:<section>` | All TOML keys grouped by section, per language (en/fr/de/es), read from `i18n::embedded_translation_sources()` — the bundles compiled into the binary |
 
 ## Frontend
@@ -65,6 +65,21 @@ context block to the system prompt. Falls back to plain prompt on embedding fail
   `src/rag_indexers.rs`): every source (`catalog`/`feature`/`i18n`) produces
   documents, chunks link to documents, and re-indexing upserts without
   duplicating documents.
+- **Guide coverage is enforced by a test, not by this prose.**
+  `test_every_guide_has_a_feature_doc` (`src/rag_indexers.rs`) enumerates
+  `docs/guides/*.md` and requires each one — except the `DEVELOPER_ONLY_GUIDES`
+  list, currently just `design-system.md` — to be claimed by exactly one entry
+  of `FEATURE_GUIDES`, which is itself asserted to match `feature_docs()`
+  id-for-id. Adding a guide without indexing it fails `cargo test`.
+  **Why it exists:** the rule used to be prose only, and by 2026-10-12 **25 of
+  the 45 indexable guides** (46 files minus `design-system.md`) had never been
+  indexed — the assistant answered "I don't know"
+  for shipped features (Syncthing, downloader, notifications, the desktop shell,
+  LUKS encryption, RAID, the cache tier, widgets…).
+- `test_feature_docs_are_unique_and_substantive` rejects a duplicate id, a stub
+  body (< 200 chars), and any implementation detail leaking into the text
+  (`src/`, `.svelte`, backticks): these entries describe the product to a user,
+  not the checkout to a maintainer.
 - **Indexers never read app content from disk** (single-binary invariant):
   `index_catalog` uses the embedded `catalog/`, `index_features` is a `vec!`
   of literals, `index_i18n` uses `i18n::embedded_translation_sources()`.

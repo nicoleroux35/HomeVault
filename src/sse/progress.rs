@@ -24,8 +24,25 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 /// The type or category of a long-running job.
+///
+/// Wire shape: `{"type":"backup"}` for the built-in kinds and
+/// `{"type":"custom","name":"explorer_copy"}` for a feature job.
+///
+/// **The `content = "name"` half is load-bearing.** With plain internal
+/// tagging (`tag = "type"` only) a newtype variant wrapping a `String` cannot
+/// be serialized at all — serde refuses with "cannot serialize tagged newtype
+/// variant JobType::Custom containing a string", because the tagged map has
+/// nowhere to put a bare string. `Custom` is what every feature job uses
+/// (explorer copy/move, docker install/update, antivirus scan, rag index,
+/// vm create, rescue, cloud sync, ollama pull), so the fallout was: the SSE
+/// stream's `serde_json::to_string(&event).unwrap_or_default()` sent an
+/// **empty** `data:` payload the client's `JSON.parse` rejects, and
+/// `GET /api/progress/jobs` panicked inside the `json!` macro. Adjacent
+/// tagging leaves the built-in kinds' shape byte-identical and gives `Custom`
+/// a field of its own. Guarded by the serde round-trip tests at the bottom of
+/// this file — do not "simplify" this back to `tag` alone.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", content = "name", rename_all = "snake_case")]
 pub enum JobType {
     Backup,
     Restore,
@@ -278,16 +295,32 @@ impl ProgressManager {
         }
     }
 
-    /// Get current progress for a job
+    /// Get the current state of a job: its **last emitted event**.
+    ///
+    /// A polling client (`GET /api/progress/{job_id}/status`) gets the same
+    /// snapshot the activity feed and the SSE stream carry — the latest
+    /// percentage, message, byte counters and **state**, completed and failed
+    /// included.
+    ///
+    /// This previously synthesised a brand-new `Running` / `0 %` /
+    /// `"Waiting..."` event for whatever id happened to be in the map, so a
+    /// job that had completed, failed, or reported 87 % still read back as
+    /// "running, 0 %" for as long as it stayed tracked. Nothing consumed the
+    /// placeholder, which is why it went unnoticed.
+    ///
+    /// `None` when the id is unknown — never created, or already dropped by
+    /// [`Self::remove_job`] / [`Self::cleanup_old_jobs`].
     pub fn get_progress(&self, job_id: &str) -> Option<ProgressEvent> {
-        self.jobs.read().get(job_id).map(|_| {
-            ProgressEvent::new(
-                job_id.to_string(),
-                JobType::default(),
-                ProgressState::Running,
-                0.0,
-                "Waiting...",
-            )
+        self.jobs.read().get(job_id).map(|job| {
+            // `last_event` is seeded by `create_job*` and only ever
+            // overwritten, so the fallback below is unreachable in practice;
+            // it keeps the create-time seed honest rather than inventing a
+            // state, should the field ever become optional for real.
+            let seed_state = job.state.clone();
+            let seed_type = job.job_type.clone();
+            job.last_event.lock().clone().unwrap_or_else(|| {
+                ProgressEvent::new(job_id.to_string(), seed_type, seed_state, 0.0, "")
+            })
         })
     }
 
@@ -561,6 +594,148 @@ mod tests {
         let m = ProgressManager::new();
         let id = m.create_job(JobType::Backup, "start");
         assert_eq!(snap(&m.list_activity(), &id).owner, None);
+    }
+
+    #[test]
+    fn test_job_type_round_trips_through_json_for_every_variant() {
+        // `Custom` used to be unserialisable (see the note on `JobType`), which
+        // silently emptied the SSE payload and panicked `GET /api/progress/jobs`.
+        let variants = [
+            JobType::Backup,
+            JobType::Restore,
+            JobType::Verify,
+            JobType::Upload,
+            JobType::Download,
+            JobType::Sync,
+            JobType::CacheMover,
+            JobType::Custom("explorer_copy".to_string()),
+            JobType::default(),
+        ];
+        for variant in variants {
+            let json = serde_json::to_string(&variant)
+                .unwrap_or_else(|e| panic!("{variant:?} must serialize: {e}"));
+            let back: JobType = serde_json::from_str(&json).expect("and deserialize");
+            assert_eq!(back, variant, "round-trip through {json}");
+        }
+    }
+
+    #[test]
+    fn test_job_type_wire_shape_of_builtin_kinds_is_unchanged() {
+        assert_eq!(
+            serde_json::to_string(&JobType::Backup).unwrap(),
+            r#"{"type":"backup"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&JobType::CacheMover).unwrap(),
+            r#"{"type":"cache_mover"}"#
+        );
+    }
+
+    #[test]
+    fn test_job_type_custom_carries_its_slug() {
+        assert_eq!(
+            serde_json::to_string(&JobType::Custom("explorer_copy".to_string())).unwrap(),
+            r#"{"type":"custom","name":"explorer_copy"}"#
+        );
+    }
+
+    #[test]
+    fn test_progress_event_of_a_custom_job_serializes() {
+        // Exactly what `handle_progress_sse` does before handing the payload to
+        // the browser, and what `GET /api/progress/{id}/status` returns.
+        let event = ProgressEvent::new(
+            "job-1".to_string(),
+            JobType::Custom("explorer_copy".to_string()),
+            ProgressState::Running,
+            42.0,
+            "42/100 files",
+        );
+        let json = serde_json::to_string(&event).expect("a Custom-job event must serialize");
+        assert!(
+            !json.is_empty(),
+            "the SSE data payload must not come out empty"
+        );
+        let back: ProgressEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.job_type, JobType::Custom("explorer_copy".to_string()));
+        assert_eq!(back.progress, 42.0);
+        assert_eq!(back.message, "42/100 files");
+    }
+
+    #[test]
+    fn test_get_progress_returns_the_last_event_not_a_placeholder() {
+        // The regression: this used to answer `Running` / 0 % / "Waiting..."
+        // for *any* tracked id, discarding the real last event.
+        let m = ProgressManager::new();
+        let id = m.create_job(JobType::Sync, "Starting sync");
+        m.emit_progress_extended(
+            &id,
+            87.5,
+            "87.5 % of 4.2 GiB",
+            Some(3_950_000_000),
+            Some(4_509_715_660),
+            Some(12_000_000),
+        );
+
+        let event = m.get_progress(&id).expect("tracked job must be readable");
+        assert_eq!(event.state, ProgressState::Running);
+        assert_eq!(event.progress, 87.5);
+        assert_eq!(event.message, "87.5 % of 4.2 GiB");
+        assert_eq!(event.job_type, JobType::Sync);
+        assert_eq!(event.bytes_processed, Some(3_950_000_000));
+        assert_eq!(event.bytes_total, Some(4_509_715_660));
+        assert_eq!(event.speed_bps, Some(12_000_000));
+        assert_eq!(event.job_id, id);
+    }
+
+    #[test]
+    fn test_get_progress_seeded_event_before_any_emit() {
+        // Before the first `emit_progress*`, the answer is the create-time
+        // seed — the caller's own initial message, not a generic placeholder.
+        let m = ProgressManager::new();
+        let id = m.create_job(JobType::Backup, "Starting backup: /a -> /b");
+        let event = m.get_progress(&id).unwrap();
+        assert_eq!(event.state, ProgressState::Running);
+        assert_eq!(event.progress, 0.0);
+        assert_eq!(event.message, "Starting backup: /a -> /b");
+        assert_eq!(event.job_type, JobType::Backup);
+    }
+
+    #[test]
+    fn test_get_progress_reports_completion() {
+        let m = ProgressManager::new();
+        let id = m.create_job(JobType::Restore, "start");
+        m.emit_progress(&id, 60.0, "restoring");
+        assert!(m.complete_job(&id, "Restore finished"));
+
+        let event = m.get_progress(&id).unwrap();
+        assert_eq!(event.state, ProgressState::Completed);
+        assert_eq!(event.progress, 100.0);
+        assert_eq!(event.message, "Restore finished");
+    }
+
+    #[test]
+    fn test_get_progress_reports_failure() {
+        let m = ProgressManager::new();
+        let id = m.create_job(JobType::Verify, "start");
+        assert!(m.fail_job(&id, "checksum mismatch"));
+
+        let event = m.get_progress(&id).unwrap();
+        assert_eq!(event.state, ProgressState::Failed);
+        assert!(event.message.contains("checksum mismatch"));
+    }
+
+    #[test]
+    fn test_get_progress_unknown_job_is_none() {
+        let m = ProgressManager::new();
+        assert!(m.get_progress("never-created").is_none());
+
+        let id = m.create_job(JobType::Backup, "start");
+        assert!(m.get_progress(&id).is_some());
+        m.remove_job(&id);
+        assert!(
+            m.get_progress(&id).is_none(),
+            "a removed job must report None, not a stale event"
+        );
     }
 
     #[test]

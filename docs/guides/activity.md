@@ -54,6 +54,17 @@ Response — `ApiResponse<ActivityTask[]>`:
 - `create_job_with_owner(job_type, msg, owner)` — `create_job` delegates to it
   with `owner = None` (signature unchanged).
 - `list_activity() -> Vec<ActivitySnapshot>` — the feed's data source.
+- `get_progress(job_id)` returns the job's retained `last_event` (or `None` for
+  an unknown/removed id), so `GET /api/progress/{job_id}/status` agrees with the
+  feed and the SSE stream. It used to synthesise a fresh `Running` / 0 % /
+  `"Waiting..."` event for any tracked id (fixed 2026-10-12).
+- `JobType` is serde-**adjacently** tagged (`tag = "type"`, `content = "name"`):
+  `{"type":"backup"}` for the built-in kinds, `{"type":"custom","name":
+  "explorer_copy"}` for the feature slugs in the table above. Internal tagging
+  alone cannot serialize the `Custom` newtype variant, which emptied every SSE
+  payload for a feature job (fixed 2026-10-12 — see
+  [Explorer](./explorer.md) → Progress reporting). This feed is unaffected
+  either way: `job_type_kind` maps the enum to the slug client-side.
 - `cleanup_old_jobs` now keeps a job while its *live* state is `running`
   (previously it checked the never-updated create-time seed).
 

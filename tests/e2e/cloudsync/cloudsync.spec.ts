@@ -13,10 +13,15 @@
  * empty-source guards reject cleanly. It never runs a real `rclone`
  * transfer or mount.
  *
- * A real `add remote → list → delete` round-trip writes `/etc/rclone.conf`
- * (root-owned on a real deployment; not writable by the dev server), so
- * section 13 is **opt-in**: set `CLOUDSYNC_E2E_WRITABLE_CONF=1` only on a
- * host where the server process can write that file. It always removes the
+ * A real `add remote → list → delete` round-trip writes the config file the
+ * server resolved at request time: `/etc/rclone.conf` when nothing overrides
+ * it (root-owned on a real deployment; not writable by the dev server), or
+ * whatever `RCLONE_CONFIG` points at. Section 13 is therefore **opt-in**: set
+ * `CLOUDSYNC_E2E_WRITABLE_CONF=1` only on a host where the server process can
+ * write that file — or launch the server with
+ * `RCLONE_CONFIG=/tmp/hv-e2e/rclone.conf`, which makes the whole section safe
+ * and is the cheaper option since the path is no longer hardcoded
+ * (`rclone_config_path()` in `src/handlers/rclone.rs`). It always removes the
  * throwaway remote afterwards.
  *
  * Run (all):     npx playwright test tests/e2e/cloudsync/cloudsync.spec.ts --project=firefox
@@ -436,11 +441,11 @@ test.describe('6 — Accessibility & console', () => {
 });
 
 // ===========================================================================
-// 13. Real remote lifecycle — opt-in (needs a writable /etc/rclone.conf)
+// 13. Real remote lifecycle — opt-in (needs a writable config file)
 // ===========================================================================
 
 test.describe('13 — Real remote lifecycle (opt-in)', () => {
-  test.skip(!RUN_CONF, 'set CLOUDSYNC_E2E_WRITABLE_CONF=1 on a host where the server can write /etc/rclone.conf');
+  test.skip(!RUN_CONF, 'set CLOUDSYNC_E2E_WRITABLE_CONF=1 on a host where the server can write its rclone config (or start it with RCLONE_CONFIG=/tmp/…/rclone.conf)');
 
   test('13.1 — add a credential-less remote → verify listed → delete', async ({ page }) => {
     await gotoCloudSync(page, adminTokens);

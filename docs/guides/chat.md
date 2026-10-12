@@ -37,17 +37,15 @@ See [RAG Knowledge Base](./rag.md) for the RAG endpoints (`/api/rag/*`).
 
 ## Invariants
 
-- `handle_chat_send`, `handle_chat_models_list`, `handle_chat_model_get` require a
-  session (a past bug had **no** check, allowing unauthenticated chat/model
-  enumeration). Do not revert to "no check".
-- **Known, unfixed gap found during a 2026-07-19 docs audit:**
-  `handle_chat_models_recommend` (`GET /chat/models/recommend`) still has no
-  session check at all — it takes zero parameters (`fn
-  handle_chat_models_recommend()`), unlike every sibling handler in this file.
-  Low severity (it only returns model recommendations derived from detected
-  local hardware specs, no user data), but the same bug class documented as
-  fixed elsewhere in this file. Not fixed here — reported to the user instead
-  of edited directly.
+- `handle_chat_send`, `handle_chat_models_list`, `handle_chat_model_get` **and**
+  `handle_chat_models_recommend` require a session (a past bug had **no** check
+  on the first three, allowing unauthenticated chat/model enumeration). Do not
+  revert to "no check".
+  A 2026-07-19 docs audit recorded `GET /chat/models/recommend` as still
+  unguarded (it took zero parameters at the time); that note was stale — the
+  handler now takes `State` + `HeaderMap` and rejects an empty/unknown session
+  with an empty `recommendations` payload before touching the hardware probes
+  (`src/handlers/chat.rs`).
 - The system prompt is built per the request `language` (defaults to English); a
   reply to `language: "de"` is German. A past bug hardcoded French.
 - `system_prompt_with_rag()` embeds the user's query and searches the RAG knowledge

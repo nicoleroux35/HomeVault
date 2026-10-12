@@ -4,7 +4,7 @@
 on demand (pick a path, scan now) or on a cron schedule. Deliberately
 **not** real-time/on-access scanning — no `clamd` daemon is installed or
 run — to stay within the low-power hardware budget documented in
-`installer/homevault.service`. Lives in the **Settings** page as the
+the systemd unit `installer/install.sh` writes. Lives in the **Settings** page as the
 Antivirus card.
 
 ## Backend

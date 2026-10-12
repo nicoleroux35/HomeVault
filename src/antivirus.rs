@@ -1,6 +1,7 @@
 //! Antivirus scanning via ClamAV's `clamscan` CLI (on-demand + scheduled
 //! only — no `clamd` real-time daemon, to stay within the low-power
-//! hardware budget documented in `installer/homevault.service`).
+//! hardware budget documented in the systemd unit `installer/install.sh`
+//! writes).
 //!
 //! `clamscan` runs as the unprivileged `homevault` user against paths the
 //! service already manages; virus definitions are kept current by the
