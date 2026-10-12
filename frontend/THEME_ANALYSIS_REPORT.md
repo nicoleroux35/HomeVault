@@ -1,55 +1,55 @@
-# Rapport d'Analyse du Thème HomeVault
+# HomeVault Theme Analysis Report
 **Date:** 2026-07-05  
 **Version:** 1.0  
-**Status:** 🔴 BESOINS D'AMÉLIORATION ET UNIFICATION
+**Status:** 🔴 NEEDS IMPROVEMENT AND UNIFICATION
 
 ---
 
-## Résumé Exécutif
+## Executive Summary
 
-Le système de thème HomeVault présente actuellement une **fragmentation** avec plusieurs systèmes coexistants qui créent de la confusion, de la duplication et des incohérences potentielles. Bien que le rapport de conformité antérieur indique 99.5% de conformité, une analyse approfondie révèle des **problèmes structurels** qui doivent être résolus pour obtenir un thème vraiment unifié.
+The HomeVault theme system currently shows **fragmentation** with several coexisting systems that create confusion, duplication and potential inconsistencies. Although the earlier compliance report states 99.5% compliance, an in-depth analysis reveals **structural problems** that must be resolved to obtain a truly unified theme.
 
-### 🔴 Problèmes Critiques Identifiés
+### 🔴 Critical Problems Identified
 
-1. **Duplication de systèmes CSS** - 3 systèmes de design tokens coexistants
-2. **Conflits de nomenclature** - Variables CSS avec préfixes multiples
-3. **Ordre de chargement problématique** - Risques d'écrasement de styles
-4. **Thème Cove non intégré** - Fichier orphelin sans utilisation claire
-5. **Variables non définies** - Références à des tokens inexistants
+1. **Duplication of CSS systems** - 3 coexisting design token systems
+2. **Naming conflicts** - CSS variables with multiple prefixes
+3. **Problematic load order** - Risks of style overriding
+4. **Cove theme not integrated** - Orphan file with no clear use
+5. **Undefined variables** - References to nonexistent tokens
 
 ---
 
-## 📊 État Actuel du Système
+## 📊 Current State of the System
 
-### Fichiers CSS Principaux Découverts
+### Main CSS Files Discovered
 
-| Fichier | Lignes | Usage | Problème |
+| File | Lines | Usage | Problem |
 |---------|--------|-------|----------|
-| `src/app/globals.css` | 1025 | Design system complet avec tokens | ❌ Utilise préfixe `--color-*` |
-| `src/lib/styles/theme/tokens.css` | ~500 | Tokens avec `--hv-*` | ✅ Bon préfixe, mais dupliqué |
-| `src/styles/cove-tailwind.js` | 98 | Thème Cove (externe) | ❌ Non intégré, orphelin |
-| `src/app.css` | 65 | Imports Tailwind + customs | ⚠️ Références variables inexistantes |
-| `tailwind.config.js` | 122 | Config Tailwind | ⚠️ Pointe vers `globals.css` |
+| `src/app/globals.css` | 1025 | Complete design system with tokens | ❌ Uses the `--color-*` prefix |
+| `src/lib/styles/theme/tokens.css` | ~500 | Tokens with `--hv-*` | ✅ Good prefix, but duplicated |
+| `src/styles/cove-tailwind.js` | 98 | Cove theme (external) | ❌ Not integrated, orphan |
+| `src/app.css` | 65 | Tailwind imports + customs | ⚠️ References nonexistent variables |
+| `tailwind.config.js` | 122 | Tailwind config | ⚠️ Points to `globals.css` |
 
-### Ordre de Chargement Actuel (main.ts)
+### Current Load Order (main.ts)
 
 ```typescript
-import './fonts.css'         // 1. Polices
-import './app.css'           // 2. Tailwind + variables --hv-* non définies
-import './app/globals.css'   // 3. Variables --color-* définies
+import './fonts.css'         // 1. Fonts
+import './app.css'           // 2. Tailwind + undefined --hv-* variables
+import './app/globals.css'   // 3. Defined --color-* variables
 ```
 
-**🔴 PROBLÈME:** `app.css` référence `var(--hv-font-family)` et `var(--hv-radius-default)` qui ne sont définis nulle part au moment du chargement!
+**🔴 PROBLEM:** `app.css` references `var(--hv-font-family)` and `var(--hv-radius-default)` which are defined nowhere at load time!
 
 ---
 
-## 🔍 Analyse Détaillée des Problèmes
+## 🔍 Detailed Analysis of the Problems
 
-### 1. Duplication des Design Tokens
+### 1. Duplication of Design Tokens
 
-Trois systèmes coexistent actuellement:
+Three systems currently coexist:
 
-#### A. `globals.css` - Système 1 (préfixe `--color-*`)
+#### A. `globals.css` - System 1 (`--color-*` prefix)
 ```css
 :root {
   --color-primary-50: #eff6ff;
@@ -61,9 +61,9 @@ Trois systèmes coexistent actuellement:
   --radius-md: 6px;
 }
 ```
-**Utilisation:** ~1373 occurrences dans le code
+**Usage:** ~1373 occurrences in the code
 
-#### B. `theme/tokens.css` - Système 2 (préfixe `--hv-*`)
+#### B. `theme/tokens.css` - System 2 (`--hv-*` prefix)
 ```css
 :root {
   --hv-primary: #2E72C9;
@@ -74,9 +74,9 @@ Trois systèmes coexistent actuellement:
   --hv-radius-md: 6px;
 }
 ```
-**Utilisation:** ~1683 occurrences dans le code
+**Usage:** ~1683 occurrences in the code
 
-#### C. `cove-tailwind.js` - Système 3 (Thème Cove)
+#### C. `cove-tailwind.js` - System 3 (Cove Theme)
 ```javascript
 export const coveTheme = {
   colors: { blue: {...}, grey: {...} },
@@ -84,50 +84,50 @@ export const coveTheme = {
   borderRadius: { "cove-corner": "12px" }
 }
 ```
-**Utilisation:** ❌ **0 occurrences** - Fichier orphelin!
+**Usage:** ❌ **0 occurrences** - Orphan file!
 
-### 2. Conflits de Nomenclature
+### 2. Naming Conflicts
 
-#### Couleur Primaire - 3 Définitions Différentes!
+#### Primary Color - 3 Different Definitions!
 
 ```css
 /* globals.css */
---color-primary: #4a90d9;     /* Bleu clair */
+--color-primary: #4a90d9;     /* Light blue */
 
 /* tokens.css */
---hv-primary: #2E72C9;         /* Bleu moyen */
+--hv-primary: #2E72C9;         /* Medium blue */
 
 /* cove-tailwind.js */
-"blue-500": "#2196f3"          /* Bleu Material */
+"blue-500": "#2196f3"          /* Material blue */
 ```
 
-#### Espacement - Incohérences
+#### Spacing - Inconsistencies
 
 ```css
 /* globals.css */
 --spacing-4: 16px;
 
 /* tokens.css */
---hv-space-4: 16px;            /* Même valeur, nom différent */
+--hv-space-4: 16px;            /* Same value, different name */
 
 /* cove-tailwind.js */
-"cove-space": "6px"            /* Valeur complètement différente */
+"cove-space": "6px"            /* Completely different value */
 ```
 
-### 3. Variables Non Définies dans app.css
+### 3. Undefined Variables in app.css
 
 ```css
-/* app.css ligne 20 */
-font-family: var(--hv-font-family);  /* ❌ N'existe pas! */
+/* app.css line 20 */
+font-family: var(--hv-font-family);  /* ❌ Does not exist! */
 
-/* app.css ligne 47 */
-border-radius: var(--hv-radius-default);  /* ❌ N'existe pas! */
+/* app.css line 47 */
+border-radius: var(--hv-radius-default);  /* ❌ Does not exist! */
 
-/* app.css ligne 22 */
-color: var(--hv-text-primary);  /* ✅ Défini dans tokens.css, mais chargé APRÈS */
+/* app.css line 22 */
+color: var(--hv-text-primary);  /* ✅ Defined in tokens.css, but loaded AFTER */
 ```
 
-### 4. Tailwind Config Pointant vers le Mauvais Fichier
+### 4. Tailwind Config Pointing to the Wrong File
 
 ```javascript
 // tailwind.config.js
@@ -135,8 +135,8 @@ theme: {
   extend: {
     colors: {
       primary: {
-        DEFAULT: 'var(--color-primary)',  // ❌ Pointe vers globals.css
-        500: 'var(--color-primary)',      // ❌ Pas vers --hv-primary
+        DEFAULT: 'var(--color-primary)',  // ❌ Points to globals.css
+        500: 'var(--color-primary)',      // ❌ Not to --hv-primary
       }
     }
   }
@@ -145,77 +145,77 @@ theme: {
 
 ---
 
-## 📈 Statistiques d'Utilisation
+## 📈 Usage Statistics
 
-### Préfixes de Variables CSS
+### CSS Variable Prefixes
 
-| Préfixe | Occurrences | Status |
+| Prefix | Occurrences | Status |
 |---------|-------------|--------|
-| `var(--hv-*)` | 1683 | ✅ Standard recommandé |
-| `var(--color-*)` | 1373 | ⚠️ Système legacy |
-| `var(--text-*)` | ~200 | ⚠️ Système legacy |
-| `var(--spacing-*)` | ~150 | ⚠️ Système legacy |
+| `var(--hv-*)` | 1683 | ✅ Recommended standard |
+| `var(--color-*)` | 1373 | ⚠️ Legacy system |
+| `var(--text-*)` | ~200 | ⚠️ Legacy system |
+| `var(--spacing-*)` | ~150 | ⚠️ Legacy system |
 
-### Classes CSS Personnalisées
+### Custom CSS Classes
 
-| Préfixe | Occurrences | Status |
+| Prefix | Occurrences | Status |
 |---------|-------------|--------|
-| `.hv-*` | ~850 | ✅ Standard HomeVault |
-| Classes Tailwind | ~2000+ | ✅ Framework |
-| Classes sans préfixe | ~100 | ⚠️ À préfixer |
+| `.hv-*` | ~850 | ✅ HomeVault standard |
+| Tailwind classes | ~2000+ | ✅ Framework |
+| Classes without prefix | ~100 | ⚠️ To be prefixed |
 
 ---
 
-## 🎯 Recommandations Prioritaires
+## 🎯 Priority Recommendations
 
-### PRIORITÉ 1: Unifier les Design Tokens (CRITIQUE)
+### PRIORITY 1: Unify the Design Tokens (CRITICAL)
 
-**Action:** Migrer vers un système unique avec préfixe `--hv-*`
+**Action:** Migrate to a single system with the `--hv-*` prefix
 
-**Étapes:**
-1. ✅ Garder `src/lib/styles/theme/tokens.css` comme source unique de vérité
-2. ❌ Supprimer ou déprécier `src/app/globals.css`
-3. 🔄 Migrer toutes les références `var(--color-*)` vers `var(--hv-*)`
-4. ✅ Maintenir les alias de compatibilité temporairement
+**Steps:**
+1. ✅ Keep `src/lib/styles/theme/tokens.css` as the single source of truth
+2. ❌ Remove or deprecate `src/app/globals.css`
+3. 🔄 Migrate all `var(--color-*)` references to `var(--hv-*)`
+4. ✅ Keep compatibility aliases temporarily
 
-**Impact:** ~1373 occurrences à migrer
+**Impact:** ~1373 occurrences to migrate
 
-### PRIORITÉ 2: Corriger l'Ordre de Chargement
+### PRIORITY 2: Fix the Load Order
 
-**Action:** Réorganiser les imports dans `main.ts`
+**Action:** Reorganize the imports in `main.ts`
 
 ```typescript
-// ❌ AVANT (incorrect)
+// ❌ BEFORE (incorrect)
 import './fonts.css'
 import './app.css'
 import './app/globals.css'
 
-// ✅ APRÈS (correct)
+// ✅ AFTER (correct)
 import './fonts.css'
-import './lib/styles/theme/index.css'  // Contient tokens.css en premier
+import './lib/styles/theme/index.css'  // Contains tokens.css first
 import './app.css'
 ```
 
-**Avantages:**
-- Variables disponibles quand nécessaire
-- Élimination des références non définies
-- Cascade CSS prévisible
+**Benefits:**
+- Variables available when needed
+- Elimination of undefined references
+- Predictable CSS cascade
 
-### PRIORITÉ 3: Supprimer le Thème Cove Orphelin
+### PRIORITY 3: Remove the Orphan Cove Theme
 
-**Action:** Nettoyer les fichiers inutilisés
+**Action:** Clean up the unused files
 
 ```bash
-# À supprimer ou archiver:
+# To remove or archive:
 - src/styles/cove-tailwind.js
-- frontend/src/styles/ (répertoire entier si vide)
+- frontend/src/styles/ (entire directory if empty)
 ```
 
-**Raison:** 0 utilisation détectée, sème la confusion
+**Reason:** 0 usages detected, sows confusion
 
-### PRIORITÉ 4: Mettre à Jour tailwind.config.js
+### PRIORITY 4: Update tailwind.config.js
 
-**Action:** Pointer vers les bonnes variables `--hv-*`
+**Action:** Point to the correct `--hv-*` variables
 
 ```javascript
 // tailwind.config.js
@@ -232,160 +232,160 @@ theme: {
 }
 ```
 
-### PRIORITÉ 5: Définir les Variables Manquantes
+### PRIORITY 5: Define the Missing Variables
 
-**Action:** Ajouter dans `tokens.css`:
+**Action:** Add to `tokens.css`:
 
 ```css
 :root {
-  /* Variables manquantes référencées dans app.css */
+  /* Missing variables referenced in app.css */
   --hv-font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   --hv-radius-default: 4px;
   
-  /* Alias pour compatibilité */
+  /* Aliases for compatibility */
   --hv-text-primary: var(--hv-on-surface);
 }
 ```
 
 ---
 
-## 🏗️ Architecture Recommandée
+## 🏗️ Recommended Architecture
 
-### Structure de Fichiers Proposée
+### Proposed File Structure
 
 ```
 frontend/src/
-├── fonts.css                      # Polices locales
-├── app.css                        # Tailwind base + overrides minimes
+├── fonts.css                      # Local fonts
+├── app.css                        # Tailwind base + minimal overrides
 └── lib/
     └── styles/
         └── theme/
-            ├── index.css          # ✅ Point d'entrée unique
+            ├── index.css          # ✅ Single entry point
             ├── tokens.css         # ✅ Design tokens (--hv-*)
             ├── base.css           # ✅ Resets & base styles
-            ├── components.css     # ✅ Composants thématisés
-            └── utilities.css      # ✅ Classes utilitaires
+            ├── components.css     # ✅ Themed components
+            └── utilities.css      # ✅ Utility classes
 
-❌ SUPPRIMER:
-├── app/globals.css               # Dupliquer tokens.css
-├── styles/cove-tailwind.js       # Non utilisé
-└── styles/desktop-*.css          # À consolider
+❌ REMOVE:
+├── app/globals.css               # Duplicates tokens.css
+├── styles/cove-tailwind.js       # Unused
+└── styles/desktop-*.css          # To consolidate
 ```
 
-### Hiérarchie de Chargement
+### Load Hierarchy
 
 ```
-1. fonts.css              → Polices
-2. theme/index.css        → Design tokens + système
-   ├── tokens.css         → Variables CSS
+1. fonts.css              → Fonts
+2. theme/index.css        → Design tokens + system
+   ├── tokens.css         → CSS variables
    ├── base.css           → Resets
-   ├── components.css     → Composants
-   └── utilities.css      → Utilitaires
+   ├── components.css     → Components
+   └── utilities.css      → Utilities
 3. app.css                → Tailwind + overrides
 ```
 
 ---
 
-## 🔧 Plan de Migration
+## 🔧 Migration Plan
 
-### Phase 1: Préparation (1-2h)
+### Phase 1: Preparation (1-2h)
 
-- [x] Audit complet (ce document)
-- [ ] Backup des fichiers actuels
-- [ ] Tests de régression avant modifications
-- [ ] Communication avec l'équipe
+- [x] Complete audit (this document)
+- [ ] Backup of the current files
+- [ ] Regression tests before changes
+- [ ] Communication with the team
 
-### Phase 2: Consolidation des Tokens (2-3h)
+### Phase 2: Token Consolidation (2-3h)
 
-- [ ] Créer script de migration `var(--color-*)` → `var(--hv-*)`
-- [ ] Exécuter sur tous les fichiers `.svelte`, `.css`, `.ts`
-- [ ] Définir variables manquantes dans `tokens.css`
-- [ ] Ajouter alias de compatibilité
+- [ ] Create a migration script `var(--color-*)` → `var(--hv-*)`
+- [ ] Run it on all `.svelte`, `.css`, `.ts` files
+- [ ] Define the missing variables in `tokens.css`
+- [ ] Add compatibility aliases
 
-### Phase 3: Restructuration (1-2h)
+### Phase 3: Restructuring (1-2h)
 
-- [ ] Modifier `main.ts` pour nouvel ordre de chargement
-- [ ] Mettre à jour `tailwind.config.js`
-- [ ] Supprimer `app/globals.css`
-- [ ] Supprimer `styles/cove-tailwind.js`
+- [ ] Modify `main.ts` for the new load order
+- [ ] Update `tailwind.config.js`
+- [ ] Remove `app/globals.css`
+- [ ] Remove `styles/cove-tailwind.js`
 
 ### Phase 4: Validation (1-2h)
 
-- [ ] Build sans erreurs
-- [ ] Tests visuels de tous les composants
-- [ ] Vérification dark mode
-- [ ] Tests responsive
-- [ ] Tests d'accessibilité
+- [ ] Build without errors
+- [ ] Visual tests of all components
+- [ ] Dark mode verification
+- [ ] Responsive tests
+- [ ] Accessibility tests
 
 ### Phase 5: Documentation (1h)
 
-- [ ] Mettre à jour `THEME_QUICK_START.md`
-- [ ] Créer guide de migration pour développeurs
-- [ ] Documenter conventions de nommage
-- [ ] Ajouter exemples d'utilisation
+- [ ] Update `THEME_QUICK_START.md`
+- [ ] Create a migration guide for developers
+- [ ] Document the naming conventions
+- [ ] Add usage examples
 
-**Durée Totale Estimée:** 6-10 heures
+**Total Estimated Duration:** 6-10 hours
 
 ---
 
-## 📋 Conventions de Nommage Standardisées
+## 📋 Standardized Naming Conventions
 
-### Variables CSS (Tokens)
+### CSS Variables (Tokens)
 
 ```css
 /* Format: --hv-{category}-{property}-{variant} */
 
-/* Couleurs */
---hv-primary              /* Couleur primaire de base */
---hv-primary-hover        /* État hover */
---hv-primary-active       /* État actif */
---hv-primary-light        /* Variante claire */
+/* Colors */
+--hv-primary              /* Base primary color */
+--hv-primary-hover        /* Hover state */
+--hv-primary-active       /* Active state */
+--hv-primary-light        /* Light variant */
 
 /* Surfaces */
---hv-surface              /* Surface de base */
+--hv-surface              /* Base surface */
 --hv-surface-container    /* Container */
---hv-surface-variant      /* Variante */
+--hv-surface-variant      /* Variant */
 
-/* Texte */
---hv-text-primary         /* Texte principal */
---hv-text-secondary       /* Texte secondaire */
---hv-text-tertiary        /* Texte tertiaire */
+/* Text */
+--hv-text-primary         /* Primary text */
+--hv-text-secondary       /* Secondary text */
+--hv-text-tertiary        /* Tertiary text */
 
-/* Espacement */
+/* Spacing */
 --hv-space-{n}            /* n = 0.5, 1, 2, 3, 4, 6, 8, 10, 12, 16 */
 
-/* Tailles de police */
+/* Font sizes */
 --hv-font-size-{size}     /* xs, sm, base, lg, xl, 2xl, 3xl */
 
 /* Border radius */
 --hv-radius-{size}        /* sm, md, lg, xl, 2xl, full */
 
-/* Ombres */
+/* Shadows */
 --hv-shadow-{size}        /* xs, sm, md, lg, xl, 2xl */
 ```
 
-### Classes CSS
+### CSS Classes
 
 ```css
 /* Format: .hv-{component}-{element}-{modifier} */
 
-/* Composants */
-.hv-btn                   /* Bouton de base */
-.hv-btn-primary           /* Bouton primaire */
-.hv-btn-sm                /* Bouton petit */
+/* Components */
+.hv-btn                   /* Base button */
+.hv-btn-primary           /* Primary button */
+.hv-btn-sm                /* Small button */
 
 /* Layout */
-.hv-app-container         /* Container principal */
-.hv-app-header            /* En-tête */
-.hv-app-content           /* Contenu */
+.hv-app-container         /* Main container */
+.hv-app-header            /* Header */
+.hv-app-content           /* Content */
 
-/* Utilitaires */
+/* Utilities */
 .hv-flex                  /* Display flex */
-.hv-gap-4                 /* Gap de 16px */
+.hv-gap-4                 /* Gap of 16px */
 .hv-mt-4                  /* Margin top 16px */
 ```
 
-### Composants Svelte
+### Svelte Components
 
 ```
 {ComponentName}.svelte    /* PascalCase */
@@ -393,83 +393,83 @@ frontend/src/
 
 ---
 
-## ✅ Bénéfices de l'Unification
+## ✅ Benefits of Unification
 
-### Pour les Développeurs
+### For Developers
 
-1. **Source unique de vérité** - Plus de confusion sur quelle variable utiliser
-2. **Autocomplete améliorée** - IDE suggère `--hv-*` de façon cohérente
-3. **Maintenabilité** - Modifications centralisées dans `tokens.css`
-4. **Onboarding simplifié** - Une seule documentation à apprendre
+1. **Single source of truth** - No more confusion about which variable to use
+2. **Improved autocomplete** - IDE suggests `--hv-*` consistently
+3. **Maintainability** - Changes centralized in `tokens.css`
+4. **Simplified onboarding** - A single documentation set to learn
 
-### Pour le Produit
+### For the Product
 
-1. **Cohérence visuelle** - Une seule définition par token
-2. **Performances** - Moins de CSS dupliqué
-3. **Thème dynamique** - Changement de thème plus simple
-4. **Accessibilité** - Contraste vérifié sur un seul système
+1. **Visual consistency** - A single definition per token
+2. **Performance** - Less duplicated CSS
+3. **Dynamic theme** - Simpler theme switching
+4. **Accessibility** - Contrast verified on a single system
 
-### Pour la Maintenance
+### For Maintenance
 
-1. **Bundle size réduit** - Élimination des duplications
-2. **Build plus rapide** - Moins de CSS à traiter
-3. **Debugging facilité** - Variables nommées de façon cohérente
-4. **Migration future** - Architecture solide pour évolutions
+1. **Reduced bundle size** - Elimination of duplications
+2. **Faster build** - Less CSS to process
+3. **Easier debugging** - Consistently named variables
+4. **Future migration** - Solid architecture for evolutions
 
 ---
 
-## 🚨 Risques et Mitigation
+## 🚨 Risks and Mitigation
 
-### Risques Identifiés
+### Identified Risks
 
-| Risque | Probabilité | Impact | Mitigation |
+| Risk | Probability | Impact | Mitigation |
 |--------|-------------|--------|------------|
-| Régression visuelle | Moyenne | Élevé | Tests visuels systématiques |
-| Variables manquantes | Faible | Moyen | Script de détection automatique |
-| Compatibilité Tailwind | Faible | Moyen | Tests de build complets |
-| Performance temporaire | Faible | Faible | Alias de compatibilité |
+| Visual regression | Medium | High | Systematic visual tests |
+| Missing variables | Low | Medium | Automatic detection script |
+| Tailwind compatibility | Low | Medium | Complete build tests |
+| Temporary performance | Low | Low | Compatibility aliases |
 
-### Plan de Rollback
+### Rollback Plan
 
-En cas de problème critique:
+In case of a critical problem:
 
-1. Restaurer les fichiers depuis backup
-2. Revenir au commit précédent
-3. Garder les deux systèmes temporairement avec alias complets
-4. Planifier migration incrémentale route par route
-
----
-
-## 📊 Métriques de Succès
-
-### Avant Unification
-
-- ❌ 3 systèmes de design tokens
-- ❌ ~50 variables en conflit
-- ❌ 1 fichier orphelin (cove-tailwind)
-- ❌ 3 références à variables non définies
-- ⚠️ Build avec warnings CSS
-
-### Après Unification (Objectifs)
-
-- ✅ 1 système de design tokens unique
-- ✅ 0 conflit de variables
-- ✅ 0 fichier orphelin
-- ✅ 0 référence non définie
-- ✅ Build sans warnings CSS
-- ✅ Bundle CSS réduit de ~15%
-- ✅ 100% de cohérence visuelle
+1. Restore the files from backup
+2. Revert to the previous commit
+3. Keep both systems temporarily with full aliases
+4. Plan an incremental migration route by route
 
 ---
 
-## 🎨 Exemple de Code Avant/Après
+## 📊 Success Metrics
 
-### Avant (Incohérent)
+### Before Unification
+
+- ❌ 3 design token systems
+- ❌ ~50 conflicting variables
+- ❌ 1 orphan file (cove-tailwind)
+- ❌ 3 references to undefined variables
+- ⚠️ Build with CSS warnings
+
+### After Unification (Objectives)
+
+- ✅ 1 single design token system
+- ✅ 0 variable conflicts
+- ✅ 0 orphan files
+- ✅ 0 undefined references
+- ✅ Build without CSS warnings
+- ✅ CSS bundle reduced by ~15%
+- ✅ 100% visual consistency
+
+---
+
+## 🎨 Before/After Code Example
+
+### Before (Inconsistent)
 
 ```svelte
 <style>
   .card {
-    /* Mélange de 3 systèmes */
+    /* Mix of 3 systems */
     background: var(--color-background);        /* globals.css */
     padding: var(--hv-space-4);                 /* tokens.css */
     border-radius: var(--cove-corner);          /* cove-tailwind */
@@ -478,12 +478,12 @@ En cas de problème critique:
 </style>
 ```
 
-### Après (Unifié)
+### After (Unified)
 
 ```svelte
 <style>
   .card {
-    /* Un seul système --hv-* */
+    /* A single --hv-* system */
     background: var(--hv-surface-container);
     padding: var(--hv-space-4);
     border-radius: var(--hv-radius-lg);
@@ -494,40 +494,40 @@ En cas de problème critique:
 
 ---
 
-## 📚 Documentation Requise
+## 📚 Required Documentation
 
-### À Créer/Mettre à Jour
+### To Create/Update
 
-1. **THEME_MIGRATION_GUIDE.md** - Guide de migration pour développeurs
-2. **THEME_QUICK_START.md** - ✅ Existe, à mettre à jour
-3. **DESIGN_TOKENS_REFERENCE.md** - Référence complète des tokens
-4. **COMPONENT_PATTERNS.md** - Patterns de composants avec exemples
-5. **ACCESSIBILITY_CHECKLIST.md** - Checklist d'accessibilité
+1. **THEME_MIGRATION_GUIDE.md** - Migration guide for developers
+2. **THEME_QUICK_START.md** - ✅ Exists, to be updated
+3. **DESIGN_TOKENS_REFERENCE.md** - Complete reference of the tokens
+4. **COMPONENT_PATTERNS.md** - Component patterns with examples
+5. **ACCESSIBILITY_CHECKLIST.md** - Accessibility checklist
 
 ---
 
 ## 🎯 Conclusion
 
-Le système de thème HomeVault a de solides fondations mais souffre de **fragmentation** due à l'évolution organique du projet. L'unification proposée permettra:
+The HomeVault theme system has solid foundations but suffers from **fragmentation** caused by the project's organic evolution. The proposed unification will enable:
 
-### Avantages Immédiats
-- ✅ Élimination de la confusion
-- ✅ Amélioration de la maintenabilité
-- ✅ Réduction du bundle CSS
-- ✅ Cohérence totale
+### Immediate Benefits
+- ✅ Elimination of confusion
+- ✅ Improved maintainability
+- ✅ Reduced CSS bundle
+- ✅ Total consistency
 
-### Avantages à Long Terme
-- ✅ Base solide pour futures évolutions
-- ✅ Onboarding développeurs simplifié
-- ✅ Facilité de thématisation
-- ✅ Performance optimisée
+### Long-Term Benefits
+- ✅ Solid base for future evolutions
+- ✅ Simplified developer onboarding
+- ✅ Ease of theming
+- ✅ Optimized performance
 
-### Prochaine Étape Recommandée
+### Recommended Next Step
 
-**Exécuter la Phase 2 du plan de migration** - Consolidation des tokens avec script automatisé pour minimiser les erreurs humaines.
+**Execute Phase 2 of the migration plan** - Token consolidation with an automated script to minimize human errors.
 
 ---
 
-**Rapport généré par:** Claude Code Agent (Opus 4.8)  
+**Report generated by:** [CC] Agent (Opus 4.8)  
 **Date:** 2026-07-05  
-**Prochaine révision:** Après phase de migration
+**Next revision:** After the migration phase

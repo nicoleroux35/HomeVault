@@ -1,135 +1,135 @@
-# HomeVault — Matériel et systèmes pris en charge
+# HomeVault — Supported hardware and systems
 
-Ce document décrit la **configuration minimale** et la **configuration
-recommandée** pour faire tourner HomeVault, ainsi que les systèmes
-d'exploitation et architectures officiellement pris en charge.
+This document describes the **minimum configuration** and the **recommended
+configuration** for running HomeVault, as well as the officially supported
+operating systems and architectures.
 
-HomeVault est un **binaire unique** (Rust / Axum / Tokio, base SQLite
-embarquée, interface web incluse). Le serveur lui‑même est léger ; ce sont
-les **fonctions optionnelles** (antivirus, ZFS, assistant IA, Docker) qui
-déterminent réellement les besoins en mémoire et en disque.
+HomeVault is a **single binary** (Rust / Axum / Tokio, embedded SQLite
+database, web interface included). The server itself is lightweight; it is
+the **optional features** (antivirus, ZFS, AI assistant, Docker) that
+really determine the memory and disk requirements.
 
-> Les besoins réseau se limitent à **une interface** (filaire de préférence).
-> Aucun accès Internet permanent n'est requis : les vérifications de mises à
-> jour sont sur *Manuel* par défaut et tout le traitement est local.
+> Network requirements are limited to **one interface** (wired preferably).
+> No permanent Internet access is required: update checks are set to
+> *Manual* by default and all processing is local.
 
 ---
 
-## 1. Systèmes d'exploitation pris en charge
+## 1. Supported operating systems
 
-| | Version minimale | Recommandé |
+| | Minimum version | Recommended |
 |---|---|---|
-| **Debian** | 10 (Buster) | 12 (Bookworm) ou plus récent |
+| **Debian** | 10 (Buster) | 12 (Bookworm) or newer |
 | **Ubuntu Server** | 20.04 LTS | 24.04 LTS |
 
-Autres prérequis logiciels :
+Other software prerequisites:
 
-- **systemd** (HomeVault s'installe comme service systemd)
-- **Accès root** pour l'installation et l'exécution
-  (le service tourne en `root` — il gère RAID, ZFS, Samba/NFS, chiffrement
-  de disque, comptes Linux réels, etc.)
-- Distribution basée sur **APT** (l'installateur utilise `apt-get`)
-- Installation **64 bits fortement conseillée** (obligatoire si ZFS)
+- **systemd** (HomeVault installs as a systemd service)
+- **Root access** for installation and execution
+  (the service runs as `root` — it manages RAID, ZFS, Samba/NFS, disk
+  encryption, real Linux accounts, etc.)
+- **APT**-based distribution (the installer uses `apt-get`)
+- **64-bit installation strongly advised** (mandatory if using ZFS)
 
-Distributions dérivées non testées mais généralement compatibles si elles
-sont basées sur Debian/Ubuntu **et** APT (Raspberry Pi OS 64‑bit, Linux
-Mint, Zorin OS…). Les distributions non‑APT (Fedora, openSUSE, Arch,
-Alpine) **ne sont pas prises en charge** par l'installateur.
+Derived distributions not tested but generally compatible if they are
+based on Debian/Ubuntu **and** APT (Raspberry Pi OS 64-bit, Linux
+Mint, Zorin OS…). Non-APT distributions (Fedora, openSUSE, Arch,
+Alpine) **are not supported** by the installer.
 
-### Architectures processeur
+### CPU architectures
 
-| Architecture | Prise en charge | Remarque |
+| Architecture | Support | Note |
 |---|---|---|
-| `x86_64` (amd64) | ✅ Complète | Cible principale |
-| `aarch64` (ARM64) | ✅ Complète | Raspberry Pi 4/5 64‑bit, mini‑PC ARM |
-| `armv7l` (ARM 32 bits) | ⚠️ Fonctionnelle | ZFS indisponible ; RAM plus limitée |
+| `x86_64` (amd64) | ✅ Full | Main target |
+| `aarch64` (ARM64) | ✅ Full | Raspberry Pi 4/5 64-bit, ARM mini-PCs |
+| `armv7l` (32-bit ARM) | ⚠️ Functional | ZFS unavailable; more limited RAM |
 
 ---
 
-## 2. Configuration minimale
+## 2. Minimum configuration
 
-**Cible : OS serveur + HomeVault seul, sans antivirus, sans assistant IA,
-sans conteneurs Docker.**
+**Target: server OS + HomeVault alone, without antivirus, without AI
+assistant, without Docker containers.**
 
-| Ressource | Minimum |
+| Resource | Minimum |
 |---|---|
-| **CPU** | 1 cœur x86‑64 / ARM64 / ARMv7 |
-| **RAM** | **1 Go** (512 Mo possible avec un peu de swap, sans marge) |
-| **Disque système** | **8 Go** (OS + `/opt/homevault` + dépendances APT : `build-essential`, `ffmpeg`, `smartmontools`, `mdadm`…) |
-| **Disques de données** | selon vos besoins, ajoutés séparément |
-| **Réseau** | 1 interface Ethernet |
+| **CPU** | 1 x86-64 / ARM64 / ARMv7 core |
+| **RAM** | **1 GB** (512 MB possible with some swap, without margin) |
+| **System disk** | **8 GB** (OS + `/opt/homevault` + APT dependencies: `build-essential`, `ffmpeg`, `smartmontools`, `mdadm`…) |
+| **Data disks** | as needed, added separately |
+| **Network** | 1 Ethernet interface |
 
-Ce que couvre cette configuration : comptes et 2FA, code de récupération,
-partages SMB / NFS / SFTP, explorateur de fichiers (copie, corbeille,
-upload), quotas de transfert, pare‑feu `ufw`, supervision SMART, RAID
-`mdadm`, tableau de bord, journal système, réseau, sauvegardes `restic`,
-Cloud Sync `rclone`, Syncthing, téléchargeur.
+What this configuration covers: accounts and 2FA, recovery code,
+SMB / NFS / SFTP shares, file explorer (copy, trash,
+upload), transfer quotas, `ufw` firewall, SMART monitoring, `mdadm`
+RAID, dashboard, system journal, network, `restic` backups,
+`rclone` Cloud Sync, Syncthing, downloader.
 
-Empreinte mémoire typique du processus au repos : **40–120 Mo résident**
-(le service systemd est plafonné à `MemoryHigh=1536M` / `MemoryMax=2G`).
+Typical process memory footprint at rest: **40–120 MB resident**
+(the systemd service is capped at `MemoryHigh=1536M` / `MemoryMax=2G`).
 
 ---
 
-## 3. Configuration recommandée
+## 3. Recommended configuration
 
-**Cible : usage NAS complet — partages, RAID, chiffrement, antivirus,
-notifications, quelques applications.**
+**Target: full NAS use — shares, RAID, encryption, antivirus,
+notifications, a few applications.**
 
-| Ressource | Recommandé |
+| Resource | Recommended |
 |---|---|
-| **CPU** | 2 cœurs x86‑64 (4 cœurs si compression/sauvegardes fréquentes) |
-| **RAM** | **4 Go** |
-| **Disque système** | **32 Go SSD** (hors disques de données) |
-| **Disques de données** | SSD/HDD dédiés ; 2+ disques pour RAID/redondance |
-| **Réseau** | Gigabit Ethernet |
+| **CPU** | 2 x86-64 cores (4 cores if frequent compression/backups) |
+| **RAM** | **4 GB** |
+| **System disk** | **32 GB SSD** (excluding data disks) |
+| **Data disks** | dedicated SSD/HDD; 2+ disks for RAID/redundancy |
+| **Network** | Gigabit Ethernet |
 
-Marge incluse pour : `clamd` (antivirus ClamAV, ~1–1,5 Go résidents pour
-la base de signatures — **le poste mémoire le plus lourd**),
-l'anti‑ransomware, le cache de stockage, les opérations d'archive de
-l'explorateur, et plusieurs sauvegardes `restic` en parallèle.
+Margin included for: `clamd` (ClamAV antivirus, ~1–1.5 GB resident for
+the signature database — **the heaviest memory item**),
+anti-ransomware, storage cache, explorer archive operations,
+and several `restic` backups in parallel.
 
 ---
 
-## 4. Besoins des fonctions optionnelles
+## 4. Requirements of the optional features
 
-Chaque fonction ci‑dessous est **désactivée par défaut** ou sans effet tant
-qu'elle n'est pas configurée. Ajoutez son coût à la configuration de base.
+Each feature below is **disabled by default** or has no effect until it is
+configured. Add its cost to the base configuration.
 
-| Fonction | RAM supplémentaire | Disque | Notes |
+| Feature | Additional RAM | Disk | Notes |
 |---|---|---|---|
-| **Antivirus (ClamAV)** | **+1 à 1,5 Go** | +2 Go (signatures) | `clamd` garde toute la base en mémoire |
-| **ZFS** (disques virtuels) | **+1 Go minimum**, idéalement +1 Go par To de pool | — | 64 bits obligatoire ; **8 Go de RAM recommandés** pour des pools multi‑To. Btrfs et mdadm n'ont pas ce besoin |
-| **Chiffrement LUKS2 (cryptsetup)** | négligeable | — | Coût CPU à l'écriture/lecture |
-| **Assistant IA (Ollama)** | **+4 Go minimum** | +2 à 30 Go selon le modèle | Aucun modèle téléchargé automatiquement. gemma3:1b ≈ 2 Go RAM ; modèle 7–8B ≈ 8–16 Go RAM. GPU facultatif |
-| **Docker** (applications) | selon les conteneurs | +1 Go (moteur) + images | À ne pas installer si non utilisé — l'app reste alors simplement inactive |
-| **Sauvegardes `restic`** | +100 à 500 Mo pendant un job | dépôt séparé | Pic mémoire proportionnel au volume |
-| **Syncthing / rclone** | +100 à 300 Mo par service actif | — | Démons séparés |
-| **Transcodage média (`ffmpeg`)** | ponctuel, CPU‑intensif | — | Installé par défaut ; usage à la demande |
+| **Antivirus (ClamAV)** | **+1 to 1.5 GB** | +2 GB (signatures) | `clamd` keeps the whole database in memory |
+| **ZFS** (virtual disks) | **+1 GB minimum**, ideally +1 GB per TB of pool | — | 64-bit mandatory; **8 GB of RAM recommended** for multi-TB pools. Btrfs and mdadm do not have this requirement |
+| **LUKS2 encryption (cryptsetup)** | negligible | — | CPU cost on write/read |
+| **AI assistant (Ollama)** | **+4 GB minimum** | +2 to 30 GB depending on the model | No model downloaded automatically. gemma3:1b ≈ 2 GB RAM; 7–8B model ≈ 8–16 GB RAM. GPU optional |
+| **Docker** (applications) | depends on the containers | +1 GB (engine) + images | Do not install if unused — the app then simply stays inactive |
+| **`restic` backups** | +100 to 500 MB during a job | separate repository | Memory peak proportional to volume |
+| **Syncthing / rclone** | +100 to 300 MB per active service | — | Separate daemons |
+| **Media transcoding (`ffmpeg`)** | temporary, CPU-intensive | — | Installed by default; used on demand |
 
 ---
 
-## 5. Exemples de plateformes
+## 5. Example platforms
 
-| Plateforme | Adaptée à |
+| Platform | Suited to |
 |---|---|
-| Raspberry Pi 4 (4 Go) / Pi 5, disque USB‑SATA SSD | Config minimale à recommandée, **sans** ZFS ni IA |
-| Mini‑PC x86 (N100/N150, 8–16 Go, NVMe) | Config recommandée **avec** ZFS, antivirus, quelques apps Docker |
-| Serveur / tour avec ECC, 16–32 Go, plusieurs disques | ZFS multi‑To, RAID, antivirus, assistant IA local |
-| VM (Proxmox, KVM) : 2 vCPU, 4 Go, disque 32 Go | Config recommandée hors IA |
+| Raspberry Pi 4 (4 GB) / Pi 5, USB-SATA SSD disk | Minimum to recommended configuration, **without** ZFS or AI |
+| x86 mini-PC (N100/N150, 8–16 GB, NVMe) | Recommended configuration **with** ZFS, antivirus, a few Docker apps |
+| Server / tower with ECC, 16–32 GB, several disks | Multi-TB ZFS, RAID, antivirus, local AI assistant |
+| VM (Proxmox, KVM): 2 vCPU, 4 GB, 32 GB disk | Recommended configuration excluding AI |
 
 ---
 
-## 6. Notes d'installation
+## 6. Installation notes
 
-- L'installateur (`installer/install.sh`) tire une chaîne de compilation
-  (`build-essential`, `libsqlite3-dev`) et `ffmpeg` **sans
-  `--install-recommends`** — prévoir la place sur le disque système.
-- Aucun **swap** n'est créé automatiquement : en créer sur les
-  configurations à 1 Go de RAM ou moins.
-- Le service ne fixe **pas** de quota CPU par défaut (le débit des
-  sauvegardes profite de tous les cœurs) ; `CPUQuota=` peut être ajouté
-  dans `installer/homevault.service` si HomeVault partage la machine avec
-  d'autres services.
-- Les limites mémoire du service (`MemoryHigh` / `MemoryMax`) sont des
-  points de départ prudents : les ajuster avec `systemd-cgtop` sur votre
-  matériel réel avant de s'y fier en production.
+- The installer (`installer/install.sh`) pulls a compilation toolchain
+  (`build-essential`, `libsqlite3-dev`) and `ffmpeg` **without
+  `--install-recommends`** — allow space on the system disk.
+- No **swap** is created automatically: create some on
+  configurations with 1 GB of RAM or less.
+- The service sets **no** CPU quota by default (backup throughput benefits
+  from all cores); `CPUQuota=` can be added
+  in the systemd unit `installer/install.sh` writes if HomeVault shares the machine with
+  other services.
+- The service's memory limits (`MemoryHigh` / `MemoryMax`) are prudent
+  starting points: adjust them with `systemd-cgtop` on your real
+  hardware before relying on them in production.

@@ -14,7 +14,7 @@ Handlers in `src/handlers/users.rs`; models in `src/handlers/users_models.rs`.
 | `GET /users/{username}` | admin | detail |
 | `PUT /users/{username}` | admin | update |
 | `PUT /users/{username}/full` | admin | full profile (first/last name) |
-| `DELETE /users/{username}` | admin | delete (kills PTY sessions via `state.pty_manager.kill_session`) |
+| `DELETE /users/{username}` | admin | delete (kills PTY sessions via `state.pty_manager.kill_session`; also revokes the account's direct share permissions, see Invariants) |
 | `PUT /users/{username}/password` | admin | reset password |
 | `PUT /users/{username}/role` | admin | change role |
 | `PUT /users/{username}/locked` | admin | lock/unlock |
@@ -322,6 +322,19 @@ data and pre-existing shape constants (`AVATAR_COLORS`' palette, the
   checkbox — a past bug compared a display name to a full system name and never
   matched, leaking sudo. Guard logic lives in `src/groups.rs`.
 - Deleting a user cleans up live terminal sessions (`handle_user_delete`).
+- **Deleting a user also revokes the share permissions it holds *directly***
+  (`PermissionService::revoke_all_user_permissions`, called by
+  `handle_user_delete` before the account row is dropped): the
+  `share_permissions` rows are deleted and the real POSIX ACLs removed
+  (best-effort, like every revoke — an unresolvable share must not block the
+  database cleanup). Without this the rows outlive the account — the table
+  keys a grantee by **name only**, with no foreign key to `users` — and
+  recreating an account with the same username silently inherits the deleted
+  user's access. Group grants are deliberately kept: the account was first
+  removed from its groups (`remove_user_from_group`), and the group rows
+  belong to the *remaining* members, whose access must survive. Regression
+  guard: `tests/users_integration.rs` →
+  `test_user_delete_revokes_its_direct_share_permissions_only`.
 - If the edited user is the current admin, a self password change invalidates the
   session and forces logout/redirect (shared with [My Account](./account.md)).
 - `home_size_bytes` and `home_path` are mutually exclusive on the wire: picking

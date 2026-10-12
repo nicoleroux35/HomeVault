@@ -19,10 +19,19 @@ Handlers in `src/handlers/auth.rs`; service in `src/auth/service.rs`; types in
 | `POST /auth/recovery-code` | auth | generate the one-time recovery code (400 if one exists unless `?regenerate=true`) |
 | `POST /auth/verify-recovery-code` | public | `{ username, code }` → opens the new-password step |
 | `POST /auth/reset-password-recovery` | public | `{ username, code, new_password }` — the code is **not** consumed |
-| `GET /auth/setup-status` | public | `is_first_run`, `is_setup_valid`, `hardware_changed`, `server_machine_id` |
-| `GET /auth/check-username` | public | availability check |
-| `POST /auth/setup` | public | create first admin (Setup Wizard); accepts optional `totp_secret` + `totp_code`, returns extra `totp_enabled` + `backup_codes` |
-| `POST /auth/setup/verify-totp` | public (first-run only) | stateless pre-creation TOTP check: `{ secret, code }` → `{ valid }` (403 once setup is complete) |
+| `GET /auth/setup-status` | public | `is_first_run` (derived from the admin row in `users`), `is_setup_valid`, `hardware_changed`, `needs_recovery`, `server_machine_id`, `sudo_available`. Never cached by the SPA. |
+| `GET /auth/check-username` | public (local network only) | availability check |
+| `POST /auth/setup` | public (local network only) | create first admin (Setup Wizard); accepts optional `totp_secret` + `totp_code`, returns extra `totp_enabled` + `backup_codes`. Refused once an admin exists (DB check, not a marker file). |
+| `POST /auth/setup/verify-totp` | public (local network only, first-run only) | stateless pre-creation TOTP check: `{ secret, code }` → `{ valid }` (403 once an admin exists) |
+| `POST /auth/setup/rebaseline` | admin | re-baselines the recorded hardware fingerprint after a confirmed hardware change (recovery flow); writes `setup_state` + logs an event. |
+
+> The three unauthenticated bootstrap routes (`/auth/setup`,
+> `/auth/setup/verify-totp`, `/auth/check-username`) are additionally
+> restricted to loopback / private / link-local peers by
+> `middleware::setup_guard` — on a shared or port-forwarded network the first
+> client to reach a fresh appliance could otherwise claim its admin account.
+> `HOMEVAULT_SETUP_ALLOW_REMOTE=1` lifts it. `/auth/setup-status` is exempt so
+> the login screen can read it from anywhere. See `setup-wizard.md`.
 
 > The email/token "forgot password" flow (`/auth/forgot-password`,
 > `/auth/reset-password`, `password_reset_tokens`, the reset-token
@@ -69,9 +78,17 @@ Handlers in `src/handlers/auth.rs`; service in `src/auth/service.rs`; types in
 
 ## Frontend
 
+- `frontend/src/lib/stores/appGate.ts` — the application route guard
+  (`refresh`/`enterApp`/`signOut`). It reads `/auth/setup-status` and the local
+  session and decides between the Setup Wizard, the hardware-change recovery
+  screen, login, the desktop, or a connection-error screen; `App.svelte`
+  renders from `$appGate.route`. `Login.svelte` no longer reads the setup status
+  or renders the wizard inline.
 - `frontend/src/routes/Login.svelte` — login form + 2FA step + recovery-code
-  panel. The recovery-code `<input>` is one-way `value=` + `oninput`
-  (`formatRecoveryCode` / `handleRecoveryCodeInput`) — never `bind:value`.
+  panel, plus the `recoveryMode` hardware-confirmation banner and the
+  `connectionError` screen (both driven by `App.svelte`). The recovery-code
+  `<input>` is one-way `value=` + `oninput` (`formatRecoveryCode` /
+  `handleRecoveryCodeInput`) — never `bind:value`.
 - `frontend/src/routes/SetupWizard.svelte` — first-run admin creation with TOTP
   enrolment at the password step (toggle → QR → verified code), then the
   mandatory "save your recovery code" screen (`startRecoveryCode`), then a short

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { authStore } from '$lib/stores/auth';
+  import { appGate } from '$lib/stores/appGate';
   import { api } from '$lib/services/api';
   import { windowManager } from '$lib/stores/windowManager';
   import { wallpaperStore } from '$lib/stores/wallpaper';
@@ -1419,8 +1420,9 @@
 
   async function handleLogout() {
     await authStore.logout();
-    window.history.pushState({}, '', '/login');
-    window.dispatchEvent(new PopStateEvent('popstate'));
+    // Hand control back to the app gate so the shell re-renders the login
+    // screen (and its URL sync) instead of staying on the desktop route.
+    appGate.signOut();
   }
 
   // Matches the LOCALE_MAP pattern already used in Chat.svelte/Dashboard.svelte/Restic.svelte.

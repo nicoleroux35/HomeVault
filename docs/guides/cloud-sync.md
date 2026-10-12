@@ -103,18 +103,34 @@ mutations (`check_session`/`check_admin` in `src/storage/sync_job_repo.rs` +
   `[`, preventing config-section injection.
 - `handle_mount_start` always spawns rclone non-blocking (`cmd.spawn()`,
   `--daemon`) — never awaits the mount process's own output.
+- **One config path, resolved in one place.** `rclone_config_path()`
+  (`src/handlers/rclone.rs`) is the **only** way this module obtains the file it
+  reads *and* writes: an explicit non-empty `RCLONE_CONFIG` wins outright
+  (existing or not — that is how a config is created outside `/etc`), else the
+  first of rclone's locations that exists (`/etc/rclone.conf`,
+  `/root/.config/rclone/rclone.conf`, `$HOME/.config/rclone/rclone.conf`), else
+  `/etc/rclone.conf`. `parse_rclone_config()` goes through it too, instead of
+  looping over the candidates on its own. **Do not reintroduce a hardcoded
+  `/etc/rclone.conf` in a handler**: `handle_get_config`, `_save_config`,
+  `_add_remote` and `_delete_remote` all used to, so the Settings editor read
+  and wrote a different file than the one the remote list was parsed from — an
+  admin who moved the config (the supported way to run rclone as a non-root
+  user) got an empty list beside unrelated editor contents, and saving failed
+  with `Permission denied` (against a root-owned `/etc`) for anyone but root.
+  Guarded by `handlers::rclone::tests::test_parse_and_the_handlers_resolve_the_
+  same_file` and, over HTTP, by
+  `tests/rclone_integration.rs::config_endpoints_use_the_rclone_config_override`,
+  `save_config_writes_the_overridden_file_and_keeps_a_backup` and
+  `add_list_delete_remote_round_trip_on_the_overridden_file`.
 - `handle_sync` / `handle_copy` register an **indeterminate** `cloud_sync`
   `PROGRESS_MANAGER` job around the blocking `rclone` call so the transfer
   shows in the desktop [activity taskbar](./activity.md); completed/failed on
   every return branch, response bodies unchanged. (Determinate `--stats`
   parsing would need converting the handler to `spawn` + piped stderr — a
   follow-up.)
-- **Known pre-existing limitation, not fixed here (out of scope):**
-  `handle_get_config`/`handle_save_config`/`handle_add_remote`/
-  `handle_delete_remote` all hardcode the path `/etc/rclone.conf`, while
-  `parse_rclone_config()` (used elsewhere) respects an `RCLONE_CONFIG` env
-  override. This inconsistency predates this pass and wasn't introduced or
-  fixed here.
+- **The config path is no longer hardcoded anywhere** — see the invariant
+  below (`rclone_config_path()`). The two halves used to disagree: the parser
+  honoured `RCLONE_CONFIG`, the four read/write handlers did not.
 - **Verified live** (isolated dev server, a scratch `RCLONE_CONFIG` pointing
   at a fake `[testremote] type = local` config, real `curl` calls, not
   mocks): every endpoint now rejects a request with no session token;

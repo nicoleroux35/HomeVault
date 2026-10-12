@@ -12,9 +12,11 @@
 //!   cargo test --test setup_integration
 //!   cargo test --test setup_integration -- --nocapture
 
+use axum::extract::ConnectInfo;
 use axum::{routing::get, Router};
 use http::{Method, Request, StatusCode};
 use serde_json::{json, Value};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::Mutex;
@@ -28,12 +30,17 @@ static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 use homevault::config::PathGuard;
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{
-    auth::{handle_check_username, handle_setup, handle_setup_status, handle_setup_verify_totp},
+    auth::{
+        handle_check_username, handle_setup, handle_setup_rebaseline, handle_setup_status,
+        handle_setup_verify_totp,
+    },
     AppState,
 };
 use homevault::middleware::rate_limit::RateLimitState;
 use homevault::storage::Database;
+use homevault::storage::SetupStateRepository;
 use homevault::storage::WidgetRepository;
+use homevault::web::create_app;
 
 type Req = Request<axum::body::Body>;
 
@@ -997,4 +1004,410 @@ async fn test_concurrent_setup_only_one_succeeds() {
         .await
         .unwrap();
     assert_eq!(admins.0, 1);
+}
+
+// ========================================================================
+// 10. First-run state is derived from the database, not marker files
+// ========================================================================
+
+/// Insert an administrator row directly (role_id 2), with no marker files.
+async fn insert_admin(state: &AppState, username: &str) {
+    let hash = state.auth.hash_password("SecurePass123").unwrap();
+    sqlx::query(
+        "INSERT INTO users (username, password_hash, fullname, email, role_id, locked, created_at)
+         VALUES (?, ?, 'Admin', '', 2, false, '2026-01-01T00:00:00Z')",
+    )
+    .bind(username)
+    .bind(&hash)
+    .execute(&*state.db.pool())
+    .await
+    .expect("Failed to insert admin");
+}
+
+#[tokio::test]
+async fn test_setup_status_not_first_run_when_admin_exists_in_db_only() {
+    // The old flag-file design answered "first run?" from `/etc/homevault`.
+    // Losing that directory while the DB survived re-opened the Setup Wizard
+    // even though an admin still existed. The DB is now authoritative.
+    let (state, _tmp, _lock) = setup_state().await;
+    insert_admin(&state, "dbboss").await;
+
+    let mut app = test_router(state);
+    let (_, body) = get_json(&mut app, "/api/auth/setup-status").await;
+    assert!(
+        !body["data"]["is_first_run"].as_bool().unwrap_or(true),
+        "an admin row means the appliance is configured"
+    );
+}
+
+#[tokio::test]
+async fn test_setup_rejected_when_admin_exists_in_db_only() {
+    let (state, _tmp, _lock) = setup_state().await;
+    insert_admin(&state, "dbboss").await;
+
+    let mut app = test_router(Arc::clone(&state));
+    let (status, body) = post_json(
+        &mut app,
+        "/api/auth/setup",
+        json!({"username": "intruder", "password": "SecurePass123"}),
+    )
+    .await;
+
+    assert_ne!(status, StatusCode::OK, "setup must refuse a second admin");
+    assert!(
+        body["message"].as_str().unwrap_or("").contains("already"),
+        "expected an already-complete rejection, got: {:?}",
+        body
+    );
+
+    // The second attempt persisted nothing.
+    let users: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
+        .fetch_one(&*state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(users.0, 1);
+}
+
+#[tokio::test]
+async fn test_verify_totp_disabled_when_admin_exists_in_db_only() {
+    let (state, _tmp, _lock) = setup_state().await;
+    insert_admin(&state, "dbboss").await;
+
+    let mut app = test_router(state);
+    let (status, _) = post_json(
+        &mut app,
+        "/api/auth/setup/verify-totp",
+        json!({ "secret": TEST_TOTP_SECRET, "code": "000000" }),
+    )
+    .await;
+
+    assert_ne!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_setup_records_the_fingerprint_in_the_database() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let mut app = test_router(Arc::clone(&state));
+
+    let (status, _) = post_json(
+        &mut app,
+        "/api/auth/setup",
+        json!({"username": "firstadmin", "password": "SecurePass123"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let recorded = SetupStateRepository::new(state.db.pool())
+        .get()
+        .await
+        .unwrap()
+        .expect("setup state must be recorded");
+    assert_eq!(
+        recorded.system_hash,
+        homevault::setup::SetupService::generate_system_hash(),
+        "the recorded fingerprint must match this host"
+    );
+    assert!(!recorded.machine_id.is_empty());
+}
+
+// ========================================================================
+// 11. POST /api/auth/setup/rebaseline — hardware-change recovery
+// ========================================================================
+
+fn rebaseline_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/api/auth/setup-status", get(handle_setup_status))
+        .route(
+            "/api/auth/setup/rebaseline",
+            axum::routing::post(handle_setup_rebaseline),
+        )
+        .with_state(state)
+}
+
+/// POST with an explicit `x-session-token` header (or none when empty).
+async fn post_with_session(
+    router: &mut Router,
+    path: &str,
+    token: Option<&str>,
+    body: Value,
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .header("content-type", "application/json");
+    if let Some(token) = token {
+        builder = builder.header("x-session-token", token);
+    }
+    let req = builder
+        .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+
+    let resp = ServiceExt::<Req>::ready(router)
+        .await
+        .unwrap()
+        .call(req)
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap_or(json!({}));
+    (status, json)
+}
+
+#[tokio::test]
+async fn test_rebaseline_requires_a_session() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let mut app = rebaseline_router(state);
+
+    let (status, _) =
+        post_with_session(&mut app, "/api/auth/setup/rebaseline", None, json!({})).await;
+    assert_ne!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_rebaseline_requires_admin_role() {
+    let (state, _tmp, _lock) = setup_state().await;
+    insert_user(&state, "plainuser").await;
+    let session = state
+        .auth
+        .create_session("plainuser".into(), "127.0.0.1".into(), false)
+        .await
+        .unwrap();
+
+    let mut app = rebaseline_router(state);
+    let (status, _) = post_with_session(
+        &mut app,
+        "/api/auth/setup/rebaseline",
+        Some(&session.token),
+        json!({}),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "a non-admin must not re-baseline");
+}
+
+#[tokio::test]
+async fn test_rebaseline_clears_needs_recovery_for_admin() {
+    let (state, _tmp, _lock) = setup_state().await;
+    insert_admin(&state, "recoverboss").await;
+    SetupStateRepository::new(state.db.pool())
+        .mark_complete("stale-fingerprint", "old-machine")
+        .await
+        .unwrap();
+    let session = state
+        .auth
+        .create_session("recoverboss".into(), "127.0.0.1".into(), false)
+        .await
+        .unwrap();
+
+    let mut app = rebaseline_router(Arc::clone(&state));
+
+    let (_, before) = get_json(&mut app, "/api/auth/setup-status").await;
+    assert!(
+        before["data"]["needs_recovery"].as_bool().unwrap_or(false),
+        "a stale fingerprint on a configured appliance needs recovery"
+    );
+
+    let (status, body) = post_with_session(
+        &mut app,
+        "/api/auth/setup/rebaseline",
+        Some(&session.token),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "rebaseline failed: {:?}", body);
+
+    let (_, after) = get_json(&mut app, "/api/auth/setup-status").await;
+    assert!(!after["data"]["needs_recovery"].as_bool().unwrap_or(true));
+    assert!(!after["data"]["hardware_changed"].as_bool().unwrap_or(true));
+
+    assert_eq!(
+        SetupStateRepository::new(state.db.pool())
+            .get()
+            .await
+            .unwrap()
+            .unwrap()
+            .system_hash,
+        homevault::setup::SetupService::generate_system_hash()
+    );
+}
+
+/// Insert a regular (non-admin) user row.
+async fn insert_user(state: &AppState, username: &str) {
+    let hash = state.auth.hash_password("SecurePass123").unwrap();
+    sqlx::query(
+        "INSERT INTO users (username, password_hash, fullname, email, role_id, locked, created_at)
+         VALUES (?, ?, 'User', '', 1, false, '2026-01-01T00:00:00Z')",
+    )
+    .bind(username)
+    .bind(&hash)
+    .execute(&*state.db.pool())
+    .await
+    .expect("Failed to insert user");
+}
+
+// ========================================================================
+// 12. Local-network guard on the public bootstrap endpoints
+// ========================================================================
+
+fn peer(ip: &str) -> SocketAddr {
+    SocketAddr::new(ip.parse().expect("valid IP"), 54321)
+}
+
+/// Drive the real production router (`create_app`) as if the request arrived
+/// from `ip`. `oneshot` does not go through a socket, so the connection
+/// metadata is injected the same way `into_make_service_with_connect_info`
+/// would.
+async fn post_as_peer(app: &Router, ip: &str, path: &str, body: Value) -> (StatusCode, Value) {
+    let mut req = Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    req.extensions_mut().insert(ConnectInfo(peer(ip)));
+
+    let mut app = app.clone();
+    let resp = ServiceExt::<Req>::ready(&mut app)
+        .await
+        .unwrap()
+        .call(req)
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap_or(json!({}));
+    (status, json)
+}
+
+async fn get_as_peer(app: &Router, ip: &str, path: &str) -> (StatusCode, Value) {
+    let mut req = Request::builder()
+        .method(Method::GET)
+        .uri(path)
+        .body(axum::body::Body::empty())
+        .unwrap();
+    req.extensions_mut().insert(ConnectInfo(peer(ip)));
+
+    let mut app = app.clone();
+    let resp = ServiceExt::<Req>::ready(&mut app)
+        .await
+        .unwrap()
+        .call(req)
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap_or(json!({}));
+    (status, json)
+}
+
+#[tokio::test]
+async fn test_setup_guard_blocks_setup_from_a_public_peer() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let app = create_app(state);
+
+    let (status, body) = post_as_peer(
+        &app,
+        "8.8.8.8",
+        "/api/auth/setup",
+        json!({"username": "attacker", "password": "SecurePass123"}),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a public peer must not reach first-run setup: {:?}",
+        body
+    );
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("local network"));
+}
+
+#[tokio::test]
+async fn test_setup_guard_blocks_check_username_from_a_public_peer() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let app = create_app(state);
+
+    let (status, _) = get_as_peer(
+        &app,
+        "203.0.113.7",
+        "/api/auth/check-username?username=boss",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_setup_guard_blocks_verify_totp_from_a_public_peer() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let app = create_app(state);
+
+    let (status, _) = post_as_peer(
+        &app,
+        "198.51.100.4",
+        "/api/auth/setup/verify-totp",
+        json!({ "secret": TEST_TOTP_SECRET, "code": "000000" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_setup_guard_allows_loopback_and_reaches_the_handler() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let app = create_app(state);
+
+    let (status, body) = post_as_peer(
+        &app,
+        "127.0.0.1",
+        "/api/auth/setup",
+        json!({"username": "localboss", "password": "SecurePass123"}),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "loopback setup must succeed: {:?}",
+        body
+    );
+    assert!(body["success"].as_bool().unwrap_or(false));
+}
+
+#[tokio::test]
+async fn test_setup_guard_allows_a_private_lan_peer() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let app = create_app(state);
+
+    let (status, _) = get_as_peer(
+        &app,
+        "192.168.1.42",
+        "/api/auth/check-username?username=boss",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_setup_guard_env_override_allows_a_public_peer() {
+    let (state, _tmp, _lock) = setup_state().await;
+    std::env::set_var("HOMEVAULT_SETUP_ALLOW_REMOTE", "1");
+    let app = create_app(state);
+
+    let (status, _) = get_as_peer(&app, "8.8.8.8", "/api/auth/check-username?username=boss").await;
+
+    std::env::remove_var("HOMEVAULT_SETUP_ALLOW_REMOTE");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the documented opt-out must lift the restriction"
+    );
 }

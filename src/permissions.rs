@@ -3,6 +3,7 @@ use thiserror::Error;
 
 use crate::acl::{AclEntry, AclError, AclPermissions, AclService, AclTag};
 use crate::groups::GroupService;
+use crate::shares::{ShareType, SharesService};
 use crate::storage::share_perm_repo::{SharePermission, SharePermissionRepository};
 
 /// Errors that can occur during permission management.
@@ -366,6 +367,89 @@ impl PermissionService {
         }
 
         Ok(())
+    }
+
+    /// Revoke every share permission granted **directly** to a user, on the
+    /// real filesystem (best-effort) *and* in the database.
+    ///
+    /// Group grants are deliberately left alone: the ACL entries they
+    /// produced are matched by group membership, so a caller that first
+    /// removes the user from its groups (which `handle_user_delete` does)
+    /// has already cut the user's access to them. Deleting the group rows
+    /// here would instead revoke access for the *remaining* members, which is
+    /// not what deleting one account means.
+    ///
+    /// Called when an account is permanently deleted: without it the
+    /// `share_permissions` rows outlive the account (the table keys grantees
+    /// only by name, with no foreign key) and the real POSIX ACLs stay in
+    /// place, so recreating an account with the same username silently
+    /// inherits the deleted user's access.
+    ///
+    /// Returns the number of database rows removed. The ACL removal is
+    /// best-effort exactly like [`Self::revoke_permission`]: a share that no
+    /// longer exists on disk, or an unresolvable path, must not prevent the
+    /// database cleanup — otherwise the stale grant could never be removed.
+    pub async fn revoke_all_user_permissions(
+        username: &str,
+        pool: Arc<sqlx::SqlitePool>,
+    ) -> Result<u64, PermissionError> {
+        let repo = SharePermissionRepository::new(Arc::clone(&pool));
+        let permissions = repo
+            .get_for_grantee("user", username)
+            .await
+            .map_err(|e| PermissionError::Share(e.to_string()))?;
+
+        for perm in &permissions {
+            match ShareType::parse(&perm.share_type) {
+                Some(share_type) => match SharesService::get_share(&perm.share_name, share_type) {
+                    Ok(share) => {
+                        if let Err(e) =
+                            Self::revoke_grantee_permissions(&share.path, "user", username)
+                        {
+                            tracing::warn!(
+                                "Failed to remove filesystem ACL for user:{} on '{}' ({}): {} — deleting database record anyway",
+                                username,
+                                perm.share_name,
+                                perm.share_type,
+                                e
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Share '{}' ({}) no longer resolvable while deleting user '{}': {} — deleting database record anyway",
+                            perm.share_name,
+                            perm.share_type,
+                            username,
+                            e
+                        );
+                    }
+                },
+                None => {
+                    tracing::warn!(
+                        "Unknown share type '{}' on share '{}' while deleting user '{}' — deleting database record anyway",
+                        perm.share_type,
+                        perm.share_name,
+                        username
+                    );
+                }
+            }
+        }
+
+        let deleted = repo
+            .delete_for_grantee("user", username)
+            .await
+            .map_err(|e| PermissionError::Share(e.to_string()))?;
+
+        if deleted > 0 {
+            tracing::info!(
+                "Revoked {} share permission(s) held directly by deleted user '{}'",
+                deleted,
+                username
+            );
+        }
+
+        Ok(deleted)
     }
 
     /// List all DB-stored permissions for a share.

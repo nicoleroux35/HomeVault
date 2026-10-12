@@ -24,14 +24,8 @@ impl SetupService {
     fn data_dir() -> std::path::PathBuf {
         crate::config::paths::base_dir()
     }
-    fn setup_flag_file() -> std::path::PathBuf {
-        crate::config::paths::setup_flag_file()
-    }
     fn setup_lock_file() -> std::path::PathBuf {
         crate::config::paths::setup_lock_file()
-    }
-    fn system_hash_file() -> std::path::PathBuf {
-        crate::config::paths::system_hash_file()
     }
     const RESERVED_USERNAMES: &'static [&'static str] = &[
         "root",
@@ -62,10 +56,6 @@ impl SetupService {
         "messagebus",
     ];
 
-    pub fn is_first_run() -> bool {
-        !Self::setup_flag_file().exists()
-    }
-
     /// Returns true if the given command can be located via `which`.
     pub fn is_command_available(command: &str) -> bool {
         std::process::Command::new("which")
@@ -76,10 +66,6 @@ impl SetupService {
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
-    }
-
-    pub fn is_setup_valid() -> bool {
-        Self::setup_flag_file().exists() && Self::system_hash_file().exists()
     }
 
     /// Return a stable machine identifier, falling back to hostname for containers without machine-id.
@@ -124,23 +110,14 @@ impl SetupService {
             .collect::<String>()
     }
 
-    pub fn has_hardware_changed() -> bool {
-        if !Self::system_hash_file().exists() {
-            return false;
-        }
-        let stored_hash = std::fs::read_to_string(Self::system_hash_file()).unwrap_or_default();
-        let current_hash = Self::generate_system_hash();
-
-        if stored_hash != current_hash {
-            tracing::warn!(
-                "Hardware change detected - stored: {}, current: {}",
-                stored_hash,
-                current_hash
-            );
-            true
-        } else {
-            false
-        }
+    /// Whether a previously recorded hardware fingerprint still describes this
+    /// host.
+    ///
+    /// Pure comparison — no filesystem or database access — so the caller can
+    /// fetch the stored hash from wherever it lives (today the `setup_state`
+    /// table, via [`crate::storage::SetupStateRepository`]).
+    pub fn system_hash_matches(stored_hash: &str) -> bool {
+        stored_hash == Self::generate_system_hash()
     }
 
     /// Atomically mark setup as in progress to prevent race conditions
@@ -162,22 +139,6 @@ impl SetupService {
             }
             Err(e) => Err(SetupError::Io(e)),
         }
-    }
-
-    pub fn mark_setup_complete() -> Result<(), SetupError> {
-        std::fs::create_dir_all(Self::data_dir())?;
-
-        std::fs::write(Self::setup_flag_file(), "true")?;
-
-        let system_hash = Self::generate_system_hash();
-        std::fs::write(Self::system_hash_file(), system_hash)?;
-
-        // Remove lock file
-        let _ = std::fs::remove_file(Self::setup_lock_file());
-
-        tracing::info!("Setup marked as complete");
-
-        Ok(())
     }
 
     pub fn cleanup_setup_lock() {
@@ -994,6 +955,24 @@ mod tests {
         let h1 = SetupService::generate_system_hash();
         let h2 = SetupService::generate_system_hash();
         assert_eq!(h1, h2, "Same machine should produce same hash");
+    }
+
+    // =====================================================================
+    // system_hash_matches
+    // =====================================================================
+
+    #[test]
+    fn test_system_hash_matches_the_current_hash() {
+        let current = SetupService::generate_system_hash();
+        assert!(SetupService::system_hash_matches(&current));
+    }
+
+    #[test]
+    fn test_system_hash_matches_rejects_anything_else() {
+        assert!(!SetupService::system_hash_matches(
+            "deadbeef-not-a-real-hash"
+        ));
+        assert!(!SetupService::system_hash_matches(""));
     }
 
     // =====================================================================

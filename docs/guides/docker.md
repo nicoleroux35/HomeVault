@@ -110,6 +110,22 @@ update", never an error.
   (reads `session-token`/`csrf-token` from `localStorage`) rather than going
   through `frontend/src/lib/services/api.ts` for Docker/Compose/catalog calls;
   the new "App Catalog" tab (`tab === 'catalog'`) follows the same pattern.
+  **Verified on 2026-10-12: the two paths are behaviourally identical** —
+  `authedFetch` sends the same `X-Session-Token` + `X-CSRF-Token` pair as
+  `api.ts` (which is what `src/middleware/csrf.rs` requires on every mutating
+  method), so this is a maintenance duplication, not a live divergence bug.
+  **Consolidating `Docker.svelte` onto `api.ts` is deliberately not done:**
+  `api.ts` carries only 6 Docker methods (`getDockerContainers`,
+  `getDockerCatalog`, `isDockerAvailable`, `startContainer`,
+  `stopContainer`, `restartContainer` — all consumed by the desktop Docker
+  monitor), while `Docker.svelte` drives containers, images, networks, volumes,
+  Compose files, the catalog and third-party stores. Routing it through
+  `api.ts` means adding roughly 50 wrapper methods and rewriting ~100 call
+  sites, with the 51-test `docker.spec.ts` as the only net — a large,
+  regression-prone change for no user-visible gain while both paths work. If it
+  is ever done, do it one tab at a time with the E2E suite green in between,
+  and keep the `authedFetch` error shape (`{success:false,error}`) until the
+  last call site is migrated.
 - `frontend/src/lib/services/api.ts` has a small, separate set of
   Docker methods (`getDockerContainers`, `startContainer`,
   `isDockerAvailable`, …) — these are not wired into

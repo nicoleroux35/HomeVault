@@ -71,11 +71,30 @@ Granting first fails with a `setfacl` error.
   so a failed ACL application does not leave a phantom "granted" permission.
 - `revokeSharePermission` deletes the DB row even if the filesystem ACL removal
   fails (so a stale permission can still be cleaned from the UI).
-- **Known bugs in the ACL layer (not SFTP-specific, reported not fixed):** a
+- ~~**Known bugs in the ACL layer (not SFTP-specific, reported not fixed):** a
   grant with `recursive: true` fails outright (`setfacl` error from
   `set_default_acl`) and is never persisted; the "rw" permission option grants
   no execute/traverse bit, which makes it unusable on a directory (every share
-  is one) — use "rwx" for real read-write directory access.
+  is one) — use "rwx" for real read-write directory access.~~
+  **Both are already fixed in the code** (stale note, re-read on 2026-10-12;
+  the ACL half still needs a live-host confirmation before it can be called
+  verified — see `TESTING.md` → "Remaining to test as a priority"):
+  `AclService::set_default_acl` (`src/acl.rs`) now passes `-d -m` in that
+  order — `setfacl`'s parser takes the element after `-m` as its value
+  regardless of a leading dash, so the old `-m -d spec` fed it the literal
+  `-d` as the ACL spec; and `PermissionService::apply_permission_to_path`
+  (`src/permissions.rs`) forces the execute bit on when the share path is a
+  directory, in the ACL actually written to disk only — the persisted
+  `permission` string (what the UI shows) is untouched.
+- `handle_user_delete` (`src/handlers/users.rs`) calls
+  `SftpJailService::purge_user` directly rather than via `rebuild_jails`,
+  because `rebuild_jails` only reconciles jails for users that still exist.
+  (The companion half of the old note — that a deleted user's direct share
+  permissions were "logged as revoked but never actually are" — is **fixed as
+  of 2026-10-12**: `handle_user_delete` now calls
+  `PermissionService::revoke_all_user_permissions`, which removes the real
+  ACLs and the `share_permissions` rows. See [Users](./users.md) →
+  Invariants.)
 - `SftpJailService::ensure_linux_user` clears the locked-password flag
   `useradd` leaves on a fresh account (OpenSSH rejects a locked account even
   for pubkey-only auth) — with a random, discarded password, never for an
@@ -83,11 +102,6 @@ Granting first fails with a `setfacl` error.
 - `authorized_keys` files are `0644`, not `0600` — OpenSSH's unprivileged
   pre-auth worker reads them directly and can't open a `0600` file it doesn't
   own; a public key isn't a secret, so this is safe.
-- `handle_user_delete` (`src/handlers/users.rs`) calls
-  `SftpJailService::purge_user` directly rather than via `rebuild_jails`,
-  since a deleted user's direct share permissions are logged as revoked but
-  never actually are (separate pre-existing bug) — `rebuild_jails` alone would
-  not have cleaned up their jail.
 - **Editable since 2026-09-12** — `CLAUDE.md`'s frozen-area registry is gone, so
   `Shares.svelte`, the permission api.ts methods, `src/handlers/shares.rs`,
   `src/handlers/permissions.rs`, `src/permissions.rs`, `src/sftp.rs` and the

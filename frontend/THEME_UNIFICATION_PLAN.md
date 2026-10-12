@@ -1,61 +1,61 @@
-# Plan d'Unification du Thème HomeVault
+# HomeVault Theme Unification Plan
 **Date:** 2026-07-05  
 **Version:** 1.0  
-**Objectif:** Créer un thème unique, unifié et harmonisé
+**Objective:** Create a single, unified and harmonized theme
 
 ---
 
-## 🎯 Objectif Principal
+## 🎯 Main Objective
 
-Unifier les 3 systèmes de design tokens actuels en un seul système cohérent utilisant le préfixe `--hv-*`, éliminer les duplications, et standardiser l'architecture CSS.
-
----
-
-## 📋 Plan d'Action Détaillé
-
-### ÉTAPE 1: Audit et Préparation (✅ COMPLÉTÉ)
-
-**Durée:** 1-2h
-
-- [x] Analyse complète du système actuel
-- [x] Identification des conflits et duplications
-- [x] Comptage des occurrences (`--hv-*`: 1683, `--color-*`: 1373)
-- [x] Documentation des problèmes (THEME_ANALYSIS_REPORT.md)
-- [x] Définition de la stratégie de migration
-
-**Résultat:** Rapport d'analyse complet créé
+Unify the 3 current design token systems into a single coherent system using the `--hv-*` prefix, eliminate duplications, and standardize the CSS architecture.
 
 ---
 
-### ÉTAPE 2: Consolidation des Design Tokens
+## 📋 Detailed Action Plan
 
-**Durée:** 2-3h  
-**Priorité:** 🔴 CRITIQUE
+### STEP 1: Audit and Preparation (✅ COMPLETED)
 
-#### 2.1 Enrichir tokens.css avec les Tokens Manquants
+**Duration:** 1-2h
 
-**Action:** Fusionner `globals.css` dans `tokens.css`
+- [x] Complete analysis of the current system
+- [x] Identification of the conflicts and duplications
+- [x] Counting of the occurrences (`--hv-*`: 1683, `--color-*`: 1373)
+- [x] Documentation of the problems (THEME_ANALYSIS_REPORT.md)
+- [x] Definition of the migration strategy
 
-**Tokens à ajouter dans tokens.css:**
+**Result:** Complete analysis report created
+
+---
+
+### STEP 2: Consolidation of the Design Tokens
+
+**Duration:** 2-3h  
+**Priority:** 🔴 CRITICAL
+
+#### 2.1 Enrich tokens.css with the Missing Tokens
+
+**Action:** Merge `globals.css` into `tokens.css`
+
+**Tokens to add to tokens.css:**
 
 ```css
-/* Variables manquantes référencées dans app.css */
+/* Missing variables referenced in app.css */
 --hv-font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 --hv-radius-default: 4px;
 
-/* Couleurs primaires avec échelle complète (depuis globals.css) */
+/* Primary colors with full scale (from globals.css) */
 --hv-primary-50: #eff6ff;
 --hv-primary-100: #dbeafe;
 --hv-primary-200: #bfdbfe;
 --hv-primary-300: #93c5fd;
 --hv-primary-400: #60a5fa;
---hv-primary-500: #4a90d9;  /* Aligner avec --hv-primary ou choisir */
+--hv-primary-500: #4a90d9;  /* Align with --hv-primary or choose */
 --hv-primary-600: #3b7ac7;
 --hv-primary-700: #2c5fa5;
 --hv-primary-800: #1e4485;
 --hv-primary-900: #1e3a8a;
 
-/* Neutrals avec échelle complète */
+/* Neutrals with full scale */
 --hv-neutral-50: #f9fafb;
 --hv-neutral-100: #f3f4f6;
 --hv-neutral-200: #e5e7eb;
@@ -67,55 +67,55 @@ Unifier les 3 systèmes de design tokens actuels en un seul système cohérent u
 --hv-neutral-800: #1f2937;
 --hv-neutral-900: #111827;
 
-/* Sémantiques depuis globals.css */
+/* Semantics from globals.css */
 --hv-success-light: #dcfce7;
 --hv-warning-light: #fef3c7;
 --hv-error-light: #fee2e2;
 --hv-info-light: #dbeafe;
 
-/* Contextuels */
+/* Contextual */
 --hv-background: #ffffff;
 --hv-background-alt: var(--hv-surface-container-low);
 --hv-border: var(--hv-outline-variant);
 ```
 
-#### 2.2 Décider de la Couleur Primaire Officielle
+#### 2.2 Decide the Official Primary Color
 
-**Conflit actuel:**
-- `globals.css`: `#4a90d9` (bleu clair)
-- `tokens.css`: `#2E72C9` (bleu moyen)
+**Current conflict:**
+- `globals.css`: `#4a90d9` (light blue)
+- `tokens.css`: `#2E72C9` (medium blue)
 - `cove-tailwind.js`: `#2196f3` (Material blue)
 
-**Recommandation:** Garder `#2E72C9` de `tokens.css`
-- ✅ Déjà défini dans le système `--hv-*`
-- ✅ Documenté dans THEME_CONFORMITY_REPORT
-- ✅ Plus proche de l'identité visuelle établie
+**Recommendation:** Keep `#2E72C9` from `tokens.css`
+- ✅ Already defined in the `--hv-*` system
+- ✅ Documented in THEME_CONFORMITY_REPORT
+- ✅ Closer to the established visual identity
 
 **Action:**
 ```css
-/* tokens.css - Garder */
+/* tokens.css - Keep */
 --hv-primary: #2E72C9;
 
-/* Ajuster globals.css pour correspondre ou supprimer */
---color-primary-500: #2E72C9;  /* Avant: #4a90d9 */
+/* Adjust globals.css to match or remove */
+--color-primary-500: #2E72C9;  /* Before: #4a90d9 */
 ```
 
-#### 2.3 Créer Script de Migration Automatique
+#### 2.3 Create the Automatic Migration Script
 
-**Fichier:** `scripts/migrate-css-variables.js`
+**File:** `scripts/migrate-css-variables.js`
 
 ```javascript
 #!/usr/bin/env node
 /**
- * Script de migration des variables CSS
- * Convertit var(--color-*) et var(--text-*) vers var(--hv-*)
+ * CSS variables migration script
+ * Converts var(--color-*) and var(--text-*) to var(--hv-*)
  */
 
 import { readFileSync, writeFileSync } from 'fs';
 import { globSync } from 'glob';
 
 const MIGRATION_MAP = {
-  // Couleurs
+  // Colors
   'var(--color-primary)': 'var(--hv-primary)',
   'var(--color-primary-light)': 'var(--hv-primary-light)',
   'var(--color-primary-50)': 'var(--hv-primary-50)',
@@ -151,14 +151,14 @@ const MIGRATION_MAP = {
   'var(--color-surface)': 'var(--hv-surface)',
   'var(--color-border)': 'var(--hv-border)',
   
-  // Texte
+  // Text
   'var(--color-text)': 'var(--hv-text-primary)',
   'var(--color-text-secondary)': 'var(--hv-text-secondary)',
   'var(--color-text-muted)': 'var(--hv-text-tertiary)',
   'var(--text-primary)': 'var(--hv-text-primary)',
   'var(--text-secondary)': 'var(--hv-text-secondary)',
   
-  // Typographie
+  // Typography
   'var(--text-xs)': 'var(--hv-font-size-xs)',
   'var(--text-sm)': 'var(--hv-font-size-sm)',
   'var(--text-base)': 'var(--hv-font-size-base)',
@@ -168,7 +168,7 @@ const MIGRATION_MAP = {
   'var(--text-2xl)': 'var(--hv-font-size-2xl)',
   'var(--text-3xl)': 'var(--hv-font-size-3xl)',
   
-  // Espacement
+  // Spacing
   'var(--spacing-0)': 'var(--hv-space-0)',
   'var(--spacing-1)': 'var(--hv-space-1)',
   'var(--spacing-2)': 'var(--hv-space-2)',
@@ -228,7 +228,7 @@ function migrateFile(filePath) {
   return 0;
 }
 
-// Exécution
+// Execution
 const files = [
   ...globSync('src/**/*.svelte'),
   ...globSync('src/**/*.css'),
@@ -245,7 +245,7 @@ files.forEach(file => {
 console.log(`\n✅ Migration complete: ${migratedCount} files modified`);
 ```
 
-**Exécution:**
+**Execution:**
 ```bash
 cd frontend
 node scripts/migrate-css-variables.js
@@ -253,32 +253,32 @@ node scripts/migrate-css-variables.js
 
 ---
 
-### ÉTAPE 3: Restructuration de l'Architecture
+### STEP 3: Restructuring of the Architecture
 
-**Durée:** 1-2h  
-**Priorité:** 🟡 IMPORTANTE
+**Duration:** 1-2h  
+**Priority:** 🟡 IMPORTANT
 
-#### 3.1 Modifier main.ts
+#### 3.1 Modify main.ts
 
-**Avant:**
+**Before:**
 ```typescript
 import './fonts.css'
 import './app.css'
 import './app/globals.css'
 ```
 
-**Après:**
+**After:**
 ```typescript
 import './fonts.css'
-import './lib/styles/theme/index.css'  // Charge tokens en premier
+import './lib/styles/theme/index.css'  // Loads tokens first
 import './app.css'
 ```
 
-#### 3.2 Mettre à Jour tailwind.config.js
+#### 3.2 Update tailwind.config.js
 
-**Fichier:** `tailwind.config.js`
+**File:** `tailwind.config.js`
 
-Remplacer toutes les références `var(--color-*)` par `var(--hv-*)`
+Replace all the `var(--color-*)` references with `var(--hv-*)`
 
 ```javascript
 export default {
@@ -395,9 +395,9 @@ export default {
 }
 ```
 
-#### 3.3 Mettre à Jour app.css
+#### 3.3 Update app.css
 
-**Fichier:** `src/app.css`
+**File:** `src/app.css`
 
 ```css
 @tailwind base;
@@ -466,32 +466,32 @@ body {
 }
 ```
 
-#### 3.4 Supprimer Fichiers Obsolètes
+#### 3.4 Remove Obsolete Files
 
-**À supprimer:**
+**To remove:**
 ```bash
-# Option 1: Supprimer complètement
+# Option 1: Remove completely
 rm frontend/src/app/globals.css
 rm frontend/src/styles/cove-tailwind.js
 
-# Option 2: Archiver (recommandé pour rollback)
+# Option 2: Archive (recommended for rollback)
 mkdir -p frontend/.archive/2026-07-05
 mv frontend/src/app/globals.css frontend/.archive/2026-07-05/
 mv frontend/src/styles/cove-tailwind.js frontend/.archive/2026-07-05/
 ```
 
-**Raisons:**
-- `globals.css` → Fusionné dans `tokens.css`
-- `cove-tailwind.js` → Non utilisé (0 occurrences)
+**Reasons:**
+- `globals.css` → Merged into `tokens.css`
+- `cove-tailwind.js` → Unused (0 occurrences)
 
 ---
 
-### ÉTAPE 4: Validation et Tests
+### STEP 4: Validation and Tests
 
-**Durée:** 2-3h  
-**Priorité:** 🔴 CRITIQUE
+**Duration:** 2-3h  
+**Priority:** 🔴 CRITICAL
 
-#### 4.1 Tests de Build
+#### 4.1 Build Tests
 
 ```bash
 cd frontend
@@ -503,90 +503,90 @@ npm install
 # Test build
 npm run build
 
-# Vérifier aucune erreur CSS
-# Vérifier aucune variable non définie
-# Vérifier bundle size (devrait être réduit)
+# Verify no CSS errors
+# Verify no undefined variables
+# Verify bundle size (should be reduced)
 ```
 
-**Critères de succès:**
-- ✅ Build sans erreurs
-- ✅ Build sans warnings CSS non définis
-- ✅ Bundle CSS réduit (~15%)
+**Success criteria:**
+- ✅ Build without errors
+- ✅ Build without undefined CSS warnings
+- ✅ Reduced CSS bundle (~15%)
 
-#### 4.2 Tests Visuels
+#### 4.2 Visual Tests
 
-**Routes à tester:**
-1. `/login` - Page de connexion
-2. `/desktop` - Bureau principal
-3. `/explorer` - Explorateur de fichiers
-4. `/settings` - Paramètres
-5. `/raid` - Gestion RAID
-6. `/apps` - Centre d'applications
-7. `/users` - Gestion utilisateurs
+**Routes to test:**
+1. `/login` - Login page
+2. `/desktop` - Main desktop
+3. `/explorer` - File explorer
+4. `/settings` - Settings
+5. `/raid` - RAID management
+6. `/apps` - Application center
+7. `/users` - User management
 
-**Checklist visuelle par route:**
-- [ ] Couleurs correctes
-- [ ] Espacements cohérents
-- [ ] Typographie correcte
-- [ ] Boutons styles
-- [ ] Inputs fonctionnels
-- [ ] Cartes affichées
-- [ ] Modals correctes
-- [ ] Toasts visibles
+**Visual checklist per route:**
+- [ ] Correct colors
+- [ ] Consistent spacings
+- [ ] Correct typography
+- [ ] Styled buttons
+- [ ] Functional inputs
+- [ ] Displayed cards
+- [ ] Correct modals
+- [ ] Visible toasts
 
-#### 4.3 Tests Dark Mode
+#### 4.3 Dark Mode Tests
 
 ```javascript
-// Dans DevTools Console
+// In DevTools Console
 document.documentElement.classList.add('dark');
-// Vérifier tous les composants
+// Verify all components
 document.documentElement.classList.remove('dark');
 ```
 
-**Vérifier:**
-- [ ] Contraste suffisant
-- [ ] Couleurs inversées correctement
-- [ ] Lisibilité maintenue
-- [ ] Ombres visibles
+**Verify:**
+- [ ] Sufficient contrast
+- [ ] Colors correctly inverted
+- [ ] Readability maintained
+- [ ] Visible shadows
 
-#### 4.4 Tests Responsive
+#### 4.4 Responsive Tests
 
-**Breakpoints à tester:**
+**Breakpoints to test:**
 - 375px (Mobile)
 - 768px (Tablet)
 - 1024px (Desktop)
 - 1920px (Large desktop)
 
-**Vérifier:**
-- [ ] Layout adaptatif
+**Verify:**
+- [ ] Adaptive layout
 - [ ] Sidebar collapse
 - [ ] Touch targets (44x44px min)
-- [ ] Texte lisible
+- [ ] Readable text
 
-#### 4.5 Tests d'Accessibilité
+#### 4.5 Accessibility Tests
 
 ```bash
-# Installer axe-core
+# Install axe-core
 npm install -D @axe-core/cli
 
-# Tester l'accessibilité
+# Test accessibility
 npx axe http://localhost:5173 --tags wcag2aa
 ```
 
-**Vérifier:**
-- [ ] Contraste > 4.5:1
+**Verify:**
+- [ ] Contrast > 4.5:1
 - [ ] Focus visible
-- [ ] Navigation clavier
+- [ ] Keyboard navigation
 - [ ] Screen reader labels
 
-#### 4.6 Tests de Performance
+#### 4.6 Performance Tests
 
 ```bash
 # Bundle analyzer
 npm install -D rollup-plugin-visualizer
 ```
 
-**Métriques à comparer (avant/après):**
+**Metrics to compare (before/after):**
 - CSS bundle size
 - Initial load time
 - Time to interactive
@@ -594,48 +594,48 @@ npm install -D rollup-plugin-visualizer
 
 ---
 
-### ÉTAPE 5: Documentation
+### STEP 5: Documentation
 
-**Durée:** 1-2h  
-**Priorité:** 🟡 IMPORTANTE
+**Duration:** 1-2h  
+**Priority:** 🟡 IMPORTANT
 
-#### 5.1 Mettre à Jour THEME_QUICK_START.md
+#### 5.1 Update THEME_QUICK_START.md
 
-**Sections à modifier:**
-- Ordre d'import des CSS
-- Variables CSS disponibles
-- Exemples avec `--hv-*` uniquement
-- Suppression références Cove
+**Sections to modify:**
+- CSS import order
+- Available CSS variables
+- Examples with `--hv-*` only
+- Removal of Cove references
 
-#### 5.2 Créer Guide de Migration
+#### 5.2 Create the Migration Guide
 
-**Fichier:** `THEME_MIGRATION_GUIDE.md`
+**File:** `THEME_MIGRATION_GUIDE.md`
 
-Contenu:
-- Changements apportés
+Content:
+- Changes made
 - Mapping `--color-*` → `--hv-*`
-- Exemples avant/après
+- Before/after examples
 - Troubleshooting
 
-#### 5.3 Mettre à Jour README.md Principal
+#### 5.3 Update the Main README.md
 
-Ajouter section:
+Add a section:
 ```markdown
-## 🎨 Système de Thème
+## 🎨 Theme System
 
-HomeVault utilise un système de design unifié avec des tokens CSS préfixés `--hv-*`.
+HomeVault uses a unified design system with CSS tokens prefixed `--hv-*`.
 
-- **Documentation complète:** `frontend/THEME_QUICK_START.md`
-- **Référence des tokens:** `frontend/src/lib/styles/theme/tokens.css`
-- **Guide de migration:** `frontend/THEME_MIGRATION_GUIDE.md`
+- **Complete documentation:** `frontend/THEME_QUICK_START.md`
+- **Token reference:** `frontend/src/lib/styles/theme/tokens.css`
+- **Migration guide:** `frontend/THEME_MIGRATION_GUIDE.md`
 
-### Démarrage Rapide
+### Quick Start
 
 \`\`\`typescript
-// Les tokens sont chargés automatiquement
+// The tokens are loaded automatically
 import './lib/styles/theme/index.css';
 
-// Utiliser dans vos composants
+// Use in your components
 .my-component {
   color: var(--hv-text-primary);
   background: var(--hv-surface);
@@ -645,128 +645,128 @@ import './lib/styles/theme/index.css';
 \`\`\`
 ```
 
-#### 5.4 Créer Référence Visuelle
+#### 5.4 Create the Visual Reference
 
-**Fichier:** `frontend/src/routes/ThemeReference.svelte`
+**File:** `frontend/src/routes/ThemeReference.svelte`
 
-Page de démo montrant:
-- Tous les tokens de couleurs
-- Échelles de spacing
-- Échelles de typographie
-- Composants stylisés
+Demo page showing:
+- All the color tokens
+- Spacing scales
+- Typography scales
+- Styled components
 - Dark mode toggle
 
 ---
 
-## 📊 Checklist Finale
+## 📊 Final Checklist
 
-### Avant de Commencer
+### Before Starting
 
-- [ ] Lire THEME_ANALYSIS_REPORT.md
-- [ ] Comprendre les changements
-- [ ] Créer branche git: `git checkout -b theme/unification`
-- [ ] Backup des fichiers: `cp -r frontend frontend.backup`
+- [ ] Read THEME_ANALYSIS_REPORT.md
+- [ ] Understand the changes
+- [ ] Create a git branch: `git checkout -b theme/unification`
+- [ ] Backup of the files: `cp -r frontend frontend.backup`
 
-### Pendant la Migration
+### During the Migration
 
-- [ ] Enrichir tokens.css avec tokens manquants
-- [ ] Décider couleur primaire officielle
-- [ ] Créer et exécuter script de migration
-- [ ] Modifier main.ts
-- [ ] Mettre à jour tailwind.config.js
-- [ ] Mettre à jour app.css
-- [ ] Archiver fichiers obsolètes
+- [ ] Enrich tokens.css with the missing tokens
+- [ ] Decide the official primary color
+- [ ] Create and run the migration script
+- [ ] Modify main.ts
+- [ ] Update tailwind.config.js
+- [ ] Update app.css
+- [ ] Archive obsolete files
 
 ### Tests
 
-- [ ] Build sans erreurs
-- [ ] Tests visuels (7 routes)
-- [ ] Tests dark mode
-- [ ] Tests responsive (4 breakpoints)
-- [ ] Tests accessibilité (axe-core)
-- [ ] Tests performance (bundle size)
+- [ ] Build without errors
+- [ ] Visual tests (7 routes)
+- [ ] Dark mode tests
+- [ ] Responsive tests (4 breakpoints)
+- [ ] Accessibility tests (axe-core)
+- [ ] Performance tests (bundle size)
 
 ### Documentation
 
-- [ ] Mettre à jour THEME_QUICK_START.md
-- [ ] Créer THEME_MIGRATION_GUIDE.md
-- [ ] Mettre à jour README.md
-- [ ] Créer page ThemeReference.svelte
+- [ ] Update THEME_QUICK_START.md
+- [ ] Create THEME_MIGRATION_GUIDE.md
+- [ ] Update README.md
+- [ ] Create the ThemeReference.svelte page
 
-### Finalisation
+### Finalization
 
 - [ ] Commit: `git commit -m "feat(theme): unify design system with --hv-* tokens"`
 - [ ] Push: `git push origin theme/unification`
-- [ ] Créer PR avec détails
-- [ ] Review par équipe
-- [ ] Merge vers main
+- [ ] Create a PR with details
+- [ ] Review by the team
+- [ ] Merge to main
 
 ---
 
-## 🚨 Plan de Rollback
+## 🚨 Rollback Plan
 
-Si problème critique détecté:
+If a critical problem is detected:
 
-### Option 1: Rollback Git
+### Option 1: Git Rollback
 
 ```bash
 git reset --hard HEAD~1
 git push --force
 ```
 
-### Option 2: Restaurer Backup
+### Option 2: Restore Backup
 
 ```bash
 rm -rf frontend
 mv frontend.backup frontend
 ```
 
-### Option 3: Restaurer Fichiers Archivés
+### Option 3: Restore Archived Files
 
 ```bash
 cp frontend/.archive/2026-07-05/globals.css frontend/src/app/
-# Restaurer import dans main.ts
+# Restore the import in main.ts
 ```
 
 ---
 
-## 📈 Métriques de Succès
+## 📈 Success Metrics
 
-### Critères de Réussite
+### Success Criteria
 
-- ✅ 1 système de design tokens unique (`--hv-*`)
-- ✅ 0 conflit de variables
-- ✅ 0 fichier CSS orphelin
-- ✅ 0 variable non définie
-- ✅ Build sans warnings
-- ✅ Bundle CSS réduit de ~15%
-- ✅ Tous les tests visuels passent
-- ✅ Score accessibilité maintenu (WCAG AA)
+- ✅ 1 single design token system (`--hv-*`)
+- ✅ 0 variable conflicts
+- ✅ 0 orphan CSS file
+- ✅ 0 undefined variable
+- ✅ Build without warnings
+- ✅ CSS bundle reduced by ~15%
+- ✅ All visual tests pass
+- ✅ Accessibility score maintained (WCAG AA)
 
 ### KPIs
 
-| Métrique | Avant | Objectif Après | Réel Après |
+| Metric | Before | Target After | Actual After |
 |----------|-------|----------------|------------|
-| Systèmes de tokens | 3 | 1 | |
-| Conflits de variables | ~50 | 0 | |
-| Variables non définies | 3 | 0 | |
+| Token systems | 3 | 1 | |
+| Variable conflicts | ~50 | 0 | |
+| Undefined variables | 3 | 0 | |
 | CSS bundle size | XXX KB | -15% | |
 | Build warnings | X | 0 | |
-| Occurrences `--hv-*` | 1683 | 3000+ | |
-| Occurrences `--color-*` | 1373 | 0 | |
+| `--hv-*` occurrences | 1683 | 3000+ | |
+| `--color-*` occurrences | 1373 | 0 | |
 
 ---
 
-## 🎯 Prochaines Étapes Après Unification
+## 🎯 Next Steps After Unification
 
-1. **Thématisation dynamique** - Permettre changement de thème runtime
-2. **Thèmes personnalisés** - Permettre utilisateurs de créer leurs thèmes
-3. **Mode haute contraste** - Support WCAG AAA
-4. **Composants supplémentaires** - Enrichir la bibliothèque
-5. **Storybook** - Documentation interactive des composants
+1. **Dynamic theming** - Allow runtime theme changes
+2. **Custom themes** - Let users create their own themes
+3. **High-contrast mode** - WCAG AAA support
+4. **Additional components** - Enrich the library
+5. **Storybook** - Interactive component documentation
 
 ---
 
-**Document créé par:** Claude Code Agent (Opus 4.8)  
+**Document created by:** [CC] Agent (Opus 4.8)  
 **Date:** 2026-07-05  
-**Prochaine action:** Exécuter ÉTAPE 2
+**Next action:** Execute STEP 2

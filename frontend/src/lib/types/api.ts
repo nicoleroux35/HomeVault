@@ -49,6 +49,9 @@ export interface SetupStatus {
   is_first_run: boolean;
   is_setup_valid: boolean;
   hardware_changed: boolean;
+  /** An admin exists but the recorded hardware fingerprint no longer matches
+   *  this host — the app routes to the recovery screen, never the wizard. */
+  needs_recovery: boolean;
   server_machine_id: string;
   sudo_available?: boolean;
 }

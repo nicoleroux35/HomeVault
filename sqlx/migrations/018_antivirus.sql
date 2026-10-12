@@ -1,7 +1,8 @@
 -- Antivirus (ClamAV) scanning: on-demand + scheduled scans, quarantine.
 -- Real-time/on-write scanning (clamd daemon) is intentionally out of scope —
 -- HomeVault targets low-power boards/mini-PCs and a resident scan daemon
--- would work against the resource ceilings in installer/homevault.service.
+-- would work against the resource ceilings in the systemd unit install.sh
+-- writes.
 
 -- Singleton settings row (id is always 1).
 CREATE TABLE IF NOT EXISTS av_settings (

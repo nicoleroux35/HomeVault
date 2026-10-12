@@ -36,10 +36,16 @@ SPA's `ApiClient` (`frontend/src/lib/services/api.ts`) prefixes every call with
 | POST | `/auth/recovery-code` | auth | `handle_generate_recovery_code` (400 if one exists unless `?regenerate=true`) |
 | POST | `/auth/verify-recovery-code` | public | `handle_verify_recovery_code` — `{ username, code }` |
 | POST | `/auth/reset-password-recovery` | public | `handle_reset_password_recovery` — code is not consumed |
-| GET | `/auth/setup-status` | public | `handle_setup_status` |
-| GET | `/auth/check-username` | public | `handle_check_username` |
-| POST | `/auth/setup` | public | `handle_setup` — accepts optional `totp_secret` + `totp_code` (enrolled at the wizard's password step); response may include `totp_enabled` + `backup_codes` |
-| POST | `/auth/setup/verify-totp` | public (first-run only) | `handle_setup_verify_totp` — stateless pre-creation check of a client-generated TOTP secret: `{ secret, code }` → `{ valid }` |
+| GET | `/auth/setup-status` | public | `handle_setup_status` — `is_first_run` (DB-derived), `is_setup_valid`, `hardware_changed`, `needs_recovery`, `server_machine_id`, `sudo_available` |
+| GET | `/auth/check-username` | public (local network only) | `handle_check_username` |
+| POST | `/auth/setup` | public (local network only) | `handle_setup` — accepts optional `totp_secret` + `totp_code` (enrolled at the wizard's password step); response may include `totp_enabled` + `backup_codes`. Refused once an admin exists |
+| POST | `/auth/setup/verify-totp` | public (local network only, first-run only) | `handle_setup_verify_totp` — stateless pre-creation check of a client-generated TOTP secret: `{ secret, code }` → `{ valid }` |
+| POST | `/auth/setup/rebaseline` | admin | `handle_setup_rebaseline` — re-baseline the hardware fingerprint after a confirmed hardware change |
+
+The three unauthenticated bootstrap routes (`/auth/setup`,
+`/auth/setup/verify-totp`, `/auth/check-username`) accept only loopback /
+private / link-local peers (`middleware::setup_guard`); `HOMEVAULT_SETUP_ALLOW_REMOTE=1`
+lifts the restriction. `/auth/setup-status` is exempt.
 
 Login returns a session token (stored as `session-token` in localStorage) and
 sets an `hv_session` cookie read only by the per-app reverse proxy.
@@ -123,7 +129,7 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 | GET | `/users/{username}` | admin | `handle_user_get` |
 | PUT | `/users/{username}` | admin | `handle_user_update` |
 | PUT | `/users/{username}/full` | admin | `handle_user_update_full` |
-| DELETE | `/users/{username}` | admin | `handle_user_delete` (kills PTY sessions) |
+| DELETE | `/users/{username}` | admin | `handle_user_delete` (kills PTY sessions; revokes the account's direct share grants — ACL + DB — and purges its SFTP jail) |
 | PUT | `/users/{username}/password` | admin | `handle_user_update_password` |
 | PUT | `/users/{username}/role` | admin | `handle_user_update_role` |
 | PUT | `/users/{username}/locked` | admin | `handle_user_set_locked` |
@@ -424,7 +430,10 @@ Every Compose project-name path parameter is validated by
 ## Cloud Sync — `rclone/*`
 
 > Previously **every** handler took only `State(_state)` — no session check
-> at all. `GET /rclone/config` returns the raw `/etc/rclone.conf` content;
+> at all. `GET /rclone/config` returns the raw content of the rclone config
+> file the server resolved for the request — `rclone_config_path()`: an explicit
+> `RCLONE_CONFIG`, else the first existing of rclone's locations, else
+> `/etc/rclone.conf`;
 > rclone's "obscured" secret encoding is trivially reversible, so this was an
 > unauthenticated plaintext credential leak for every configured remote (S3
 > keys, OAuth tokens, FTP/SFTP passwords). `sync`/`copy` support a `"local"`
@@ -496,6 +505,14 @@ Every Downloader endpoint calls `require_admin_request`, so **all** are admin-on
 /progress/{job_id}/status`, `DELETE /progress/{job_id}` (cancel). Long-running jobs
 (backup, restore, clone, etc.) emit `progress` / `done` / `error` / `heartbeat`
 events; the SPA subscribes via `EventSource` (`api.subscribeToProgress`).
+`/status` answers the job's **real last event** (latest `%`, message, byte
+counters and state — `completed`/`failed` included) and a 400 for an id that was
+never created or was already removed. In a `ProgressEvent`, `job_type` is a
+tagged object: `{"type":"backup"}` for the built-in kinds,
+`{"type":"custom","name":"explorer_copy"}` for a feature job (the enum uses
+serde **adjacent** tagging — plain internal tagging cannot serialize the
+`Custom` newtype variant, which used to empty the SSE payload for every feature
+job, see [guides/explorer.md](./guides/explorer.md)).
 
 ## Activity feed — `GET /api/activity` (`auth`)
 

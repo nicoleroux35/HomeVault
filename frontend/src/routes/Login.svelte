@@ -2,12 +2,12 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { api } from '$lib/services/api';
   import { authStore } from '$lib/stores/auth';
+  import { appGate } from '$lib/stores/appGate';
   import { translations, languageStore } from '$lib/stores/i18n';
   import { IconAlertTriangle, IconArrowLeft, IconEye, IconEyeOff, IconLock, IconLogin, IconRefresh, IconShieldCheckered, IconUser, IconWifiOff } from '@tabler/icons-svelte';
   import { Modal, Button } from '$lib/components/theme';
   import { Switch } from '$lib/components/ui/switch/index.js';
   import { cn } from '$lib/utils.js';
-  import SetupWizard from './SetupWizard.svelte';
 
   let username = '';
   let password = '';
@@ -18,10 +18,14 @@
   let codeInputs: HTMLInputElement[] = [];
   let isLoading = false;
   let requires2fa = false;
-  let isFirstRun: boolean | null = null;
-  let hardwareChanged = false;
-  let connectionError = false;
-  let serverMachineId = '';
+  // Set by the app gate (`App.svelte`): the server is unreachable, so no setup
+  // status could be read (drives the connection-error screen).
+  export let connectionError = false;
+  // Set by the app gate on the hardware-change recovery route: an admin already
+  // exists but the recorded fingerprint changed, so signing in once confirms
+  // the new hardware (step-up authentication) instead of dead-ending on the
+  // Setup Wizard.
+  export let recoveryMode = false;
   // Real server version + TLS indicator for the card footer. The version comes
   // from the public `/api/settings/public` endpoint (no auth needed on the
   // login screen); TLS is detected by the transport (HTTPS = built-in TLS or a
@@ -99,29 +103,19 @@
   }
 
   function gotoDesktop() {
+    // Let the gate take over — it re-renders the desktop and syncs the URL.
+    appGate.enterApp();
     window.history.pushState({}, '', '/desktop');
     window.dispatchEvent(new PopStateEvent('popstate'));
   }
 
-  async function checkSetupStatus() {
-    isFirstRun = null;
-    connectionError = false;
-    try {
-      const status = await Promise.race([
-        api.getSetupStatus(),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
-      ]);
-      isFirstRun = status.is_first_run;
-      hardwareChanged = status.hardware_changed;
-      serverMachineId = status.server_machine_id || '';
-    } catch (e) {
-      console.error('[Login] checkSetupStatus error:', e);
-      connectionError = true;
-    }
+  // The connection-error screen's retry: re-run the whole gate (setup status
+  // + session), not just this component's view of it.
+  function retryConnection() {
+    appGate.refresh();
   }
 
   onMount(() => {
-    checkSetupStatus();
     api.getPublicSettings().then((res) => {
       if (res.success && res.data?.version) serverVersion = res.data.version;
     }).catch(() => {});
@@ -199,6 +193,16 @@
       const result = await authStore.login(username, password, totpCode || undefined, rememberMe);
       if (result.success) {
         if (!result.isAdmin) { isLoading = false; showLoginError('login.error.not_admin'); return; }
+        // Hardware-change recovery: the admin's sign-in doubles as the
+        // confirmation step, so re-baseline the fingerprint before entering.
+        if (recoveryMode) {
+          const rebaseline = await api.rebaselineSetup();
+          if (!rebaseline.success) {
+            isLoading = false;
+            showLoginError('login.hardware_recovery.failed');
+            return;
+          }
+        }
         unlocking = true;
         setTimeout(gotoDesktop, 700);
       } else if (result.requires2fa) {
@@ -370,15 +374,12 @@
 </script>
 
 <div class="hv-login-page relative min-h-screen w-full overflow-y-auto bg-[image:var(--hv-login-bg-gradient)]" data-testid="login-page">
-  {#if isFirstRun === true || hardwareChanged}
-    <SetupWizard />
-  {:else}
-    <div class="pointer-events-none fixed inset-0 overflow-hidden" aria-hidden="true">
+  <div class="pointer-events-none fixed inset-0 overflow-hidden" aria-hidden="true">
       <div class="absolute top-1/4 left-1/3 h-96 w-96 rounded-full bg-[image:var(--hv-login-orb-indigo)] opacity-40 blur-[70px]"></div>
       <div class="absolute right-1/3 bottom-1/4 h-80 w-80 rounded-full bg-[image:var(--hv-login-orb-pink)] opacity-30 blur-[60px]"></div>
     </div>
 
-    {#if isFirstRun === false}
+    {#if !connectionError}
       <div class="pointer-events-none fixed top-10 left-1/2 z-[1] -translate-x-1/2 text-center max-[480px]:top-6">
         <div class="text-[4.5rem] leading-none font-light tracking-[-0.02em] text-[var(--hv-login-clock)] tabular-nums max-[480px]:text-[3rem]">{clock}</div>
         <div class="mt-1 text-sm uppercase tracking-[0.12em] text-[var(--hv-login-muted)]">{dateLabel}</div>
@@ -447,6 +448,12 @@
 
             <form onsubmit={(e)=>{e.preventDefault();handleLogin();}}>
               <div class="flex flex-col gap-4 px-8 py-6 max-[480px]:px-6 max-[480px]:py-5">
+                {#if recoveryMode}
+                  <div class="flex items-start gap-2 rounded-lg border border-[var(--hv-login-timer-warn)] bg-[var(--hv-login-accent-soft)] px-3 py-2.5" role="status" data-testid="login-hardware-recovery">
+                    <IconAlertTriangle size={18} stroke={2} class="mt-0.5 shrink-0 text-[var(--hv-login-timer-warn)]" />
+                    <p class="m-0 text-[13px] leading-relaxed text-[var(--hv-shell-text-2)]">{t('login.hardware_recovery.notice')}</p>
+                  </div>
+                {/if}
                 <div class="flex flex-col gap-1.5">
                   <label for="username" class="text-xs font-medium uppercase tracking-[0.1em] text-[var(--hv-login-muted)]">{t('login.username_label')}</label>
                   <div class={fieldWrapperClass}>
@@ -570,14 +577,13 @@
           <div data-testid="login-error-state" class="flex flex-col items-center gap-3 px-6 py-10 text-center text-[var(--hv-shell-text-2)]">
             <IconWifiOff size={32} stroke={2} class="text-[var(--hv-login-muted)]" />
             <p class="m-0 text-sm">{t('login.connection_error')}</p>
-            <Button variant="primary" class="hv-error-retry" onclick={checkSetupStatus}><IconRefresh size={16} stroke={2} /> {t('login.retry')}</Button>
+            <Button variant="primary" class="hv-error-retry" onclick={retryConnection}><IconRefresh size={16} stroke={2} /> {t('login.retry')}</Button>
           </div>
         {:else}
           <div class="hv-spinner hv-login-spinner h-8 w-8 border-4" data-testid="login-spinner"></div>
         {/if}
       </div>
     {/if}
-  {/if}
 </div>
 
 <Modal open={showErrorModal} title={t('login.error_title')} size="sm" onclose={closeErrorModal}>

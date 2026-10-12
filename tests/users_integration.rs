@@ -1434,6 +1434,107 @@ async fn test_user_delete_nonexistent_user() {
     assert_eq!(body["success"], json!(false));
 }
 
+/// Insert a `share_permissions` row directly — the table keys a grantee by
+/// name only (no foreign key to `users`), which is exactly why a deleted
+/// account's rows used to outlive it.
+async fn grant_test_permission(
+    state: &AppState,
+    share_name: &str,
+    share_type: &str,
+    grantee_type: &str,
+    grantee_name: &str,
+    permission: &str,
+) {
+    sqlx::query(
+        "INSERT INTO share_permissions (share_name, share_type, grantee_type, grantee_name, permission, recursive, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))",
+    )
+    .bind(share_name)
+    .bind(share_type)
+    .bind(grantee_type)
+    .bind(grantee_name)
+    .bind(permission)
+    .execute(&*state.db.pool())
+    .await
+    .expect("Failed to insert test share permission");
+}
+
+/// Count the `share_permissions` rows for one grantee.
+async fn count_test_permissions(state: &AppState, grantee_type: &str, grantee_name: &str) -> i64 {
+    let row: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM share_permissions WHERE grantee_type = ? AND grantee_name = ?",
+    )
+    .bind(grantee_type)
+    .bind(grantee_name)
+    .fetch_one(&*state.db.pool())
+    .await
+    .expect("Failed to count test share permissions");
+    row.0
+}
+
+/// Deleting an account must revoke the share permissions it holds *directly*
+/// — both the `share_permissions` rows and (best-effort) the real POSIX ACLs —
+/// so that recreating an account with the same username cannot silently
+/// inherit the deleted user's access. Previously the handler only logged an
+/// intent to revoke: nothing was deleted, on disk or in the database.
+///
+/// Group grants are deliberately kept: they belong to the group, and the other
+/// members must not lose access because one account was deleted. The share
+/// names used here do not exist on the host, so the ACL half fails cleanly and
+/// best-effort — this test asserts the database half, which is the regression.
+#[tokio::test]
+async fn test_user_delete_revokes_its_direct_share_permissions_only() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    create_test_user(&state, "regular1", "Passw0rd!123", 1).await;
+    create_test_user(&state, "regular2", "Passw0rd!123", 1).await;
+
+    // Two direct grants for the deleted user — one on a well-known protocol
+    // name, one on a type that does not parse — plus a same-named *group*
+    // grant and another user's grant, neither of which may be touched.
+    grant_test_permission(&state, "hv-test-gone", "smb", "user", "regular1", "rw").await;
+    grant_test_permission(
+        &state,
+        "hv-test-gone",
+        "bogusproto",
+        "user",
+        "regular1",
+        "r",
+    )
+    .await;
+    grant_test_permission(&state, "hv-test-keep", "smb", "user", "regular2", "r").await;
+    grant_test_permission(&state, "hv-test-group", "smb", "group", "regular1", "rw").await;
+
+    let mut r = users_router(state.clone());
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+    let (status, body) = send(
+        &mut r,
+        Method::DELETE,
+        "/api/users/regular1",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["success"], json!(true));
+
+    assert_eq!(
+        count_test_permissions(&state, "user", "regular1").await,
+        0,
+        "every grant held directly by the deleted user must be gone"
+    );
+    assert_eq!(
+        count_test_permissions(&state, "user", "regular2").await,
+        1,
+        "another user's grant must be untouched"
+    );
+    assert_eq!(
+        count_test_permissions(&state, "group", "regular1").await,
+        1,
+        "a same-named group grant belongs to the group, not to the account"
+    );
+}
+
 // ===========================================================================
 // 12. Count / exists
 // ===========================================================================

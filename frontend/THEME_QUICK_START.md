@@ -2,18 +2,18 @@
 
 **Version**: 2.0 | **Date**: 2026-07-03
 
-## 🚀 Démarrage Rapide (5 minutes)
+## 🚀 Quick Start (5 minutes)
 
-### 1. Importer le Thème
+### 1. Import the Theme
 
-Dans votre fichier principal ou layout :
+In your main file or layout:
 
 ```typescript
-// +layout.svelte ou app.css
+// +layout.svelte or app.css
 import '$lib/styles/theme/index.css';
 ```
 
-### 2. Initialiser le Store (Optionnel)
+### 2. Initialize the Store (Optional)
 
 ```svelte
 <script lang="ts">
@@ -26,7 +26,7 @@ import '$lib/styles/theme/index.css';
 </script>
 ```
 
-### 3. Utiliser les Composants
+### 3. Use the Components
 
 ```svelte
 <script>
@@ -37,42 +37,42 @@ import '$lib/styles/theme/index.css';
 
 <Card>
   <div slot="header">
-    <h2 class="hv-card-title">Connexion</h2>
-    <Badge variant="success">Actif</Badge>
+    <h2 class="hv-card-title">Login</h2>
+    <Badge variant="success">Active</Badge>
   </div>
 
   <Input
     label="Email"
     type="email"
     bind:value={email}
-    placeholder="votre@email.com"
+    placeholder="your@email.com"
   />
 
   <div slot="footer">
-    <Button variant="primary">Se connecter</Button>
+    <Button variant="primary">Log in</Button>
   </div>
 </Card>
 ```
 
-## 📦 Composants Disponibles
+## 📦 Available Components
 
 ```typescript
 import {
-  Button,      // Boutons avec variantes
-  Input,       // Champs de formulaire
-  Badge,       // Badges de statut
-  Card,        // Cartes avec header/footer
-  Modal,       // Modales
-  Message,     // Alertes/Messages
-  Toggle,      // Interrupteurs
+  Button,      // Buttons with variants
+  Input,       // Form fields
+  Badge,       // Status badges
+  Card,        // Cards with header/footer
+  Modal,       // Modals
+  Message,     // Alerts/Messages
+  Toggle,      // Switches
   Spinner,     // Loaders
-  Sidebar,     // Barre latérale
-  SidebarItem, // Items de sidebar
-  Topbar,      // Barre supérieure
+  Sidebar,     // Sidebar
+  SidebarItem, // Sidebar items
+  Topbar,      // Top bar
 } from '$lib/components/theme';
 ```
 
-## 🎨 Classes Utilitaires
+## 🎨 Utility Classes
 
 ```html
 <!-- Layout -->
@@ -80,18 +80,18 @@ import {
   <div class="hv-flex-1">Flex item</div>
 </div>
 
-<!-- Espacement -->
-<div class="hv-p-4 hv-mb-6">Padding et margin</div>
+<!-- Spacing -->
+<div class="hv-p-4 hv-mb-6">Padding and margin</div>
 
-<!-- Typographie -->
-<h1 class="hv-text-3xl hv-font-semibold hv-text-primary">Titre</h1>
-<p class="hv-text-base hv-text-secondary">Texte</p>
+<!-- Typography -->
+<h1 class="hv-text-3xl hv-font-semibold hv-text-primary">Title</h1>
+<p class="hv-text-base hv-text-secondary">Text</p>
 
-<!-- Couleurs -->
-<div class="hv-bg-primary hv-text-white hv-rounded-lg">Contenu</div>
+<!-- Colors -->
+<div class="hv-bg-primary hv-text-white hv-rounded-lg">Content</div>
 ```
 
-## 💻 Variables CSS
+## 💻 CSS Variables
 
 ```css
 .my-component {
@@ -103,21 +103,21 @@ import {
 }
 ```
 
-## 🛠️ Utilitaires TypeScript
+## 🛠️ TypeScript Utilities
 
 ```typescript
 import { themeColors, spacing, cn, formatBytes } from '$lib/utils/theme';
 
-// Couleurs
+// Colors
 const color = themeColors.primary; // '#2E72C9'
 
-// Espacements
+// Spacings
 const padding = spacing(4); // '16px'
 
-// Classes conditionnelles
+// Conditional classes
 const classes = cn('hv-btn', isActive && 'active');
 
-// Formatage
+// Formatting
 const size = formatBytes(1024000); // '1 MB'
 ```
 
@@ -129,13 +129,13 @@ const size = formatBytes(1024000); // '1 MB'
 </script>
 
 <button on:click={toggleThemeMode}>
-  {$isDarkMode ? 'Mode Clair' : 'Mode Sombre'}
+  {$isDarkMode ? 'Light Mode' : 'Dark Mode'}
 </button>
 ```
 
-## 📖 Exemples Complets
+## 📖 Complete Examples
 
-### Formulaire de Connexion
+### Login Form
 
 ```svelte
 <script>
@@ -147,17 +147,17 @@ const size = formatBytes(1024000); // '1 MB'
 
   function handleSubmit() {
     if (!email || !password) {
-      error = 'Tous les champs sont requis';
+      error = 'All fields are required';
       return;
     }
-    // Logique de connexion
+    // Login logic
   }
 </script>
 
 <div class="hv-min-h-screen hv-flex hv-items-center hv-justify-center hv-bg-surface">
   <Card class="hv-w-full" style="max-width: 440px;">
     <div slot="header">
-      <h2 class="hv-text-2xl hv-font-semibold">Connexion</h2>
+      <h2 class="hv-text-2xl hv-font-semibold">Login</h2>
     </div>
 
     {#if error}
@@ -169,12 +169,12 @@ const size = formatBytes(1024000); // '1 MB'
         label="Email"
         type="email"
         bind:value={email}
-        placeholder="votre@email.com"
+        placeholder="your@email.com"
         required
       />
 
       <Input
-        label="Mot de passe"
+        label="Password"
         type="password"
         bind:value={password}
         placeholder="••••••••"
@@ -182,14 +182,14 @@ const size = formatBytes(1024000); // '1 MB'
       />
 
       <Button variant="primary" type="submit" fullWidth>
-        Se connecter
+        Log in
       </Button>
     </form>
   </Card>
 </div>
 ```
 
-### Dashboard avec Sidebar
+### Dashboard with Sidebar
 
 ```svelte
 <script>
@@ -218,7 +218,7 @@ const size = formatBytes(1024000); // '1 MB'
           <svelte:fragment slot="icon">
             <Home size={20} />
           </svelte:fragment>
-          Accueil
+          Home
         </SidebarItem>
 
         <SidebarItem 
@@ -229,7 +229,7 @@ const size = formatBytes(1024000); // '1 MB'
           <svelte:fragment slot="icon">
             <Folder size={20} />
           </svelte:fragment>
-          Fichiers
+          Files
         </SidebarItem>
 
         <SidebarItem 
@@ -239,7 +239,7 @@ const size = formatBytes(1024000); // '1 MB'
           <svelte:fragment slot="icon">
             <Settings size={20} />
           </svelte:fragment>
-          Paramètres
+          Settings
         </SidebarItem>
       </div>
     </Sidebar>
@@ -251,42 +251,42 @@ const size = formatBytes(1024000); // '1 MB'
         <Card hover>
           <div class="hv-flex hv-items-center hv-justify-between">
             <div>
-              <div class="hv-text-sm hv-text-secondary">Stockage</div>
+              <div class="hv-text-sm hv-text-secondary">Storage</div>
               <div class="hv-text-2xl hv-font-semibold">2.4 TB</div>
             </div>
             <Badge variant="success">75%</Badge>
           </div>
         </Card>
 
-        <!-- Plus de cards... -->
+        <!-- More cards... -->
       </div>
     </main>
   </div>
 </div>
 ```
 
-## 📚 Documentation Complète
+## 📚 Complete Documentation
 
-- **Guide Complet**: `THEME_SYSTEM.md`
-- **Rapport de Création**: `THEME_CREATION_REPORT.md`
-- **README Thème**: `frontend/src/lib/styles/theme/README.md`
-- **Page Démo**: `/theme-demo`
+- **Full Guide**: `THEME_SYSTEM.md`
+- **Creation Report**: `THEME_CREATION_REPORT.md`
+- **Theme README**: `frontend/src/lib/styles/theme/README.md`
+- **Demo Page**: `/theme-demo`
 
-## 🎨 Design Tokens Principaux
+## 🎨 Main Design Tokens
 
 ```css
-/* Couleurs */
+/* Colors */
 --hv-primary: #2E72C9;
 --hv-success: #10b981;
 --hv-error: #ba1a1a;
 --hv-warning: #f59e0b;
 
-/* Espacements */
+/* Spacings */
 --hv-space-2: 8px;
 --hv-space-4: 16px;
 --hv-space-6: 24px;
 
-/* Typographie */
+/* Typography */
 --hv-font-size-base: 14px;
 --hv-font-size-lg: 18px;
 --hv-font-size-2xl: 24px;
@@ -299,8 +299,8 @@ const size = formatBytes(1024000); // '1 MB'
 
 ## 🔥 Tips & Tricks
 
-### 1. Préfixe `hv-`
-Toutes les classes et variables utilisent le préfixe `hv-` (HomeVault)
+### 1. `hv-` Prefix
+All classes and variables use the `hv-` prefix (HomeVault)
 
 ### 2. Combine Classes
 ```html
@@ -320,18 +320,18 @@ const buttonClass = cn(
 
 ### 4. Responsive
 
-Les composants s'adaptent à leur conteneur (`@container`) :
+Components adapt to their container (`@container`):
 
 ```html
 <div class="@container grid grid-cols-2 @min-[768px]:grid-cols-3 @min-[1024px]:grid-cols-4">
 ```
 
-## ⚡ Prêt à Commencer !
+## ⚡ Ready to Start!
 
-Vous êtes maintenant prêt à utiliser le système de thème HomeVault. Commencez par :
+You are now ready to use the HomeVault theme system. Start with:
 
-1. Voir la démo : `/theme-demo`
-2. Lire la doc : `THEME_SYSTEM.md`
-3. Créer votre première page avec les composants
+1. See the demo: `/theme-demo`
+2. Read the docs: `THEME_SYSTEM.md`
+3. Create your first page with the components
 
-**Bon développement ! 🚀**
+**Happy developing! 🚀**
