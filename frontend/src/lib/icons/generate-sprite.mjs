@@ -7,7 +7,7 @@
  */
 
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync } from 'fs';
-import { join, basename, dirname } from 'path';
+import { join, basename, dirname, extname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -18,6 +18,160 @@ const FRONTEND_DIR = join(__dirname, '../../../');
 const PUBLIC_DIR = join(FRONTEND_DIR, 'public');
 const OUTPUT_SPRITE = join(PUBLIC_DIR, 'sprite-unified.svg');
 const OUTPUT_MAPPING = join(__dirname, 'mapping-unified.ts');
+
+// ---------------------------------------------------------------------------
+// Icon subsetting
+// ---------------------------------------------------------------------------
+// Phosphor + Tabler together ship 7 600+ glyphs (~3.6 MB of SVG), of which the
+// UI references a few hundred. `main.ts` fetches this sprite and injects it
+// into the DOM on every page load, so the unused glyphs are pure transfer,
+// parse and memory cost on the low-power boards HomeVault targets.
+//
+// Every pixel of sprite usage goes through `theme/Icon.svelte`'s `name` prop,
+// and every value that can reach that prop is a string literal in one of a
+// *small, statically identifiable* set of files (see `scanFiles`). Restricting
+// the scan to that set is what makes the subset meaningful: icon names are
+// ordinary short words (`home`, `user`, `lock`, `folder`), so a whole-tree
+// literal scan matches nearly the entire library and removes almost nothing —
+// measured, it keeps 7 659 of 7 750 glyphs (a ~40 KB saving), while this
+// closure keeps ~70 (a ~3.5 MB saving).
+//
+// The Docker app catalog never reaches the sprite either: its manifest `icon`
+// is resolved to a bundled Tabler *component* in
+// `routes/Docker.svelte::catalogIconFor`, so it is not scanned.
+//
+// If a runtime-constructed name ever turns up, regenerate everything with
+// `HV_SPRITE_FULL=1 npm run icons:generate`.
+const SRC_DIR = join(FRONTEND_DIR, 'src');
+const ROOT_DIR = join(FRONTEND_DIR, '..');
+const CATALOG_DIR = join(ROOT_DIR, 'catalog');
+
+/** Extensions scanned for icon-name literals. */
+const SCANNED_EXTENSIONS = new Set(['.svelte', '.ts']);
+
+/** A component rendering the shared sprite (`theme/Icon.svelte`). */
+const SPRITE_USAGE = /<Icon[ >]/;
+
+/**
+ * A literal handed to a prop whose name mentions "icon" — `icon="gauge"`,
+ * `iconName="terminal"` — i.e. a caller feeding an icon name downwards.
+ */
+const ICON_PROP_LITERAL = /\b\w*[Ii]con\w*\s*=\s*["']/;
+
+/**
+ * Icons that must survive regardless of what the scan finds — names reachable
+ * only through a component's public API rather than a literal at the call
+ * site. Keep this list short and justified: anything genuinely used is already
+ * a literal in the files above.
+ */
+const ALWAYS_INCLUDE = [];
+
+/** Recursively list every file under `dir` (absolute paths). */
+function walkFiles(dir, out = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walkFiles(full, out);
+    } else if (entry.isFile()) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+/**
+ * Every `.svelte` / `.ts` file whose string literals can become a sprite icon
+ * name at runtime:
+ *
+ *   1. it renders the sprite (`<Icon name="folder">`, or a literal inside a
+ *      `name={cond ? 'a' : 'b'}` expression),
+ *   2. it hands an icon name down as a prop (`<EmptyState icon="gauge">`),
+ *   3. it is a store/service module that supplies such a component with its
+ *      data (`$lib/stores/**`, `$lib/services/**`).
+ */
+function scanFiles() {
+  const all = walkFiles(SRC_DIR);
+  const sources = all.filter((f) => SCANNED_EXTENSIONS.has(extname(f)));
+
+  const rendersSprite = sources.filter((f) => SPRITE_USAGE.test(readFileSync(f, 'utf-8')));
+  const passesIconProp = sources.filter((f) => ICON_PROP_LITERAL.test(readFileSync(f, 'utf-8')));
+  const sharedModules = all.filter(
+    (f) => f.endsWith('.ts') && /[\\/](stores|services)[\\/]/.test(f)
+  );
+
+  return new Set([...rendersSprite, ...passesIconProp, ...sharedModules]);
+}
+
+/**
+ * Every string literal in `source`, e.g. `'folder'`, `"caret-up"`. Deliberately
+ * over-inclusive: a false positive only keeps one extra glyph in the sprite,
+ * while a false negative ships a blank icon at runtime.
+ */
+function stringLiterals(source) {
+  const found = new Set();
+  const pattern = /'([^'\\\n]{1,64})'|"([^"\\\n]{1,64})"/g;
+  for (const match of source.matchAll(pattern)) {
+    found.add(match[1] ?? match[2]);
+  }
+  return found;
+}
+
+/**
+ * Base names of every icon the frontend can reference: the string literals of
+ * the files `scanFiles` selects, plus the first-party app catalog manifests,
+ * which name their icon as a plain kebab-case string (`icon = "book-open"`).
+ */
+function collectUsedNames() {
+  const used = new Set(ALWAYS_INCLUDE);
+  const files = scanFiles();
+
+  for (const file of files) {
+    for (const literal of stringLiterals(readFileSync(file, 'utf-8'))) {
+      // `name="tabler-foo"` and `name="foo"` both mean base name `foo`.
+      used.add(literal);
+      used.add(literal.replace(/^(tabler|phosphor)-/, ''));
+    }
+  }
+
+  const indexHtml = join(FRONTEND_DIR, 'index.html');
+  if (existsSync(indexHtml)) {
+    for (const literal of stringLiterals(readFileSync(indexHtml, 'utf-8'))) used.add(literal);
+  }
+
+  if (existsSync(CATALOG_DIR)) {
+    const manifests = walkFiles(CATALOG_DIR).filter((f) => f.endsWith('.toml'));
+    for (const file of manifests) {
+      for (const match of readFileSync(file, 'utf-8').matchAll(/^\s*icon\s*=\s*"([^"]+)"/gm)) {
+        used.add(match[1]);
+      }
+    }
+  }
+
+  console.log(`\nScanned ${files.size} source file(s) for icon references.`);
+  return used;
+}
+
+/** Keep only the icons whose base name is actually referenced. */
+function subsetIcons(allIcons) {
+  if (process.env.HV_SPRITE_FULL === '1') {
+    console.log('\nHV_SPRITE_FULL=1 — keeping the complete sprite.');
+    return allIcons;
+  }
+
+  const used = collectUsedNames();
+  const kept = {};
+  for (const [name, icon] of Object.entries(allIcons)) {
+    if (used.has(name.replace(/^(phosphor|tabler)-/, ''))) kept[name] = icon;
+  }
+
+  const total = Object.keys(allIcons).length;
+  const count = Object.keys(kept).length;
+  console.log(
+    `\nSubset: ${count}/${total} icons referenced from ${used.size} scanned names ` +
+      `(${total - count} unused glyphs dropped)`
+  );
+  return kept;
+}
 
 console.log('Frontend dir:', FRONTEND_DIR);
 
@@ -148,13 +302,27 @@ async function generateSprite() {
   console.log(`  Found ${Object.keys(tablerIcons).length} Tabler icons`);
 
   const total = Object.keys(allIcons).length;
-  console.log(`\nTotal: ${total} icons`);
+  console.log(`\nTotal available: ${total} icons`);
+
+  // Drop everything the frontend never references (see `subsetIcons`).
+  const used = subsetIcons(allIcons);
+  const kept = Object.keys(used).length;
+
+  // A scan that silently stopped matching (moved directory, renamed prop)
+  // would generate an empty sprite and blank every icon in the UI, with no
+  // error anywhere — fail the build instead.
+  if (kept === 0) {
+    throw new Error(
+      'Icon subset is empty — the reference scan matched nothing. ' +
+        'Run with HV_SPRITE_FULL=1 to fall back to the full sprite.'
+    );
+  }
 
   // Generate sprite
-  const symbols = Object.keys(allIcons)
+  const symbols = Object.keys(used)
     .sort()
     .map(name => {
-      const icon = allIcons[name];
+      const icon = used[name];
       return createSymbol(name, icon.viewBox, icon.content);
     });
 
@@ -162,6 +330,9 @@ async function generateSprite() {
 <!--
   Unified Icon Sprite
   Generated from: Phosphor Icons, Tabler Icons
+  Subset to the ${kept} of ${total} glyphs the frontend actually references —
+  regenerate with the same script (\`npm run icons:generate\`), or with
+  \`HV_SPRITE_FULL=1\` for the complete set.
 
   Usage:
   <svg><use href="#icon-name" /></svg>
@@ -183,9 +354,9 @@ ${symbols.join('\n')}
   console.log(`\nSprite written to: ${OUTPUT_SPRITE}`);
 
   // Generate mapping file
-  generateMapping(allIcons);
+  generateMapping(used);
 
-  return total;
+  return kept;
 }
 
 /**

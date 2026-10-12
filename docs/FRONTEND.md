@@ -94,8 +94,36 @@ them into the unified sprite `public/sprite-unified.svg` under the `phosphor-`
 glyphs (`fill: currentColor`) since Phosphor's regular set is solid shapes,
 unlike Tabler's stroke-based outlines. Usage: `<Icon name="tabler-check" />`
 or `<Icon name="check" library="tabler" />`. The library-agnostic
-`getIcon(name)` auto-fallback prefers `tabler` then `phosphor`. Regenerate via
-`npm run icons:generate`. **The Fluent System Icons set
+`getIcon(name)` auto-fallback prefers `tabler` then `phosphor`.
+
+**The sprite is subset to the icons the frontend can actually reference.**
+The two libraries ship 7 750 glyphs (~3.6 MB) but `main.ts` fetches the sprite
+and injects it into the DOM on every page load, so everything unused is pure
+transfer/parse/memory cost. The script scans only the files whose string
+literals can become an icon name:
+
+1. components rendering the sprite (`<Icon name="folder">`, or a literal
+   inside a `name={cond ? 'a' : 'b'}` expression),
+2. components handing an icon name down as a prop (`<EmptyState icon="gauge">`,
+   `iconName="terminal"`),
+3. `$lib/stores/**` and `$lib/services/**` (they can feed those components),
+4. the first-party `catalog/**/homevault-app.toml` manifests (`icon = "…"`).
+
+That closure yields ~110 icons. Scanning the whole tree instead is
+**not** a substitute: icon names are ordinary short words (`home`, `user`,
+`lock`), so a whole-tree literal scan matches nearly the entire library and
+removes almost nothing (measured: 7 659 of 7 750 kept). The Docker app catalog
+never reaches the sprite at all — `Docker.svelte::catalogIconFor` resolves a
+manifest `icon` to a bundled Tabler *component*.
+
+Regeneration is wired into the build (`npm run build` runs `prebuild`), and
+`mapping-unified.ts` is filtered to the same set so `getIcon`/`hasIcon` stay
+truthful. A new icon is therefore picked up automatically once it appears as a
+literal in one of those files. If a runtime-constructed name ever turns up,
+regenerate the complete sprite with `HV_SPRITE_FULL=1 npm run icons:generate`.
+The script aborts the build if the subset comes out empty.
+
+**The Fluent System Icons set
 (`@fluentui/svg-icons`, `fluent-` prefix) was removed 2026-09-11** along with
 the Fluent component library — the sprite is now Phosphor + Tabler only.
 
@@ -278,6 +306,7 @@ Import pattern: `import { api } from '$lib/services/api';` then
 | File | Responsibility |
 |------|----------------|
 | `auth.ts` | current user, session token, login/logout |
+| `appGate.ts` | application route guard: reads `/auth/setup-status` + the session and decides `setup` / `recovery` / `login` / `app` / `error`; `App.svelte` renders from `$appGate.route` (Umbrel's `EnsureUser*` equivalent) |
 | `i18n.ts` | active locale, `t(key)` lookup, translation map |
 | `settingsDraft.svelte.ts` | Settings draft state (per-group baseline + dirty tracking + `saveAll()`); also holds the re-hydrated theme/accent |
 | `activityStore.ts` | activity taskbar state |

@@ -216,6 +216,11 @@ pub struct SetupStatusResponse {
     pub is_first_run: bool,
     pub is_setup_valid: bool,
     pub hardware_changed: bool,
+    /// True when an admin exists but the recorded hardware fingerprint no
+    /// longer matches this host — the frontend shows the dedicated recovery
+    /// screen (admin confirmation + re-baseline), never the Setup Wizard.
+    #[serde(default)]
+    pub needs_recovery: bool,
     pub server_machine_id: String,
     /// Whether `sudo` is available on the host (required for terminal access).
     #[serde(default)]

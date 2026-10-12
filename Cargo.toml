@@ -47,7 +47,7 @@ tokio = { version = "1.52", features = ["full"] }
 tokio-tungstenite = "0.29"
 futures-util = "0.3"
 open = "5"
-tower-http = { version = "0.7", features = ["fs", "trace", "cors", "compression-br", "compression-gzip", "set-header", "limit"] }
+tower-http = { version = "0.7", features = ["trace", "cors", "compression-br", "compression-gzip", "limit"] }
 thiserror = "2"
 toml = "1"
 tracing = "0.1"
@@ -98,3 +98,17 @@ tower = { version = "0.5", features = ["util"] }
 opt-level = 2
 lto = true
 codegen-units = 1
+# Drop the symbol table and debug info from the shipped binary. HomeVault is
+# distributed as a single self-contained executable downloaded by the
+# installer, so its size is a real distribution cost; a stripped release is
+# still fully debuggable from a local `--release` build if the symbols matter
+# (`strip = "debuginfo"` keeps the symbol table while still shrinking it).
+strip = true
+# Abort instead of unwinding on panic: no landing pads, so the binary is
+# smaller and a panic cannot leave a half-torn-down task running. The trade-off
+# is deliberate and worth knowing: with the default `unwind`, a panic inside
+# one request kills only that task and the server keeps serving; with `abort`
+# it takes the whole process down, and the operator relies on the systemd
+# unit's `Restart=on-failure` / `RestartSec=5` to bring HomeVault back. Remove
+# this line to go back to per-request failure isolation.
+panic = "abort"

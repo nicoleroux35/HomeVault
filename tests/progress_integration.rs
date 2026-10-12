@@ -285,6 +285,65 @@ async fn job_status_and_cancel_reject_garbage_token() {
 }
 
 // ---------------------------------------------------------------------------
+// The status endpoint reports the job's real last event
+// ---------------------------------------------------------------------------
+
+/// `GET /api/progress/{job_id}/status` used to answer a hardcoded
+/// `Running` / 0 % / `"Waiting..."` for any id present in the manager,
+/// discarding the job's real last event
+/// (`ProgressManager::get_progress`). Driven over HTTP because the handler —
+/// not just the manager — is what a polling client talks to; the manager-side
+/// behaviour is unit-tested in `src/sse/progress.rs`.
+#[tokio::test]
+async fn job_status_reports_the_real_last_event() {
+    use homevault::sse::progress::{JobType, PROGRESS_MANAGER};
+
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "alice", "Sup3rSecret!!", 2).await;
+    let mut r = progress_router(state);
+    let token = login(&mut r, "alice", "Sup3rSecret!!").await;
+
+    // A real tracked job, unique id (uuid), removed again before the test ends
+    // so the process-wide singleton does not leak into the other tests here.
+    let job_id = PROGRESS_MANAGER.create_job_with_owner(
+        JobType::Custom("explorer_copy".to_string()),
+        "Starting copy",
+        Some("alice".to_string()),
+    );
+    PROGRESS_MANAGER.emit_progress(&job_id, 42.0, "42/100 files");
+
+    let uri = format!("/api/progress/{job_id}/status");
+    let (status, body) = send(&mut r, Method::GET, &uri, Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["success"], json!(true));
+    assert_eq!(body["data"]["job_id"], json!(job_id));
+    assert_eq!(body["data"]["state"], json!("running"));
+    assert_eq!(body["data"]["progress"], json!(42.0));
+    assert_eq!(body["data"]["message"], json!("42/100 files"));
+
+    // A finished job must read back as finished — the whole point of the fix.
+    PROGRESS_MANAGER.complete_job(&job_id, "Copy finished");
+    let (_, body) = send(&mut r, Method::GET, &uri, Some(&token), None).await;
+    assert_eq!(body["data"]["state"], json!("completed"));
+    assert_eq!(body["data"]["progress"], json!(100.0));
+    assert_eq!(body["data"]["message"], json!("Copy finished"));
+
+    PROGRESS_MANAGER.remove_job(&job_id);
+
+    // An id nobody ever created is a clean error, never a phantom job.
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/progress/00000000-0000-0000-0000-000000000000/status",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["success"], json!(false));
+}
+
+// ---------------------------------------------------------------------------
 // G5 — response hardening headers on every response
 // ---------------------------------------------------------------------------
 

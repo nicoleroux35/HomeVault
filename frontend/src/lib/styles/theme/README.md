@@ -3,19 +3,19 @@
 Version: **2.0**  
 Date: **2026-07-03**
 
-## 📋 Vue d'ensemble
+## 📋 Overview
 
-Le système de design HomeVault est une bibliothèque complète de composants, tokens et utilitaires pour construire l'interface HomeVault NAS. Il est basé sur les spécifications définies dans `theme homevault/`.
+The HomeVault design system is a complete library of components, tokens and utilities for building the HomeVault NAS interface. It is based on the specifications defined in `theme homevault/`.
 
-## 🎨 Caractéristiques
+## 🎨 Characteristics
 
-- **Design Tokens CSS** - Variables CSS pour toutes les couleurs, espacements, typographies
-- **Composants Svelte** - Composants réutilisables et accessibles
-- **Utilities CSS** - Classes utilitaires pour un développement rapide
-- **TypeScript Support** - Types et utilitaires TypeScript
-- **Theme Store** - Gestion d'état Svelte pour le thème
-- **Dark Mode Ready** - Prêt pour le mode sombre (futur)
-- **Accessible** - Conforme WCAG AA
+- **CSS Design Tokens** - CSS variables for all colors, spacings, typographies
+- **Svelte Components** - Reusable and accessible components
+- **CSS Utilities** - Utility classes for rapid development
+- **TypeScript Support** - TypeScript types and utilities
+- **Theme Store** - Svelte state management for the theme
+- **Dark Mode Ready** - Ready for dark mode (future)
+- **Accessible** - WCAG AA compliant
 
 ## 📦 Structure
 
@@ -23,11 +23,11 @@ Le système de design HomeVault est une bibliothèque complète de composants, t
 frontend/src/lib/
 ├── styles/
 │   └── theme/
-│       ├── index.css          # Point d'entrée principal
-│       ├── tokens.css         # Design tokens (variables CSS)
-│       ├── base.css           # Styles de base et reset
-│       ├── components.css     # Styles des composants
-│       └── utilities.css      # Classes utilitaires
+│       ├── index.css          # Main entry point
+│       ├── tokens.css         # Design tokens (CSS variables)
+│       ├── base.css           # Base styles and reset
+│       ├── components.css     # Component styles
+│       └── utilities.css      # Utility classes
 ├── components/
 │   └── theme/
 │       ├── Button.svelte
@@ -43,21 +43,21 @@ frontend/src/lib/
 │       ├── Topbar.svelte
 │       └── index.ts
 ├── utils/
-│   └── theme.ts              # Utilitaires TypeScript
+│   └── theme.ts              # TypeScript utilities
 └── stores/
-    └── theme.ts              # Store Svelte pour le thème
+    └── theme.ts              # Svelte store for the theme
 ```
 
 ## 🚀 Installation
 
-### 1. Importer le thème dans votre app
+### 1. Import the theme into your app
 
 ```typescript
-// src/app.css ou main entry
+// src/app.css or main entry
 import '$lib/styles/theme/index.css';
 ```
 
-### 2. Initialiser le store de thème
+### 2. Initialize the theme store
 
 ```svelte
 <script lang="ts">
@@ -70,11 +70,11 @@ import '$lib/styles/theme/index.css';
 </script>
 ```
 
-## 📖 Utilisation
+## 📖 Usage
 
-### Design Tokens (Variables CSS)
+### Design Tokens (CSS Variables)
 
-Utilisez les variables CSS dans vos styles :
+Use the CSS variables in your styles:
 
 ```css
 .my-component {
@@ -86,7 +86,7 @@ Utilisez les variables CSS dans vos styles :
 }
 ```
 
-### Composants Svelte
+### Svelte Components
 
 ```svelte
 <script>
@@ -97,50 +97,50 @@ Utilisez les variables CSS dans vos styles :
 
 <Card>
   <div slot="header">
-    <h2>Mon Titre</h2>
-    <Badge variant="success">Actif</Badge>
+    <h2>My Title</h2>
+    <Badge variant="success">Active</Badge>
   </div>
   
   <Input
     label="Email"
     type="email"
-    placeholder="votre@email.com"
+    placeholder="your@email.com"
     bind:value={email}
   />
   
   <div slot="footer">
-    <Button variant="secondary">Annuler</Button>
+    <Button variant="secondary">Cancel</Button>
     <Button variant="primary" on:click={() => showModal = true}>
-      Valider
+      Confirm
     </Button>
   </div>
 </Card>
 
 <Modal bind:open={showModal} title="Confirmation">
-  <p>Êtes-vous sûr ?</p>
+  <p>Are you sure?</p>
   
   <div slot="footer">
     <Button variant="secondary" on:click={() => showModal = false}>
-      Non
+      No
     </Button>
-    <Button variant="primary">Oui</Button>
+    <Button variant="primary">Yes</Button>
   </div>
 </Modal>
 ```
 
-### Classes Utilitaires
+### Utility Classes
 
 ```html
 <div class="hv-flex hv-items-center hv-gap-4 hv-p-6 hv-rounded-lg hv-shadow-md">
   <div class="hv-flex-1">
-    <h3 class="hv-text-lg hv-font-semibold hv-text-primary">Titre</h3>
+    <h3 class="hv-text-lg hv-font-semibold hv-text-primary">Title</h3>
     <p class="hv-text-sm hv-text-secondary">Description</p>
   </div>
   <button class="hv-btn hv-btn-primary">Action</button>
 </div>
 ```
 
-### Utilitaires TypeScript
+### TypeScript Utilities
 
 ```typescript
 import {
@@ -152,20 +152,20 @@ import {
   debounce
 } from '$lib/utils/theme';
 
-// Utiliser les couleurs
+// Use the colors
 const primaryColor = themeColors.primary;
 
-// Formater les espacements
+// Format spacings
 const padding = spacing(4); // '16px'
 
-// Concaténer les classes conditionnellement
+// Concatenate classes conditionally
 const classes = cn(
   'hv-btn',
   isActive && 'active',
   isDisabled && 'disabled'
 );
 
-// Formater les octets
+// Format bytes
 const size = formatBytes(1024000); // '1 MB'
 ```
 
@@ -177,26 +177,26 @@ const size = formatBytes(1024000); // '1 MB'
 </script>
 
 <div>
-  Mode actuel: {$themeMode}
-  Mode sombre: {$isDarkMode ? 'Oui' : 'Non'}
+  Current mode: {$themeMode}
+  Dark mode: {$isDarkMode ? 'Yes' : 'No'}
   
   <button on:click={toggleThemeMode}>
-    Basculer le mode
+    Toggle the mode
   </button>
   
   <button on:click={() => setThemeMode('dark')}>
-    Mode sombre
+    Dark mode
   </button>
   
   <button on:click={() => setThemeMode('light')}>
-    Mode clair
+    Light mode
   </button>
 </div>
 ```
 
 ## 🎨 Design Tokens
 
-### Couleurs
+### Colors
 
 - **Primary**: `--hv-primary` (#2E72C9)
 - **Secondary**: `--hv-secondary` (#505f76)
@@ -204,70 +204,70 @@ const size = formatBytes(1024000); // '1 MB'
 - **Error**: `--hv-error` (#ba1a1a)
 - **Warning**: `--hv-warning` (#f59e0b)
 
-### Espacements
+### Spacings
 
-- `--hv-space-1` (4px) à `--hv-space-20` (80px)
-- Noms: xs, sm, md, lg, xl, xxl, xxxl
+- `--hv-space-1` (4px) to `--hv-space-20` (80px)
+- Names: xs, sm, md, lg, xl, xxl, xxxl
 
-### Typographie
+### Typography
 
 - **Font Family**: Inter
-- **Sizes**: micro (10px) à 4xl (30px)
+- **Sizes**: micro (10px) to 4xl (30px)
 - **Weights**: regular (400), medium (500), semibold (600), bold (700)
 
 ### Border Radius
 
-- `--hv-radius-sm` (2px) à `--hv-radius-2xl` (16px)
-- `--hv-radius-full` (9999px) pour les cercles
+- `--hv-radius-sm` (2px) to `--hv-radius-2xl` (16px)
+- `--hv-radius-full` (9999px) for circles
 
 ### Shadows
 
-- `--hv-shadow-sm` à `--hv-shadow-2xl`
+- `--hv-shadow-sm` to `--hv-shadow-2xl`
 
-## 📚 Composants Disponibles
+## 📚 Available Components
 
 ### Button
-Bouton avec variantes primary, secondary, danger, ghost
+Button with primary, secondary, danger, ghost variants
 
 ### Input
-Champ de formulaire avec label, error, helper
+Form field with label, error, helper
 
 ### Badge
-Badge avec variantes success, warning, error, info
+Badge with success, warning, error, info variants
 
 ### Card
-Carte avec header, body, footer
+Card with header, body, footer
 
 ### Modal
-Modal avec overlay, header, content, footer
+Modal with overlay, header, content, footer
 
 ### Message
-Message d'alerte avec variantes error, success, info, warning
+Alert message with error, success, info, warning variants
 
 ### Toggle
-Interrupteur on/off
+On/off switch
 
 ### Spinner
-Loader animé
+Animated loader
 
 ### Sidebar
-Barre latérale avec items
+Sidebar with items
 
 ### Topbar
-Barre supérieure avec logo et actions
+Top bar with logo and actions
 
-## 🎯 Bonnes Pratiques
+## 🎯 Best Practices
 
-1. **Utilisez les design tokens** au lieu de valeurs hardcodées
-2. **Préférez les composants** aux styles custom
-3. **Utilisez les classes utilitaires** pour les layouts simples
-4. **Respectez la hiérarchie typographique**
-5. **Maintenez la cohérence** avec le design system
-6. **Testez l'accessibilité** avec les lecteurs d'écran
+1. **Use the design tokens** instead of hardcoded values
+2. **Prefer components** over custom styles
+3. **Use the utility classes** for simple layouts
+4. **Respect the typographic hierarchy**
+5. **Stay consistent** with the design system
+6. **Test accessibility** with screen readers
 
-## 🔧 Personnalisation
+## 🔧 Customization
 
-Pour personnaliser le thème, modifiez les variables CSS dans `tokens.css` ou utilisez le store :
+To customize the theme, edit the CSS variables in `tokens.css` or use the store:
 
 ```typescript
 import { setPrimaryColor } from '$lib/stores/theme';
@@ -277,41 +277,41 @@ setPrimaryColor('#FF5733');
 
 ## 📱 Responsive
 
-Convention unique de l'application : les requêtes de conteneur Tailwind v4
-(`@container` est posé sur le corps de page, les dialogues et le wizard).
+Single convention for the application: Tailwind v4 container queries
+(`@container` is set on the page body, dialogs and the wizard).
 
 ```html
 <div class="@container grid grid-cols-2 @min-[640px]:grid-cols-3 @min-[900px]:grid-cols-4">
-  <!-- Contenu -->
+  <!-- Content -->
 </div>
 ```
 
-## ♿ Accessibilité
+## ♿ Accessibility
 
-Tous les composants sont conçus avec l'accessibilité en tête :
+All components are designed with accessibility in mind:
 
-- Rôles ARIA appropriés
-- Support clavier complet
-- Labels pour lecteurs d'écran
-- Contrastes WCAG AA minimum
+- Appropriate ARIA roles
+- Full keyboard support
+- Labels for screen readers
+- Minimum WCAG AA contrast
 
-## 🐛 Problèmes Connus
+## 🐛 Known Issues
 
-Aucun pour le moment.
+None at the moment.
 
 ## 📝 Changelog
 
 ### Version 2.0 (2026-07-03)
-- Création initiale du design system
-- 10+ composants Svelte
-- Design tokens complets
-- Utilitaires TypeScript
-- Theme store Svelte
+- Initial creation of the design system
+- 10+ Svelte components
+- Complete design tokens
+- TypeScript utilities
+- Svelte theme store
 
-## 📄 Licence
+## 📄 License
 
-Propriétaire - HomeVault Project
+Proprietary - HomeVault Project
 
-## 👥 Contributeurs
+## 👥 Contributors
 
 - HomeVault Team

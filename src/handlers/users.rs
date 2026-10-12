@@ -914,24 +914,25 @@ pub async fn handle_user_delete(
                 let _ = GroupService::remove_user_from_group(&username, &g);
             }
 
-            // Revoke ACL permissions assigned directly to the user (group permissions are left intact)
+            // Revoke the ACL permissions granted *directly* to this user, on
+            // the filesystem and in `share_permissions` (group permissions are
+            // left intact — the user was just removed from its groups above,
+            // and the remaining members must keep theirs). Without this the
+            // rows outlive the account and a future account recreated with the
+            // same username silently inherits the deleted user's access.
             use crate::permissions::PermissionService;
-            match PermissionService::get_user_permissions(&username, state.db.pool()).await {
-                Ok(permissions) => {
-                    for perm in permissions {
-                        if perm.grantee_type == "user" && perm.grantee_name == username {
-                            tracing::info!(
-                                "Revoking permission for user '{}' on share '{}' ({})",
-                                username,
-                                perm.share_name,
-                                perm.share_type
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to check permissions for user '{}': {}", username, e);
-                }
+            match PermissionService::revoke_all_user_permissions(&username, state.db.pool()).await {
+                Ok(0) => {}
+                Ok(revoked) => tracing::info!(
+                    "Revoked {} permission(s) for deleted user '{}'",
+                    revoked,
+                    username
+                ),
+                Err(e) => tracing::warn!(
+                    "Failed to revoke share permissions for user '{}': {}",
+                    username,
+                    e
+                ),
             }
 
             if query.delete_home_folder {

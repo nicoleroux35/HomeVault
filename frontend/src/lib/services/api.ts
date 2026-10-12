@@ -17,7 +17,14 @@ export interface ActivityTask {
 /** Progress event received from the server via SSE for long-running jobs. */
 export interface ProgressEvent {
   job_id: string;
-  job_type: string;
+  /**
+   * Serde-tagged category: `{ type: 'backup' }` for the built-in kinds,
+   * `{ type: 'custom', name: 'explorer_copy' }` for a feature job. Never a
+   * bare string — it is an object on the wire (the backend used to fail
+   * serializing the `custom` case outright, which emptied `data` and made
+   * `JSON.parse` throw for every explorer copy/move job).
+   */
+  job_type: { type: string; name?: string };
   state: string;
   progress: number;
   message?: string;
@@ -331,8 +338,23 @@ class ApiClient {
   }
 
   async getSetupStatus(): Promise<SetupStatus> {
-    const response = await this.get<SetupStatus>('/auth/setup-status');
-    return response.data ?? { is_first_run: true, is_setup_valid: false, hardware_changed: false, server_machine_id: '' };
+    // Never cached: the app gate re-reads this after setup / login / a
+    // hardware re-baseline and a stale answer would route the app wrongly.
+    const response = await this.get<SetupStatus>('/auth/setup-status', { cache: false });
+    if (!response.success || !response.data) {
+      // Throwing (rather than falling back to a fake first-run status) is what
+      // lets the gate show its connection-error screen instead of the Setup
+      // Wizard when the server is unreachable.
+      throw new Error(response.error || response.message || 'Failed to load setup status');
+    }
+    return response.data;
+  }
+
+  // Confirms a hardware change and re-baselines the stored fingerprint.
+  // Admin-only; used by the recovery screen the app gate routes to when
+  // `/auth/setup-status` reports `needs_recovery`.
+  async rebaselineSetup(): Promise<ApiResponse<{ system_hash: string; machine_id: string }>> {
+    return this.post<{ system_hash: string; machine_id: string }>('/auth/setup/rebaseline', {});
   }
 
   async setupAdmin(data: SetupAdminRequest): Promise<ApiResponse<LoginResponse>> {

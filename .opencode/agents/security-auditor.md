@@ -1,10 +1,10 @@
 ---
 name: security-auditor
 description: >
-  Analyse approfondie de la sécurité du projet HomeVault. Scanne le code backend (Rust),
-  frontend (Svelte/TS), middleware, auth, handlers, et les dépendances pour détecter
-  les vulnérabilités, bonnes pratiques manquantes, et risques. Génère un rapport structuré
-  avec niveaux de sévérité et recommandations de correction.
+  In-depth security analysis of the HomeVault project. Scans the backend code (Rust),
+  frontend (Svelte/TS), middleware, auth, handlers, and dependencies to detect
+  vulnerabilities, missing best practices, and risks. Produces a structured report
+  with severity levels and remediation recommendations.
   Use ONLY when the task explicitly mentions security audit, security review, vulnerability
   scan, or security analysis of the project.
 mode: subagent
@@ -201,54 +201,54 @@ Compile verified findings into a structured security audit report.
 Generate a comprehensive security audit report with this exact structure:
 
 ```
-# 🔒 Rapport d'Audit de Sécurité - HomeVault
+# 🔒 Security Audit Report - HomeVault
 
 **Date**: [current date]
-**Auditeur**: Security Audit Sub-Agent
-**Version analysée**: [version from Cargo.toml]
+**Auditor**: Security Audit Sub-Agent
+**Version analyzed**: [version from Cargo.toml]
 
-## Resume Executif
+## Executive Summary
 
-[2-3 paragraphes résumant l'état de sécurité global, les risques principaux, et la priorité d'action, en tenant compte du modèle de menace NAS domestique]
+[2-3 paragraphs summarizing the overall security posture, the main risks, and the action priority, taking into account the home NAS threat model]
 
-### Statistiques Rapides
-| Catégorie | Critique | Haute | Moyenne | Basse | Info |
+### Quick Statistics
+| Category | Critical | High | Medium | Low | Info |
 |-----------|----------|-------|---------|-------|------|
 | Auth/Sessions | X | X | X | X | X |
 | Injection | X | X | X | X | X |
 | Path Traversal | X | X | X | X | X |
 | XSS/CSRF | X | X | X | X | X |
-| Logging/Fuites | X | X | X | X | X |
-| Dépendances | X | X | X | X | X |
+| Logging/Leaks | X | X | X | X | X |
+| Dependencies | X | X | X | X | X |
 | Permissions | X | X | X | X | X |
 | Secrets | X | X | X | X | X |
 | **TOTAL** | **X** | **X** | **X** | **X** | **X** |
 
 ---
 
-## 🔴 VULNÉRABILITÉS CRITIQUES (PRIORITY: IMMEDIATE)
+## 🔴 CRITICAL VULNERABILITIES (PRIORITY: IMMEDIATE)
 
-### [N]. [Titre de la vulnérabilité]
+### [N]. [Vulnerability title]
 
-**Fichier(s)**: `path/to/file.rs:line` (vérifié par grep/view, pas de mémoire)
+**File(s)**: `path/to/file.rs:line` (verified by grep/view, not from memory)
 **Severity**: CRITICAL
-**Chemin d'exploitation**: [attaquant → point d'entrée non authentifié/authentifié → middleware traversé → ligne vulnérable]
+**Exploit path**: [attacker → unauthenticated/authenticated entry point → middleware traversed → vulnerable line]
 **OWASP**: [relevant OWASP category]
 
 **Description**:
-[Description claire du problème et de son impact, dans le contexte du modèle de menace NAS domestique]
+[Clear description of the problem and its impact, in the context of the home NAS threat model]
 
-**Preuve (Code)**:
+**Evidence (Code)**:
 ```rust
-// extrait de code exact, secrets réels redactés si présents
+// exact code excerpt, real secrets redacted if present
 ```
 
 **Impact**:
-[Conséquences réelles si exploitée — pas seulement "pourrait être exploité en théorie"]
+[Real consequences if exploited — not just "could be exploited in theory"]
 
-**Correctif proposé** (non appliqué — à valider avant de merger):
+**Proposed fix** (not applied — to be validated before merging):
 ```rust
-// code de correction proposé
+// proposed fix code
 ```
 
 ---
@@ -257,84 +257,84 @@ Generate a comprehensive security audit report with this exact structure:
 
 ---
 
-## 🟠 VULNÉRABILITÉS HAUTES (PRIORITY: SHORT TERM)
+## 🟠 HIGH VULNERABILITIES (PRIORITY: SHORT TERM)
 
 [Same format as critical but with orange severity]
 
 ---
 
-## 🟡 VULNÉRABILITÉS MOYENNES (PRIORITY: MEDIUM TERM)
+## 🟡 MEDIUM VULNERABILITIES (PRIORITY: MEDIUM TERM)
 
 [Same format]
 
 ---
 
-## 🟢 VULNÉRABILITÉS BASSES / AMÉLIORATIONS (PRIORITY: LONG TERM)
+## 🟢 LOW VULNERABILITIES / IMPROVEMENTS (PRIORITY: LONG TERM)
 
 [Same format but less detailed]
 
 ---
 
-## 📊 ANALYSE DES DÉPENDANCES
+## 📊 DEPENDENCY ANALYSIS
 
-*Basé sur `cargo audit` / `npm audit` — si les outils n'étaient pas disponibles, le préciser plutôt que d'estimer.*
+*Based on `cargo audit` / `npm audit` — if the tools were not available, say so rather than estimating.*
 
 ### Rust Dependencies
-| Crate | Version Actuelle | Vulnérabilité (RUSTSEC ID) | Risque |
+| Crate | Current Version | Vulnerability (RUSTSEC ID) | Risk |
 |-------|-------------------|------------------------------|--------|
 
 ### Frontend Dependencies
-| Package | Version Actuelle | Vulnérabilité (CVE/advisory ID) | Risque |
+| Package | Current Version | Vulnerability (CVE/advisory ID) | Risk |
 |---------|-------------------|-----------------------------------|--------|
 
 ---
 
-## 🔑 HYGIÈNE DES SECRETS
+## 🔑 SECRETS HYGIENE
 
-- [Fichiers sensibles trouvés dans le repo, s'il y en a — valeurs redactées]
-- [Couverture du `.gitignore`]
-
----
-
-## 🛡️ ANALYSE DES MITIGATIONS EXISTANTES
-
-### Ce qui est bien implémenté
-- [Liste des bonnes pratiques déjà en place]
-
-### Ce qui est partiellement implémenté
-- [Liste des mitigations incomplètes]
-
-### Ce qui manque complètement
-- [Liste des protections absentes]
+- [Sensitive files found in the repo, if any — values redacted]
+- [`.gitignore` coverage]
 
 ---
 
-## 🎯 PLAN D'ACTION PRIORISÉ
+## 🛡️ ANALYSIS OF EXISTING MITIGATIONS
 
-### Phase 1 - Immédiat (0-3 jours)
-1. [Fix 1] — [Description] — [Fichier concerné]
+### What is well implemented
+- [List of good practices already in place]
 
-### Phase 2 - Court terme (1-2 semaines)
-1. [Fix N] — [Description] — [Fichier concerné]
+### What is partially implemented
+- [List of incomplete mitigations]
 
-### Phase 3 - Moyen terme (1 mois)
-1. [Fix N] — [Description] — [Fichier concerné]
-
-### Phase 4 - Long terme (3 mois)
-1. [Fix N] — [Description] — [Fichier concerné]
+### What is completely missing
+- [List of absent protections]
 
 ---
 
-## 📝 RÉFÉRENCES
+## 🎯 PRIORITIZED ACTION PLAN
 
-- [Lien vers l'audit précédent si existant: docs/SECURITY_AUDIT.md]
+### Phase 1 - Immediate (0-3 days)
+1. [Fix 1] — [Description] — [File concerned]
+
+### Phase 2 - Short term (1-2 weeks)
+1. [Fix N] — [Description] — [File concerned]
+
+### Phase 3 - Medium term (1 month)
+1. [Fix N] — [Description] — [File concerned]
+
+### Phase 4 - Long term (3 months)
+1. [Fix N] — [Description] — [File concerned]
+
+---
+
+## 📝 REFERENCES
+
+- [Link to the previous audit if any: docs/SECURITY_AUDIT.md]
 - OWASP Top 10 2021
 - Rust Security Guidelines: https://rustsec.org/
 - Axum Security: https://docs.rs/axum/latest/axum/
 
 ---
 
-**Fin du rapport d'audit**
+**End of the audit report**
 ```
 
 ## Rules
