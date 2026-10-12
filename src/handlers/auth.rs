@@ -5,6 +5,7 @@ use crate::storage::models::{
     LoginRequest, LoginResponse, SetupRequest, SetupStatusResponse, TwoFactorSetupRequest,
     TwoFactorVerifyRequest, ADMIN_ROLE_ID,
 };
+use crate::storage::SetupStateRepository;
 use crate::utils::ResponseHelper;
 use axum::{extract::State, http::HeaderMap, response::Response};
 use serde::{Deserialize, Serialize};
@@ -482,18 +483,41 @@ pub async fn handle_get_current_user(
 
 #[axum_macros::debug_handler]
 /// Reports whether the initial setup has been completed and whether hardware changed.
-pub async fn handle_setup_status() -> Response {
-    let is_first_run = SetupService::is_first_run();
-    let is_setup_valid = SetupService::is_setup_valid();
-    let hardware_changed = SetupService::has_hardware_changed();
-    let server_machine_id = SetupService::get_machine_id();
-    let sudo_available = SetupService::is_command_available("sudo");
+///
+/// "Configured" is derived from the database — the existence of an admin
+/// account — never from a marker file, so the answer can never disagree with
+/// the account table (see `storage/setup_state_repo.rs`).
+pub async fn handle_setup_status(State(state): State<Arc<AppState>>) -> Response {
+    let repo = SetupStateRepository::new(state.db.pool());
+
+    let admin_exists = match repo.has_admin().await {
+        Ok(exists) => exists,
+        Err(e) => {
+            tracing::error!("Failed to check for an admin account: {}", e);
+            false
+        }
+    };
+    let recorded = repo.get().await.ok().flatten();
+
+    // A fingerprint only counts as "changed" when one was actually recorded at
+    // setup time — a database that predates the `setup_state` table (migration
+    // 037) but has an admin is not a hardware change, just a missing record.
+    let hardware_changed = recorded
+        .as_ref()
+        .map(|s| !SetupService::system_hash_matches(&s.system_hash))
+        .unwrap_or(false);
+
+    if hardware_changed {
+        tracing::warn!("Hardware change detected since setup");
+    }
+
     ResponseHelper::json_success(SetupStatusResponse {
-        is_first_run,
-        is_setup_valid,
+        is_first_run: !admin_exists,
+        is_setup_valid: admin_exists && !hardware_changed,
         hardware_changed,
-        server_machine_id,
-        sudo_available,
+        needs_recovery: admin_exists && hardware_changed,
+        server_machine_id: SetupService::get_machine_id(),
+        sudo_available: SetupService::is_command_available("sudo"),
     })
 }
 
@@ -561,9 +585,11 @@ pub struct SetupTotpVerifyRequest {
 /// a stolen secret nothing they could not compute offline themselves. Only
 /// reachable while the server is still unconfigured (first run).
 pub async fn handle_setup_verify_totp(
+    State(state): State<Arc<AppState>>,
     req: axum::extract::Json<SetupTotpVerifyRequest>,
 ) -> Response {
-    if !SetupService::is_first_run() {
+    let setup_repo = SetupStateRepository::new(state.db.pool());
+    if setup_repo.has_admin().await.unwrap_or(true) {
         return ResponseHelper::json_forbidden("Setup already complete".to_string());
     }
 
@@ -581,8 +607,16 @@ pub async fn handle_setup(
     headers: HeaderMap,
     req: axum::extract::Json<SetupRequest>,
 ) -> Response {
-    if !SetupService::is_first_run() {
-        return ResponseHelper::json_error("Setup already complete".to_string());
+    let setup_repo = SetupStateRepository::new(state.db.pool());
+
+    // The database is the single source of truth for "already configured": a
+    // lost marker file can no longer re-open setup while an admin exists, and
+    // a surviving admin can no longer dead-end the wizard on "already
+    // complete" after a hardware change.
+    match setup_repo.has_admin().await {
+        Ok(true) => return ResponseHelper::json_error("Setup already complete".to_string()),
+        Ok(false) => {}
+        Err(e) => return ResponseHelper::json_internal_error(format!("Database error: {}", e)),
     }
 
     if let Err(e) = SetupService::mark_setup_in_progress() {
@@ -703,10 +737,19 @@ pub async fn handle_setup(
         return ResponseHelper::json_internal_error(format!("Transaction commit failed: {}", e));
     }
 
-    if let Err(e) = SetupService::mark_setup_complete() {
-        tracing::error!("Failed to mark setup complete: {}", e);
-        return ResponseHelper::json_internal_error(format!("Failed to finalize setup: {}", e));
+    // Persist the hardware fingerprint in the same durable store as the
+    // account. Best-effort: the admin row is already committed, so a failure
+    // here (the fingerprint only exists to detect a moved/reflashed system)
+    // must not fail an otherwise-complete setup.
+    let system_hash = SetupService::generate_system_hash();
+    let machine_id = SetupService::get_machine_id();
+    if let Err(e) = setup_repo.mark_complete(&system_hash, &machine_id).await {
+        tracing::warn!(
+            "Failed to persist setup state (setup is still complete): {}",
+            e
+        );
     }
+    SetupService::cleanup_setup_lock();
 
     // Enable 2FA with the secret the admin scanned at the password step (the
     // code was already verified above). Persists the encrypted secret and
@@ -742,9 +785,9 @@ pub async fn handle_setup(
     }
 
     // No sudoers file to generate any more: HomeVault runs as root (see
-    // installer/homevault.service — no User=/Group=, and install.sh no
-    // longer creates a "homevault" service account), so every `sudo` call
-    // already in the codebase (RAID/mdadm, ZFS, VPN, Docker, useradd/
+    // the systemd unit installer/install.sh writes — no User=/Group=, and
+    // install.sh no longer creates a "homevault" service account), so every
+    // `sudo` call already in the codebase (RAID/mdadm, ZFS, VPN, Docker, useradd/
     // groupadd above, ...) already succeeds against the default Debian/
     // Ubuntu `root ALL=(ALL:ALL) ALL` sudoers rule — nothing left to grant.
     // `SetupService::configure_sudoers()` is kept in setup.rs (unused) as a
@@ -790,6 +833,47 @@ pub async fn handle_setup(
             ))
         }
     }
+}
+
+#[axum_macros::debug_handler]
+/// Re-baselines the recorded hardware fingerprint after a confirmed hardware
+/// change (VM clone, hostname/OS change, restored database).
+///
+/// Admin-only: it does not grant anything new — it only stops
+/// `/auth/setup-status` from reporting `needs_recovery` forever. The setup
+/// endpoints stay closed because an admin already exists; this is the
+/// documented recovery path that replaced the old dead-end where a changed
+/// fingerprint re-showed the Wizard only for `/auth/setup` to reject it with
+/// "Setup already complete".
+pub async fn handle_setup_rebaseline(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    let username = match require_admin(State(state.clone()), headers).await {
+        Ok(username) => username,
+        Err(response) => return response,
+    };
+
+    let repo = SetupStateRepository::new(state.db.pool());
+    let system_hash = SetupService::generate_system_hash();
+    let machine_id = SetupService::get_machine_id();
+
+    if let Err(e) = repo.update_system_hash(&system_hash, &machine_id).await {
+        tracing::error!("Failed to re-baseline setup state: {}", e);
+        return ResponseHelper::json_internal_error(
+            "Failed to persist the hardware fingerprint".to_string(),
+        );
+    }
+
+    crate::events::log_event(format!(
+        "Hardware fingerprint re-baselined by '{}'",
+        username
+    ));
+
+    ResponseHelper::json_success(serde_json::json!({
+        "system_hash": system_hash,
+        "machine_id": machine_id,
+    }))
 }
 
 #[axum_macros::debug_handler]

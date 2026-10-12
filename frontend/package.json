@@ -12,7 +12,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node src/lib/icons/generate-sprite.mjs",
     "build": "vite build",
+    "postbuild": "node scripts/precompress-dist.mjs",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
     "icons:generate": "node src/lib/icons/generate-sprite.mjs"

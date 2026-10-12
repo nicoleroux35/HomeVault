@@ -360,14 +360,15 @@
     isVerifying = false;
   }
 
-  // Login.svelte's .hv-login-page (the nearest scrollable ancestor of this
-  // component, since the wizard card itself never scrolls) grows/
-  // shrinks its scrollTop via the browser's default scroll-anchoring
-  // whenever a step swap changes content height above the fold — confirmed
-  // live this could leave scrollTop at 165px right after a step change,
-  // pushing the stepper (and sometimes the step title) above the visible
-  // area with no indication anything was cut off. Steps should always
-  // open scrolled to their own top.
+  // The page-level .hv-login-page scroll container — now this component's
+  // own root, since App.svelte renders the wizard directly (it used to sit
+  // inside Login.svelte's page div). The wizard card itself never scrolls;
+  // the default scroll-anchoring of that container grows/shrinks its
+  // scrollTop whenever a step swap changes content height above the fold —
+  // confirmed live this could leave scrollTop at 165px right after a step
+  // change, pushing the stepper (and sometimes the step title) above the
+  // visible area with no indication anything was cut off. Steps should
+  // always open scrolled to their own top.
   async function scrollWizardToTop() {
     await tick();
     document.querySelector('.hv-login-page')?.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
@@ -714,7 +715,7 @@
   const errorBorderClass = 'border-[var(--hv-wizard-error)]!';
 </script>
 
-<div class="relative min-h-screen w-full @container" data-testid="setup-container">
+<div class="hv-login-page relative min-h-screen w-full overflow-y-auto bg-[image:var(--hv-login-bg-gradient)] @container" data-testid="setup-container">
   <!-- Blurred orbs (fixed, never scroll) -->
   <div class="pointer-events-none fixed inset-0 overflow-hidden" aria-hidden="true">
     <div class="absolute top-1/4 left-1/3 h-96 w-96 rounded-full bg-[image:var(--hv-login-orb-indigo)] opacity-40 blur-[70px]"></div>

@@ -109,11 +109,11 @@ levels (manual audit, Rust unit, Rust integration, Playwright E2E). Update it
 **in the same change** that moves the ground it tracks:
 
 - After writing/running tests: flip the relevant `[ ]` → `[x]`, re-count with
-  the `grep -c` commands in the file's "Méthode de vérification" section (never
+  the `grep -c` commands in the file's "Verification method" section (never
   estimate — a stale count reads as verified when it isn't), update the
   summary counts at the top.
-- After a manual/live audit: update that screen's "Audit manuel" date and fold
-  the finding into "Reste à tester en priorité" if it changes the risk picture.
+- After a manual/live audit: update that screen's "Manual audit" date and fold
+  the finding into "Remaining to test as a priority" if it changes the risk picture.
 - A screen in `SCREENS.md` with no `TESTING.md` row (or vice-versa): fix it.
 - Applies whether the test work happened this session or was reported as
   already done — `TESTING.md` must reflect the tree as it stands *after* the
@@ -150,11 +150,24 @@ The RAG system (`src/rag.rs`, `src/rag_indexers.rs`, `src/handlers/rag.rs`) feed
 the Chat AI with relevant context. It must stay healthy and documented:
 
 - **When adding a new feature or app catalog entry**, also add a corresponding
-  `FeatureDoc` entry in `src/rag_indexers.rs::index_features()` and update
-  `docs/guides/rag.md`'s "Document Sources" table.
+  `FeatureDoc` entry in `src/rag_indexers.rs::feature_docs()` and update
+  `docs/guides/rag.md`'s "Document Sources" table. This is **enforced**:
+  `tests::test_every_guide_has_a_feature_doc` enumerates `docs/guides/*.md` and
+  fails when a guide has no entry — a new guide means a new `FEATURE_GUIDES`
+  row (id → filename) and a new `FeatureDoc`, or the build breaks. The mapping
+  is not 1:1 (`backup` ← `backup-restic.md`, `virtual-machines` ← `vm.md`,
+  `setup` ← `setup-wizard.md`, `cloudsync` ← `cloud-sync.md`). A guide about how
+  the codebase is built (`design-system.md`) belongs in `DEVELOPER_ONLY_GUIDES`
+  instead of the index. Entries describe the product to a user — no file paths,
+  no handler names (`test_feature_docs_are_unique_and_substantive` rejects
+  `src/`, `.svelte` and backticks).
 - **When changing the embedding model** (currently `nomic-embed-text`), update
   `src/rag.rs` (`EMBEDDING_MODEL`), `docs/guides/rag.md`, and the i18n key
   `chat.rag_embedding_model` in all 4 locale files.
+- **When changing the text of a shipped feature**, check its `FeatureDoc`
+  entry too: the assistant answers from those entries, and they go stale
+  silently. (The 2026-10-12 pass also refreshed the Users entry, which still
+  described account deletion without the share-permission revoke.)
 - **When adding a new document source** (e.g. user manuals, system metrics),
   add a new indexer function in `src/rag_indexers.rs`, register it in
   `index_all()`, add an endpoint if needed, and update the guide.
@@ -245,10 +258,11 @@ are **deferred** — details and follow-ups in `PRIVACY.md`.
 
 # Deployment model — runs as root (2026-09-04, commit `2d5ba40`)
 
-No dedicated `homevault` service account. `installer/homevault.service` has no
-`User=`/`Group=` (systemd → root); `install.sh` only creates `/home/homevault`
-as a home-folder root and the first admin's real Linux account at setup. Full
-rationale + consequences: **`docs/ARCHITECTURE.md` → Deployment model**.
+No dedicated `homevault` service account. The systemd unit `install.sh` writes
+has no `User=`/`Group=` (systemd → root); `install.sh` only creates
+`/home/homevault` as a home-folder root and the first admin's real Linux
+account at setup. Full rationale + consequences: **`docs/ARCHITECTURE.md` →
+Deployment model**.
 
 Two things that bind this codebase:
 
@@ -267,15 +281,17 @@ Two things that bind this codebase:
 `homevault-sftp` (the SFTP jail group/service) and `homevault_admin` (the OS
 admin group) are unrelated to the dropped account and still exist.
 
-`installer/install.sh` + `src/dependencies.rs` are kept in lockstep by
-`dependencies.rs`'s tests (every inventory `package` must appear as a
-whole-word token in `install.sh`; on top of that, the systemd unit and the
-udiskie automount config that `install.sh` **embeds** for the no-checkout
-`curl | sudo bash` path must match `installer/homevault.service` and
-`installer/setup-automount.sh` — a piped install has no checkout on disk, so
-the embedded copy is what actually ships). Ollama is installed via its official
-`curl … | sh` (not apt), best-effort; **no model is auto-downloaded** — the
-admin pulls one from Settings > AI.
+`installer/install.sh` is the **only installer file** — self-contained by
+design, since a `curl | sudo bash` install has no checkout on disk. The retired
+`installer/homevault.service`, `installer/setup-automount.sh`,
+`installer/optional-packages.conf` and packaging `Makefile` were folded into it
+(the one file both installs and, via `--package`, builds the release archive).
+`src/dependencies.rs`'s tests keep it honest: every inventory `package` must
+appear as a whole-word token in `install.sh`, the inline systemd unit / udiskie
+config must keep their load-bearing directives, and `install.sh` must not
+reference any sibling file. Ollama is installed via its official `curl … | sh`
+(not apt), best-effort; **no model is auto-downloaded** — the admin pulls one
+from Settings > AI.
 
 ---
 
@@ -528,6 +544,31 @@ and re-capture a reference screenshot.
   log out + redirect to `/login` (shared behaviour between `Users.svelte`'s
   `isSelf` branch and `Account.svelte`; a fix to one needs the same fix in the
   other).
+- **First-run state comes from the database (2026-10-08).** `is_first_run` is
+  `!SetupStateRepository::has_admin()` (a `users` row with `role_id = 2`); the
+  `.setup_complete`/`.system_hash` marker files are gone and the singleton
+  `setup_state` row (migration 037) holds the fingerprint. `handle_setup` and
+  `handle_setup_verify_totp` must gate on `has_admin()`, never a file. The
+  `.setup_lock` `O_EXCL` lock stays. Don't reintroduce a file as the authority —
+  it can disagree with the accounts it is supposed to describe.
+- **A hardware change never re-shows the Setup Wizard.** With an admin present,
+  a changed fingerprint sets `needs_recovery: true`; the frontend routes to the
+  recovery screen (`Login` `recoveryMode`), whose successful admin sign-in calls
+  `POST /auth/setup/rebaseline` (admin-only) to rewrite the fingerprint. Showing
+  the Wizard there dead-ends on "Setup already complete".
+- **`lib/stores/appGate.ts` is the one frontend route guard** (Umbrel's
+  `EnsureUserExists`/`EnsureUserDoesntExist` equivalent). `App.svelte` renders
+  setup/recovery/login/desktop/error from `$appGate.route`; `Login.svelte` must
+  **not** fetch `/auth/setup-status` or render `SetupWizard` inline, and
+  `api.getSetupStatus()` must throw on failure (never fake `is_first_run: true`,
+  which would show the Wizard on a network error).
+- **The bootstrap endpoints are local-network-only.**
+  `middleware::setup_guard` on `POST /auth/setup`, `POST /auth/setup/verify-totp`
+  and `GET /auth/check-username` allows only loopback / private / link-local /
+  ULA peers, read from `ConnectInfo` — never from `X-Forwarded-For`/`X-Real-IP`
+  (forgeable). `/auth/setup-status` and the admin-authenticated
+  `/auth/setup/rebaseline` are exempt. `HOMEVAULT_SETUP_ALLOW_REMOTE=1` is the
+  documented opt-out.
 
 ## Users / Groups / Accounts · `docs/guides/users.md`, `groups.md`, `account.md`
 
@@ -537,8 +578,16 @@ and re-capture a reference screenshot.
   `createForm.groups`/`updateUserGroups` never touch it). Membership is driven
   only by the Role selector (`sync_admin_user_to_group` / `remove_user_from_group`).
 - Deleting a user must clean up live PTY sessions (`pty_manager.kill_session`),
-  purge the SFTP jail (`SftpJailService::purge_user` — unconditional) and
-  delete the `transfer_quotas` row (else a same-name recreate inherits it).
+  purge the SFTP jail (`SftpJailService::purge_user` — unconditional),
+  revoke the share permissions it holds **directly**
+  (`PermissionService::revoke_all_user_permissions` — ACL best-effort + the
+  `share_permissions` rows; group grants stay, they belong to the remaining
+  members) and delete the `transfer_quotas` row — all four so that a
+  same-name recreate inherits nothing from the deleted account. The
+  `share_permissions` table keys a grantee by **name only** (no foreign key),
+  so nothing else enforces this: dropping the revoke call silently re-opens
+  the bug. Guard: `users_integration.rs` →
+  `test_user_delete_revokes_its_direct_share_permissions_only`.
 - Home-directory size limit: the detail-sheet slider saves via `saveHome()`
   only; `saveProfile` must keep forwarding `home_size_bytes` **and
   `home_path`** through `updateUserFull`. `setquota -u` is best-effort and must
@@ -657,6 +706,23 @@ before handing it to the `cron` crate (`1=Sun…7=Sat`).
 - Tracked copy/move jobs must register via `PROGRESS_MANAGER.create_job`
   (with `owner`) — never a self-generated UUID (every progress event would be a
   silent no-op). `handle_explorer_copy`/`_move` thread the session username in.
+- `JobType` uses serde **adjacent** tagging (`tag = "type"`, `content = "name"`).
+  Plain internal tagging cannot serialize the `Custom(String)` newtype variant
+  ("cannot serialize tagged newtype variant"), and `Custom` is what every feature
+  job uses — Explorer copy/move, Docker install/update, antivirus, RAG, VM,
+  rescue, cloud sync, Ollama pull. The fallout was invisible on the taskbar
+  (the activity handler maps `JobType` to a slug via `job_type_kind` and never
+  serializes the enum) but broke the SSE payload: `handle_progress_sse`'s
+  `serde_json::to_string(&event).unwrap_or_default()` sent an **empty** `data:`
+  line, so `JSON.parse` threw client-side and `Explorer.svelte`'s `watchJob`
+  resolved false for a copy that succeeded. Never revert to `tag` alone; the
+  round-trip tests at the bottom of `src/sse/progress.rs` guard the wire shape
+  (`{"type":"backup"}` for built-in kinds,
+  `{"type":"custom","name":"explorer_copy"}` for a feature slug).
+- `ProgressManager::get_progress` must keep returning the job's stored
+  `last_event` — never synthesise a placeholder. The activity feed, the SSE
+  stream and `GET /api/progress/{job_id}/status` must agree on a job's state
+  (`list_activity` and the SSE stream read `last_event` too).
 - `restore_trash_item` keeps the rename→(EXDEV)→copy+delete fallback;
   `find_trash_entry` treats a missing trash root as `NotFound` and tries the
   next one; `list_directory_sync` skips a bad entry (`let Ok … else continue`),
@@ -770,6 +836,15 @@ comments). Blocking `ip`/`ethtool`/`ping` calls stay in `spawn_blocking`.
   Ollama NDJSON — don't revert to `stream:false`.
 - Cloud Sync: session on every handler; **admin** on every mutation **and** on
   `GET /rclone/config` (rclone's "obscuring" is trivially reversible).
+  **The config path comes from `rclone_config_path()` and nowhere else**
+  (`RCLONE_CONFIG` override → first existing of rclone's locations →
+  `/etc/rclone.conf`); `parse_rclone_config()` uses the same resolver. The four
+  read/write handlers used to hardcode `/etc/rclone.conf`, so the editor and
+  the remote list could disagree, and saving failed with `Permission denied`
+  for any admin whose config lived elsewhere. No handler may reintroduce a
+  literal path — guarded by `test_parse_and_the_handlers_resolve_the_same_file`
+  (unit) and three `rclone_integration.rs` tests that drive the real endpoints
+  with `RCLONE_CONFIG` pointed at a tempdir.
   `MountRequest`'s `#[serde(default)]` on its 3 bool fields stays; the
   `[`-line rejection in `add_remote` stays; `handle_mount_start` uses `--daemon`.
 - Syncthing: `require_admin` on all 10 handlers. `handle_syncthing_folders`
@@ -839,3 +914,35 @@ comments). Blocking `ip`/`ethtool`/`ping` calls stay in `spawn_blocking`.
   `Desktop.svelte`, use a legacy `$:` — never "just one rune". A legacy `$:`
   also runs during init, *before* `onMount`, which is how `Desktop.svelte`
   seeds `resourcePollMs` from `monitorStore` before the first subscribe.
+
+## Static assets, caching & the icon sprite · `docs/ARCHITECTURE.md`, `docs/FRONTEND.md`
+
+- **Cache policy lives in `spa.rs`'s handlers, one policy per route — never a
+  blanket `SetResponseHeaderLayer` in `create_app`.** A layer applied after
+  the routers are merged also covers the API and `index.html`, so it would pin
+  both for a year. The two policies are `CACHE_IMMUTABLE` (content-hashed
+  bundles, wallpapers, `static/`) and `CACHE_REVALIDATE` (the two sprites,
+  whose URL is fixed but whose content is regenerated every build).
+  `index.html`, `sw.js`, `manifest.json` and `favicon.svg` get **no**
+  `Cache-Control` on purpose.
+- **Every embedded file keeps an `ETag`, and the validator is per content
+  coding** (`-br` / `-gz` suffix). Dropping the suffix lets a cache answer a
+  `br` request with the identity body. A matching `If-None-Match` must stay a
+  `304` with no body.
+- **Pre-compressed `.br` / `.gz` siblings are the served bytes, not a cache.**
+  `frontend/scripts/precompress-dist.mjs` writes them from npm's `postbuild`,
+  and `Content-Encoding` is what makes `CompressionLayer` skip the response.
+  They are never addressable on their own — `/foo.js.br` 404s (or falls to the
+  SPA fallback), it never returns raw brotli.
+- **The icon sprite is generated from the sources, never hand-edited, and it is
+  subset.** `npm run build` runs it as `prebuild`. Run `npm run
+  icons:generate` after adding an `@tabler`/`@phosphor` icon import that is
+  referenced only indirectly, and remember the subset scans a *closure* of
+  files (components rendering `<Icon>`, components passing an `icon`-ish prop,
+  `$lib/stores` + `$lib/services`, the catalog manifests) — a whole-tree scan
+  is not a substitute, it keeps nearly the full library. Do not "fix" a blank
+  icon by adding every glyph back: `HV_SPRITE_FULL=1 npm run icons:generate`
+  exists for that escape hatch and is a deliberate, temporary step.
+- **`include_dir!` emits no `cargo:rerun-if-changed`.** After a frontend-only
+  rebuild, `touch src/handlers/spa.rs` before `cargo build --release`, or the
+  stale bundle (and any missing `.br` sibling) stays embedded.

@@ -1,11 +1,11 @@
 ---
 name: live-tester
 description: >
-  Teste une page ou fonctionnalité de HomeVault de bout en bout, en conditions réelles :
-  backend réel (jamais mocké), base de données isolée, sessions HTTP réelles (curl) et
-  navigateur réel (Playwright si disponible) pour vérifier les actions frontend, les
-  endpoints backend, et surtout les droits d'accès (public / auth / admin). Génère un
-  rapport structuré des résultats (succès/échecs) avec preuves concrètes, pas de suppositions.
+  Tests a HomeVault page or feature end to end, under real conditions: real backend
+  (never mocked), isolated database, real HTTP sessions (curl) and a real browser
+  (Playwright if available) to verify frontend actions, backend endpoints, and above
+  all access rights (public / auth / admin). Produces a structured report of the
+  results (pass/fail) with concrete evidence, no assumptions.
   Use ONLY when the task explicitly asks to test a page, feature, or app end-to-end in
   real conditions, verify actions/functionality live against a running server, or audit
   permissions/access control on live endpoints — not for static code review (use

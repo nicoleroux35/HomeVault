@@ -1,20 +1,74 @@
 #!/bin/bash
 set -euo pipefail
 
-# HomeVault Installation Script
+# HomeVault Installation Script — the only installer file: packages, the
+# systemd unit, the udiskie automount config, the download and the final
+# verification all live here (nothing is read from a sibling file).
 # Supported OS: Debian 10+, Ubuntu 20.04+
 # Architecture: x86_64, aarch64, armv7l
 #
 # Usage (recommended — downloads + installs everything in one command):
-#   curl -fsSL https://codeberg.org/nicleroux35/HomeVault-Svelt/raw/branch/main/installer/install.sh | sudo bash
-#   wget -qO- https://codeberg.org/nicleroux35/HomeVault-Svelt/raw/branch/main/installer/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/nicoleroux35/HomeVault/main/installer/install.sh | sudo bash
+#   wget -qO- https://raw.githubusercontent.com/nicoleroux35/HomeVault/main/installer/install.sh | sudo bash
 #
 # Usage with an already-downloaded archive (skips the download step):
-#   sudo ./install.sh /path/to/homevault-latest.tar.gz
+#   sudo ./install.sh /path/to/homevault.tar.gz
 #
-# The URL the script downloads the application archive from defaults to
-# $RELEASE_URL below. Override it without editing the script:
-#   sudo HV_RELEASE_URL=https://your-mirror/homevault.tar.gz bash -c "$(curl -fsSL https://codeberg.org/nicleroux35/HomeVault-Svelt/raw/branch/main/installer/install.sh)"
+# The pre-built binary is downloaded from the project's GitHub Releases by
+# default, as a per-architecture asset (`homevault-<arch>.tar.gz`). Override
+# the source without editing the script:
+#   sudo HV_RELEASE_URL=https://mirror/homevault-x86_64.tar.gz bash -c "$(curl -fsSL <install-url>)"
+# Optionally pin the download's integrity:
+#   sudo HV_RELEASE_SHA256=<hex> bash -c "$(curl -fsSL <install-url>)"
+#
+# Maintainers publish those assets with this same file (needs Rust + Node ≥ 20,
+# run from a checkout):
+#   ./installer/install.sh --package
+#
+# ---------------------------------------------------------------------------
+# Maintainer mode — `install.sh --package`
+#
+# Builds the per-architecture release archive this installer downloads:
+#   installer/release/homevault-<arch>.tar.gz  (+ .sha256)
+# It never touches the running system and never needs root.
+# ---------------------------------------------------------------------------
+if [[ "${1:-}" == "--package" || "${1:-}" == "-p" ]]; then
+    case "$0" in
+        */*) PKG_ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd) ;;
+        *)   PKG_ROOT=$(pwd) ;;
+    esac
+    # `bash install.sh` from inside installer/ resolves to installer/ — walk
+    # up to the checkout root that actually holds Cargo.toml.
+    if [[ ! -f "$PKG_ROOT/Cargo.toml" && -f "$PKG_ROOT/../Cargo.toml" ]]; then
+        PKG_ROOT=$(cd -- "$PKG_ROOT/.." && pwd)
+    fi
+    cd "$PKG_ROOT"
+    PKG_ARCH=$(uname -m)
+    for tool in cargo npm; do
+        if ! command -v "$tool" &> /dev/null; then
+            echo "Error: $tool is required to build a release (cargo: https://rustup.rs, npm: https://nodejs.org)." >&2
+            exit 1
+        fi
+    done
+    echo "▶ Building the frontend…"
+    ( cd frontend && npm ci && npm run build )
+    # The backend embeds `static/` at compile time — refuse to package a
+    # binary whose UI is missing rather than shipping a broken release.
+    if [[ ! -f static/dist/index.html ]]; then
+        echo "Error: static/dist/index.html is missing after the frontend build." >&2
+        exit 1
+    fi
+    echo "▶ Building the backend (release)…"
+    cargo build --release --bin homevault
+    mkdir -p installer/release
+    ASSET="installer/release/homevault-${PKG_ARCH}.tar.gz"
+    tar -czf "$ASSET" -C target/release homevault
+    sha256sum "$ASSET" | awk '{print $1}' > "${ASSET}.sha256"
+    echo "✓ $ASSET"
+    echo "  sha256: $(cat "${ASSET}.sha256")"
+    echo "  Publish it as a GitHub Release asset so the default install URL resolves."
+    exit 0
+fi
 
 # Root gate FIRST, before the log redirection further down: as a non-root
 # user `/var/log` is not writable, so `tee -a` would die, and every later
@@ -34,21 +88,14 @@ ENV_FILE="/etc/homevault.env"
 PORT="8080"
 HTTPS_PORT="8443"
 
-# Pre-built application archive (single compressed `homevault` binary, see
-# installer/Makefile). Point this at the published artifact for the project;
-# `install.sh` itself keeps working unchanged if only this URL moves.
-RELEASE_URL="${HV_RELEASE_URL:-https://codeberg.org/nicleroux35/HomeVault-Svelt/raw/branch/main/installer/release/homevault-latest.tar.gz}"
-
-# Directory this script was invoked from — only set when `$0` carries a path
-# (`bash installer/install.sh`, `./install.sh`); a `curl | sudo bash` pipe has
-# `$0` = `bash` and no directory, so it stays empty. When the checkout that
-# ships `installer/homevault.service` and `installer/setup-automount.sh` is
-# on disk, those tracked files are used verbatim; the embedded copies in
-# Steps 2/3 are the fallback so the piped install works with no checkout.
-SCRIPT_DIR=""
-case "$0" in
-    */*) SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" 2>/dev/null && pwd) || SCRIPT_DIR="" ;;
-esac
+# Pre-built application archive — one compressed `homevault` binary. Published
+# per architecture on the project's GitHub Releases as `homevault-<arch>.tar.gz`
+# (x86_64 / aarch64 / armv7l), exactly what `install.sh --package` produces.
+# `HV_RELEASE_URL` overrides the whole URL (mirror, pinned version, …) and
+# `HV_RELEASE_SHA256` optionally pins the archive's checksum.
+RELEASE_BASE="${HV_RELEASE_BASE:-https://github.com/nicoleroux35/HomeVault/releases/latest/download}"
+RELEASE_URL="${HV_RELEASE_URL:-}"
+RELEASE_SHA256="${HV_RELEASE_SHA256:-}"
 
 # Avoid apt/debconf ever popping an interactive prompt mid-install (a
 # headless box or a `curl | sudo bash` pipe has no one to answer it, so a
@@ -173,14 +220,17 @@ step "Verifying and installing system packages"
 # the user names there.
 mkdir -p "$INSTALL_DIR" "$DATA_DIR" "/etc/homevault"
 # Everything lives under /var/lib/homevault:
-#   data/      SQLite DB + JSON settings
-#   compose/   Docker Compose projects (one dir per app)
-#   apps/      persistent data of installed Docker apps
-#   wallpapers/ (+ thumbs/) uploaded wallpapers
-#   rescue/    file-recovery working data
-#   syncthing/ Syncthing configuration
+#   data/       SQLite DB + JSON settings
+#   compose/    Docker Compose projects (one dir per app)
+#   apps/       persistent data of installed Docker apps
+#   rescue/     file-recovery working data
+#   syncthing/  Syncthing configuration
+#   logs/       HomeVault's own rotating application log
+#   quarantine/ antivirus quarantine
+#   vm/isos/    Virtual Machines install media
+# (tls/ and trash/ are created on demand by the application.)
 # Personal user home folders live under /home/homevault.
-for sub in data compose apps wallpapers wallpapers/thumbs rescue syncthing; do
+for sub in data compose apps rescue syncthing logs quarantine vm/isos; do
     mkdir -p "$DATA_DIR/$sub"
 done
 mkdir -p "/home/homevault"
@@ -574,20 +624,11 @@ install_ollama
 
 # Configure automatic mounting of external drives (USB, SD cards) the same
 # way a desktop does: udisks2 + udiskie, a systemd unit, and plugdev/storage
-# group membership. The tracked `installer/setup-automount.sh` runs when the
-# checkout is on disk; the embedded copy below covers the no-checkout
-# `curl | sudo bash` path and is kept identical to it (sync test in
-# `src/dependencies.rs`). Best-effort like the rest: a failing daemon just
-# skips the feature instead of aborting the install.
+# group membership. Inlined so this single script needs no sibling file;
+# udisks2 + udiskie are already in the required package group above, so on a
+# normal run nothing is installed here. Best-effort like the rest: a failing
+# daemon just skips the feature instead of aborting the install.
 setup_automount() {
-    if [[ -n "$SCRIPT_DIR" ]] && [[ -f "$SCRIPT_DIR/setup-automount.sh" ]]; then
-        if bash "$SCRIPT_DIR/setup-automount.sh"; then
-            ok "Automatic external-drive mounting configured"
-        else
-            warn "Automount setup failed — external drives will not auto-mount"
-        fi
-        return 0
-    fi
     if ! command -v udiskie &> /dev/null; then
         warn "Automount skipped — udiskie not installed"
         return 0
@@ -641,7 +682,7 @@ EOF
         usermod -a -G plugdev,storage,cdrom "homevault" 2>/dev/null || true
     fi
     # Also grant the logged-in desktop user (first `who` session) device
-    # access — same behaviour as installer/setup-automount.sh.
+    # access — the behaviour the old standalone automount helper had.
     local invoker=""
     invoker=$(who 2>/dev/null | head -n 1 | awk '{print $1}' || true)
     if [[ -n "$invoker" ]]; then
@@ -668,12 +709,17 @@ if [[ $# -ge 1 ]] && [[ -f "$1" ]]; then
     info "Using the provided archive: $PACKAGE"
 fi
 if [[ -z "$PACKAGE" ]]; then
+    # Default to the per-architecture release asset for this host.
+    if [[ -z "$RELEASE_URL" ]]; then
+        RELEASE_URL="$RELEASE_BASE/homevault-${ARCH}.tar.gz"
+    fi
     TMP_ARCHIVE=$(mktemp /tmp/homevault.XXXXXX.tar.gz)
     PACKAGE="$TMP_ARCHIVE"
-    info "Downloading HomeVault from $RELEASE_URL ..."
+    info "Downloading HomeVault ($ARCH) from $RELEASE_URL ..."
     if ! curl -fL --retry 3 --retry-delay 2 -o "$PACKAGE" "$RELEASE_URL"; then
         err "Failed to download HomeVault from $RELEASE_URL"
         echo -e "  Check the URL, or pass a local archive: ${C_BOLD}sudo $0 /path/to/homevault.tar.gz${C_RESET}"
+        echo -e "  Or point at another source: ${C_BOLD}HV_RELEASE_URL=<url>${C_RESET}"
         exit 1
     fi
     ok "Downloaded: $PACKAGE"
@@ -685,6 +731,21 @@ if ! tar -tzf "$PACKAGE" &> /dev/null; then
     exit 1
 fi
 ok "Archive found and valid: $PACKAGE"
+
+# Optional integrity check — the publisher can ship a `<asset>.sha256` sidecar
+# (see `install.sh --package`) and the admin passes its digest here. Verified
+# before anything is extracted into /opt/homevault.
+if [[ -n "$RELEASE_SHA256" ]]; then
+    ACTUAL_SHA=$(sha256sum "$PACKAGE" | awk '{print $1}')
+    if [[ "$ACTUAL_SHA" != "$RELEASE_SHA256" ]]; then
+        err "SHA-256 mismatch for the downloaded archive."
+        echo -e "  expected: $RELEASE_SHA256"
+        echo -e "  actual:   $ACTUAL_SHA"
+        rm -f "$PACKAGE"
+        exit 1
+    fi
+    ok "Archive checksum verified"
+fi
 
 UPGRADE=0
 if [[ -f "$SERVICE_FILE" ]]; then
@@ -705,17 +766,10 @@ if [[ -f "$SERVICE_FILE" ]]; then
     cp "$SERVICE_FILE" "${SERVICE_FILE}.bak" 2>/dev/null || true
 fi
 
-# Systemd unit: prefer the tracked `installer/homevault.service` when running
-# from a checkout — it stays byte-identical to the version-controlled source,
-# which the sync test in `src/dependencies.rs` enforces against the embedded
-# copy below. That embedded copy is what a no-checkout `curl | sudo bash`
-# install gets, since `installer/` never exists on disk there. No dedicated
-# service account either way — HomeVault runs as root because it manages the
-# host itself; see the note in Step 2 above.
-if [[ -n "$SCRIPT_DIR" ]] && [[ -f "$SCRIPT_DIR/homevault.service" ]]; then
-    cp "$SCRIPT_DIR/homevault.service" "$SERVICE_FILE"
-    ok "System service unit copied from $SCRIPT_DIR/homevault.service"
-else
+# Systemd unit — written inline so this single script is self-contained (there
+# is no sibling `homevault.service` to fall back to). No dedicated service
+# account: HomeVault runs as root because it manages the host itself; see the
+# note in Step 2 above.
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=HomeVault Server
@@ -756,8 +810,7 @@ TasksMax=1024
 [Install]
 WantedBy=multi-user.target
 EOF
-    ok "System service unit written to $SERVICE_FILE"
-fi
+ok "System service unit written to $SERVICE_FILE"
 
 # Optional: turn on built-in HTTPS with a self-signed certificate. Opt-in and
 # only offered on a fresh install; can also be toggled later from

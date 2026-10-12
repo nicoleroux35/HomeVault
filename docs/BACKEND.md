@@ -158,7 +158,7 @@ Notable handlers (see `API.md` for the full map):
 ## Storage / repository layer
 
 `src/storage/` holds SQLx repositories. Each repo wraps a pool and provides typed
-async CRUD. Migrations are in `sqlx/migrations/` (**001–036**), embedded in the
+async CRUD. Migrations are in `sqlx/migrations/` (**001–037**), embedded in the
 binary via `include_dir!` and applied at startup. `storage/database.rs::Database::run_migrations`
 runs each pending file once (tracked in `_hv_migrations`); the hand-rolled SQL
 statement splitter tracks `--` line comments explicitly, so a semicolon inside a
@@ -170,7 +170,8 @@ default roles. Recent migrations: `027_app_stores.sql`,
 `033_rag_knowledge_base.sql` (RAG documents, chunks, index status),
 `034_explorer_share_links.sql` (Explorer "share by link"),
 `035_login_attempts_success_user_agent.sql` (user-agent on successful logins),
-`036_sync_jobs.sql` (background sync job tracking).
+`036_sync_jobs.sql` (background sync job tracking),
+`037_setup_state.sql` (durable first-run setup state — see below).
 
 All repositories share a common `Repository` trait (`src/storage/repository.rs`)
 exposing standard CRUD (`find_by_id`, `find_all`, `create`, `update`, `delete`,
@@ -205,6 +206,15 @@ Multi-table operations that must be atomic live in `TransactionalService`
 
 SQLite runs in WAL mode with a tuned cache/MMAP and foreign keys enforced; indexes
 for common queries are created by the migrations.
+
+### First-run setup state (`storage/setup_state_repo.rs`)
+
+The database — not a marker file — is the source of truth for whether the
+appliance is configured. `SetupStateRepository::has_admin()` (a `users` row with
+`role_id = 2`) is the canonical check used by the setup handlers, and the
+singleton `setup_state` row (migration 037) carries the `system_hash` /
+`machine_id` fingerprint recorded at setup time for hardware-change detection.
+See [Setup Wizard](./guides/setup-wizard.md).
 
 ## Configuration (`src/config/`)
 

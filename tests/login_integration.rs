@@ -1509,13 +1509,16 @@ async fn test_rate_limit_state_window_resets_after_expiry() {
 // ========================================================================
 
 #[tokio::test]
-async fn test_setup_status_reports_hardware_changed_when_hash_file_mismatches() {
-    let (state, tmp, _lock) = setup_state().await;
+async fn test_setup_status_reports_hardware_changed_when_fingerprint_mismatches() {
+    let (state, _tmp, _lock) = setup_state().await;
 
-    // Simulate a completed setup: both flag files present, hash file holds a
-    // value that cannot match this host's real system hash.
-    std::fs::write(tmp.path().join(".setup_complete"), "true").unwrap();
-    std::fs::write(tmp.path().join(".system_hash"), "deadbeef-not-a-real-hash").unwrap();
+    // A configured appliance: an admin exists and a fingerprint was recorded
+    // that cannot match this host's real system hash.
+    create_admin_user(&state, "hwboss", "SecurePass123").await;
+    homevault::storage::SetupStateRepository::new(state.db.pool())
+        .mark_complete("deadbeef-not-a-real-hash", "machine-x")
+        .await
+        .unwrap();
 
     let mut app = Router::new()
         .route(
@@ -1528,22 +1531,28 @@ async fn test_setup_status_reports_hardware_changed_when_hash_file_mismatches() 
     assert_eq!(status, StatusCode::OK);
     assert!(
         body["data"]["hardware_changed"].as_bool().unwrap_or(false),
-        "a stale system-hash file must flip hardware_changed"
+        "a stale recorded fingerprint must flip hardware_changed"
+    );
+    assert!(
+        body["data"]["needs_recovery"].as_bool().unwrap_or(false),
+        "an existing admin + changed fingerprint must ask for the recovery flow"
     );
     assert!(
         !body["data"]["is_first_run"].as_bool().unwrap_or(true),
-        "the setup-complete flag is present"
+        "an admin exists, so this is not a first run"
     );
 }
 
 #[tokio::test]
-async fn test_setup_status_no_hardware_change_when_hash_matches() {
-    let (state, tmp, _lock) = setup_state().await;
+async fn test_setup_status_no_hardware_change_when_fingerprint_matches() {
+    let (state, _tmp, _lock) = setup_state().await;
 
-    std::fs::write(tmp.path().join(".setup_complete"), "true").unwrap();
-    // Write the *real* current hash so it matches.
+    create_admin_user(&state, "hwboss", "SecurePass123").await;
     let real = homevault::setup::SetupService::generate_system_hash();
-    std::fs::write(tmp.path().join(".system_hash"), &real).unwrap();
+    homevault::storage::SetupStateRepository::new(state.db.pool())
+        .mark_complete(&real, "machine-x")
+        .await
+        .unwrap();
 
     let mut app = Router::new()
         .route(
@@ -1554,6 +1563,28 @@ async fn test_setup_status_no_hardware_change_when_hash_matches() {
 
     let (_, body) = get_json(&mut app, "/api/auth/setup-status").await;
     assert!(!body["data"]["hardware_changed"].as_bool().unwrap_or(true));
+    assert!(!body["data"]["needs_recovery"].as_bool().unwrap_or(true));
+    assert!(body["data"]["is_setup_valid"].as_bool().unwrap_or(false));
+}
+
+#[tokio::test]
+async fn test_setup_status_not_first_run_when_admin_exists_without_fingerprint() {
+    // A database that predates migration 037 (admin row, no `setup_state`
+    // row) is configured — not a first run — and not a hardware change.
+    let (state, _tmp, _lock) = setup_state().await;
+    create_admin_user(&state, "legacy", "SecurePass123").await;
+
+    let mut app = Router::new()
+        .route(
+            "/api/auth/setup-status",
+            get(homevault::handlers::auth::handle_setup_status),
+        )
+        .with_state(state);
+
+    let (_, body) = get_json(&mut app, "/api/auth/setup-status").await;
+    assert!(!body["data"]["is_first_run"].as_bool().unwrap_or(true));
+    assert!(!body["data"]["hardware_changed"].as_bool().unwrap_or(true));
+    assert!(!body["data"]["needs_recovery"].as_bool().unwrap_or(true));
 }
 
 // ========================================================================

@@ -93,19 +93,9 @@ pub fn syncthing_config_path() -> PathBuf {
     syncthing_dir().join("config.xml")
 }
 
-/// Flag file written once the first-run setup completes.
-pub fn setup_flag_file() -> PathBuf {
-    base_dir().join(".setup_complete")
-}
-
 /// Lock file preventing concurrent first-run setups.
 pub fn setup_lock_file() -> PathBuf {
     base_dir().join(".setup_lock")
-}
-
-/// File storing the system fingerprint used to validate the setup.
-pub fn system_hash_file() -> PathBuf {
-    base_dir().join(".system_hash")
 }
 
 /// Absolute path of a user's personal home folder (`/home/homevault/{user}`).

@@ -432,6 +432,212 @@ async fn test_add_remote_rejects_config_section_injection() {
 }
 
 // ---------------------------------------------------------------------------
+// 3b. The config file rclone consumes is the one RCLONE_CONFIG points at
+// ---------------------------------------------------------------------------
+
+/// Points `RCLONE_CONFIG` at `path` for the duration of the test and removes it
+/// on drop (panic included). The test already holds the file-wide `ENV_LOCK`
+/// through its `setup_state` guard, so no sibling test can observe it.
+struct ConfigEnvGuard;
+
+impl Drop for ConfigEnvGuard {
+    fn drop(&mut self) {
+        std::env::remove_var("RCLONE_CONFIG");
+    }
+}
+
+fn point_rclone_config_at(dir: &tempfile::TempDir) -> (std::path::PathBuf, ConfigEnvGuard) {
+    let path = dir.path().join("rclone.conf");
+    std::env::set_var("RCLONE_CONFIG", &path);
+    (path, ConfigEnvGuard)
+}
+
+/// The regression: `handle_get_config`/`_save_config`/`add_remote`/
+/// `delete_remote` hardcoded `/etc/rclone.conf` while `parse_rclone_config()`
+/// honoured the `RCLONE_CONFIG` override — so the Settings editor read and wrote
+/// a **different file** than the one the remote list came from. An admin who
+/// moved the config saw an empty remote list beside an editor showing
+/// unrelated contents. Driven over HTTP through the real router.
+#[tokio::test]
+async fn config_endpoints_use_the_rclone_config_override() {
+    let (state, tmp, _g) = setup_state().await;
+    let (config_path, _env) = point_rclone_config_at(&tmp);
+
+    let seed = "[override_probe]\ntype = dropbox\ntoken = not-a-real-token\n";
+    std::fs::write(&config_path, seed).unwrap();
+
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = rclone_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    // GET /config must read *that* file, not /etc/rclone.conf.
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/rclone/config",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], true, "got {body}");
+    assert_eq!(
+        body["data"].as_str(),
+        Some(seed),
+        "the editor must open the same file the remotes are parsed from"
+    );
+
+    // `handle_list_remotes` already honoured the override before this fix (it
+    // goes through `parse_rclone_config`); only the mutating handlers and the
+    // editor did not. Asserted when rclone is present on the host — the list
+    // handler refuses to answer otherwise, and that is not what this test
+    // guards.
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/rclone/remotes",
+        Some(&token),
+        None,
+    )
+    .await;
+    if body["success"] == json!(true) {
+        assert_eq!(body["data"][0]["name"], json!("override_probe"));
+        // `Remote` serialises `remote_type` under the key `type`.
+        assert_eq!(body["data"][0]["type"], json!("Dropbox"));
+    }
+}
+
+/// Saving must write the same file — and back it up. Previously the write went
+/// to `/etc/rclone.conf` regardless of the override.
+#[tokio::test]
+async fn save_config_writes_the_overridden_file_and_keeps_a_backup() {
+    let (state, tmp, _g) = setup_state().await;
+    let (config_path, _env) = point_rclone_config_at(&tmp);
+    std::fs::write(&config_path, "[before]\ntype = s3\n").unwrap();
+
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = rclone_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let replacement = "[after]\ntype = drive\n";
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/rclone/config",
+        Some(&token),
+        Some(json!({ "config": replacement })),
+    )
+    .await;
+    assert_eq!(body["success"], true, "got {body}");
+
+    assert_eq!(std::fs::read_to_string(&config_path).unwrap(), replacement);
+
+    let backups: Vec<String> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.contains(".backup."))
+        .collect();
+    assert_eq!(backups.len(), 1, "exactly one backup beside the config");
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join(&backups[0])).unwrap(),
+        "[before]\ntype = s3\n",
+        "the backup holds the previous content"
+    );
+}
+
+/// The full `add_remote` → list → `delete_remote` round-trip, on a real file.
+/// The suite header documents this as impossible while the handlers hardcoded
+/// `/etc/rclone.conf` (a writable root-owned path), so it lived only in the E2E
+/// spec; the resolver makes it safely testable here.
+#[tokio::test]
+async fn add_list_delete_remote_round_trip_on_the_overridden_file() {
+    let (state, tmp, _g) = setup_state().await;
+    let (config_path, _env) = point_rclone_config_at(&tmp);
+    std::fs::write(&config_path, "[existing]\ntype = s3\n").unwrap();
+
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = rclone_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    // add
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/rclone/remotes",
+        Some(&token),
+        Some(json!({
+            "name": "roundtrip",
+            "provider": "drive",
+            "config": "scope = drive"
+        })),
+    )
+    .await;
+    assert_eq!(body["success"], true, "got {body}");
+
+    let on_disk = std::fs::read_to_string(&config_path).unwrap();
+    assert!(
+        on_disk.contains("[roundtrip]") && on_disk.contains("type = drive"),
+        "the new section must land in the override file, got {on_disk:?}"
+    );
+    assert!(
+        on_disk.contains("[existing]"),
+        "the pre-existing section must survive, got {on_disk:?}"
+    );
+
+    // list (both remotes, sorted by name)
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/rclone/remotes",
+        Some(&token),
+        None,
+    )
+    .await;
+    if body["success"] == json!(true) {
+        let names: Vec<&str> = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["existing", "roundtrip"]);
+    }
+
+    // delete
+    let (_, body) = send(
+        &mut router,
+        Method::DELETE,
+        "/api/rclone/remotes/roundtrip",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], true, "got {body}");
+
+    let after = std::fs::read_to_string(&config_path).unwrap();
+    assert!(!after.contains("[roundtrip]"), "got {after:?}");
+    assert!(after.contains("[existing]"), "got {after:?}");
+
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/rclone/remotes",
+        Some(&token),
+        None,
+    )
+    .await;
+    if body["success"] == json!(true) {
+        let names: Vec<&str> = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["existing"]);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 4. sync / copy / mount validation
 // ---------------------------------------------------------------------------
 

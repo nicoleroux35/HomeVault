@@ -174,76 +174,110 @@ fn build_rclone_path(path_type: &str, remote: &str, sub_path: &Option<String>) -
     }
 }
 
+/// Canonical config location when nothing else exists — also what a fresh
+/// install writes.
+const DEFAULT_RCLONE_CONFIG: &str = "/etc/rclone.conf";
+
+/// The locations rclone itself falls back to, in order, when `RCLONE_CONFIG`
+/// is not set.
+fn rclone_config_fallback_paths() -> Vec<std::path::PathBuf> {
+    let mut paths = vec![std::path::PathBuf::from(DEFAULT_RCLONE_CONFIG)];
+    paths.push(std::path::PathBuf::from("/root/.config/rclone/rclone.conf"));
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            paths.push(std::path::PathBuf::from(home).join(".config/rclone/rclone.conf"));
+        }
+    }
+    paths
+}
+
+/// The **one** config file this module reads *and* writes.
+///
+/// Every handler used to hardcode `/etc/rclone.conf` while
+/// [`parse_rclone_config`] honoured the `RCLONE_CONFIG` override — so the
+/// Settings editor could read and write a different file from the one the
+/// remote list was parsed from, and an admin who moved the config (the
+/// supported way to run a second, non-root rclone) saw an empty list next to
+/// editor contents that did not match it. Both sides now resolve through this
+/// single function, so they cannot drift apart again.
+///
+/// Order: an explicit non-empty `RCLONE_CONFIG` wins outright — existing or
+/// not, since that is how a fresh config gets created outside `/etc` — then
+/// the first of rclone's fallback locations that exists, then
+/// [`DEFAULT_RCLONE_CONFIG`].
+fn rclone_config_path() -> std::path::PathBuf {
+    if let Ok(overridden) = std::env::var("RCLONE_CONFIG") {
+        if !overridden.is_empty() {
+            return std::path::PathBuf::from(overridden);
+        }
+    }
+
+    rclone_config_fallback_paths()
+        .into_iter()
+        .find(|path| path.exists())
+        .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_RCLONE_CONFIG))
+}
+
 /// Parse rclone config file to get remotes with their types
 fn parse_rclone_config() -> Option<Vec<Remote>> {
-    // Standard rclone config locations
-    let config_paths = [
-        std::env::var("RCLONE_CONFIG").ok(),
-        Some("/etc/rclone.conf".to_string()),
-        Some("/root/.config/rclone/rclone.conf".to_string()),
-        Some(format!(
-            "{}/.config/rclone/rclone.conf",
-            std::env::var("HOME").unwrap_or_default()
-        )),
-    ];
+    // One resolver, shared with every handler that writes the file (see
+    // `rclone_config_path`). Previously this looped over the candidates on its
+    // own, which is exactly how it ended up disagreeing with them.
+    let content = std::fs::read_to_string(rclone_config_path()).ok()?;
 
-    for config_path in config_paths.iter().flatten() {
-        if let Ok(content) = std::fs::read_to_string(config_path) {
-            let mut remotes = Vec::new();
-            let mut current_section = String::new();
-            let mut current_type = String::new();
+    let mut remotes = Vec::new();
+    let mut current_section = String::new();
+    let mut current_type = String::new();
 
-            for line in content.lines() {
-                let line = line.trim();
+    for line in content.lines() {
+        let line = line.trim();
 
-                // Skip comments and empty lines
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
+        // Skip comments and empty lines
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
 
-                // Parse section headers like [section_name]
-                if line.starts_with('[') && line.ends_with(']') {
-                    // Save previous remote if it has a type
-                    if !current_section.is_empty() && !current_type.is_empty() {
-                        let description = get_provider_description(&current_type);
-                        remotes.push(Remote {
-                            name: current_section.clone(),
-                            remote_type: description,
-                        });
-                    }
-                    current_section = line[1..line.len() - 1].to_string();
-                    current_type.clear();
-                    continue;
-                }
-
-                // Parse key=value pairs
-                if let Some((key, value)) = line.split_once('=') {
-                    let key = key.trim().to_lowercase();
-                    let value = value.trim();
-
-                    if key == "type" {
-                        current_type = value.to_string();
-                    }
-                }
-            }
-
-            // Don't forget the last remote
+        // Parse section headers like [section_name]
+        if line.starts_with('[') && line.ends_with(']') {
+            // Save previous remote if it has a type
             if !current_section.is_empty() && !current_type.is_empty() {
                 let description = get_provider_description(&current_type);
                 remotes.push(Remote {
-                    name: current_section,
+                    name: current_section.clone(),
                     remote_type: description,
                 });
             }
+            current_section = line[1..line.len() - 1].to_string();
+            current_type.clear();
+            continue;
+        }
 
-            if !remotes.is_empty() {
-                remotes.sort_by(|a, b| a.name.cmp(&b.name));
-                return Some(remotes);
+        // Parse key=value pairs
+        if let Some((key, value)) = line.split_once('=') {
+            let key = key.trim().to_lowercase();
+            let value = value.trim();
+
+            if key == "type" {
+                current_type = value.to_string();
             }
         }
     }
 
-    None
+    // Don't forget the last remote
+    if !current_section.is_empty() && !current_type.is_empty() {
+        let description = get_provider_description(&current_type);
+        remotes.push(Remote {
+            name: current_section,
+            remote_type: description,
+        });
+    }
+
+    if remotes.is_empty() {
+        return None;
+    }
+
+    remotes.sort_by(|a, b| a.name.cmp(&b.name));
+    Some(remotes)
 }
 
 /// Get human-readable description for provider type
@@ -1395,11 +1429,15 @@ pub async fn handle_get_config(
         return Json(ApiResponse::error(&e));
     }
 
-    let config_path = "/etc/rclone.conf";
+    let config_path = rclone_config_path();
 
-    match tokio::fs::read_to_string(config_path).await {
+    match tokio::fs::read_to_string(&config_path).await {
         Ok(content) => Json(ApiResponse::success(content)),
-        Err(e) => Json(ApiResponse::error(&format!("Failed to read config: {}", e))),
+        Err(e) => Json(ApiResponse::error(&format!(
+            "Failed to read config {}: {}",
+            config_path.display(),
+            e
+        ))),
     }
 }
 
@@ -1419,16 +1457,17 @@ pub async fn handle_save_config(
         return Json(ApiResponse::error(&e));
     }
 
-    let config_path = "/etc/rclone.conf";
+    let config_path = rclone_config_path();
+    let config_path_str = config_path.to_string_lossy().to_string();
     let backup_path = format!(
         "{}.backup.{}",
-        config_path,
+        config_path_str,
         chrono::Utc::now().format("%Y%m%d_%H%M%S")
     );
 
     // Create backup of existing config
-    if tokio::fs::metadata(config_path).await.is_ok() {
-        if let Err(e) = tokio::fs::copy(config_path, &backup_path).await {
+    if tokio::fs::metadata(&config_path).await.is_ok() {
+        if let Err(e) = tokio::fs::copy(&config_path, &backup_path).await {
             return Json(ApiResponse::error(&format!(
                 "Failed to create backup: {}",
                 e
@@ -1437,7 +1476,7 @@ pub async fn handle_save_config(
     }
 
     // Write new config
-    match tokio::fs::write(config_path, &req.config).await {
+    match tokio::fs::write(&config_path, &req.config).await {
         Ok(_) => Json(ApiResponse::success(format!(
             "Config saved successfully. Backup: {}",
             backup_path
@@ -1465,7 +1504,7 @@ pub async fn handle_add_remote(
         Err(e) => return Json(ApiResponse::error(&e)),
     };
 
-    let config_path = "/etc/rclone.conf";
+    let config_path = rclone_config_path();
 
     // Validate name
     if req.name.is_empty() {
@@ -1491,7 +1530,7 @@ pub async fn handle_add_remote(
     }
 
     // Read existing config
-    let existing_config: String = tokio::fs::read_to_string(config_path)
+    let existing_config: String = tokio::fs::read_to_string(&config_path)
         .await
         .unwrap_or_default();
 
@@ -1517,7 +1556,7 @@ pub async fn handle_add_remote(
     // Append to config
     let new_config = format!("{}{}", existing_config.trim_end(), new_section);
 
-    match tokio::fs::write(config_path, new_config).await {
+    match tokio::fs::write(&config_path, new_config).await {
         Ok(_) => {
             crate::events::log_event(format!(
                 "Admin '{}' added cloud remote '{}' ({})",
@@ -1543,12 +1582,18 @@ pub async fn handle_delete_remote(
         Err(e) => return Json(ApiResponse::error(&e)),
     };
 
-    let config_path = "/etc/rclone.conf";
+    let config_path = rclone_config_path();
 
     // Read existing config
-    let existing_config = match tokio::fs::read_to_string(config_path).await {
+    let existing_config = match tokio::fs::read_to_string(&config_path).await {
         Ok(content) => content,
-        Err(e) => return Json(ApiResponse::error(&format!("Failed to read config: {}", e))),
+        Err(e) => {
+            return Json(ApiResponse::error(&format!(
+                "Failed to read config {}: {}",
+                config_path.display(),
+                e
+            )))
+        }
     };
 
     // Find and remove the remote section
@@ -1577,7 +1622,7 @@ pub async fn handle_delete_remote(
         format!("{}\n{}", before_section, after_section)
     };
 
-    match tokio::fs::write(config_path, new_config).await {
+    match tokio::fs::write(&config_path, new_config).await {
         Ok(_) => {
             crate::events::log_event_warn(format!(
                 "Admin '{}' deleted cloud remote '{}'",
@@ -1682,6 +1727,80 @@ mod tests {
             get_provider_description("weirdcloud"),
             "weirdcloud (custom)"
         );
+    }
+
+    // -- rclone_config_path (one resolver for reads AND writes) -------
+
+    /// Run `f` with `RCLONE_CONFIG` either set to `value` or removed, holding
+    /// `ENV_LOCK` and always restoring the process environment.
+    fn with_env_override<T>(value: Option<&std::path::Path>, f: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var("RCLONE_CONFIG").ok();
+        match value {
+            Some(path) => std::env::set_var("RCLONE_CONFIG", path),
+            None => std::env::remove_var("RCLONE_CONFIG"),
+        }
+        let out = f();
+        match previous {
+            Some(p) => std::env::set_var("RCLONE_CONFIG", p),
+            None => std::env::remove_var("RCLONE_CONFIG"),
+        }
+        out
+    }
+
+    #[test]
+    fn test_rclone_config_path_honours_the_env_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("custom.conf");
+        // Not created on disk: an override must win anyway, because that is how
+        // a fresh config gets created outside /etc.
+        assert!(!path.exists());
+        let resolved = with_env_override(Some(&path), rclone_config_path);
+        assert_eq!(resolved, path);
+    }
+
+    #[test]
+    fn test_rclone_config_path_ignores_an_empty_env_override() {
+        // An exported-but-empty `RCLONE_CONFIG` must not resolve to "" — that
+        // would make every read fail and every write land in the cwd.
+        let resolved = with_env_override(Some(std::path::Path::new("")), || {
+            let p = rclone_config_path();
+            assert!(!p.as_os_str().is_empty());
+            p
+        });
+        assert!(resolved.is_absolute());
+    }
+
+    #[test]
+    fn test_rclone_config_path_falls_back_to_the_default_when_none_exists() {
+        // No override, and (in CI) no /etc/rclone.conf either. Whatever the
+        // host has, the answer must be an absolute path — never a relative one
+        // built from an unset HOME.
+        let resolved = with_env_override(None, rclone_config_path);
+        assert!(resolved.is_absolute(), "got {}", resolved.display());
+    }
+
+    #[test]
+    fn test_parse_and_the_handlers_resolve_the_same_file() {
+        // The regression this guards: the parser honoured `RCLONE_CONFIG`
+        // while `handle_get_config`/`_save_config`/`add_remote`/`delete_remote`
+        // hardcoded `/etc/rclone.conf`, so the editor could read and write a
+        // different file than the one the remote list came from. Both sides now
+        // go through `rclone_config_path` — if one of them grows its own
+        // hardcoded path again, this fails.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rclone.conf");
+        std::fs::write(&path, "[probe]\ntype = s3\n").unwrap();
+
+        let (parsed, resolved) = with_env_override(Some(&path), || {
+            (parse_rclone_config(), rclone_config_path())
+        });
+
+        assert_eq!(resolved, path, "the writer's target must be the override");
+        let remotes = parsed.expect("the parser must read that same file");
+        assert_eq!(remotes.len(), 1);
+        assert_eq!(remotes[0].name, "probe");
+        assert_eq!(remotes[0].remote_type, "Amazon S3");
     }
 
     // -- parse_rclone_config (INI) ------------------------------------

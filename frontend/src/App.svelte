@@ -1,13 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { authStore } from '$lib/stores/auth';
   import { translationsReady } from '$lib/stores/i18n';
   import { wallpaperStore } from '$lib/stores/wallpaper';
   import { api } from '$lib/services/api';
-  import Icon from '$lib/components/theme/Icon.svelte';
+  import { appGate } from '$lib/stores/appGate';
   import { Spinner, Toast } from '$lib/components/theme';
   import Login from './routes/Login.svelte';
   import Desktop from './routes/Desktop.svelte';
+  import SetupWizard from './routes/SetupWizard.svelte';
 
   // Wallpaper/accent color are saved server-side (per-account, via the Settings
   // page) but the local wallpaperStore only ever hydrates from this browser's
@@ -42,28 +42,17 @@
 
   let currentPath = '/';
   let ready = false;
-  // Separate from `ready`: whether authStore.checkAuth() has resolved.
-  // Rendering Login/Desktop before this is what caused the F5-refresh
-  // flash below — Desktop (topbar, widgets, dock) used to mount instantly
-  // using whatever route the URL already had, fully visible, then get torn
-  // down a moment later once the auth check finished and (for an
-  // expired/invalid session) redirected to /login. Gating on this instead
-  // means nothing renders until the real, confirmed route is known, so
-  // there's exactly one render of the correct screen — never a render of
-  // the wrong one first.
-  let authChecked = false;
-  // Same reasoning as authChecked above, for the i18n store: on a hard
-  // refresh the module-level translationsStore starts out only seeded with
-  // the (incomplete) embedded English fallback, so rendering before the real
-  // backend translation map has been fetched shows raw keys like
-  // "desktop.raid_arrays" instead of translated text. Gating on this too
-  // means Desktop/Login never render before real translations are known.
+  // Guards the one-shot server appearance hydration. Reset when the gate
+  // leaves the desktop so the next account to sign in loads its own
+  // wallpaper/accent instead of reusing the previous session's.
+  let appearanceHydrated = false;
 
   function handleNavigation() {
     currentPath = window.location.pathname;
   }
 
   function navigate(path: string) {
+    if (window.location.pathname === path) return;
     window.history.pushState({}, '', path);
     handleNavigation();
   }
@@ -73,32 +62,53 @@
     window.addEventListener('popstate', handleNavigation);
 
     ready = true;
-    authStore.checkAuth().then(() => {
-      if ($authStore.isAuthenticated) {
-        hydrateAppearanceFromServer();
-        if (currentPath === '/' || currentPath === '/login') {
-          navigate('/desktop');
-        }
-      } else if (!$authStore.isAuthenticated && currentPath !== '/' && currentPath !== '/login') {
-        navigate('/login');
-      }
-      authChecked = true;
-    });
+    // The gate decides setup / recovery / login / desktop in one place (see
+    // `$lib/stores/appGate`) — the shell no longer renders Login/Desktop
+    // before that decision is known, so there is exactly one render of the
+    // correct screen and never a flash of the wrong one.
+    appGate.refresh();
 
     return () => {
       window.removeEventListener('popstate', handleNavigation);
     };
   });
 
-  $: isDesktopRoute = currentPath === '/desktop';
-  $: isLoginRoute = currentPath === '/' || currentPath === '/login';
+  $: gateRoute = $appGate.route;
+
+  // The gate is the authority; the address bar follows it.
+  $: if (ready && gateRoute === 'app' && currentPath !== '/desktop') {
+    navigate('/desktop');
+  }
+  $: if (
+    ready &&
+    (gateRoute === 'login' ||
+      gateRoute === 'setup' ||
+      gateRoute === 'recovery' ||
+      gateRoute === 'error') &&
+    currentPath !== '/login' &&
+    currentPath !== '/'
+  ) {
+    navigate('/login');
+  }
+
+  $: if (ready && gateRoute === 'app' && !appearanceHydrated) {
+    appearanceHydrated = true;
+    hydrateAppearanceFromServer();
+  }
+  $: if (gateRoute !== 'app' && appearanceHydrated) {
+    appearanceHydrated = false;
+  }
 </script>
 
-{#if ready && authChecked && $translationsReady}
-  {#if isLoginRoute}
+{#if ready && $translationsReady && $appGate.route !== 'loading'}
+  {#if $appGate.route === 'setup'}
+    <SetupWizard />
+  {:else if $appGate.route === 'recovery'}
+    <Login recoveryMode />
+  {:else if $appGate.route === 'error'}
+    <Login connectionError />
+  {:else if $appGate.route === 'login'}
     <Login />
-  {:else if isDesktopRoute}
-    <Desktop />
   {:else}
     <Desktop />
   {/if}
