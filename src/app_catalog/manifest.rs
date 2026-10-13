@@ -53,11 +53,66 @@ pub struct Manifest {
     pub repo: Option<String>,
     #[serde(default)]
     pub release_notes: Option<String>,
-    /// Bare ids of other apps in the same store this one needs. Phase A
-    /// only surfaces a warning when a dependency isn't installed - it does
-    /// not auto-install them.
+    /// Bare ids of other apps in the same store this one needs. A
+    /// dependency is satisfied by an installed app whose bare id equals the
+    /// dependency **or** whose `implements` list contains it (Umbrel-style
+    /// alternatives: e.g. any `postgres`-implementing app satisfies a
+    /// `postgres` dependency). `resolve_install_plan` in `mod.rs` computes
+    /// the concrete choice; the install endpoint auto-installs missing
+    /// same-store providers.
     #[serde(default)]
     pub dependencies: Vec<String>,
+    /// Canonical dependency ids this app can stand in for. An app with
+    /// `implements = ["postgres"]` is offered as an alternative whenever
+    /// another app declares `dependencies = ["postgres"]`.
+    #[serde(default)]
+    pub implements: Vec<String>,
+    /// Advanced environment variables the admin may set at install time
+    /// (Umbrel-style `environment` block). Declared values render into the
+    /// compose template as `{{VAR_NAME}}` placeholders; undeclared `{{X}}`
+    /// placeholders are left untouched.
+    #[serde(default)]
+    pub environment: Vec<EnvVarDecl>,
+    /// Minimum HomeVault server version (semver `major.minor.patch`) required
+    /// to install this app. `None` = no constraint. Compared against
+    /// `CARGO_PKG_VERSION` in `is_compatible_with_server`.
+    #[serde(default)]
+    pub min_homevault_version: Option<String>,
+}
+
+/// One advanced environment variable an app package declares (Umbrel-style).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct EnvVarDecl {
+    /// `UPPER_SNAKE_CASE` name, also the `{{NAME}}` template placeholder.
+    pub name: String,
+    /// Compose services the variable applies to (informational; the value
+    /// is substituted everywhere its placeholder appears).
+    #[serde(default)]
+    pub services: Vec<String>,
+    /// Default used when the admin provides no value.
+    #[serde(default)]
+    pub default: Option<String>,
+    /// Allowed values when present; an install value outside this list is a
+    /// 400. Empty = free text.
+    #[serde(default)]
+    pub options: Vec<String>,
+    /// Whether the admin must provide a value (or the manifest a default).
+    #[serde(default)]
+    pub required: bool,
+    /// Short help text shown in the install dialog.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// `UPPER_SNAKE_CASE`, 1-64 chars — keeps a variable name from breaking out
+/// of a `{{NAME}}` placeholder into template syntax.
+pub fn is_valid_env_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        && name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
 }
 
 impl Manifest {
@@ -76,6 +131,40 @@ impl Manifest {
                 .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
             return Err(format!("invalid app id: {:?}", m.id));
+        }
+        for dep in m.dependencies.iter().chain(m.implements.iter()) {
+            if dep.is_empty()
+                || !dep
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                return Err(format!("invalid dependency id: {dep:?}"));
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        for var in &m.environment {
+            if !is_valid_env_name(&var.name) {
+                return Err(format!("invalid environment variable name: {:?}", var.name));
+            }
+            if !seen.insert(var.name.clone()) {
+                return Err(format!("duplicate environment variable: {:?}", var.name));
+            }
+            if !var.options.is_empty()
+                && var
+                    .default
+                    .as_ref()
+                    .is_some_and(|d| !var.options.contains(d))
+            {
+                return Err(format!(
+                    "environment variable {:?} default is not in its options list",
+                    var.name
+                ));
+            }
+        }
+        if let Some(min) = &m.min_homevault_version {
+            parse_version(min).ok_or_else(|| {
+                format!("invalid min_homevault_version {min:?} (want major.minor.patch)")
+            })?;
         }
         Ok(m)
     }
@@ -112,6 +201,55 @@ impl Manifest {
         };
         self.arch.iter().any(|a| a == wanted)
     }
+
+    /// Whether this server (arch + version) can install the app. Returns
+    /// `None` when compatible, else a short human-readable reason (surfaced
+    /// in the catalog as `incompatibility_reason` and enforced by install).
+    pub fn incompatibility_reason(&self, host_arch: &str, server_version: &str) -> Option<String> {
+        if !self.supports_host_arch(host_arch) {
+            return Some(format!("requires one of [{}]", self.arch.join(", ")));
+        }
+        if let Some(min) = &self.min_homevault_version {
+            match (parse_version(min), parse_version(server_version)) {
+                (Some(need), Some(have)) if have >= need => {}
+                (Some(need), Some(have)) => {
+                    return Some(format!(
+                        "requires HomeVault {} or newer (this server is {})",
+                        fmt_version(&need),
+                        fmt_version(&have)
+                    ));
+                }
+                _ => {
+                    return Some(format!("declares an unreadable minimum version ({min})"));
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Parse `major.minor.patch` (missing parts default to 0, pre-release/build
+/// suffixes ignored) for the `min_homevault_version` gate.
+pub fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
+    let core = s.split(['-', '+']).next().unwrap_or(s);
+    let mut parts = core.split('.');
+    let major: u64 = parts.next()?.trim().parse().ok()?;
+    let minor: u64 = match parts.next() {
+        None => 0,
+        Some(p) => p.trim().parse().ok()?,
+    };
+    let patch: u64 = match parts.next() {
+        None => 0,
+        Some(p) => p.trim().parse().ok()?,
+    };
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+fn fmt_version(v: &(u64, u64, u64)) -> String {
+    format!("{}.{}.{}", v.0, v.1, v.2)
 }
 
 #[cfg(test)]
@@ -188,5 +326,91 @@ mod tests {
                 .is_err()
         );
         assert!(Manifest::parse(&MINIMAL.replace(r#"id = "demo""#, r#"id = "../evil""#)).is_err());
+    }
+
+    #[test]
+    fn test_parse_implements_and_environment() {
+        let src = r#"
+            manifest_version = 1
+            id = "db"
+            name = "Db"
+            category = "db"
+            app_port = 5432
+            description = "d"
+            implements = ["postgres"]
+            min_homevault_version = "1.2.0"
+            [[environment]]
+            name = "POSTGRES_PASSWORD"
+            services = ["db"]
+            required = true
+            [[environment]]
+            name = "TZ"
+            default = "UTC"
+            options = ["UTC", "Europe/Paris"]
+        "#;
+        let m = Manifest::parse(src).unwrap();
+        assert_eq!(m.implements, vec!["postgres"]);
+        assert_eq!(m.environment.len(), 2);
+        assert!(m.environment[0].required);
+        assert_eq!(m.min_homevault_version.as_deref(), Some("1.2.0"));
+        assert!(m.incompatibility_reason("x86_64", "1.2.0").is_none());
+        assert!(m
+            .incompatibility_reason("x86_64", "1.1.9")
+            .unwrap()
+            .contains("1.2.0"));
+    }
+
+    #[test]
+    fn test_reject_bad_environment_and_min_version() {
+        // Lowercase env name.
+        assert!(Manifest::parse(
+            "manifest_version = 1\nid = \"a\"\nname = \"A\"\ncategory = \"x\"\napp_port = 1\ndescription = \"d\"\n[[environment]]\nname = \"lower\"\n"
+        )
+        .is_err());
+        // Duplicate env name.
+        assert!(Manifest::parse(
+            "manifest_version = 1\nid = \"a\"\nname = \"A\"\ncategory = \"x\"\napp_port = 1\ndescription = \"d\"\n[[environment]]\nname = \"A\"\n[[environment]]\nname = \"A\"\n"
+        )
+        .is_err());
+        // Default outside options.
+        assert!(Manifest::parse(
+            "manifest_version = 1\nid = \"a\"\nname = \"A\"\ncategory = \"x\"\napp_port = 1\ndescription = \"d\"\n[[environment]]\nname = \"A\"\ndefault = \"x\"\noptions = [\"y\"]\n"
+        )
+        .is_err());
+        // Bad min version and bad dependency id.
+        assert!(Manifest::parse(&MINIMAL.replace(
+            r#"description = "A demo app.""#,
+            "description = \"d\"\nmin_homevault_version = \"soon\""
+        ))
+        .is_err());
+        assert!(Manifest::parse(&MINIMAL.replace(
+            r#"description = "A demo app.""#,
+            "description = \"d\"\ndependencies = [\"../evil\"]"
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn test_parse_version_shapes() {
+        assert_eq!(parse_version("1.2.3"), Some((1, 2, 3)));
+        assert_eq!(parse_version("1.2"), Some((1, 2, 0)));
+        assert_eq!(parse_version("2"), Some((2, 0, 0)));
+        assert_eq!(parse_version("1.2.3-beta.1"), Some((1, 2, 3)));
+        assert!(parse_version("soon").is_none());
+        assert!(parse_version("1.2.3.4").is_none());
+        assert!(parse_version("").is_none());
+    }
+
+    #[test]
+    fn test_incompatibility_arch_reason() {
+        let m = Manifest::parse(
+            "manifest_version = 1\nid = \"a\"\nname = \"A\"\ncategory = \"x\"\napp_port = 1\ndescription = \"d\"\narch = [\"amd64\"]\n",
+        )
+        .unwrap();
+        assert!(m.incompatibility_reason("x86_64", "9.9.9").is_none());
+        assert!(m
+            .incompatibility_reason("arm", "9.9.9")
+            .unwrap()
+            .contains("amd64"));
     }
 }

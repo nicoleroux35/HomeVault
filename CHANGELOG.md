@@ -8,6 +8,21 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- External AI-agent server (MCP, Streamable HTTP, Umbrel parity): `POST /mcp`
+  (`initialize`, `tools/list`, `tools/call`) with opaque `hv_mcp_…` bearer
+  tokens, one master kill-switch and one global permission set shared by all
+  tokens (apps / App Store / files / VMs / knowledge base / reboot — deny by
+  default), managed from an admin-only "External agents" panel in the Chat app
+  (`GET|PUT /api/mcp/status`, `PUT /api/mcp/permissions`, `POST|DELETE
+  /api/mcp/tokens`). The `knowledge.search` tool exposes the internal RAG base
+  to agents. See `docs/guides/mcp.md`.
+- App catalog phase B (Umbrel parity on the same `homevault-app.toml` shape):
+  dependencies with `implements` alternatives + install-review endpoint,
+  `[[environment]]` install settings rendered as `{{NAME}}`, `arch` +
+  `min_homevault_version` compatibility (listed and enforced), per-app compose
+  logs, and a sequential `update-all` queue. Install/uninstall share their core
+  with the MCP `apps.*` tools. See `docs/guides/docker.md`.
+
 - GitHub community health files: `LICENSE` (MIT), `SECURITY.md`,
   `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, issue/PR templates, Dependabot,
   `CODEOWNERS`, `.editorconfig`, `.gitattributes`.

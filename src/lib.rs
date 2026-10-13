@@ -34,6 +34,7 @@ pub mod i18n;
 pub mod incus;
 pub mod journal_cleanup_scheduler;
 pub mod logging;
+pub mod mcp;
 pub mod mdns;
 pub mod media_ticket;
 pub mod middleware;

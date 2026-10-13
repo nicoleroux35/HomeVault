@@ -73,6 +73,40 @@ Logic lives in `src/app_catalog/{mod,manifest,store,updates}.rs`.
   host port, `proxy_port`, `proxy_auth_required`) next to the app data; uninstall
   keeps `apps_dir()` data so a reinstall doesn't lose it.
 
+### App catalog phase B — dependencies, settings, compatibility (2026-10-13)
+
+Umbrel-parity additions on the same package shape (no new manifest file):
+
+- **Dependencies with alternatives**: `dependencies = ["postgres"]` is
+  satisfied by an installed app whose bare id matches **or** whose
+  `implements = ["postgres"]` declares it. `providers_of()` lists every
+  provider (canonical first); `resolve_install_plan()` maps each dependency
+  to its installed satisfiers and its selected provider (explicit
+  `alternatives[dep]`, else same-store-first). `GET
+  /docker/catalog/{id}/install-review` (session) returns the plan plus the
+  declared environment and the compatibility verdict, so the install dialog
+  offers choices *before* the pull; `POST
+  /docker/catalog/{id}/install` accepts `{port?, alternatives?, environment?}`
+  and hard-gates missing providers (400 naming what to install first —
+  dependency installs stay explicit, never implicit pulls).
+- **Advanced environment settings**: `[[environment]]` declarations (`name`
+  in `UPPER_SNAKE_CASE`, `services`, `default`, `options`, `required`,
+  `note`) validated at parse (bad names/duplicates/default-outside-options
+  rejected) and at install (`validate_env_values`); values render into the
+  compose template as `{{NAME}}` placeholders (`render_with_env`).
+- **Compatibility**: `arch` (existing) plus `min_homevault_version`
+  (`major.minor.patch`, checked against `CARGO_PKG_VERSION`) surface as
+  `incompatibility_reason` in the list view and are enforced by install.
+- **Per-app logs**: `GET /docker/catalog/{id}/logs?tail=N` (session, 1–2000,
+  default 200) tails `docker compose logs` for the install key.
+- **Update queue**: `POST /docker/catalog/update-all` (admin) runs the same
+  `apply_update` path sequentially over every pending update and reports
+  `{updated[], failed[]}` — one failure never aborts the queue. Surfaced as
+  a `docker_update_all` progress job.
+- Install/uninstall share their core with the MCP `apps.install/uninstall`
+  tools (`install_catalog_app` / `uninstall_catalog_app`, actor-labelled
+  event log) — fix one path and both move.
+
 ### Per-app reverse proxy + auth gate (`src/app_proxy/*`)
 
 Each installed app gets its own hyper HTTP/1 listener on a dedicated port
