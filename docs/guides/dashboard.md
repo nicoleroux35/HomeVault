@@ -33,11 +33,43 @@ there is no separate per-widget-type handler.
 - Charts: the CPU per-core panel renders `charts/BarsChart` (LayerChart,
   themed with `--hv-*` tokens) — the reusable chart layer lives in
   `frontend/src/lib/components/charts/` (`DonutChart`, `BarsChart`,
-  `TrendLineChart`).
+  `TrendLineChart`, `AreaChart`).
 - Widget components: `frontend/src/lib/components/dashboard/*`. (The
   `Widget*.svelte` / `WidgetPanel.svelte` / `desktopWidgets.ts` files were
   removed 2026-07-18 — the desktop monitor tiles are rendered inline in
   `Desktop.svelte`, see [Widgets](./widgets.md).)
+
+### Live usage by app — `components/dashboard/AppUsageBreakdown.svelte`
+
+A full-width card under the four stat tiles, added 2026-10-16. It polls
+`GET /docker/containers?stats=true` (per-container CPU %, memory, net/block
+IO — see [Docker](./docker.md)) alongside `GET /dashboard/server-details`
+(host CPU/memory totals) every 5 s and renders:
+
+- **Two stacked area charts** — CPU and memory — whose bands are the running
+  apps, so the *composition* of the host total is visible over a rolling
+  24-sample (~2 min) window. Drawn by `charts/AreaChart.svelte`, a hand-rolled
+  SVG component (the shared `LineChart` cannot stack).
+- **A per-app list** with a colour chip, live CPU/memory, and a `…` menu of
+  direct actions: **restart**, **stop**, **uninstall** (force-remove, behind a
+  `ConfirmDialog`).
+
+Two invariants:
+
+1. **Stable per-app colour.** `lib/utils/appColor.ts` hashes the container
+   name to a fixed hue (djb2 → `hsl(h 62% 52%)`). It is deliberately *not* a
+   per-render index and *not* an icon colour extracted at runtime (the offline
+   equivalent of a colorthief read): a colour that changed every poll would
+   make the stacked bands and the chips meaningless. The fixed
+   saturation/lightness keep every chip above the 3:1 non-text contrast bar.
+2. **The list freezes while a menu is open** (and while an action is in
+   flight): `refresh()` returns early when `menuFor !== null || busyFor !== null`,
+   so rows never reorder or disappear under the user's cursor mid-click. Same
+   reason the Docker app freezes its list during a menu. E2E 3.4 asserts the
+   row order is unchanged after a full poll interval with the menu open.
+
+The card degrades cleanly on a host without a Docker daemon: it renders
+`[data-testid="dashboard-usage-empty"]` instead of the charts/list.
 
 ## Invariants
 
