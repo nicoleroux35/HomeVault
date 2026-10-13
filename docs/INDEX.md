@@ -80,6 +80,7 @@ methods, and notable invariants.
 | HTTPS / TLS (built-in listener, self-signed + manual certs) | [guides/tls.md](./guides/tls.md) |
 | System Journal (log viewer, auto-cleanup) | [guides/journal.md](./guides/journal.md) |
 | Widgets (desktop monitor catalog) | [guides/widgets.md](./guides/widgets.md) |
+| Web shortcuts (pinned desktop links, SSRF-guarded metadata fetch) | [guides/shortcuts.md](./guides/shortcuts.md) |
 | Design system (single UI identity — tokens, components, page anatomy) | [guides/design-system.md](./guides/design-system.md) |
 
 ## Doc conventions

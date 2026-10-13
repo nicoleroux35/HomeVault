@@ -84,6 +84,30 @@ The long-cadence pollers (Docker catalog, notifications) deliberately keep
 their own fixed intervals — they are not "widget refresh" and are not driven
 by `refreshMs`.
 
+### Edit Widgets — drag & drop layout editor (2026-10-16)
+
+The `edit-widgets` app (`frontend/src/routes/EditWidgets.svelte`, opened from
+the Applications launcher) is the layout editor the catalog app never had. It
+has two zones:
+
+- **Featured** — up to `MAX_FEATURED` (3) widgets pinned to the top of the
+desktop's widget column. The cap is enforced in
+  `stores/widgetLayout.ts::toggleFeatured`, which returns `false` at the cap
+  (the page shows `edit_widgets.cap_reached`).
+- **All widgets** — the full catalog in the account's saved order, each with a
+  visibility toggle (visibility itself is still owned by `monitorStore`).
+
+Layout (`featured` + `order`) is per-account in localStorage
+(`hv-widget-layout:<username>`), namespaced exactly like `monitorStore` and
+`shortcuts`. `sanitize()` appends any catalog entry a stored order predates,
+so a widget added in a later release still appears.
+
+**Drag & drop is not the only path.** Native HTML5 drag (`draggable` +
+`dataTransfer`) reorders and features, but every tile also carries move
+up/down and a star toggle, so the whole interaction is reachable with mouse,
+touch, pen and keyboard (WCAG 2.2). E2E `edit-widgets.spec.ts` 3.1/3.2 drive
+the keyboard path.
+
 ## Frontend
 
 - `frontend/src/routes/Widgets.svelte` — the app itself, reachable from the
