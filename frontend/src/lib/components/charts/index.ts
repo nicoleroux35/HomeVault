@@ -10,6 +10,8 @@
 export { default as DonutChart } from './DonutChart.svelte';
 export { default as BarsChart } from './BarsChart.svelte';
 export { default as TrendLineChart } from './TrendLineChart.svelte';
+export { default as AreaChart } from './AreaChart.svelte';
 export type { DonutSegment } from './DonutChart.svelte';
 export type { BarsChartItem } from './BarsChart.svelte';
 export type { TrendSeries } from './TrendLineChart.svelte';
+export type { AreaSeries } from './AreaChart.svelte';
