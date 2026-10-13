@@ -418,7 +418,18 @@ test.describe('4 — All user interactions', () => {
 test.describe('5 — Submission flows', () => {
   test('5.1 — validating compose YAML does not deploy anything', async ({ page }) => {
     await gotoDocker(page, adminTokens);
-    await switchTab(page, 'compose');
+    // The compose-availability probe resolves async after the tab switch:
+    // wait for its response (if any — a revisit serves the cached value and
+    // fires no request) before reading the editor's disabled state, or the
+    // check races the probe and fills an editor that is about to disable.
+    await Promise.all([
+      page
+        .waitForResponse((r) => r.url().includes('/api/docker/compose/available'), {
+          timeout: 15_000,
+        })
+        .catch(() => null),
+      switchTab(page, 'compose'),
+    ]);
     if (await win(page).locator('[data-testid="docker-code-area"]').isDisabled()) {
       test.skip(true, 'compose unavailable on this host');
     }
@@ -804,5 +815,133 @@ test.describe('14 — Edge cases & memory regression', () => {
       console.log(`[MEM] 5x modal open/close delta: ${delta.toFixed(1)} MB`);
       expect(delta).toBeLessThan(15);
     }
+  });
+});
+
+// ===========================================================================
+// 15. Catalog phase B — install review, compatibility, logs, update-all
+// ===========================================================================
+
+test.describe('15 — Catalog phase B', () => {
+  test('15.1 — install-review API returns plan, settings and verdict', async ({ page }) => {
+    await gotoDocker(page, adminTokens);
+    const review = await page.evaluate(
+      async ({ token, csrf }) => {
+        const r = await fetch('/api/docker/catalog/homevault:jellyfin/install-review', {
+          headers: { 'x-session-token': token, 'x-csrf-token': csrf },
+        });
+        return r.json();
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf },
+    );
+    expect(review.success).toBe(true);
+    expect(review.data.id).toBe('homevault:jellyfin');
+    expect(Array.isArray(review.data.dependencies)).toBe(true);
+    expect(Array.isArray(review.data.environment)).toBe(true);
+    expect('incompatibility_reason' in review.data).toBe(true);
+    expect(typeof review.data.default_port).toBe('number');
+
+    const unknown = await page.evaluate(
+      async ({ token, csrf }) => {
+        const r = await fetch('/api/docker/catalog/homevault:nope/install-review', {
+          headers: { 'x-session-token': token, 'x-csrf-token': csrf },
+        });
+        return r.json();
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf },
+    );
+    expect(unknown.success).toBe(false);
+  });
+
+  test('15.2 — compatible apps show no incompatibility badge and an enabled Install', async ({
+    page,
+  }) => {
+    await gotoDocker(page, adminTokens);
+    await switchTab(page, 'catalog');
+    const cards = win(page).locator('[data-testid="docker-app-card"]');
+    await expect(cards.first()).toBeVisible({ timeout: 10_000 });
+    // This host is x86_64 with a current server version: the 15 built-in
+    // apps declare no arch/version gate, so no card may carry the badge.
+    await expect(win(page).getByText(/Cannot be installed here/)).toHaveCount(0);
+    const jellyfin = win(page).locator('[data-testid="docker-app-card"]', { hasText: 'Jellyfin' });
+    if ((await jellyfin.count()) > 0) {
+      const installBtn = jellyfin.getByRole('button', { name: /^Install/ });
+      if ((await installBtn.count()) > 0) await expect(installBtn.first()).toBeEnabled();
+    }
+  });
+
+  test('15.3 — the Install dialog resolves its review and closes without installing', async ({
+    page,
+  }) => {
+    await gotoDocker(page, adminTokens);
+    await switchTab(page, 'catalog');
+    const jellyfin = win(page).locator('[data-testid="docker-app-card"]', { hasText: 'Jellyfin' });
+    if ((await jellyfin.count()) === 0) test.skip(true, 'jellyfin not in catalog');
+    const installBtn = jellyfin.getByRole('button', { name: /^Install/ });
+    if ((await installBtn.count()) === 0) test.skip(true, 'jellyfin already installed here');
+    await installBtn.first().click();
+    const modal = page.locator('[data-slot="dialog-content"][role="dialog"]');
+    await expect(modal).toBeVisible({ timeout: 10_000 });
+    // The review resolves: the loading line disappears (no incompatible
+    // verdict for a built-in app on this host).
+    await expect(modal.getByText(/Checking requirements/)).toHaveCount(0, { timeout: 10_000 });
+    await expect(modal.getByText(/cannot install this app/i)).toHaveCount(0);
+    await expect(modal.getByRole('button', { name: /^Install/ })).toBeEnabled();
+    // Close without installing — no image is ever pulled by this suite.
+    await modal.getByRole('button', { name: /Cancel/ }).click();
+    await expect(modal).toHaveCount(0);
+  });
+
+  test('15.4 — update-all and per-app logs are admin-gated and safe when idle', async ({
+    page,
+  }) => {
+    await gotoDocker(page, adminTokens);
+    const updateAll = await page.evaluate(
+      async ({ token, csrf }) => {
+        const r = await fetch('/api/docker/catalog/update-all', {
+          method: 'POST',
+          headers: { 'x-session-token': token, 'x-csrf-token': csrf },
+        });
+        return r.json();
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf },
+    );
+    expect(updateAll.success).toBe(true);
+    expect(Array.isArray(updateAll.data.updated)).toBe(true);
+    expect(Array.isArray(updateAll.data.failed)).toBe(true);
+
+    const logs = await page.evaluate(
+      async ({ token, csrf }) => {
+        const r = await fetch('/api/docker/catalog/homevault:jellyfin/logs', {
+          headers: { 'x-session-token': token, 'x-csrf-token': csrf },
+        });
+        return r.json();
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf },
+    );
+    expect(logs.success).toBe(false);
+  });
+
+  test('15.5 — install rejects an alternative for a dependency the app does not have', async ({
+    page,
+  }) => {
+    await gotoDocker(page, adminTokens);
+    const res = await page.evaluate(
+      async ({ token, csrf }) => {
+        const r = await fetch('/api/docker/catalog/homevault:jellyfin/install', {
+          method: 'POST',
+          headers: {
+            'x-session-token': token,
+            'x-csrf-token': csrf,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ alternatives: { postgres: 'homevault:postgres' } }),
+        });
+        return r.json();
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf },
+    );
+    expect(res.success).toBe(false);
+    expect(String(res.message || res.error)).toContain('does not depend');
   });
 });

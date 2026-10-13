@@ -347,6 +347,22 @@ prompt is automatically enriched with relevant context chunks.
 Embedding model is `nomic-embed-text` (hardcoded). Admin must pull it before
 indexing. Embeddings stored as f32 BLOBs; similarity search is cosine in Rust.
 
+## External Agents (MCP) — `mcp/*` + `POST /mcp`
+
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| GET | `/mcp/status` | admin | kill-switch state, global permissions, token prefixes (never secrets) |
+| PUT | `/mcp/status` | admin | `{enabled}` — disabling keeps tokens/permissions |
+| PUT | `/mcp/permissions` | admin | replaces the global permission set (everything defaults to denied) |
+| POST | `/mcp/tokens` | admin | mints `hv_mcp_…` (cap 20); full value returned exactly once |
+| DELETE | `/mcp/tokens/{id}` | admin | revoke |
+| POST | `/mcp` (no `/api` prefix) | Bearer `hv_mcp_…` | MCP Streamable HTTP: `initialize`, `tools/list`, `tools/call`, `ping` |
+
+Disabled/invalid/revoked tokens all answer the same 401. The tool set is
+filtered per request from the permission snapshot (system info, apps,
+catalog, files, VMs, knowledge search, reboot). See
+[External Agents](./guides/mcp.md).
+
 ## Restic (Backup) — `restic/*`
 
 | Method | Path | Auth | Notes |
@@ -407,10 +423,13 @@ Representative endpoints:
 | GET/POST/PUT/DELETE | `/docker/compose/projects` (+ `/{name}/config\|start\|stop\|restart\|services`) | admin |
 | GET | `/docker/catalog` | auth | manifest-driven app list (15 built-in packages + community stores) + `installed`/`installed_port` |
 | GET | `/docker/catalog/{id}/icon` · `/gallery/{n}` | auth | package icon / screenshot (`id` is namespaced `<store>:<app>`, URL-encoded) |
-| POST | `/docker/catalog/{id}/install` | admin | renders the package's compose template into a project, starts it, writes `.install.toml`, starts the per-app proxy |
+| POST | `/docker/catalog/{id}/install` | admin | renders the package's compose template into a project, starts it, writes `.install.toml`, starts the per-app proxy. Body `{port?, alternatives?, environment?}`; hard-gates compatibility, settings and dependencies |
+| GET | `/docker/catalog/{id}/install-review` | auth | pre-install review: dependency plan (satisfiers, providers, selection), declared environment, compatibility verdict |
+| GET | `/docker/catalog/{id}/logs?tail=N` | auth | tails the installed app's compose logs (1–2000, default 200) |
 | DELETE | `/docker/catalog/{id}` | admin | stops + removes the project, stops the proxy |
 | POST | `/docker/catalog/{id}/proxy` | admin | toggle the per-app session-cookie auth gate |
 | GET | `/docker/catalog/updates` · POST `/docker/catalog/{id}/update` | admin | registry-digest update detection (read-only) / `compose pull` + re-render + `up -d` |
+| POST | `/docker/catalog/update-all` | admin | sequential update queue over every pending update → `{updated[], failed[]}` |
 | GET/POST/DELETE | `/docker/stores` (+ `/{id}/sync`) | admin | community catalog git repos |
 
 **App catalog (2026-09-03 overhaul):** `src/docker_catalog.rs::CATALOG` is gone.
