@@ -44,7 +44,7 @@ Handlers in `src/handlers/settings.rs`. Persistence via
   category rail (no separate layout/sidebar files). Renders its own
   `<WindowHeader>` (`settings` is in `WindowFrame`'s `OWN_HEADER_APPS`).
   Embedded cards live in `frontend/src/lib/components/settings/`.
-- **Category rail = 8 groups** (`categories` array + `activeCategory`):
+- **Category rail = 8 groups** (`SETTINGS_CATEGORIES` + `activeCategory`):
   `general`, `security`, `appearance`, `widgets`, `notifications`, `ai`,
   `monitoring`, `system`. Several groups stack more than one
   `{#if activeCategory === …}` block, each with its own section label: `security`
@@ -55,6 +55,28 @@ Handlers in `src/handlers/settings.rs`. Persistence via
   Blocks stay in their original file position — only the guard value changed —
   so a group renders its cards in top-to-bottom file order. Don't re-split
   these back into flat tabs.
+
+### Single settings catalog (page + search + ⌘K)
+
+The category list is **not** declared in `Settings.svelte` any more. It lives
+in `frontend/src/lib/stores/settingsCatalog.ts` as `SETTINGS_CATEGORIES`, and
+that one array feeds three consumers:
+
+1. `routes/Settings.svelte` — the rail and the content header
+   (`const categories = SETTINGS_CATEGORIES`).
+2. `routes/Desktop.svelte` — the global ⌘K search index, which folds in
+   `settingsSearchItems(translate)` so **every** category is searchable.
+3. `requestSettingsCategory(key)` / `pendingSettingsCategory` — a one-shot
+   store a search hit uses to open Settings already switched to its category
+   (`Settings.svelte` consumes and clears it on mount).
+
+Each entry carries `labelKey`, `subtitleKey`, `icon`, `accent` and a short
+`keywords` list of English synonyms (`smtp`, `tls`, `ollama`, `uptime`, …).
+Adding a category is therefore **one catalog entry + its i18n keys + the
+`{#if activeCategory === …}` block** — the rail, the header and search all pick
+it up with no second list to keep in sync. The catalog is a pure module (no
+rune context) so it stays unit-testable; `settingsSearchItems` takes the
+translate function as an argument instead of importing the i18n store.
 
 ### The 2026-09-14 shell
 

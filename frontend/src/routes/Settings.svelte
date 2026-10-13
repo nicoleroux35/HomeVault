@@ -7,6 +7,7 @@
   import { monitorStore, REFRESH_INTERVAL_OPTIONS } from '$lib/stores/monitorStore';
   import { WIDGET_DEFS } from '$lib/stores/widgetCatalog';
   import { languageStore, t, translate } from '$lib/stores/i18n';
+  import { SETTINGS_CATEGORIES, pendingSettingsCategory } from '$lib/stores/settingsCatalog';
   import { weatherLocationStore, type WeatherLocation } from '$lib/stores/weatherLocation';
   import { weatherDisplayPrefsStore, WEATHER_FIELDS, type WeatherField } from '$lib/stores/weatherDisplayPrefs';
   import {
@@ -57,14 +58,17 @@
   import TlsCard from '$lib/components/settings/TlsCard.svelte';
   import UpsCard from '$lib/components/settings/UpsCard.svelte';
   import SnmpCard from '$lib/components/settings/SnmpCard.svelte';
-  import NotificationBellIcon from '$lib/components/shared/NotificationBellIcon.svelte';
-  import { IconAlertTriangle, IconCookie, IconShield, IconCheck, IconWifiOff, IconSettings, IconPalette, IconInfoCircle, IconBrain, IconRefresh, IconMapPin, IconPencil, IconShieldCheckered, IconActivity, IconLayoutGrid } from '@tabler/icons-svelte';
+  import { IconAlertTriangle, IconCookie, IconShield, IconCheck, IconSettings, IconWifiOff, IconRefresh, IconMapPin, IconPencil } from '@tabler/icons-svelte';
 
   // Sidebar categories — 8 grouped entries instead of a 12-item flat list.
-  // Each `key` gates one or more of the `{#if activeCategory === …}` blocks in
-  // the markup; several former standalone categories stack inside one group
-  // (each renders its own section label + card, so the group still reads as
-  // labelled sub-sections — same pattern Security/Monitoring already use):
+  // The list itself is the single source of truth in
+  // `stores/settingsCatalog.ts`, shared with the global ⌘K search index so a
+  // category can never be visible in the rail but missing from search (or
+  // vice-versa). Each `key` gates one or more of the `{#if activeCategory ===
+  // …}` blocks in the markup; several former standalone categories stack
+  // inside one group (each renders its own section label + card, so the group
+  // still reads as labelled sub-sections — same pattern Security/Monitoring
+  // already use):
   //
   //   general   → General
   //   security  → HTTPS/TLS + Antivirus + Anti-Ransomware + Firewall
@@ -75,31 +79,7 @@
   //   monitoring→ UPS + SNMP
   //   system    → Software update + System information + Data management +
   //               Privacy
-  //
-  // `labelKey` reuses each group's existing card-title translation.
-  // `subtitleKey` is the rail item's second line AND the content header's
-  // subtitle, so the rail and the panel heading can never disagree.
-  // `accent` is the category colour (tokens.css → SETTINGS SCREEN) driving the
-  // rail icon tile, the content header tile and this category's row accents.
-  //
-  // Keys are declared literally (never built as `settings.nav_subtitle_${key}`)
-  // so a grep for the full key name still finds it — see docs/I18N.md.
-  const categories: {
-    key: string
-    labelKey: string
-    subtitleKey: string
-    icon: any
-    accent: string
-  }[] = [
-    { key: 'general', labelKey: 'settings.general_title', subtitleKey: 'settings.nav_subtitle_general', icon: IconSettings, accent: 'var(--hv-settings-cat-general)' },
-    { key: 'security', labelKey: 'settings.security', subtitleKey: 'settings.nav_subtitle_security', icon: IconShieldCheckered, accent: 'var(--hv-settings-cat-security)' },
-    { key: 'appearance', labelKey: 'settings.appearance_title', subtitleKey: 'settings.nav_subtitle_appearance', icon: IconPalette, accent: 'var(--hv-settings-cat-appearance)' },
-    { key: 'widgets', labelKey: 'settings.widgets_title', subtitleKey: 'settings.nav_subtitle_widgets', icon: IconLayoutGrid, accent: 'var(--hv-settings-cat-widgets)' },
-    { key: 'notifications', labelKey: 'settings.notifications_title', subtitleKey: 'settings.nav_subtitle_notifications', icon: NotificationBellIcon, accent: 'var(--hv-settings-cat-notifications)' },
-    { key: 'ai', labelKey: 'settings.ai_title', subtitleKey: 'settings.nav_subtitle_ai', icon: IconBrain, accent: 'var(--hv-settings-cat-ai)' },
-    { key: 'monitoring', labelKey: 'settings.monitoring_title', subtitleKey: 'settings.nav_subtitle_monitoring', icon: IconActivity, accent: 'var(--hv-settings-cat-monitoring)' },
-    { key: 'system', labelKey: 'settings.system_title', subtitleKey: 'settings.nav_subtitle_system', icon: IconInfoCircle, accent: 'var(--hv-settings-cat-system)' }
-  ];
+  const categories = SETTINGS_CATEGORIES;
   let activeCategory = 'general';
   /* The active category's record — drives the content header (icon, title,
      subtitle, accent). Falls back to the first entry so the header is never
@@ -111,6 +91,15 @@
      `$:` blocks it is built from. */
   let activeCat = categories[0];
   $: activeCat = categories.find((c) => c.key === activeCategory) ?? categories[0];
+
+  // A ⌘K search hit can ask for a specific category (see
+  // `stores/settingsCatalog.ts` → `requestSettingsCategory`). Consume the
+  // one-shot request and immediately clear it, so reopening Settings from the
+  // dock later does not re-jump to a stale category.
+  $: if ($pendingSettingsCategory) {
+    activeCategory = $pendingSettingsCategory;
+    pendingSettingsCategory.set(null);
+  }
   const dlg = createConfirmState();
 
   // Settings state — every editable value lives in `draft` (the shared
