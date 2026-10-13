@@ -54,6 +54,7 @@ pub mod resource_shares;
 pub mod restic;
 pub mod security;
 pub mod settings;
+pub mod shortcuts;
 pub mod share_links;
 pub mod shares;
 pub mod snmp;

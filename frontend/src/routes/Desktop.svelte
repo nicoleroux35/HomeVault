@@ -19,10 +19,12 @@
   import { websocket } from '$lib/services/websocket';
   import { notificationsStore } from '$lib/stores/notifications';
   import LazyLoad from '$lib/components/LazyLoad.svelte';
+  import DesktopShortcuts from '$lib/components/desktop/DesktopShortcuts.svelte';
   import { IconServer, IconSettings as SettingsIcon, IconMoon, IconUser, IconActivity, IconCpu, IconThermometer, IconArrowUp, IconArrowDown, IconDatabase, IconPackage, IconTerminal as TerminalIcon, IconPower, IconShieldCheckered, IconLock, IconHome, IconLayoutGrid, IconMenu, IconSearch, IconPlus, IconDownload, IconUpload, IconTrash, IconPencil, IconCheck, IconAlertCircle, IconInfoCircle, IconAlertTriangle, IconBug, IconShield, IconRefresh, IconCalendar, IconChevronLeft, IconChevronRight, IconChevronsLeft, IconChevronsRight, IconPlayerPlay, IconSquare, IconContainer as ContainerIcon, IconSun, IconSun as Sun, IconCloud, IconCloudRain, IconSnowflake, IconCloudStorm, IconMapPin, IconUsers, IconHeartbeat, IconLogout, IconRobot, IconGlobe, IconSignal3g, IconCopy, IconCloudFog } from '@tabler/icons-svelte';
   import { subscribeWidget, type WidgetLoadResult } from '$lib/components/desktop/widgetData';
   import { launchpadIcons } from '$lib/assets/launchpadIcons';
   import HvLaunchpad from '$lib/components/desktop/HvLaunchpad.svelte';
+  import BackupProgressIsland from '$lib/components/backup/BackupProgressIsland.svelte';
   import WidgetHeader from '$lib/components/desktop/WidgetHeader.svelte';
   import { monitorStore, DEFAULT_REFRESH_MS, type MonitorPositions } from '$lib/stores/monitorStore';
   import { weatherLocationStore } from '$lib/stores/weatherLocation';
@@ -56,6 +58,7 @@
   const Storage = () => import('./Storage.svelte');
   const VPN = () => import('./VPN.svelte');
   const Widgets = () => import('./Widgets.svelte');
+  const EditWidgets = () => import('./EditWidgets.svelte');
   const Journal = () => import('./Journal.svelte');
   const VirtualMachines = () => import('./VirtualMachines.svelte');
   let currentTime = new Date();
@@ -997,6 +1000,7 @@
     { id: 'downloader', name: 'Downloader', icon: 'download', color: 'var(--hv-app-downloader-grad)', category: 'Productivity', desc: 'Manage downloads', component: Downloader, customIcon: launchpadIcons.downloader },
     { id: 'rescue', name: 'Rescue', icon: 'healing', color: 'var(--hv-app-rescue-grad)', category: 'System', desc: 'Recovery & repair', component: Rescue, customIcon: launchpadIcons.rescue },
     { id: 'widgets', name: 'Widgets', icon: 'layout-grid', color: 'var(--hv-app-widgets-grad)', category: 'System', desc: 'Add or remove desktop widgets', component: Widgets, customIcon: launchpadIcons.widgets },
+    { id: 'edit-widgets', name: 'Edit Widgets', icon: 'layout-grid', color: 'var(--hv-app-widgets-grad)', category: 'System', desc: 'Drag & drop the desktop widget layout', component: EditWidgets, customIcon: launchpadIcons.widgets },
     { id: 'journal', name: 'System Journal', icon: 'article', color: 'var(--hv-app-journal-grad)', category: 'Monitoring', desc: 'Centralized system logs & events', component: Journal, customIcon: launchpadIcons.journal },
     { id: 'virtual-machines', name: 'Virtual Machines', icon: 'server', color: 'var(--hv-app-virtual-machines-grad)', category: 'System', desc: 'Manage VMs and system containers', component: VirtualMachines, customIcon: launchpadIcons.virtualMachines },
   ];
@@ -2491,6 +2495,8 @@
 
   <!-- Desktop Area with Windows -->
   <main class="hv-desktop">
+    <!-- Pinned web shortcuts (per-account, metadata fetched server-side). -->
+    <DesktopShortcuts />
     {#each $windowManager as window (window.id)}
       <WindowFrame
         win={window}
@@ -2884,6 +2890,10 @@
       onClose={() => showAppsCenter = false}
     />
   {/if}
+
+  <!-- Persistent backup/restore progress island (module-level store, so it
+       survives app switches while a long run continues in the background). -->
+  <BackupProgressIsland />
 </div>
 
 <style>

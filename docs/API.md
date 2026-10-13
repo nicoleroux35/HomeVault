@@ -768,6 +768,16 @@ Per-user persisted UI state, not tied to any specific monitor widget:
 monitor panel) and `GET/POST /weather-location` (the Weather monitor's saved
 city). See [Widgets](./guides/widgets.md).
 
+## Web shortcuts — `shortcuts/*` (`auth`)
+
+| Method | Path | Auth | Handler |
+|--------|------|------|---------|
+| POST | `/shortcuts/fetch-metadata` | auth | `handle_fetch_metadata` — `{url}` → `{url, title, description, icon_url, site_name}` |
+
+The server fetches the page (SSRF-guarded: http/https only, every resolved
+address must be public, no automatic redirects, 10 s / 512 KB cap). See
+[Web shortcuts](./guides/shortcuts.md).
+
 ## Events (SSE) — `/api/events`, `notifications/events/ticket` (`auth`)
 
 Same single-use-ticket pattern as the Terminal WebSocket (a long-lived token

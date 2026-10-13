@@ -589,6 +589,15 @@ class ApiClient {
   }
 
   // ==============================================
+  // Web shortcuts
+  // ==============================================
+
+  /** Fetch a page's title / description / favicon (server-side, SSRF-guarded). */
+  async fetchShortcutMetadata(url: string) {
+    return this.post('/shortcuts/fetch-metadata', { url });
+  }
+
+  // ==============================================
   // Virtual Machines
   // ==============================================
 

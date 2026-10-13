@@ -225,6 +225,7 @@ use crate::handlers::{
     resource_shares::{
         handle_grant_access, handle_list_access, handle_my_access, handle_revoke_access,
     },
+    shortcuts::handle_fetch_metadata,
     widgets::{
         handle_widget_cpu_temp, handle_widget_cpu_usage, handle_widget_network_traffic,
         handle_widget_ram_usage, handle_widget_update_info,
@@ -527,6 +528,8 @@ pub fn create_app(state: AppStateArc) -> Router {
                 .delete(handle_revoke_access),
         )
         .route("/api/shares/access/mine", get(handle_my_access))
+        // Web shortcuts: fetch a page's title/description/favicon (SSRF-guarded).
+        .route("/api/shortcuts/fetch-metadata", post(handle_fetch_metadata))
         // Antivirus (ClamAV) - status/settings/scans/threats
         .route("/api/antivirus/status", get(handle_antivirus_status))
         .route(
