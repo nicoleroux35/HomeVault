@@ -30,7 +30,8 @@ use crate::handlers::{
     auth::{
         handle_2fa_setup, handle_2fa_verify, handle_check_username, handle_generate_recovery_code,
         handle_get_current_user, handle_login, handle_logout, handle_reset_password_recovery,
-        handle_setup, handle_setup_rebaseline, handle_setup_status, handle_setup_verify_totp,
+        handle_setup, handle_setup_progress_get, handle_setup_progress_put, handle_setup_rebaseline,
+        handle_setup_status, handle_setup_storage_options, handle_setup_verify_totp,
         handle_verify_recovery_code,
     },
     avatars::{handle_avatar_preview, handle_update_my_avatar, handle_user_avatar},
@@ -84,9 +85,11 @@ use crate::handlers::{
         handle_explorer_compress, handle_explorer_copy, handle_explorer_delete,
         handle_explorer_disks, handle_explorer_download, handle_explorer_download_ticket,
         handle_explorer_eject, handle_explorer_extract, handle_explorer_favorites_add,
-        handle_explorer_favorites_list, handle_explorer_favorites_remove, handle_explorer_list,
-        handle_explorer_mkdir, handle_explorer_move, handle_explorer_permissions,
-        handle_explorer_preview, handle_explorer_rename, handle_explorer_roots,
+        handle_explorer_favorites_list, handle_explorer_favorites_remove, handle_explorer_format,
+        handle_explorer_history, handle_explorer_list, handle_explorer_mkdir,
+        handle_explorer_move, handle_explorer_network_discovery, handle_explorer_permissions,
+        handle_explorer_preview, handle_explorer_recents_clear, handle_explorer_recents_list,
+        handle_explorer_recents_touch, handle_explorer_rename, handle_explorer_roots,
         handle_explorer_save, handle_explorer_search, handle_explorer_snapshots,
         handle_explorer_thumbnail, handle_explorer_thumbnail_ticket, handle_explorer_trash,
         handle_explorer_trash_empty, handle_explorer_trash_list, handle_explorer_trash_purge,
@@ -137,13 +140,14 @@ use crate::handlers::{
     },
     restic::{
         handle_restic_available, handle_restic_backup_create, handle_restic_backup_jobs,
-        handle_restic_check, handle_restic_forget, handle_restic_prune, handle_restic_repo_create,
-        handle_restic_repo_delete, handle_restic_repo_get, handle_restic_repo_update,
-        handle_restic_repos_list, handle_restic_restore, handle_restic_schedule_create,
-        handle_restic_schedule_delete, handle_restic_schedule_set_enabled,
-        handle_restic_schedule_update, handle_restic_schedules_list, handle_restic_snapshot_delete,
-        handle_restic_snapshots_list, handle_restic_stats, handle_restic_unlock,
-        handle_restic_version, handle_retention_policies_list, handle_retention_policy_create,
+        handle_restic_check, handle_restic_forget, handle_restic_prune, handle_restic_reminders,
+        handle_restic_repo_create, handle_restic_repo_delete, handle_restic_repo_get,
+        handle_restic_repo_update, handle_restic_repos_list, handle_restic_restore,
+        handle_restic_restore_plan, handle_restic_schedule_create, handle_restic_schedule_delete,
+        handle_restic_schedule_set_enabled, handle_restic_schedule_update,
+        handle_restic_schedules_list, handle_restic_snapshot_delete, handle_restic_snapshots_list,
+        handle_restic_stats, handle_restic_unlock, handle_restic_version,
+        handle_retention_policies_list, handle_retention_policy_create,
         handle_retention_policy_delete, handle_retention_policy_update,
     },
     security::{
@@ -218,6 +222,9 @@ use crate::handlers::{
         handle_user_update_role, handle_users_list,
     },
     weather_location::{handle_get_weather_location, handle_set_weather_location},
+    resource_shares::{
+        handle_grant_access, handle_list_access, handle_my_access, handle_revoke_access,
+    },
     widgets::{
         handle_widget_cpu_temp, handle_widget_cpu_usage, handle_widget_network_traffic,
         handle_widget_ram_usage, handle_widget_update_info,
@@ -511,6 +518,15 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/weather-location",
             get(handle_get_weather_location).post(handle_set_weather_location),
         )
+        // Per-member resource access (apps / folders / shares). The listing is
+        // admin-scoped; `mine` is the server-side filter the frontend reads.
+        .route(
+            "/api/shares/access",
+            get(handle_list_access)
+                .post(handle_grant_access)
+                .delete(handle_revoke_access),
+        )
+        .route("/api/shares/access/mine", get(handle_my_access))
         // Antivirus (ClamAV) - status/settings/scans/threats
         .route("/api/antivirus/status", get(handle_antivirus_status))
         .route(
@@ -926,6 +942,18 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/explorer/watch/ticket",
             post(handle_explorer_watch_ticket),
         )
+        .route(
+            "/api/explorer/recents",
+            get(handle_explorer_recents_list)
+                .post(handle_explorer_recents_touch)
+                .delete(handle_explorer_recents_clear),
+        )
+        .route("/api/explorer/history", get(handle_explorer_history))
+        .route(
+            "/api/explorer/network-discovery",
+            get(handle_explorer_network_discovery),
+        )
+        .route("/api/explorer/format", post(handle_explorer_format))
         // Shares
         .route("/api/shares", get(handle_shares_list))
         .route("/api/shares", post(handle_share_create))
@@ -1164,6 +1192,8 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/restic/repos/{id}/prune", post(handle_restic_prune))
         .route("/api/restic/backup", post(handle_restic_backup_create))
         .route("/api/restic/restore", post(handle_restic_restore))
+        .route("/api/restic/restore-plan", get(handle_restic_restore_plan))
+        .route("/api/restic/reminders", get(handle_restic_reminders))
         .route("/api/restic/check", post(handle_restic_check))
         .route("/api/restic/forget", post(handle_restic_forget))
         .route(
@@ -1338,6 +1368,14 @@ pub fn create_app(state: AppStateArc) -> Router {
             post(handle_setup_verify_totp),
         )
         .route("/api/auth/check-username", get(handle_check_username))
+        .route(
+            "/api/auth/setup/progress",
+            get(handle_setup_progress_get).put(handle_setup_progress_put),
+        )
+        .route(
+            "/api/auth/setup/storage-options",
+            get(handle_setup_storage_options),
+        )
         .route_layer(axum::middleware::from_fn(
             crate::middleware::setup_guard_middleware,
         ))
