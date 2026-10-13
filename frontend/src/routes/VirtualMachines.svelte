@@ -50,7 +50,7 @@
   }
   interface OsOption {
     id: string; label: string; kinds: string[]; alias: string;
-    blurb: string; recommended: boolean;
+    blurb: string; recommended: boolean; iso_only: boolean;
   }
 
   // ── Local authed fetch (same pattern as Docker.svelte) ────────────────────
@@ -107,6 +107,8 @@
   let wIsoPath = $state('');
   let wDriversIso = $state('');
   let wSecureBoot = $state(true);
+  // Virtual sound card (VMs only — hidden for containers).
+  let wAudio = $state(false);
   interface ManagedIso { name: string; path: string; size: number; virtio: boolean }
   let managedIsos = $state<ManagedIso[]>([]);
   let isoUrl = $state('');
@@ -193,6 +195,15 @@
   }
 
   onAppVisible(load, { pollMs: 8000 });
+
+  $effect(() => {
+    // Deep link: ?vm_screen=<name> (opened via the screen's "new tab"
+    // button) auto-opens that machine's screen once the list is in.
+    if (ready && !screenVm && typeof window !== 'undefined') {
+      const name = new URLSearchParams(window.location.search).get('vm_screen');
+      if (name && machines.some((m) => m.name === name && m.has_screen)) screenVm = name;
+    }
+  });
 
   // ── Master-detail split ──────────────────────────────────────────────────
   // `narrow` measures the split container itself (the window floats, so a
@@ -314,6 +325,7 @@
     wUser = 'admin'; wPass = ''; wShowPass = false;
     wAdvanced = false; wCpu = 2; wMem = 2048; wDisk = 25;
     wIsoOs = 'linux'; wIsoPath = ''; wDriversIso = ''; wSecureBoot = true;
+    wAudio = false;
     isoUrl = ''; isoUrlOpen = false;
     suggestName(wOs);
   }
@@ -372,8 +384,17 @@
     if (!wNameTouched) suggestName(o);
   }
   function pickOs(id: string) {
-    wOs = id;
     const o = osOptions.find(x => x.id === id);
+    if (o?.iso_only) {
+      // No ready-made image for this system: continue in the ISO installer
+      // instead of offering a one-click create that the server would refuse.
+      wMode = 'iso';
+      if (id.startsWith('windows')) setIsoOs('windows');
+      loadIsos();
+      if (!wNameTouched) suggestName(id);
+      return;
+    }
+    wOs = id;
     if (o && !o.kinds.includes(wKind === 'vm' ? 'vm' : 'container')) {
       wKind = o.kinds.includes('vm') ? 'vm' : 'container';
     }
@@ -405,6 +426,7 @@
       payload.secure_boot = wSecureBoot;
       if (wIsoOs === 'windows' && wDriversIso.trim()) payload.drivers_iso_path = wDriversIso.trim();
     }
+    if (wAudio && (wMode === 'iso' || wKind === 'vm')) payload.audio = true;
     if (wAdvanced) { payload.cpu_cores = wCpu; payload.memory_mb = wMem; payload.disk_gb = wDisk; }
     const res = await call<{ name: string }>('POST', '/vm/create', payload);
     wBusy = false;
@@ -692,7 +714,7 @@
             {#each osOptions as o (o.id)}
               {@const bk = `vm.os_${o.id.replace(/[.\-]/g, '_')}`}
               <button type="button" data-testid="vm-os" class:sel={wOs === o.id} class={cn('flex flex-col items-start gap-0.5 p-3 rounded-xl border border-[var(--hv-shell-border)] bg-[var(--hv-shell-card)] text-left cursor-pointer', wOs === o.id && 'border-[var(--hv-primary)] bg-[var(--hv-primary-light)]')} onclick={() => pickOs(o.id)}>
-                <span class="vm-os-label text-c-base font-semibold text-[var(--hv-shell-text-strong)]">{o.label}{#if o.recommended}<span data-testid="vm-os-reco" class="ml-1 px-1.5 py-0.5 rounded bg-[var(--hv-success-bg)] text-[var(--hv-success)] text-micro font-bold uppercase">{$t('vm.w_recommended')}</span>{/if}</span>
+                <span class="vm-os-label text-c-base font-semibold text-[var(--hv-shell-text-strong)]">{o.label}{#if o.recommended}<span data-testid="vm-os-reco" class="ml-1 px-1.5 py-0.5 rounded bg-[var(--hv-success-bg)] text-[var(--hv-success)] text-micro font-bold uppercase">{$t('vm.w_recommended')}</span>{/if}{#if o.iso_only}<span data-testid="vm-os-iso" class="ml-1 px-1.5 py-0.5 rounded bg-[var(--hv-primary-light)] text-[var(--hv-primary)] text-micro font-bold uppercase">{$t('vm.w_iso_badge')}</span>{/if}</span>
                 <span class="vm-os-blurb text-c-xs text-[var(--hv-shell-text-2)]">{ $t(bk) === bk ? o.blurb : $t(bk)}</span>
               </button>
             {/each}
@@ -770,6 +792,13 @@
         </div>
         {#if wMode === 'iso' && wIsoOs === 'windows'}<span class={vmFieldHint}>{$t('vm.w_size_windows_hint')}</span>{/if}
       </fieldset>
+
+      {#if wMode === 'iso' || wKind === 'vm'}
+        <div class="flex flex-col gap-1">
+          <label class="vm-check flex items-center gap-1.5 text-xs text-[var(--hv-shell-text-2)] cursor-pointer"><input type="checkbox" class="accent-[var(--hv-primary)]" bind:checked={wAudio} /> {$t('vm.audio')}</label>
+          <span class={vmFieldHint}>{$t('vm.audio_hint')}</span>
+        </div>
+      {/if}
 
       {#if wMode === 'catalogue'}
         <fieldset class="vm-field border-0 p-0 m-0">

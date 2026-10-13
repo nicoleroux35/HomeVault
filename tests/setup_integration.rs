@@ -31,8 +31,9 @@ use homevault::config::PathGuard;
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{
     auth::{
-        handle_check_username, handle_setup, handle_setup_rebaseline, handle_setup_status,
-        handle_setup_verify_totp,
+        handle_check_username, handle_setup, handle_setup_progress_get,
+        handle_setup_progress_put, handle_setup_rebaseline, handle_setup_status,
+        handle_setup_storage_options, handle_setup_verify_totp,
     },
     AppState,
 };
@@ -105,6 +106,14 @@ fn test_router(state: Arc<AppState>) -> Router {
             "/api/auth/setup/verify-totp",
             axum::routing::post(handle_setup_verify_totp),
         )
+        .route(
+            "/api/auth/setup/progress",
+            get(handle_setup_progress_get).put(handle_setup_progress_put),
+        )
+        .route(
+            "/api/auth/setup/storage-options",
+            get(handle_setup_storage_options),
+        )
         .with_state(state)
 }
 
@@ -152,6 +161,30 @@ async fn post_json(router: &mut Router, path: &str, body: Value) -> (StatusCode,
         .unwrap();
     let json: Value = serde_json::from_slice(&body_bytes)
         .unwrap_or(json!({"raw": String::from_utf8_lossy(&body_bytes)}));
+    (status, json)
+}
+
+/// Helper: send a PUT request with JSON body and return (status, body JSON).
+async fn put_json(router: &mut Router, path: &str, body: Value) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri(path)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+
+    let resp = ServiceExt::<Req>::ready(router)
+        .await
+        .unwrap()
+        .call(req)
+        .await
+        .unwrap();
+    let status = resp.status();
+    let put_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&put_bytes)
+        .unwrap_or(json!({"raw": String::from_utf8_lossy(&put_bytes)}));
     (status, json)
 }
 
@@ -1410,4 +1443,112 @@ async fn test_setup_guard_env_override_allows_a_public_peer() {
         StatusCode::OK,
         "the documented opt-out must lift the restriction"
     );
+}
+
+// ========================================================================
+// Setup progress (reboot-safe onboarding): GET/PUT /api/auth/setup/progress
+// ========================================================================
+
+/// Fresh first run reports step 0 with empty choices.
+#[tokio::test]
+async fn test_setup_progress_defaults_to_step_zero() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let mut app = test_router(state);
+
+    let (status, body) = get_json(&mut app, "/api/auth/setup/progress").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["step"], json!(0));
+    assert_eq!(body["data"]["data"], json!({}));
+}
+
+/// PUT persists step + choices; a later GET resumes them (the reboot path).
+#[tokio::test]
+async fn test_setup_progress_save_and_resume() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let mut app = test_router(state);
+
+    let (status, body) = put_json(
+        &mut app,
+        "/api/auth/setup/progress",
+        json!({"step": 4, "data": {"language": "fr", "storage": "sda"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["step"], json!(4));
+
+    let (status, body) = get_json(&mut app, "/api/auth/setup/progress").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["step"], json!(4));
+    assert_eq!(body["data"]["data"]["language"], json!("fr"));
+    assert_eq!(body["data"]["data"]["storage"], json!("sda"));
+}
+
+/// Out-of-range steps and non-object payloads are rejected, never stored.
+#[tokio::test]
+async fn test_setup_progress_rejects_bad_step_and_shape() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let mut app = test_router(state);
+
+    for bad in [
+        json!({"step": 99, "data": {}}),
+        json!({"step": -1, "data": {}}),
+        json!({"step": 2, "data": [1, 2]}),
+        json!({"step": 2, "data": "fr"}),
+    ] {
+        let (status, body) = put_json(&mut app, "/api/auth/setup/progress", bad).await;
+        assert_ne!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["success"], json!(false));
+    }
+
+    // Nothing from the rejected writes may have stuck.
+    let (_, body) = get_json(&mut app, "/api/auth/setup/progress").await;
+    assert_eq!(body["data"]["step"], json!(0));
+}
+
+/// Once an admin exists the progress endpoints close (setup is over).
+#[tokio::test]
+async fn test_setup_progress_forbidden_after_setup() {
+    let (state, _tmp, _lock) = setup_state().await;
+    sqlx::query(
+        "INSERT INTO users (username, password_hash, fullname, email, role_id, locked, created_at, avatar_seed)
+         VALUES ('boss', 'x', 'Boss', 'b@example.com', 2, false, datetime('now'), 's')",
+    )
+    .execute(&*state.db.pool())
+    .await
+    .expect("insert admin");
+    let mut app = test_router(state);
+
+    let (status, _) = get_json(&mut app, "/api/auth/setup/progress").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, body) = put_json(
+        &mut app,
+        "/api/auth/setup/progress",
+        json!({"step": 3, "data": {}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+}
+
+/// Storage options are listed on a fresh box and close after setup.
+#[tokio::test]
+async fn test_setup_storage_options_first_run_only() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let mut app = test_router(state.clone());
+
+    let (status, body) = get_json(&mut app, "/api/auth/setup/storage-options").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["data"]["disks"].is_array());
+    assert!(body["data"]["raid_devices"].is_array());
+
+    sqlx::query(
+        "INSERT INTO users (username, password_hash, fullname, email, role_id, locked, created_at, avatar_seed)
+         VALUES ('boss', 'x', 'Boss', 'b@example.com', 2, false, datetime('now'), 's')",
+    )
+    .execute(&*state.db.pool())
+    .await
+    .expect("insert admin");
+
+    let (status, _) = get_json(&mut app, "/api/auth/setup/storage-options").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }

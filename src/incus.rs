@@ -261,6 +261,9 @@ pub struct OsOption {
     /// Short "what is this / who is it for" line, already in plain language.
     pub blurb: &'static str,
     pub recommended: bool,
+    /// No ready-made image exists (Windows): the wizard must send the person
+    /// to the ISO install instead of offering a one-click create.
+    pub iso_only: bool,
 }
 
 /// The curated list. All of these ship cloud-init, so the seeded login account
@@ -274,6 +277,7 @@ pub fn os_catalogue() -> &'static [OsOption] {
             alias: "ubuntu/24.04/cloud",
             blurb: "The most common choice. Great for web apps, tools and learning Linux.",
             recommended: true,
+            iso_only: false,
         },
         OsOption {
             id: "ubuntu-22.04",
@@ -282,6 +286,7 @@ pub fn os_catalogue() -> &'static [OsOption] {
             alias: "ubuntu/22.04/cloud",
             blurb: "Older long-term-support Ubuntu, for software that needs it.",
             recommended: false,
+            iso_only: false,
         },
         OsOption {
             id: "debian-12",
@@ -290,6 +295,7 @@ pub fn os_catalogue() -> &'static [OsOption] {
             alias: "debian/12/cloud",
             blurb: "Rock-solid and lightweight. A good default for servers.",
             recommended: false,
+            iso_only: false,
         },
         OsOption {
             id: "fedora-43",
@@ -298,6 +304,7 @@ pub fn os_catalogue() -> &'static [OsOption] {
             alias: "fedora/43/cloud",
             blurb: "Cutting-edge packages, backed by Red Hat.",
             recommended: false,
+            iso_only: false,
         },
         OsOption {
             id: "rocky-9",
@@ -306,6 +313,7 @@ pub fn os_catalogue() -> &'static [OsOption] {
             alias: "rockylinux/9/cloud",
             blurb: "A free stand-in for Red Hat Enterprise Linux.",
             recommended: false,
+            iso_only: false,
         },
         OsOption {
             id: "alpine-3.21",
@@ -314,6 +322,43 @@ pub fn os_catalogue() -> &'static [OsOption] {
             alias: "alpine/3.21/cloud",
             blurb: "Tiny. Boots in a blink — handy for a single small service.",
             recommended: false,
+            iso_only: false,
+        },
+        OsOption {
+            id: "ubuntu-24.04-minimal",
+            label: "Ubuntu 24.04 Minimal",
+            kinds: &["vm", "container"],
+            alias: "ubuntu/24.04/cloud",
+            blurb: "Same Ubuntu base with a small disk and 1 GB of RAM — for one lightweight service.",
+            recommended: false,
+            iso_only: false,
+        },
+        OsOption {
+            id: "debian-12-minimal",
+            label: "Debian 12 Minimal",
+            kinds: &["vm", "container"],
+            alias: "debian/12/cloud",
+            blurb: "The smallest usual Debian footprint, for DNS, VPN or file helpers.",
+            recommended: false,
+            iso_only: false,
+        },
+        OsOption {
+            id: "windows-11",
+            label: "Windows 11",
+            kinds: &["vm"],
+            alias: "windows/11",
+            blurb: "For Windows-only software. Install from your own ISO — a TPM and Secure Boot are wired up automatically.",
+            recommended: false,
+            iso_only: true,
+        },
+        OsOption {
+            id: "windows-10",
+            label: "Windows 10",
+            kinds: &["vm"],
+            alias: "windows/10",
+            blurb: "For older Windows-only software. Install from your own ISO.",
+            recommended: false,
+            iso_only: true,
         },
     ]
 }
@@ -327,6 +372,18 @@ pub fn resolve_os_alias(id: &str) -> &'static str {
         .or_else(|| os_catalogue().iter().find(|o| o.recommended))
         .map(|o| o.alias)
         .unwrap_or("ubuntu/24.04/cloud")
+}
+
+/// QEMU audio device attached when the person ticks "sound" in the wizard
+/// (VMs only — containers share the host audio stack differently). `intel-hda`
+/// with an `hda-micro` codec is the combination guest drivers expect without
+/// extra setup.
+pub fn audio_device() -> serde_json::Value {
+    serde_json::json!({
+        "type": "qemu",
+        "driver": "intel-hda",
+        "codec": "hda-micro",
+    })
 }
 
 // ── Service ─────────────────────────────────────────────────────────────────
@@ -850,6 +907,25 @@ mod tests {
             }
             assert!(o.alias.contains('/'));
         }
+    }
+
+    #[test]
+    fn os_catalogue_windows_entries_are_iso_only_vms() {
+        for o in os_catalogue().iter().filter(|o| o.iso_only) {
+            assert_eq!(o.kinds, &["vm"]);
+        }
+        let win11 = os_catalogue().iter().find(|o| o.id == "windows-11").unwrap();
+        assert!(win11.iso_only);
+        let win10 = os_catalogue().iter().find(|o| o.id == "windows-10").unwrap();
+        assert!(win10.iso_only);
+        assert!(os_catalogue().iter().filter(|o| o.iso_only).count() >= 2);
+    }
+
+    #[test]
+    fn audio_device_is_a_qemu_hda() {
+        let d = audio_device();
+        assert_eq!(d["type"], "qemu");
+        assert_eq!(d["driver"], "intel-hda");
     }
 
     #[test]

@@ -12,6 +12,8 @@
   import PathField from '$lib/components/theme/PathField.svelte';
   import FolderPicker from '$lib/components/theme/FolderPicker.svelte';
   import { IconActivity, IconArchive, IconCalendarClock, IconCircleCheck, IconClock, IconDatabase, IconFileText, IconFolder, IconFolderOpen, IconServer, IconLoader, IconLock, IconPlus, IconSearch, IconShield, IconTrash, IconX } from '@tabler/icons-svelte';
+  import BackupProgressIsland from '$lib/components/backup/BackupProgressIsland.svelte';
+  import { trackJob } from '$lib/stores/backupJobs.svelte';
 
   const LOCALE_MAP: Record<string, string> = { en: 'en-US', fr: 'fr-FR', de: 'de-DE', es: 'es-ES' };
 
@@ -155,6 +157,78 @@
   // must act on THIS row, not on `snapshots.find(...)` (which always returned
   // the first snapshot).
   let pendingRestoreSnapshot = $state<ResticSnapshot | null>(null);
+
+  // Backup reminders (repos with no recent success) + restore pre-flight.
+  interface Reminder { repo_id: string; repo_name: string; days_since_last_success: number | null; has_enabled_schedule: boolean; }
+  let reminders = $state<Reminder[]>([]);
+  interface RestorePlan { required_bytes: number; available_bytes: number | null; fits: boolean; }
+  let restorePlan = $state<RestorePlan | null>(null);
+  let restorePlanLoading = $state(false);
+  let restorePlanTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function formatBytesOrDash(n: number | null | undefined): string {
+    if (n === null || n === undefined) return '—';
+    return formatBytes(n);
+  }
+
+  async function loadReminders() {
+    try {
+      const resp = await api.resticReminders();
+      if (resp.success && resp.data && Array.isArray(resp.data.reminders)) {
+        reminders = resp.data.reminders;
+      }
+    } catch {
+      reminders = [];
+    }
+  }
+
+  function openBackupFor(repoId: string) {
+    const repo = repos.find((r) => r.id === repoId);
+    if (repo) {
+      selectedRepo = repo;
+      activeView = 'repo-detail';
+      activeRepoSection = 'snapshots';
+      showCreateBackupModal = true;
+    }
+  }
+
+  /** Debounced pre-flight space check for the open restore dialog. */
+  function scheduleRestorePlan() {
+    if (restorePlanTimer) clearTimeout(restorePlanTimer);
+    restorePlanTimer = setTimeout(checkRestorePlan, 400);
+  }
+
+  async function checkRestorePlan() {
+    if (!selectedRepo || !pendingRestoreSnapshot || !restoreTarget.trim()) {
+      restorePlan = null;
+      return;
+    }
+    restorePlanLoading = true;
+    try {
+      const resp = await api.resticRestorePlan(selectedRepo.id, pendingRestoreSnapshot.short_id, restoreTarget.trim());
+      if (resp.success && resp.data) {
+        restorePlan = {
+          required_bytes: resp.data.required_bytes ?? 0,
+          available_bytes: resp.data.available_bytes ?? null,
+          fits: resp.data.fits === true,
+        };
+      } else {
+        restorePlan = null;
+      }
+    } catch {
+      restorePlan = null;
+    } finally {
+      restorePlanLoading = false;
+    }
+  }
+
+  $effect(() => {
+    // Re-check whenever the dialog, snapshot or target changes.
+    void showResticRestoreModal;
+    void pendingRestoreSnapshot?.short_id;
+    void restoreTarget;
+    if (showResticRestoreModal && pendingRestoreSnapshot) scheduleRestorePlan();
+  });
   let showForgetModal = $state(false);
   let backupInProgress = $state(false);
   let checkResult: any = $state(null);
@@ -194,6 +268,7 @@
     } else {
       loadRepos();
       loadRetentionPolicies();
+      loadReminders();
     }
   }
 
@@ -201,7 +276,7 @@
     (async () => {
       await checkResticAvailable();
       if (resticAvailable) {
-        await Promise.all([loadRepos(), loadRetentionPolicies()]);
+        await Promise.all([loadRepos(), loadRetentionPolicies(), loadReminders()]);
       }
       resticLoading = false;
     })();
@@ -493,8 +568,12 @@
     });
 
     if (resp.success) {
+      if ((resp.data as any)?.job_id && selectedRepo) {
+        trackJob((resp.data as any).job_id, `${translate('restic.run_backup')} — ${selectedRepo.name}`);
+      }
       showCreateBackupModal = false;
       await Promise.all([loadSnapshots(), loadJobs()]);
+      await loadReminders();
     } else {
     }
     backupInProgress = false;
@@ -512,8 +591,13 @@
     });
 
     if (resp.success) {
+      if ((resp.data as any)?.job_id && selectedRepo) {
+        trackJob((resp.data as any).job_id, `${translate('restic.restore_btn')} — ${snapshot.short_id}`);
+      }
       pendingRestoreSnapshot = null;
       showResticRestoreModal = false;
+      restorePlan = null;
+      await loadReminders();
     } else {
     }
   }
@@ -698,6 +782,19 @@
       </EmptyState>
 
     {:else}
+    {#if reminders.length > 0}
+      <div data-testid="restic-reminders" class="mb-5 flex flex-col gap-2" role="status">
+        {#each reminders as r (r.repo_id)}
+          <Alert variant="warning">
+            <div class="flex flex-wrap items-center gap-2">
+              <IconCalendarClock size={16} class="shrink-0" />
+              <span class="flex-1 text-sm">{$t('restic.reminders_body', { name: r.repo_name, days: String(r.days_since_last_success ?? '—') })}</span>
+              <Button variant="ghost" size="sm" onclick={() => openBackupFor(r.repo_id)}>{$t('restic.reminders_run_now')}</Button>
+            </div>
+          </Alert>
+        {/each}
+      </div>
+    {/if}
     <div data-testid="restic-split" bind:this={splitEl} class="flex flex-1 min-h-0">
       {#if !(narrow && detailOpen)}
         <div data-testid="restic-list-pane" class="flex-none min-w-0 border-r border-[var(--hv-shell-border)] overflow-y-auto" style="width: {narrow ? '100%' : '420px'};">
@@ -975,35 +1072,56 @@
   {/snippet}
 </Modal>
 
-<!-- Restic Restore Modal -->
-<Modal open={showResticRestoreModal && !!selectedRepo} title={$t('restic.restore_title')} size="md" onclose={() => { pendingRestoreSnapshot = null; showResticRestoreModal = false; }}>
+<!-- Restic Restore Modal: split-view — options left, pre-flight summary right -->
+<Modal open={showResticRestoreModal && !!selectedRepo} title={$t('restic.restore_title')} size="lg" onclose={() => { pendingRestoreSnapshot = null; showResticRestoreModal = false; restorePlan = null; }}>
   <Alert variant="warning">{$t('restic.restore_warning')}</Alert>
-  <div class="flex flex-col gap-1.5 mt-3">
-    <label for="rv-target" class={fieldLabel}>{$t('restic.restore_target_label')} <span class="text-[var(--hv-error)]">*</span></label>
-    <PathField id="rv-target" bind:value={restoreTarget} mode="folder" placeholder="/data/restore" required />
-  </div>
-  <div class="flex flex-col gap-1.5 mt-3">
-    <span class={fieldLabel} id="restic-restore-include-label">{$t('restic.restore_include_label')}</span>
-    <div class="flex flex-wrap gap-2" role="group" aria-labelledby="restic-restore-include-label">
-      {#if restoreIncludeList.length === 0}
-        <span class="text-xs text-[var(--hv-shell-text-2)]">{$t('restic.no_paths')}</span>
-      {:else}
-        {#each restoreIncludeList as path, i}
-          <span class={sourceChip}><IconFolder size={14} /> <span>{path}</span> <button type="button" class="hv-ic border-none bg-transparent cursor-pointer text-[var(--hv-shell-text-2)] hover:text-[var(--hv-error)]" onclick={() => removeRestorePath(i)} aria-label={$t('common.remove')}><IconX size={14} /></button></span>
-        {/each}
+  <div class="mt-3 grid gap-4 @min-[640px]:grid-cols-[minmax(0,1fr)_240px]">
+    <div class="min-w-0">
+      <div class="flex flex-col gap-1.5">
+        <label for="rv-target" class={fieldLabel}>{$t('restic.restore_target_label')} <span class="text-[var(--hv-error)]">*</span></label>
+        <PathField id="rv-target" bind:value={restoreTarget} mode="folder" placeholder="/data/restore" required />
+      </div>
+      <div class="flex flex-col gap-1.5 mt-3">
+        <span class={fieldLabel} id="restic-restore-include-label">{$t('restic.restore_include_label')}</span>
+        <div class="flex flex-wrap gap-2" role="group" aria-labelledby="restic-restore-include-label">
+          {#if restoreIncludeList.length === 0}
+            <span class="text-xs text-[var(--hv-shell-text-2)]">{$t('restic.no_paths')}</span>
+          {:else}
+            {#each restoreIncludeList as path, i}
+              <span class={sourceChip}><IconFolder size={14} /> <span>{path}</span> <button type="button" class="hv-ic border-none bg-transparent cursor-pointer text-[var(--hv-shell-text-2)] hover:text-[var(--hv-error)]" onclick={() => removeRestorePath(i)} aria-label={$t('common.remove')}><IconX size={14} /></button></span>
+            {/each}
+          {/if}
+        </div>
+        <div class="mt-1">
+          <button type="button" class="inline-flex items-center gap-2 h-10 px-4 border border-[var(--hv-shell-border-strong)] rounded-xl bg-[var(--hv-shell-fill)] text-[var(--hv-shell-text-strong)] text-c-base font-semibold cursor-pointer hover:bg-[var(--hv-shell-border)]" onclick={() => (restorePickerOpen = true)}><IconFolderOpen size={14} /> {$t('restic.add_include_path')}</button>
+        </div>
+        <span class={hint}>{$t('restic.restore_include_hint')}</span>
+      </div>
+      <div class="flex flex-col gap-1.5 mt-3"><label for="rv-exclude" class={fieldLabel}>{$t('restic.restore_exclude_label')}</label><textarea id="rv-exclude" class={textareaCls} bind:value={restoreExclude} placeholder="*.tmp" rows={2}></textarea></div>
+    </div>
+    <aside class="min-w-0 rounded-xl border border-[var(--hv-shell-border)] bg-[var(--hv-shell-fill)] p-3" aria-live="polite">
+      <h3 class="m-0 text-c-xs font-semibold uppercase tracking-wide text-[var(--hv-shell-text-2)]">{$t('restic.restore_space_title')}</h3>
+      {#if pendingRestoreSnapshot}
+        <p class="m-0 mt-1.5 truncate font-[family-name:var(--hv-font-mono)] text-c-sm text-[var(--hv-shell-text-strong)]" title={pendingRestoreSnapshot.id}>{pendingRestoreSnapshot.short_id} · {formatDate(pendingRestoreSnapshot.time)}</p>
       {/if}
-    </div>
-    <div class="mt-1">
-      <button type="button" class="inline-flex items-center gap-2 h-10 px-4 border border-[var(--hv-shell-border-strong)] rounded-xl bg-[var(--hv-shell-fill)] text-[var(--hv-shell-text-strong)] text-c-base font-semibold cursor-pointer hover:bg-[var(--hv-shell-border)]" onclick={() => (restorePickerOpen = true)}><IconFolderOpen size={14} /> {$t('restic.add_include_path')}</button>
-    </div>
-    <span class={hint}>{$t('restic.restore_include_hint')}</span>
+      {#if restorePlanLoading}
+        <p class="m-0 mt-2 flex items-center gap-2 text-c-sm text-[var(--hv-shell-text-2)]"><Spinner size="sm" /> {$t('restic.loading_snapshots')}</p>
+      {:else if restorePlan}
+        {#if restorePlan.available_bytes === null}
+          <p class="m-0 mt-2 text-c-sm text-[var(--hv-warning)]">{$t('restic.restore_space_unknown', { required: formatBytes(restorePlan.required_bytes) })}</p>
+        {:else if restorePlan.fits}
+          <p class="m-0 mt-2 text-c-sm text-[var(--hv-success)]">{$t('restic.restore_space_ok', { required: formatBytes(restorePlan.required_bytes), available: formatBytesOrDash(restorePlan.available_bytes) })}</p>
+        {:else}
+          <p class="m-0 mt-2 text-c-sm font-medium text-[var(--hv-error)]" role="alert">{$t('restic.restore_space_short', { required: formatBytes(restorePlan.required_bytes), available: formatBytesOrDash(restorePlan.available_bytes) })}</p>
+        {/if}
+      {/if}
+    </aside>
   </div>
-  <div class="flex flex-col gap-1.5 mt-3"><label for="rv-exclude" class={fieldLabel}>{$t('restic.restore_exclude_label')}</label><textarea id="rv-exclude" class={textareaCls} bind:value={restoreExclude} placeholder="*.tmp" rows={2}></textarea></div>
   <FolderPicker open={restorePickerOpen} mode="folder" onselect={handleAddRestorePath} onclose={() => (restorePickerOpen = false)} />
   {#snippet footer()}
     <div class="flex gap-2.5 justify-end">
-      <Button variant="ghost" onclick={() => { pendingRestoreSnapshot = null; showResticRestoreModal = false; }}>{$t('common.cancel')}</Button>
-      <Button variant="danger" onclick={() => { if (pendingRestoreSnapshot) restoreSnapshot(pendingRestoreSnapshot); }} disabled={!pendingRestoreSnapshot}>{$t('restic.restore_btn')}</Button>
+      <Button variant="ghost" onclick={() => { pendingRestoreSnapshot = null; showResticRestoreModal = false; restorePlan = null; }}>{$t('common.cancel')}</Button>
+      <Button variant="danger" data-testid="restic-restore-confirm" onclick={() => { if (pendingRestoreSnapshot) restoreSnapshot(pendingRestoreSnapshot); }} disabled={!pendingRestoreSnapshot || (restorePlan !== null && restorePlan.available_bytes !== null && !restorePlan.fits)}>{$t('restic.restore_btn')}</Button>
     </div>
   {/snippet}
 </Modal>

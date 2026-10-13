@@ -693,6 +693,142 @@ pub async fn handle_restic_snapshot_delete(
 }
 
 // ---------------------------------------------------------------------------
+// Backup reminders + restore pre-flight
+// ---------------------------------------------------------------------------
+
+/// A repo whose newest successful backup is older than this is "stale" and
+/// shows up in the reminder list (and the dashboard banner).
+pub(crate) const REMINDER_STALE_DAYS: i64 = 7;
+
+/// Days since `finished_at` (RFC 3339) relative to `now_secs`. Returns `None`
+/// when the timestamp is missing or unparseable — the caller treats that as
+/// "never backed up".
+pub(crate) fn days_since(finished_at: Option<&str>, now_secs: i64) -> Option<i64> {
+    let s = finished_at?;
+    let dt = chrono::DateTime::parse_from_rfc3339(s).ok()?;
+    Some((now_secs - dt.timestamp()).div_euclid(86_400))
+}
+
+/// Parses `df -B1 --output=avail <target>` stdout (header line + bytes).
+/// Returns `None` on any unexpected shape — the plan endpoint reports
+/// `available_bytes: null` instead of failing.
+pub(crate) fn parse_df_available(stdout: &str) -> Option<u64> {
+    let mut lines = stdout.lines();
+    lines.next()?; // header
+    lines.next()?.trim().parse::<u64>().ok()
+}
+
+/// Free bytes at `target` via `df`. `None` when the path is unusable.
+fn target_available_bytes(target: &str) -> Option<u64> {
+    std::process::Command::new("df")
+        .args(["-B1", "--output=avail", target])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| parse_df_available(&String::from_utf8_lossy(&o.stdout)))
+}
+
+#[derive(Deserialize)]
+pub struct RestorePlanQuery {
+    pub repo_id: String,
+    pub snapshot_id: String,
+    pub target: String,
+}
+
+/// GET /api/restic/reminders — repos with no recent successful backup.
+///
+/// Read-only (`require_auth`): each entry carries the repo id/name, days
+/// since the last success (`null` = never), and whether an enabled schedule
+/// exists, so the UI can suggest "run now" vs "enable the schedule".
+pub async fn handle_restic_reminders(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers).await {
+        return response;
+    }
+    let repo_repo = ResticRepository::new(state.db.pool());
+    let sched_repo = ResticScheduleRepository::new(state.db.pool());
+    let repos = match repo_repo.list_all().await {
+        Ok(r) => r,
+        Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
+    };
+    let now = chrono::Utc::now().timestamp();
+    let mut reminders = Vec::new();
+    for repo in repos {
+        let last = repo_repo
+            .last_successful_backup_at(&repo.id)
+            .await
+            .unwrap_or(None);
+        let days = days_since(last.as_deref(), now);
+        let stale = days.map(|d| d >= REMINDER_STALE_DAYS).unwrap_or(true);
+        if !stale {
+            continue;
+        }
+        let has_schedule = sched_repo
+            .list_by_repo(&repo.id)
+            .await
+            .map(|s| s.iter().any(|e| e.enabled))
+            .unwrap_or(false);
+        reminders.push(serde_json::json!({
+            "repo_id": repo.id,
+            "repo_name": repo.name,
+            "days_since_last_success": days,
+            "has_enabled_schedule": has_schedule,
+        }));
+    }
+    ResponseHelper::json_success(serde_json::json!({ "reminders": reminders }))
+}
+
+/// GET /api/restic/restore-plan — pre-flight space check before a restore.
+///
+/// Admin-only (the target path is a privileged write). Returns the
+/// snapshot's restore size, the target's free bytes (`null` when the target
+/// cannot be statted), and whether the restore fits.
+pub async fn handle_restic_restore_plan(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<RestorePlanQuery>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers).await {
+        return response;
+    }
+    if params.repo_id.trim().is_empty()
+        || params.snapshot_id.trim().is_empty()
+        || params.target.trim().is_empty()
+    {
+        return ResponseHelper::json_error(
+            "repo_id, snapshot_id and target are required".to_string(),
+        );
+    }
+    if params.target.len() > 4096 || params.target.contains('\0') {
+        return ResponseHelper::json_error("Invalid target path".to_string());
+    }
+    let repo_repo = ResticRepository::new(state.db.pool());
+    let repo_config = match repo_repo.get_by_id(&params.repo_id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return ResponseHelper::json_error("Repository not found".to_string()),
+        Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
+    };
+    let required = match ResticService::restore_size(&repo_config, &params.snapshot_id) {
+        Ok(n) => n,
+        Err(e) => return ResponseHelper::json_error(format!("Failed to size snapshot: {}", e)),
+    };
+    let target = params.target.clone();
+    let available =
+        tokio::task::spawn_blocking(move || target_available_bytes(&target)).await.unwrap_or(None);
+    let fits = available.map(|a| a >= required).unwrap_or(false);
+    ResponseHelper::json_success(serde_json::json!({
+        "repo_id": params.repo_id,
+        "snapshot_id": params.snapshot_id,
+        "target": params.target,
+        "required_bytes": required,
+        "available_bytes": available,
+        "fits": fits,
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // Retention policies
 // ---------------------------------------------------------------------------
 
@@ -1025,5 +1161,46 @@ pub async fn handle_restic_schedule_delete(
         }
         Ok(false) => ResponseHelper::json_error("Schedule not found".to_string()),
         Err(e) => ResponseHelper::json_error(format!("Failed to delete schedule: {}", e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_days_since_counts_whole_days() {
+        // 2026-01-01T00:00:00Z vs 2026-01-08T12:00:00Z -> 7 full days.
+        let now = chrono::DateTime::parse_from_rfc3339("2026-01-08T12:00:00Z")
+            .unwrap()
+            .timestamp();
+        assert_eq!(
+            days_since(Some("2026-01-01T00:00:00Z"), now),
+            Some(7)
+        );
+        assert_eq!(days_since(None, now), None);
+        assert_eq!(days_since(Some("not-a-date"), now), None);
+    }
+
+    #[test]
+    fn test_reminder_threshold_flags_stale_repos() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-06-01T00:00:00Z")
+            .unwrap()
+            .timestamp();
+        let stale = days_since(Some("2026-05-20T00:00:00Z"), now).unwrap();
+        let fresh = days_since(Some("2026-05-30T00:00:00Z"), now).unwrap();
+        assert!(stale >= REMINDER_STALE_DAYS);
+        assert!(fresh < REMINDER_STALE_DAYS);
+    }
+
+    #[test]
+    fn test_parse_df_available_reads_second_line() {
+        assert_eq!(
+            parse_df_available("Avail\n123456789\n"),
+            Some(123456789)
+        );
+        assert_eq!(parse_df_available("Avail\n"), None);
+        assert_eq!(parse_df_available(""), None);
+        assert_eq!(parse_df_available("Avail\nnot-a-number\n"), None);
     }
 }

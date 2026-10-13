@@ -32,6 +32,8 @@ pub enum DbError {
     Migration(String),
     #[error("Record not found")]
     NotFound,
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
 }
 
 /// Wraps a shared SQLite connection pool and provides lifecycle management.

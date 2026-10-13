@@ -7,7 +7,7 @@
    */
   import { onMount, onDestroy } from 'svelte';
   import RFB from '@novnc/novnc';
-  import { IconX, IconRefresh, IconMaximize, IconKeyboard } from '@tabler/icons-svelte';
+  import { IconX, IconRefresh, IconMaximize, IconKeyboard, IconExternalLink } from '@tabler/icons-svelte';
   import { t, translate } from '$lib/stores/i18n';
 
   interface Props { vmName: string; onClose: () => void }
@@ -85,6 +85,11 @@
     if (el && !document.fullscreenElement) el.requestFullscreen?.();
     else document.exitFullscreen?.();
   }
+  function openNewTab() {
+    const url = new URL(window.location.href);
+    url.searchParams.set('vm_screen', vmName);
+    window.open(url.toString(), '_blank', 'noopener');
+  }
 
   onMount(connect);
   onDestroy(() => {
@@ -111,6 +116,7 @@
           <IconKeyboard size={15} stroke={2} /> Ctrl+Alt+Del
         </button>
         <button class="scr-btn" onclick={fullscreen} aria-label={$t('vm.screen_fullscreen')}><IconMaximize size={16} stroke={2} /></button>
+        <button class="scr-btn" data-testid="vm-screen-new-tab" onclick={openNewTab} aria-label={$t('vm.screen_new_tab')} title={$t('vm.screen_new_tab')}><IconExternalLink size={16} stroke={2} /></button>
         {#if status === 'closed' || status === 'error'}
           <button class="scr-btn" onclick={reconnect}><IconRefresh size={15} stroke={2} /> {$t('vm.console_reconnect')}</button>
         {/if}

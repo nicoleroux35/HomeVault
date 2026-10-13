@@ -12,8 +12,9 @@
   import { t, translate } from '$lib/stores/i18n';
   import { explorerShareIntent } from '$lib/stores/explorerShareIntent';
   import FolderPicker from '$lib/components/theme/FolderPicker.svelte';
-  import { IconAlertCircle, IconArchive, IconArrowBackUp, IconArrowUp, IconCloud, IconCloudCheck, IconCloudUpload, IconCopy, IconDatabase, IconDownload, IconHistory, IconPlayerEject, IconPencil, IconEye, IconFileZip, IconFolderMinus, IconFolderOpen, IconFolderPlus, IconServer, IconHome, IconLayoutGrid, IconList, IconLoader, IconLock, IconRefresh, IconSearch, IconShare, IconShield, IconShieldCheckered, IconStar, IconStarFilled, IconTrash, IconUpload, IconUsb, IconX } from '@tabler/icons-svelte';
+  import { IconAlertCircle, IconArchive, IconArrowBackUp, IconArrowUp, IconClock, IconCloud, IconCloudCheck, IconCloudUpload, IconCopy, IconDatabase, IconDownload, IconHistory, IconPlayerEject, IconPencil, IconEye, IconFileZip, IconFolderMinus, IconFolderOpen, IconFolderPlus, IconServer, IconHome, IconLayoutGrid, IconList, IconLoader, IconLock, IconRefresh, IconSearch, IconShare, IconShield, IconShieldCheckered, IconStar, IconStarFilled, IconTrash, IconUpload, IconUsb, IconX } from '@tabler/icons-svelte';
   import ShareLinkModal from '$lib/components/explorer/ShareLinkModal.svelte';
+  import ExplorerWidget from '$lib/components/explorer/ExplorerWidget.svelte';
 
   interface FileEntry {
     name: string;
@@ -110,6 +111,15 @@
 
   // Pinned folders (sidebar "Favorites"), synced server-side.
   let favorites = $state<{ path: string; label: string }[]>([]);
+
+  // Recently opened locations (sidebar "Recents"), synced server-side.
+  let recents = $state<{ path: string; label: string }[]>([]);
+
+  // Fuzzy (subsequence) search toggle next to the search box.
+  let fuzzySearch = $state(false);
+
+  // Whether the current session may format drives (admin-only endpoint).
+  let isAdmin = $state(false);
 
   // Read-only browsing of a past ZFS snapshot ("time travel").
   let snapshots = $state<{ name: string; created: string; browse_path: string }[]>([]);
@@ -290,9 +300,21 @@
 
   onMount(async () => {
     await loadFavorites();
+    await loadRecents();
     await loadDisks();
     await loadRoots();
+    try {
+      const me = await api.getCurrentUser();
+      isAdmin = (me as any)?.data?.is_admin === true || (me as any)?.is_admin === true;
+    } catch {
+      isAdmin = false;
+    }
     await loadDirectory('/');
+
+    // Deep link: ?rewind=open starts the Rewind drawer for the live folder.
+    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('rewind') === 'open') {
+      openRewindFor(currentPath, currentPath);
+    }
 
     diskRefreshInterval = setInterval(loadDisks, 30000);
 
@@ -301,6 +323,8 @@
 
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', onVisibilityChange);
+      window.addEventListener('mousemove', onMarqueeMove);
+      window.addEventListener('mouseup', onMarqueeUp);
     }
   });
 
@@ -309,6 +333,10 @@
     if (watchEventSource) watchEventSource.close();
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', onVisibilityChange);
+    }
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('mousemove', onMarqueeMove);
+      window.removeEventListener('mouseup', onMarqueeUp);
     }
   });
 
@@ -363,6 +391,263 @@
       favorites = [...favorites, { path, label }];
       try { await api.addExplorerFavorite(path, label); } catch { /* keep optimistic */ }
     }
+  }
+
+  // --- Recents (server-side) -----------------------------------------------
+
+  async function loadRecents() {
+    try {
+      const r = await api.getExplorerRecents();
+      if (r.success && Array.isArray(r.data)) {
+        recents = r.data.map((e: any) => ({ path: e.path, label: e.label || e.path.split('/').filter(Boolean).pop() || e.path }));
+      }
+    } catch {
+      recents = [];
+    }
+  }
+
+  /** Record a visit (fire-and-forget) and mirror it at the top locally. */
+  function recordRecent(path: string) {
+    if (!path || path === '/') return;
+    const label = path.split('/').filter(Boolean).pop() || path;
+    recents = [{ path, label }, ...recents.filter((e) => e.path !== path)].slice(0, 50);
+    api.touchExplorerRecent(path).catch(() => {});
+  }
+
+  async function clearRecents() {
+    recents = [];
+    try { await api.clearExplorerRecents(); } catch { /* keep optimistic */ }
+  }
+
+  // --- Rewind (per-file version timeline) -----------------------------------
+
+  interface RewindVersion { name: string; created: string; browse_path: string; }
+
+  let showRewind = $state(false);
+  let rewindLabel = $state('');
+  let rewindLivePath = $state('');
+  let rewindVersions = $state<RewindVersion[]>([]);
+  let rewindLoading = $state(false);
+
+  async function openRewindFor(path: string, label: string) {
+    rewindLabel = label;
+    rewindLivePath = path;
+    rewindVersions = [];
+    rewindLoading = true;
+    showRewind = true;
+    try {
+      const r = await api.getExplorerHistory(path);
+      if (r.success && r.data && Array.isArray(r.data.versions)) {
+        rewindVersions = r.data.versions;
+      }
+    } catch {
+      rewindVersions = [];
+    } finally {
+      rewindLoading = false;
+    }
+  }
+
+  function closeRewind() {
+    showRewind = false;
+    // Drop `rewind=open` from the URL so a reload doesn't reopen the drawer.
+    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('rewind') === 'open') {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('rewind');
+      window.history.replaceState(null, '', url.toString());
+    }
+  }
+
+  /** Copy a past version back into the live tree (a "restore"). */
+  async function restoreRewindVersion(v: RewindVersion) {
+    const destDir = parentPath(rewindLivePath) === rewindLivePath ? rewindLivePath : parentPath(rewindLivePath);
+    const liveName = rewindLivePath.split('/').filter(Boolean).pop() || v.name;
+    const strategy = await resolveStrategy([liveName], destDir);
+    if (strategy === null) return;
+    const r = await api.copyItem(v.browse_path, joinPath(destDir, liveName), strategy);
+    if (r.success && r.data?.job_id) {
+      if (await watchJob(r.data.job_id)) {
+        closeRewind();
+        await loadDirectory(currentPath);
+      }
+    } else if (r.success) {
+      closeRewind();
+      await loadDirectory(currentPath);
+    }
+  }
+
+  // --- Network discovery + drive formatting ---------------------------------
+
+  interface Neighbour { host: string; address?: string; share?: string; source: string; }
+
+  let showNetwork = $state(false);
+  let neighbours = $state<Neighbour[]>([]);
+  let networkLoading = $state(false);
+
+  async function openNetwork() {
+    showNetwork = true;
+    networkLoading = true;
+    try {
+      const r = await api.getNetworkDiscovery();
+      if (r.success && r.data && Array.isArray(r.data.neighbours)) {
+        neighbours = r.data.neighbours;
+      } else {
+        neighbours = [];
+      }
+    } catch {
+      neighbours = [];
+    } finally {
+      networkLoading = false;
+    }
+  }
+
+  let showFormat = $state(false);
+  let formatDevice = $state('');
+  let formatFstype = $state<'ext4' | 'exfat'>('ext4');
+  let formatLabel = $state('');
+  let formatBusy = $state(false);
+  let formatError = $state('');
+
+  async function handleFormat() {
+    if (!formatDevice.trim() || formatBusy) return;
+    formatBusy = true;
+    formatError = '';
+    try {
+      const r = await api.formatDrive(formatDevice.trim(), formatFstype, formatLabel.trim() || undefined);
+      if (r.success) {
+        showFormat = false;
+        formatDevice = '';
+        formatLabel = '';
+        await loadDisks();
+      } else {
+        formatError = r.message || (r as any).error || translate('explorer.eject_failed');
+      }
+    } catch (e: any) {
+      formatError = String(e?.message || e);
+    } finally {
+      formatBusy = false;
+    }
+  }
+
+  // --- Virtualised rendering (windowing) ------------------------------------
+
+  const VIRTUAL_PAGE = 200;
+  let visibleLimit = $state(VIRTUAL_PAGE);
+  // `$derived.by` (not `$derived`) so the slice is evaluated lazily inside a
+  // closure: `sortedEntries` is declared further down and a direct reference
+  // here would read it before its declaration.
+  let visibleEntries = $derived.by(() => sortedEntries.slice(0, visibleLimit));
+  let sentinelEl: HTMLElement | null = $state(null);
+
+  function resetPaging() {
+    visibleLimit = VIRTUAL_PAGE;
+  }
+
+  $effect(() => {
+    const el = sentinelEl;
+    if (!el || typeof IntersectionObserver === 'undefined') return;
+    const obs = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) {
+        visibleLimit += VIRTUAL_PAGE;
+      }
+    }, { root: fileAreaEl });
+    obs.observe(el);
+    return () => obs.disconnect();
+  });
+
+  // --- Marquee (rubber-band) multi-select -----------------------------------
+  // Mouse enhancement only: every row stays a keyboard-operable button, and
+  // shift/ctrl-click selection is unchanged.
+
+  let fileAreaEl: HTMLElement | null = $state(null);
+  let marquee = $state<{ sx: number; sy: number; cx: number; cy: number } | null>(null);
+
+  function marqueeStyle(): string {
+    if (!marquee || !fileAreaEl) return 'display:none';
+    const r = fileAreaEl.getBoundingClientRect();
+    const x0 = Math.min(marquee.sx, marquee.cx) - r.left + fileAreaEl.scrollLeft;
+    const x1 = Math.max(marquee.sx, marquee.cx) - r.left + fileAreaEl.scrollLeft;
+    const y0 = Math.min(marquee.sy, marquee.cy) - r.top + fileAreaEl.scrollTop;
+    const y1 = Math.max(marquee.sy, marquee.cy) - r.top + fileAreaEl.scrollTop;
+    return `left:${x0}px;top:${y0}px;width:${x1 - x0}px;height:${y1 - y0}px`;
+  }
+
+  function onFileAreaMouseDown(e: MouseEvent) {
+    if (e.button !== 0 || e.shiftKey || e.ctrlKey || e.metaKey || !fileAreaEl) return;
+    const t = e.target as HTMLElement;
+    if (t.closest('button, a, input, select, textarea, [role="button"], [data-testid="explorer-file-row"], [data-testid="explorer-grid-item"]')) return;
+    marquee = { sx: e.clientX, sy: e.clientY, cx: e.clientX, cy: e.clientY };
+  }
+
+  function onMarqueeMove(e: MouseEvent) {
+    if (marquee) marquee = { ...marquee, cx: e.clientX, cy: e.clientY };
+  }
+
+  function onMarqueeUp(e: MouseEvent) {
+    if (!marquee || !fileAreaEl) return;
+    const m = marquee;
+    marquee = null;
+    const moved = Math.hypot(m.cx - m.sx, m.cy - m.sy);
+    if (moved < 4) return; // plain click on empty space — leave selection alone
+    const x0 = Math.min(m.sx, m.cx), x1 = Math.max(m.sx, m.cx);
+    const y0 = Math.min(m.sy, m.cy), y1 = Math.max(m.sy, m.cy);
+    const next = new Set<string>();
+    const rows = fileAreaEl.querySelectorAll('[data-path]');
+    rows.forEach((row) => {
+      const r = (row as HTMLElement).getBoundingClientRect();
+      const overlap = r.left < x1 && r.right > x0 && r.top < y1 && r.bottom > y0;
+      if (overlap) {
+        const p = (row as HTMLElement).dataset.path;
+        if (p) next.add(p);
+      }
+    });
+    if (next.size > 0) {
+      selected = next;
+      lastSelectedIndex = -1;
+    }
+  }
+
+  // --- Internal drag & drop (move onto a folder) -----------------------------
+
+  let dragPaths = $state<string[]>([]);
+
+  function onRowDragStart(e: DragEvent, entry: FileEntry) {
+    if (snapshotMode || showTrash) return;
+    dragPaths = selected.has(entry.path) ? [...selected] : [entry.path];
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', entry.path);
+    }
+  }
+
+  function onFolderDragOver(e: DragEvent) {
+    if (snapshotMode || showTrash || dragPaths.length === 0) return;
+    e.preventDefault();
+  }
+
+  async function onFolderDrop(e: DragEvent, destDir: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (snapshotMode || showTrash || dragPaths.length === 0) return;
+    const names = dragPaths.map((p) => p.split('/').filter(Boolean).pop() || p);
+    const strategy = await resolveStrategy(names, destDir);
+    const paths = dragPaths;
+    dragPaths = [];
+    if (strategy === null) return;
+    let moved = 0;
+    for (const src of paths) {
+      const name = src.split('/').filter(Boolean).pop() || src;
+      if (src === joinPath(destDir, name)) continue; // dropped onto its own folder
+      const r = await api.moveItem(src, joinPath(destDir, name), strategy);
+      if (r.success) moved++;
+    }
+    if (moved > 0) {
+      selected = new Set();
+      await loadDirectory(currentPath);
+    }
+  }
+
+  function endInternalDrag() {
+    dragPaths = [];
   }
 
   // --- Snapshot browsing --------------------------------------------------
@@ -498,6 +783,8 @@
         listing = result.data;
         currentPath = path;
         if (ticket) thumbnailTicket = ticket;
+        resetPaging();
+        recordRecent(path);
         // Reconnect the real-time watcher for the new directory
         connectWatcher(path);
       } else {
@@ -523,7 +810,7 @@
   async function runSearch(query: string) {
     searching = true;
     try {
-      const result = await api.searchFiles(currentPath, query, 200);
+      const result = await api.searchFiles(currentPath, query, 200, fuzzySearch);
       if (result.success && result.data) {
         searchResults = result.data.results;
       } else {
@@ -531,12 +818,14 @@
       }
     } finally {
       searching = false;
+      resetPaging();
     }
   }
 
   function clearSearch() {
     searchQuery = '';
     searchResults = null;
+    resetPaging();
   }
 
   let sortedEntries = $derived.by(() => {
@@ -1168,6 +1457,27 @@
       </WindowSidebarSection>
     {/if}
 
+    {#if recents.length > 0}
+      <WindowSidebarSection label={$t('explorer.recents')}>
+        {#each recents as recent (recent.path)}
+          <WindowSidebarItem
+            label={recent.label}
+            labelClass="disk-name"
+            class="disk-btn"
+            active={!showTrash && currentPath === recent.path}
+            dropActive={sidebarDropTarget === recent.path}
+            onclick={() => loadDirectory(recent.path)}
+            ondragover={(e) => sidebarDragOver(e, recent.path)}
+            ondragleave={sidebarDragLeave}
+            ondrop={(e) => sidebarDrop(e, recent.path)}
+          >
+            {#snippet icon()}<IconClock size={15} class="text-[var(--hv-shell-text-2)]" />{/snippet}
+          </WindowSidebarItem>
+        {/each}
+        <button data-testid="explorer-recents-clear" class="mx-3 mt-1 border-none bg-transparent text-c-xs text-[var(--hv-shell-text-2)] cursor-pointer hover:text-[var(--hv-shell-text-strong)] hv-ic" onclick={clearRecents}>{$t('explorer.clear_recents')}</button>
+      </WindowSidebarSection>
+    {/if}
+
     <WindowSidebarSection>
       <WindowSidebarItem
         label={$t('explorer.trash')}
@@ -1290,6 +1600,13 @@
         {/if}
       </div>
     {/if}
+    {#if !showTrash}
+      <button data-testid="explorer-rewind-btn" class={cn(toolbarBtn, showRewind && 'text-[var(--hv-primary)]')} class:active={showRewind} onclick={() => openRewindFor(currentPath, currentPath)} title={$t('explorer.rewind')} aria-label={$t('explorer.rewind')}><IconClock size={16} /></button>
+      <button data-testid="explorer-network-btn" class={cn(toolbarBtn, showNetwork && 'text-[var(--hv-primary)]')} onclick={openNetwork} title={$t('explorer.network')} aria-label={$t('explorer.network')}><IconServer size={16} /></button>
+      {#if isAdmin}
+        <button data-testid="explorer-format-btn" class={toolbarBtn} onclick={() => { formatError = ''; showFormat = true; }} title={$t('explorer.format_drive')} aria-label={$t('explorer.format_drive')}><IconDatabase size={16} /></button>
+      {/if}
+    {/if}
     <div data-testid="explorer-breadcrumb" class="flex items-center gap-0.5 flex-1 min-w-0 px-1 overflow-hidden">
       {#if breadcrumbRoot}
         <button class="px-2 py-1 rounded-lg border-none bg-transparent text-c-base font-medium text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)]" onclick={() => breadcrumbRoot && loadDirectory(breadcrumbRoot.path)}>{rootLabel(breadcrumbRoot)}</button>
@@ -1326,6 +1643,7 @@
       {#if searchResults !== null}
         <span class="text-c-xs text-[var(--hv-shell-text-2)]">{$t('explorer.search_results_count', { count: String(searchResults.length) })}</span>
       {/if}
+      <button data-testid="explorer-fuzzy-toggle" class={cn(toolbarBtn, fuzzySearch && 'bg-[var(--hv-primary-light)] text-[var(--hv-primary)]')} class:active={fuzzySearch} aria-pressed={fuzzySearch} onclick={() => { fuzzySearch = !fuzzySearch; if (searchQuery.trim()) runSearch(searchQuery.trim()); }} title={$t('explorer.fuzzy_search')} aria-label={$t('explorer.fuzzy_search')}><span class="text-sm font-bold" aria-hidden="true">≈</span></button>
       <div data-testid="explorer-view-toggle" class="flex gap-0.5">
         <button class={cn(toolbarBtn, view === 'list' && 'bg-[var(--hv-primary-light)] text-[var(--hv-primary)]')} class:active={view === 'list'} data-testid="explorer-view-list" onclick={() => view = 'list'} title={$t('explorer.view_list')}><IconList size={16} /></button>
         <button class={cn(toolbarBtn, view === 'grid' && 'bg-[var(--hv-primary-light)] text-[var(--hv-primary)]')} class:active={view === 'grid'} data-testid="explorer-view-grid" onclick={() => view = 'grid'} title={$t('explorer.view_grid')}><IconLayoutGrid size={16} /></button>
@@ -1361,7 +1679,10 @@
     </div>
   {/if}
 
-  <div data-testid="explorer-file-area" class:drag-active={isDraggingOver} class="flex-1 min-h-0 overflow-y-auto" ondragover={handleDragOver} ondragenter={handleDragEnter} ondragleave={handleDragLeave} ondrop={handleDrop} role="region" aria-label={$t('explorer.drop_zone_label')}>
+  <div data-testid="explorer-file-area" class:drag-active={isDraggingOver} class="relative flex-1 min-h-0 overflow-y-auto" bind:this={fileAreaEl} onmousedown={onFileAreaMouseDown} ondragover={handleDragOver} ondragenter={handleDragEnter} ondragleave={handleDragLeave} ondrop={handleDrop} role="region" aria-label={$t('explorer.drop_zone_label')}>
+    {#if marquee}
+      <div data-testid="explorer-marquee" class="pointer-events-none absolute z-20 border border-[var(--hv-primary)] bg-[var(--hv-primary-light)]/60" style={marqueeStyle()} aria-hidden="true"></div>
+    {/if}
     {#if showTrash}
       <div data-testid="explorer-trash-toolbar" class="flex items-center justify-between gap-2 px-4 py-3">
         <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('explorer.trash')}</h3>
@@ -1389,6 +1710,9 @@
         </div>
       {/if}
     {:else}
+    {#if !loading && !error && listing && searchResults === null && !showTrash && !snapshotMode && currentPath === '/'}
+      <ExplorerWidget onopen={(p) => loadDirectory(p)} />
+    {/if}
     {#if isDraggingOver}
       <div class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-[var(--hv-primary-light)]/70">
         <IconUpload size={40} />
@@ -1414,8 +1738,8 @@
             <span class="text-c-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-2)]">{$t('explorer.permissions')}</span>
             <span class="text-c-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-2)]">{$t('explorer.col_actions')}</span>
           </div>
-          {#each sortedEntries as entry, i (entry.path)}
-            <div data-testid="explorer-file-row" class:selected={selected.has(entry.path)} class="grid grid-cols-[minmax(0,1fr)_auto_auto_auto_auto] items-center gap-3 px-3 py-2 border-b border-[var(--hv-shell-border-soft)] cursor-pointer hover:bg-[var(--hv-subtle-hover)]" onclick={(e) => handleRowClick(entry, i, e)} onkeydown={(e) => activateOnEnterOrSpace(e, () => navigateToEntry(entry))} role="button" tabindex="0" aria-label={entry.name}>
+          {#each visibleEntries as entry, vi (entry.path)}
+            <div data-testid="explorer-file-row" data-path={entry.path} draggable="true" ondragstart={(e) => onRowDragStart(e, entry)} ondragend={endInternalDrag} ondragover={entry.is_directory ? onFolderDragOver : undefined} ondrop={entry.is_directory ? (e) => onFolderDrop(e, entry.path) : undefined} class:selected={selected.has(entry.path)} class="grid grid-cols-[minmax(0,1fr)_auto_auto_auto_auto] items-center gap-3 px-3 py-2 border-b border-[var(--hv-shell-border-soft)] cursor-pointer hover:bg-[var(--hv-subtle-hover)]" onclick={(e) => handleRowClick(entry, sortedEntries.indexOf(entry), e)} onkeydown={(e) => activateOnEnterOrSpace(e, () => navigateToEntry(entry))} role="button" tabindex="0" aria-label={entry.name}>
               <span class="flex items-center gap-2 min-w-0"><Icon name={getFileIcon(entry)} size={18} className={entry.is_directory ? 'folder-icon' : ''} class="text-[var(--hv-shell-text-2)]" /><span class="text-c-base text-[var(--hv-shell-text-strong)] truncate">{entry.name}</span></span>
               <span class="text-xs text-[var(--hv-shell-text-2)]">{entry.is_directory ? '\u2014' : formatSize(entry.size_bytes)}</span>
               <span class="text-xs text-[var(--hv-shell-text-2)]">{entry.modified}</span>
@@ -1429,6 +1753,7 @@
                   {#if isText(entry.name) || isImage(entry.name)}
                     <button class={efRowAction} data-testid="explorer-row-preview" onclick={(e) => { e.stopPropagation(); handlePreview(entry); }} title={$t('explorer.preview')} aria-label={$t('explorer.preview')}><IconEye size={14} /></button>
                   {/if}
+                  <button class={efRowAction} data-testid="explorer-row-rewind" onclick={(e) => { e.stopPropagation(); openRewindFor(entry.path, entry.name); }} title={$t('explorer.rewind')} aria-label={$t('explorer.rewind')}><IconClock size={14} /></button>
                   {#if isArchive(entry.name) && !snapshotMode}
                     <button class={efRowAction} data-testid="explorer-row-extract" onclick={(e) => { e.stopPropagation(); handleExtract(entry); }} title={$t('explorer.extract')} aria-label={$t('explorer.extract')}><IconArchive size={14} /></button>
                   {/if}
@@ -1447,11 +1772,16 @@
           {#if sortedEntries.length === 0}
             <div data-testid="explorer-state-message" class={stateMessage}><IconFolderOpen size={40} /><p class="m-0">{$t('explorer.empty_folder')}</p></div>
           {/if}
+          {#if visibleLimit < sortedEntries.length}
+            <div bind:this={sentinelEl} class="flex justify-center py-3">
+              <Button variant="ghost" onclick={() => visibleLimit += VIRTUAL_PAGE}>{$t('explorer.show_more', { remaining: String(sortedEntries.length - visibleLimit) })}</Button>
+            </div>
+          {/if}
         </div>
       {:else}
         <div data-testid="explorer-file-grid" class="grid gap-2 p-4 [grid-template-columns:repeat(auto-fill,minmax(110px,1fr))]">
-          {#each sortedEntries as entry, i (entry.path)}
-            <button data-testid="explorer-grid-item" class:selected={selected.has(entry.path)} class="flex flex-col items-center gap-1.5 p-3 rounded-xl border border-transparent bg-transparent cursor-pointer hover:bg-[var(--hv-subtle-hover)] text-center" onclick={(e) => handleRowClick(entry, i, e)}>
+          {#each visibleEntries as entry, vi (entry.path)}
+            <button data-testid="explorer-grid-item" data-path={entry.path} draggable="true" ondragstart={(e) => onRowDragStart(e, entry)} ondragend={endInternalDrag} ondragover={entry.is_directory ? onFolderDragOver : undefined} ondrop={entry.is_directory ? (e) => onFolderDrop(e, entry.path) : undefined} class:selected={selected.has(entry.path)} class="flex flex-col items-center gap-1.5 p-3 rounded-xl border border-transparent bg-transparent cursor-pointer hover:bg-[var(--hv-subtle-hover)] text-center" onclick={(e) => handleRowClick(entry, sortedEntries.indexOf(entry), e)}>
               {#if !entry.is_directory && isImage(entry.name)}
                 <img class="w-12 h-12 object-cover rounded-lg" src={api.getThumbnailUrl(entry.path, thumbnailTicket)} alt={entry.name} loading="lazy" onerror={(e) => { (e.target as HTMLImageElement).style.display = 'none'; (e.target as HTMLImageElement).nextElementSibling?.classList.remove('explorer-grid-icon--hidden'); }} />
                 <span class="explorer-grid-icon explorer-grid-icon--hidden"><Icon name="image" size={48} /></span>
@@ -1464,6 +1794,11 @@
           {/each}
           {#if sortedEntries.length === 0}
             <div data-testid="explorer-state-message" class={stateMessage}><IconFolderOpen size={40} /><p class="m-0">{$t('explorer.empty_folder')}</p></div>
+          {/if}
+          {#if visibleLimit < sortedEntries.length}
+            <div bind:this={sentinelEl} class="flex justify-center py-3 [grid-column:1/-1]">
+              <Button variant="ghost" onclick={() => visibleLimit += VIRTUAL_PAGE}>{$t('explorer.show_more', { remaining: String(sortedEntries.length - visibleLimit) })}</Button>
+            </div>
           {/if}
         </div>
       {/if}
@@ -1602,6 +1937,86 @@
 
 <!-- Share by link -->
 <ShareLinkModal open={showShareLink && !!shareLinkTarget} initialPath={shareLinkTarget?.path ?? ''} onclose={() => { showShareLink = false; shareLinkTarget = null; }} />
+
+<!-- Rewind: per-file version timeline -->
+<Modal open={showRewind} title={$t('explorer.rewind_title')} size="md" onclose={closeRewind}>
+  <p class="m-0 mb-1 text-xs text-[var(--hv-shell-text-2)]">{rewindLabel}</p>
+  {#if rewindLoading}
+    <div class="flex items-center gap-2 py-6 text-sm text-[var(--hv-shell-text-2)]" role="status"><IconLoader size={16} class="animate-spin" /> {$t('explorer.loading')}</div>
+  {:else if rewindVersions.length === 0}
+    <p class="m-0 py-6 text-sm text-[var(--hv-shell-text-2)]">{$t('explorer.rewind_empty')}</p>
+  {:else}
+    <div class="flex flex-col gap-1.5">
+      {#each rewindVersions as v (v.browse_path)}
+        <div class="flex items-center gap-2 rounded-lg border border-[var(--hv-shell-border-soft)] px-3 py-2">
+          <IconHistory size={16} class="shrink-0 text-[var(--hv-shell-text-2)]" />
+          <span class="min-w-0 flex-1">
+            <span class="block truncate text-c-base font-medium text-[var(--hv-shell-text-strong)]">{v.name}</span>
+            <span class="block text-c-xs text-[var(--hv-shell-text-2)]">{formatSnapDate(v.created)}</span>
+          </span>
+          <Button variant="ghost" onclick={() => restoreRewindVersion(v)}>{$t('explorer.rewind_restore')}</Button>
+        </div>
+      {/each}
+    </div>
+  {/if}
+  {#snippet footer()}
+    <div class="flex gap-2.5 justify-end">
+      <Button variant="ghost" onclick={closeRewind}>{$t('common.close')}</Button>
+    </div>
+  {/snippet}
+</Modal>
+
+<!-- Network discovery -->
+<Modal open={showNetwork} title={$t('explorer.network')} size="md" onclose={() => showNetwork = false}>
+  {#if networkLoading}
+    <div class="flex items-center gap-2 py-6 text-sm text-[var(--hv-shell-text-2)]" role="status"><IconLoader size={16} class="animate-spin" /> {$t('explorer.loading')}</div>
+  {:else if neighbours.length === 0}
+    <p class="m-0 py-6 text-sm text-[var(--hv-shell-text-2)]">{$t('explorer.network_empty')}</p>
+  {:else}
+    <div class="flex flex-col gap-1.5">
+      {#each neighbours as n (`${n.source}:${n.host}:${n.share ?? ''}`)}
+        <div class="flex items-center gap-2 rounded-lg border border-[var(--hv-shell-border-soft)] px-3 py-2">
+          <IconServer size={16} class="shrink-0 text-[var(--hv-shell-text-2)]" />
+          <span class="min-w-0 flex-1">
+            <span class="block truncate text-c-base font-medium text-[var(--hv-shell-text-strong)]">{n.share ? `${n.host} / ${n.share}` : n.host}</span>
+            <span class="block truncate text-c-xs text-[var(--hv-shell-text-2)]">{[n.address, n.source].filter(Boolean).join(' · ')}</span>
+          </span>
+        </div>
+      {/each}
+    </div>
+  {/if}
+  {#snippet footer()}
+    <div class="flex gap-2.5 justify-end">
+      <Button variant="ghost" onclick={() => showNetwork = false}>{$t('common.close')}</Button>
+      <Button variant="primary" onclick={openNetwork}>{$t('explorer.network_scan')}</Button>
+    </div>
+  {/snippet}
+</Modal>
+
+<!-- Drive formatting (admin only, destructive) -->
+<Modal open={showFormat} title={$t('explorer.format_drive')} size="sm" onclose={() => showFormat = false}>
+  <label class="mb-1.5 block text-sm font-medium text-[var(--hv-shell-text-strong)]" for="formatDevice">/dev/…</label>
+  <input id="formatDevice" type="text" class="h-11 w-full rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] px-3 text-sm outline-none focus:border-[var(--hv-primary)]" bind:value={formatDevice} placeholder="/dev/sdb1" autocomplete="off" />
+  <label class="mb-1.5 mt-4 block text-sm font-medium text-[var(--hv-shell-text-strong)]" for="formatFstype">ext4 / exFAT</label>
+  <select id="formatFstype" class="h-11 w-full rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] px-3 text-sm outline-none focus:border-[var(--hv-primary)]" bind:value={formatFstype}>
+    <option value="ext4">ext4</option>
+    <option value="exfat">exFAT</option>
+  </select>
+  <label class="mb-1.5 mt-4 block text-sm font-medium text-[var(--hv-shell-text-strong)]" for="formatLabel">{$t('explorer.format_label')}</label>
+  <input id="formatLabel" type="text" class="h-11 w-full rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] px-3 text-sm outline-none focus:border-[var(--hv-primary)]" bind:value={formatLabel} maxlength="16" autocomplete="off" />
+  {#if formatDevice.trim()}
+    <p class="m-0 mt-3 text-xs font-medium text-[var(--hv-error)]">{$t('explorer.format_warning', { device: formatDevice.trim() })}</p>
+  {/if}
+  {#if formatError}
+    <p class="m-0 mt-2 text-xs text-[var(--hv-error)]" role="alert">{formatError}</p>
+  {/if}
+  {#snippet footer()}
+    <div class="flex gap-2.5 justify-end">
+      <Button variant="ghost" onclick={() => showFormat = false}>{$t('common.cancel')}</Button>
+      <Button variant="danger" onclick={handleFormat} disabled={formatBusy || !formatDevice.trim()}>{#if formatBusy}<IconLoader size={16} class="animate-spin" />{/if} {$t('explorer.format_confirm')}</Button>
+    </div>
+  {/snippet}
+</Modal>
 
 <!-- Unsaved editor changes — never drop them silently -->
 <Modal open={showDiscardConfirm} title={$t('explorer.unsaved_title')} size="sm" closeOnBackdrop={false} onclose={() => (showDiscardConfirm = false)}>
