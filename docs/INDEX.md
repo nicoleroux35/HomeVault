@@ -51,6 +51,7 @@ methods, and notable invariants.
 | Backup / Restic (repos, snapshots, schedules) | [guides/backup-restic.md](./guides/backup-restic.md) |
 | AI Assistant (Chat, Ollama) | [guides/chat.md](./guides/chat.md) |
 | RAG Knowledge Base (embeddings, semantic search) | [guides/rag.md](./guides/rag.md) |
+| External Agents (MCP server, tokens, granular permissions) | [guides/mcp.md](./guides/mcp.md) |
 | Terminal (native PTY over WebSocket) | [guides/terminal.md](./guides/terminal.md) |
 | Docker (containers, images, networks, compose) | [guides/docker.md](./guides/docker.md) |
 | Cloud Sync (rclone) | [guides/cloud-sync.md](./guides/cloud-sync.md) |

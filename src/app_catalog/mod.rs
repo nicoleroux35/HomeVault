@@ -194,15 +194,168 @@ fn scan_store(store_id: &str, store_name: &str) -> Vec<CatalogApp> {
 /// rendered YAML and the app's dedicated data directory (created by the
 /// caller). Mirrors the old `docker_catalog::render`.
 pub fn render(app: &CatalogApp, port: u16) -> Result<(String, PathBuf), String> {
+    render_with_env(app, port, &std::collections::HashMap::new())
+}
+
+/// Like [`render`], but substitutes declared environment variables: every
+/// `{{NAME}}` placeholder for a manifest-declared `NAME` is replaced by the
+/// caller-supplied value, else the manifest default, else left in place when
+/// the variable is optional. A missing required value is an error.
+pub fn render_with_env(
+    app: &CatalogApp,
+    port: u16,
+    env: &std::collections::HashMap<String, String>,
+) -> Result<(String, PathBuf), String> {
     let tmpl = app
         .compose_template()
         .ok_or_else(|| "app package has no docker-compose.yml".to_string())?;
     let data_dir = crate::config::paths::apps_dir().join(app.install_key());
-    let rendered = tmpl
+    let mut rendered = tmpl
         .replace("{{DATA_DIR}}", &data_dir.to_string_lossy())
         .replace("{{PORT}}", &port.to_string())
         .replace("{{APP_ID}}", app.bare_id());
+    for decl in &app.manifest.environment {
+        let value = env
+            .get(&decl.name)
+            .cloned()
+            .or_else(|| decl.default.clone());
+        match value {
+            Some(v) => {
+                rendered = rendered.replace(&format!("{{{{{}}}}}", decl.name), &v);
+            }
+            None if decl.required => {
+                return Err(format!(
+                    "missing required setting {} for {}",
+                    decl.name, app.manifest.name
+                ));
+            }
+            None => {}
+        }
+    }
     Ok((rendered, data_dir))
+}
+
+/// Validate caller-supplied environment values against the manifest's
+/// declarations: unknown names, values outside `options`, and missing
+/// required variables (with no default) are all errors.
+pub fn validate_env_values(
+    app: &CatalogApp,
+    env: &std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    for key in env.keys() {
+        let Some(decl) = app.manifest.environment.iter().find(|d| &d.name == key) else {
+            return Err(format!(
+                "{} declares no setting named {key:?}",
+                app.manifest.name
+            ));
+        };
+        if !decl.options.is_empty() && env.get(key).is_some_and(|v| !decl.options.contains(v)) {
+            return Err(format!(
+                "{key:?} must be one of [{}]",
+                decl.options.join(", ")
+            ));
+        }
+    }
+    for decl in &app.manifest.environment {
+        if decl.required && !env.contains_key(&decl.name) && decl.default.is_none() {
+            return Err(format!("{} requires a value", decl.name));
+        }
+    }
+    Ok(())
+}
+
+/// Every catalog app (same store first, then other stores) that can satisfy
+/// `dependency`: the canonical app itself plus any app whose `implements`
+/// list contains it. Used to offer Umbrel-style alternatives at install.
+pub fn providers_of<'a>(apps: &'a [CatalogApp], dependency: &str) -> Vec<&'a CatalogApp> {
+    let (mut canonical, mut alternatives): (Vec<_>, Vec<_>) = apps
+        .iter()
+        .filter(|a| {
+            a.bare_id() == dependency || a.manifest.implements.contains(&dependency.to_string())
+        })
+        .partition(|a| a.bare_id() == dependency);
+    // Prefer same-store providers deterministically by store then name.
+    canonical.sort_by(|a, b| {
+        a.store_id
+            .cmp(&b.store_id)
+            .then(a.manifest.name.cmp(&b.manifest.name))
+    });
+    alternatives.sort_by(|a, b| {
+        a.store_id
+            .cmp(&b.store_id)
+            .then(a.manifest.name.cmp(&b.manifest.name))
+    });
+    canonical.into_iter().chain(alternatives).collect()
+}
+
+/// One dependency line of an install plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependencyNeed {
+    /// The canonical id the app declares.
+    pub dependency: String,
+    /// Bare ids of installed apps that already satisfy it (empty = missing).
+    pub satisfied_by: Vec<String>,
+    /// Namespaced ids of catalog apps that could satisfy it, canonical first.
+    pub providers: Vec<String>,
+    /// The provider the plan selects (`alternatives[dep]`, else the first
+    /// available provider, else `None` when nothing provides it).
+    pub selected: Option<String>,
+}
+
+/// Resolve `app`'s dependencies against the catalog: which are already
+/// satisfied by `installed_bare_ids`, which provider each missing one maps
+/// to (honouring the caller's `alternatives` overrides, validated to really
+/// provide the dependency), and which have no provider at all.
+pub fn resolve_install_plan(
+    apps: &[CatalogApp],
+    app: &CatalogApp,
+    installed_bare_ids: &std::collections::HashSet<String>,
+    alternatives: &std::collections::HashMap<String, String>,
+) -> Vec<DependencyNeed> {
+    app.manifest
+        .dependencies
+        .iter()
+        .map(|dep| {
+            let satisfied_by: Vec<String> = apps
+                .iter()
+                .filter(|a| {
+                    (a.bare_id() == *dep || a.manifest.implements.contains(dep))
+                        && installed_bare_ids.contains(a.bare_id())
+                })
+                .map(|a| a.bare_id().to_string())
+                .collect();
+            let providers: Vec<String> = providers_of(apps, dep)
+                .iter()
+                .map(|a| a.namespaced_id())
+                .collect();
+            let selected = if !satisfied_by.is_empty() {
+                None
+            } else if let Some(want) = alternatives.get(dep) {
+                providers.iter().find(|p| *p == want).cloned()
+            } else {
+                // Prefer a same-store provider so cross-store installs stay
+                // explicit, else the first (canonical-first) provider.
+                providers
+                    .iter()
+                    .find(|p| p.starts_with(&format!("{}:", app.store_id)))
+                    .or_else(|| providers.first())
+                    .cloned()
+            };
+            DependencyNeed {
+                dependency: dep.clone(),
+                satisfied_by,
+                providers,
+                selected,
+            }
+        })
+        .collect()
+}
+
+/// Server-side compatibility for one catalog app: arch coverage plus the
+/// manifest's `min_homevault_version` gate against this binary.
+pub fn compatibility(app: &CatalogApp) -> Option<String> {
+    app.manifest
+        .incompatibility_reason(std::env::consts::ARCH, env!("CARGO_PKG_VERSION"))
 }
 
 #[cfg(test)]
@@ -260,5 +413,105 @@ mod tests {
         assert!(find(&[], "jellyfin").is_some());
         assert!(find(&[], "homevault:jellyfin").is_some());
         assert!(find(&[], "nope:jellyfin").is_none());
+    }
+
+    fn test_app(store: &str, id: &str, deps: &[&str], implements: &[&str]) -> CatalogApp {
+        let toml = format!(
+            "manifest_version = 1\nid = \"{id}\"\nname = \"{id}\"\ncategory = \"x\"\napp_port = 1\ndescription = \"d\"\ndependencies = {deps:?}\nimplements = {impls:?}\n",
+            deps = deps.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            impls = implements.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        );
+        CatalogApp {
+            store_id: store.to_string(),
+            store_name: store.to_string(),
+            manifest: Manifest::parse(&toml).unwrap(),
+            source: AppSource::Store(format!("/tmp/{store}-{id}").into()),
+        }
+    }
+
+    #[test]
+    fn test_providers_of_prefers_canonical() {
+        let apps = vec![
+            test_app("homevault", "alt-db", &[], &["postgres"]),
+            test_app("homevault", "postgres", &[], &[]),
+        ];
+        let providers = providers_of(&apps, "postgres");
+        assert_eq!(providers.len(), 2);
+        assert_eq!(providers[0].bare_id(), "postgres");
+        assert_eq!(providers[1].bare_id(), "alt-db");
+        assert!(providers_of(&apps, "missing").is_empty());
+    }
+
+    #[test]
+    fn test_resolve_install_plan_satisfied_missing_and_alternative() {
+        let apps = vec![
+            test_app("homevault", "wiki", &["postgres"], &[]),
+            test_app("homevault", "postgres", &[], &[]),
+            test_app("homevault", "alt-db", &[], &["postgres"]),
+        ];
+        let wiki = apps[0].clone();
+        let installed: std::collections::HashSet<String> =
+            ["alt-db".to_string()].into_iter().collect();
+        // Satisfied via the alternative implementation.
+        let plan =
+            resolve_install_plan(&apps, &wiki, &installed, &std::collections::HashMap::new());
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].satisfied_by, vec!["alt-db"]);
+        assert!(plan[0].selected.is_none());
+
+        // Nothing installed: selects the canonical provider by default.
+        let plan = resolve_install_plan(
+            &apps,
+            &wiki,
+            &std::collections::HashSet::new(),
+            &std::collections::HashMap::new(),
+        );
+        assert_eq!(plan[0].selected.as_deref(), Some("homevault:postgres"));
+
+        // Explicit alternative override is honoured when it provides the dep.
+        let mut alt = std::collections::HashMap::new();
+        alt.insert("postgres".to_string(), "homevault:alt-db".to_string());
+        let plan = resolve_install_plan(&apps, &wiki, &std::collections::HashSet::new(), &alt);
+        assert_eq!(plan[0].selected.as_deref(), Some("homevault:alt-db"));
+
+        // An override that does not provide the dep selects nothing.
+        alt.insert("postgres".to_string(), "homevault:wiki".to_string());
+        let plan = resolve_install_plan(&apps, &wiki, &std::collections::HashSet::new(), &alt);
+        assert!(plan[0].selected.is_none());
+    }
+
+    #[test]
+    fn test_render_with_env_and_validation() {
+        let mut app = test_app("homevault", "demo", &[], &[]);
+        app.manifest.environment = vec![
+            manifest::EnvVarDecl {
+                name: "SECRET".to_string(),
+                services: vec![],
+                default: None,
+                options: vec![],
+                required: true,
+                note: None,
+            },
+            manifest::EnvVarDecl {
+                name: "TZ".to_string(),
+                services: vec![],
+                default: Some("UTC".to_string()),
+                options: vec!["UTC".to_string(), "Europe/Paris".to_string()],
+                required: false,
+                note: None,
+            },
+        ];
+        let empty = std::collections::HashMap::new();
+        assert!(validate_env_values(&app, &empty).is_err()); // SECRET missing
+        let mut bad = std::collections::HashMap::new();
+        bad.insert("NOPE".to_string(), "x".to_string());
+        assert!(validate_env_values(&app, &bad).is_err()); // unknown
+        let mut bad_opt = std::collections::HashMap::new();
+        bad_opt.insert("SECRET".to_string(), "s".to_string());
+        bad_opt.insert("TZ".to_string(), "Mars".to_string());
+        assert!(validate_env_values(&app, &bad_opt).is_err()); // outside options
+        let mut good = std::collections::HashMap::new();
+        good.insert("SECRET".to_string(), "s3cr3t".to_string());
+        assert!(validate_env_values(&app, &good).is_ok());
     }
 }

@@ -45,8 +45,14 @@ struct CatalogAppView {
     repo: Option<String>,
     release_notes: Option<String>,
     dependencies: Vec<String>,
+    /// Canonical ids this app can stand in for (`implements`).
+    implements: Vec<String>,
+    /// Advanced settings the install dialog offers (Umbrel-style).
+    environment: Vec<crate::app_catalog::manifest::EnvVarDecl>,
     /// Dependencies (same store) that are not currently installed.
     missing_dependencies: Vec<String>,
+    /// `None` when this server can install the app, else the reason why.
+    incompatibility_reason: Option<String>,
     store_id: String,
     store_name: String,
     installed: bool,
@@ -145,8 +151,8 @@ pub async fn proxy_restore_entries() -> Vec<crate::app_proxy::RestoreEntry> {
 }
 
 /// Load the enabled community stores as `(id, name)` pairs for
-/// `app_catalog::list_apps` / `find`.
-async fn enabled_stores(state: &Arc<AppState>) -> Vec<(String, String)> {
+/// `app_catalog::list_apps` / `find`. Shared with the MCP handler.
+pub(crate) async fn enabled_stores(state: &Arc<AppState>) -> Vec<(String, String)> {
     let repo = AppStoreRepository::new(state.db.pool());
     repo.list()
         .await
@@ -160,6 +166,13 @@ async fn enabled_stores(state: &Arc<AppState>) -> Vec<(String, String)> {
 #[derive(Debug, Deserialize)]
 pub struct InstallCatalogAppRequest {
     pub port: Option<u16>,
+    /// `dependency -> namespaced provider id` overrides. Each override must
+    /// really provide the dependency or the install is a 400.
+    #[serde(default)]
+    pub alternatives: std::collections::HashMap<String, String>,
+    /// Values for the manifest's declared `environment` settings.
+    #[serde(default)]
+    pub environment: std::collections::HashMap<String, String>,
 }
 
 /// Lists every catalog app (built-in + enabled stores) with its live
@@ -224,7 +237,10 @@ pub async fn handle_catalog_list(
                     repo: app.manifest.repo.clone(),
                     release_notes: app.manifest.release_notes.clone(),
                     dependencies: app.manifest.dependencies.clone(),
+                    implements: app.manifest.implements.clone(),
+                    environment: app.manifest.environment.clone(),
                     missing_dependencies,
+                    incompatibility_reason: app_catalog::compatibility(app),
                     store_id: app.store_id.clone(),
                     store_name: app.store_name.clone(),
                     installed,
@@ -318,14 +334,40 @@ pub async fn handle_catalog_install(
         Err(response) => return response,
     };
 
-    let stores = enabled_stores(&state).await;
-    let Some(app) = app_catalog::find(&stores, &id) else {
-        return ResponseHelper::json_error(format!("Unknown catalog app: {}", id));
+    match install_catalog_app(&state, &id, &req, &format!("Admin '{admin_username}'")).await {
+        Ok(message) => ResponseHelper::json_success(message),
+        Err(e) => ResponseHelper::json_error(e),
+    }
+}
+
+/// Shared install core behind the HTTP handler and the MCP `apps.install`
+/// tool: validate, render, create + start the compose project, bring up the
+/// per-app proxy, write the install marker. `actor` labels the event-log
+/// line (`Admin 'x'` for HTTP, `MCP token <id>` for agents).
+pub async fn install_catalog_app(
+    state: &Arc<AppState>,
+    id: &str,
+    req: &InstallCatalogAppRequest,
+    actor: &str,
+) -> Result<String, String> {
+    let stores = enabled_stores(state).await;
+    let Some(app) = app_catalog::find(&stores, id) else {
+        return Err(format!("Unknown catalog app: {}", id));
     };
 
     let install_key = app.install_key();
     if ComposeManager::get_project(&install_key).is_ok() {
-        return ResponseHelper::json_error(format!("{} is already installed", app.manifest.name));
+        return Err(format!("{} is already installed", app.manifest.name));
+    }
+
+    // Compatibility gate (arch + min_homevault_version) — same reason the
+    // catalog list shows, enforced server-side so the UI can't bypass it.
+    if let Some(reason) = app_catalog::compatibility(&app) {
+        return Err(format!("Cannot install {}: {}", app.manifest.name, reason));
+    }
+
+    if let Err(e) = app_catalog::validate_env_values(&app, &req.environment) {
+        return Err(format!("Invalid settings for {}: {}", app.manifest.name, e));
     }
 
     let port = req.port.unwrap_or(app.manifest.host_port());
@@ -342,28 +384,71 @@ pub async fn handle_catalog_install(
             Some("homevault") => format!("port {} is reserved by the HomeVault server", port),
             _ => format!("port {} is already in use on the host", port),
         };
-        return ResponseHelper::json_error(format!(
-            "Cannot install {}: {}",
-            app.manifest.name, reason
-        ));
+        return Err(format!("Cannot install {}: {}", app.manifest.name, reason));
     }
 
-    let (rendered, data_dir) = match app_catalog::render(&app, port) {
+    // Dependency gate: every declared dependency must already be satisfied
+    // by an installed app (canonical id or an `implements` alternative), or
+    // map to a catalog provider via `alternatives`/default selection.
+    // Missing providers are an error naming what to install first —
+    // dependency installs stay an explicit admin decision, never an
+    // implicit pull.
+    {
+        let all_apps = app_catalog::list_apps(&stores);
+        let installed: std::collections::HashSet<String> = all_apps
+            .iter()
+            .filter(|a| ComposeManager::get_project(&a.install_key()).is_ok())
+            .map(|a| a.bare_id().to_string())
+            .collect();
+        for (dep, want) in &req.alternatives {
+            if !app.manifest.dependencies.contains(dep) {
+                return Err(format!("{} does not depend on {dep:?}", app.manifest.name));
+            }
+            let provides = app_catalog::providers_of(&all_apps, dep)
+                .iter()
+                .any(|a| &a.namespaced_id() == want);
+            if !provides {
+                return Err(format!("{want:?} does not provide {dep:?}"));
+            }
+        }
+        let plan =
+            app_catalog::resolve_install_plan(&all_apps, &app, &installed, &req.alternatives);
+        let missing: Vec<String> = plan
+            .iter()
+            .filter(|n| n.satisfied_by.is_empty() && n.selected.is_none())
+            .map(|n| {
+                if n.providers.is_empty() {
+                    format!(
+                        "{} (no known provider — add a store that ships it)",
+                        n.dependency
+                    )
+                } else {
+                    format!("{} (try {})", n.dependency, n.providers.join(" or "))
+                }
+            })
+            .collect();
+        if !missing.is_empty() {
+            return Err(format!(
+                "Cannot install {}: missing dependencies: {}",
+                app.manifest.name,
+                missing.join("; ")
+            ));
+        }
+    }
+
+    let (rendered, data_dir) = match app_catalog::render_with_env(&app, port, &req.environment) {
         Ok(v) => v,
         Err(e) => {
-            return ResponseHelper::json_error(format!(
-                "Failed to render {}: {}",
-                app.manifest.name, e
-            ))
+            return Err(format!("Failed to render {}: {}", app.manifest.name, e));
         }
     };
 
     if let Err(e) = std::fs::create_dir_all(&data_dir) {
-        return ResponseHelper::json_error(format!("Failed to create data directory: {}", e));
+        return Err(format!("Failed to create data directory: {}", e));
     }
 
     if let Err(e) = ComposeManager::create_project(&install_key, &rendered) {
-        return ResponseHelper::json_error(format!("Failed to create project: {}", e));
+        return Err(format!("Failed to create project: {}", e));
     }
 
     // `start_project` runs `docker compose up -d`, which pulls the images —
@@ -376,7 +461,7 @@ pub async fn handle_catalog_install(
 
     if let Err(e) = ComposeManager::start_project(&install_key) {
         crate::sse::PROGRESS_MANAGER.fail_job(&job_id, &e.to_string());
-        return ResponseHelper::json_error(format!("Failed to start {}: {}", app.manifest.name, e));
+        return Err(format!("Failed to start {}: {}", app.manifest.name, e));
     }
 
     // Home Assistant uses `network_mode: host` - no compose-managed port.
@@ -409,10 +494,10 @@ pub async fn handle_catalog_install(
     crate::sse::PROGRESS_MANAGER.complete_job(&job_id, &format!("{} installed", app.manifest.name));
 
     crate::events::log_event(format!(
-        "Admin '{}' installed catalog app '{}' from store '{}' (port: {})",
-        admin_username, app.manifest.name, app.store_id, port
+        "{} installed catalog app '{}' from store '{}' (port: {})",
+        actor, app.manifest.name, app.store_id, port
     ));
-    ResponseHelper::json_success(format!("{} installed and started", app.manifest.name))
+    Ok(format!("{} installed and started", app.manifest.name))
 }
 
 /// Stops and removes a previously installed catalog app.
@@ -426,9 +511,22 @@ pub async fn handle_catalog_uninstall(
         Err(response) => return response,
     };
 
-    let stores = enabled_stores(&state).await;
-    let Some(app) = app_catalog::find(&stores, &id) else {
-        return ResponseHelper::json_error(format!("Unknown catalog app: {}", id));
+    match uninstall_catalog_app(&state, &id, &format!("Admin '{admin_username}'")).await {
+        Ok(message) => ResponseHelper::json_success(message),
+        Err(e) => ResponseHelper::json_error(e),
+    }
+}
+
+/// Shared uninstall core behind the HTTP handler and the MCP
+/// `apps.uninstall` tool.
+pub async fn uninstall_catalog_app(
+    state: &Arc<AppState>,
+    id: &str,
+    actor: &str,
+) -> Result<String, String> {
+    let stores = enabled_stores(state).await;
+    let Some(app) = app_catalog::find(&stores, id) else {
+        return Err(format!("Unknown catalog app: {}", id));
     };
     let install_key = app.install_key();
 
@@ -438,14 +536,12 @@ pub async fn handle_catalog_uninstall(
     match ComposeManager::delete_project(&install_key) {
         Ok(_) => {
             crate::events::log_event(format!(
-                "Admin '{}' uninstalled catalog app '{}'",
-                admin_username, app.manifest.name
+                "{} uninstalled catalog app '{}'",
+                actor, app.manifest.name
             ));
-            ResponseHelper::json_success(format!("{} uninstalled", app.manifest.name))
+            Ok(format!("{} uninstalled", app.manifest.name))
         }
-        Err(e) => {
-            ResponseHelper::json_error(format!("Failed to uninstall {}: {}", app.manifest.name, e))
-        }
+        Err(e) => Err(format!("Failed to uninstall {}: {}", app.manifest.name, e)),
     }
 }
 
@@ -530,6 +626,196 @@ pub async fn handle_catalog_update(
 pub struct ProxyConfigRequest {
     /// Whether the per-app proxy requires a HomeVault session.
     pub auth_required: bool,
+}
+
+/// Pre-install review (Umbrel-style `getInstallReview`): dependencies with
+/// their installed satisfiers and alternative providers, declared
+/// environment settings, and the server-side compatibility verdict — so the
+/// install dialog can offer choices before the long image pull starts.
+pub async fn handle_catalog_install_review(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers).await {
+        return response;
+    }
+    let stores = enabled_stores(&state).await;
+    let Some(app) = app_catalog::find(&stores, &id) else {
+        return ResponseHelper::json_error(format!("Unknown catalog app: {}", id));
+    };
+    let review = tokio::task::spawn_blocking(move || {
+        let apps = app_catalog::list_apps(&stores);
+        let installed: std::collections::HashSet<String> = apps
+            .iter()
+            .filter(|a| ComposeManager::get_project(&a.install_key()).is_ok())
+            .map(|a| a.bare_id().to_string())
+            .collect();
+        let needs = app_catalog::resolve_install_plan(
+            &apps,
+            &app,
+            &installed,
+            &std::collections::HashMap::new(),
+        );
+        serde_json::json!({
+            "id": app.namespaced_id(),
+            "name": app.manifest.name,
+            "version": app.manifest.version,
+            "incompatibility_reason": app_catalog::compatibility(&app),
+            "dependencies": needs.iter().map(|n| serde_json::json!({
+                "dependency": n.dependency,
+                "satisfied_by": n.satisfied_by,
+                "providers": n.providers,
+                "selected": n.selected,
+            })).collect::<Vec<_>>(),
+            "environment": app.manifest.environment,
+            "default_port": app.manifest.host_port(),
+        })
+    })
+    .await;
+    match review {
+        Ok(body) => ResponseHelper::json_success(body),
+        Err(e) => ResponseHelper::json_error(format!("Task join error: {}", e)),
+    }
+}
+
+/// One-shot update queue for every installed app with a pending update
+/// (Umbrel-style "update all"): runs the same `apply_update` path as the
+/// single-app endpoint sequentially and reports a per-app outcome, so one
+/// failure never aborts the rest of the queue.
+pub async fn handle_catalog_update_all(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(response) => return response,
+    };
+    let stores = enabled_stores(&state).await;
+    let pending = crate::app_catalog::updates::check_installed_apps(&stores).await;
+    if pending.is_empty() {
+        return ResponseHelper::json_success(serde_json::json!({
+            "updated": Vec::<String>::new(),
+            "failed": Vec::<String>::new(),
+        }));
+    }
+    let job_id = crate::sse::PROGRESS_MANAGER.create_job(
+        crate::sse::JobType::Custom("docker_update_all".to_string()),
+        &format!("Updating {} apps", pending.len()),
+    );
+    let mut updated = Vec::new();
+    let mut failed = Vec::new();
+    for item in &pending {
+        let Some(app) = app_catalog::find(&stores, &item.id) else {
+            failed.push(serde_json::json!({"id": item.id, "error": "catalog entry vanished"}));
+            continue;
+        };
+        let install_key = app.install_key();
+        let host_port = read_installed_port(&install_key).unwrap_or(app.manifest.host_port());
+        let version = app.manifest.version.clone();
+        let store_id = app.store_id.clone();
+        let bare_id = app.bare_id().to_string();
+        let ns_id = app.namespaced_id();
+        let prev = read_install_marker(&install_key);
+        let outcome = tokio::task::spawn_blocking(move || {
+            crate::app_catalog::updates::apply_update(&app, host_port)
+        })
+        .await;
+        match outcome {
+            Ok(Ok(())) => {
+                write_install_marker(
+                    &install_key,
+                    &InstallMarker {
+                        store_id,
+                        app_id: bare_id,
+                        namespaced_id: ns_id,
+                        package_version: version,
+                        host_port,
+                        proxy_port: prev.as_ref().and_then(|m| m.proxy_port),
+                        proxy_auth_required: prev
+                            .as_ref()
+                            .map(|m| m.proxy_auth_required)
+                            .unwrap_or(true),
+                    },
+                );
+                updated.push(item.id.clone());
+            }
+            Ok(Err(e)) => failed.push(serde_json::json!({"id": item.id, "error": e.to_string()})),
+            Err(e) => failed.push(serde_json::json!({"id": item.id, "error": e.to_string()})),
+        }
+    }
+    if failed.is_empty() {
+        crate::sse::PROGRESS_MANAGER
+            .complete_job(&job_id, &format!("{} apps updated", updated.len()));
+    } else {
+        crate::sse::PROGRESS_MANAGER.fail_job(
+            &job_id,
+            &format!("{} updated, {} failed", updated.len(), failed.len()),
+        );
+    }
+    crate::events::log_event(format!(
+        "Admin '{}' ran update-all on catalog apps: {} updated, {} failed",
+        admin,
+        updated.len(),
+        failed.len()
+    ));
+    ResponseHelper::json_success(serde_json::json!({ "updated": updated, "failed": failed }))
+}
+
+/// Tail an installed app's compose logs (Umbrel-style per-app logs viewer).
+/// Query: `?tail=200` (default 200, max 2000). Read-only, any session.
+pub async fn handle_catalog_logs(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers).await {
+        return response;
+    }
+    let stores = enabled_stores(&state).await;
+    let Some(app) = app_catalog::find(&stores, &id) else {
+        return ResponseHelper::json_error(format!("Unknown catalog app: {}", id));
+    };
+    let install_key = app.install_key();
+    if ComposeManager::get_project(&install_key).is_err() {
+        return ResponseHelper::json_error(format!("{} is not installed", app.manifest.name));
+    }
+    let tail: usize = query
+        .get("tail")
+        .and_then(|t| t.parse().ok())
+        .unwrap_or(200)
+        .clamp(1, 2000);
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("docker")
+            .args([
+                "compose",
+                "-p",
+                &install_key,
+                "logs",
+                "--no-color",
+                "--tail",
+                &tail.to_string(),
+            ])
+            .output()
+            .map_err(|e| format!("failed to run docker compose logs: {e}"))
+            .and_then(|o| {
+                if o.status.success() {
+                    Ok(String::from_utf8_lossy(&o.stdout).to_string())
+                } else {
+                    Err(format!(
+                        "docker compose logs: {}",
+                        String::from_utf8_lossy(&o.stderr).trim()
+                    ))
+                }
+            })
+    })
+    .await;
+    match output {
+        Ok(Ok(logs)) => ResponseHelper::json_success(serde_json::json!({ "logs": logs })),
+        Ok(Err(e)) => ResponseHelper::json_error(e),
+        Err(e) => ResponseHelper::json_error(format!("Task join error: {}", e)),
+    }
 }
 
 /// Toggle the auth gate on an installed app's reverse proxy.

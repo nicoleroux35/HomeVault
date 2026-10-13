@@ -64,10 +64,11 @@ use crate::handlers::{
         handle_docker_port_check,
     },
     docker_catalog::{
-        handle_catalog_gallery, handle_catalog_icon, handle_catalog_install, handle_catalog_list,
+        handle_catalog_gallery, handle_catalog_icon, handle_catalog_install,
+        handle_catalog_install_review, handle_catalog_list, handle_catalog_logs,
         handle_catalog_proxy_config, handle_catalog_uninstall, handle_catalog_update,
-        handle_catalog_updates, handle_store_add, handle_store_delete, handle_store_sync,
-        handle_stores_list,
+        handle_catalog_update_all, handle_catalog_updates, handle_store_add, handle_store_delete,
+        handle_store_sync, handle_stores_list,
     },
     downloader::{
         handle_downloader_add, handle_downloader_global_stat, handle_downloader_pause,
@@ -105,6 +106,10 @@ use crate::handlers::{
     journal::{
         handle_journal_cleanup_settings_get, handle_journal_cleanup_settings_update,
         handle_journal_clear, handle_journal_entries, handle_journal_sources,
+    },
+    mcp::{
+        handle_mcp_create_token, handle_mcp_revoke_token, handle_mcp_rpc, handle_mcp_set_enabled,
+        handle_mcp_set_permissions, handle_mcp_status,
     },
     mdns::handle_mdns_status,
     monitor_layout::{handle_get_monitor_layout, handle_set_monitor_layout},
@@ -696,6 +701,10 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/docker/catalog", get(handle_catalog_list))
         .route("/api/docker/catalog/updates", get(handle_catalog_updates))
         .route(
+            "/api/docker/catalog/update-all",
+            post(handle_catalog_update_all),
+        )
+        .route(
             "/api/docker/catalog/{id}/update",
             post(handle_catalog_update),
         )
@@ -712,6 +721,11 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/docker/catalog/{id}/install",
             post(handle_catalog_install),
         )
+        .route(
+            "/api/docker/catalog/{id}/install-review",
+            get(handle_catalog_install_review),
+        )
+        .route("/api/docker/catalog/{id}/logs", get(handle_catalog_logs))
         .route("/api/docker/catalog/{id}", delete(handle_catalog_uninstall))
         // Community app stores (extra git-repo catalog sources)
         .route("/api/docker/stores", get(handle_stores_list))
@@ -1202,6 +1216,14 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/rag/index", post(handle_rag_index))
         .route("/api/rag/search", post(handle_rag_search))
         .route("/api/rag/documents", get(handle_rag_documents))
+        // External AI agents (MCP, Streamable HTTP) — management is
+        // admin-session; POST /mcp is Bearer-token (see handlers::mcp).
+        .route("/api/mcp/status", get(handle_mcp_status))
+        .route("/api/mcp/status", put(handle_mcp_set_enabled))
+        .route("/api/mcp/permissions", put(handle_mcp_set_permissions))
+        .route("/api/mcp/tokens", post(handle_mcp_create_token))
+        .route("/api/mcp/tokens/{id}", delete(handle_mcp_revoke_token))
+        .route("/mcp", post(handle_mcp_rpc))
         // System Journal
         .route("/api/journal/sources", get(handle_journal_sources))
         .route("/api/journal/entries", get(handle_journal_entries))

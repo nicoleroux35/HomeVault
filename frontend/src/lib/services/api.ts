@@ -1821,6 +1821,32 @@ class ApiClient {
   // ==============================================
 
   // ==============================================
+  // External Agents (MCP server)
+  // ==============================================
+
+  async mcpStatus() {
+    // Never cached: the token list must reflect creates/revokes
+    // immediately (a `ttl: 0` would fall back to the default TTL).
+    return this.get('/mcp/status', { cache: false });
+  }
+
+  async mcpSetEnabled(enabled: boolean) {
+    return this.put('/mcp/status', { enabled });
+  }
+
+  async mcpSetPermissions(permissions: Record<string, unknown>) {
+    return this.put('/mcp/permissions', permissions);
+  }
+
+  async mcpCreateToken(name: string) {
+    return this.post('/mcp/tokens', { name });
+  }
+
+  async mcpRevokeToken(id: string) {
+    return this.delete(`/mcp/tokens/${encodeURIComponent(id)}`);
+  }
+
+  // ==============================================
   // Restic
   // ==============================================
 

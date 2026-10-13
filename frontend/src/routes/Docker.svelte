@@ -90,7 +90,10 @@
     website: string | null;
     repo: string | null;
     dependencies: string[];
+    implements: string[];
+    environment: EnvVarDecl[];
     missing_dependencies: string[];
+    incompatibility_reason: string | null;
     store_id: string;
     store_name: string;
     installed: boolean;
@@ -112,6 +115,9 @@
   interface CreatePortRow { host_port: string; container_port: string; protocol: string; }
   interface CreateEnvRow { key: string; value: string; }
   interface CreateVolumeRow { host_path: string; container_path: string; read_only: boolean; }
+  interface EnvVarDecl { name: string; services: string[]; default: string | null; options: string[]; required: boolean; note: string | null; }
+  interface InstallReviewDep { dependency: string; satisfied_by: string[]; providers: string[]; selected: string | null; }
+  interface InstallReview { id: string; name: string; version: string; incompatibility_reason: string | null; dependencies: InstallReviewDep[]; environment: EnvVarDecl[]; default_port: number; }
 
   // ── Local authed fetch (keeps session + CSRF tokens in sync with api client) ─
   async function authedFetch<T = any>(method: string, endpoint: string, body?: any): Promise<ApiEnvelope<T>> {
@@ -175,7 +181,17 @@
   let catalogApps = $state<CatalogApp[]>([]);
   let catalogLoading = $state(false);
   let catalogBusyId = $state<string | null>(null);
-  let catalogPortModal = $state<{ id: string; name: string; port: string } | null>(null);
+  let catalogPortModal = $state<{
+    id: string;
+    name: string;
+    port: string;
+    review: InstallReview | null;
+    reviewLoading: boolean;
+    alternatives: Record<string, string>;
+    envValues: Record<string, string>;
+  } | null>(null);
+  let updateAllBusy = $state(false);
+  let appLogsModal = $state<{ id: string; name: string; logs: string; loading: boolean } | null>(null);
 
   const CATALOG_ICONS: Record<string, any> = {
     movie: IconDeviceTv, cloud: IconCloud, image: ImageIcon,
@@ -573,6 +589,37 @@
     }
   }
 
+  // Grouped update queue: one call updates every app with a pending update,
+  // reporting per-app outcomes so a single failure never hides the rest.
+  async function updateAllCatalogApps() {
+    updateAllBusy = true;
+    const res = await authedFetch<{ updated: string[]; failed: { id: string; error: string }[] }>('POST', '/docker/catalog/update-all');
+    updateAllBusy = false;
+    if (res.success && res.data) {
+      const ok = res.data.updated.length;
+      const fail = res.data.failed.length;
+      setBanner(fail === 0 ? 'ok' : 'error', translate('docker.catalog_update_all_result', { ok: String(ok), fail: String(fail) }));
+      await loadCatalog();
+      await loadCatalogUpdates();
+      await loadContainers();
+    } else {
+      setBanner('error', res.message || res.error || translate('docker.catalog_update_failed'));
+    }
+  }
+
+  // Per-app compose logs viewer (same Modal pattern as container logs).
+  async function openAppLogs(app: CatalogApp) {
+    appLogsModal = { id: app.id, name: app.name, logs: '', loading: true };
+    const res = await authedFetch<{ logs: string }>('GET', `/docker/catalog/${encodeURIComponent(app.id)}/logs?tail=200`);
+    if (!appLogsModal || appLogsModal.id !== app.id) return;
+    if (res.success && res.data) appLogsModal.logs = res.data.logs;
+    else {
+      appLogsModal.logs = '';
+      setBanner('error', res.message || res.error || translate('docker.catalog_logs_failed'));
+    }
+    appLogsModal.loading = false;
+  }
+
   // Client-side search across the merged catalog (built-in + stores).
   let catalogSearch = $state('');
   let filteredCatalog = $derived(
@@ -591,17 +638,54 @@
 
   function openCatalogInstall(app: CatalogApp) {
     portChecks = {};
-    catalogPortModal = { id: app.id, name: app.name, port: String(app.default_port) };
+    catalogPortModal = {
+      id: app.id,
+      name: app.name,
+      port: String(app.default_port),
+      review: null,
+      reviewLoading: true,
+      alternatives: {},
+      envValues: {},
+    };
     checkPortValue(String(app.default_port));
+    loadInstallReview(app.id);
+  }
+
+  // Pre-install review (dependencies with alternatives, declared settings,
+  // compatibility) so the dialog offers choices before the image pull.
+  async function loadInstallReview(id: string) {
+    const res = await authedFetch<InstallReview>('GET', `/docker/catalog/${encodeURIComponent(id)}/install-review`);
+    if (!catalogPortModal || catalogPortModal.id !== id) return;
+    if (res.success && res.data) {
+      const review = res.data;
+      const alternatives: Record<string, string> = {};
+      for (const dep of review.dependencies) {
+        if (dep.satisfied_by.length === 0 && dep.selected) alternatives[dep.dependency] = dep.selected;
+      }
+      const envValues: Record<string, string> = {};
+      for (const decl of review.environment) {
+        if (decl.default) envValues[decl.name] = decl.default;
+      }
+      catalogPortModal.review = review;
+      catalogPortModal.alternatives = alternatives;
+      catalogPortModal.envValues = envValues;
+    }
+    catalogPortModal.reviewLoading = false;
   }
 
   async function confirmCatalogInstall() {
     if (!catalogPortModal) return;
-    const { id, name, port } = catalogPortModal;
+    const { id, name, port, alternatives, envValues } = catalogPortModal;
     const parsedPort = parseInt(port, 10);
     catalogBusyId = id;
+    const environment: Record<string, string> = {};
+    for (const [k, v] of Object.entries(envValues)) {
+      if (v.trim() !== '') environment[k] = v;
+    }
     const res = await authedFetch('POST', `/docker/catalog/${encodeURIComponent(id)}/install`, {
       port: Number.isFinite(parsedPort) ? parsedPort : undefined,
+      alternatives,
+      environment,
     });
     catalogBusyId = null;
     catalogPortModal = null;
@@ -1238,10 +1322,12 @@
         <IconSearch size={16} stroke={1.9} />
         <input type="search" class="flex-1 min-w-0 border-none bg-transparent text-sm text-[var(--hv-shell-text-strong)] outline-none" placeholder={$t('docker.catalog_search')} bind:value={catalogSearch} aria-label={$t('docker.catalog_search')} />
       </div>
-      <Button variant="secondary" onclick={() => { showStoresPanel = !showStoresPanel; if (showStoresPanel) loadStores(); }}><IconPackage size={17} stroke={1.9} /> {$t('docker.stores_title')}</Button>
+      <button type="button" class="hv-btn hv-btn-secondary" aria-expanded={showStoresPanel} onclick={() => { showStoresPanel = !showStoresPanel; if (showStoresPanel) loadStores(); }}><IconPackage size={17} stroke={1.9} /> {$t('docker.stores_title')}</button>
     </div>
     {#if Object.keys(catalogUpdates).length > 0}
-      <div class="flex items-center gap-2 mx-3 px-3 py-2 rounded-lg bg-[var(--hv-warning-bg)] text-[var(--hv-warning)] text-xs font-semibold"><IconDownload size={16} stroke={2} /> {$t('docker.catalog_updates_pending', { count: String(Object.keys(catalogUpdates).length) })}</div>
+      <div class="flex items-center gap-2 mx-3 px-3 py-2 rounded-lg bg-[var(--hv-warning-bg)] text-[var(--hv-warning)] text-xs font-semibold"><IconDownload size={16} stroke={2} /> {$t('docker.catalog_updates_pending', { count: String(Object.keys(catalogUpdates).length) })}
+        <button class={cn(actionBtn, 'ml-auto')} disabled={updateAllBusy} onclick={updateAllCatalogApps}>{updateAllBusy ? $t('docker.catalog_updating_all') : $t('docker.catalog_update_all')}</button>
+      </div>
     {/if}
     {#if showStoresPanel}
       <div class="mx-3 p-3 rounded-xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
@@ -1300,7 +1386,8 @@
             {#if app.gallery_count > 0}
               <div class="flex gap-1 overflow-hidden">{#each Array(app.gallery_count) as _, i}<img src={`/api/docker/catalog/${encodeURIComponent(app.id)}/gallery/${i + 1}`} alt={`${app.name} ${i + 1}`} loading="lazy" class="w-8 h-8 object-cover rounded" />{/each}</div>
             {/if}
-            {#if app.unsupported_on_host}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--hv-error-bg)] text-[var(--hv-error)] text-c-xs font-bold"><IconAlertTriangle size={13} stroke={2} />{$t('docker.catalog_arch_unsupported')}</span>{/if}
+            {#if app.incompatibility_reason}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--hv-error-bg)] text-[var(--hv-error)] text-c-xs font-bold"><IconAlertTriangle size={13} stroke={2} />{$t('docker.catalog_incompatible', { reason: app.incompatibility_reason })}</span>
+            {:else if app.unsupported_on_host}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--hv-error-bg)] text-[var(--hv-error)] text-c-xs font-bold"><IconAlertTriangle size={13} stroke={2} />{$t('docker.catalog_arch_unsupported')}</span>{/if}
             {#if app.missing_dependencies.length}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--hv-error-bg)] text-[var(--hv-error)] text-c-xs font-bold"><IconAlertTriangle size={13} stroke={2} />{$t('docker.catalog_dep_missing', { deps: app.missing_dependencies.join(', ') })}</span>{/if}
             {#if app.installed}
               {#if catalogUpdates[app.id]}
@@ -1318,10 +1405,11 @@
                 {#if app.proxy_port}
                   <label class="flex items-center gap-1.5 text-c-sm text-[var(--hv-shell-text-2)] cursor-pointer"><input type="checkbox" class="accent-[var(--hv-primary)]" checked={app.proxy_auth_required} onchange={() => toggleAppProxyAuth(app)} /> {$t('docker.proxy_require_login')}</label>
                 {/if}
+                <button class={cn(actionBtn, 'text-c-base')} onclick={() => openAppLogs(app)}><IconTerminal size={15} stroke={2} /> {$t('docker.catalog_app_logs')}</button>
                 <button class={cn(actionBtn, dangerHover, 'text-c-base')} disabled={catalogBusyId === app.id} onclick={() => uninstallCatalogApp(app)}><IconTrash size={15} stroke={2} /> {$t('docker.catalog_uninstall')}</button>
               </div>
             {:else}
-              <button class={cn(actionBtn, 'mt-1 bg-[var(--hv-primary)] border-[var(--hv-primary)] text-white hover:brightness-110')} disabled={catalogBusyId === app.id || app.unsupported_on_host} onclick={() => openCatalogInstall(app)}><IconDownload size={15} stroke={2} /> {$t('docker.catalog_install')}</button>
+              <button class={cn(actionBtn, 'mt-1 bg-[var(--hv-primary)] border-[var(--hv-primary)] text-white hover:brightness-110')} disabled={catalogBusyId === app.id || app.unsupported_on_host || !!app.incompatibility_reason} onclick={() => openCatalogInstall(app)}><IconDownload size={15} stroke={2} /> {$t('docker.catalog_install')}</button>
             {/if}
           </div>
         {/each}
@@ -1400,11 +1488,56 @@
           <span class={cn('text-c-xs', h.kind === 'bad' ? 'text-[var(--hv-error)]' : 'text-[var(--hv-warning)]')}>{h.text}</span>
         {/if}
       </div>
+      {#if cp.reviewLoading}
+        <p class="m-0 mt-3 text-xs text-[var(--hv-shell-text-2)]" role="status">{$t('docker.catalog_review_loading')}</p>
+      {:else if cp.review}
+        {#if cp.review.incompatibility_reason}
+          <p class="m-0 mt-3 px-3 py-2 rounded-lg bg-[var(--hv-error-bg)] text-[var(--hv-error)] text-xs font-semibold">{$t('docker.catalog_review_blocked', { reason: cp.review.incompatibility_reason })}</p>
+        {/if}
+        {#if cp.review.dependencies.length > 0}
+          <div class="mt-3 flex flex-col gap-2">
+            <span class="text-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-3)]">{$t('docker.catalog_review_deps')}</span>
+            {#each cp.review.dependencies as dep (dep.dependency)}
+              <div class="flex flex-col gap-1">
+                {#if dep.satisfied_by.length > 0}
+                  <span class="text-xs text-[var(--hv-success)] font-semibold">{dep.dependency} — {$t('docker.catalog_review_dep_ok', { by: dep.satisfied_by.join(', ') })}</span>
+                {:else if dep.providers.length > 0}
+                  <label class={fieldLabel} for={`dep-${dep.dependency}`}>{$t('docker.catalog_review_dep_pick', { dep: dep.dependency })}</label>
+                  <select id={`dep-${dep.dependency}`} class={textInput} bind:value={cp.alternatives[dep.dependency]}>
+                    {#each dep.providers as p}<option value={p}>{p}</option>{/each}
+                  </select>
+                {:else}
+                  <span class="text-xs text-[var(--hv-error)] font-semibold">{$t('docker.catalog_review_dep_none', { dep: dep.dependency })}</span>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
+        {#if cp.review.environment.length > 0}
+          <div class="mt-3 flex flex-col gap-2">
+            <span class="text-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-3)]">{$t('docker.catalog_review_env')}</span>
+            {#each cp.review.environment as decl (decl.name)}
+              <div class={field}>
+                <label class={fieldLabel} for={`env-${decl.name}`}>{decl.name}{#if decl.required} *{/if}</label>
+                {#if decl.options.length > 0}
+                  <select id={`env-${decl.name}`} class={textInput} bind:value={cp.envValues[decl.name]}>
+                    {#if !decl.required && !decl.default}<option value=""></option>{/if}
+                    {#each decl.options as opt}<option value={opt}>{opt}</option>{/each}
+                  </select>
+                {:else}
+                  <input type="text" id={`env-${decl.name}`} class={textInput} bind:value={cp.envValues[decl.name]} placeholder={decl.default ?? ''} />
+                {/if}
+                {#if decl.note}<span class="text-c-xs text-[var(--hv-shell-text-2)]">{decl.note}</span>{/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
+      {/if}
     {/snippet}
     {#snippet footer()}
       <div class="flex gap-2.5 justify-end">
         <Button variant="secondary" onclick={() => catalogPortModal = null}>{$t('common.cancel')}</Button>
-        <Button variant="primary" disabled={catalogBusyId === cp.id || portHint(cp.port).kind === 'bad'} onclick={confirmCatalogInstall}><IconCheck size={14} stroke={2} /> {$t('docker.catalog_install')}</Button>
+        <Button variant="primary" disabled={catalogBusyId === cp.id || portHint(cp.port).kind === 'bad' || cp.reviewLoading || !!cp.review?.incompatibility_reason} onclick={confirmCatalogInstall}><IconCheck size={14} stroke={2} /> {$t('docker.catalog_install')}</Button>
       </div>
     {/snippet}
   </Modal>
@@ -1419,6 +1552,25 @@
       <div class="h-72 overflow-auto p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)] font-[family-name:var(--hv-font-mono)] text-c-sm text-[var(--hv-shell-text-strong)]">
         {#each containerLogs.split('\n') as line}<div class="whitespace-pre-wrap">{line}</div>{/each}
       </div>
+    {/snippet}
+  </Modal>
+{/if}
+
+<!-- CATALOG APP LOGS MODAL -->
+{#if appLogsModal}
+  {@const al = appLogsModal}
+  <Modal open={!!al} title={$t('docker.catalog_logs_title', { name: al.name })} size="lg" onclose={() => appLogsModal = null}>
+    {#snippet icon()}<IconTerminal size={22} stroke={1.75} />{/snippet}
+    {#snippet children()}
+      {#if al.loading}
+        <p class="m-0 text-sm text-[var(--hv-shell-text-2)]" role="status">{$t('common.loading')}</p>
+      {:else if al.logs}
+        <div class="h-72 overflow-auto p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)] font-[family-name:var(--hv-font-mono)] text-c-sm text-[var(--hv-shell-text-strong)]">
+          {#each al.logs.split('\n') as line}<div class="whitespace-pre-wrap">{line}</div>{/each}
+        </div>
+      {:else}
+        <p class="m-0 text-sm text-[var(--hv-shell-text-2)]">{$t('docker.catalog_logs_failed')}</p>
+      {/if}
     {/snippet}
   </Modal>
 {/if}
