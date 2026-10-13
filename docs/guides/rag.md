@@ -44,7 +44,7 @@ context block to the system prompt. Falls back to plain prompt on embedding fail
 | Source | ID prefix | Content |
 |--------|-----------|---------|
 | App catalog | `catalog:<app_id>` | Manifest fields: name, description (4 langs), category, developer, website, port, GPU, arch |
-| Feature docs | `feature:<name>` | **45** feature docs — **one per guide in `docs/guides/`**, minus `design-system.md` (developer-only, deliberately excluded). The ids are not always the guide's filename (`backup` ← `backup-restic.md`, `virtual-machines` ← `vm.md`, `setup` ← `setup-wizard.md`, `cloudsync` ← `cloud-sync.md`). Full list, and the id → guide mapping that is asserted in both directions: `src/rag_indexers.rs::tests::FEATURE_GUIDES`. |
+| Feature docs | `feature:<name>` | **46** feature docs — **one per guide in `docs/guides/`**, minus `design-system.md` (developer-only, deliberately excluded). The ids are not always the guide's filename (`backup` ← `backup-restic.md`, `virtual-machines` ← `vm.md`, `setup` ← `setup-wizard.md`, `cloudsync` ← `cloud-sync.md`). Full list, and the id → guide mapping that is asserted in both directions: `src/rag_indexers.rs::tests::FEATURE_GUIDES`. |
 | i18n translations | `i18n:<lang>:<section>` | All TOML keys grouped by section, per language (en/fr/de/es), read from `i18n::embedded_translation_sources()` — the bundles compiled into the binary |
 
 ## Frontend

@@ -1583,6 +1583,34 @@ afterwards ; 4 loop devices + a disposable RAID1 ; environment restored).**
   session). Invariant under "Network" (`CLAUDE.md`) and
   `docs/guides/network.md`.
 
+**2026-10-16 (four desktop/plumbing features).** Four features landed in one
+pass, each with its own tests and doc updates:
+
+1. **Single settings catalog** (`frontend/src/lib/stores/settingsCatalog.ts`)
+   now feeds the Settings rail, the content header and the global ⌘K index
+   (`settingsSearchItems`). E2E `desktop.spec.ts` 6.5–6.7 (keyword search,
+   category activation, wallpaper shortcut). Doc: `docs/guides/settings.md`.
+2. **Live usage by app** — `components/dashboard/AppUsageBreakdown.svelte` +
+   `charts/AreaChart.svelte` + `lib/utils/appColor.ts`, embedded in the
+   Dashboard. E2E `dashboard.spec.ts` 2.6/2.7 and 3.4/3.5 (menu freeze, menu
+   contents, no mutation on open). Doc: `docs/guides/dashboard.md`.
+3. **Per-member resource access** — migration `041_resource_shares.sql`,
+   `storage/resource_share_repo.rs`, `handlers/resource_shares.rs`
+   (`/shares/access` + `/shares/access/mine`, server-side filter helpers +
+   WS whitelist). Tests: 5 unit + 10 integration
+   (`tests/resource_shares_integration.rs`) + E2E `users.spec.ts` 17.1–17.4.
+   Docs: `docs/guides/users.md`, `docs/API.md`.
+4. **Web shortcuts + Edit Widgets** — SSRF-guarded
+   `POST /shortcuts/fetch-metadata`, `stores/shortcuts.ts`,
+   `DesktopShortcuts.svelte`; `routes/EditWidgets.svelte` +
+   `stores/widgetLayout.ts` (drag & drop, max 3 featured). Tests: 7 unit + 3
+   integration (`tests/shortcuts_integration.rs`) + E2E `shortcuts.spec.ts`
+   and `edit-widgets.spec.ts`. Docs: `docs/guides/shortcuts.md`,
+   `docs/guides/widgets.md`, `docs/INDEX.md`, `docs/API.md`.
+
+`cargo test --lib` = **704** passing (was 689); the new guide is indexed by a
+`FeatureDoc` (`shortcuts`) so `test_every_guide_has_a_feature_doc` stays green.
+
 ## Verification method
 
 - `tests/*.rs` files listed via `ls`, counted via
