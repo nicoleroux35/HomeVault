@@ -2799,3 +2799,30 @@ tokens_empty = "Noch keine Token — eines erstellen, um einen Agenten zu verbin
 token_revoke = "Dieses Token widerrufen"
 token_last_used = "zuletzt verwendet %when%"
 
+
+[shortcuts]
+title = "Web-Verknüpfungen"
+add = "Verknüpfung hinzufügen"
+add_short = "Hinzufügen"
+add_hint = "Geben Sie eine Webadresse ein. HomeVault ruft Seitentitel und Symbol ab, um die Verknüpfung zu erstellen."
+url_label = "Adresse"
+open = "{title} öffnen"
+remove = "Verknüpfung {title} entfernen"
+fetch_failed = "Diese Seite konnte nicht gelesen werden. Prüfen Sie die Adresse und versuchen Sie es erneut."
+duplicate_or_full = "Diese Verknüpfung existiert bereits oder die Höchstzahl ist erreicht."
+
+[edit_widgets]
+title = "Widgets bearbeiten"
+featured_title = "Hervorgehobene Widgets"
+featured_hint = "Hefte bis zu drei Widgets oben auf dem Desktop an. Ziehen Sie ein Widget hierher oder nutzen Sie die Stern-Schaltfläche."
+featured_empty = "Noch kein hervorgehobenes Widget — ziehen Sie eines hierher."
+all_title = "Alle Widgets"
+cap_reached = "Sie können höchstens {max} Widgets hervorheben."
+feature = "{name} hervorheben"
+unfeature = "Hervorhebung von {name} aufheben"
+move_up = "{name} nach oben verschieben"
+move_down = "{name} nach unten verschieben"
+show = "{name} anzeigen"
+hide = "{name} ausblenden"
+reset = "Layout zurücksetzen"
+footer_hint = "Zum Neuordnen ziehen oder die Pfeile verwenden."
