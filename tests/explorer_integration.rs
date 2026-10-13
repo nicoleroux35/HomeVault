@@ -62,8 +62,10 @@ use homevault::handlers::explorer::{
     handle_explorer_compress, handle_explorer_copy, handle_explorer_delete, handle_explorer_disks,
     handle_explorer_download, handle_explorer_download_ticket, handle_explorer_eject,
     handle_explorer_extract, handle_explorer_favorites_add, handle_explorer_favorites_list,
-    handle_explorer_favorites_remove, handle_explorer_list, handle_explorer_mkdir,
-    handle_explorer_move, handle_explorer_permissions, handle_explorer_preview,
+    handle_explorer_favorites_remove, handle_explorer_format, handle_explorer_history,
+    handle_explorer_list, handle_explorer_mkdir, handle_explorer_move,
+    handle_explorer_network_discovery, handle_explorer_permissions, handle_explorer_preview,
+    handle_explorer_recents_clear, handle_explorer_recents_list, handle_explorer_recents_touch,
     handle_explorer_rename, handle_explorer_roots, handle_explorer_save, handle_explorer_search,
     handle_explorer_snapshots, handle_explorer_thumbnail, handle_explorer_thumbnail_ticket,
     handle_explorer_trash, handle_explorer_trash_empty, handle_explorer_trash_list,
@@ -206,6 +208,18 @@ fn explorer_router(state: Arc<AppState>) -> Router {
             "/api/explorer/favorites",
             delete(handle_explorer_favorites_remove),
         )
+        .route("/api/explorer/recents", get(handle_explorer_recents_list))
+        .route("/api/explorer/recents", post(handle_explorer_recents_touch))
+        .route(
+            "/api/explorer/recents",
+            delete(handle_explorer_recents_clear),
+        )
+        .route("/api/explorer/history", get(handle_explorer_history))
+        .route(
+            "/api/explorer/network-discovery",
+            get(handle_explorer_network_discovery),
+        )
+        .route("/api/explorer/format", post(handle_explorer_format))
         .with_state(state)
 }
 
@@ -1385,9 +1399,9 @@ async fn test_list_defaults_to_root_for_admin() {
 }
 
 // ===========================================================================
-// 4. umbrelOS-inspired endpoints — labelled roots, inline save, safe-eject,
-//    ZFS snapshot browsing, server-side favorites, and the copy/move/upload
-//    collision strategy (`?strategy=`).
+// 4. Labelled roots, inline save, safe-eject, ZFS snapshot browsing,
+//    server-side favorites, and the copy/move/upload collision strategy
+//    (`?strategy=`).
 // ===========================================================================
 
 /// Every new endpoint rejects a request with no session token (or a bogus
@@ -2174,4 +2188,245 @@ async fn test_permanent_delete_is_admin_only() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert!(h.root.join("keep.txt").exists(), "file must not be deleted");
+}
+
+// ===========================================================================
+// 5. Recents, fuzzy search, file history, network discovery, drive format.
+// ===========================================================================
+
+/// Recents lifecycle: touch → list (newest first) → clear, scoped per user.
+#[tokio::test]
+async fn test_recents_touch_list_clear_lifecycle() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "bob", "Password123!").await;
+
+    std::fs::create_dir_all(h.root.join("docs")).unwrap();
+    let docs = p(&h.root, "docs");
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/recents",
+        Some(&token),
+        Some(json!({"path": docs})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["success"], json!(true));
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/recents",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let recents = body["data"].as_array().expect("data is an array");
+    assert_eq!(recents.len(), 1);
+    assert_eq!(recents[0]["path"], json!(docs));
+
+    let (status, body) = send(
+        &mut r,
+        Method::DELETE,
+        "/api/explorer/recents",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/recents",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"].as_array().unwrap().len(), 0);
+}
+
+/// A recent outside the user's allowed roots is rejected, and recents never
+/// leak across users.
+#[tokio::test]
+async fn test_recents_reject_outside_root_and_isolate_users() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    create_test_user(&h.state, "alice", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let bob = login(&mut r, "bob", "Password123!").await;
+    let alice = login(&mut r, "alice", "Password123!").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/recents",
+        Some(&bob),
+        Some(json!({"path": "/etc"})),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["success"], json!(false), "outside-root touch denied");
+
+    std::fs::create_dir_all(h.root.join("shared")).unwrap();
+    let shared = p(&h.root, "shared");
+    let (status, _) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/recents",
+        Some(&bob),
+        Some(json!({"path": shared})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/recents",
+        Some(&alice),
+        None,
+    )
+    .await;
+    assert_eq!(
+        body["data"].as_array().unwrap().len(),
+        0,
+        "alice must not see bob's recents"
+    );
+}
+
+/// `?fuzzy=true` finds a subsequence match the plain substring search misses.
+#[tokio::test]
+async fn test_search_fuzzy_finds_subsequence_match() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "bob", "Password123!").await;
+
+    std::fs::write(h.root.join("readme.md"), b"hello").unwrap();
+    let root = h.root.to_string_lossy().to_string();
+
+    let (_, plain) = send(
+        &mut r,
+        Method::GET,
+        &format!("/api/explorer/search?path={root}&query=rdm"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(plain["data"]["count"], json!(0));
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        &format!("/api/explorer/search?path={root}&query=rdm&fuzzy=true"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["fuzzy"], json!(true));
+    let results = body["data"]["results"].as_array().expect("results array");
+    assert!(
+        results.iter().any(|e| e["name"] == json!("readme.md")),
+        "fuzzy rdm must surface readme.md: {body}"
+    );
+}
+
+/// History answers the live-file stat plus a (possibly empty) version list.
+#[tokio::test]
+async fn test_history_reports_current_file_and_versions() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "bob", "Password123!").await;
+
+    std::fs::write(h.root.join("notes.txt"), b"v1").unwrap();
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        &format!("/api/explorer/history?path={}", p(&h.root, "notes.txt")),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["current"]["exists"], json!(true));
+    assert!(body["data"]["versions"].is_array());
+}
+
+/// Network discovery is best-effort: authenticated callers always get a
+/// shaped answer, even with no discovery tools on the box.
+#[tokio::test]
+async fn test_network_discovery_returns_shaped_answer() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "bob", "Password123!").await;
+
+    let (status, unauth) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/network-discovery",
+        None,
+        None,
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+    assert_eq!(unauth["success"], json!(false));
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/network-discovery",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["data"]["count"].is_number());
+    assert!(body["data"]["neighbours"].is_array());
+}
+
+/// Drive formatting is admin-only and validates before touching anything.
+#[tokio::test]
+async fn test_format_is_admin_only_and_validates() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    create_test_user(&h.state, "root2", "Password123!", 2).await;
+    let mut r = explorer_router(h.state.clone());
+    let user = login(&mut r, "bob", "Password123!").await;
+    let admin = login(&mut r, "root2", "Password123!").await;
+
+    let (status, _) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/format",
+        Some(&user),
+        Some(json!({"device": "/dev/sdz1", "fstype": "ext4"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    for bad in [
+        json!({"device": "/etc/passwd", "fstype": "ext4"}),
+        json!({"device": "/dev/sdz1", "fstype": "ntfs"}),
+        json!({"device": "/dev/sdz1", "fstype": "exfat", "label": "WAY-TOO-LONG-LABEL"}),
+    ] {
+        let (status, body) = send(
+            &mut r,
+            Method::POST,
+            "/api/explorer/format",
+            Some(&admin),
+            Some(bad),
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["success"], json!(false), "{body}");
+    }
 }

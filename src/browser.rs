@@ -61,6 +61,42 @@ impl CollisionStrategy {
     }
 }
 
+/// Subsequence (fuzzy) match score of `query` against a file `name`.
+///
+/// Both inputs must already be lowercased. Returns 0 when `query` is empty or
+/// is not a subsequence of `name`; otherwise a positive score where larger is
+/// better: every matched character scores a base, with bonuses for contiguity
+/// and word-boundary starts, minus a length penalty so short names win ties.
+pub fn fuzzy_score(query: &str, name: &str) -> u64 {
+    if query.is_empty() || query.len() > name.len() {
+        return 0;
+    }
+    let q: Vec<char> = query.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    let mut qi = 0usize;
+    let mut raw: u64 = 0;
+    let mut prev_match: Option<usize> = None;
+    for (i, c) in n.iter().enumerate() {
+        if qi < q.len() && *c == q[qi] {
+            let mut s: u64 = 10;
+            if i == 0 || matches!(n[i - 1], '/' | '_' | '-' | '.' | ' ') {
+                s += 10;
+            }
+            if i > 0 && prev_match == Some(i - 1) {
+                s += 15;
+            }
+            raw += s;
+            prev_match = Some(i);
+            qi += 1;
+        }
+    }
+    if qi != q.len() {
+        return 0;
+    }
+    // Length penalty keeps exact/short names above long incidental matches.
+    raw.saturating_mul(1000).saturating_add(1) / (1000 + n.len() as u64)
+}
+
 /// Returns a path that does not collide with an existing file/dir by
 /// inserting ` (N)` before the extension — Finder / GNOME Files style.
 /// `foo.txt` → `foo (1).txt`, `archive.tar.gz` → `archive.tar (1).gz`,
@@ -326,6 +362,91 @@ impl FileBrowser {
         })
         .await
         .map_err(|e| BrowserError::Io(std::io::Error::other(e.to_string())))
+    }
+
+    /// Fuzzy (subsequence) search over file names under `path`.
+    ///
+    /// Unlike [`Self::search`] (substring match), a query like `rdm` matches
+    /// `readme.md`. Every visited name is scored with [`fuzzy_score`]; only
+    /// scoring names are kept, best first, capped at `max_results`. The walk
+    /// is bounded (depth 10, 50 000 visited entries) so a huge tree cannot
+    /// stall the request.
+    pub async fn search_fuzzy(
+        path: &str,
+        query: &str,
+        max_results: usize,
+    ) -> Result<Vec<FileInfo>, BrowserError> {
+        let path = path.to_string();
+        let query = query.to_lowercase();
+        tokio::task::spawn_blocking(move || {
+            let passwd_map = Self::load_passwd_map();
+            let mut scored =
+                Self::search_fuzzy_sync(&path, &query, 0, &passwd_map, &mut 0usize);
+            scored.sort_by_key(|a| std::cmp::Reverse(a.0));
+            scored.truncate(max_results.max(1));
+            scored.into_iter().map(|(_, info)| info).collect()
+        })
+        .await
+        .map_err(|e| BrowserError::Io(std::io::Error::other(e.to_string())))
+    }
+
+    fn search_fuzzy_sync(
+        path: &str,
+        query: &str,
+        depth: usize,
+        passwd_map: &HashMap<u32, String>,
+        visited: &mut usize,
+    ) -> Vec<(u64, FileInfo)> {
+        const MAX_VISITED: usize = 50_000;
+        let mut out = Vec::new();
+        if depth > 10 || *visited >= MAX_VISITED {
+            return out;
+        }
+        let dir_path = Path::new(path);
+        if !dir_path.exists() || !dir_path.is_dir() {
+            return out;
+        }
+        let Ok(dir_entries) = std::fs::read_dir(dir_path) else {
+            return out;
+        };
+        for entry in dir_entries.flatten() {
+            if *visited >= MAX_VISITED {
+                break;
+            }
+            *visited += 1;
+            let metadata = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let name = entry.file_name().to_string_lossy().to_string();
+            let file_path = entry.path().to_string_lossy().to_string();
+            let score = fuzzy_score(query, &name.to_lowercase());
+            if score > 0 {
+                out.push((
+                    score,
+                    FileInfo {
+                        name: name.clone(),
+                        path: file_path.clone(),
+                        is_directory: metadata.is_dir(),
+                        size_bytes: metadata.len(),
+                        modified: Self::format_time(metadata.modified().ok()),
+                        permissions: Self::format_permissions(&metadata),
+                        owner: Self::get_owner(&metadata, passwd_map),
+                        filesystem: None,
+                    },
+                ));
+            }
+            if metadata.is_dir() && !name.starts_with('.') {
+                out.extend(Self::search_fuzzy_sync(
+                    &file_path,
+                    query,
+                    depth + 1,
+                    passwd_map,
+                    visited,
+                ));
+            }
+        }
+        out
     }
 
     fn search_sync(
@@ -1420,6 +1541,47 @@ mod transfer_tests {
         assert!(created.iter().any(|p| p.ends_with("top.txt")));
         assert!(created.iter().any(|p| p.ends_with("nested.txt")));
         assert!(std::fs::read(dst.join("precious.txt")).unwrap() == b"keep me");
+    }
+}
+
+#[cfg(test)]
+mod fuzzy_tests {
+    use super::*;
+
+    #[test]
+    fn test_fuzzy_score_matches_exact_and_prefix() {
+        assert!(fuzzy_score("readme", "readme.md") > 0);
+        assert!(fuzzy_score("read", "readme.md") > 0);
+    }
+
+    #[test]
+    fn test_fuzzy_score_matches_non_contiguous_subsequence() {
+        assert!(fuzzy_score("rdm", "readme.md") > 0);
+        assert!(fuzzy_score("psm", "photo_summer.png") > 0);
+    }
+
+    #[test]
+    fn test_fuzzy_score_rejects_non_subsequence_and_empty() {
+        assert_eq!(fuzzy_score("", "readme.md"), 0);
+        assert_eq!(fuzzy_score("xyz", "readme.md"), 0);
+        assert_eq!(fuzzy_score("readme.md.bak!", "readme.md"), 0);
+    }
+
+    #[test]
+    fn test_fuzzy_score_prefers_contiguous_and_short() {
+        let contiguous = fuzzy_score("read", "readme.md");
+        let scattered = fuzzy_score("read", "r-e-a-d-notes.txt");
+        assert!(contiguous > scattered);
+        let short = fuzzy_score("doc", "doc.txt");
+        let long = fuzzy_score("doc", "documentation_final_draft_v2.txt");
+        assert!(short > long);
+    }
+
+    #[test]
+    fn test_fuzzy_score_prefers_word_boundary_start() {
+        let boundary = fuzzy_score("ph", "my-photo.png");
+        let middle = fuzzy_score("ph", "alphabet-soup.txt");
+        assert!(boundary > middle);
     }
 }
 

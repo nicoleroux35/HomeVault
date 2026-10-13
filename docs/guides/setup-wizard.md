@@ -44,16 +44,36 @@ sessions — survive a reinstall of the system disk. With an empty database and
 no marker files, setup simply runs again.
 
 The Umbrel-style *reboot-during-setup* RAID flow (write credentials to the
-pool, reboot, create the account on the next boot) is **not** implemented:
-HomeVault's wizard has no storage-selection step, and pools are created from
-the Storage app *after* setup. Deferred, tracked here rather than silently
-assumed.
+pool, reboot, create the account on the next boot) is **not** implemented.
+HomeVault's wizard now **does** have storage and RAID steps (steps 3 and 4), but
+they only *record the operator's intent*: the pools themselves are still created
+from the Storage app *after* setup. The wizard's own progress is reboot-safe on
+its own (see *Progress persistence*), which is the part of that flow that
+mattered. Deferred, tracked here rather than silently assumed.
 
-## Flow (wizard, 4 steps)
+## Flow (wizard, 8 steps)
 
-1. **Step 1 (Account)** — username + optional fullname; live availability check
+The wizard is **reboot-safe**: the current step and the non-secret choices are
+persisted server-side (see *Progress persistence* below), so a reboot or a
+closed browser resumes where the operator left off.
+
+1. **Step 1 (Welcome)** — what HomeVault is; no input.
+2. **Step 2 (Language)** — pick the interface language (EN/FR/DE/ES). The
+   embedded dictionary switches instantly; the choice is persisted.
+3. **Step 3 (Storage)** — pick where data should live: the system disk (default)
+   or one of the detected spare disks (`GET /auth/setup/storage-options`,
+   `role == "Available"`). Detection is best-effort — with nothing detected the
+   step degrades to "system disk".
+4. **Step 4 (RAID)** — optionally choose a RAID mode (none / mirror / stripe)
+   and the disks for the array. Advisory at this stage: the actual pools are
+   created from the Storage app after setup.
+5. **Step 5 (Restore)** — optionally point at an encrypted Restic backup to
+   restore from (repository + optional snapshot id). The **passphrase is never
+   collected or stored here** — it is asked when the restore actually runs, from
+   Backup → Restore. Leaving it blank means a fresh start.
+6. **Step 6 (Account)** — username + optional fullname; live availability check
    (`GET /auth/check-username`) blocks the step while the name is taken.
-2. **Step 2 (Password)** — password + confirmation. Optional **TOTP
+7. **Step 7 (Password)** — password + confirmation. Optional **TOTP
    enrolment**: a `theme/Switch` toggle reveals a QR code rendered client-side
    (`qrcode` npm package) from a client-generated base32 secret
    (`crypto.getRandomValues`, 20 bytes), plus a message listing compatible
@@ -61,15 +81,31 @@ assumed.
    2FAS…) with iOS/Android availability. The 6-digit code is validated via the
    stateless `POST /auth/setup/verify-totp` endpoint; the step cannot be left
    until the toggle is off or the code is verified.
-3. **Step 3 (Verify)** — server-side summary; "Create" submits `POST /auth/setup`
-   with optional `totp_secret` + `totp_code`. The server re-verifies the code
-   **before** creating any row (invalid code → clean rejection, nothing
-   persisted), then enables 2FA (`enable_2fa`, best-effort) and returns
-   `totp_enabled` + `backup_codes`.
-4. **Step 4 (Recovery)** — the one-time recovery code is generated and shown
+8. **Step 8 (Verify & create)** — server-side summary (account, storage, RAID
+   and restore choices); "Create" submits `POST /auth/setup` with optional
+   `totp_secret` + `totp_code`. The server re-verifies the code **before**
+   creating any row (invalid code → clean rejection, nothing persisted), then
+   enables 2FA (`enable_2fa`, best-effort) and returns `totp_enabled` +
+   `backup_codes`. The one-time recovery code is then generated and shown
    **after** account creation (mandatory, non-copyable, acknowledged once),
-   then — when TOTP was enrolled — a short backup-codes summary, then finish
-   (`/login`). There is **no** post-creation 2FA-enrolment screen anymore.
+   followed — when TOTP was enrolled — by a short backup-codes summary, then
+   finish (`/login`). There is **no** post-creation 2FA-enrolment screen.
+
+## Progress persistence (reboot-safe)
+
+The step and the non-secret choices live in a **singleton `setup_progress` row**
+(migration `040_setup_progress.sql`, `src/storage/setup_progress_repo.rs`):
+
+- `GET /auth/setup/progress` → `{ step, data }`; `PUT /auth/setup/progress`
+  (`{ step, data }`) saves it. Both are behind the same first-run guard as the
+  other bootstrap routes and return **403 once an admin exists**.
+- `data` holds only choices: `language`, `storage`, `raid_mode`, `raid_devices`,
+  `restore_repo`, `restore_snapshot`. Secrets — the password, the TOTP secret and
+  the restore passphrase — are **never** part of this payload.
+- On load the wizard resumes at the saved step and shows a "picked up where you
+  left off" banner; the banner clears on the next step change.
+- `GET /auth/setup/storage-options` lists the physical disks + RAID candidates
+  for steps 3 and 4 (first-run-only, 403 after setup).
 
 `POST /auth/setup` then records the fingerprint via
 `SetupStateRepository::mark_complete` and drops the lock. Recording the
@@ -136,6 +172,11 @@ available from the local network"}`.
   backed by `AuthService::verify_totp_code_with_secret` (window −1..=1 time step).
 - `POST /auth/setup/rebaseline` (`handle_setup_rebaseline`) — admin-only
   fingerprint re-baseline for the recovery flow.
+- `GET/PUT /auth/setup/progress` (`handle_setup_progress_get` / `_put`) —
+  reboot-safe wizard progress (step + non-secret choices), 403 once an admin
+  exists.
+- `GET /auth/setup/storage-options` (`handle_setup_storage_options`) — physical
+  disks + RAID candidates for the storage/RAID steps, 403 once an admin exists.
 
 ## Frontend
 
@@ -149,9 +190,11 @@ available from the local network"}`.
   panel; `recoveryMode` banner + re-baseline, `connectionError` screen.
 - `frontend/src/lib/services/api.ts`: `getSetupStatus` (throws on failure,
   never faked as first-run), `setupAdmin`, `checkUsername`, `verifySetupTotp`,
-  `rebaselineSetup`.
+  `rebaselineSetup`, `getSetupProgress`/`saveSetupProgress`,
+  `getSetupStorageOptions`.
 - `src/setup.rs` `SetupService`; `src/storage/setup_state_repo.rs`;
-  `src/middleware/setup_guard.rs`; models in `src/storage/models.rs`.
+  `src/storage/setup_progress_repo.rs`; `src/middleware/setup_guard.rs`; models
+  in `src/storage/models.rs`.
 
 ## Invariants
 
@@ -167,6 +210,13 @@ available from the local network"}`.
   non-copyable; only its hash is stored.
 - After account creation the "Previous" button is disabled.
 - The `.setup_lock` `O_EXCL` lock is kept; it is the only filesystem state.
+- **Wizard progress holds no secret.** `setup_progress.data` may only carry
+  `language`, `storage`, `raid_mode`, `raid_devices`, `restore_repo`,
+  `restore_snapshot` — the password, TOTP secret and restore passphrase must
+  never be added to it.
+- **The storage/RAID/restore steps record intent only.** They do not create a
+  pool or start a restore; those happen after setup (Storage / Backup apps). Do
+  not wire a `mkfs`/`zpool`/restore into `/auth/setup`.
 - The bootstrap endpoints stay local-network-only unless
   `HOMEVAULT_SETUP_ALLOW_REMOTE` is set.
 - Must cover all four locales for the TOTP-enrolment step, the sudo prerequisite
