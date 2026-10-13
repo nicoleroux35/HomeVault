@@ -4,6 +4,7 @@
   import { t, translate, languageStore } from '$lib/stores/i18n';
   import { PageLayout, SectionCard } from '$lib/components/app';
   import { BarsChart } from '$lib/components/charts';
+  import AppUsageBreakdown from '$lib/components/dashboard/AppUsageBreakdown.svelte';
   import { cn } from '$lib/utils.js';
 
   let serverDetails: Record<string, any> | null = null;
@@ -247,6 +248,9 @@
             </div>
           </div>
         </div>
+        <!-- Live usage by app — stacked CPU/memory composition per container,
+             with direct restart / stop / uninstall actions. -->
+        <AppUsageBreakdown />
         <!-- Health -->
         <SectionCard data-testid="dashboard-card" class="flex flex-col col-span-4 @max-[1200px]:col-span-6 @max-[768px]:col-span-12 [&>.hv-section-card-body]:flex [&>.hv-section-card-body]:flex-col [&>.hv-section-card-body]:items-center">
           {#snippet titleSnippet()}
