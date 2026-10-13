@@ -24,7 +24,7 @@ For the ready-made path the product makes five decisions so the UI stays short:
 
 | Decision | What HomeVault does |
 |----------|---------------------|
-| Which image | A curated catalogue (`incus::os_catalogue()`) — Ubuntu, Debian, Fedora, Rocky, Alpine — all cloud-init enabled. Resolved against the public `images.linuxcontainers.org` server. |
+| Which image | A curated catalogue (`incus::os_catalogue()`) — Ubuntu, Debian, Fedora, Rocky, Alpine — all cloud-init enabled. Resolved against the public `images.linuxcontainers.org` server. Each entry carries `kinds` (`["vm","container"]`) and, for the Windows entries, an **`iso_only`** flag: a Windows 11 / Windows 10 image is offered as an ISO-install target only (no ready-made cloud image), so the wizard routes it straight to the ISO mode. |
 | How big | Three presets (`small` 1 CPU/1 GB/10 GB, `medium` 2/2/25, `large` 4/8/60). Advanced users can override each number. |
 | Networking | The instance inherits the `default` profile's NIC (the bridge `incus admin init` created). Nothing to choose. |
 | Secure Boot / TPM | Left at the Incus default — every catalogue image is signed. Not surfaced. |
@@ -83,7 +83,14 @@ ISO-install VM).
 `disk_used_gb`, `snapshots: { name, created_at, stateful }[]`.
 
 **OsOption** — `id`, `label`, `kinds` (`["vm","container"]`), `alias`,
-`blurb` (one plain-language line), `recommended`.
+`blurb` (one plain-language line), `recommended`, `iso_only` (true for the
+Windows entries — the ready-made path is refused and the wizard switches to ISO
+mode).
+
+**Audio** — `CreateVmRequest` gained `audio?: bool`. When set, `handle_vm_create`
+attaches an `audio0` device (`apply_audio_device`) so the guest gets a sound
+card; it is only ever attached to a **VM** (an Incus container has no audio
+device).
 
 ### Long operations
 
@@ -221,7 +228,11 @@ protocol as the Terminal app).
   `handle_console_ws` after the ticket is consumed.
 - `handle_vm_create` validates everything (name, then either kind/OS/login or
   ISO path/extension/size/free-display) **before** the first Incus call; only
-  the "already exists" check and the create itself touch Incus.
+  the "already exists" check and the create itself touch Incus. An `iso_only`
+  catalogue entry (Windows) is **rejected** on the ready-made path — the wizard
+  must switch to ISO mode.
+- An `audio0` device is attached **only to a VM** (`apply_audio_device`); never
+  to a container, which has no audio device.
 - `build_cloud_init` must keep hashing the password — never emit
   `plain_text_passwd`. The unit test asserts the plaintext is absent.
 - `os` and `password` are `#[serde(default)]` (optional for ISO mode) — the
@@ -256,7 +267,10 @@ protocol as the Terminal app).
   list, one two-mode create wizard, one detail drawer.
 - `frontend/src/lib/components/vm/VmConsole.svelte` — the shell console (xterm).
 - `frontend/src/lib/components/vm/VmScreen.svelte` — the graphical screen
-  (noVNC, `@novnc/novnc`).
+  (noVNC, `@novnc/novnc`), with an **"open in a new tab"** action: the screen can
+  be popped out into a standalone browser tab (deep-linked via the `vm_screen`
+  route parameter) so the operator can keep the console full-screen while using
+  the rest of HomeVault.
 - `frontend/src/lib/components/theme/PathPickerField.svelte` — the ISO / driver
   file pickers (`mode="file"`).
 - `frontend/src/lib/services/api.ts` — `getVm*` / `createVm` / `updateVmConfig`

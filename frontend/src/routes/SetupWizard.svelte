@@ -2,14 +2,14 @@
   import { api } from '$lib/services/api';
   import { onMount, onDestroy, tick } from 'svelte';
   import { authStore } from '$lib/stores/auth';
-  import { IconAlertTriangle, IconCheck, IconChevronLeft, IconChevronRight, IconEye, IconEyeOff, IconLoader, IconLock, IconRefresh, IconShield, IconShieldCheckered, IconUser, IconUserCheck } from '@tabler/icons-svelte';
+  import { IconAlertTriangle, IconArchive, IconCheck, IconChevronLeft, IconChevronRight, IconDatabase, IconDeviceSdCard, IconEye, IconEyeOff, IconHistory, IconLoader, IconLock, IconRefresh, IconServer, IconShield, IconShieldCheckered, IconShieldLock, IconUser, IconUserCheck } from '@tabler/icons-svelte';
   import { translations, languageStore } from '$lib/stores/i18n';
   import { Button, Alert, Spinner, Switch } from '$lib/components/theme';
   import { cn } from '$lib/utils.js';
   import QRCode from 'qrcode';
 
   let currentStep = 0;
-  const totalSteps = 4;
+  const totalSteps = 8;
 
   let username = '';
   let fullname = '';
@@ -28,6 +28,63 @@
   // Host capability checks (sudo) shown as a warning banner.
   let sudoAvailable = true;
   let capabilitiesLoaded = false;
+
+  // ── Reboot-safe progress ─────────────────────────────────────────────
+  // The wizard's step + non-secret choices persist server-side
+  // (GET/PUT /auth/setup/progress) so a reboot or a closed browser resumes
+  // where the operator left off. Secrets (password, TOTP secret, the
+  // encrypted-restore passphrase) are deliberately NOT part of this payload.
+  interface SetupChoices {
+    language?: string;
+    storage?: string;
+    raid_mode?: 'none' | 'mirror' | 'stripe';
+    raid_devices?: string[];
+    restore_repo?: string;
+    restore_snapshot?: string;
+  }
+  // This wizard is a legacy-mode (non-runes) Svelte component — its many
+  // `$:` reactive statements and `$languageStore` auto-subscription rely on
+  // legacy reactivity — so plain `let` + reassignment is used for state and
+  // `$:` for derivations. Mixing `$state`/`$derived` in here makes the whole
+  // component switch to runes mode and breaks every `$:` in the file.
+  let choices: SetupChoices = {};
+  let progressLoaded = false;
+  let resumedNotice = false;
+
+  function persistProgress() {
+    if (!progressLoaded) return;
+    const safe: SetupChoices = { ...choices };
+    api.saveSetupProgress(currentStep, safe as unknown as Record<string, unknown>).catch(() => {});
+  }
+
+  async function loadProgress() {
+    try {
+      const res = await api.getSetupProgress();
+      if (res.success && res.data) {
+        if (res.data.step > 0 && res.data.step < totalSteps) {
+          currentStep = res.data.step;
+          resumedNotice = true;
+        }
+        const d = (res.data.data ?? {}) as SetupChoices;
+        choices = {
+          language: d.language,
+          storage: d.storage,
+          raid_mode: d.raid_mode,
+          raid_devices: Array.isArray(d.raid_devices) ? d.raid_devices : [],
+          restore_repo: d.restore_repo,
+          restore_snapshot: d.restore_snapshot,
+        };
+        if (choices.language && (translations as any)?.[choices.language]) {
+          languageStore.setLanguage(choices.language as any);
+        }
+        restoreWanted = !!choices.restore_repo;
+      }
+    } catch {
+      /* first boot or unreachable — start at step 0 */
+    } finally {
+      progressLoaded = true;
+    }
+  }
 
   // Optional two-factor authentication enrollment. The TOTP setup moved INTO
   // the wizard at the password step (step 3): the user flips a toggle, scans a
@@ -78,6 +135,8 @@
     updateClock();
     clockTimer = setInterval(updateClock, 1000);
     await loadCapabilities();
+    await loadProgress();
+    await loadStorageOptions();
   });
 
   onDestroy(() => {
@@ -94,6 +153,96 @@
     } finally {
       capabilitiesLoaded = true;
     }
+  }
+
+  // ── Storage / RAID detection (first-run storage-options endpoint) ─────
+
+  interface SetupDisk { name: string; device: string; size: number; vendor: string; model: string; role: string; connection_type: string; mount_point?: string; }
+  let setupDisks: SetupDisk[] = [];
+  let raidCandidates: SetupDisk[] = [];
+  let storageLoading = false;
+
+  async function loadStorageOptions() {
+    storageLoading = true;
+    try {
+      const r = await api.getSetupStorageOptions();
+      if (r.success && r.data) {
+        setupDisks = Array.isArray(r.data.disks) ? (r.data.disks as SetupDisk[]) : [];
+        raidCandidates = Array.isArray(r.data.raid_devices) ? (r.data.raid_devices as SetupDisk[]) : [];
+      }
+    } catch {
+      /* detection is best-effort — the steps degrade to "system disk" */
+    } finally {
+      storageLoading = false;
+    }
+  }
+
+  function formatDiskSize(bytes: number | undefined): string {
+    if (!bytes || bytes <= 0) return '';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+    return `${(bytes / Math.pow(1024, i)).toFixed(0)} ${units[i]}`;
+  }
+
+  function diskLabel(d: SetupDisk): string {
+    return d.model || d.vendor || d.name || d.device;
+  }
+
+  // Language picker options for the language step. The interface dictionary is
+  // embedded (see stores/i18n.ts) so switching is instant and offline.
+  const languages = [
+    { code: 'en' as const, label: 'English', flag: '🇬🇧' },
+    { code: 'fr' as const, label: 'Français', flag: '🇫🇷' },
+    { code: 'de' as const, label: 'Deutsch', flag: '🇩🇪' },
+    { code: 'es' as const, label: 'Español', flag: '🇪🇸' },
+  ];
+
+  // Disks that can host a new pool. `role` is detected server-side (RAID/ZFS/
+  // Btrfs membership + mount points); anything not "Available" is already in
+  // use, so it is not offered.
+  $: availableDisks = setupDisks.filter((d) => d.role === 'Available');
+
+  // RAID mode cards (id = persisted choice, label/hint from i18n).
+  $: raidModes = [
+    { id: 'none' as const, icon: IconServer, title: t('setup.raid.none'), hint: t('setup.raid.none_hint') },
+    { id: 'mirror' as const, icon: IconShieldLock, title: t('setup.raid.mirror'), hint: t('setup.raid.mirror_hint') },
+    { id: 'stripe' as const, icon: IconDatabase, title: t('setup.raid.stripe'), hint: t('setup.raid.stripe_hint') },
+  ];
+  $: raidMode = choices.raid_mode ?? 'none';
+
+  // "Restore" is opt-in: leaving the repo empty means a fresh start. This flag
+  // only controls the sub-form's visibility (an empty repo would otherwise
+  // collapse it the moment the option is picked). The passphrase is
+  // deliberately never collected here — it is asked when the restore actually
+  // runs (Backup > Restore) and never persisted.
+  let restoreWanted = false;
+
+  function useRestore(enable: boolean) {
+    restoreWanted = enable;
+    choices = enable ? choices : { ...choices, restore_repo: '', restore_snapshot: '' };
+    persistProgress();
+  }
+
+  function toggleRaidDevice(name: string) {
+    const cur = choices.raid_devices ?? [];
+    choices = { ...choices, raid_devices: cur.includes(name) ? cur.filter((n) => n !== name) : [...cur, name] };
+    persistProgress();
+  }
+
+  function setLanguageChoice(lang: 'en' | 'fr' | 'de' | 'es') {
+    choices = { ...choices, language: lang };
+    languageStore.setLanguage(lang);
+    persistProgress();
+  }
+
+  function setStorageChoice(device: string) {
+    choices = { ...choices, storage: device };
+    persistProgress();
+  }
+
+  function setRaidMode(mode: 'none' | 'mirror' | 'stripe') {
+    choices = { ...choices, raid_mode: mode };
+    persistProgress();
   }
 
   // Avatar (DiceBear Miniavs - generated server-side, fully offline).
@@ -223,12 +372,14 @@
   }
 
   function canGoNext(): boolean {
-    if (currentStep === 0) return true; // Welcome screen
-    if (currentStep === 1) return validateUsername();
+    // Steps 0–4 (welcome / language / storage / RAID / restore) are optional
+    // choices — always passable. The account and password gates moved to
+    // steps 5 and 6; verify (7) is always reachable.
+    if (currentStep === 5) return validateUsername();
     // Password step: the TOTP toggle (if on) must hold a server-validated code
     // before the step can be left — an enabled-but-unverified enrollment is
     // not allowed to slip through to account creation.
-    if (currentStep === 2) return validatePassword() && validateConfirmPassword() && (!totpEnabled || totpVerified);
+    if (currentStep === 6) return validatePassword() && validateConfirmPassword() && (!totpEnabled || totpVerified);
     return true;
   }
 
@@ -274,11 +425,9 @@
     && username.length >= 3
     && USERNAME_PATTERN.test(username)
     && !RESERVED_USERNAMES.includes(username.toLowerCase());
-  $: canProceed = currentStep === 0
-    ? true
-    : currentStep === 1
+  $: canProceed = currentStep === 5
     ? usernameFormatValid
-    : currentStep === 2
+    : currentStep === 6
     ? (passwordAllMet && password === confirmPassword && (!totpEnabled || totpVerified))
     : true;
 
@@ -375,31 +524,34 @@
   }
 
   // Advance to the next step; when reaching the verification step, run validation automatically.
-  // Leaving step 2 (account) is gated on the server-side username availability:
-  // an already-taken admin name blocks the transition to the password step.
+  // Leaving the account step (5) is gated on the server-side username
+  // availability: an already-taken admin name blocks the transition to the
+  // password step.
   async function nextStep() {
-    if (currentStep === 1) {
+    if (currentStep === 5) {
       const available = await checkUsernameAvailability();
       if (!available) return;
     }
     // Password step: an enabled TOTP toggle needs a verified code before the
     // step can be left (the "Next" button is disabled too — this guards the
     // keyboard/enter path and surfaces the reason explicitly).
-    if (currentStep === 2 && totpEnabled && !totpVerified) {
+    if (currentStep === 6 && totpEnabled && !totpVerified) {
       totpError = t('setup.2fa.verify_required');
       return;
     }
     if (!canGoNext()) return;
+    resumedNotice = false;
     if (currentStep < totalSteps - 1) {
       currentStep++;
+      persistProgress();
       scrollWizardToTop();
       // The QR label embeds the admin name: re-render it when (re)entering the
       // password step in case the user went back and changed the username.
-      if (currentStep === 2 && totpEnabled && totpSecret) {
+      if (currentStep === 6 && totpEnabled && totpSecret) {
         refreshTotpQr();
       }
       // Run verification when reaching the verification step
-      if (currentStep === 3) {
+      if (currentStep === 7) {
         verifyAccountCreation();
       }
     }
@@ -408,9 +560,11 @@
   function prevStep() {
     if (currentStep > 0) {
       currentStep--;
+      resumedNotice = false;
+      persistProgress();
       scrollWizardToTop();
       // Reset verification when leaving verification step
-      if (currentStep === 2) {
+      if (currentStep === 6) {
         verificationResult = { valid: false, errors: [], warnings: [] };
         usernameAvailable = null;
       }
@@ -680,9 +834,15 @@
                      passwordStrength === 4 ? 'var(--hv-wizard-success)' :
                      'var(--hv-wizard-success-strong)';
 
-  // Stepper labels shown in the card header step dots
+  // Stepper labels shown in the card header step dots. The order matches the
+  // 8-step flow: welcome → language → storage → RAID → restore → account →
+  // password → verify.
   $: stepLabels = [
     t('setup.stepper.welcome'),
+    t('setup.stepper.language'),
+    t('setup.stepper.storage'),
+    t('setup.stepper.raid'),
+    t('setup.stepper.restore'),
     t('setup.stepper.account'),
     t('setup.stepper.password'),
     t('setup.stepper.verify'),
@@ -791,6 +951,12 @@
         </div>
 
         <div class="px-8 py-7 @max-[480px]:px-6 @max-[480px]:py-5">
+          {#if resumedNotice && currentStep > 0}
+            <div class="mb-5" data-testid="setup-resumed">
+              <Alert variant="info"><p class="m-0">{t('setup.resumed')}</p></Alert>
+            </div>
+          {/if}
+
           {#if capabilitiesLoaded && !sudoAvailable}
             <div class="mb-5">
               <Alert variant="warning">
@@ -824,10 +990,229 @@
             </div>
           {/if}
 
-          <!-- ── Step 2: Account ── -->
+          <!-- ── Step 2: Language ── -->
           {#if currentStep === 1}
             <div data-step="1">
               <p class="mb-2 text-xs font-semibold uppercase tracking-widest text-[var(--hv-login-accent)]">{t('setup.step')} 2 {t('setup.of')} {totalSteps}</p>
+              <h1 data-testid="setup-step-title" class="m-0 text-3xl font-bold text-[var(--hv-wizard-text-heading)]!">{t('setup.language.title')}</h1>
+              <p data-testid="setup-step-desc" class="m-0 mt-2 text-sm text-[var(--hv-wizard-text-body)]">{t('setup.language.description')}</p>
+
+              <div class="mt-6 grid grid-cols-2 gap-3 @max-[480px]:grid-cols-1" data-testid="setup-language-list" role="radiogroup" aria-label={t('setup.language.title')}>
+                {#each languages as lang}
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={$languageStore === lang.code}
+                    data-testid={`setup-language-${lang.code}`}
+                    class={cn(
+                      'flex min-h-11 w-full items-center gap-3 rounded-xl border p-4 text-left transition-colors',
+                      $languageStore === lang.code
+                        ? 'border-[var(--hv-login-accent)]! bg-[var(--hv-login-accent-soft)]'
+                        : 'border-[var(--hv-login-field-border)]! bg-white hover:bg-[var(--hv-login-accent-soft)]',
+                    )}
+                    onclick={() => setLanguageChoice(lang.code)}
+                  >
+                    <span class="text-2xl leading-none" aria-hidden="true">{lang.flag}</span>
+                    <span class="min-w-0 flex-1 text-sm font-medium text-[var(--hv-wizard-text-title)]">{lang.label}</span>
+                    {#if $languageStore === lang.code}<IconCheck size={18} stroke={2.5} class="shrink-0 text-[var(--hv-login-accent)]" />{/if}
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {/if}
+
+          <!-- ── Step 3: Storage ── -->
+          {#if currentStep === 2}
+            <div data-step="2">
+              <p class="mb-2 text-xs font-semibold uppercase tracking-widest text-[var(--hv-login-accent)]">{t('setup.step')} 3 {t('setup.of')} {totalSteps}</p>
+              <h1 data-testid="setup-step-title" class="m-0 text-3xl font-bold text-[var(--hv-wizard-text-heading)]!">{t('setup.storage.title')}</h1>
+              <p data-testid="setup-step-desc" class="m-0 mt-2 text-sm text-[var(--hv-wizard-text-body)]">{t('setup.storage.description')}</p>
+
+              <div class="mt-6" data-testid="setup-storage-list" role="radiogroup" aria-label={t('setup.storage.title')}>
+                {#if storageLoading}
+                  <p class="hv-loading-row m-0 flex items-center gap-2 text-sm text-[var(--hv-wizard-text-body)]"><Spinner size="sm" />{t('setup.storage.loading')}</p>
+                {:else}
+                  <div class="flex flex-col gap-3">
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={!choices.storage || choices.storage === 'system'}
+                      data-testid="setup-storage-system"
+                      class={cn(
+                        'flex min-h-11 w-full items-center gap-3 rounded-xl border p-4 text-left transition-colors',
+                        !choices.storage || choices.storage === 'system'
+                          ? 'border-[var(--hv-login-accent)]! bg-[var(--hv-login-accent-soft)]'
+                          : 'border-[var(--hv-login-field-border)]! bg-white hover:bg-[var(--hv-login-accent-soft)]',
+                      )}
+                      onclick={() => setStorageChoice('system')}
+                    >
+                      <span class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--hv-login-accent-soft)] text-[var(--hv-login-accent)]"><IconServer size={20} stroke={1.8} /></span>
+                      <span class="min-w-0 flex-1 text-sm font-medium text-[var(--hv-wizard-text-title)]">{t('setup.storage.system')}</span>
+                      {#if !choices.storage || choices.storage === 'system'}<IconCheck size={18} stroke={2.5} class="shrink-0 text-[var(--hv-login-accent)]" />{/if}
+                    </button>
+
+                    {#each availableDisks as disk (disk.device)}
+                      <button
+                        type="button"
+                        role="radio"
+                        aria-checked={choices.storage === disk.device}
+                        data-testid={`setup-storage-${disk.name}`}
+                        class={cn(
+                          'flex min-h-11 w-full items-center gap-3 rounded-xl border p-4 text-left transition-colors',
+                          choices.storage === disk.device
+                            ? 'border-[var(--hv-login-accent)]! bg-[var(--hv-login-accent-soft)]'
+                            : 'border-[var(--hv-login-field-border)]! bg-white hover:bg-[var(--hv-login-accent-soft)]',
+                        )}
+                        onclick={() => setStorageChoice(disk.device)}
+                      >
+                        <span class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--hv-login-accent-soft)] text-[var(--hv-login-accent)]"><IconDeviceSdCard size={20} stroke={1.8} /></span>
+                        <span class="min-w-0 flex-1">
+                          <span class="block truncate text-sm font-medium text-[var(--hv-wizard-text-title)]">{diskLabel(disk)}</span>
+                          <span class="block truncate text-xs text-[var(--hv-login-muted)]">{disk.device} · {formatDiskSize(disk.size)}</span>
+                        </span>
+                        {#if choices.storage === disk.device}<IconCheck size={18} stroke={2.5} class="shrink-0 text-[var(--hv-login-accent)]" />{/if}
+                      </button>
+                    {/each}
+                  </div>
+
+                  {#if availableDisks.length === 0}
+                    <p class="m-0 mt-3 text-xs leading-relaxed text-[var(--hv-login-muted)]">{t('setup.storage.empty')}</p>
+                  {/if}
+                {/if}
+              </div>
+            </div>
+          {/if}
+
+          <!-- ── Step 4: RAID ── -->
+          {#if currentStep === 3}
+            <div data-step="3">
+              <p class="mb-2 text-xs font-semibold uppercase tracking-widest text-[var(--hv-login-accent)]">{t('setup.step')} 4 {t('setup.of')} {totalSteps}</p>
+              <h1 data-testid="setup-step-title" class="m-0 text-3xl font-bold text-[var(--hv-wizard-text-heading)]!">{t('setup.raid.title')}</h1>
+              <p data-testid="setup-step-desc" class="m-0 mt-2 text-sm text-[var(--hv-wizard-text-body)]">{t('setup.raid.description')}</p>
+
+              <div class="mt-6 flex flex-col gap-3" data-testid="setup-raid-modes" role="radiogroup" aria-label={t('setup.raid.title')}>
+                {#each raidModes as mode}
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={raidMode === mode.id}
+                    data-testid={`setup-raid-${mode.id}`}
+                    class={cn(
+                      'flex min-h-11 w-full items-center gap-3 rounded-xl border p-4 text-left transition-colors',
+                      raidMode === mode.id
+                        ? 'border-[var(--hv-login-accent)]! bg-[var(--hv-login-accent-soft)]'
+                        : 'border-[var(--hv-login-field-border)]! bg-white hover:bg-[var(--hv-login-accent-soft)]',
+                    )}
+                    onclick={() => setRaidMode(mode.id)}
+                  >
+                    <span class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--hv-login-accent-soft)] text-[var(--hv-login-accent)]"><svelte:component this={mode.icon} size={20} stroke={1.8} /></span>
+                    <span class="min-w-0 flex-1">
+                      <span class="block text-sm font-medium text-[var(--hv-wizard-text-title)]">{mode.title}</span>
+                      <span class="block text-xs leading-relaxed text-[var(--hv-login-muted)]">{mode.hint}</span>
+                    </span>
+                    {#if raidMode === mode.id}<IconCheck size={18} stroke={2.5} class="shrink-0 text-[var(--hv-login-accent)]" />{/if}
+                  </button>
+                {/each}
+              </div>
+
+              {#if raidMode !== 'none'}
+                <div class="mt-6">
+                  <p class="m-0 mb-2 text-sm font-medium text-[var(--hv-wizard-text-label)]">{t('setup.raid.devices')}</p>
+                  {#if raidCandidates.length < 2}
+                    <p class="m-0 text-xs leading-relaxed text-[var(--hv-login-muted)]">{t('setup.raid.empty')}</p>
+                  {:else}
+                    <div class="flex flex-col gap-2" data-testid="setup-raid-devices">
+                      {#each raidCandidates as disk (disk.device)}
+                        <label class="flex min-h-11 cursor-pointer items-center gap-3 rounded-xl border border-[var(--hv-login-field-border)] bg-white px-4 py-2.5">
+                          <input type="checkbox" class="h-4 w-4 accent-[var(--hv-login-accent)]" checked={(choices.raid_devices ?? []).includes(disk.name)} onchange={() => toggleRaidDevice(disk.name)} />
+                          <span class="min-w-0 flex-1">
+                            <span class="block truncate text-sm font-medium text-[var(--hv-wizard-text-title)]">{diskLabel(disk)}</span>
+                            <span class="block truncate text-xs text-[var(--hv-login-muted)]">{disk.device} · {formatDiskSize(disk.size)}</span>
+                          </span>
+                        </label>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          <!-- ── Step 5: Restore ── -->
+          {#if currentStep === 4}
+            <div data-step="4">
+              <p class="mb-2 text-xs font-semibold uppercase tracking-widest text-[var(--hv-login-accent)]">{t('setup.step')} 5 {t('setup.of')} {totalSteps}</p>
+              <h1 data-testid="setup-step-title" class="m-0 text-3xl font-bold text-[var(--hv-wizard-text-heading)]!">{t('setup.restore.title')}</h1>
+              <p data-testid="setup-step-desc" class="m-0 mt-2 text-sm text-[var(--hv-wizard-text-body)]">{t('setup.restore.description')}</p>
+
+              <div class="mt-6 flex flex-col gap-3" data-testid="setup-restore-choice" role="radiogroup" aria-label={t('setup.restore.title')}>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={!restoreWanted}
+                  data-testid="setup-restore-skip"
+                  class={cn(
+                    'flex min-h-11 w-full items-center gap-3 rounded-xl border p-4 text-left transition-colors',
+                    !restoreWanted
+                      ? 'border-[var(--hv-login-accent)]! bg-[var(--hv-login-accent-soft)]'
+                      : 'border-[var(--hv-login-field-border)]! bg-white hover:bg-[var(--hv-login-accent-soft)]',
+                  )}
+                  onclick={() => useRestore(false)}
+                >
+                  <span class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--hv-login-accent-soft)] text-[var(--hv-login-accent)]"><IconServer size={20} stroke={1.8} /></span>
+                  <span class="min-w-0 flex-1 text-sm font-medium text-[var(--hv-wizard-text-title)]">{t('setup.restore.skip')}</span>
+                  {#if !restoreWanted}<IconCheck size={18} stroke={2.5} class="shrink-0 text-[var(--hv-login-accent)]" />{/if}
+                </button>
+
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={restoreWanted}
+                  data-testid="setup-restore-enable"
+                  class={cn(
+                    'flex min-h-11 w-full items-center gap-3 rounded-xl border p-4 text-left transition-colors',
+                    restoreWanted
+                      ? 'border-[var(--hv-login-accent)]! bg-[var(--hv-login-accent-soft)]'
+                      : 'border-[var(--hv-login-field-border)]! bg-white hover:bg-[var(--hv-login-accent-soft)]',
+                  )}
+                  onclick={() => useRestore(true)}
+                >
+                  <span class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--hv-login-accent-soft)] text-[var(--hv-login-accent)]"><IconHistory size={20} stroke={1.8} /></span>
+                  <span class="min-w-0 flex-1 text-sm font-medium text-[var(--hv-wizard-text-title)]">{t('setup.restore.title')}</span>
+                  {#if restoreWanted}<IconCheck size={18} stroke={2.5} class="shrink-0 text-[var(--hv-login-accent)]" />{/if}
+                </button>
+              </div>
+
+              {#if restoreWanted}
+                <div class="mt-5">
+                  <label for="setup-restore-repo" class="mb-1.5 block text-sm font-medium text-[var(--hv-wizard-text-label)]">{t('setup.restore.repo')}</label>
+                  <div class={fieldWrapperClass}>
+                    <IconArchive size={19} stroke={1.7} class="shrink-0 text-[var(--hv-login-muted)]" />
+                    <input id="setup-restore-repo" data-testid="setup-restore-repo" type="text" class={textInputClass} value={choices.restore_repo ?? ''} oninput={(e) => { choices = { ...choices, restore_repo: e.currentTarget.value }; persistProgress(); }} placeholder={t('setup.restore.repo_placeholder')} autocomplete="off" />
+                  </div>
+
+                  <label for="setup-restore-snapshot" class="mt-4 mb-1.5 block text-sm font-medium text-[var(--hv-wizard-text-label)]">{t('setup.restore.snapshot')}</label>
+                  <div class={fieldWrapperClass}>
+                    <IconHistory size={19} stroke={1.7} class="shrink-0 text-[var(--hv-login-muted)]" />
+                    <input id="setup-restore-snapshot" data-testid="setup-restore-snapshot" type="text" class={textInputClass} value={choices.restore_snapshot ?? ''} oninput={(e) => { choices = { ...choices, restore_snapshot: e.currentTarget.value }; persistProgress(); }} placeholder="latest" autocomplete="off" />
+                  </div>
+
+                  <div class="mt-4 flex items-start gap-2.5 rounded-lg bg-[var(--hv-login-accent-soft)] p-3">
+                    <IconLock size={18} stroke={1.8} class="mt-0.5 shrink-0 text-[var(--hv-login-accent-deep)]" />
+                    <div class="min-w-0">
+                      <p class="m-0 text-xs font-medium text-[var(--hv-wizard-text-title)]">{t('setup.restore.passphrase')}</p>
+                      <p class="m-0 mt-1 text-xs leading-relaxed text-[var(--hv-wizard-text-body)]">{t('setup.restore.defer')}</p>
+                    </div>
+                  </div>
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          <!-- ── Step 6: Account ── -->
+          {#if currentStep === 5}
+            <div data-step="5">
+              <p class="mb-2 text-xs font-semibold uppercase tracking-widest text-[var(--hv-login-accent)]">{t('setup.step')} 6 {t('setup.of')} {totalSteps}</p>
               <h1 data-testid="setup-step-title" class="m-0 text-3xl font-bold text-[var(--hv-wizard-text-heading)]!">{t('setup.step1.title')}</h1>
               <p data-testid="setup-step-desc" class="m-0 mt-2 text-sm text-[var(--hv-wizard-text-body)]">{t('setup.step1.description')}</p>
 
@@ -882,10 +1267,10 @@
             </div>
           {/if}
 
-          <!-- ── Step 3: Password ── -->
-          {#if currentStep === 2}
-            <div data-step="2">
-              <p class="mb-2 text-xs font-semibold uppercase tracking-widest text-[var(--hv-login-accent)]">{t('setup.step')} 3 {t('setup.of')} {totalSteps}</p>
+          <!-- ── Step 7: Password ── -->
+          {#if currentStep === 6}
+            <div data-step="6">
+              <p class="mb-2 text-xs font-semibold uppercase tracking-widest text-[var(--hv-login-accent)]">{t('setup.step')} 7 {t('setup.of')} {totalSteps}</p>
               <h1 data-testid="setup-step-title" class="m-0 text-3xl font-bold text-[var(--hv-wizard-text-heading)]!">{t('setup.step2.title')}</h1>
               <p data-testid="setup-step-desc" class="m-0 mt-2 text-sm text-[var(--hv-wizard-text-body)]">{t('setup.step2.description')}</p>
 
@@ -997,10 +1382,10 @@
             </div>
           {/if}
 
-          <!-- ── Step 4: Verify & create (then recovery + 2FA) ── -->
-          {#if currentStep === 3}
-            <div data-step="3">
-              <p class="mb-2 text-xs font-semibold uppercase tracking-widest text-[var(--hv-login-accent)]">{t('setup.step')} 4 {t('setup.of')} {totalSteps}</p>
+          <!-- ── Step 8: Verify & create (then recovery + 2FA) ── -->
+          {#if currentStep === 7}
+            <div data-step="7">
+              <p class="mb-2 text-xs font-semibold uppercase tracking-widest text-[var(--hv-login-accent)]">{t('setup.step')} 8 {t('setup.of')} {totalSteps}</p>
               <h1 data-testid="setup-step-title" class="m-0 text-3xl font-bold text-[var(--hv-wizard-text-heading)]!">{t('setup.step3.title')}</h1>
               <p data-testid="setup-step-desc" class="m-0 mt-2 text-sm text-[var(--hv-wizard-text-body)]">{t('setup.step3.description')}</p>
 
@@ -1046,6 +1431,24 @@
                     <span class="text-sm text-[var(--hv-wizard-text-body)]">{t('setup.password.label')}</span>
                     <span class="hv-summary-value text-sm font-medium text-[var(--hv-wizard-text-title)]">••••••••</span>
                   </div>
+                  {#if choices.storage}
+                    <div class="hv-summary-item flex items-center justify-between gap-3 px-6 py-3">
+                      <span class="text-sm text-[var(--hv-wizard-text-body)]">{t('setup.storage.title')}</span>
+                      <span class="hv-summary-value truncate text-sm font-medium text-[var(--hv-wizard-text-title)]">{choices.storage === 'system' ? t('setup.storage.system') : choices.storage}</span>
+                    </div>
+                  {/if}
+                  {#if choices.raid_mode && choices.raid_mode !== 'none'}
+                    <div class="hv-summary-item flex items-center justify-between gap-3 px-6 py-3">
+                      <span class="text-sm text-[var(--hv-wizard-text-body)]">{t('setup.raid.title')}</span>
+                      <span class="hv-summary-value text-sm font-medium text-[var(--hv-wizard-text-title)]">{choices.raid_mode} · {(choices.raid_devices ?? []).length}</span>
+                    </div>
+                  {/if}
+                  {#if restoreWanted && choices.restore_repo}
+                    <div class="hv-summary-item flex items-center justify-between gap-3 px-6 py-3">
+                      <span class="text-sm text-[var(--hv-wizard-text-body)]">{t('setup.restore.title')}</span>
+                      <span class="hv-summary-value max-w-[60%] truncate text-sm font-medium text-[var(--hv-wizard-text-title)]">{choices.restore_repo}</span>
+                    </div>
+                  {/if}
                 </div>
               </div>
 

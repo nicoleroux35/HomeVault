@@ -5,6 +5,7 @@ use crate::storage::models::{
     LoginRequest, LoginResponse, SetupRequest, SetupStatusResponse, TwoFactorSetupRequest,
     TwoFactorVerifyRequest, ADMIN_ROLE_ID,
 };
+use crate::storage::SetupProgressRepository;
 use crate::storage::SetupStateRepository;
 use crate::utils::ResponseHelper;
 use axum::{extract::State, http::HeaderMap, response::Response};
@@ -596,6 +597,83 @@ pub async fn handle_setup_verify_totp(
     let valid =
         crate::auth::service::AuthService::verify_totp_code_with_secret(&req.secret, &req.code);
     ResponseHelper::json_success(serde_json::json!({ "valid": valid }))
+}
+
+/// Body for persisting first-run wizard progress.
+#[derive(Debug, Deserialize)]
+pub struct SetupProgressRequest {
+    pub step: i64,
+    /// Operator choices (language, storage, RAID, restore intent) as a JSON
+    /// object. Never secrets — the restore passphrase is intentionally not
+    /// part of this payload (see `storage/setup_progress_repo.rs`).
+    pub data: serde_json::Value,
+}
+
+/// Reports the persisted Setup Wizard progress so a reboot or a closed
+/// browser resumes the onboarding where it left off.
+///
+/// First-run-only (403 once an admin exists): the stored choices describe an
+/// unconfigured machine and stop being meaningful after setup.
+pub async fn handle_setup_progress_get(State(state): State<Arc<AppState>>) -> Response {
+    let setup_repo = SetupStateRepository::new(state.db.pool());
+    if setup_repo.has_admin().await.unwrap_or(true) {
+        return ResponseHelper::json_forbidden("Setup already complete".to_string());
+    }
+    let repo = SetupProgressRepository::new(state.db.pool());
+    match repo.get().await {
+        Ok(p) => {
+            let data: serde_json::Value =
+                serde_json::from_str(&p.data_json).unwrap_or(serde_json::json!({}));
+            ResponseHelper::json_success(serde_json::json!({
+                "step": p.step,
+                "data": data,
+            }))
+        }
+        Err(e) => ResponseHelper::json_error(format!("Failed to load setup progress: {}", e)),
+    }
+}
+
+/// Persists the Setup Wizard's current step and choices (first-run-only).
+pub async fn handle_setup_progress_put(
+    State(state): State<Arc<AppState>>,
+    req: axum::extract::Json<SetupProgressRequest>,
+) -> Response {
+    let setup_repo = SetupStateRepository::new(state.db.pool());
+    if setup_repo.has_admin().await.unwrap_or(true) {
+        return ResponseHelper::json_forbidden("Setup already complete".to_string());
+    }
+    if !req.data.is_object() {
+        return ResponseHelper::json_error("data must be a JSON object".to_string());
+    }
+    let repo = SetupProgressRepository::new(state.db.pool());
+    let data_json = req.data.to_string();
+    match repo.save(req.step, &data_json).await {
+        Ok(p) => ResponseHelper::json_success(serde_json::json!({
+            "step": p.step,
+            "saved": true,
+        })),
+        Err(crate::storage::DbError::InvalidInput(msg)) => ResponseHelper::json_error(msg),
+        Err(e) => ResponseHelper::json_error(format!("Failed to save setup progress: {}", e)),
+    }
+}
+
+/// Lists the physical disks and RAID candidate devices for the Setup Wizard's
+/// storage/RAID steps. First-run-only (403 once an admin exists): it exposes
+/// real host block-device names, like the authenticated storage endpoints do
+/// after setup.
+pub async fn handle_setup_storage_options(State(state): State<Arc<AppState>>) -> Response {
+    let setup_repo = SetupStateRepository::new(state.db.pool());
+    if setup_repo.has_admin().await.unwrap_or(true) {
+        return ResponseHelper::json_forbidden("Setup already complete".to_string());
+    }
+    let disks = crate::disk::DiskService::list_disks().await.unwrap_or_default();
+    let raid_devices = crate::disk::DiskService::get_available_devices()
+        .await
+        .unwrap_or_default();
+    ResponseHelper::json_success(serde_json::json!({
+        "disks": disks,
+        "raid_devices": raid_devices,
+    }))
 }
 
 #[axum_macros::debug_handler]

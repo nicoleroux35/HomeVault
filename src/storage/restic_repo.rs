@@ -250,6 +250,21 @@ impl ResticRepository {
 
         Ok(())
     }
+
+    /// RFC 3339 `finished_at` of the newest `completed` job for a repo, if any.
+    /// Powers the backup-reminder list (`GET /api/restic/reminders`).
+    pub async fn last_successful_backup_at(
+        &self,
+        repo_id: &str,
+    ) -> Result<Option<String>, sqlx::Error> {
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT MAX(finished_at) FROM restic_backup_jobs WHERE repo_id = ? AND status = 'completed'",
+        )
+        .bind(repo_id)
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+        Ok(row.and_then(|r| r.0))
+    }
 }
 
 #[derive(sqlx::FromRow)]

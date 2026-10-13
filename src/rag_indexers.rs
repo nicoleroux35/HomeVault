@@ -227,17 +227,22 @@ Widgets can be rearranged by drag-and-drop. Monitor panels (Resource, RAID, Secu
 - Browse directories, view files with preview (text, images, code)
 - Upload files (drag-and-drop or click), download files
 - Create directories, rename, copy, move, delete
-- Search files recursively by name
+- Search files recursively by name, with an optional fuzzy (approximate spelling) mode
 - Set file/directory permissions (chmod)
 - Compress/extract archives (zip)
 - Trash system (soft-delete with restore)
-- Favorites / pinned folders (per-browser localStorage)
+- Recently visited folders, remembered per account and shared across browsers
+- Favorites / pinned folders
 - Safe-eject external drives
+- Rewind: a per-file timeline of past ZFS snapshots, restore an older version by copying it out
 - Browse past ZFS snapshots (read-only, copy to restore)
+- Discover nearby network (SMB) shares from the toolbar
+- Format a spare drive as ext4 or exfat
 - Share a folder directly to the Shares app
 - Collision handling on copy/move/upload (overwrite, keep_both, skip)
 - Inline text/code editor for quick edits
 - Share a file by a revocable download link (URL + QR code; 'anyone' or 'signed-in' only; default 30-day expiry)
+- Drag a file onto a folder to move it, or drag a rubber-band box to select several at once
 - Background auto-refresh every 8 seconds
 
 PathGuard restricts non-admin users to their home directory and allowed roots."#.to_string(),
@@ -279,13 +284,16 @@ RAID levels: RAID0 (stripe), RAID1 (mirror), RAID5 (parity), RAID6 (double parit
             id: "virtual-machines".to_string(),
             title: "Virtual Machines Management".to_string(),
             content: r#"The Virtual Machines app is a guided, non-technical interface for Incus VMs and system containers:
-- A create wizard: pick an operating system from a short curated list (Ubuntu, Debian, Fedora, Rocky, Alpine), name the machine, choose a size (small/medium/large), and set a login username + password
+- A create wizard: pick an operating system from a short curated list (Ubuntu, Debian, Fedora, Rocky, Alpine, and Windows 11/10), name the machine, choose a size (small/medium/large), and set a login username + password
+- Windows entries are offered as an ISO installation (no ready-made image); the wizard switches to ISO mode automatically
 - The login account is seeded into the machine automatically via cloud-init; the password is stored only as a SHA-512 hash, never in plain text
+- Optional sound card for a virtual machine
 - VM lifecycle: create, start, stop, restart, delete (long operations are awaited so status is always accurate; image downloads run as a tracked background job)
 - Live status, IPv4 address, CPU/memory/disk and snapshot count for every machine
 - Change CPU or memory after creation
 - Saved states (snapshots): create, roll back, delete
 - A built-in shell console (xterm) into any running machine — no VNC client needed
+- A graphical screen for ISO installations (noVNC), which can be popped out into its own browser tab
 - System containers are supported alongside full virtual machines
 - Admin-only access control (every operation requires the admin role)"#.to_string(),
         },
@@ -296,10 +304,11 @@ RAID levels: RAID0 (stripe), RAID1 (mirror), RAID5 (parity), RAID6 (double parit
 - Create backup repositories (local, remote targets)
 - Manual and scheduled backups
 - Backup verification
-- Restore from snapshots
+- Restore from snapshots, with a pre-flight check of the space the restore will need
+- Reminders when a repository has not been backed up for a while
 - Retention policies (keep last N, daily, weekly, monthly)
 - Backup scheduling with cron expressions
-- Progress tracking via SSE
+- Progress tracking via SSE, and a floating progress panel that stays visible while you use other apps
 
 Schedule lifecycle: create schedule -> set retention policy -> enable. Failed runs are rescheduled automatically."#.to_string(),
         },
@@ -543,10 +552,16 @@ There is no email "forgot password" flow: recovery is code-based only. A first-r
             title: "Setup Wizard (first run)".to_string(),
             content: r#"The wizard shown on a fresh installation, while no administrator account exists yet. Until it is finished, the web interface only serves this flow.
 
-- Step 1 — account: choose the administrator username, with availability checked as you type, and optionally a full name.
-- Step 2 — password: type it and confirm it. Two-factor authentication can be enrolled right here: a QR code is generated in the browser from a fresh secret and the first 6-digit code is verified before the account exists, so a mis-scanned code is caught immediately instead of locking the administrator out later.
-- Step 3 — review: a summary of the chosen account, then creation.
-- Step 4 — recovery code: the administrator account is created and a one-time recovery code is shown once. It has to be stored somewhere safe; it is the only offline way back into the account. When two-factor authentication was enrolled, the one-time backup codes are shown next.
+The wizard is reboot-safe: the current step and the choices made so far are remembered on the server, so a reboot or a closed browser resumes where the person left off (passwords and secrets are never among the saved choices).
+
+- Step 1 — welcome: what HomeVault is.
+- Step 2 — language: pick the interface language; it can be changed later in Settings.
+- Step 3 — storage: choose the disk that will hold shares and app data (the system disk by default, or a detected spare disk).
+- Step 4 — RAID: optionally protect data with a mirror or a stripe, and pick the disks for the array. The actual pool is created later from the Storage app.
+- Step 5 — restore: optionally point at an encrypted backup to restore from. The backup passphrase is not asked here — it is asked when the restore actually runs, from the Backup app.
+- Step 6 — account: choose the administrator username, with availability checked as you type, and optionally a full name.
+- Step 7 — password: type it and confirm it. Two-factor authentication can be enrolled right here: a QR code is generated in the browser from a fresh secret and the first 6-digit code is verified before the account exists, so a mis-scanned code is caught immediately instead of locking the administrator out later.
+- Step 8 — review and create: a summary of the chosen account and options, then creation. A one-time recovery code is shown once afterwards and has to be stored somewhere safe; it is the only offline way back into the account. When two-factor authentication was enrolled, the one-time backup codes are shown next.
 
 The whole wizard, including the QR-code step, follows the chosen interface language. It refuses to run twice: once an administrator exists, the setup endpoints report that the server is already configured.
 

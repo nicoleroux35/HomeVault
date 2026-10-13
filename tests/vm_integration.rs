@@ -676,3 +676,54 @@ async fn console_ticket_needs_a_running_machine() {
     assert_eq!(body["success"], false);
     assert!(body["data"]["ticket"].is_null());
 }
+
+/// The OS catalogue exposes the desktop/Windows entries as ISO-only, plus
+/// lightweight variants — and Windows ids are refused as one-click creates.
+#[tokio::test]
+async fn test_os_catalogue_lists_iso_only_windows_entries() {
+    let (state, _tmp, _guard) = setup_state().await;
+    let mut r = vm_router(state.clone());
+    let token = admin_token(&state, &mut r).await;
+
+    let (status, body) = send(&mut r, Method::GET, "/api/vm/os-options", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let options = body["data"].as_array().expect("options array");
+    let ids: Vec<&str> = options.iter().map(|o| o["id"].as_str().unwrap()).collect();
+    for want in ["windows-11", "windows-10", "ubuntu-24.04-minimal", "debian-12-minimal"] {
+        assert!(ids.contains(&want), "{want} missing from {ids:?}");
+    }
+    for o in options.iter().filter(|o| o["id"] == "windows-11") {
+        assert_eq!(o["iso_only"], json!(true));
+    }
+}
+
+/// A catalogue create with a Windows id fails fast with an ISO pointer —
+/// before any Incus call — so no daemon is needed for this test.
+#[tokio::test]
+async fn test_create_with_windows_catalogue_id_requires_iso() {
+    let (state, _tmp, _guard) = setup_state().await;
+    let mut r = vm_router(state.clone());
+    let token = admin_token(&state, &mut r).await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/vm/create",
+        Some(&token),
+        Some(json!({
+            "name": "wintest",
+            "kind": "vm",
+            "os": "windows-11",
+            "size": "medium",
+            "username": "admin",
+            "password": "Secret123!",
+        })),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["success"], json!(false));
+    assert!(
+        body["message"].as_str().unwrap_or("").contains("ISO"),
+        "must point at the ISO install: {body}"
+    );
+}

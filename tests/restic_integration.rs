@@ -52,9 +52,10 @@ use homevault::handlers::{
     auth::handle_login,
     restic::{
         handle_restic_available, handle_restic_backup_create, handle_restic_backup_jobs,
-        handle_restic_check, handle_restic_forget, handle_restic_prune, handle_restic_repo_create,
-        handle_restic_repo_delete, handle_restic_repo_get, handle_restic_repo_update,
-        handle_restic_repos_list, handle_restic_restore, handle_restic_schedule_create,
+        handle_restic_check, handle_restic_forget, handle_restic_prune, handle_restic_reminders,
+        handle_restic_repo_create, handle_restic_repo_delete, handle_restic_repo_get,
+        handle_restic_repo_update, handle_restic_repos_list, handle_restic_restore,
+        handle_restic_restore_plan, handle_restic_schedule_create,
         handle_restic_schedule_delete, handle_restic_schedule_set_enabled,
         handle_restic_schedule_update, handle_restic_schedules_list, handle_restic_snapshot_delete,
         handle_restic_snapshots_list, handle_restic_stats, handle_restic_unlock,
@@ -135,6 +136,8 @@ fn restic_router(state: Arc<AppState>) -> Router {
         .route("/api/restic/repos/{id}/prune", post(handle_restic_prune))
         .route("/api/restic/backup", post(handle_restic_backup_create))
         .route("/api/restic/restore", post(handle_restic_restore))
+        .route("/api/restic/restore-plan", get(handle_restic_restore_plan))
+        .route("/api/restic/reminders", get(handle_restic_reminders))
         .route("/api/restic/check", post(handle_restic_check))
         .route("/api/restic/forget", post(handle_restic_forget))
         .route(
@@ -867,4 +870,117 @@ async fn test_lists_start_empty() {
         assert_eq!(s, StatusCode::OK, "{u}");
         assert_eq!(body["data"].as_array().map(|a| a.len()), Some(0), "{u}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Reminders + restore pre-flight.
+// ---------------------------------------------------------------------------
+
+/// Insert a completed backup job finishing `days_ago` days in the past.
+async fn insert_completed_job(state: &AppState, repo_id: &str, days_ago: i64) {
+    let finished = chrono::Utc::now() - chrono::Duration::days(days_ago);
+    sqlx::query(
+        "INSERT INTO restic_backup_jobs (id, repo_id, source, backup_type, status, started_at, finished_at, created_at)
+         VALUES (?, ?, '/tmp/src', 'manual', 'completed', ?, ?, datetime('now'))",
+    )
+    .bind(format!("job-{repo_id}-{days_ago}"))
+    .bind(repo_id)
+    .bind(finished.to_rfc3339())
+    .bind(finished.to_rfc3339())
+    .execute(&*state.db.pool())
+    .await
+    .expect("insert completed job");
+}
+
+/// A repo that never backed up is reminded; a freshly-backed-up repo is not.
+#[tokio::test]
+async fn test_reminders_flag_stale_repos_only() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "bob", "Password123!", 1).await;
+    let mut r = restic_router(state.clone());
+    let token = login(&mut r, "bob", "Password123!").await;
+
+    insert_repo(&state, "repo-stale", "stale").await;
+    insert_repo(&state, "repo-fresh", "fresh").await;
+    insert_completed_job(&state, "repo-fresh", 1).await;
+    insert_completed_job(&state, "repo-stale", 30).await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/restic/reminders",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let reminders = body["data"]["reminders"]
+        .as_array()
+        .expect("reminders array");
+    let ids: Vec<&str> = reminders
+        .iter()
+        .map(|e| e["repo_id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"repo-stale"), "stale repo reminded: {body}");
+    assert!(!ids.contains(&"repo-fresh"), "fresh repo quiet: {body}");
+    let stale = reminders
+        .iter()
+        .find(|e| e["repo_id"] == json!("repo-stale"))
+        .unwrap();
+    assert_eq!(stale["days_since_last_success"], json!(30));
+    assert_eq!(stale["has_enabled_schedule"], json!(false));
+}
+
+/// Reminders require a session; restore-plan requires admin.
+#[tokio::test]
+async fn test_reminders_and_restore_plan_auth_split() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "bob", "Password123!", 1).await;
+    let mut r = restic_router(state.clone());
+    let user = login(&mut r, "bob", "Password123!").await;
+
+    let (status, _) = send(&mut r, Method::GET, "/api/restic/reminders", None, None).await;
+    assert_ne!(status, StatusCode::OK);
+
+    let (status, _) = send(
+        &mut r,
+        Method::GET,
+        "/api/restic/restore-plan?repo_id=x&snapshot_id=y&target=/tmp",
+        Some(&user),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// Restore-plan validates before shelling out: unknown repo and bad target
+/// fail cleanly with no restic process spawned.
+#[tokio::test]
+async fn test_restore_plan_rejects_unknown_repo_and_bad_target() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "root2", "Password123!", 2).await;
+    let mut r = restic_router(state.clone());
+    let admin = login(&mut r, "root2", "Password123!").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/restic/restore-plan?repo_id=nope&snapshot_id=abc&target=/tmp/restore",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["success"], json!(false));
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/restic/restore-plan?repo_id=&snapshot_id=&target=",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["success"], json!(false));
 }

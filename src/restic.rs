@@ -525,6 +525,33 @@ impl ResticService {
         }
     }
 
+    /// Restored byte size of one snapshot (`restic stats --mode restore-size`).
+    /// Used by the restore wizard's pre-flight space check so a restore never
+    /// starts when the target cannot hold it.
+    pub fn restore_size(repo: &ResticRepo, snapshot_id: &str) -> Result<u64, ResticError> {
+        if snapshot_id.trim().is_empty()
+            || snapshot_id.len() > 128
+            || snapshot_id
+                .chars()
+                .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
+        {
+            return Err(ResticError::CommandFailed("Invalid snapshot id".to_string()));
+        }
+        let mut cmd = Self::restic_cmd()?;
+        Self::set_env(&mut cmd, repo);
+        cmd.args(["stats", "--json", "--mode", "restore-size", snapshot_id]);
+
+        let output = cmd.output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ResticError::CommandFailed(stderr.to_string()));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let raw: HashMap<String, serde_json::Value> =
+            serde_json::from_str(&stdout).map_err(|e| ResticError::ParseError(e.to_string()))?;
+        Ok(raw.get("total_size").and_then(|v| v.as_u64()).unwrap_or(0))
+    }
+
     pub fn diff_snapshots(
         repo: &ResticRepo,
         snapshot_a: &str,
