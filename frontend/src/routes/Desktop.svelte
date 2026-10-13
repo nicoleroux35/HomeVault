@@ -9,6 +9,7 @@
   import { get } from 'svelte/store';
   import SearchBar from '$lib/components/search/SearchBar.svelte';
   import { openSearch, type SearchableItem } from '$lib/stores/search';
+  import { settingsSearchItems, requestSettingsCategory } from '$lib/stores/settingsCatalog';
   import NotificationCenter from '$lib/components/NotificationCenter.svelte';
   import NotificationBellIcon from '$lib/components/shared/NotificationBellIcon.svelte';
   import WifiIcon from '$lib/components/shared/WifiIcon.svelte';
@@ -1518,6 +1519,22 @@
       keywords: $t('desktop.search_settings_keywords').split(',').map(k => k.trim()),
       action: () => openApp(settingsApp)
     },
+    // Every Settings category is searchable through the shared catalog, so a
+    // new rail group is never invisible to ⌘K. Activating a hit opens Settings
+    // and asks it to switch to that category (`requestSettingsCategory`).
+    ...settingsSearchItems((key) => $t(key)).map((cat) => ({
+      id: `setting-${cat.key}`,
+      type: 'setting' as const,
+      title: cat.title,
+      description: cat.description,
+      icon: 'settings',
+      color: 'var(--hv-primary)',
+      keywords: cat.searchKeywords,
+      action: () => {
+        requestSettingsCategory(cat.key);
+        openApp(settingsApp);
+      }
+    })),
     {
       id: 'action-wallpaper',
       type: 'setting' as const,
@@ -1526,7 +1543,10 @@
       icon: 'wallpaper',
       color: 'var(--hv-primary)',
       keywords: $t('desktop.search_wallpaper_keywords').split(',').map(k => k.trim()),
-      action: () => openApp(settingsApp)
+      action: () => {
+        requestSettingsCategory('appearance');
+        openApp(settingsApp);
+      }
     },
     {
       id: 'action-chat',

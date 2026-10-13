@@ -806,6 +806,44 @@ test.describe('6 — Global search', () => {
     await page.keyboard.press('Escape');
     await expect(page.locator('.search-overlay')).toHaveCount(0);
   });
+
+  // The Settings categories are fed into this index from the single shared
+  // catalog (`stores/settingsCatalog.ts`), so every rail group is reachable
+  // by search and a hit opens Settings already on that category.
+  test('6.5 — a settings-category synonym is searchable', async ({ page }) => {
+    await gotoDesktop(page, adminTokens);
+    await page.keyboard.press('Control+k');
+    await page.locator('.search-overlay .search-input').fill('smtp');
+    // "smtp" is only in the notifications category's keyword list, never in
+    // its label — it can only match through the catalog projection.
+    await expect(page.locator('.search-item').first()).toBeVisible({ timeout: 5000 });
+  });
+
+  test('6.6 — selecting a settings category opens Settings on that category', async ({ page }) => {
+    await gotoDesktop(page, adminTokens);
+    await page.keyboard.press('Control+k');
+    await page.locator('.search-overlay .search-input').fill('ollama');
+    await page.locator('.search-item').first().click();
+    await expect(page.locator('.search-overlay')).toHaveCount(0);
+    await page.waitForSelector('[data-testid="settings-page"]', { timeout: 15_000 });
+    // The AI category (the only one carrying the "ollama" keyword) must be the
+    // active rail item, proving the one-shot `requestSettingsCategory` was
+    // consumed.
+    await expect(
+      page.locator('[data-testid="settings-nav-item"].set-nav-active')
+    ).toContainText(/AI|assistant|Ollama/i);
+  });
+
+  test('6.7 — the wallpaper shortcut opens the appearance category', async ({ page }) => {
+    await gotoDesktop(page, adminTokens);
+    await page.keyboard.press('Control+k');
+    await page.locator('.search-overlay .search-input').fill('wallpaper');
+    await page.locator('.search-item').first().click();
+    await page.waitForSelector('[data-testid="settings-page"]', { timeout: 15_000 });
+    await expect(
+      page.locator('[data-testid="settings-nav-item"].set-nav-active')
+    ).toContainText(/appearance|apparence/i);
+  });
 });
 
 // ===========================================================================
