@@ -853,6 +853,18 @@ This is what lets a user type homevault.local in a browser or a file manager ins
 - Choosing one: pick a seed and see the result in a live preview before saving it; it is then used everywhere the account appears — the user menu in the top bar, the Users list, a group's member list, and the account page.
 - The generated image is cached per account and replaced whenever the seed changes."#.to_string(),
         },
+        FeatureDoc {
+            id: "mcp".to_string(),
+            title: "External Agents (MCP server)".to_string(),
+            content: r#"Lets an external AI agent — a coding assistant or automation running on another machine — drive HomeVault through the Model Context Protocol, over HTTP.
+
+- The server is off by default and is switched on by an administrator. Switching it off again stops every agent call immediately, while keeping the tokens and permissions for later.
+- Access is granted through tokens, each with a name so they can be told apart and revoked individually. A token is shown in full exactly once, at creation; afterwards only its prefix identifies it, and at most twenty tokens can exist at once.
+- One shared permission set applies to every token: which apps the agent may see and control, whether it may install new apps from the catalog, which folders it may list, whether it may query the knowledge base, which virtual machines it may power-cycle, and whether it may reboot the appliance. Everything defaults to denied.
+- The agent sees a tool list filtered to its permissions: appliance identity and resource usage, catalog search and app control, folder listing inside the granted scope, virtual-machine power actions, semantic search over the knowledge base, and — only when explicitly granted — reboot.
+- Folder access never crosses its scope: system directories are always excluded, and links are resolved and re-checked before listing.
+- Every agent action is recorded in the event log under its token, like any administrator action."#.to_string(),
+        },
     ]
 }
 
@@ -1082,6 +1094,7 @@ mod tests {
         ("mdns", "mdns.md"),
         ("server-control", "server-control.md"),
         ("avatars", "avatars.md"),
+        ("mcp", "mcp.md"),
     ];
 
     fn guides_dir() -> std::path::PathBuf {

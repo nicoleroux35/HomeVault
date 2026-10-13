@@ -39,6 +39,7 @@ pub mod explorer;
 pub mod firewall;
 pub mod groups;
 pub mod journal;
+pub mod mcp;
 pub mod mdns;
 pub mod monitor_layout;
 pub mod network;
