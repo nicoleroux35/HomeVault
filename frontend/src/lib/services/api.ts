@@ -244,14 +244,14 @@ class ApiClient {
   /**
    * Generic PUT request
    */
-  async put<T = any>(endpoint: string, data?: any): Promise<ApiResponse<T>> {
+  async put<T = any>(endpoint: string, data?: any, includeAuth = true): Promise<ApiResponse<T>> {
     // Invalidate cache for mutations
     this.invalidateForMutation(endpoint);
 
     try {
       const response = await fetch(`${this.baseUrl}${endpoint}`, {
         method: 'PUT',
-        headers: this.getHeaders(),
+        headers: this.getHeaders(includeAuth),
         body: JSON.stringify(data),
       });
 
@@ -372,6 +372,18 @@ class ApiClient {
   // just answers "is this code valid for this secret right now?".
   async verifySetupTotp(secret: string, code: string): Promise<ApiResponse<{ valid: boolean }>> {
     return this.post<{ valid: boolean }>('/auth/setup/verify-totp', { secret, code }, false);
+  }
+
+  /** Reboot-safe wizard progress: current step + operator choices. */
+  async getSetupProgress(): Promise<ApiResponse<{ step: number; data: Record<string, unknown> }>> {
+    return this.get<{ step: number; data: Record<string, unknown> }>('/auth/setup/progress', { cache: false });
+  }
+
+  async saveSetupProgress(step: number, data: Record<string, unknown>): Promise<ApiResponse<{ step: number; saved: boolean }>> {
+    // includeAuth: false — same reason as setupAdmin(): a stale session pair
+    // from a previous install must not trip the CSRF middleware on this
+    // public pre-session endpoint.
+    return this.put<{ step: number; saved: boolean }>('/auth/setup/progress', { step, data }, false);
   }
 
   // 2FA enrollment (reuses the authenticated 2FA setup endpoints)
@@ -509,6 +521,21 @@ class ApiClient {
 
   async getDockerContainers() {
     return this.get('/docker/containers', { ttl: 3000 }); // Cache 3s
+  }
+
+  /**
+   * Containers WITH live `docker stats` sampling (CPU %, memory, net/block
+   * IO). `stats=true` makes the backend run `docker stats --no-stream`, which
+   * blocks ~1s, so this is deliberately uncached and only used by the
+   * Dashboard's live-usage card — never by the Docker app's first paint.
+   */
+  async getDockerContainersWithStats() {
+    return this.get('/docker/containers?stats=true', { cache: false });
+  }
+
+  /** Remove (uninstall) a container. `force` also stops a running one. */
+  async removeDockerContainer(name: string, force = false) {
+    return this.delete(`/docker/containers/${encodeURIComponent(name)}?force=${force ? 'true' : 'false'}`);
   }
 
   async getDockerCatalog() {
@@ -1171,8 +1198,9 @@ class ApiClient {
     return this.get(`/explorer/list?path=${encodeURIComponent(path)}`, { cache: false });
   }
 
-  async searchFiles(path: string, query: string, maxResults: number = 100) {
-    return this.get(`/explorer/search?path=${encodeURIComponent(path)}&query=${encodeURIComponent(query)}&max_results=${maxResults}`, { cache: false });
+  async searchFiles(path: string, query: string, maxResults: number = 100, fuzzy = false) {
+    const qs = `path=${encodeURIComponent(path)}&query=${encodeURIComponent(query)}&max_results=${maxResults}${fuzzy ? '&fuzzy=true' : ''}`;
+    return this.get(`/explorer/search?${qs}`, { cache: false });
   }
 
   async getDisks() {
@@ -1243,6 +1271,34 @@ class ApiClient {
 
   async removeExplorerFavorite(path: string) {
     return this.delete('/explorer/favorites', { path });
+  }
+
+  /** Recently opened locations (server-side, per user, newest first). */
+  async getExplorerRecents() {
+    return this.get('/explorer/recents', { cache: false });
+  }
+
+  async touchExplorerRecent(path: string) {
+    return this.post('/explorer/recents', { path });
+  }
+
+  async clearExplorerRecents() {
+    return this.delete('/explorer/recents');
+  }
+
+  /** Per-file version timeline for the Rewind drawer. */
+  async getExplorerHistory(path: string) {
+    return this.explorerGet('/explorer/history', { path });
+  }
+
+  /** Nearby SMB/mDNS file servers (best-effort, never an error). */
+  async getNetworkDiscovery() {
+    return this.get('/explorer/network-discovery', { cache: false });
+  }
+
+  /** Wipe + mkfs an external drive (admin-only, ext4/exfat). */
+  async formatDrive(device: string, fstype: 'ext4' | 'exfat', label?: string) {
+    return this.post('/explorer/format', { device, fstype, label });
   }
 
   /** A file "share by link" row returned by the backend. */
@@ -1903,6 +1959,17 @@ class ApiClient {
     include_paths?: string[];
   }) {
     return this.post('/restic/restore', data);
+  }
+
+  /** Pre-flight space check before a restore (required/available/fits). */
+  async resticRestorePlan(repoId: string, snapshotId: string, target: string) {
+    const qs = `repo_id=${encodeURIComponent(repoId)}&snapshot_id=${encodeURIComponent(snapshotId)}&target=${encodeURIComponent(target)}`;
+    return this.get(`/restic/restore-plan?${qs}`, { cache: false });
+  }
+
+  /** Repos with no successful backup in the last 7 days. */
+  async resticReminders() {
+    return this.get('/restic/reminders', { cache: false });
   }
 
   async resticCheck(data: {

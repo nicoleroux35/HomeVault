@@ -230,6 +230,35 @@ test.describe('2 — Data cards', () => {
       expect(v).toMatch(/\d/);
     }
   });
+
+  // The live-usage card needs Docker. On a host without a daemon it renders
+  // its empty state; with one it renders stacked charts + a per-app list.
+  // Both are valid, so each test detects which state it is in.
+  test('2.6 — live-usage card is present with charts or an explicit empty state', async ({ page }) => {
+    await openDashboard(page, adminTokens);
+    const card = win(page).locator('[data-testid="dashboard-usage-card"]');
+    await expect(card).toBeVisible({ timeout: 20_000 });
+    const empty = card.locator('[data-testid="dashboard-usage-empty"]');
+    const list = card.locator('[data-testid="dashboard-usage-list"]');
+    await expect.poll(
+      async () => (await empty.count()) + (await list.count()),
+      { timeout: 20_000 },
+    ).toBeGreaterThan(0);
+  });
+
+  test('2.7 — each running app row shows a stable colour chip and a menu trigger', async ({ page }) => {
+    await openDashboard(page, adminTokens);
+    const rows = win(page).locator('[data-testid="dashboard-usage-row"]');
+    if ((await rows.count()) === 0) test.skip(true, 'no running app on this host');
+    const first = rows.first();
+    await expect(first.locator('[data-testid="dashboard-usage-menu-btn"]')).toBeVisible();
+    // The colour chip is a non-empty background colour, never transparent.
+    const bg = await first.locator('span[aria-hidden="true"]').first().evaluate(
+      (el) => getComputedStyle(el).backgroundColor,
+    );
+    expect(bg).not.toBe('');
+    expect(bg).not.toMatch(/rgba?\(0, 0, 0, 0\)/);
+  });
 });
 
 // ===========================================================================
@@ -263,6 +292,42 @@ test.describe('3 — Interactions', () => {
     await page.locator('[data-testid="dock-dashboard"]').click({ force: true });
     await page.waitForTimeout(500);
     await expect(win(page)).toHaveCount(1);
+  });
+
+  test('3.4 — opening an app action menu freezes the list (no reorder under the cursor)', async ({ page }) => {
+    await openDashboard(page, adminTokens);
+    const rows = win(page).locator('[data-testid="dashboard-usage-row"]');
+    if ((await rows.count()) === 0) test.skip(true, 'no running app on this host');
+    const namesBefore = await rows.locator('div.text-c-base').allInnerTexts();
+    await rows.first().locator('[data-testid="dashboard-usage-menu-btn"]').click();
+    await expect(win(page).locator('[data-testid="dashboard-usage-menu"]')).toBeVisible();
+    // While the menu is open the poll is paused, so the row order must not
+    // change even after more than one 5 s poll interval would have fired.
+    await page.waitForTimeout(6500);
+    const namesAfter = await rows.locator('div.text-c-base').allInnerTexts();
+    expect(namesAfter).toEqual(namesBefore);
+    // Escape / clicking the trigger again closes it.
+    await rows.first().locator('[data-testid="dashboard-usage-menu-btn"]').click();
+    await expect(win(page).locator('[data-testid="dashboard-usage-menu"]')).toHaveCount(0);
+  });
+
+  test('3.5 — the menu offers restart, stop and uninstall, and never fires on open', async ({ page }) => {
+    await openDashboard(page, adminTokens);
+    const rows = win(page).locator('[data-testid="dashboard-usage-row"]');
+    if ((await rows.count()) === 0) test.skip(true, 'no running app on this host');
+    let mutated = false;
+    page.on('request', (r) => {
+      if (/\/api\/docker\/containers\/[^/]+\/(restart|stop)/.test(r.url())) mutated = true;
+      if (r.method() === 'DELETE' && /\/api\/docker\/containers\//.test(r.url())) mutated = true;
+    });
+    await rows.first().locator('[data-testid="dashboard-usage-menu-btn"]').click();
+    const menu = win(page).locator('[data-testid="dashboard-usage-menu"]');
+    await expect(menu).toBeVisible();
+    const items = menu.locator('[role="menuitem"]');
+    await expect(items).toHaveCount(3);
+    // Opening the menu must not mutate anything.
+    expect(mutated).toBe(false);
+    await page.keyboard.press('Escape');
   });
 });
 
