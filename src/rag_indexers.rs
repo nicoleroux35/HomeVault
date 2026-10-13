@@ -752,9 +752,20 @@ The eleven panels: Resource, RAID, Security, VPN, Downloader, Syncthing, Calenda
 - Positions and visibility are remembered per account, so two people using the same server each get their own layout.
 - Panels are re-clamped against the current window size whenever it changes, so none is left off-screen after a resize or a rotation.
 - The catalog lists every panel with an icon, a short description and a switch, plus a button that restores the default arrangement.
+- The Edit Widgets app is a drag-and-drop layout editor: pin up to three widgets as featured, reorder the list, and toggle visibility. Reordering is also available with arrow buttons for keyboard and touch.
 - The Weather panel additionally remembers the city it was set to.
 
 The panels are read-only: they display system state and link to the app that manages it."#.to_string(),
+        },
+        FeatureDoc {
+            id: "shortcuts".to_string(),
+            title: "Web Shortcuts".to_string(),
+            content: r#"Pin web pages as icons on the desktop so a frequently used site is one click away.
+
+- Add a shortcut by entering a web address; HomeVault reads the page's title, description and icon to build the tile.
+- Each shortcut opens the page in a new browser tab. Shortcuts can be removed individually.
+- Shortcuts are remembered per account, so each person sees their own set.
+- Only regular web addresses (http and https) are accepted; addresses pointing back at the server itself or at a private network are refused."#.to_string(),
         },
         FeatureDoc {
             id: "desktop".to_string(),
@@ -1086,6 +1097,7 @@ mod tests {
         ("rag", "rag.md"),
         ("notifications", "notifications.md"),
         ("widgets", "widgets.md"),
+        ("shortcuts", "shortcuts.md"),
         ("desktop", "desktop.md"),
         ("apps-center", "apps-center.md"),
         ("themes", "themes.md"),
