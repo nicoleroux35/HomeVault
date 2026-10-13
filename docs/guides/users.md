@@ -76,6 +76,38 @@ Offered for **every role** — the server applies the quota regardless (was role
   `updateUserFull({ …, home_path, home_size_bytes })`.
 - See [Disk quotas](./quotas.md).
 
+### Per-member resource access (apps / folders / shares) — 2026-10-16
+
+Roles stay coarse (`user` / `admin`), but the owner can now grant a member
+access to **specific** apps, folders and SMB/NFS/FTP/WebDAV shares without
+making them an admin. Grants live in `resource_shares`
+(`sqlx/migrations/041_resource_shares.sql`) and are managed through
+`src/handlers/resource_shares.rs`:
+
+| Endpoint | Auth | Notes |
+|----------|------|-------|
+| `GET /shares/access` | admin | every grant (optional `?member=`) |
+| `GET /shares/access/mine` | auth | the caller's own effective access |
+| `POST /shares/access` | admin | grant/update `{member, kind, resource, permission?}` |
+| `DELETE /shares/access` | admin | revoke `?member=&kind=&resource=` |
+
+`kind` ∈ `app` \| `folder` \| `share`; `permission` ∈ `read` \| `write` \|
+`full` (default `read`; `full ⊇ write ⊇ read`). Repository:
+`src/storage/resource_share_repo.rs`.
+
+**The filter is server-side.** An admin (the appliance "owner") sees
+everything implicitly and needs no rows; a member sees exactly the
+`(kind, resource)` pairs they hold. `handle_my_access` returns `all: true` +
+empty lists for an admin and the grouped grant rows for a member. Other
+modules must call `resource_shares::visible_app_ids` /
+`can_access` before listing or acting on a resource — filtering in the UI is
+not a boundary. `event_visible_to` is the WebSocket whitelist: an event tagged
+with `resource_kind` / `resource` is only delivered to a member who can access
+that resource; untagged events go to everyone.
+
+The editor is `frontend/src/lib/components/users/MemberAccessCard.svelte`,
+embedded in the Users detail view (admins see a read-only note instead).
+
 ## Frontend
 
 - `frontend/src/routes/Users.svelte`.

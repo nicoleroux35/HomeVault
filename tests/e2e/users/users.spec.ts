@@ -1477,3 +1477,71 @@ test.describe('16 — Home directory size limit', () => {
     }
   });
 });
+
+// ===========================================================================
+// 17. Per-member resource access (apps / folders / shares)
+// ===========================================================================
+
+test.describe('17 — Resource access', () => {
+  test('17.1 — the access card is present in a member detail and shows the admin note for admins', async ({ page }) => {
+    await gotoUsers(page, adminTokens);
+    // A regular member: the editor is shown (empty by default).
+    await win(page).locator('[data-testid="users-tile"]').filter({ hasText: sharedActive.username }).click();
+    await expect(win(page).locator('[data-testid="users-access-card"]')).toBeVisible({ timeout: 8_000 });
+    await expect(win(page).locator('[data-testid="users-access-empty"]')).toBeVisible();
+    // An admin account: the read-only note replaces the editor.
+    await win(page).locator('[data-testid="users-tile"]').filter({ hasText: sharedAdmin2.username }).click();
+    await expect(win(page).locator('[data-testid="users-access-admin-note"]')).toBeVisible({ timeout: 8_000 });
+  });
+
+  test('17.2 — granting then revoking access round-trips through the server', async ({ page }) => {
+    await gotoUsers(page, adminTokens);
+    await win(page).locator('[data-testid="users-tile"]').filter({ hasText: sharedActive.username }).click();
+    await expect(win(page).locator('[data-testid="users-access-card"]')).toBeVisible({ timeout: 8_000 });
+
+    const resource = `e2eapp_${Date.now().toString(36)}`;
+    await win(page).locator('[data-testid="users-access-kind"]').selectOption('app');
+    await win(page).locator('[data-testid="users-access-resource"]').fill(resource);
+    await win(page).locator('[data-testid="users-access-permission"]').selectOption('write');
+    await win(page).locator('[data-testid="users-access-add"]').click();
+
+    const row = win(page).locator('[data-testid="users-access-row"]').filter({ hasText: resource });
+    await expect(row).toBeVisible({ timeout: 8_000 });
+    await expect(row).toContainText(/write|écriture|schreiben|escritura/i);
+
+    // The grant is visible to the member through the server-filtered endpoint.
+    const mine = await sharedCtx.get('/api/shares/access/mine', {
+      headers: { 'x-session-token': sharedActive.token, 'x-csrf-token': sharedActive.csrf },
+    });
+    const body = await mine.json();
+    const apps = (body?.data?.apps ?? []) as { resource: string; permission: string }[];
+    expect(apps.some((a) => a.resource === resource && a.permission === 'write')).toBe(true);
+
+    // Revoke via the UI.
+    await row.locator('button').click();
+    await expect(row).toHaveCount(0, { timeout: 8_000 });
+
+    // And the member no longer sees it.
+    const after = await sharedCtx.get('/api/shares/access/mine', {
+      headers: { 'x-session-token': sharedActive.token, 'x-csrf-token': sharedActive.csrf },
+    });
+    const afterBody = await after.json();
+    const afterApps = (afterBody?.data?.apps ?? []) as { resource: string }[];
+    expect(afterApps.some((a) => a.resource === resource)).toBe(false);
+  });
+
+  test('17.3 — a member cannot list every grant (server-side guard)', async () => {
+    const res = await sharedCtx.get('/api/shares/access', {
+      headers: { 'x-session-token': sharedActive.token, 'x-csrf-token': sharedActive.csrf },
+    });
+    expect(res.status()).toBe(403);
+  });
+
+  test('17.4 — granting a resource to a non-existent member is rejected', async () => {
+    const res = await sharedCtx.post('/api/shares/access', {
+      headers: adminHeaders,
+      data: { member: 'no_such_member_e2e', kind: 'app', resource: 'x' },
+    });
+    expect(res.status()).toBe(400);
+  });
+});
