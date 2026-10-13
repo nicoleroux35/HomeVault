@@ -289,6 +289,15 @@ and `handle_share_get` accepted any non-empty `X-Session-Token`; they now use
 | GET/POST/DELETE | `/shares/{name}/{share_type}/permissions` | admin | per-user/group ACL |
 | POST | `/shares/{name}/{share_type}/permissions/sync` | admin | re-apply ACLs |
 | GET | `/users/{username}/permissions` | admin | `handle_user_permissions` |
+| GET | `/shares/access` | admin | `handle_list_access` — every per-member resource grant (optional `?member=`) |
+| GET | `/shares/access/mine` | auth | `handle_my_access` — the caller's own effective access (`all: true` for admins) |
+| POST | `/shares/access` | admin | `handle_grant_access` — `{member, kind, resource, permission?}` |
+| DELETE | `/shares/access` | admin | `handle_revoke_access` — `?member=&kind=&resource=` |
+
+`/shares/access` is the **fine-grained per-member** layer (apps / folders /
+shares), separate from the POSIX-ACL share permissions above. `kind` ∈ {`app`,
+`folder`, `share`}, `permission` ∈ {`read`, `write`, `full`}. See
+[Users](./guides/users.md) for the server-side filter contract.
 
 `share_type` ∈ {`smb`, `nfs`, `ftp`, `webdav`}. Permission grant applies the real
 POSIX ACL **before** the DB write; revoke deletes the DB row even if the ACL

@@ -20,10 +20,13 @@ pub mod notification_repo;
 pub mod password_history_repo;
 pub mod password_recovery_repo;
 pub mod ransomware_repo;
+pub mod recent_repo;
 pub mod repository;
+pub mod resource_share_repo;
 pub mod restic_repo;
 pub mod restic_schedule_repo;
 pub mod session_repo;
+pub mod setup_progress_repo;
 pub mod setup_state_repo;
 pub mod share_link_repo;
 pub mod share_perm_repo;
@@ -59,9 +62,11 @@ pub use password_recovery_repo::PasswordRecoveryCodeRepository;
 pub use ransomware_repo::{
     ProtectedPath, RansomwareEvent, RansomwareRepository, RansomwareSettings,
 };
+pub use recent_repo::{RecentEntry, RecentRepository};
 pub use repository::Repository;
 pub use restic_schedule_repo::{ResticSchedule, ResticScheduleRepository};
 pub use session_repo::SessionRepository;
+pub use setup_progress_repo::{SetupProgress, SetupProgressRepository};
 pub use setup_state_repo::{SetupState, SetupStateRepository};
 pub use share_link_repo::{ShareLink, ShareLinkRepository};
 pub use share_perm_repo::SharePermissionRepository;

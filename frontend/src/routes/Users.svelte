@@ -12,6 +12,7 @@
   import { cn } from '$lib/utils.js';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
   import FolderPicker from '$lib/components/theme/FolderPicker.svelte';
+  import MemberAccessCard from '$lib/components/users/MemberAccessCard.svelte';
   import type { AvailableHomeDisk } from '$lib/types/api';
   import { IconSearch, IconPlus, IconMinus, IconLock, IconLockOpen, IconUsers, IconFolder, IconFolderOpen, IconKey, IconTrash, IconCheck, IconX, IconShield, IconShieldOff, IconGauge, IconArrowLeft, IconEye, IconEyeOff } from '@tabler/icons-svelte';
 
@@ -1290,6 +1291,9 @@
               </form>
             {/if}
           </SectionCard>
+
+          <!-- 4b. Per-member resource access (apps / folders / shares) -->
+          <MemberAccessCard username={selectedUser.username} isAdmin={selectedUser.role === 'admin'} />
 
           <!-- 5. Security -->
           <SectionCard data-testid="users-setting-row" divider>

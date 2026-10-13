@@ -386,6 +386,11 @@ class ApiClient {
     return this.put<{ step: number; saved: boolean }>('/auth/setup/progress', { step, data }, false);
   }
 
+  /** Physical disks + RAID candidates for the Setup Wizard (first-run-only). */
+  async getSetupStorageOptions(): Promise<ApiResponse<{ disks: unknown[]; raid_devices: unknown[] }>> {
+    return this.get<{ disks: unknown[]; raid_devices: unknown[] }>('/auth/setup/storage-options', { cache: false });
+  }
+
   // 2FA enrollment (reuses the authenticated 2FA setup endpoints)
   async setup2FASecret(): Promise<ApiResponse<{ secret: string; qrcode_url: string }>> {
     return this.post<{ secret: string; qrcode_url: string }>('/auth/2fa/setup', { action: 'generate' });
@@ -556,6 +561,31 @@ class ApiClient {
 
   async isDockerAvailable() {
     return this.get('/docker/available', { ttl: 10000 });
+  }
+
+  // ==============================================
+  // Per-member resource access (apps / folders / shares)
+  // ==============================================
+
+  /** Admin: every grant, optionally narrowed to one member. */
+  async listResourceAccess(member?: string) {
+    const qs = member ? `?member=${encodeURIComponent(member)}` : '';
+    return this.get(`/shares/access${qs}`, { cache: false });
+  }
+
+  /** The calling account's own effective access (server-filtered). */
+  async getMyResourceAccess() {
+    return this.get('/shares/access/mine', { cache: false });
+  }
+
+  /** Admin: grant (or update) a member's access to a resource. */
+  async grantResourceAccess(member: string, kind: 'app' | 'folder' | 'share', resource: string, permission: 'read' | 'write' | 'full' = 'read') {
+    return this.post('/shares/access', { member, kind, resource, permission });
+  }
+
+  /** Admin: revoke a member's access to a resource. */
+  async revokeResourceAccess(member: string, kind: 'app' | 'folder' | 'share', resource: string) {
+    return this.delete(`/shares/access?member=${encodeURIComponent(member)}&kind=${kind}&resource=${encodeURIComponent(resource)}`);
   }
 
   // ==============================================

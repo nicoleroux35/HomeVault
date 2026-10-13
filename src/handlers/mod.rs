@@ -50,6 +50,7 @@ pub mod rag;
 pub mod ransomware;
 pub mod rclone;
 pub mod rescue;
+pub mod resource_shares;
 pub mod restic;
 pub mod security;
 pub mod settings;
