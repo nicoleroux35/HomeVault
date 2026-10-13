@@ -16,6 +16,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 
 use crate::browser::{FileBrowser, TRASH_DIR_NAME};
+use crate::handlers::admin_guard::{require_admin, require_auth};
 use crate::handlers::AppState;
 use crate::utils::ResponseHelper;
 
@@ -27,6 +28,9 @@ pub struct ExplorerSearchQuery {
     pub path: String,
     pub query: String,
     pub max_results: Option<usize>,
+    /// When true, match as a subsequence (`rdm` finds `readme.md`) and rank
+    /// best-first instead of plain substring order.
+    pub fuzzy: Option<bool>,
 }
 
 /// Returns the canonical path a session may access, or `None` if the path is
@@ -772,15 +776,31 @@ pub async fn handle_explorer_search(
     };
 
     let max_results = params.max_results.unwrap_or(100);
+    let fuzzy = params.fuzzy.unwrap_or(false);
 
-    match FileBrowser::search(&safe_path.to_string_lossy(), &params.query, max_results).await {
-        Ok(results) => ResponseHelper::json_success(serde_json::json!({
-            "query": params.query,
-            "path": safe_path.to_string_lossy(),
-            "count": results.len(),
-            "results": results
-        })),
-        Err(e) => ResponseHelper::json_error(format!("Search failed: {}", e)),
+    if fuzzy {
+        match FileBrowser::search_fuzzy(&safe_path.to_string_lossy(), &params.query, max_results)
+            .await
+        {
+            Ok(results) => ResponseHelper::json_success(serde_json::json!({
+                "query": params.query,
+                "path": safe_path.to_string_lossy(),
+                "count": results.len(),
+                "fuzzy": true,
+                "results": results
+            })),
+            Err(e) => ResponseHelper::json_error(format!("Search failed: {}", e)),
+        }
+    } else {
+        match FileBrowser::search(&safe_path.to_string_lossy(), &params.query, max_results).await {
+            Ok(results) => ResponseHelper::json_success(serde_json::json!({
+                "query": params.query,
+                "path": safe_path.to_string_lossy(),
+                "count": results.len(),
+                "results": results
+            })),
+            Err(e) => ResponseHelper::json_error(format!("Search failed: {}", e)),
+        }
     }
 }
 
@@ -3336,91 +3356,95 @@ pub async fn handle_explorer_snapshots(
 /// Runs the ZFS snapshot listing for a validated target path and builds the
 /// JSON response.
 async fn render_snapshots(target: String) -> Response {
-    let snaps = tokio::task::spawn_blocking(move || -> Vec<ExplorerSnapshot> {
-        let Ok(mounts) = std::fs::read_to_string("/proc/mounts") else {
-            return Vec::new();
-        };
-
-        // The deepest ZFS mount point that contains `target`.
-        let mut best: Option<(String, String)> = None; // (mountpoint, dataset)
-        for line in mounts.lines() {
-            let mut it = line.split_whitespace();
-            let (Some(dev), Some(mp), Some(fs)) = (it.next(), it.next(), it.next()) else {
-                continue;
-            };
-            if fs != "zfs" {
-                continue;
-            }
-            let mp_trim = mp.trim_end_matches('/');
-            if target == mp || target.starts_with(&format!("{}/", mp_trim)[..]) {
-                let deeper = best
-                    .as_ref()
-                    .map(|(m, _)| mp.len() > m.len())
-                    .unwrap_or(true);
-                if deeper {
-                    best = Some((mp.to_string(), dev.to_string()));
-                }
-            }
-        }
-
-        let Some((mountpoint, dataset)) = best else {
-            return Vec::new();
-        };
-        let mp_trim = mountpoint.trim_end_matches('/').to_string();
-        let rel = target
-            .strip_prefix(mp_trim.as_str())
-            .unwrap_or("")
-            .trim_start_matches('/')
-            .to_string();
-
-        let out = std::process::Command::new("sudo")
-            .args([
-                "zfs",
-                "list",
-                "-H",
-                "-p",
-                "-t",
-                "snapshot",
-                "-o",
-                "name,creation",
-                "-r",
-                "-d",
-                "1",
-            ])
-            .arg(&dataset)
-            .output();
-        let Ok(out) = out else {
-            return Vec::new();
-        };
-        if !out.status.success() {
-            return Vec::new();
-        }
-
-        let mut snaps: Vec<ExplorerSnapshot> = Vec::new();
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        for line in stdout.lines() {
-            let mut cols = line.split('\t');
-            let (Some(full), Some(creation)) = (cols.next(), cols.next()) else {
-                continue;
-            };
-            let snapname = full.rsplit('@').next().unwrap_or(full);
-            let mut browse = format!("{}/.zfs/snapshot/{}", mp_trim, snapname);
-            if !rel.is_empty() {
-                browse = format!("{}/{}", browse, rel);
-            }
-            snaps.push(ExplorerSnapshot {
-                name: snapname.to_string(),
-                created: creation.to_string(),
-                browse_path: browse,
-            });
-        }
-        snaps.reverse(); // newest first
-        snaps
-    })
-    .await
-    .unwrap_or_default();
+    let snaps = tokio::task::spawn_blocking(move || list_zfs_snapshots_sync(&target))
+        .await
+        .unwrap_or_default();
 
     ResponseHelper::json_success(snaps)
+}
+
+/// Synchronous ZFS snapshot listing for `target` (deepest containing dataset,
+/// newest first). Best-effort: any unreadable state yields an empty list.
+fn list_zfs_snapshots_sync(target: &str) -> Vec<ExplorerSnapshot> {
+    let Ok(mounts) = std::fs::read_to_string("/proc/mounts") else {
+        return Vec::new();
+    };
+
+    // The deepest ZFS mount point that contains `target`.
+    let mut best: Option<(String, String)> = None; // (mountpoint, dataset)
+    for line in mounts.lines() {
+        let mut it = line.split_whitespace();
+        let (Some(dev), Some(mp), Some(fs)) = (it.next(), it.next(), it.next()) else {
+            continue;
+        };
+        if fs != "zfs" {
+            continue;
+        }
+        let mp_trim = mp.trim_end_matches('/');
+        if target == mp || target.starts_with(&format!("{}/", mp_trim)[..]) {
+            let deeper = best
+                .as_ref()
+                .map(|(m, _)| mp.len() > m.len())
+                .unwrap_or(true);
+            if deeper {
+                best = Some((mp.to_string(), dev.to_string()));
+            }
+        }
+    }
+
+    let Some((mountpoint, dataset)) = best else {
+        return Vec::new();
+    };
+    let mp_trim = mountpoint.trim_end_matches('/').to_string();
+    let rel = target
+        .strip_prefix(mp_trim.as_str())
+        .unwrap_or("")
+        .trim_start_matches('/')
+        .to_string();
+
+    let out = std::process::Command::new("sudo")
+        .args([
+            "zfs",
+            "list",
+            "-H",
+            "-p",
+            "-t",
+            "snapshot",
+            "-o",
+            "name,creation",
+            "-r",
+            "-d",
+            "1",
+        ])
+        .arg(&dataset)
+        .output();
+    let Ok(out) = out else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+
+    let mut snaps: Vec<ExplorerSnapshot> = Vec::new();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for line in stdout.lines() {
+        let mut cols = line.split('\t');
+        let (Some(full), Some(creation)) = (cols.next(), cols.next()) else {
+            continue;
+        };
+        let snapname = full.rsplit('@').next().unwrap_or(full);
+        let mut browse = format!("{}/.zfs/snapshot/{}", mp_trim, snapname);
+        if !rel.is_empty() {
+            browse = format!("{}/{}", browse, rel);
+        }
+        snaps.push(ExplorerSnapshot {
+            name: snapname.to_string(),
+            created: creation.to_string(),
+            browse_path: browse,
+        });
+    }
+    snaps.reverse(); // newest first
+    snaps
 }
 
 // ---------------------------------------------------------------------------
@@ -3607,9 +3631,517 @@ pub async fn handle_explorer_watch(Query(query): Query<WatchQuery>) -> Response 
     Sse::new(stream).into_response()
 }
 
+// ---------------------------------------------------------------------------
+// Explorer recents (server-side, per-user)
+//
+// The last directories a user opened, capped at 50 server-side. Powers the
+// sidebar "Recents" section and the dashboard widget. Same retention story
+// as favorites: rows die with the user account (`purge_user` in the user
+// delete chain).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct RecentTouchRequest {
+    pub path: String,
+}
+
+/// GET /api/explorer/recents — the current user's recent locations, newest first.
+pub async fn handle_explorer_recents_list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    let username = match require_auth(&state, &headers).await {
+        Ok(u) => u,
+        Err(r) => return r,
+    };
+    let repo = crate::storage::RecentRepository::new(state.db.pool());
+    match repo.list(&username, 50).await {
+        Ok(recents) => ResponseHelper::json_success(recents),
+        Err(e) => ResponseHelper::json_error(format!("Failed to list recents: {}", e)),
+    }
+}
+
+/// POST /api/explorer/recents — record a visit to `path`.
+pub async fn handle_explorer_recents_touch(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Json(req): axum::extract::Json<RecentTouchRequest>,
+) -> Response {
+    let session_token = headers
+        .get("x-session-token")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    if session_token.is_empty() {
+        return ResponseHelper::json_error("No session token provided".to_string());
+    }
+    let session = match state.auth.get_session(session_token).await {
+        Ok(s) => s,
+        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
+    };
+    // Only record locations the user can actually browse.
+    let stored = match validate_path_access(&state, &req.path, &session) {
+        Some(p) => p.to_string_lossy().into_owned(),
+        None => {
+            return ResponseHelper::json_error(
+                "Access denied: path outside allowed directory".to_string(),
+            );
+        }
+    };
+    let repo = crate::storage::RecentRepository::new(state.db.pool());
+    match repo.touch(&session.username, &stored).await {
+        Ok(()) => ResponseHelper::json_success(serde_json::json!({"recorded": true})),
+        Err(e) => ResponseHelper::json_error(format!("Failed to record recent: {}", e)),
+    }
+}
+
+/// DELETE /api/explorer/recents — clear the current user's recents.
+pub async fn handle_explorer_recents_clear(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    let username = match require_auth(&state, &headers).await {
+        Ok(u) => u,
+        Err(r) => return r,
+    };
+    let repo = crate::storage::RecentRepository::new(state.db.pool());
+    match repo.clear(&username).await {
+        Ok(()) => ResponseHelper::json_success(serde_json::json!({"cleared": true})),
+        Err(e) => ResponseHelper::json_error(format!("Failed to clear recents: {}", e)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Explorer file history ("Rewind")
+//
+// Per-file version timeline for the Rewind drawer (`?rewind=open`): the live
+// file's stat plus every ZFS snapshot of its parent directory that still
+// holds that file, newest first. Restoring is a plain copy out of the
+// read-only `.zfs/snapshot` path, so no dedicated restore endpoint is needed.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct ExplorerHistoryQuery {
+    pub path: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HistoryVersion {
+    pub name: String,
+    pub created: String,
+    pub browse_path: String,
+}
+
+/// GET /api/explorer/history?path=… — version timeline for one file or folder.
+pub async fn handle_explorer_history(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ExplorerHistoryQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let session_token = headers
+        .get("x-session-token")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    if session_token.is_empty() {
+        return ResponseHelper::json_error("No session token provided".to_string());
+    }
+    let session = match state.auth.get_session(session_token).await {
+        Ok(s) => s,
+        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
+    };
+    let validated = match validate_path_access(&state, &params.path, &session) {
+        Some(p) => p,
+        None => {
+            return ResponseHelper::json_error(
+                "Access denied: path outside allowed directory".to_string(),
+            );
+        }
+    };
+    let target = validated.to_string_lossy().into_owned();
+    let result = tokio::task::spawn_blocking(move || {
+        let current = std::fs::metadata(&target).ok().map(|m| {
+            serde_json::json!({
+                "exists": true,
+                "is_directory": m.is_dir(),
+                "size_bytes": m.len(),
+                "modified": m.modified().ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs()),
+            })
+        });
+        // Snapshots cover the parent directory; each version's path is the
+        // snapshot browse path with the file name appended back.
+        let parent = std::path::Path::new(&target)
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| target.clone());
+        let file_name = std::path::Path::new(&target)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut versions: Vec<HistoryVersion> = Vec::new();
+        for snap in list_zfs_snapshots_sync(&parent) {
+            let version_path = if file_name.is_empty() {
+                snap.browse_path.clone()
+            } else {
+                format!("{}/{}", snap.browse_path.trim_end_matches('/'), file_name)
+            };
+            if std::path::Path::new(&version_path).exists() {
+                versions.push(HistoryVersion {
+                    name: snap.name,
+                    created: snap.created,
+                    browse_path: version_path,
+                });
+            }
+        }
+        serde_json::json!({
+            "path": target,
+            "current": current.unwrap_or(serde_json::json!({"exists": false})),
+            "versions": versions,
+        })
+    })
+    .await
+    .unwrap_or_else(|e| serde_json::json!({"error": e.to_string()}));
+    ResponseHelper::json_success(result)
+}
+
+// ---------------------------------------------------------------------------
+// Explorer network discovery (SMB / mDNS neighbours)
+//
+// Best-effort enumeration of nearby file servers for the "Network" picker:
+// `smbtree` (NetBIOS/SMB) plus `avahi-browse` (mDNS). Either tool missing,
+// slow (>8 s) or empty simply yields fewer entries — never an error, so the
+// picker degrades to manual entry on minimal installs.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NetworkNeighbour {
+    pub host: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub share: Option<String>,
+    /// `"smb"` | `"mdns"`.
+    pub source: String,
+}
+
+/// Parses one `smbtree -N -b` line (`\\HOST\share`, possibly indented).
+/// Returns `(host, share?)` — a bare `\\HOST` line has no share.
+pub(crate) fn parse_smbtree_line(line: &str) -> Option<(String, Option<String>)> {
+    let line = line.trim();
+    let rest = line.strip_prefix("\\\\")?;
+    let mut parts = rest.split('\\');
+    let host = parts.next()?.trim().to_string();
+    if host.is_empty() {
+        return None;
+    }
+    let share = parts.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    Some((host, share))
+}
+
+/// Parses one `avahi-browse -a -p --resolve` record line:
+/// `=;iface;proto;name;type;domain;host;addr;port;…`. Only `_smb._tcp` /
+/// `_nfs._tcp` records are kept (file servers, not printers).
+pub(crate) fn parse_avahi_line(line: &str) -> Option<(String, String)> {
+    let line = line.trim();
+    if !line.starts_with('=') {
+        return None;
+    }
+    let f: Vec<&str> = line.split(';').collect();
+    if f.len() < 9 {
+        return None;
+    }
+    let svc = f[4];
+    if !svc.contains("_smb._tcp") && !svc.contains("_nfs._tcp") {
+        return None;
+    }
+    let host = f[6].trim().trim_end_matches('.').to_string();
+    let addr = f[7].trim().to_string();
+    if host.is_empty() || addr.is_empty() {
+        return None;
+    }
+    Some((host, addr))
+}
+
+fn discover_neighbours_sync() -> Vec<NetworkNeighbour> {
+    use std::time::Duration;
+    let mut out: Vec<NetworkNeighbour> = Vec::new();
+
+    let run = |prog: &str, args: &[&str]| {
+        std::process::Command::new(prog)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    };
+
+    // SMB workgroup tree. `timeout 8` bounds the whole call including
+    // NetBIOS elections on a quiet LAN.
+    if let Some(text) =
+        run("timeout", &["8", "smbtree", "-N", "-b"])
+            .or_else(|| run("smbtree", &["-N", "-b"]))
+    {
+        let _ = Duration::from_secs(0);
+        for line in text.lines() {
+            if let Some((host, share)) = parse_smbtree_line(line) {
+                out.push(NetworkNeighbour {
+                    host,
+                    address: None,
+                    share,
+                    source: "smb".to_string(),
+                });
+            }
+        }
+    }
+
+    if let Some(text) =
+        run("timeout", &["8", "avahi-browse", "-a", "-p", "-t", "--resolve"])
+            .or_else(|| run("avahi-browse", &["-a", "-p", "-t", "--resolve"]))
+    {
+        for line in text.lines() {
+            if let Some((host, addr)) = parse_avahi_line(line) {
+                out.push(NetworkNeighbour {
+                    host,
+                    address: Some(addr),
+                    share: None,
+                    source: "mdns".to_string(),
+                });
+            }
+        }
+    }
+
+    out.sort_by(|a, b| {
+        a.host
+            .cmp(&b.host)
+            .then(a.share.cmp(&b.share))
+            .then(a.source.cmp(&b.source))
+    });
+    out.dedup_by(|a, b| a.host == b.host && a.share == b.share && a.source == b.source);
+    out
+}
+
+/// GET /api/explorer/network-discovery — nearby SMB/mDNS file servers.
+pub async fn handle_explorer_network_discovery(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(r) = require_auth(&state, &headers).await {
+        return r;
+    }
+    let neighbours =
+        tokio::task::spawn_blocking(discover_neighbours_sync).await.unwrap_or_default();
+    ResponseHelper::json_success(serde_json::json!({
+        "count": neighbours.len(),
+        "neighbours": neighbours,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Explorer external-drive formatting (ext4 / exFAT)
+//
+// Admin-only escape hatch for preparing a USB drive from the Explorer disks
+// card. The device must be a `/dev/…` block node that is not currently
+// mounted at a system location; the actual `wipefs` + `mkfs` run under sudo
+// on a blocking thread.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct FormatRequest {
+    pub device: String,
+    /// `"ext4"` | `"exfat"`.
+    pub fstype: String,
+    pub label: Option<String>,
+}
+
+/// Pure validation for a format request — unit-tested, no I/O.
+pub(crate) fn validate_format_request(
+    device: &str,
+    fstype: &str,
+    label: Option<&str>,
+) -> Result<(), String> {
+    if !device.starts_with("/dev/") || device.len() > 64 {
+        return Err("device must be a /dev/… block device".to_string());
+    }
+    let tail = &device["/dev/".len()..];
+    if tail.is_empty()
+        || !tail
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '.'))
+        || tail.contains("..")
+    {
+        return Err("device must be a /dev/… block device".to_string());
+    }
+    match fstype.to_ascii_lowercase().as_str() {
+        "ext4" | "exfat" => {}
+        _ => return Err("fstype must be ext4 or exfat".to_string()),
+    }
+    if let Some(l) = label {
+        let max = if fstype.eq_ignore_ascii_case("exfat") { 11 } else { 16 };
+        if l.is_empty()
+            || l.len() > max
+            || !l
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+        {
+            return Err(format!(
+                "label must be 1–{max} chars [A-Za-z0-9_-]"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// POST /api/explorer/format — wipe + mkfs an external block device.
+pub async fn handle_explorer_format(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Json(req): axum::extract::Json<FormatRequest>,
+) -> Response {
+    if let Err(r) = require_admin(&state, &headers).await {
+        return r;
+    }
+    if let Err(e) = validate_format_request(&req.device, &req.fstype, req.label.as_deref()) {
+        return ResponseHelper::json_error(e);
+    }
+    // Refuse devices mounted at system locations — formatting the boot disk
+    // from the file manager must be impossible, not just unlikely.
+    const PROTECTED_MOUNTS: [&str; 5] = ["/", "/boot", "/boot/efi", "/etc", "/var"];
+    if let Ok(mounts) = std::fs::read_to_string("/proc/mounts") {
+        for line in mounts.lines() {
+            let mut it = line.split_whitespace();
+            let (Some(dev), Some(mp)) = (it.next(), it.next()) else {
+                continue;
+            };
+            if dev == req.device && PROTECTED_MOUNTS.contains(&mp) {
+                return ResponseHelper::json_error(
+                    "Refusing to format a system-mounted device".to_string(),
+                );
+            }
+        }
+    }
+    let device = req.device.clone();
+    let fstype = req.fstype.to_ascii_lowercase();
+    let label = req.label.clone().unwrap_or_default();
+    let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
+        let wipe = std::process::Command::new("sudo")
+            .args(["wipefs", "-a", &device])
+            .output()
+            .map_err(|e| format!("wipefs failed to start: {e}"))?;
+        if !wipe.status.success() {
+            return Err(format!(
+                "wipefs failed: {}",
+                String::from_utf8_lossy(&wipe.stderr).trim()
+            ));
+        }
+        let mut args: Vec<String> = Vec::new();
+        match fstype.as_str() {
+            "ext4" => {
+                args.push("-F".to_string());
+                if !label.is_empty() {
+                    args.push("-L".to_string());
+                    args.push(label.clone());
+                }
+                args.push(device.clone());
+                let mk = std::process::Command::new("sudo")
+                    .arg("mkfs.ext4")
+                    .args(&args)
+                    .output()
+                    .map_err(|e| format!("mkfs.ext4 failed to start: {e}"))?;
+                if !mk.status.success() {
+                    return Err(format!(
+                        "mkfs.ext4 failed: {}",
+                        String::from_utf8_lossy(&mk.stderr).trim()
+                    ));
+                }
+            }
+            _ => {
+                if !label.is_empty() {
+                    args.push("-n".to_string());
+                    args.push(label.clone());
+                }
+                args.push(device.clone());
+                let mk = std::process::Command::new("sudo")
+                    .arg("mkfs.exfat")
+                    .args(&args)
+                    .output()
+                    .map_err(|e| format!("mkfs.exfat failed to start: {e}"))?;
+                if !mk.status.success() {
+                    return Err(format!(
+                        "mkfs.exfat failed: {}",
+                        String::from_utf8_lossy(&mk.stderr).trim()
+                    ));
+                }
+            }
+        }
+        Ok(format!("{device} formatted as {fstype}"))
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+    match result {
+        Ok(msg) => {
+            tracing::info!("External drive formatted: {}", msg);
+            ResponseHelper::json_success(serde_json::json!({"message": msg}))
+        }
+        Err(e) => ResponseHelper::json_error(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- network discovery parsers ---
+
+    #[test]
+    fn test_parse_smbtree_line_host_and_share() {
+        assert_eq!(
+            parse_smbtree_line("\\\\NAS\\media"),
+            Some(("NAS".to_string(), Some("media".to_string())))
+        );
+        assert_eq!(
+            parse_smbtree_line("\t\\\\PRINT-SRV"),
+            Some(("PRINT-SRV".to_string(), None))
+        );
+        assert_eq!(parse_smbtree_line("WORKGROUP"), None);
+        assert_eq!(parse_smbtree_line(""), None);
+    }
+
+    #[test]
+    fn test_parse_avahi_line_keeps_file_services_only() {
+        let smb = "=;eth0;IPv4;NAS;_smb._tcp;local;nas.local;192.168.1.10;445;\"x\"";
+        assert_eq!(
+            parse_avahi_line(smb),
+            Some(("nas.local".to_string(), "192.168.1.10".to_string()))
+        );
+        let printer = "=;eth0;IPv4;Printer;_printer._tcp;local;print.local;192.168.1.11;631;";
+        assert_eq!(parse_avahi_line(printer), None);
+        assert_eq!(parse_avahi_line("+;eth0;IPv4;cache"), None);
+    }
+
+    // --- format validation ---
+
+    #[test]
+    fn test_validate_format_request_accepts_ext4_and_exfat() {
+        assert!(validate_format_request("/dev/sdb1", "ext4", None).is_ok());
+        assert!(validate_format_request("/dev/sdb1", "exfat", Some("BACKUP")).is_ok());
+        assert!(validate_format_request("/dev/sdb1", "EXT4", None).is_ok());
+    }
+
+    #[test]
+    fn test_validate_format_request_rejects_bad_device_and_fstype() {
+        assert!(validate_format_request("/etc/passwd", "ext4", None).is_err());
+        assert!(validate_format_request("/dev/../../etc", "ext4", None).is_err());
+        assert!(validate_format_request("/dev/sdb1", "ntfs", None).is_err());
+        assert!(validate_format_request("/dev/sdb1", "", None).is_err());
+    }
+
+    #[test]
+    fn test_validate_format_request_enforces_label_limits() {
+        assert!(validate_format_request("/dev/sdb1", "exfat", Some("TOO-LONG-LABEL")).is_err());
+        assert!(validate_format_request("/dev/sdb1", "ext4", Some("12345678901234567")).is_err());
+        assert!(validate_format_request("/dev/sdb1", "ext4", Some("bad label!")).is_err());
+        assert!(validate_format_request("/dev/sdb1", "ext4", Some("")).is_err());
+    }
 
     // --- sanitize_upload_filename: the client-name → safe-basename gate ---
 

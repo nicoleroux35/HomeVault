@@ -120,6 +120,9 @@ pub struct CreateVmRequest {
     /// widest ISO compatibility).
     #[serde(default)]
     pub secure_boot: Option<bool>,
+    /// Attach a virtual sound card (VMs only, ignored for containers).
+    #[serde(default)]
+    pub audio: Option<bool>,
 }
 
 fn default_kind() -> String {
@@ -549,6 +552,7 @@ pub async fn handle_vm_create(
         if tpm_added {
             devices.insert("vtpm".to_string(), serde_json::json!({ "type": "tpm" }));
         }
+        apply_audio_device(&mut devices, req.audio.unwrap_or(false), true);
 
         let label = if windows {
             "Windows (ISO)"
@@ -594,6 +598,12 @@ pub async fn handle_vm_create(
             Ok(o) => o,
             Err(e) => return e,
         };
+        if os.iso_only {
+            return ResponseHelper::json_error(format!(
+                "{} has no ready-made image — install it from your ISO instead.",
+                os.label,
+            ));
+        }
         if !os.kinds.contains(&if kind == "virtual-machine" {
             "vm"
         } else {
@@ -648,7 +658,11 @@ pub async fn handle_vm_create(
                 "size": format!("{}GiB", disk),
             }),
         );
-
+        apply_audio_device(
+            &mut devices,
+            req.audio.unwrap_or(false),
+            kind == "virtual-machine",
+        );
         (
             incus::CreateInstanceBody {
                 name: name.clone(),
@@ -1984,6 +1998,19 @@ fn os_or_error(id: &str) -> Result<&'static incus::OsOption, Response> {
         })
 }
 
+/// Attaches the virtual sound card when the wizard's "sound" box is ticked.
+/// VMs only: containers share the host audio stack, so the device would be
+/// rejected there.
+fn apply_audio_device(
+    devices: &mut HashMap<String, serde_json::Value>,
+    audio: bool,
+    is_vm: bool,
+) {
+    if audio && is_vm {
+        devices.insert("audio0".to_string(), incus::audio_device());
+    }
+}
+
 fn incus_err(e: IncusError) -> Response {
     match e {
         IncusError::NotAvailable => ResponseHelper::json_error(
@@ -2001,6 +2028,21 @@ fn incus_err(e: IncusError) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_apply_audio_device_attaches_for_vms_only() {
+        let mut vm_devices = HashMap::new();
+        apply_audio_device(&mut vm_devices, true, true);
+        assert!(vm_devices.contains_key("audio0"));
+
+        let mut quiet = HashMap::new();
+        apply_audio_device(&mut quiet, false, true);
+        assert!(!quiet.contains_key("audio0"));
+
+        let mut container = HashMap::new();
+        apply_audio_device(&mut container, true, false);
+        assert!(!container.contains_key("audio0"));
+    }
 
     #[test]
     fn test_valid_instance_name() {

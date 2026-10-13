@@ -19,7 +19,7 @@ non-admins are restricted to the configured `allowed_roots`.
 | Endpoint | Method | Body / Query | Notes |
 |----------|--------|--------------|-------|
 | `/explorer/list` | GET | `?path=` | directory listing |
-| `/explorer/search` | GET | `?path=&query=&max_results=` | recursive search, wired into the UI's search box (see below) |
+| `/explorer/search` | GET | `?path=&query=&max_results=&fuzzy=` | recursive search, wired into the UI's search box (see below). `?fuzzy=true` switches to subsequence matching (see *Fuzzy search*) |
 | `/explorer/disks` | GET | — | mounted volumes grouped `system\|internal\|raid\|external\|cloud\|network`; each entry carries `mount_point`, `filesystem`, `size_bytes`, `used_bytes`, plus optional `label` (FS label) + `vendor`/`model`/`serial` of the parent block device (one `lsblk -P` pass, `collect_block_device_meta`, added 2026-09-09 for the folder picker's sidebar). `FolderPicker.svelte` ignores the extra fields. |
 | `/explorer/mkdir` | POST | `?path=` | create folder |
 | `/explorer/delete` | POST | `?path=` | **admin-only** permanent delete — internal use only now (purge/empty-trash), the UI's Delete button calls `/explorer/trash` instead |
@@ -46,6 +46,10 @@ non-admins are restricted to the configured `allowed_roots`.
 | `/explorer/save` | POST | `{ path, content }` | inline text/code editor — atomic temp-file + rename, 5 MB cap |
 | `/explorer/snapshots` | GET | `?path=` | ZFS snapshots covering that path, each with a read-only `browse_path` under `.zfs/snapshot/` |
 | `/explorer/eject` | POST (admin) | `?path=<mount>` | safe-eject a removable drive — guarded by `is_removable_block_device` (can never `umount` an internal disk) |
+| `/explorer/recents` | GET / POST / DELETE | `?path=<key>` (POST) | the session user's recently-visited folders: list (newest first), touch (record/refresh one), clear (all). Stored server-side, per user, in `recent_repo` (`explorer_recents`, migration 039) — not `localStorage` |
+| `/explorer/history` | GET | `?path=` | **Rewind** — the ZFS snapshot timeline covering that file/folder, oldest→newest, each with a read-only `snapshot_path` under `.zfs/snapshot/`. Empty outside ZFS |
+| `/explorer/network-discovery` | GET (admin) | — | **SMB/network discovery** — nearby shares found via `smbtree` (SMB workgroups/hosts/shares) and Avahi/mDNS (`_smb._tcp` etc.), returned as a flat `NetworkResource[]` (`kind`, `name`, `host`, `address`, `share?`). Best-effort: missing tools yield an empty list, never an error |
+| `/explorer/format` | POST (admin) | `{ device, fstype, label? }` | format a block device as `ext4` or `exfat` (`mkfs.*` under `sudo`). `fstype` is validated against the two-value allow-list and the device against the available-disk list **before** any `mkfs` runs |
 
 `/copy`, `/move`, `/upload` also take `?strategy=overwrite\|keep_both\|skip`
 (`browser::CollisionStrategy`); `keep_both` uses `non_colliding_path` (` (N)`
@@ -226,10 +230,52 @@ a misleading half-populated tree.
   bails via `blockedInSnapshot()` **except copy** (relabelled "Restore a copy
   to…" — that is how you recover an old version).
 
+## Later features (2026-10-13)
+
+- **Rewind (per-file snapshot timeline)** — `GET /explorer/history?path=` returns
+  the ZFS snapshots that cover a path, oldest first, each carrying a read-only
+  `snapshot_path` under `.zfs/snapshot/`. The toolbar "Rewind" modal lists them
+  and restores by **copying out of the snapshot** (the same read-only
+  `snapshotMode` copy path as the Snapshots dropdown) — there is no dedicated
+  restore endpoint. Outside ZFS the list is empty and the modal says so.
+- **Server-side recents** — the sidebar's "Recent" list is now stored per user
+  in the database (`explorer_recents`, migration `039_explorer_recents.sql`,
+  `src/storage/recent_repo.rs`), not in `localStorage`, so it follows the account
+  across browsers. `GET /explorer/recents` lists them newest-first,
+  `POST /explorer/recents` (body `{ path }`) records/refreshes one (called
+  `recordRecent` on every folder navigation), `DELETE /explorer/recents` clears
+  the list. Deleting a user purges their rows (`src/handlers/users.rs`).
+- **Fuzzy search** — `?fuzzy=true` on `/explorer/search` switches from substring
+  matching to a subsequence scorer (`browser::fuzzy_score`, `search_fuzzy` /
+  `search_fuzzy_sync`): `rdm` matches `readme.md`, with contiguous and
+  shorter-name matches ranked higher. The search box has a "fuzzy" toggle.
+- **Marquee (rubber-band) select** — dragging on the file area draws a selection
+  rectangle and selects the rows it crosses. Mouse enhancement only: rows stay
+  keyboard-operable buttons and shift/ctrl-click is unchanged.
+- **Virtualized listing** — the list/grid renders in pages (`VIRTUAL_PAGE` = 200,
+  `visibleLimit` / `visibleEntries`); an `IntersectionObserver` on a sentinel
+  grows the window as it scrolls, and a "show more" button is the keyboard path.
+  Keeps the DOM small on huge directories.
+- **Internal drag & drop** — rows are `draggable`; dropping onto a folder row
+  moves the selection there (`onRowDragStart`/`onFolderDrop`), alongside the
+  existing OS-file drop-to-upload.
+- **SMB / network discovery** — `GET /explorer/network-discovery` (admin) lists
+  nearby shares discovered with `smbtree` (SMB workgroups/hosts/shares) and
+  Avahi/mDNS (`_smb._tcp`). Both parsers are pure functions unit-tested in
+  `src/handlers/explorer.rs`; a host without the tools gets an empty list, not an
+  error. The toolbar "Network" modal renders them as browsable entries.
+- **Format a drive** — `POST /explorer/format` (admin) formats a block device as
+  **ext4** or **exfat**. The `fstype` is checked against a two-value allow-list
+  and the device against the available-disk list *before* `mkfs` runs (never a
+  free-form command), then `mkfs.ext4` / `mkfs.exfat` is invoked under `sudo`.
+
 ## Frontend
 
 - `frontend/src/routes/Explorer.svelte` — fully wired through `$t()`/
   `translate()`.
+- `frontend/src/lib/components/explorer/ExplorerWidget.svelte` — the dashboard
+  widget that embeds a compact Explorer (roots + recent folders) and opens the
+  full app on demand.
 - Destination picking for copy/move/extract uses the shared
   `frontend/src/lib/components/theme/FolderPicker.svelte` (also now fully
   translated) instead of a raw `prompt()`. The picker overlay is
@@ -261,7 +307,9 @@ a misleading half-populated tree.
   `getThumbnailTicket`, `downloadFile`, `getThumbnailUrl`,
   `uploadSessionStart`/`uploadChunk`/`uploadComplete`/`uploadSessionAbort`
   (chunked upload, used by `uploadFile`),
-  `getExplorerSnapshots`, `ejectDrive`.
+  `getExplorerSnapshots`, `ejectDrive`, `getExplorerHistory`,
+  `getExplorerRecents`/`touchExplorerRecent`/`clearExplorerRecents`,
+  `discoverNetworkResources`, `formatDrive`.
   Directory copy/move responses are checked for `data.job_id` and, if
   present, subscribed to via the existing `api.subscribeToProgress` (already
   used by Restic/Rescue, previously unused by Explorer).
@@ -321,6 +369,19 @@ a misleading half-populated tree.
   edits — the preview modal closes first and reopens on "Cancel" with the
   in-progress `editContent` intact (the shared `Modal`'s internal close
   state can't fight a still-open parent).
+- **Format is a two-value allow-list, never a free-form command.** `fstype` is
+  rejected unless it is exactly `ext4` or `exfat`, and the device must be in the
+  available-disk list, *before* any `mkfs` runs — the handler never interpolates
+  caller input into a shell command.
+- **Network discovery never fails the request.** A host without `smbtree` or
+  Avahi returns an empty list; the parsers are pure functions with unit tests, so
+  a malformed tool output degrades to "nothing found" instead of a 500.
+- **Recents are per-user and server-side.** The rows are keyed by the session
+  user and purged when the account is deleted; the client never sends another
+  user's key.
+- **Rewind restores by copy, not by writing into the snapshot.** The snapshot
+  path is read-only (`.zfs/snapshot/…`); "restore" copies the old version out to
+  a chosen destination, so a snapshot is never mutated.
 - **Verified live** (real files, real HTTP calls, not just code review):
   owner resolution, preview gating (text vs. binary), recursive search
   finding a deeply nested file, full trash lifecycle (trash → list → restore

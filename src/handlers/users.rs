@@ -977,6 +977,12 @@ pub async fn handle_user_delete(
                     // other cleanup call in this branch.
                     crate::sftp::SftpJailService::purge_user(&username);
 
+                    // Recents are personal data too: a recreated same-name
+                    // account must not inherit the deleted user's locations.
+                    let recent_repo =
+                        crate::storage::RecentRepository::new(state.db.pool());
+                    let _ = recent_repo.purge_user(&username).await;
+
                     crate::events::log_event_warn(format!(
                         "Admin '{}' deleted user '{}'{}",
                         session.username,

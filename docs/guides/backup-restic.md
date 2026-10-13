@@ -29,13 +29,28 @@ retention in `src/storage/backup_retention_repo.rs`. Wrapper in `src/restic.rs`.
 | `GET /restic/retention-policies` | auth | list |
 | `POST /restic/retention-policies` | admin | create |
 | `PUT/DELETE /restic/retention-policies/{id}` | admin | update/delete |
+| `GET /restic/reminders` | auth | **backup reminders** — for each repo, `last_backup_at` + `days_since` + a `stale` flag, so the UI can nag when a repository has not been backed up recently |
+| `GET /restic/restore-plan` | auth | **pre-flight space check** — `?repo_id=&snapshot=` → `{ size_bytes, available_bytes, fits }`, comparing the snapshot's total restore size (`restic::restore_size`) with the free space (`df`) on the destination. Debounced by the restore dialog before the user commits |
 
 ## Frontend
 
 - `frontend/src/routes/Restic.svelte` (full i18n coverage; date locale follows UI
   language, not hardcoded `en-US`).
 - `frontend/src/lib/services/api.ts`: all `restic*` methods including schedules
-  and retention policies.
+  and retention policies, plus `resticReminders` and `resticRestorePlan`.
+- **Backup reminders banner** — the page opens with a warning when any repository
+  is stale (`GET /restic/reminders`), naming the repository and how many days
+  since its last successful backup.
+- **Split-view restore dialog** — choosing a snapshot opens a two-pane restore
+  view (snapshot tree on one side, destination on the other). Before the user
+  commits, a **debounced pre-flight** calls `GET /restic/restore-plan` and shows
+  the required vs. available space, warning when the snapshot will not fit.
+- **Floating progress island** — backups/restores are tracked by a module-level
+  Svelte store (`frontend/src/lib/stores/backupJobs.svelte.ts`) rendered by
+  `frontend/src/lib/components/backup/BackupProgressIsland.svelte`, mounted once
+  in `Desktop.svelte`. Because it lives above the app windows, a running backup
+  keeps its progress visible while the user switches apps; `Restic.svelte`
+  registers each run with `trackJob`.
 
 ## Invariants
 
@@ -50,7 +65,15 @@ retention in `src/storage/backup_retention_repo.rs`. Wrapper in `src/restic.rs`.
   marks `failed`) even when a run errors.
 - Backup/restore/verify already emit `ProgressEmitter` progress, so they show in
   the desktop [activity taskbar](./activity.md) with no `restic.rs` change
-  (`/api/activity` reads the same `PROGRESS_MANAGER` registry).
+  (`/api/activity` reads the same `PROGRESS_MANAGER` registry). The floating
+  progress island reads the same store, so a run is visible both in the taskbar
+  and over the desktop.
+- **The restore pre-flight never blocks the restore.** `GET /restic/restore-plan`
+  is advisory: if `restic` or `df` cannot be read, the dialog shows "unknown"
+  rather than refusing — the real restore still runs and reports its own error.
+- **Reminders are derived, not stored.** `days_since` is computed from the last
+  successful backup timestamp (`restic_repo::last_successful_backup_at`); there
+  is no separate reminder table to drift out of sync.
 - **Editable since 2026-09-12** — `CLAUDE.md`'s frozen-area registry is gone, so
   `Restic.svelte`, the `restic*` api.ts methods, `src/handlers/restic.rs`,
   `src/restic_scheduler.rs`, the schedule/retention repos and the `restic.*`
