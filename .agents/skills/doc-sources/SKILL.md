@@ -155,8 +155,16 @@ comment and break the build. Write "routes under /api/auth" instead.
   name, model name, or "generated" wording anywhere in headers, comments or
   docs. Author and by-lines carry the human author name (`Nicolas Le Roux`).
 - **Never cite, compare with, or credit unrelated third-party software or
-  products** ("like X", "inspired by Y", "alternative to Z"). Only real
-  dependencies may be named, in the Dependencies field.
+  products** ("like X", "inspired by Y", "alternative to Z") — including
+  other NAS / self-hosting platforms (Umbrel, TrueNAS, OpenMediaVault,
+  Synology DSM, CasaOS, Unraid, QNAP, Proxmox, …). Only real dependencies
+  may be named, in the Dependencies field, and installable catalog apps in
+  their functional context.
+- The checks are automated: run
+  `python3 .agents/skills/doc-sources/scripts/audit.py` (16+ checks on every
+  file: banner integrity, git-date consistency, attribution, English-only,
+  platform names). Git-date checks ignore `docs:` commits, so a
+  documentation-only commit never makes the tree look stale.
 
 ## 4. In-code documentation — understandable at every level
 
