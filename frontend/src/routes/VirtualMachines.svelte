@@ -11,7 +11,7 @@
      config, snapshots, browser console and graphical screen, ISO management.
 
      Dependencies:
-       - svelte (>= 5), theme + app/ composites, components/vm/*,
+       - svelte (>= 5), theme + app/ composites, components/vm console/screen components,
          $lib/services/api
 
      Usage:

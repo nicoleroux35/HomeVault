@@ -1,7 +1,7 @@
 /* =============================================================================
  * File          : appGate.ts
  * Author        : Nicolas Le Roux
- * Created       : 28/09/2026
+ * Created       : 12/10/2026
  * Last modified : 12/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *

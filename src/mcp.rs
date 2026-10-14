@@ -7,8 +7,8 @@
  *
  * Description:
  *   External AI-agent server (Model Context Protocol, Streamable HTTP):
- *   lets an outside agent call a filtered tool set (file listing, docker
- *   status, health, ...) authenticated by hashed bearer tokens with
+ *   lets an outside coding agent call a filtered tool set (file listing,
+ *   docker status, health, ...) authenticated by hashed bearer tokens with
  *   per-token permission snapshots. Every call is event-logged with the
  *   token id.
  *
@@ -24,7 +24,7 @@
 //! External AI-agent server (Model Context Protocol, Streamable HTTP).
 //!
 //! HomeVault ships an internal Chat/RAG assistant, but nothing an external
-//! agent (Claude Code, opencode, …) can call. This module is the shareable
+//! coding agent can call. This module is the shareable
 //! half of that gap, modelled on Umbrel's `umbrelMcp` module:
 //!
 //! - one master kill-switch (`enabled`) plus one **global** permission set
