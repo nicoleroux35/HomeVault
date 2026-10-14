@@ -1,25 +1,3 @@
-/**
- * HOMEVAULT — focusTrap
- *
- * Svelte `use:focusTrap` action for the hand-rolled overlay/dialog elements
- * that are NOT built on bits-ui Dialog (which already traps focus): the
- * Desktop power/confirm modals and the Launchpad. Gives them the WCAG 2.2
- * keyboard behaviour of a modal dialog:
- *
- *  - moves focus into the dialog when it opens (first focusable control),
- *  - keeps Tab/Shift+Tab cycling inside the dialog (no keyboard trap, but
- *    also no escape from the modal — WCAG 2.1.1 / 2.1.2),
- *  - closes on Escape via the `escape` callback,
- *  - restores focus to the element that had it before the dialog opened
- *    (WCAG 2.4.3), so the keyboard user lands back on the trigger button.
- *
- * Usage:
- *   <div role="dialog" aria-modal="true" use:focusTrap={{ escape: close }}>
- *
- * The node should have `tabindex="-1"` (or the first control will receive
- * focus). Do not use on bits-ui Dialog content — it manages its own focus.
- */
-
 /* =============================================================================
  * File          : focusTrap.ts
  * Author        : Nicolas Le Roux
@@ -40,6 +18,28 @@
  * Usage:
  *   `<div role="dialog" aria-modal="true" use:focusTrap={{ escape: close }}>`.
  * =============================================================================
+ */
+
+/**
+ * HOMEVAULT — focusTrap
+ *
+ * Svelte `use:focusTrap` action for the hand-rolled overlay/dialog elements
+ * that are NOT built on bits-ui Dialog (which already traps focus): the
+ * Desktop power/confirm modals and the Launchpad. Gives them the WCAG 2.2
+ * keyboard behaviour of a modal dialog:
+ *
+ *  - moves focus into the dialog when it opens (first focusable control),
+ *  - keeps Tab/Shift+Tab cycling inside the dialog (no keyboard trap, but
+ *    also no escape from the modal — WCAG 2.1.1 / 2.1.2),
+ *  - closes on Escape via the `escape` callback,
+ *  - restores focus to the element that had it before the dialog opened
+ *    (WCAG 2.4.3), so the keyboard user lands back on the trigger button.
+ *
+ * Usage:
+ *   <div role="dialog" aria-modal="true" use:focusTrap={{ escape: close }}>
+ *
+ * The node should have `tabindex="-1"` (or the first control will receive
+ * focus). Do not use on bits-ui Dialog content — it manages its own focus.
  */
 
 const FOCUSABLE =

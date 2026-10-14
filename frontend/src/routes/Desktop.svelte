@@ -14,7 +14,7 @@
 
      Dependencies:
        - svelte (>= 5), stores (auth, appGate, windowManager, monitor,
-         wallpaper, i18n), components/desktop/*
+         wallpaper, i18n), components/desktop barrel
 
      Usage:
      Rendered by App.svelte once the app gate selects the desktop.

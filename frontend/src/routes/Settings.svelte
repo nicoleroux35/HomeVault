@@ -14,7 +14,7 @@
 
      Dependencies:
        - svelte (>= 5), stores/settingsDraft.svelte + settingsCatalog,
-         components/settings/*, theme primitives
+         components/settings barrel, theme primitives
 
      Usage:
      Opened as a desktop window app.
