@@ -25,7 +25,7 @@
 //!
 //! HomeVault ships an internal Chat/RAG assistant, but nothing an external
 //! coding agent can call. This module is the shareable
-//! half of that gap, modelled on Umbrel's `umbrelMcp` module:
+//! half of that gap: a minimal, external-agent gateway surface:
 //!
 //! - one master kill-switch (`enabled`) plus one **global** permission set
 //!   shared by every token (per-token scoping is only revocation),
@@ -46,7 +46,7 @@ use sha2::{Digest, Sha256};
 /// Prefix of every issued token. The full token is
 /// `hv_mcp_<16 hex id>_<32 hex secret>`.
 pub const TOKEN_PREFIX: &str = "hv_mcp_";
-/// Hard cap on live tokens (Umbrel parity: 20).
+/// Hard cap on live tokens (20).
 pub const MAX_TOKENS: i64 = 20;
 /// MCP protocol version we handshake.
 pub const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -293,7 +293,7 @@ fn schema(props: &[(&str, &str)], required: &[&str]) -> Value {
     })
 }
 
-/// The tools visible for a permission snapshot. Mirrors Umbrel's families:
+/// The tools visible for a permission snapshot, grouped into families:
 /// always-on system info, then `apps`, `files`, `machines` (VMs here),
 /// `management` (reboot) and the HomeVault-only `knowledge` family that
 /// exposes the internal RAG base to external agents.

@@ -91,7 +91,7 @@ pub struct McpEnabledRequest {
 }
 
 /// `PUT /api/mcp/status` — flip the master kill-switch. Disabling keeps
-/// tokens and permissions (Umbrel `disable` parity); every live agent call
+/// tokens and permissions survive; every live agent call
 /// then gets a 401 until re-enabled.
 pub async fn handle_mcp_set_enabled(
     State(state): State<Arc<AppState>>,
@@ -245,7 +245,7 @@ async fn agent_context(
         .and_then(|h| h.to_str().ok())
         .and_then(|h| h.strip_prefix("Bearer "))
         .unwrap_or("");
-    // Indistinguishable 401 for disabled/invalid/revoked (Umbrel parity).
+    // Indistinguishable 401 for disabled/invalid/revoked.
     let unauthorized = || {
         (
             StatusCode::UNAUTHORIZED,

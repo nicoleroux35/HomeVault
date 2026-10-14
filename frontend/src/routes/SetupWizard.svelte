@@ -140,7 +140,7 @@
   let twoFactorUnavailable = false;
   let twoFactorBackupCodes: string[] = [];
 
-  // DSM gateway live clock (24 h), same voice as the login screen.
+  // Gateway live clock (24 h), same voice as the login screen.
   let clock = '';
   let dateLabel = '';
   let clockTimer: ReturnType<typeof setInterval>;
@@ -848,7 +848,7 @@
                      passwordStrength === 3 ? t('setup.password_medium') :
                      passwordStrength === 4 ? t('setup.password_strong') :
                      t('setup.password_very_strong');
-  // DSM strength hue ramp (red → orange → green) matching the mock labels.
+  // Password-strength hue ramp (red → orange → green) matching the mock labels.
   $: strengthColor = passwordStrength <= 2 ? 'var(--hv-wizard-strength-weak)' :
                      passwordStrength === 3 ? 'var(--hv-wizard-strength-mid)' :
                      passwordStrength === 4 ? 'var(--hv-wizard-success)' :
@@ -868,7 +868,7 @@
     t('setup.stepper.verify'),
   ];
 
-  // Welcome-step feature cards (DSM 7 mock voice).
+  // Welcome-step feature cards (matching the approved mock).
   $: welcomeFeatures = [
     { icon: IconUser, color: 'var(--hv-login-accent)', title: t('setup.welcome.feature1'), desc: t('setup.welcome.feature1_desc') },
     { icon: IconLock, color: 'var(--hv-wizard-feature-violet)', title: t('setup.welcome.feature2'), desc: t('setup.welcome.feature2_desc') },
@@ -877,7 +877,7 @@
 
   // base.css ships unlayered global `input { width:100%; border; background;
   // padding; … }` rules that beat Tailwind's layered utilities, so every raw
-  // form field carries the trailing `!` important modifier. The DSM field
+  // form field carries the trailing `!` important modifier. The field
   // look lives on the wrapper; the inner input is transparent and borderless.
   // The wizard fields are WHITE (the mock) with a hairline shadow, unlike the
   // login's #F8FAFC fields.

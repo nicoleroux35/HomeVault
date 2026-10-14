@@ -1082,7 +1082,7 @@ test.describe('14 — Edge cases', () => {
 });
 
 // ===========================================================================
-// 15. "umbrelOS" features — inline editor / favorites / collision strategy /
+// 15. Explorer extras — inline editor / favorites / collision strategy /
 //     ZFS snapshot mode / Explorer→Shares hand-off
 //
 // These endpoints and UI paths landed after the 2026-09-06 audit and were
@@ -1140,7 +1140,7 @@ async function openWork(page: Page) {
   await expect.poll(() => currentPath(page), { timeout: 15_000 }).toBe(WORK);
 }
 
-test.describe('15 — umbrelOS features', () => {
+test.describe('15 — Explorer extras', () => {
   // Favorites are per-user + server-side; the file-level afterAll only sweeps
   // /tmp work dirs, so clean up any favorite pointing back into one here.
   test.afterAll(async () => {
