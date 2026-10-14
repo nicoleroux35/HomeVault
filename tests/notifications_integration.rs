@@ -37,7 +37,7 @@
 //!   cargo test --test notifications_integration
 
 use axum::{
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use http::{Method, Request, StatusCode};
@@ -50,13 +50,15 @@ use tower::{Service, ServiceExt};
 use homevault::auth::AuthService;
 use homevault::config::PathGuard;
 use homevault::handlers::notifications::{
-    handle_notification_delete, handle_notification_mark_read, handle_notifications_events,
-    handle_notifications_events_ticket, handle_notifications_list,
+    handle_notification_delete, handle_notification_events_config_get,
+    handle_notification_events_config_update, handle_notification_mark_read,
+    handle_notifications_events, handle_notifications_events_ticket, handle_notifications_list,
     handle_notifications_mark_all_read, handle_notifications_unread_count,
 };
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{auth::handle_login, AppState};
 use homevault::middleware::rate_limit::RateLimitState;
+use homevault::storage::models::{ADMIN_ROLE_ID, USER_ROLE_ID};
 use homevault::storage::{Database, WidgetRepository};
 
 type Req = Request<axum::body::Body>;
@@ -126,6 +128,14 @@ fn notifications_router(state: Arc<AppState>) -> Router {
             post(handle_notifications_events_ticket),
         )
         .route("/api/events", get(handle_notifications_events))
+        .route(
+            "/api/notifications/events/config",
+            get(handle_notification_events_config_get),
+        )
+        .route(
+            "/api/notifications/events/config",
+            put(handle_notification_events_config_update),
+        )
         .with_state(state)
 }
 
@@ -538,4 +548,203 @@ async fn test_events_endpoint_rejects_invalid_ticket() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+// ---------------------------------------------------------------------------
+// Per-event notification config (2026-10-13)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn event_config_requires_admin() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    create_test_user(&state, "user", "UserPass123!", USER_ROLE_ID).await;
+    let mut r = notifications_router(state);
+    let admin = login(&mut r, "admin", "AdminPass123!").await;
+    let user = login(&mut r, "user", "UserPass123!").await;
+
+    let (status, _) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications/events/config",
+        None,
+        None,
+    )
+    .await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "anonymous must not read the event config"
+    );
+    let (status, _) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications/events/config",
+        Some(&user),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = send(
+        &mut r,
+        Method::PUT,
+        "/api/notifications/events/config",
+        Some(&user),
+        Some(json!({"events": {}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications/events/config",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn event_config_lists_the_catalog_with_enabled_defaults() {
+    let (state, _tmp, _guard) = setup_state().await;
+
+    // NOTIFICATION_SETTINGS is a process-wide static — reset it so a
+    // previous test's toggles don't leak into this one's expectations.
+    *homevault::handlers::settings::NOTIFICATION_SETTINGS.write() =
+        homevault::handlers::settings::NotificationSettings::default();
+
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    let mut r = notifications_router(state);
+    let admin = login(&mut r, "admin", "AdminPass123!").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications/events/config",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let events = body["data"]["events"].as_array().expect("events array");
+    assert!(!events.is_empty());
+    // Default state: every catalog event enabled (absent toggle = enabled).
+    assert!(events.iter().all(|e| e["enabled"] == json!(true)), "{body}");
+    // The catalog includes the backup + app-update ids and the health checks.
+    let ids: Vec<&str> = events.iter().filter_map(|e| e["id"].as_str()).collect();
+    assert!(ids.contains(&"backup.jobs"));
+    assert!(ids.contains(&"app.updates"));
+    assert!(ids.contains(&"health.disk_smart"));
+    // webhook_format defaults to null (generic).
+    assert!(body["data"]["webhook_format"].is_null());
+}
+
+#[tokio::test]
+async fn event_config_update_mutes_events_and_persists() {
+    let (state, _tmp, _guard) = setup_state().await;
+
+    // NOTIFICATION_SETTINGS is a process-wide static — reset it so a
+    // previous test's toggles don't leak into this one's expectations.
+    *homevault::handlers::settings::NOTIFICATION_SETTINGS.write() =
+        homevault::handlers::settings::NotificationSettings::default();
+
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    let mut r = notifications_router(state);
+    let admin = login(&mut r, "admin", "AdminPass123!").await;
+
+    let (status, _) = send(
+        &mut r,
+        Method::PUT,
+        "/api/notifications/events/config",
+        Some(&admin),
+        Some(json!({"events": {"backup.jobs": false, "health.cpu": true}})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "unknown event id must be rejected"
+    );
+
+    let (status, _) = send(
+        &mut r,
+        Method::PUT,
+        "/api/notifications/events/config",
+        Some(&admin),
+        Some(json!({"events": {"backup.jobs": false}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications/events/config",
+        Some(&admin),
+        None,
+    )
+    .await;
+    let events = body["data"]["events"].as_array().unwrap();
+    let backup = events.iter().find(|e| e["id"] == "backup.jobs").unwrap();
+    assert_eq!(backup["enabled"], json!(false), "muted event persists");
+    let other = events.iter().find(|e| e["id"] == "app.updates").unwrap();
+    assert_eq!(
+        other["enabled"],
+        json!(true),
+        "untouched events stay enabled"
+    );
+}
+
+#[tokio::test]
+async fn webhook_format_updates_and_validates() {
+    let (state, _tmp, _guard) = setup_state().await;
+
+    // NOTIFICATION_SETTINGS is a process-wide static — reset it so a
+    // previous test's toggles don't leak into this one's expectations.
+    *homevault::handlers::settings::NOTIFICATION_SETTINGS.write() =
+        homevault::handlers::settings::NotificationSettings::default();
+
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    let mut r = notifications_router(state);
+    let admin = login(&mut r, "admin", "AdminPass123!").await;
+
+    let (status, _) = send(
+        &mut r,
+        Method::PUT,
+        "/api/notifications/events/config",
+        Some(&admin),
+        Some(json!({"webhook_format": "discord"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications/events/config",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"]["webhook_format"], "discord");
+
+    // Unknown format rejected, previous value untouched.
+    let (status, _) = send(
+        &mut r,
+        Method::PUT,
+        "/api/notifications/events/config",
+        Some(&admin),
+        Some(json!({"webhook_format": "teams"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications/events/config",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"]["webhook_format"], "discord");
 }

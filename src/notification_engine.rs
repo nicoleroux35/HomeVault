@@ -128,6 +128,7 @@ async fn check_app_updates(state: &Arc<AppState>, engine_state: &Arc<Mutex<Engin
     for (name, message) in to_notify {
         notify(
             state,
+            "app.updates",
             &format!("App update: {}", name),
             &message,
             "info",
@@ -196,6 +197,7 @@ async fn check_health(state: &Arc<AppState>, engine_state: &Arc<Mutex<EngineStat
     for (name, message, severity) in to_notify {
         notify(
             state,
+            &crate::notification_events::health_event_id(&name),
             &format!("Health: {}", name),
             &message,
             &severity,
@@ -256,6 +258,7 @@ async fn check_backup_jobs(state: &Arc<AppState>, engine_state: &Arc<Mutex<Engin
         };
         notify(
             state,
+            "backup.jobs",
             &format!("Backup: {}", repo.name),
             &message,
             severity,
@@ -267,15 +270,27 @@ async fn check_backup_jobs(state: &Arc<AppState>, engine_state: &Arc<Mutex<Engin
 }
 
 /// Persists a notification and, if configured, dispatches it via email
-/// and/or webhook.
+/// and/or webhook. `event_id` is the per-event toggle the admin can mute
+/// (see `notification_events::EVENT_CATALOG`) — a muted event is not
+/// persisted nor dispatched at all.
 async fn notify(
     state: &Arc<AppState>,
+    event_id: &str,
     title: &str,
     message: &str,
     severity: &str,
     category: &str,
     source: &str,
 ) {
+    let settings_snapshot = NOTIFICATION_SETTINGS.read().clone();
+    if !crate::notification_events::is_event_enabled(
+        event_id,
+        settings_snapshot.event_toggles.as_ref(),
+    ) {
+        tracing::info!("Notification event '{}' is muted; skipping", event_id);
+        return;
+    }
+
     let repo = NotificationRepository::new(state.db.pool());
     if let Err(e) = repo
         .create(title, message, severity, category, source)
@@ -285,7 +300,7 @@ async fn notify(
         return;
     }
 
-    let settings = NOTIFICATION_SETTINGS.read().clone();
+    let settings = settings_snapshot;
     let severity_rank = match severity {
         "critical" => 3,
         "error" => 2,
@@ -335,12 +350,15 @@ async fn notify(
 
     if settings.webhook_enabled.unwrap_or(false) {
         if let Some(url) = &settings.webhook_url {
-            let payload = serde_json::json!({
-                "title": title,
-                "message": message,
-                "severity": severity,
-                "category": category,
-            });
+            // The sink format decides the body shape: the historical generic
+            // JSON, or Slack/Discord's incoming-webhook fields so a channel
+            // URL can be pasted without a relay service.
+            let format = settings
+                .webhook_format
+                .as_deref()
+                .and_then(crate::notification_events::WebhookFormat::parse)
+                .unwrap_or_default();
+            let payload = format.payload(title, message, severity, category);
             let client = reqwest::Client::new();
             if let Err(e) = client.post(url).json(&payload).send().await {
                 tracing::warn!("Notification engine: failed to post webhook: {}", e);

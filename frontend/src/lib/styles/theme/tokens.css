@@ -1198,6 +1198,8 @@
   --hv-app-journal-grad:      linear-gradient(145deg, #7dd3fc, #0ea5e9);
   --hv-app-virtual-machines-grad: linear-gradient(145deg, #06b6d4, #0e7490);
   --hv-app-quotas-grad:       linear-gradient(145deg, #d946ef, #a21caf);
+  --hv-app-tasks-grad:        linear-gradient(145deg, #34d399, #059669);
+  --hv-app-metrics-grad:      linear-gradient(145deg, #fb923c, #ea580c);
   /* The Launchpad launcher is not an app — it keeps a bespoke light slate and
      is the one tile that stays off the app-colour ladder on purpose. */
   --hv-app-launchpad-grad:    linear-gradient(145deg, #eef2fb, #ccd7ef);
@@ -1245,6 +1247,8 @@
   --hv-app-journal-c:         #0ea5e9;
   --hv-app-virtual-machines-c: #0e7490;
   --hv-app-quotas-c:          #a21caf;
+  --hv-app-tasks-c:           #059669;
+  --hv-app-metrics-c:         #ea580c;
   --hv-app-launchpad-c:       #6366f1;
 
   /* ============================================

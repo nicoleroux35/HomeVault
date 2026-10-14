@@ -82,6 +82,10 @@ pub struct PersistedNotifications {
     pub smtp_enabled: Option<bool>,
     pub webhook_url: Option<String>,
     pub webhook_enabled: Option<bool>,
+    #[serde(default)]
+    pub event_toggles: Option<std::collections::HashMap<String, bool>>,
+    #[serde(default)]
+    pub webhook_format: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +132,14 @@ impl PersistedSettings {
                 .as_ref()
                 .and_then(|n| n.webhook_url.clone()),
             webhook_enabled: self.notifications.as_ref().and_then(|n| n.webhook_enabled),
+            event_toggles: self
+                .notifications
+                .as_ref()
+                .and_then(|n| n.event_toggles.clone()),
+            webhook_format: self
+                .notifications
+                .as_ref()
+                .and_then(|n| n.webhook_format.clone()),
         }
     }
 
@@ -188,6 +200,8 @@ impl SettingsPersistence {
                 smtp_enabled: notifications.smtp_enabled,
                 webhook_url: notifications.webhook_url.clone(),
                 webhook_enabled: notifications.webhook_enabled,
+                event_toggles: notifications.event_toggles.clone(),
+                webhook_format: notifications.webhook_format.clone(),
             }),
             appearance: Some(PersistedAppearance {
                 theme: appearance.theme.clone(),
@@ -355,6 +369,8 @@ fn apply_loaded_settings(loaded: &PersistedSettings) {
         if let Some(webhook_enabled) = notif.webhook_enabled {
             settings.webhook_enabled = Some(webhook_enabled);
         }
+        settings.event_toggles = notif.event_toggles.clone();
+        settings.webhook_format = notif.webhook_format.clone();
     }
 
     // Appearance settings
@@ -433,6 +449,8 @@ pub fn save_all_settings() {
                 smtp_enabled: notifications.smtp_enabled,
                 webhook_url: notifications.webhook_url.clone(),
                 webhook_enabled: notifications.webhook_enabled,
+                event_toggles: notifications.event_toggles.clone(),
+                webhook_format: notifications.webhook_format.clone(),
             }),
             appearance: Some(PersistedAppearance {
                 theme: appearance.theme.clone(),

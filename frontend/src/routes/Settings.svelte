@@ -321,7 +321,9 @@
       loadServerInfo(),
       loadAiModels(),
       loadRecommendations(),
-      loadAutostart()
+      loadAutostart(),
+      loadNotificationEvents(),
+      loadPower()
     ]);
     // After a save flushes the AI group, keep the display model in step.
     onGroupSaved('ai', () => {
@@ -367,7 +369,8 @@
           alert_threshold: data.notifications?.alert_threshold || 80,
           smtp_enabled: data.notifications?.smtp_enabled ?? false,
           webhook_url: data.notifications?.webhook_url || '',
-          webhook_enabled: data.notifications?.webhook_enabled ?? false
+          webhook_enabled: data.notifications?.webhook_enabled ?? false,
+          webhook_format: data.notifications?.webhook_format || 'generic'
         };
         draft.appearance = {
           theme: data.appearance?.theme || 'auto',
@@ -456,6 +459,130 @@
   // never clobber edits the user staged for Save.
   $: syncWidgetsFromMonitor($monitorStore);
   $: syncWeatherFromStores($weatherLocationStore, $weatherDisplayPrefsStore);
+
+  // --- Per-event notification toggles (own endpoint, immediate save) -----
+  interface NotificationEventRow {
+    id: string;
+    group: string;
+    label_key: string;
+    enabled: boolean;
+  }
+  let notificationEvents: NotificationEventRow[] = [];
+  let powerLoaded = false;
+  let powerGovernors: string[] = [];
+  let powerGovernor = '';
+  let powerGovernorSupported = false;
+  let powerSpindownSupported = false;
+  let powerSpindown: { device: string; apm_level: number | null; spindown_minutes: number | null }[] = [];
+  let newSpindown = { device: '', apm_level: 127, spindown_minutes: 20 };
+  let powerBusy = false;
+
+  async function loadNotificationEvents() {
+    try {
+      const res = await api.getNotificationEventsConfig();
+      if (res.success) notificationEvents = res.data?.events ?? [];
+    } catch {
+      notificationEvents = [];
+    }
+  }
+
+  async function toggleNotificationEvent(id: string, enabled: boolean) {
+    // Optimistic update; the row's Switch shows the new state immediately
+    // and a failed PUT rolls it back (same UX as the SNMP/UPS cards).
+    const row = notificationEvents.find((e) => e.id === id);
+    if (row) row.enabled = enabled;
+    const res = await api.updateNotificationEventsConfig({ events: { [id]: enabled } });
+    if (!res.success) {
+      if (row) row.enabled = !enabled;
+      notifySettings(res.message || translate('settings.save_failed'), 'error');
+    }
+  }
+
+  async function loadPower() {
+    if (powerLoaded) return;
+    try {
+      const [statusRes, spindownRes] = await Promise.all([api.getPowerStatus(), api.getPowerSpindown()]);
+      if (statusRes.success && statusRes.data) {
+        powerGovernors = statusRes.data.available_governors ?? [];
+        powerGovernor = statusRes.data.governor ?? '';
+        powerGovernorSupported = statusRes.data.governor_supported;
+        powerSpindownSupported = statusRes.data.spindown_supported;
+      }
+      if (spindownRes.success) powerSpindown = spindownRes.data?.settings ?? [];
+    } catch {
+      // Host without cpufreq/hdparm: cards render with unsupported states.
+    } finally {
+      powerLoaded = true;
+    }
+  }
+
+  async function saveGovernor() {
+    powerBusy = true;
+    try {
+      const res = await api.setPowerGovernor(powerGovernor);
+      notifySettings(res.success ? translate('power.saved') : (res.message || translate('settings.save_failed')), res.success ? 'success' : 'error');
+      if (res.success) powerGovernor = (res.data?.governor as string) || powerGovernor;
+    } catch {
+      notifySettings(translate('settings.save_failed'), 'error');
+    } finally {
+      powerBusy = false;
+    }
+  }
+
+  async function hostPower(action: 'reboot' | 'shutdown' | 'suspend') {
+    const message = action === 'reboot' ? translate('power.confirm_reboot')
+      : action === 'shutdown' ? translate('power.confirm_shutdown')
+      : translate('power.confirm_suspend');
+    if (!(await dlg.ask(message))) return;
+    powerBusy = true;
+    try {
+      const res = await api.hostPowerAction(action);
+      if (!res.success) notifySettings(res.message || translate('settings.save_failed'), 'error');
+    } finally {
+      powerBusy = false;
+    }
+  }
+
+  async function addSpindown() {
+    if (!newSpindown.device.trim()) return;
+    powerBusy = true;
+    try {
+      const res = await api.setPowerSpindown({
+        device: newSpindown.device.trim(),
+        apm_level: newSpindown.apm_level,
+        spindown_minutes: newSpindown.spindown_minutes,
+      });
+      if (res.success) {
+        powerSpindown = [...powerSpindown.filter((x) => x.device !== newSpindown.device.trim()), res.data!.setting].sort((a, b) => a.device.localeCompare(b.device));
+        notifySettings(res.data?.applied ? translate('power.applied_ok') : translate('power.applied_failed'));
+        newSpindown = { device: '', apm_level: 127, spindown_minutes: 20 };
+      } else {
+        notifySettings(res.message || translate('settings.save_failed'), 'error');
+      }
+    } finally {
+      powerBusy = false;
+    }
+  }
+
+  async function removeSpindown(device: string) {
+    powerBusy = true;
+    try {
+      const res = await api.setPowerSpindown({ device });
+      if (res.success) powerSpindown = powerSpindown.filter((x) => x.device !== device);
+    } finally {
+      powerBusy = false;
+    }
+  }
+
+  async function applyAllSpindown() {
+    powerBusy = true;
+    try {
+      await api.applyPowerSpindown();
+      notifySettings(translate('power.applied_ok'));
+    } finally {
+      powerBusy = false;
+    }
+  }
 
   async function handleTestEmail() {
     testingEmail = true;
@@ -881,6 +1008,41 @@
               ariaLabel={$t('settings.enable_webhook_notifications')}
             />
           </div>
+          <div class={settingsRowStacked}>
+            <label class={settingsRowLabel} for="webhookFormat">{$t('notifications.events.webhook_format')}</label>
+            <select id="webhookFormat" class={cn(settingsSelect, 'max-w-[280px]')} bind:value={draft.notifications.webhook_format}>
+              <option value="generic">{$t('notifications.events.format_generic')}</option>
+              <option value="slack">{$t('notifications.events.format_slack')}</option>
+              <option value="discord">{$t('notifications.events.format_discord')}</option>
+            </select>
+            <p class={settingsRowHint}>{$t('notifications.events.webhook_format_help')}</p>
+          </div>
+        </div>
+        <!-- Per-event toggles: a separate endpoint (notification_events),
+             saved immediately on toggle — deliberately outside the draft
+             flow because it is not part of the aggregate PUT. -->
+        <div data-testid="settings-card-title" class={secLabel}></div>
+        <div data-testid="settings-card" class={settingsCard}>
+          <div class={settingsRowStacked}>
+            <span class={settingsRowLabel}>{$t('notifications.events.title')}</span>
+            <p class={settingsRowHint}>{$t('notifications.events.desc')}</p>
+          </div>
+          {#if notificationEvents.length === 0}
+            <div class={settingsRowLast}><p class="m-0 text-sm text-[var(--hv-settings-label)]">{$t('settings.loading_settings')}</p></div>
+          {:else}
+            {#each notificationEvents as ev (ev.id)}
+              <div class={ev.id === notificationEvents[notificationEvents.length - 1].id ? settingsRowLast : settingsRow} data-testid="settings-event-row">
+                <span class={settingsRowLabel}>{$t(ev.label_key)}</span>
+                <Switch
+                  checked={ev.enabled}
+                  accent={activeCat.accent}
+                  ariaLabel={$t(ev.label_key)}
+                  data-testid={`settings-event-${ev.id}`}
+                  onchange={(v: boolean) => toggleNotificationEvent(ev.id, v)}
+                />
+              </div>
+            {/each}
+          {/if}
         </div>
       {/if}
       {#if activeCategory === 'system'}
@@ -1123,6 +1285,83 @@
         </div>
       {/if}
       {#if activeCategory === 'system'}
+        <!-- Host power management (admin actions, confirmed) -->
+        <div data-testid="settings-card-title" class={secLabelFirst}></div>
+        <div data-testid="settings-card" class={settingsCard}>
+          <div class={settingsRowStacked}>
+            <span class={settingsRowLabel}>{$t('power.governor_title')}</span>
+            <p class={settingsRowHint}>{$t('power.governor_desc')}</p>
+          </div>
+          {#if powerGovernorSupported}
+            <div class={settingsRow} data-testid="power-governor-row">
+              <select
+                class={cn(settingsSelect, 'max-w-[280px]')}
+                bind:value={powerGovernor}
+                aria-label={$t('power.governor_title')}
+                data-testid="power-governor-select"
+                disabled={powerBusy}
+              >
+                {#each powerGovernors as gov (gov)}<option value={gov}>{gov}</option>{/each}
+              </select>
+              <button class={cn(settingsBtn, settingsBtnGhost)} onclick={saveGovernor} disabled={powerBusy}>{$t('common.save')}</button>
+            </div>
+          {:else}
+            <div class={settingsRowLast}><p class="m-0 text-sm text-[var(--hv-settings-label)]">{$t('power.governor_unsupported')}</p></div>
+          {/if}
+          <div class={settingsRowStacked}>
+            <span class={settingsRowLabel}>{$t('power.actions_title')}</span>
+            <p class={settingsRowHint}>{$t('power.actions_desc')}</p>
+            <div class="flex flex-wrap gap-2 mt-2" data-testid="power-actions">
+              <button class={cn(settingsBtn, settingsBtnGhost)} data-testid="power-reboot" onclick={() => hostPower('reboot')} disabled={powerBusy}>{$t('power.reboot')}</button>
+              <button class={cn(settingsBtn, settingsBtnDanger)} data-testid="power-shutdown" onclick={() => hostPower('shutdown')} disabled={powerBusy}>{$t('power.shutdown')}</button>
+              <button class={cn(settingsBtn, settingsBtnGhost)} data-testid="power-suspend" onclick={() => hostPower('suspend')} disabled={powerBusy}>{$t('power.suspend')}</button>
+            </div>
+          </div>
+        </div>
+        <!-- Disk spindown (hdparm -B / -S), persisted per disk -->
+        <div data-testid="settings-card-title" class={secLabel}></div>
+        <div data-testid="settings-card" class={settingsCard}>
+          <div class={settingsRowStacked}>
+            <span class={settingsRowLabel}>{$t('power.spindown_title')}</span>
+            <p class={settingsRowHint}>{$t('power.spindown_desc')}</p>
+          </div>
+          {#if !powerSpindownSupported}
+            <div class={settingsRowLast}><p class="m-0 text-sm text-[var(--hv-settings-label)]">{$t('power.governor_unsupported')}</p></div>
+          {:else}
+            {#if powerSpindown.length > 0}
+              {#each powerSpindown as sd (sd.device)}
+                <div class={settingsRow} data-testid="power-spindown-row">
+                  <span class={settingsRowLabel} class:font-mono={true}>{sd.device}</span>
+                  <div class="flex items-center gap-2">
+                    <span class="text-xs text-[var(--hv-settings-label)]">
+                      APM {sd.apm_level ?? '—'} · {sd.spindown_minutes === 0 ? $t('power.never') : sd.spindown_minutes ? `${sd.spindown_minutes} min` : '—'}
+                    </span>
+                    <button class={cn(settingsBtn, settingsBtnGhost)} data-testid="power-spindown-remove-{sd.device}" onclick={() => removeSpindown(sd.device)} disabled={powerBusy}>{$t('power.remove')}</button>
+                  </div>
+                </div>
+              {/each}
+            {/if}
+            <div class={settingsRowLast} data-testid="power-spindown-add">
+              <div class="flex flex-wrap items-end gap-2 w-full">
+                <label class="flex flex-col gap-1 text-xs text-[var(--hv-settings-label)]">
+                  <span>{$t('power.device')}</span>
+                  <input class={cn(settingsInput, 'w-32')} type="text" bind:value={newSpindown.device} placeholder="sda" aria-label={$t('power.device')} />
+                </label>
+                <label class="flex flex-col gap-1 text-xs text-[var(--hv-settings-label)]">
+                  <span>{$t('power.apm')}</span>
+                  <input class={cn(settingsInput, 'w-24')} type="number" min="1" max="255" bind:value={newSpindown.apm_level} aria-label={$t('power.apm')} />
+                </label>
+                <label class="flex flex-col gap-1 text-xs text-[var(--hv-settings-label)]">
+                  <span>{$t('power.minutes')}</span>
+                  <input class={cn(settingsInput, 'w-24')} type="number" min="0" max="330" bind:value={newSpindown.spindown_minutes} aria-label={$t('power.minutes')} />
+                </label>
+                <button class={cn(settingsBtn, settingsBtnPrimary)} onclick={addSpindown} disabled={powerBusy}>{$t('power.add')}</button>
+                <button class={cn(settingsBtn, settingsBtnGhost)} onclick={applyAllSpindown} disabled={powerBusy}>{$t('power.apply')}</button>
+              </div>
+            </div>
+          {/if}
+        </div>
+        <!-- Privacy (existing) -->
         <div data-testid="settings-card-title" class={secLabel}></div>
         <div data-testid="settings-card" class={settingsCard}>
           <div class="settings-privacy-feature flex items-start gap-3 py-3 border-b-[1.45px] border-[var(--hv-settings-hairline)]">
