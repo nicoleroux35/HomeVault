@@ -20,8 +20,8 @@
  * =============================================================================
  */
 
-//! Per-app reverse proxy for installed Docker catalog apps (umbrelOS-style
-//! "app proxy"). Each running app gets its own listener on a dedicated port
+//! Per-app reverse proxy for installed Docker catalog apps. Each running
+//! app gets its own listener on a dedicated port
 //! that forwards to the container's published port, with an optional
 //! app-proxy-scoped session gate (see [`app_auth`]). The app's own published
 //! port stays open on the LAN — the proxy is an additional, consistent entry

@@ -75,7 +75,7 @@ struct CatalogAppView {
     dependencies: Vec<String>,
     /// Canonical ids this app can stand in for (`implements`).
     implements: Vec<String>,
-    /// Advanced settings the install dialog offers (Umbrel-style).
+    /// Advanced settings the install dialog offers.
     environment: Vec<crate::app_catalog::manifest::EnvVarDecl>,
     /// Dependencies (same store) that are not currently installed.
     missing_dependencies: Vec<String>,
@@ -656,7 +656,7 @@ pub struct ProxyConfigRequest {
     pub auth_required: bool,
 }
 
-/// Pre-install review (Umbrel-style `getInstallReview`): dependencies with
+/// Pre-install review: dependencies with
 /// their installed satisfiers and alternative providers, declared
 /// environment settings, and the server-side compatibility verdict — so the
 /// install dialog can offer choices before the long image pull starts.
@@ -708,7 +708,7 @@ pub async fn handle_catalog_install_review(
 }
 
 /// One-shot update queue for every installed app with a pending update
-/// (Umbrel-style "update all"): runs the same `apply_update` path as the
+/// ("update all"): runs the same `apply_update` path as the
 /// single-app endpoint sequentially and reports a per-app outcome, so one
 /// failure never aborts the rest of the queue.
 pub async fn handle_catalog_update_all(
@@ -790,7 +790,7 @@ pub async fn handle_catalog_update_all(
     ResponseHelper::json_success(serde_json::json!({ "updated": updated, "failed": failed }))
 }
 
-/// Tail an installed app's compose logs (Umbrel-style per-app logs viewer).
+/// Tail an installed app's compose logs (per-app logs viewer).
 /// Query: `?tail=200` (default 200, max 2000). Read-only, any session.
 pub async fn handle_catalog_logs(
     State(state): State<Arc<AppState>>,

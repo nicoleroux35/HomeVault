@@ -52,7 +52,7 @@
   let serverVersion = '';
   $: tlsActive = typeof window !== 'undefined' && window.location.protocol === 'https:';
 
-  // DSM-style gateway motion: the card shakes on a failed attempt and shrinks
+  // Gateway motion (approved mock): the card shakes on a failed attempt and shrinks
   // + fades out while a successful login unlocks toward the desktop.
   let shaking = false;
   let unlocking = false;
@@ -66,7 +66,7 @@
 
   let showErrorModal = false;
   let errorModalMessage = '';
-  // Inline field error (the DSM mock shows it under the fields) — shown
+  // Inline field error (the approved mock shows it under the fields) — shown
   // alongside the modal so the E2E error flow stays intact.
   let inlineError = '';
 
@@ -93,7 +93,7 @@
   // base.css ships unlayered global `input { width:100%; border; background;
   // padding; … }` rules that would otherwise beat Tailwind's layered
   // utilities, so every form field carries the trailing `!` important
-  // modifier. The DSM field look lives on the wrapper; the inner input is
+  // modifier. The field look lives on the wrapper; the inner input is
   // transparent and borderless, the focus ring lives on the wrapper.
   const textInputClass =
     'min-w-0 flex-1 p-0! border-none! bg-transparent! text-[var(--hv-shell-text-strong)] caret-[var(--hv-login-accent)] outline-none placeholder:text-[var(--hv-login-muted)]! focus:shadow-none! disabled:bg-transparent!';

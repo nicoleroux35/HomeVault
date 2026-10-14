@@ -279,7 +279,7 @@ export const translations = {
     'login.info.checking': 'Signing in...',
     // Login success
     'login.success': 'Welcome back!',
-    // DSM login gateway (2026-09-14)
+    // Login gateway (2026-09-14)
     'login.authenticated': 'Authenticated',
     'login.totp_prompt': 'Enter the 6-digit code',
     'login.totp_prompt_hint': 'from your authenticator app',
