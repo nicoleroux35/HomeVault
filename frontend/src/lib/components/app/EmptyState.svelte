@@ -1,3 +1,20 @@
+<!-- ========================================================================
+     File          : EmptyState.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       The one standard empty/no-data state: tinted icon tile over a title,
+       optional description and optional action cluster.
+
+     Dependencies:
+       - svelte (>= 5), theme/Icon
+
+     Usage:
+       `import { EmptyState } from '$lib/components/app'`.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM — EmptyState (page composite, `app/` layer)

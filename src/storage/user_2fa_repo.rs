@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : user_2fa_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Two-factor credentials per user: encrypted TOTP secret and backup
+ *   codes, plus enable/disable state.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
+//! Two-factor credentials (encrypted TOTP secret, backup codes).
+
 use crate::impl_repository;
 use crate::storage::database::DbError;
 use chrono::Utc;

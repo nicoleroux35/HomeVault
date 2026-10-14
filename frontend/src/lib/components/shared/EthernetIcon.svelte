@@ -1,3 +1,20 @@
+<!-- ========================================================================
+     File          : EthernetIcon.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Inline wired-Ethernet SVG glyph (Tabler-voiced) for network status
+       displays, sized and stroke-tunable.
+
+     Dependencies:
+       - svelte (>= 5)
+
+     Usage:
+       Network interfaces / health indicators.
+     ======================================================================== -->
 <script lang="ts">
   let { size = 20, strokeWidth = 1.91, ...rest }: { size?: number; strokeWidth?: number; [key: string]: any } = $props();
 </script>

@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : ransomware.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Anti-ransomware protection logic: honeypot decoy files placed on
+ *   protected paths, settings/paths/events management, and the
+ *   auto-response executed when the watcher flags suspicious activity.
+ *   Heuristic and best-effort by design — a mitigation layer, not a
+ *   guarantee (scope notes in CLAUDE.md).
+ *
+ * Dependencies:
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   handlers/ransomware.rs (API surface), ransomware_watcher.rs (detection
+ *   triggers the response here).
+ * =============================================================================
+ */
+
 //! Anti-ransomware protection: honeypot decoy files + the auto-response
 //! executed when the watcher (`src/ransomware_watcher.rs`) detects suspicious
 //! activity. Heuristic/best-effort, not a guarantee — see the scope notes in

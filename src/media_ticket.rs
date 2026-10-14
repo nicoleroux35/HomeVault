@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : media_ticket.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Short-lived, session-bound tickets for the Explorer's binary streams
+ *   (download + thumbnail) so the session token never appears in a URL
+ *   query string — which would leak it into access logs, browser history
+ *   and Referer headers. Tickets are single-use and expire quickly.
+ *
+ * Dependencies:
+ *   - parking_lot (>= 0.12)
+ *
+ * Usage:
+ *   Issued by the explorer download/thumbnail endpoints, consumed by the
+ *   public streaming routes.
+ * =============================================================================
+ */
+
 //! Short-lived, session-bound tickets for the Explorer's binary streams
 //! (download + thumbnail) so the session token never has to appear in a URL
 //! query string — putting the token in `?token=` leaks it into access logs,

@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : search.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   State of the global search overlay plus its scoring engine: the index
+ *   (apps, settings, actions) is filtered case-insensitively on title,
+ *   description and keywords, scored (exact/prefix title weight, keyword
+ *   and type bonuses), capped at 8 results, and navigable by keyboard.
+ *
+ * Dependencies:
+ *   - svelte (>= 5)
+ *
+ * Usage:
+ *   searchStore + openSearch/updateQuery/selectNext/executeSelected from
+ *   the search overlay components.
+ * =============================================================================
+ */
+
 import { writable, get } from 'svelte/store';
 
 /** An item the user can find via the search overlay. */

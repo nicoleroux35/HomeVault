@@ -1,3 +1,22 @@
+<!-- ========================================================================
+     File          : Button.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Design-system button wrapping the vendored shadcn-svelte Button:
+       HomeVault variants (primary/secondary/ghost/danger/success/warning)
+       mapped 1:1 onto shadcn variants with --hv-* fills; a loading state
+       swaps children for the shared Spinner and disables the button.
+
+     Dependencies:
+       - svelte (>= 5), components/ui/button (vendored)
+
+     Usage:
+       `import { Button } from '$lib/components/theme'`.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM - Button Component

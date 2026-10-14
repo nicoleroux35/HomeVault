@@ -1,3 +1,29 @@
+/* =============================================================================
+ * File          : tests.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Unit tests for the authentication building blocks — Argon2 password
+ *   hashing and verification, session token generation, username and role
+ *   validation rules, and session expiry logic. Part of the auth module's
+ *   test suite (included via `mod tests` in auth/mod.rs).
+ *
+ * Dependencies:
+ *   - argon2 (>= 0.6)
+ *   - chrono (>= 0.4)
+ *   - rand (>= 0.10)
+ *
+ * Usage:
+ *   Run with `cargo test` (compiled in test builds only).
+ * =============================================================================
+ */
+
+//! Unit tests for the authentication primitives: password hashing, token
+//! generation, username/role validation and session expiry.
+
 #[cfg(test)]
 mod auth_tests {
     use argon2::{

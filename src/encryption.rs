@@ -1,3 +1,24 @@
+/* =============================================================================
+ * File          : encryption.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   LUKS2 disk encryption for standalone, unassigned block devices: create
+ *   (format + passphrase), open/close (mapper management) and destroy.
+ *   Deliberately scoped to single devices — not RAID arrays or ZFS pools,
+ *   which have their own native encryption paths.
+ *
+ * Dependencies:
+ *   - internal disk service (device listing)
+ *
+ * Usage:
+ *   handlers/encryption.rs; metadata persisted via EncryptedVolumeRepository.
+ * =============================================================================
+ */
+
 //! LUKS2 disk encryption for standalone, available (unassigned) block devices.
 //!
 //! Deliberately scoped to a single device at a time — not RAID arrays or

@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : Spinner.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Loading indicator wrapping the vendored shadcn Spinner with an
+       accessible, i18n'd label; three sizes on the content scale, brand
+       primary colour.
+
+     Dependencies:
+       - svelte (>= 5), components/ui/spinner (vendored)
+
+     Usage:
+       `import { Spinner } from '$lib/components/theme'`.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM - Spinner/Loader Component

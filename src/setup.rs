@@ -1,3 +1,29 @@
+/* =============================================================================
+ * File          : setup.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 12/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   First-run system setup service: creates the initial admin (with
+ *   username/password/fullname validation), records the machine identity
+ *   (machine id + system hash powering the hardware-change recovery
+ *   decision), guards the one-time setup with a lock file, and configures
+ *   the scoped sudoers grant the service account needs.
+ *
+ * Dependencies:
+ *   - thiserror (>= 2)
+ *
+ * Usage:
+ *   handlers/auth.rs (wizard endpoints); the recovery gate reads the
+ *   stored system hash (see docs/guides/setup-wizard.md).
+ * =============================================================================
+ */
+
+//! First-run system setup service (initial admin, machine identity,
+//! validation rules, setup lock).
+
 use std::fs::OpenOptions;
 use std::io::Write;
 use thiserror::Error;

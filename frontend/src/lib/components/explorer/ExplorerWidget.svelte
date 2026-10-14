@@ -1,3 +1,20 @@
+<!-- ========================================================================
+     File          : ExplorerWidget.svelte
+     Author        : Nicolas Le Roux
+     Created       : 13/10/2026
+     Last modified : 13/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Compact quick-access card: global favourites and recent locations,
+       feeding the Explorer's home view.
+
+     Dependencies:
+       - svelte (>= 5), $lib/services/api, stores/i18n
+
+     Usage:
+       Desktop widget / Explorer sidebar.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';

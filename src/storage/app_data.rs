@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : app_data.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Per-app persistent key/value data for installed Docker apps, stored
+ *   as JSON documents.
+ *
+ * Dependencies:
+ *   - none (JSON storage via storage/json)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
+//! Per-app persistent key/value data (JSON documents).
+
 use crate::storage::json::{JsonStorage, JsonStorageError};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

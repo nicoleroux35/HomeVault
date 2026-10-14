@@ -1,3 +1,22 @@
+<!-- ========================================================================
+     File          : Modal.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Design-system modal dialog wrapping the vendored shadcn-svelte Dialog
+       (bits-ui): declarative open state, built-in close button, focus trap
+       and focus restore for free, themed with the --hv-* tokens. The
+       accessibility-critical modal every screen should use.
+
+     Dependencies:
+       - svelte (>= 5), bits-ui (via components/ui/dialog)
+
+     Usage:
+       `import { Modal } from '$lib/components/theme'`.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM - Modal Component

@@ -1,3 +1,22 @@
+/* =============================================================================
+ * File          : launchpadIcons.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Inline SVG strings for the launcher's per-app icons, monochrome to match
+ *   the dock style.
+ *
+ * Dependencies:
+ *   - none (static SVG strings)
+ *
+ * Usage:
+ *   Read by the Launchpad grid.
+ * =============================================================================
+ */
+
 // Launchpad custom icons - SVG strings for each app (monochrome style matching dock)
 export const launchpadIcons = {
   dashboard: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 -0.5 25 25" fill="none">

@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : avatars.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Offline avatar generation: bundled avatar-style crates render a
+ *   deterministic SVG from a seed (same seed = same avatar), so only the
+ *   seed is persisted and the image is regenerated on demand. No outbound
+ *   network call is ever made.
+ *
+ * Dependencies:
+ *   - dicebear-core + dicebear-styles (bundled, offline)
+ *
+ * Usage:
+ *   handlers/avatars.rs renders previews and persistent user avatars;
+ *   auth/service.rs seeds new accounts.
+ * =============================================================================
+ */
+
 //! Avatar generation service for HomeVault.
 //!
 //! Avatars are generated locally using the bundled DiceBear Rust crates

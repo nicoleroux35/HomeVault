@@ -1,3 +1,21 @@
+/* =============================================================================
+ * File          : syncthing_integration.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Syncthing integration tests: in-memory SQLite + assembled Axum router, exercising the area's endpoints end-to-end via oneshot requests.
+ *
+ * Dependencies:
+ *   - none (test crate: axum router + tower oneshot / Playwright)
+ *
+ * Usage:
+ *   Rust: cargo test  |  E2E: npx playwright test
+ * =============================================================================
+ */
+
 // Integration tests deliberately hold a process-wide `ENV_LOCK` guard across
 // `await` points to serialize tests that mutate process environment variables.
 #![allow(clippy::await_holding_lock)]

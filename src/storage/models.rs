@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : models.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 12/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Shared storage-layer data models: users, sessions, login requests and
+ *   responses, and the role constants (user/admin) every auth path uses.
+ *
+ * Dependencies:
+ *   - chrono (>= 0.4), serde (>= 1.0), sqlx (>= 0.9)
+ *
+ * Usage:
+ *   Re-exported through auth/models.rs; used by the auth service and user
+ *   repositories.
+ * =============================================================================
+ */
+
+//! Shared storage-layer data models (users, sessions, login types).
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;

@@ -113,6 +113,11 @@ calls `pty_manager.cleanup_all()` so shells never outlive the server
 - `RequestBodyLimitLayer`: 10 GiB (`src/web/mod.rs`, grep for
   `RequestBodyLimitLayer::new`).
 - CSRF protection: `middleware::csrf` — the SPA sends `X-CSRF-Token`.
+- Versioned client/server contract: `middleware::contract` rejects an
+  explicit `X-HomeVault-Contract` mismatch on `/api/*` with **426 Upgrade
+  Required** (`/api/meta` exempt); the SPA sends the header on every request
+  and shows a reload banner on a 426. See "Versioned client/server contract"
+  below.
 - Rate limiting: admin rate limiter 10 ops/min.
 - `fail2ban` and `security_headers` middleware in `src/middleware/`. HSTS is
   emitted only when the built-in HTTPS listener is active
@@ -267,6 +272,32 @@ runtime inventory must appear in `install.sh`, the inline systemd unit and
 udiskie config must keep their load-bearing directives, and `install.sh` is
 asserted to stay free of any reference to a sibling installer file.
 
+## Versioned client/server contract
+
+The backend and the Svelte SPA are built and released together, but a browser
+can hold a cached bundle from the previous build after an update (service
+worker, aggressive proxy cache, a long-lived tab). A versioned contract makes
+that fail loudly instead of silently misparsing.
+
+- `src/api_contract.rs` — `CONTRACT_VERSION` is bumped **only** on a breaking
+  API change (renamed field, removed endpoint, changed shape); additive
+  changes do not bump it. `client_is_compatible` treats a missing or
+  non-numeric header as legacy (allowed) and a present, different value as
+  incompatible.
+- `GET /api/meta` (`src/handlers/meta.rs`, unauthenticated) reports
+  `{ contract_version, server_version }` — the discovery endpoint the SPA can
+  call before it has a session.
+- `src/middleware/contract.rs` rejects an incompatible request on `/api/*`
+  with `426 Upgrade Required`.
+- `frontend/src/lib/services/api.ts` defines the matching
+  `CONTRACT_VERSION`, sends `X-HomeVault-Contract` on every request, and flags
+  a 426 into `stores/contract.ts`; `Desktop.svelte` renders the reload banner
+  (`[data-testid="contract-mismatch-banner"]`).
+
+**Rule:** bump `CONTRACT_VERSION` in **both** `src/api_contract.rs` and
+`frontend/src/lib/services/api.ts` in the same change, and only for a breaking
+change.
+
 ## Auth model (summary)
 
 Two guard helpers in `src/handlers/admin_guard.rs`:
@@ -279,6 +310,18 @@ Both read `X-Session-Token`, look up the username via
 dashboard/network/storage endpoints that previously had no guard now use
 `require_auth`; mutations use `require_admin`. See
 [API Contract](./API.md) for the per-endpoint level.
+
+### Per-app proxy auth (second entry)
+
+A browser navigating to a proxied app's port sends no `X-Session-Token`, only
+cookies. Login/2FA also set an `hv_session` cookie for that flow, but the app
+proxy does **not** trust it: it accepts only an app-proxy-scoped
+`hv_app_session` token minted by `GET /app-auth?app=<ns_id>` on the main
+origin (`src/handlers/app_auth.rs`, `src/app_proxy/app_auth.rs`). `/app-auth`
+validates the real session, mints the scoped token and redirects to the app
+origin; the proxy then strips both HomeVault cookies before forwarding
+upstream. The scoped token grants proxy access only and is revoked on logout
+or when the proxy stops. See [guides/docker.md](./guides/docker.md).
 
 ## Related docs
 

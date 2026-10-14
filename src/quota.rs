@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : quota.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Per-user home-directory disk quotas applied through the filesystem's
+ *   setquota tooling on the volume hosting the user's home folder.
+ *
+ * Dependencies:
+ *   - thiserror (>= 2)
+ *
+ * Usage:
+ *   Called by the user-home handlers when creating users or changing the
+ *   home-folder size limit.
+ * =============================================================================
+ */
+
+//! Per-user home-directory disk quotas (setquota on the hosting volume).
+
 use std::process::Command;
 use thiserror::Error;
 

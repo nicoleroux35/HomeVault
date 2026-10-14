@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : transfer_quota.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Enforcement of the configured upload/download transfer quotas for
+ *   users and groups: counters tracked against the limits, checked before
+ *   transfers proceed. Distinct from the filesystem disk-space quota
+ *   system in quota.rs (which caps home-folder size, not network
+ *   throughput volume).
+ *
+ * Dependencies:
+ *   - internal storage layer (transfer quota repository)
+ *
+ * Usage:
+ *   Consulted by the transfer-handling paths; limits configured on the
+ *   Users/Groups pages via handlers/transfer_quotas.rs.
+ * =============================================================================
+ */
+
 //! Enforcement for the upload/download transfer quotas configured on the
 //! Users/Groups pages (see `src/storage/transfer_quota_repo.rs` for the
 //! storage layer). Distinct from the pre-existing filesystem disk-space

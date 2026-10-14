@@ -1,3 +1,19 @@
+<!-- ========================================================================
+     File          : WifiIcon.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Inline Wi-Fi SVG glyph (arcs + dot) for network status displays.
+
+     Dependencies:
+       - svelte (>= 5)
+
+     Usage:
+       Network interfaces / health indicators.
+     ======================================================================== -->
 <script lang="ts">
   let { size = 20, ...rest }: { size?: number; [key: string]: any } = $props();
 </script>

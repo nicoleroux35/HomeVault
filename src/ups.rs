@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : ups.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   UPS monitoring through the NUT client tooling: enumerates configured
+ *   devices, and reads live variables (battery charge, load, runtime,
+ *   status) per device, parsing the key:value output into typed snapshots.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0), thiserror (>= 2), tracing (>= 0.1)
+ *
+ * Usage:
+ *   handlers/ups.rs (device list, status, config management).
+ * =============================================================================
+ */
+
+//! UPS monitoring via the NUT client (device enumeration + live variables).
+
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 use thiserror::Error;

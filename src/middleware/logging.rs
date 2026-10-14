@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : logging.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Middleware that logs every HTTP request (method, URI and response
+ *   status) under a tracing span, so individual requests can be followed
+ *   in the server logs.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - tracing (>= 0.1)
+ *
+ * Usage:
+ *   Available via middleware::logging_middleware but not currently
+ *   registered on any router — HTTP request tracing is handled by
+ *   tower-http's TraceLayer in src/web/mod.rs.
+ * =============================================================================
+ */
+
 use axum::{extract::Request, middleware::Next, response::Response};
 use tracing::{info, span, Level};
 

@@ -1,3 +1,23 @@
+<!-- ========================================================================
+     File          : SetupWizard.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 13/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The first-run Setup Wizard: language, admin account (+ optional TOTP
+     enrollment), general settings, storage configuration and the final
+     provisioning call — with per-step progress persisted server-side so a
+     refresh resumes where the user left off. Local-network only (the
+     backend's setup guard enforces it).
+
+     Dependencies:
+       - svelte (>= 5), stores (auth, i18n), $lib/services/api
+
+     Usage:
+     Rendered by App.svelte while the app gate is on 'setup'.
+     ======================================================================== -->
 <script lang="ts">
   import { api } from '$lib/services/api';
   import { onMount, onDestroy, tick } from 'svelte';

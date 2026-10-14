@@ -1,3 +1,29 @@
+/* =============================================================================
+ * File          : csrf.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Middleware that rejects state-changing requests (everything except
+ *   GET/HEAD/OPTIONS) whose session token is not paired with a valid CSRF
+ *   token. The token is tied to the user's session row and travels in the
+ *   X-CSRF-Token header; urlencoded HTML form posts may carry it as a
+ *   csrf_token form field instead. Requests without a session token pass
+ *   through unchecked — they are pre-session public endpoints (login,
+ *   setup, password reset) protected by their own rules.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *
+ * Usage:
+ *   Layered onto the API router in src/web/mod.rs; the frontend sends
+ *   X-CSRF-Token with every mutating request (see ApiClient in
+ *   frontend/src/lib/services/api.ts).
+ * =============================================================================
+ */
+
 use crate::handlers::AppState;
 use axum::{
     extract::{Request, State},

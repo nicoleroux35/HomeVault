@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : cache.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Disk cache-tier service: a designated fast pool absorbs writes for
+ *   named cache shares, each mirrored on a slower target pool; the mover
+ *   drains aged data from cache to target on schedule (single-flight
+ *   guard, live progress, per-run history).
+ *
+ * Dependencies:
+ *   - internal storage layer (cache repository/settings)
+ *
+ * Usage:
+ *   handlers/cache.rs; the mover is triggered by cache_scheduler.rs or the
+ *   manual endpoint.
+ * =============================================================================
+ */
+
 //! Disk cache tier service (HomeVault write caching).
 //!
 //! A designated fast pool ("cache") absorbs writes for named datasets

@@ -1,3 +1,22 @@
+<!-- ========================================================================
+     File          : Docker.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 13/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The Docker app: container list with live status refresh, lifecycle
+     actions (start/stop/restart/remove), logs, image pull/remove, network
+     inspection, port checks and per-container resource stats.
+
+     Dependencies:
+       - svelte (>= 5), theme primitives, app/ composites, utils
+         (autoRevalidate), stores/i18n
+
+     Usage:
+     Opened as a desktop window app (admin only).
+     ======================================================================== -->
 <script lang="ts">
   import { IconSearch, IconX, IconRefresh, IconTrash, IconPlayerPlay, IconSquare, IconDownload, IconCheck, IconCopy, IconPhoto as ImageIcon, IconAlertTriangle, IconContainer, IconPlus, IconTerminal, IconExternalLink, IconDeviceTv, IconCloud, IconShield, IconLock, IconHome, IconGlobe, IconDatabase, IconActivity, IconPackage, IconPackages, IconServer, IconNetwork, IconKey, IconShieldOff, IconGitBranch, IconRss, IconTextScan2, IconBook, IconLayoutDashboard, IconMusic, IconListCheck, IconPipeline, IconBoxMultiple, IconBox, IconPencil, IconStar } from '@tabler/icons-svelte';
   import { t, translate } from '$lib/stores/i18n';

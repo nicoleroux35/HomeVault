@@ -1,3 +1,29 @@
+/* =============================================================================
+ * File          : ups.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   UPS monitoring endpoints: enumerate configured UPS devices, live status
+ *   and variables (battery charge, load, runtime), availability probes,
+ *   and the admin-managed device configuration list (which hosts and
+ *   communities to poll). Queries run through UpsService; every endpoint
+ *   is admin-only.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/ups in src/web/mod.rs; device configuration persists via
+ *   UpsConfigEntry / the UPS storage.
+ * =============================================================================
+ */
+
+//! UPS monitoring endpoints (device list, live status, configuration) —
+//! all admin-only.
+
 use crate::handlers::AppState;
 use crate::ups::{UpsConfigEntry, UpsService};
 use crate::utils::ResponseHelper;

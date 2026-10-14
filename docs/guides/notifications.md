@@ -54,10 +54,11 @@ populated — this feature is the missing wire between the two.
   `setFromServer(rows)`, which replaces the store from backend rows
   (preserving server-issued ids, so mark-read/delete round-trip correctly)
   instead of the old client-only `add()`.
-- `frontend/src/lib/components/NotificationCenter.svelte` — mark-read/remove/
-  mark-all/clear now also call the backend (`api.markNotificationRead`, etc.)
-  instead of only mutating local state; hardcoded English strings replaced
-  with `$t('notifications.*')`.
+- `frontend/src/lib/components/NotificationCenter.svelte` — the persistent
+  notification **center**: mark-read/remove/mark-all/clear call the backend
+  (`api.markNotificationRead`, etc.) instead of only mutating local state, and
+  the panel carries severity-filter chips, an unread-only toggle and a text
+  search. All strings come from `$t('notifications.*')`.
 - `frontend/src/routes/Desktop.svelte` — on-mount + 30s-interval fetch of
   `api.getNotifications()` feeding `notificationsStore.setFromServer(...)`,
   cleaned up on destroy. The bell icon, unread badge, and panel were already
@@ -66,6 +67,45 @@ populated — this feature is the missing wire between the two.
 - `frontend/src/routes/Settings.svelte` — Notifications card gained a webhook
   URL field + enable toggle; "Send test email" now reflects the real result.
 - `src/i18n/{en,fr,de,es}.toml` — `[notifications]` section.
+
+## What's New (release highlights)
+
+A second, distinct surface: after an update the SPA shows the running
+version's highlights once per account.
+
+- `src/release_notes.rs` — a curated, static table of `ReleaseNote`s (one per
+  released version, newest first). `current()` returns the entry whose
+  `version` equals `CARGO_PKG_VERSION`; a missing entry simply means "no
+  modal". **Release checklist:** add one entry for the version in `Cargo.toml`
+  before tagging. Curated rather than parsed from `CHANGELOG.md` so the modal
+  shows short, user-visible wins and can never break on a changelog heading
+  change.
+- `GET /api/whats-new` — `{ version, title, highlights, seen }`; `seen` is
+  **per user** (`whats_new_seen` table, migration `042_whats_new.sql`), so the
+  modal stays dismissed across browsers and devices.
+- `POST /api/whats-new/seen` — records the acknowledgement (idempotent).
+- `frontend/src/lib/components/WhatsNewModal.svelte` — uses the shared
+  `theme/Modal` (bits-ui Dialog) for focus trapping, Escape and focus
+  restoration. `Desktop.svelte` fetches once on mount and opens it only when
+  the server says `seen: false` and there is at least one highlight.
+
+## Versioned client/server contract
+
+The SPA and backend are released together, but a browser can hold a cached
+`app.js` from the previous build after an update. A versioned contract makes
+that fail loudly instead of silently misparsing.
+
+- `src/api_contract.rs` — `CONTRACT_VERSION` (bumped **only** on a breaking
+  API change) + `client_is_compatible` (missing/non-numeric header = legacy,
+  allowed; present-and-different = incompatible).
+- `GET /api/meta` (unauthenticated) — `{ contract_version, server_version }`,
+  the discovery endpoint the SPA uses to detect a mismatch before it has a
+  session.
+- `src/middleware/contract.rs` — rejects an explicit mismatch on `/api/*`
+  with **426 Upgrade Required** (`/api/meta` exempt).
+- `frontend/src/lib/services/api.ts` — sends `X-HomeVault-Contract` on every
+  request and flags a 426 into `stores/contract.ts`; `Desktop.svelte` shows a
+  reload banner (`[data-testid="contract-mismatch-banner"]`).
 
 ## Invariants
 

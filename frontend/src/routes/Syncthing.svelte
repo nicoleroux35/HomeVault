@@ -1,3 +1,20 @@
+<!-- ========================================================================
+     File          : Syncthing.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The Syncthing app: device and folder management, connection state,
+     rescan and service control through the backend's REST proxy.
+
+     Dependencies:
+       - svelte (>= 5), theme + app/ composites, $lib/services/api
+
+     Usage:
+     Opened as a desktop window app (admin only).
+     ======================================================================== -->
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { api } from '$lib/services/api';

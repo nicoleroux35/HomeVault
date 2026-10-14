@@ -1,3 +1,28 @@
+/* =============================================================================
+ * File          : transfer_quotas.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Upload/download transfer quota management for the Users and Groups
+ *   pages — admin-configurable per-user or per-group caps on total data
+ *   uploaded/downloaded, distinct from the filesystem disk-space quota
+ *   system in src/handlers/quotas.rs. Reads are auth-level; set/delete are
+ *   admin-only. Backs the read-only Quotas app.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/transfer-quotas in src/web/mod.rs; storage by
+ *   TransferQuotaRepository.
+ * =============================================================================
+ */
+
 //! Upload/download transfer quota management for the Users and Groups
 //! pages — admin-configurable per-user or per-group caps on total data
 //! uploaded/downloaded, distinct from the filesystem disk-space quota

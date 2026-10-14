@@ -1,3 +1,29 @@
+/* =============================================================================
+ * File          : fail2ban.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   In-memory brute-force protection: counts failed attempts per client IP
+ *   over a rolling 15-minute window and temporarily bans IPs that exceed
+ *   the allowed number of attempts. Everything lives in memory only, so a
+ *   restart clears every ban and failure count.
+ *
+ * Dependencies:
+ *   - parking_lot (>= 0.12)
+ *
+ * Usage:
+ *   Intended to guard authentication endpoints: call `record_failure` when
+ *   an attempt fails and `is_blocked` before accepting a new one. Note:
+ *   no route or handler currently references `Fail2BanState` — it is
+ *   defined and re-exported but not wired anywhere yet.
+ * =============================================================================
+ */
+
+//! In-memory IP ban list for brute-force protection.
+
 use parking_lot::RwLock as ParkingRwLock;
 use std::collections::HashMap;
 use std::sync::Arc;

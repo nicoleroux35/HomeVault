@@ -1,3 +1,24 @@
+/* =============================================================================
+ * File          : tls.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   HTTPS/TLS settings endpoints: read the current configuration plus
+ *   certificate info, save the configuration (applies after a restart),
+ *   and regenerate the self-signed certificate. Admin-only throughout.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *
+ * Usage:
+ *   Routes /api/settings/tls in src/web/mod.rs; see docs/guides/tls.md for
+ *   the listener and certificate model.
+ * =============================================================================
+ */
+
 //! HTTPS/TLS settings endpoints (admin-only).
 //!
 //! * `GET  /api/settings/tls`            — current config + certificate info

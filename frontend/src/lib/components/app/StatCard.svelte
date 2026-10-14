@@ -1,3 +1,23 @@
+<!-- ========================================================================
+     File          : StatCard.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       The one standard metric tile (previously re-implemented by
+       Dashboard/Storage/Health): tinted icon tile beside a label and big
+       value, optional footer note, five semantic tones. With onClick it
+       becomes an interactive button with a 44px-min, keyboard-activatable
+       target.
+
+     Dependencies:
+       - svelte (>= 5), theme/Icon
+
+     Usage:
+       `import { StatCard } from '$lib/components/app'`.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM — StatCard (page composite, `app/` layer)

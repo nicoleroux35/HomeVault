@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : restic_schedule_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Backup schedules: cron expressions per repository with next-run
+ *   computation.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
+//! Backup schedules (cron per repository).
+
 use chrono::Utc;
 use sqlx::SqlitePool;
 use std::sync::Arc;

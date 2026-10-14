@@ -1,3 +1,27 @@
+/* =============================================================================
+ * File          : appGate.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 12/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Application-level route guard: the single place deciding whether the
+ *   shell shows the Setup Wizard, the hardware-change recovery screen, the
+ *   login form, the desktop or a connection-error state. The server is the
+ *   source of truth (first run = no admin account in the database), and the
+ *   hardware-fingerprint mismatch gets a dedicated recovery route instead
+ *   of the wizard, which the server would refuse.
+ *
+ * Dependencies:
+ *   - svelte (>= 5)
+ *
+ * Usage:
+ *   appGate.refresh() at boot and after logout/enterApp on success;
+ *   App.svelte renders the matching route.
+ * =============================================================================
+ */
+
 import { get, writable } from 'svelte/store';
 import type { SetupStatus } from '$lib/types/api';
 import { api } from '$lib/services/api';

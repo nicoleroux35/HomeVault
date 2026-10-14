@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : database.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   SQLite database bootstrap: opens the single application database,
+ *   applies the embedded SQL migrations (compiled into the binary), and
+ *   exposes the shared connection pool every repository builds on.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9, sqlite), include_dir (>= 0.7)
+ *
+ * Usage:
+ *   Initialized once at startup; Database is cloned into AppState.
+ * =============================================================================
+ */
+
+//! SQLite database bootstrap (embedded migrations + shared pool).
+
 use include_dir::{include_dir, Dir};
 use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool};
 use std::sync::Arc;

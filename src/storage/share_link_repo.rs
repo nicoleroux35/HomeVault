@@ -1,3 +1,21 @@
+/* =============================================================================
+ * File          : share_link_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Explorer share-by-link repository: one row per public download
+ *   link (token hash, expiry, visibility, owner).
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
 //! Explorer "share by link" repository: one row per public download link a
 //! user created from the File Explorer (`/share/{token}`).
 //!

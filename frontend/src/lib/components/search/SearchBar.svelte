@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : SearchBar.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Global search overlay (Cmd/Ctrl-K): input bound to the search store,
+       full keyboard navigation (arrows, Enter, Escape) against the scored
+       app/setting/action index.
+
+     Dependencies:
+       - svelte (>= 5), stores/search, stores/i18n
+
+     Usage:
+       Opened by the desktop shell's search hotkey.
+     ======================================================================== -->
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { searchStore, closeSearch, updateQuery, selectNext, selectPrev, executeSelected, type SearchableItem } from '$lib/stores/search';

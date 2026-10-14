@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : network.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Network interface service: enumerate interfaces with addresses and
+ *   state, per-interface configuration (IP/gateway/DNS), interface up/down,
+ *   Wi-Fi scanning/association/disconnection, and public-IP lookup.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   handlers/network.rs (see docs/guides/network.md).
+ * =============================================================================
+ */
+
+//! Network interface service (inventory, configuration, Wi-Fi).
+
 use serde::{Deserialize, Serialize};
 use std::net::{Ipv4Addr, Ipv6Addr, UdpSocket};
 use std::process::Command;

@@ -8,6 +8,28 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Persistent notification center: the bell panel now keeps the full history
+  with severity filters, an unread-only toggle and text search, and the
+  "What's New" release-highlights modal shown once per version per account
+  (`GET|POST /api/whats-new[/seen]`, migration `042_whats_new.sql`,
+  `src/release_notes.rs`). See `docs/guides/notifications.md`.
+- Storage health: a per-virtual-disk scrub-status endpoint + inline UI
+  (`GET /api/storage/virtual-disks/{name}/scrub`) and foreign-pool import for
+  ZFS/Btrfs pools discovered on attached disks (`GET /api/storage/importable-pools`,
+  `POST /api/storage/import-pool`). See `docs/guides/storage.md`.
+- Hardened app-proxy auth: proxied apps no longer receive the API session.
+  The proxy gate accepts only an app-proxy-scoped `hv_app_session` token minted
+  by the server-chosen `GET /app-auth` entry, and both HomeVault cookies are
+  stripped before forwarding upstream. See `docs/guides/docker.md`.
+- Versioned client/server contract: `GET /api/meta` + the
+  `X-HomeVault-Contract` header, with a 426 + reload banner on a mismatch
+  (`src/api_contract.rs`, `src/middleware/contract.rs`). See
+  `docs/ARCHITECTURE.md`.
+- Development tooling: `scripts/dev-instance.sh` (multi-instance `.local`
+  dev via `HV_MDNS_HOSTNAME`), a real-VM Playwright suite
+  (`playwright.vm.config.ts`, `tests/vm/*.vm.test.ts`), and
+  `docs/guides/development.md`.
+
 - External AI-agent server (MCP, Streamable HTTP, Umbrel parity): `POST /mcp`
   (`initialize`, `tools/list`, `tools/call`) with opaque `hv_mcp_…` bearer
   tokens, one master kill-switch and one global permission set shared by all

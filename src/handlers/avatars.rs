@@ -1,3 +1,30 @@
+/* =============================================================================
+ * File          : avatars.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Serves the user avatar images: a public preview endpoint for the setup
+ *   wizard (seed + size + cache-busting), the persistent per-user avatar
+ *   (seed stored in the users table) and the authenticated self-service
+ *   update. Responses are raw SVG with explicit cache headers; a missing
+ *   seed renders a random avatar on the fly.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/avatars/preview, /api/users/{username}/avatar.svg and
+ *   PATCH /api/auth/me/avatar in src/web/mod.rs.
+ * =============================================================================
+ */
+
+//! Avatar endpoints: offline, deterministic SVG rendering from a seed for
+//! wizard previews, per-user persistent avatars, and the self-service update.
+
 use crate::avatars::{self, AvatarError};
 use crate::handlers::AppState;
 use crate::utils::ResponseHelper;

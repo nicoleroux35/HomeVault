@@ -1,3 +1,24 @@
+<!-- ========================================================================
+     File          : Desktop.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 13/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The desktop shell — the largest screen: menubar, dock with running-app
+     indicators, floating monitor widgets (draggable, per-account layout),
+     window rendering for every open app, wallpaper, activity taskbar,
+     global search, notification center, contract-mismatch reload prompt
+     and the What's-New modal.
+
+     Dependencies:
+       - svelte (>= 5), stores (auth, appGate, windowManager, monitor,
+         wallpaper, i18n), components/desktop/*
+
+     Usage:
+     Rendered by App.svelte once the app gate selects the desktop.
+     ======================================================================== -->
 <script lang="ts">
   import { authStore } from '$lib/stores/auth';
   import { appGate } from '$lib/stores/appGate';
@@ -11,6 +32,7 @@
   import { openSearch, type SearchableItem } from '$lib/stores/search';
   import { settingsSearchItems, requestSettingsCategory } from '$lib/stores/settingsCatalog';
   import NotificationCenter from '$lib/components/NotificationCenter.svelte';
+  import WhatsNewModal from '$lib/components/WhatsNewModal.svelte';
   import NotificationBellIcon from '$lib/components/shared/NotificationBellIcon.svelte';
   import WifiIcon from '$lib/components/shared/WifiIcon.svelte';
   import EthernetIcon from '$lib/components/shared/EthernetIcon.svelte';
@@ -18,6 +40,7 @@
   import UserAvatar from '$lib/components/theme/UserAvatar.svelte';
   import { websocket } from '$lib/services/websocket';
   import { notificationsStore } from '$lib/stores/notifications';
+  import { contractMismatch } from '$lib/stores/contract';
   import LazyLoad from '$lib/components/LazyLoad.svelte';
   import DesktopShortcuts from '$lib/components/desktop/DesktopShortcuts.svelte';
   import { IconServer, IconSettings as SettingsIcon, IconMoon, IconUser, IconActivity, IconCpu, IconThermometer, IconArrowUp, IconArrowDown, IconDatabase, IconPackage, IconTerminal as TerminalIcon, IconPower, IconShieldCheckered, IconLock, IconHome, IconLayoutGrid, IconMenu, IconSearch, IconPlus, IconDownload, IconUpload, IconTrash, IconPencil, IconCheck, IconAlertCircle, IconInfoCircle, IconAlertTriangle, IconBug, IconShield, IconRefresh, IconCalendar, IconChevronLeft, IconChevronRight, IconChevronsLeft, IconChevronsRight, IconPlayerPlay, IconSquare, IconContainer as ContainerIcon, IconSun, IconSun as Sun, IconCloud, IconCloudRain, IconSnowflake, IconCloudStorm, IconMapPin, IconUsers, IconHeartbeat, IconLogout, IconRobot, IconGlobe, IconSignal3g, IconCopy, IconCloudFog } from '@tabler/icons-svelte';
@@ -75,6 +98,32 @@
   let connIpLoading = false;
   let connIpLoaded = false;
   let showPowerModal = false;
+
+  // "What's New" release highlights — fetched once after login. The modal
+  // opens only when the server says this user hasn't acknowledged the running
+  // version yet (see `GET /api/whats-new`).
+  let showWhatsNew = false;
+  let whatsNewVersion = '';
+  let whatsNewTitle = '';
+  let whatsNewHighlights: string[] = [];
+
+  async function loadWhatsNew() {
+    const result = await api.getWhatsNew();
+    if (result.success && result.data && result.data.seen === false) {
+      whatsNewVersion = result.data.version ?? '';
+      whatsNewTitle = result.data.title ?? '';
+      whatsNewHighlights = Array.isArray(result.data.highlights) ? result.data.highlights : [];
+      // Only open when there is actually something to show.
+      if (whatsNewHighlights.length > 0) showWhatsNew = true;
+    }
+  }
+
+  function dismissWhatsNew() {
+    showWhatsNew = false;
+    // Fire-and-forget: a failed acknowledgement only means it reappears next
+    // login, never a blocked UI.
+    void api.markWhatsNewSeen();
+  }
   let logoutAction: 'logout' | 'restart' | 'shutdown' | null = null;
   let systemUpdateAvailable = false;
 
@@ -1282,6 +1331,9 @@
     }
     loadNotifications();
     const notificationsInterval = setInterval(loadNotifications, 30000);
+
+    // One-shot: show the release highlights once per version, per user.
+    loadWhatsNew();
 
     // Connection type polling (wired vs. wireless icon in the topbar)
     async function loadConnectionType() {
@@ -2495,6 +2547,14 @@
 
   <!-- Desktop Area with Windows -->
   <main class="hv-desktop">
+    {#if $contractMismatch}
+      <div class="hv-contract-banner" role="alert" data-testid="contract-mismatch-banner">
+        <span>{$t('contract.mismatch')}</span>
+        <button type="button" class="hv-contract-reload" onclick={() => location.reload()}>
+          {$t('contract.reload')}
+        </button>
+      </div>
+    {/if}
     <!-- Pinned web shortcuts (per-account, metadata fetched server-side). -->
     <DesktopShortcuts />
     {#each $windowManager as window (window.id)}
@@ -2522,6 +2582,15 @@
       </WindowFrame>
     {/each}
   </main>
+
+  <!-- "What's New" — release highlights, once per version per user. -->
+  <WhatsNewModal
+    open={showWhatsNew}
+    version={whatsNewVersion}
+    title={whatsNewTitle}
+    highlights={whatsNewHighlights}
+    onclose={dismissWhatsNew}
+  />
 
   <!-- Power Options Modal -->
   {#if showPowerModal}
@@ -2897,6 +2966,44 @@
 </div>
 
 <style>
+  /* Client/server contract mismatch banner — a stale cached bundle talking to
+     a newer server. Fixed above the desktop chrome, dismissible only by
+     reloading (the mismatch is real until the bundle is refreshed). */
+  .hv-contract-banner {
+    position: fixed;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 100000;
+    display: flex;
+    align-items: center;
+    gap: var(--hv-space-3);
+    padding: var(--hv-space-2) var(--hv-space-4);
+    background: var(--hv-warning-bg);
+    border: 1px solid var(--hv-warning);
+    border-top: none;
+    border-radius: 0 0 var(--hv-radius-md) var(--hv-radius-md);
+    color: var(--hv-warning-text);
+    font-size: var(--hv-font-size-sm);
+    box-shadow: var(--hv-shell-shadow-card);
+  }
+
+  .hv-contract-reload {
+    min-height: var(--hv-touch-target-min);
+    padding: 0 var(--hv-space-3);
+    background: var(--hv-warning);
+    border: none;
+    border-radius: var(--hv-radius-sm);
+    color: #fff;
+    font-weight: var(--hv-font-weight-semibold);
+    cursor: pointer;
+  }
+
+  .hv-contract-reload:focus-visible {
+    outline: none;
+    box-shadow: var(--hv-focus-ring);
+  }
+
   /* Desktop Container.
      Font comes from the self-hosted Inter face (src/lib/styles/fonts.css) via
      --hv-font-family — no external font CDN, the box may have no internet

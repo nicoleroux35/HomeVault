@@ -1,3 +1,27 @@
+/* =============================================================================
+ * File          : confirmDialog.svelte.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Promise-based confirm/alert state factory replacing the native
+ *   window.confirm/alert calls, which break the focus-trap and
+ *   focus-restore accessibility baseline. Each component instance creates
+ *   its own state (two apps on the same desktop never share a dialog); the
+ *   returned object is a single Svelte 5 $state proxy whose reads stay
+ *   reactive — read through the proxy, never through extracted getters.
+ *
+ * Dependencies:
+ *   - svelte (>= 5, runes)
+ *
+ * Usage:
+ *   `const dlg = createConfirmState();` then `await dlg.ask(message)` and
+ *   bind `<ConfirmDialog {dlg} ...>`.
+ * =============================================================================
+ */
+
 /**
  * HOMEVAULT — promise-based confirm/alert state factory
  *

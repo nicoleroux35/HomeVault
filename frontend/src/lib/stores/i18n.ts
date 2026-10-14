@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : i18n.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   The i18n runtime: language detection (explicit choice, then browser
+ *   locale) across the four supported languages, translation rows fetched
+ *   from the server into a flat key→string map, and the translate helper
+ *   used everywhere in the UI. Unknown keys fall back to the key itself so
+ *   a missing translation can never blank out a label.
+ *
+ * Dependencies:
+ *   - svelte (>= 5)
+ *
+ * Usage:
+ *   `import { t, languageStore, translationsReady } from '$lib/stores/i18n'`;
+ *   see docs/guides/i18n.md for adding keys/languages.
+ * =============================================================================
+ */
+
 import { writable, derived, get } from 'svelte/store';
 
 type Language = 'en' | 'fr' | 'de' | 'es';

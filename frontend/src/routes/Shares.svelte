@@ -1,3 +1,23 @@
+<!-- ========================================================================
+     File          : Shares.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The Shares app: share list across SMB/NFS/FTP/SFTP/WebDAV, create/edit
+     forms, per-protocol service configuration and control, per-share
+     permissions, and the create-share form pre-fill coming from the
+     Explorer's share intent.
+
+     Dependencies:
+       - svelte (>= 5), theme + app/ composites, stores/explorerShareIntent,
+         $lib/services/api
+
+     Usage:
+     Opened as a desktop window app.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { get } from 'svelte/store';

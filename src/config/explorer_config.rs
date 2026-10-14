@@ -1,3 +1,31 @@
+/* =============================================================================
+ * File          : explorer_config.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.1
+ *
+ * Description:
+ *   Defines the directories the file Explorer is allowed to browse (default
+ *   roots overridable via HOMEVAULT_EXPLORER_ROOTS, with automatic detection
+ *   of mounted filesystems) and PathGuard, the security check that validates
+ *   every file path against those roots — resolving symlinks and refusing
+ *   anything that escapes them (../ traversal, absolute paths outside the
+ *   roots, null bytes).
+ *
+ * Dependencies:
+ *   - serde (>= 1.0)
+ *   - tracing (>= 0.1)
+ *
+ * Usage:
+ *   `PathGuard::default()` is built once at startup in src/web/mod.rs;
+ *   handlers call `PathGuard::validate(path)` before touching any file.
+ * =============================================================================
+ */
+
+//! Which directories the file Explorer may browse, and the path-traversal
+//! guard that keeps every file operation inside those roots.
+
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::{Path, PathBuf};

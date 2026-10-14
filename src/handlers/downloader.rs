@@ -1,3 +1,31 @@
+/* =============================================================================
+ * File          : downloader.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Download-manager endpoints backed by the aria2 daemon: service status
+ *   and start/stop, global and per-task statistics, adding URLs and
+ *   torrents, pause/resume/removal, and task details. Every endpoint is
+ *   admin-only; aria2 state is shared through Aria2State in AppState.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Routes /api/downloader in src/web/mod.rs; the Downloader desktop app
+ *   polls these endpoints.
+ * =============================================================================
+ */
+
+//! Download-manager endpoints (aria2): status, tasks, add/pause/remove —
+//! all admin-only.
+
 use axum::{
     extract::{Path, State},
     http::HeaderMap,

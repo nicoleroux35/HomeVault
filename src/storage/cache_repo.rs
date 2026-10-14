@@ -1,3 +1,21 @@
+/* =============================================================================
+ * File          : cache_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Cache-tier storage: settings (cache pool, mover schedule and
+ *   thresholds), cache shares and mover-run history.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
 //! Storage layer for the disk cache tier.
 //!
 //! Three tables: a singleton `cache_settings` row, one `cache_shares` row per

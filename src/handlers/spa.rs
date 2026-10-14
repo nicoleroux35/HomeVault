@@ -1,3 +1,31 @@
+/* =============================================================================
+ * File          : spa.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 12/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Static-asset and SPA serving. The whole static/ tree (built frontend,
+ *   sounds) is embedded in the binary at compile time, so the binary alone
+ *   is a runnable artifact. Each file gets a strong ETag validator and a
+ *   cache policy — one year immutable for content-hashed bundles, one day
+ *   plus ETag for the regenerated icon sprites — and when the build
+ *   produced pre-compressed siblings, their brotli/gzip bytes are served
+ *   directly, with one ETag per encoding. Public: static assets carry no
+ *   session data.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - include_dir (>= 0.7)
+ *   - sha2 (>= 0.11)
+ *
+ * Usage:
+ *   Catch-all and asset routes in src/web/mod.rs; serve_spa is the SPA
+ *   entry point (index.html fallback).
+ * =============================================================================
+ */
+
 //! Static-asset and SPA serving.
 //!
 //! Everything under `static/` is embedded into the binary at compile time, so

@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : PathField.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Path input field pairing a bindable text value with the modal
+       FolderPicker for browsing; supports folder and file modes. Frozen in
+       favour of PathPickerField for new call sites (no free typing there).
+
+     Dependencies:
+       - svelte (>= 5)
+
+     Usage:
+       Legacy call sites only — prefer PathPickerField.
+     ======================================================================== -->
 <script lang="ts">
   import { t } from '$lib/stores/i18n';
   import { IconFolderOpen, IconFile as FileIcon } from '@tabler/icons-svelte';

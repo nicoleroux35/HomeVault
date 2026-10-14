@@ -1,3 +1,21 @@
+/* =============================================================================
+ * File          : antivirus_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Antivirus storage: singleton settings row, scan-run history and
+ *   quarantined-threat records.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
 //! Storage layer for antivirus (ClamAV) scanning: a singleton settings row,
 //! a history of scan runs, and the threats found during those scans.
 

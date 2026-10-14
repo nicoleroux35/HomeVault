@@ -1,3 +1,24 @@
+<!-- ========================================================================
+     File          : Settings.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 13/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The Settings app: the 8 rail groups (general, security, network,
+     appearance, widgets, notifications, AI, monitoring/system) rendered
+     from the settings catalog, with the embedded TLS/Antivirus/
+     Anti-Ransomware/SNMP sub-cards, wallpaper picker and the shared draft
+     + explicit Save All flow.
+
+     Dependencies:
+       - svelte (>= 5), stores/settingsDraft.svelte + settingsCatalog,
+         components/settings/*, theme primitives
+
+     Usage:
+     Opened as a desktop window app.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { get } from 'svelte/store';

@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : WindowHeader.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Window title bar: app icon tinted with the window's accent (from the
+       hvAppAccent context, matching dock/Launchpad), title, and the window
+       control cluster (minimize/maximize/close).
+
+     Dependencies:
+       - svelte (>= 5), theme/Icon
+
+     Usage:
+       Flush top edge inside PageLayout/WindowFrame.
+     ======================================================================== -->
 <script lang="ts">
   import { getContext, type Snippet } from 'svelte';
   import Icon from '$lib/components/theme/Icon.svelte';

@@ -1,3 +1,29 @@
+/* =============================================================================
+ * File          : settings.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Server-wide settings loaded from environment variables at startup
+ *   (listen port, log level, data directory, connection limits, session
+ *   lifetime, I/O timeouts), each with a safe default. Also hosts the
+ *   host-compatibility checks that tell whether this machine can run
+ *   HomeVault (Debian/Ubuntu distribution, x86_64/aarch64/arm CPU).
+ *
+ * Dependencies:
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   `Settings::load()` at startup in src/web/mod.rs; the listen port is
+ *   also re-read by the firewall, mDNS and TLS handlers.
+ * =============================================================================
+ */
+
+//! Global server settings read from environment variables, plus host
+//! compatibility checks (supported OS distribution and CPU architecture).
+
 use serde::{Deserialize, Serialize};
 use std::env;
 

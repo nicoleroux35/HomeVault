@@ -1,3 +1,24 @@
+/* =============================================================================
+ * File          : store.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Community app stores: extra git repositories the admin adds as app
+ *   sources, cloned locally and re-synced on demand. A store mirrors the
+ *   built-in catalog shape (store manifest + one directory per app).
+ *
+ * Dependencies:
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   app_catalog/mod.rs merges store apps into the catalog; the store CRUD
+ *   endpoints live in handlers/docker_catalog.rs.
+ * =============================================================================
+ */
+
 //! Community app stores: extra git repositories the admin adds as sources
 //! of app packages. A store repo has the same shape as the built-in
 //! `catalog/` dir - a `homevault-store.toml` at the root (`id`, `name`)

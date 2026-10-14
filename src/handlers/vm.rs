@@ -1,3 +1,33 @@
+/* =============================================================================
+ * File          : vm.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Virtual Machines app endpoints (Incus-backed): availability and curated
+ *   OS list, machine lifecycle (create as a tracked background job — image
+ *   downloads take minutes —, list/get/delete, start/stop/restart, CPU and
+ *   memory config), snapshots (create/restore/delete), browser console and
+ *   screen streams over WebSocket with single-use tickets, and ISO
+ *   management (list, download, delete, bundled VirtIO drivers). Every
+ *   endpoint is admin-only: Incus talks to a root socket and hands out
+ *   disk and network resources.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - futures-util
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Routes /api/vm in src/web/mod.rs; execution delegated to
+ *   crate::incus (see docs/guides/vm.md).
+ * =============================================================================
+ */
+
 //! HTTP handlers for the **Virtual Machines** app (Incus-backed).
 //!
 //! Design goal: a person with no Linux knowledge can create a machine, log

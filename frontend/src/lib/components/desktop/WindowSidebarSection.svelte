@@ -1,3 +1,20 @@
+<!-- ========================================================================
+     File          : WindowSidebarSection.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Grouped section of the window sidebar: uppercase micro-label heading
+       (omittable for unlabelled groups) over its items.
+
+     Dependencies:
+       - svelte (>= 5)
+
+     Usage:
+       Inside WindowSidebar.
+     ======================================================================== -->
 <script lang="ts">
   import { getContext, type Snippet } from 'svelte';
 

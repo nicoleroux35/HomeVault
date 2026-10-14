@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : mapping-unified.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 12/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   The unified icon-name mapping (generated from the bundled icon sets):
+ *   resolves an icon name to its library entry for the theme/Icon
+ *   component, with existence checks and library listing.
+ *
+ * Dependencies:
+ *   - none (generated lookup tables)
+ *
+ * Usage:
+ *   theme/Icon.svelte resolves every icon through it.
+ * =============================================================================
+ */
+
 /**
  * Unified Icon Mapping
  * Generated from: Phosphor Icons, Tabler Icons
@@ -15,9 +35,9 @@ export interface IconEntry {
 }
 
 export const iconCount = {
-  phosphor: 44,
-  tabler: 70,
-  total: 114
+  phosphor: 51,
+  tabler: 80,
+  total: 131
 };
 
 export const iconLookup: Record<string, IconEntry> = {
@@ -44,6 +64,10 @@ export const iconLookup: Record<string, IconEntry> = {
     "phosphor": "phosphor-caret-up",
     "tabler": "tabler-caret-up"
   },
+  "certificate": {
+    "phosphor": "phosphor-certificate",
+    "tabler": "tabler-certificate"
+  },
   "chat": {
     "phosphor": "phosphor-chat"
   },
@@ -59,9 +83,15 @@ export const iconLookup: Record<string, IconEntry> = {
     "phosphor": "phosphor-database",
     "tabler": "tabler-database"
   },
+  "desktop": {
+    "phosphor": "phosphor-desktop"
+  },
   "download": {
     "phosphor": "phosphor-download",
     "tabler": "tabler-download"
+  },
+  "export": {
+    "phosphor": "phosphor-export"
   },
   "file": {
     "phosphor": "phosphor-file",
@@ -104,6 +134,10 @@ export const iconLookup: Record<string, IconEntry> = {
     "phosphor": "phosphor-key",
     "tabler": "tabler-key"
   },
+  "layout": {
+    "phosphor": "phosphor-layout",
+    "tabler": "tabler-layout"
+  },
   "list": {
     "phosphor": "phosphor-list",
     "tabler": "tabler-list"
@@ -140,6 +174,10 @@ export const iconLookup: Record<string, IconEntry> = {
   "orange": {
     "phosphor": "phosphor-orange"
   },
+  "power": {
+    "phosphor": "phosphor-power",
+    "tabler": "tabler-power"
+  },
   "presentation": {
     "phosphor": "phosphor-presentation",
     "tabler": "tabler-presentation"
@@ -148,9 +186,16 @@ export const iconLookup: Record<string, IconEntry> = {
     "phosphor": "phosphor-radio",
     "tabler": "tabler-radio"
   },
+  "rewind": {
+    "phosphor": "phosphor-rewind"
+  },
   "rss": {
     "phosphor": "phosphor-rss",
     "tabler": "tabler-rss"
+  },
+  "share": {
+    "phosphor": "phosphor-share",
+    "tabler": "tabler-share"
   },
   "stop": {
     "phosphor": "phosphor-stop"
@@ -193,6 +238,9 @@ export const iconLookup: Record<string, IconEntry> = {
   },
   "alert-triangle": {
     "tabler": "tabler-alert-triangle"
+  },
+  "battery": {
+    "tabler": "tabler-battery"
   },
   "bmp": {
     "tabler": "tabler-bmp"
@@ -245,6 +293,9 @@ export const iconLookup: Record<string, IconEntry> = {
   "logout": {
     "tabler": "tabler-logout"
   },
+  "mail": {
+    "tabler": "tabler-mail"
+  },
   "menu": {
     "tabler": "tabler-menu"
   },
@@ -266,6 +317,12 @@ export const iconLookup: Record<string, IconEntry> = {
   "progress": {
     "tabler": "tabler-progress"
   },
+  "refresh": {
+    "tabler": "tabler-refresh"
+  },
+  "restore": {
+    "tabler": "tabler-restore"
+  },
   "search": {
     "tabler": "tabler-search"
   },
@@ -278,11 +335,17 @@ export const iconLookup: Record<string, IconEntry> = {
   "svg": {
     "tabler": "tabler-svg"
   },
+  "timezone": {
+    "tabler": "tabler-timezone"
+  },
   "txt": {
     "tabler": "tabler-txt"
   },
   "wallpaper": {
     "tabler": "tabler-wallpaper"
+  },
+  "webhook": {
+    "tabler": "tabler-webhook"
   },
   "wheel": {
     "tabler": "tabler-wheel"

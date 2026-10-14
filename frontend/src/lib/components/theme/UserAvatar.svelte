@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : UserAvatar.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       A user's avatar <img> served by the backend from the stored seed;
+       appends a cache-buster when the seed changes so the freshly generated
+       SVG is refetched despite the avatar endpoint's immutable caching.
+
+     Dependencies:
+       - svelte (>= 5), $lib/services/api
+
+     Usage:
+       `<UserAvatar username={u} seed={u.avatar_seed} />` in header/menus.
+     ======================================================================== -->
 <script lang="ts">
   import { api } from '$lib/services/api';
 

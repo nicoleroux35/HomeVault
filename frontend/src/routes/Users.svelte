@@ -1,3 +1,23 @@
+<!-- ========================================================================
+     File          : Users.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 13/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The Users management app: user list with avatars/roles/groups, create
+     and edit (profile, password, role, home folder + quota), lock/unlock,
+     force-2FA-disable, delete (optionally wiping the home folder), and the
+     per-member resource-access editor. Admin-only.
+
+     Dependencies:
+       - svelte (>= 5), theme + app/ composites, stores/i18n,
+         $lib/services/api, utils/autoRevalidate
+
+     Usage:
+     Opened as a desktop window app (admin only).
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { get } from 'svelte/store';

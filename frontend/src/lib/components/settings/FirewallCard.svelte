@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : FirewallCard.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Settings sub-card for the firewall (ufw): status, rule list with
+       mandatory-rule marking, add/delete rules, and the confirm-guarded
+       enable/disable (self-lockout protection is server-side).
+
+     Dependencies:
+       - svelte (>= 5), $lib/services/api, ./SettingsCard
+
+     Usage:
+       Embedded in routes/Settings.svelte's security group.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';

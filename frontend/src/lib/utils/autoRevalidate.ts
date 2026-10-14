@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : autoRevalidate.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Keeps an app window's data fresh without a manual refresh button:
+ *   re-runs the provided loader when the tab/window becomes visible again
+ *   (with a cooldown coalescing the visibilitychange + focus pair), and
+ *   optionally on a slow interval while visible. Deduplication across calls
+ *   is left to the api.ts 5 s response cache. Returns a cleanup function.
+ *
+ * Dependencies:
+ *   - none
+ *
+ * Usage:
+ *   In a component: `onMount(() => onAppVisible(load, { pollMs: 15000 }))`.
+ * =============================================================================
+ */
+
 /**
  * Keep an app window's data fresh without a manual "Refresh" button.
  *

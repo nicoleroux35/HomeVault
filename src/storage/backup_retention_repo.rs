@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : backup_retention_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Backup retention-policy definitions (keep-last/daily/weekly/...)
+ *   referenced by restic repositories.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
+//! Backup retention-policy definitions for restic repositories.
+
 use chrono::Utc;
 use sqlx::SqlitePool;
 use std::sync::Arc;

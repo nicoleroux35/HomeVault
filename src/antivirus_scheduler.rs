@@ -1,3 +1,24 @@
+/* =============================================================================
+ * File          : antivirus_scheduler.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Background scheduler for scheduled antivirus scans: polls on a fixed
+ *   interval and starts a scan when the configured cron is due (only when
+ *   scheduled scanning is enabled and no scan is running). Kept separate
+ *   from the scan service so a hung scan can never block the scheduler.
+ *
+ * Dependencies:
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Spawned once at startup in src/web/mod.rs.
+ * =============================================================================
+ */
+
 //! Background scheduler for scheduled antivirus scans.
 //!
 //! Structural copy of `cache_scheduler`/`restic_scheduler`: polls every

@@ -1,3 +1,28 @@
+/* =============================================================================
+ * File          : service.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Rescue tool execution service: runs ddrescue (disk cloning with
+ *   progress), TestDisk (analyze/rebuild), PhotoRec (file carving) and
+ *   mdadm (diagnose/repair) as background processes, after the
+ *   SecurityValidator cleared the request, streaming progress where
+ *   applicable.
+ *
+ * Dependencies:
+ *   - tokio (>= 1.52), internal validator + models
+ *
+ * Usage:
+ *   handlers/rescue.rs (see docs/guides/rescue.md).
+ * =============================================================================
+ */
+
+//! Rescue tool execution (ddrescue, TestDisk, PhotoRec, mdadm),
+//! validator-gated, with progress streaming.
+
 use super::models::*;
 use super::validator::SecurityValidator;
 use tokio::process::Command;

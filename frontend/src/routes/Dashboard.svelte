@@ -1,3 +1,22 @@
+<!-- ========================================================================
+     File          : Dashboard.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 13/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The Dashboard app: aggregated system overview (CPU/RAM/disk/network,
+     storage health) with the user's widget layout, stat cards and live
+     charts.
+
+     Dependencies:
+       - svelte (>= 5), theme + app/ composites, charts/*,
+         $lib/services/api
+
+     Usage:
+     Opened as a desktop window app.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { api } from '$lib/services/api';

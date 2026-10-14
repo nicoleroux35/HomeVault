@@ -31,7 +31,7 @@ disagree on a rule, `CLAUDE.md` wins.
 ## Commit style
 
 - Imperative scope prefix: `feat(auth): …`, `fix(shares): …`,
-  `docs(rag): …`, `test(quotas): …`, `ci(gitea): …`, `chore(deps): …`.
+  `docs(rag): …`, `test(quotas): …`, `ci(github): …`, `chore(deps): …`.
 - Keep the subject under 72 characters; explain the *why* in the body
   when it is not obvious.
 
