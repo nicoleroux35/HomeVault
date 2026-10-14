@@ -1,5 +1,4 @@
 # E2E — real browsers (Playwright). Official image with browsers preinstalled.
-# GitHub-hosted mirror of .gitea/workflows/e2e-playwright.yml.
 # Runs only on main pushes, PRs and manually: it is the most expensive stage
 # (frontend build + Rust build + full spec run) and is gated after
 # unit/component/integration in full-pipeline.yml.
@@ -12,8 +11,8 @@
 #   the explicit `playwright install` step (OS deps are already in the image).
 # - Real browsers, not emulated Chromium: playwright.config.ts runs the
 #   `firefox` + `chromium` projects.
-# GitHub differences vs Gitea: none in the steps (container jobs run as root
-# on both); the artifact upload works natively here, so no continue-on-error.
+# Jobs run in containers as root; the artifact upload works natively on
+# GitHub Actions, so no continue-on-error.
 name: e2e
 on:
   push:

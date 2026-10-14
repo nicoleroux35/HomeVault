@@ -1,3 +1,24 @@
+/* =============================================================================
+ * File          : api.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 12/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Shared frontend type definitions mirroring the backend's API shapes:
+ *   the standard response envelope plus the request/response types for
+ *   auth, setup, users and the feature areas consumed by services/api.ts.
+ *
+ * Dependencies:
+ *   - none (types only)
+ *
+ * Usage:
+ *   `import type { ApiResponse, ... } from '$lib/types/api'` across the
+ *   frontend; keep in sync with the Rust handlers (see docs/API.md).
+ * =============================================================================
+ */
+
 /** Standard API response envelope – every endpoint returns this shape. */
 export interface ApiResponse<T = any> {
   success: boolean;

@@ -1,3 +1,27 @@
+/* =============================================================================
+ * File          : permissions.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 12/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   The grant/revoke logic on top of raw ACLs: resolves a share's real
+ *   path (share types differ), maps user/group permissions onto ACL
+ *   entries (optionally recursive), and computes a user's effective
+ *   permissions by combining direct and group grants.
+ *
+ * Dependencies:
+ *   - thiserror (>= 2), internal acl/groups/shares services
+ *
+ * Usage:
+ *   handlers/permissions.rs; also consumed by resource-access checks.
+ * =============================================================================
+ */
+
+//! Share permission logic on top of POSIX ACLs (grant/revoke, effective
+//! permission resolution).
+
 use std::sync::Arc;
 use thiserror::Error;
 

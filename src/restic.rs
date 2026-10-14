@@ -1,3 +1,28 @@
+/* =============================================================================
+ * File          : restic.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Backup engine service wrapping the restic CLI: repository
+ *   initialisation and credential handling (password supplied per run,
+ *   never stored in plaintext), snapshot listing, and the backup/restore/
+ *   check/forget/prune operations with their typed results.
+ *
+ * Dependencies:
+ *   - chrono (>= 0.4), serde (>= 1.0)
+ *
+ * Usage:
+ *   handlers/restic.rs (manual operations) and the backup scheduler
+ *   (scheduled runs); progress flows through the SSE progress manager.
+ * =============================================================================
+ */
+
+//! Backup engine service wrapping the restic CLI (repositories, snapshots,
+//! backup/restore/check/forget/prune).
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

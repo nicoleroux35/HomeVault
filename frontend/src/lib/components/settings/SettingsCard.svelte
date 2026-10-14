@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : SettingsCard.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       The standard settings card shell: icon tile + title + description
+       header over a body, with the shared class vocabulary so every card —
+       rail groups and embedded sub-cards alike — looks identical.
+
+     Dependencies:
+       - svelte (>= 5), ./vocabulary
+
+     Usage:
+       Base of every Settings group/sub-card.
+     ======================================================================== -->
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { cn } from '$lib/utils.js';

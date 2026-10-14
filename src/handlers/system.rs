@@ -1,3 +1,31 @@
+/* =============================================================================
+ * File          : system.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Server power control: graceful restart and shutdown. Each endpoint
+ *   validates the session and admin role inline, answers first, and runs
+ *   the system command from a short-delay background task so the client
+ *   receives the confirmation before the machine goes down.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - http (>= 1)
+ *   - serde_json (>= 1.0)
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Routes /api/system/restart and /api/system/shutdown in src/web/mod.rs;
+ *   admin-only.
+ * =============================================================================
+ */
+
+//! Server control endpoints: graceful restart and shutdown (admin-only,
+//! session checked inline per handler).
+
 use crate::handlers::AppState;
 use crate::utils::ResponseHelper;
 use axum::{extract::State, response::Response};

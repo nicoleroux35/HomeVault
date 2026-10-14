@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : FloatingPathPicker.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Non-modal, draggable folder/file picker: browses the server's allowed
+       roots (PathGuard-scoped), distinguishes drives/categories via icons,
+       and returns the chosen path without blocking the rest of the UI.
+
+     Dependencies:
+       - svelte (>= 5), @tabler/icons-svelte, $lib/services/api
+
+     Usage:
+       Opened by PathPickerField; see the in-code doc for the full contract.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';

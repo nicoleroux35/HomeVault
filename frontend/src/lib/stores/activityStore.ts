@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : activityStore.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Desktop background-activity feed: polls GET /api/activity (~2 s) while
+ *   the tab is visible and the user is logged in, exposing the task list
+ *   and count for the dock's activity button and its taskbar panel. A
+ *   readable store with start/stop, so the poll only runs while the desktop
+ *   shell is mounted; tolerates one transient failure to avoid flicker.
+ *
+ * Dependencies:
+ *   - svelte (>= 5)
+ *
+ * Usage:
+ *   `import { activity } from '$lib/stores/activityStore'` in the desktop
+ *   shell / taskbar.
+ * =============================================================================
+ */
+
 /**
  * Desktop background-activity feed.
  *

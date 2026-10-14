@@ -1,3 +1,23 @@
+<!-- ========================================================================
+     File          : Restic.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 13/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The Backup app: restic repositories (create/edit with stored passwords
+     and retention policies), snapshot browsing, manual backup/restore/
+     check/forget/prune with live job progress, schedules and the stale-
+     repository reminders.
+
+     Dependencies:
+       - svelte (>= 5), theme primitives, app/ composites, stores/i18n,
+         $lib/services/api, utils/autoRevalidate
+
+     Usage:
+     Opened as a desktop window app.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';

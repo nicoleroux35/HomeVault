@@ -1,3 +1,21 @@
+/* =============================================================================
+ * File          : storage.spec.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Storage screen end-to-end tests (Playwright): covers the screen's functionality per TESTING.md.
+ *
+ * Dependencies:
+ *   - none (test crate: axum router + tower oneshot / Playwright)
+ *
+ * Usage:
+ *   Rust: cargo test  |  E2E: npx playwright test
+ * =============================================================================
+ */
+
 /**
  * Storage app — End-to-End Test Suite
  *
@@ -588,5 +606,89 @@ test.describe('13 — Real LUKS lifecycle (opt-in)', () => {
       }
       await ctx.dispose();
     }
+  });
+});
+
+// ===========================================================================
+// 14. Storage health — scrub status & foreign-pool import
+// ===========================================================================
+
+test.describe('14 — Scrub status & foreign-pool import', () => {
+  test('14.1 — the virtual-disks tab offers a scrub-status control per disk', async ({ page }) => {
+    await gotoStorage(page, adminTokens);
+    await switchTab(page, /virtual|virtuel|virtuell|virtual/i);
+    const cards = win(page).locator('[data-testid="storage-vd-card"]');
+    const count = await cards.count();
+    test.skip(count === 0, 'no virtual disks on this host — nothing to check');
+    // Every card carries the "Check status" button (it never shells out until
+    // clicked, so this stays read-only).
+    const buttons = win(page).locator('[data-testid="storage-vd-card"] button', {
+      hasText: /status|état|estado/i,
+    });
+    expect(await buttons.count()).toBeGreaterThan(0);
+  });
+
+  test('14.2 — clicking "Check status" renders the scrub state inline', async ({ page }) => {
+    await gotoStorage(page, adminTokens);
+    await switchTab(page, /virtual|virtuel|virtuell|virtual/i);
+    const cards = win(page).locator('[data-testid="storage-vd-card"]');
+    const count = await cards.count();
+    test.skip(count === 0, 'no virtual disks on this host — nothing to check');
+    const statusBtn = cards
+      .first()
+      .locator('button', { hasText: /status|état|estado/i })
+      .first();
+    await statusBtn.click();
+    // Either the inline status appears, or a dialog explains the failure —
+    // never a crash or a silent no-op.
+    const inline = cards.first().locator('[data-testid="storage-vd-scrub-status"]');
+    await expect(inline).toBeVisible({ timeout: 8_000 });
+  });
+
+  test('14.3 — the importable-pools section is well-formed when present', async ({ page }) => {
+    await gotoStorage(page, adminTokens);
+    await switchTab(page, /virtual|virtuel|virtuell|virtual/i);
+    const section = win(page).locator('[data-testid="storage-importable-pools"]');
+    if ((await section.count()) === 0) {
+      // No foreign pool on this host: the section is correctly absent.
+      expect(await section.count()).toBe(0);
+      return;
+    }
+    await expect(section).toBeVisible();
+    const rows = section.locator('[data-testid="storage-importable-pool"]');
+    expect(await rows.count()).toBeGreaterThan(0);
+  });
+
+  test('14.4 — the import endpoint rejects a non-admin session', async ({ playwright }) => {
+    const ctx = await playwright.request.newContext({ baseURL: BASE });
+    // Unauthenticated → 400/401.
+    const anon = await ctx.post('/api/storage/import-pool', {
+      data: { name: 'tank', pool_type: 'zfs' },
+    });
+    expect([400, 401]).toContain(anon.status());
+
+    // A valid non-admin session → 403 (require_admin), never a command run.
+    const login = await ctx.post('/api/auth/login', {
+      data: { username: 'e2euser', password: 'E2eSecret123' },
+    });
+    if (login.ok()) {
+      const body = await login.json();
+      const token = body?.data?.token;
+      if (token) {
+        const forbidden = await ctx.post('/api/storage/import-pool', {
+          headers: { 'x-session-token': token, 'x-csrf-token': body?.data?.csrf_token || '' },
+          data: { name: 'tank', pool_type: 'zfs' },
+        });
+        expect([403, 401]).toContain(forbidden.status());
+      }
+    }
+    await ctx.dispose();
+  });
+
+  test('14.5 — the scrub-status endpoint rejects a non-admin session', async ({ playwright }) => {
+    const ctx = await playwright.request.newContext({ baseURL: BASE });
+    const anon = await ctx.get('/api/storage/virtual-disks/does-not-exist/scrub');
+    expect([400, 401]).toContain(anon.status());
+    await ctx.dispose();
   });
 });

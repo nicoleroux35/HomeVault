@@ -1,3 +1,27 @@
+/* =============================================================================
+ * File          : browser.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   File-browser engine behind the Explorer: directory listings with
+ *   typed file info, previews, fuzzy search scoring, trash with
+ *   non-colliding restore paths, and a small per-mount filesystem-type
+ *   cache. All operations stay within the caller's validated roots.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   handlers/explorer.rs (list/search/trash/preview endpoints).
+ * =============================================================================
+ */
+
+//! File-browser engine behind the Explorer (listings, search, trash,
+//! previews).
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

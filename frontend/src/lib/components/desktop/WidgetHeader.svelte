@@ -1,3 +1,20 @@
+<!-- ========================================================================
+     File          : WidgetHeader.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Standard floating-widget title bar: accent icon tile + label, shared
+       by every desktop monitor panel so they read as one family.
+
+     Dependencies:
+       - svelte (>= 5)
+
+     Usage:
+       Top of each desktop monitor widget.
+     ======================================================================== -->
 <script lang="ts">
   import type { Snippet } from 'svelte';
 

@@ -1,3 +1,37 @@
+/* =============================================================================
+ * File          : chat.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   AI-assistant endpoints proxying the local Ollama service: send a
+ *   message (blocking) or stream the reply token-by-token over SSE, list
+ *   installed models, and pull new models (admin — multi-gigabyte
+ *   download). The system prompt follows the user's UI language and is
+ *   enriched with knowledge-base context when the RAG index is available;
+ *   the active model lives in a process-wide setting.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - futures-util
+ *   - once_cell
+ *   - parking_lot (>= 0.12)
+ *   - reqwest
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/chat in src/web/mod.rs; chat/streams/models are
+ *   session-auth, model pull is admin-only. See docs/guides/chat.md and
+ *   docs/guides/rag.md (grounding).
+ * =============================================================================
+ */
+
+//! AI-assistant endpoints (Ollama proxy): blocking and SSE-streamed chat,
+//! model list, admin-only model pull, language-aware + RAG-enriched prompts.
+
 use crate::handlers::AppState;
 use crate::utils::ResponseHelper;
 use axum::http::HeaderMap;

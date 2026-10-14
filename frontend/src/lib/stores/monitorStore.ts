@@ -1,3 +1,27 @@
+/* =============================================================================
+ * File          : monitorStore.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Per-account layout of the floating desktop monitor panels: positions,
+ *   per-panel visibility, and the shared poll cadence, stored as one blob
+ *   namespaced per user in localStorage (legacy unnamespaced key migrated
+ *   once) and mirrored server-side so the layout follows the account across
+ *   browser origins. Hand-edited or foreign refresh values are coerced back
+ *   to a sane cadence so they can never starve or hammer the pollers.
+ *
+ * Dependencies:
+ *   - svelte (>= 5)
+ *
+ * Usage:
+ *   monitorStore in Desktop.svelte (placement/pollers), Settings → Widgets
+ *   (visibility), widgetCatalog (visibility keys).
+ * =============================================================================
+ */
+
 import { writable } from 'svelte/store'
 import { authStore } from './auth'
 import { api } from '$lib/services/api'

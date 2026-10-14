@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : Chat.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 13/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The AI Chat app: conversation view with streamed replies, model
+     selection, and the MCP server management panel.
+
+     Dependencies:
+       - svelte (>= 5), theme + app/ composites, chat/McpPanel,
+         $lib/services/api
+
+     Usage:
+     Opened as a desktop window app.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';

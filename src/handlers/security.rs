@@ -1,4 +1,29 @@
-//! Security API handlers - sessions, login history, access control
+/* =============================================================================
+ * File          : security.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Account-security endpoints: the caller's session list with revocation
+ *   ("logout from other devices" and "logout everywhere except current" —
+ *   the current session is always protected), the global login history
+ *   (admin), per-user login history (admin or the account owner), and the
+ *   system-wide active-sessions count for the admin monitor widget.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/security in src/web/mod.rs; see docs/guides/security.md.
+ * =============================================================================
+ */
+
+//! Security endpoints: own-session list and revocation, login history
+//! (admin or self), and the system-wide active-sessions count (admin).
 
 use crate::handlers::AppState;
 use crate::storage::login_attempt_repo::LoginAttemptRepository;

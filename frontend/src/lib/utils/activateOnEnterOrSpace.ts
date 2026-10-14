@@ -1,3 +1,24 @@
+/* =============================================================================
+ * File          : activateOnEnterOrSpace.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Shared keyboard-activation helper for role="button" containers: a
+ *   non-native button element must activate on BOTH Enter and Space (WAI-ARIA
+ *   button pattern), and Space must not scroll the page. Ignores key repeats.
+ *
+ * Dependencies:
+ *   - none
+ *
+ * Usage:
+ *   `onkeydown={(e) => activateOnEnterOrSpace(e, () => openDetail(id))}` —
+ *   returns true when the event was consumed.
+ * =============================================================================
+ */
+
 /**
  * activateOnEnterOrSpace — one shared keyboard-activation helper for
  * `role="button"` containers (UI audit W8/W18).

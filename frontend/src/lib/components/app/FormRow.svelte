@@ -1,3 +1,22 @@
+<!-- ========================================================================
+     File          : FormRow.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       The one standard label + control pairing for app forms: accessible
+       <label> over the control, optional help line, and an error line that
+       replaces help when present. Every input in an app screen sits in one.
+
+     Dependencies:
+       - svelte (>= 5)
+
+     Usage:
+       `import { FormRow } from '$lib/components/app'` wrapping an
+       Input/Select/Toggle/Checkbox/Radio.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM — FormRow (page composite, `app/` layer)

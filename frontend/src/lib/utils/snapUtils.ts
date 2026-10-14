@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : snapUtils.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Window/widget drag helpers: clamp a dragged rectangle to the true
+ *   viewport edges and snap it when it comes near an edge. The desktop-chrome
+ *   keep-out geometry (menubar, dock) is mirrored here as constants because
+ *   it only matters at initial placement; a lockstep E2E test fails if the
+ *   CSS tokens and this mirror drift apart.
+ *
+ * Dependencies:
+ *   - none
+ *
+ * Usage:
+ *   `applySnap(x, y, w, h)` from the drag handlers in Desktop/WM code.
+ * =============================================================================
+ */
+
 export interface SnapConfig {
   topbarHeight: number
   dockBottom: number

@@ -1,3 +1,22 @@
+/* =============================================================================
+ * File          : lucide-mapping.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   DEPRECATED legacy icon mapping kept only for old call sites; new code
+ *   must use $lib/icons/mapping-unified instead.
+ *
+ * Dependencies:
+ *   - none
+ *
+ * Usage:
+ *   Legacy call sites only — do not extend.
+ * =============================================================================
+ */
+
 /**
  * Legacy Icon Mapping - HomeVault (Deprecated)
  * Maps Material Design icon names to Tabler icon base names

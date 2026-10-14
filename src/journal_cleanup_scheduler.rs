@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : journal_cleanup_scheduler.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Background scheduler for the System Journal auto-cleanup: on its poll
+ *   interval, deletes HomeVault's own rotating log files once the
+ *   configured number of days have elapsed since the last cleanup.
+ *
+ * Dependencies:
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Spawned once at startup in src/web/mod.rs.
+ * =============================================================================
+ */
+
 //! Background scheduler for the System Journal app's auto-cleanup setting.
 //!
 //! Mirrors `cache_scheduler`: polls every `POLL_INTERVAL_SECS` and, if

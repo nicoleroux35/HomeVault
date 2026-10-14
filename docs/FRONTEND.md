@@ -311,7 +311,8 @@ Import pattern: `import { api } from '$lib/services/api';` then
 | `settingsDraft.svelte.ts` | Settings draft state (per-group baseline + dirty tracking + `saveAll()`); also holds the re-hydrated theme/accent |
 | `activityStore.ts` | activity taskbar state |
 | `weatherDisplayPrefs.ts` | weather widget display preferences |
-| `notifications.ts` | notification center |
+| `notifications.ts` | persistent notification center (server-backed rows) |
+| `contract.ts` | client/server contract mismatch flag (426) → desktop reload banner |
 | `windowManager.ts` | open windows, focus/minimize/maximize, sizes |
 | `monitorStore.ts` | desktop monitor-tile catalog (Resource/RAID/Security/VPN/Downloader/Syncthing/Calendar/Docker/Weather/Sessions/Health) + per-tile visibility + `refreshMs`, all persisted to the `/api/monitor-layout` blob |
 | `widgetCatalog.ts` | `WIDGET_DEFS` — the 11 monitors (icon, accent, i18n keys, visibility key + setter), shared by `Widgets.svelte` and Settings > Widgets |
@@ -405,7 +406,9 @@ Dashboard metrics are fetched directly via `api.ts`. There is no
 - `storage/`, `docker/`, `vm/`, `search/` — feature-specific components.
   `search/` (`SearchBar`, `SearchResults`, `SearchItem`) backs the desktop
   command palette and is i18n-driven via the `[search]` locale table.
-- `ErrorBoundary.svelte`, `LazyLoad.svelte`, `NotificationCenter.svelte`.
+- `ErrorBoundary.svelte`, `LazyLoad.svelte`, `NotificationCenter.svelte`
+  (persistent center: severity filters + unread-only + search),
+  `WhatsNewModal.svelte` (post-update release highlights, once per version).
 
 ## Data freshness — no manual "Refresh" buttons (2026-09-08)
 

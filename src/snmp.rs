@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : snmp.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   SNMP queries against monitored network devices (system info,
+ *   interfaces, storage, availability) executed through the snmpget/
+ *   snmpwalk CLI tools and parsed into typed results.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0), thiserror (>= 2), tracing (>= 0.1)
+ *
+ * Usage:
+ *   handlers/snmp.rs and the UPS polling service.
+ * =============================================================================
+ */
+
+//! SNMP queries against network devices via the net-snmp CLI tools.
+
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 use thiserror::Error;

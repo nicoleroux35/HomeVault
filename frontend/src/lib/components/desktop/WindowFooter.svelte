@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : WindowFooter.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Standard window footer with two modes: a full-height action bar
+       (right-aligned buttons for forms/editors) or a thin status strip
+       (counts, live state, sync info).
+
+     Dependencies:
+       - svelte (>= 5)
+
+     Usage:
+       Optional footer slot of PageLayout.
+     ======================================================================== -->
 <script lang="ts">
   import type { Snippet } from 'svelte';
 

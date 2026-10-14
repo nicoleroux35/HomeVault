@@ -1,3 +1,23 @@
+<!-- ========================================================================
+     File          : ConfirmDialog.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       App-layer confirm/alert dialog replacing the native window.confirm /
+       window.alert everywhere: wraps theme/Modal so focus is trapped and
+       restored, Escape closes, and the trigger regains focus (WCAG baseline
+       native dialogs break). Driven by createConfirmState().
+
+     Dependencies:
+       - svelte (>= 5), theme/Modal, utils/confirmDialog.svelte.ts
+
+     Usage:
+       `<ConfirmDialog {dlg} onconfirm oncancel />` with dlg from
+       createConfirmState().
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM — Confirm/Alert dialog (`app/` layer)

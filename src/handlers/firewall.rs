@@ -1,3 +1,29 @@
+/* =============================================================================
+ * File          : firewall.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Firewall (ufw) management endpoints: status and rule listing, rule
+ *   add/delete, and enable/disable. Self-lockout safety is enforced
+ *   server-side: enabling always re-asserts the mandatory SSH/app-port
+ *   rules first and needs an explicit confirmation body, and deleting a
+ *   rule marked mandatory is rejected with 403 before ufw is touched.
+ *   Status is session-auth; every mutation is admin-only.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/firewall in src/web/mod.rs; system changes via
+ *   crate::firewall, persistence via FirewallRepository.
+ * =============================================================================
+ */
+
 //! HTTP handlers for firewall (ufw) management.
 //!
 //! Self-lockout safety is enforced here, not just in the frontend: enabling

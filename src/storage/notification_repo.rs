@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : notification_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Persisted notifications (the source of truth behind the bell
+ *   panel and its 30 s poll) with per-user read state.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
+//! Persisted notifications + per-user read state.
+
 use chrono::Utc;
 use serde::Serialize;
 use sqlx::SqlitePool;

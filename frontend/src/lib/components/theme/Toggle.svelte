@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : Toggle.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Design-system toggle wrapping the vendored bits-ui Switch, kept as a
+       distinct name for the existing bind:checked call sites; identical
+       behaviour to Switch.svelte.
+
+     Dependencies:
+       - svelte (>= 5), components/ui/switch (vendored)
+
+     Usage:
+       `import { Toggle } from '$lib/components/theme'`.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM - Toggle Component

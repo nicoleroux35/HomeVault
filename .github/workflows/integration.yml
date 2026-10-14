@@ -1,13 +1,12 @@
 # Integration tests — app + real services via `services:` containers.
-# GitHub-hosted mirror of .gitea/workflows/integration.yml.
 # HomeVault note: tests/*_integration.rs use in-memory SQLite + Axum
 # Router + tower oneshot, so they do NOT touch Postgres/Redis. The two
 # services below stay as proof that the Docker wiring works and as
 # ready-to-use backends for future DB-backed suites (DATABASE_URL /
 # REDIS_URL are exported for that purpose).
-# GitHub differences vs Gitea: github-hosted jobs run as the non-root
-# `runner` user (passwordless sudo), not as root, so privileged setup
-# steps use sudo and the suite runs via `sudo -u ci` instead of `su ci`.
+# github-hosted jobs run as the non-root `runner` user (passwordless
+# sudo), not as root, so privileged setup steps use sudo and the suite
+# runs via `sudo -u ci`.
 name: integration
 on:
   push:

@@ -1,3 +1,21 @@
+/* =============================================================================
+ * File          : ransomware_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Anti-ransomware storage: singleton settings row, protected paths
+ *   with honeypots, and detected-event records.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
 //! Storage layer for anti-ransomware protection: a singleton settings row,
 //! user-configured protected paths (with an optional honeypot file), and the
 //! history of detected events.

@@ -1,3 +1,22 @@
+/* =============================================================================
+ * File          : recent_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 13/10/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Explorer recent locations, per user, for the quick-access card.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
+//! Explorer recent locations (per user).
+
 use crate::impl_repository;
 use crate::storage::database::DbError;
 use sqlx::SqlitePool;

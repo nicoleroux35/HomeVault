@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : password_recovery_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Numeric recovery codes for the email-free password reset: only the
+ *   Argon2 hash of the code is stored, never the plaintext.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
+//! Hashed numeric recovery codes (password reset).
+
 use chrono::Utc;
 use std::sync::Arc;
 

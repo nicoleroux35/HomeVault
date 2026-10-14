@@ -1,3 +1,21 @@
+/* =============================================================================
+ * File          : firewall_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Firewall storage: singleton enable/settings row and an audit trail
+ *   of changes (live rules always read from ufw, never mirrored).
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
 //! Storage layer for firewall (ufw) management: a singleton settings row and
 //! an audit trail of changes. Rules themselves are never mirrored here —
 //! `ufw status` on the live system is always the source of truth (see

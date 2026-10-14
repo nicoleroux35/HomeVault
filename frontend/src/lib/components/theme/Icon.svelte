@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : Icon.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Unified icon component: resolves a name across the bundled icon
+       libraries (Tabler/Phosphor, auto-detected or forced) and renders the
+       matching SVG with controllable size, stroke and colour.
+
+     Dependencies:
+       - svelte (>= 5), $lib/icons/mapping-unified
+
+     Usage:
+       `<Icon name="tabler-folder" size={20} />`.
+     ======================================================================== -->
 <script lang="ts">
   import { getIcon, hasIcon, iconLibraries, type IconLibrary } from '$lib/icons/mapping-unified';
 

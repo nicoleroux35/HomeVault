@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : atomic.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Atomic file writer: writes to a temporary file in the same directory
+ *   then renames over the target, so a crash can never leave a
+ *   half-written settings file behind.
+ *
+ * Dependencies:
+ *   - thiserror (>= 2)
+ *
+ * Usage:
+ *   Used by the JSON settings persistence layer.
+ * =============================================================================
+ */
+
+//! Atomic file writes (temp file + rename) so crashes never leave
+//! half-written files.
+
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;

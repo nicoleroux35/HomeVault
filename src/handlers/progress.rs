@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : progress.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   SSE endpoints exposing job progress: stream one job's events live,
+ *   list active jobs (the unified activity feed's source), poll a job's
+ *   latest status, and cancel a job. Every endpoint requires a valid
+ *   session; visibility and cancellation follow the job-owner rules
+ *   implemented in crate::sse::progress.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *
+ * Usage:
+ *   Routes /api/progress in src/web/mod.rs; jobs are created and updated
+ *   by handlers through ProgressEmitter.
+ * =============================================================================
+ */
+
 //! SSE Progress Handlers
 //!
 //! Real-time progress for long-running jobs (backup, restore, verify, cache

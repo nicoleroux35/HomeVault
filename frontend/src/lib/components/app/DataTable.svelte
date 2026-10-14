@@ -1,3 +1,22 @@
+<!-- ========================================================================
+     File          : DataTable.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       The one standard data table (previously re-implemented per app by
+       Docker/Users/Groups/Shares/Journal): compact appliance chrome, 44px
+       rows, and built-in a11y behaviours (row keyboard activation, sort
+       announcements) from the W11/W12 audit fixes.
+
+     Dependencies:
+       - svelte (>= 5), theme primitives
+
+     Usage:
+       `import { DataTable } from '$lib/components/app'`.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM — DataTable (page composite, `app/` layer)

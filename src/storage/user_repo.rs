@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : user_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   User account records: credentials (Argon2 hash), role, lock
+ *   state, avatar seed; create/find/update/delete/count.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
+//! User account records (credentials, role, lock, avatar seed).
+
 use crate::impl_repository;
 use crate::storage::database::DbError;
 use crate::storage::models::User;

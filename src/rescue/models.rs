@@ -1,3 +1,24 @@
+/* =============================================================================
+ * File          : models.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Rescue toolkit types: the error enum, per-tool option structs and
+ *   result models shared by the service and the handlers.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0), thiserror (>= 2)
+ *
+ * Usage:
+ *   Imported by rescue/service.rs and handlers/rescue.rs.
+ * =============================================================================
+ */
+
+//! Rescue toolkit types (errors, per-tool options, results).
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

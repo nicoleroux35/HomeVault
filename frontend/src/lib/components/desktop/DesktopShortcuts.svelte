@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : DesktopShortcuts.svelte
+     Author        : Nicolas Le Roux
+     Created       : 13/10/2026
+     Last modified : 13/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Pinned web-shortcut tiles under the app grid. Adding one asks for a
+       URL whose metadata (title/description/favicon) the server fetches
+       SSRF-guarded; the list is stored per-account by shortcutsStore.
+
+     Dependencies:
+       - svelte (>= 5), stores/shortcuts, $lib/services/api
+
+     Usage:
+       Mounted by the desktop shell.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * Pinned web shortcuts on the desktop.

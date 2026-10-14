@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : MemberAccessCard.svelte
+     Author        : Nicolas Le Roux
+     Created       : 13/10/2026
+     Last modified : 13/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Per-member resource-access editor embedded in the Users detail view:
+       the admin grants a member access to specific apps, folders and shares
+       (stored server-side as resource_shares, enforced server-side too).
+
+     Dependencies:
+       - svelte (>= 5), $lib/services/api
+
+     Usage:
+       Embedded in the Users app detail view.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * Per-member resource access editor, embedded in the Users app's detail view.

@@ -1,3 +1,21 @@
+/* =============================================================================
+ * File          : storage_integration.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Storage integration tests: in-memory SQLite + assembled Axum router, exercising the area's endpoints end-to-end via oneshot requests.
+ *
+ * Dependencies:
+ *   - none (test crate: axum router + tower oneshot / Playwright)
+ *
+ * Usage:
+ *   Rust: cargo test  |  E2E: npx playwright test
+ * =============================================================================
+ */
+
 //! Integration tests for the Storage page API — the storage-proper endpoints
 //! in `crate::handlers::{storage, cache, encryption}`:
 //!
@@ -78,8 +96,9 @@ use homevault::handlers::{
     },
     storage::{
         handle_disk_smart_capabilities, handle_disk_smart_test_start,
-        handle_disk_smart_test_status, handle_disks_list, handle_partitions_list,
-        handle_removable_disks_list, handle_virtual_disk_delete, handle_virtual_disk_scrub,
+        handle_disk_smart_test_status, handle_disks_list, handle_import_pool,
+        handle_importable_pools_list, handle_partitions_list, handle_removable_disks_list,
+        handle_virtual_disk_delete, handle_virtual_disk_scrub, handle_virtual_disk_scrub_status,
         handle_virtual_disks_list,
     },
     AppState,
@@ -148,6 +167,15 @@ fn storage_router(state: Arc<AppState>) -> Router {
             "/api/storage/virtual-disks/{name}/scrub",
             post(handle_virtual_disk_scrub),
         )
+        .route(
+            "/api/storage/virtual-disks/{name}/scrub",
+            get(handle_virtual_disk_scrub_status),
+        )
+        .route(
+            "/api/storage/importable-pools",
+            get(handle_importable_pools_list),
+        )
+        .route("/api/storage/import-pool", post(handle_import_pool))
         .route("/api/cache/settings", get(handle_cache_settings_get))
         .route("/api/cache/settings", put(handle_cache_settings_update))
         .route("/api/cache/pools", get(handle_cache_pools_get))
@@ -275,6 +303,7 @@ fn read_endpoints() -> Vec<(Method, &'static str)> {
         (Method::GET, "/api/encryption/volumes"),
         (Method::GET, "/api/encryption/available-devices"),
         (Method::GET, "/api/storage/virtual-disks"),
+        (Method::GET, "/api/storage/importable-pools"),
         (Method::GET, "/api/storage/disks/sda/smart/capabilities"),
         (Method::GET, "/api/storage/disks/sda/smart/test"),
     ]
@@ -324,6 +353,11 @@ fn write_endpoints() -> Vec<(Method, &'static str, Option<Value>)> {
         ),
         (Method::DELETE, "/api/storage/virtual-disks/ghost", None),
         (Method::POST, "/api/storage/virtual-disks/ghost/scrub", None),
+        (
+            Method::POST,
+            "/api/storage/import-pool",
+            Some(json!({"name": "tank", "pool_type": "zfs"})),
+        ),
         (
             Method::POST,
             "/api/storage/disks/sda/smart/test",
@@ -790,6 +824,77 @@ async fn test_virtual_disk_delete_and_scrub_report_an_unknown_name() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(msg(&body).contains("not found"), "got: {:?}", msg(&body));
+}
+
+#[tokio::test]
+async fn test_virtual_disk_scrub_status_reports_an_unknown_name() {
+    let (mut router, token, _tmp, _guard) = admin_router().await;
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/storage/virtual-disks/does-not-exist/scrub",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(msg(&body).contains("not found"), "got: {:?}", msg(&body));
+}
+
+#[tokio::test]
+async fn test_importable_pools_list_returns_an_array() {
+    // Best-effort `zpool import` / `btrfs filesystem show` scans: absent
+    // tools or a password-gated sudo just yield an empty list, never a 500.
+    let (mut router, token, _tmp, _guard) = admin_router().await;
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/storage/importable-pools",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["data"].is_array());
+}
+
+#[tokio::test]
+async fn test_import_pool_rejects_unsupported_type_before_any_command() {
+    let (mut router, token, _tmp, _guard) = admin_router().await;
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/storage/import-pool",
+        Some(&token),
+        Some(json!({"name": "tank", "pool_type": "ext4"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        msg(&body).to_lowercase().contains("unsupported"),
+        "got: {:?}",
+        msg(&body)
+    );
+}
+
+#[tokio::test]
+async fn test_import_pool_rejects_mdadm_before_any_command() {
+    // Storage must never import a RAID array — that's the RAID app's job.
+    let (mut router, token, _tmp, _guard) = admin_router().await;
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/storage/import-pool",
+        Some(&token),
+        Some(json!({"name": "md0", "pool_type": "mdadm"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        msg(&body).to_lowercase().contains("unsupported"),
+        "got: {:?}",
+        msg(&body)
+    );
 }
 
 #[tokio::test]

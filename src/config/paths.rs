@@ -1,3 +1,27 @@
+/* =============================================================================
+ * File          : paths.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 12/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Single source of truth for every filesystem path HomeVault uses: the
+ *   base data directory (DATA_DIRECTORY overridable, /var/lib/homevault by
+ *   default), the SQLite database file, app/compose/rescue/quarantine/log
+ *   directories, mount-point prefixes and the SFTP chroot locations.
+ *   Centralizing them keeps backups, migration and permissions consistent.
+ *
+ * Dependencies:
+ *   - none (standard library only)
+ *
+ * Usage:
+ *   Path helpers are called from handlers and services, e.g.
+ *   `crate::config::paths::database_path()`; the mount-prefix constants are
+ *   also used as defaults in other modules.
+ * =============================================================================
+ */
+
 //! Centralized filesystem paths for HomeVault.
 //!
 //! All persistent data lives under a single base directory

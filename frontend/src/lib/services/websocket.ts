@@ -1,3 +1,27 @@
+/* =============================================================================
+ * File          : websocket.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Live server-push client (SSE) for real-time notifications. Because a
+ *   browser EventSource cannot send the session header, it first exchanges
+ *   the session token for a short-lived, single-use ticket, then opens the
+ *   stream with that ticket — a long-lived token never travels in a URL.
+ *   Reconnects with exponential backoff (2 s to 30 s, 10 attempts) and
+ *   exposes connection state through wsStore plus typed listeners.
+ *
+ * Dependencies:
+ *   - svelte (>= 5)
+ *
+ * Usage:
+ *   `import { websocket, wsStore } from '$lib/services/websocket'`; call
+ *   websocket.connect() once after login, listen with websocket.on(...).
+ * =============================================================================
+ */
+
 import { writable } from 'svelte/store';
 import { notificationsStore, type ServerNotification } from '$lib/stores/notifications';
 import { api } from './api';

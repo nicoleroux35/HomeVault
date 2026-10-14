@@ -85,3 +85,6 @@ ses_*
 
 # Generated type declaration emitted by Vite (build artifact).
 /frontend/vite.config.d.ts
+
+# doc-sources skill: generated coverage index (rebuild with scripts/scan.sh)
+/.agents/skills/doc-sources/INDEX.md

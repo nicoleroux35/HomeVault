@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : encrypted_volume_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   LUKS2 encrypted-volume metadata rows (device, mapper name,
+ *   label, filesystem).
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
+//! LUKS2 encrypted-volume metadata rows.
+
 use chrono::Utc;
 use serde::Serialize;
 use sqlx::SqlitePool;

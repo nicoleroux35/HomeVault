@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : rag.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   RAG knowledge base core: document chunking, embeddings generated via
+ *   the local Ollama service, vector storage in SQLite, and
+ *   cosine-similarity search with context building — grounding the chat
+ *   assistant's answers in indexed project documents.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9), serde (>= 1.0)
+ *
+ * Usage:
+ *   handlers/rag.rs (API), handlers/chat.rs (prompt grounding),
+ *   rag_indexers.rs (document sources); see docs/guides/rag.md.
+ * =============================================================================
+ */
+
 //! RAG (Retrieval-Augmented Generation) knowledge base.
 //!
 //! Provides document chunking, embedding via Ollama, storage in SQLite, and

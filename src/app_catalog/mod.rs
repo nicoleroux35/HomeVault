@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : mod.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Manifest-driven Docker app catalog: apps are packages (manifest +
+ *   compose template) read from the embedded catalog/ directory plus any
+ *   community stores, replacing the old hard-coded catalog array. Merges
+ *   sources, exposes the install-ready app list and icon/gallery assets.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   handlers/docker_catalog.rs (Apps Center); install/uninstall go
+ *   through ComposeManager (see docs/guides/apps-center.md).
+ * =============================================================================
+ */
+
 //! Manifest-driven Docker app catalog. Replaces the hard-coded
 //! `src/docker_catalog.rs::CATALOG` array: apps are now packages (a
 //! `homevault-app.toml` manifest + a `docker-compose.yml` template) read

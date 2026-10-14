@@ -1,3 +1,20 @@
+<!-- ========================================================================
+     File          : Widgets.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The Widgets app: catalog grid of the desktop monitor widgets with
+     per-widget visibility toggles and the shared refresh-cadence choice.
+
+     Dependencies:
+       - svelte (>= 5), stores/widgetCatalog + monitorStore
+
+     Usage:
+     Opened as a desktop window app.
+     ======================================================================== -->
 <script lang="ts">
   import { IconCircleCheck, IconLayoutGrid, IconCirclePlus, IconRefresh } from '@tabler/icons-svelte';
   import { monitorStore } from '$lib/stores/monitorStore';

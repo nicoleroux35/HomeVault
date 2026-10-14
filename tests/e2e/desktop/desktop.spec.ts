@@ -1,3 +1,21 @@
+/* =============================================================================
+ * File          : desktop.spec.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Desktop screen end-to-end tests (Playwright): covers the screen's functionality per TESTING.md.
+ *
+ * Dependencies:
+ *   - none (test crate: axum router + tower oneshot / Playwright)
+ *
+ * Usage:
+ *   Rust: cargo test  |  E2E: npx playwright test
+ * =============================================================================
+ */
+
 /**
  * Desktop shell — End-to-End Test Suite
  *
@@ -2226,5 +2244,91 @@ test.describe('15 — Topbar icon + label chips', () => {
     });
     expect(de.labels, 'de really did apply').toContain('Benachrichtigungen');
     expect(de.left, 'the German pill still starts on-screen @901px').toBeGreaterThanOrEqual(0);
+  });
+});
+
+// ===========================================================================
+// 16. Notification center & What's New
+// ===========================================================================
+
+test.describe('16 — Notification center & What\'s New', () => {
+  test('16.1 — the notification panel exposes the persistent-center filters', async ({ page }) => {
+    await gotoDesktop(page, adminTokens);
+    await page.locator('.hv-notif-btn').click();
+    const panel = page.locator('.hv-topbar-panel');
+    await expect(panel).toBeVisible();
+
+    // Severity chips + search + unread toggle are the "center" affordances
+    // (not just a toast list). They must be real, labelled controls.
+    await expect(panel.locator('.severity-chip')).toHaveCount(4);
+    await expect(panel.locator('.center-search')).toBeVisible();
+    await expect(panel.locator('.unread-toggle input[type="checkbox"]')).toBeVisible();
+
+    // The severity group carries an accessible name.
+    await expect(panel.locator('[role="group"]')).toHaveAttribute('aria-label', /.+/);
+  });
+
+  test('16.2 — severity chips filter and are keyboard-operable', async ({ page }) => {
+    await gotoDesktop(page, adminTokens);
+    await page.locator('.hv-notif-btn').click();
+    const panel = page.locator('.hv-topbar-panel');
+    await expect(panel).toBeVisible();
+
+    const errorChip = panel.locator('.severity-chip').nth(3);
+    await errorChip.focus();
+    await page.keyboard.press('Enter');
+    await expect(errorChip).toHaveAttribute('aria-pressed', 'true');
+
+    // With an empty notification list the filtered view shows the no-match
+    // state OR the plain empty state — never a crash or a stale list.
+    const empty = panel.locator('.empty-state');
+    await expect(empty).toBeVisible();
+  });
+
+  test('16.3 — What\'s New modal state matches the server acknowledgement', async ({
+    page,
+    request,
+  }) => {
+    // Deterministic: read the server's per-user `seen` flag for this version,
+    // then assert the modal is shown exactly when the server says unseen.
+    const meta = await request.get('/api/whats-new', {
+      headers: { 'x-session-token': adminTokens.token },
+    });
+    const body = await meta.json();
+    const seen = body?.data?.seen === true;
+
+    await gotoDesktop(page, adminTokens);
+    const modal = page.locator('[data-testid="whats-new-modal"]');
+    if (seen) {
+      await expect(modal).toHaveCount(0);
+    } else {
+      await expect(modal).toBeVisible();
+      // Dismissing acknowledges it server-side and closes the modal.
+      await page.locator('[data-testid="whats-new-dismiss"]').click();
+      await expect(modal).toHaveCount(0);
+      const after = await request.get('/api/whats-new', {
+        headers: { 'x-session-token': adminTokens.token },
+      });
+      const afterBody = await after.json();
+      expect(afterBody?.data?.seen).toBe(true);
+    }
+  });
+
+  test('16.4 — a stale contract header surfaces the reload banner', async ({ page }) => {
+    // A bogus contract on an API call must make the shell show the reload
+    // banner instead of silently failing. Drive it through the real client.
+    await seedBrowser(page, adminTokens);
+    await page.route('**/api/health/**', async (route) => {
+      const res = await route.fetch();
+      if (res.status() === 426) return route.fulfill({ response: res });
+      return route.fulfill({
+        status: 426,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: false, error: 'contract mismatch' }),
+      });
+    });
+    await page.goto('/desktop', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('.hv-user-pill', { timeout: 20_000 });
+    await expect(page.locator('[data-testid="contract-mismatch-banner"]')).toBeVisible();
   });
 });

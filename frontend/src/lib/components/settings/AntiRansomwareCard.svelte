@@ -1,3 +1,22 @@
+<!-- ========================================================================
+     File          : AntiRansomwareCard.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Settings sub-card for anti-ransomware protection: enable/disable,
+       protected paths with honeypots, and the detected-events list. Binds
+       its fields to the shared settings draft and registers its save with
+       the sidebar's Save All.
+
+     Dependencies:
+       - svelte (>= 5), stores/settingsDraft.svelte, $lib/services/api
+
+     Usage:
+       Embedded in routes/Settings.svelte's security group.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';

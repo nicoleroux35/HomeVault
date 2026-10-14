@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : manifest.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   The homevault-app.toml manifest: the static metadata half of an app
+ *   package (the sibling docker-compose.yml template carries the
+ *   {{DATA_DIR}}/{{PORT}} placeholders). Parsed with the toml crate already
+ *   used for translations — no new dependency.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   app_catalog/mod.rs loads manifests from the embedded catalog and the
+ *   community stores; install validates them.
+ * =============================================================================
+ */
+
 //! The `homevault-app.toml` manifest: the static metadata half of an app
 //! package (the other half is a sibling `docker-compose.yml` template with
 //! `{{DATA_DIR}}` / `{{PORT}}` placeholders). Parsed with the `toml` crate

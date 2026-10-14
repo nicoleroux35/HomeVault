@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : notification_engine.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Background loop turning health-check results and backup job outcomes
+ *   into persisted notifications and, when configured, email/webhook
+ *   alerts. Runs on a fixed interval (the same scheduler-loop shape as the
+ *   other background workers) with per-rule severity thresholds.
+ *
+ * Dependencies:
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Spawned once at startup in src/web/mod.rs; rules configured via the
+ *   notification settings endpoints.
+ * =============================================================================
+ */
+
 //! Background loop that turns existing health checks and backup job results
 //! into persisted notifications (and, optionally, email/webhook alerts).
 //!

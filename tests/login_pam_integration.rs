@@ -1,3 +1,21 @@
+/* =============================================================================
+ * File          : login_pam_integration.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Host (PAM) account login tests: mirrored users rows, admin-group derivation and lockout interplay.
+ *
+ * Dependencies:
+ *   - none (test crate: axum router + tower oneshot / Playwright)
+ *
+ * Usage:
+ *   Rust: cargo test  |  E2E: npx playwright test
+ * =============================================================================
+ */
+
 //! Opt-in, host-mutating integration tests for the parts of the auth stack
 //! that can only be verified against a real Linux system:
 //!

@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : restic_scheduler.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Background scheduler for automated restic backups: polls the schedule
+ *   table, runs due backups via the restic service as tracked jobs, and
+ *   applies the repository's retention policy afterwards.
+ *
+ * Dependencies:
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Spawned once at startup in src/web/mod.rs.
+ * =============================================================================
+ */
+
 //! Background scheduler for automated restic backups.
 //!
 //! Polls the `restic_schedules` table for due, enabled schedules and runs

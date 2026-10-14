@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : user_home_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Home-folder assignments: enabled flag, hosting disk or explicit
+ *   path, and the hard size quota.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
+//! Home-folder assignments (disk/path + hard quota).
+
 use crate::impl_repository;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

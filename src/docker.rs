@@ -1,3 +1,27 @@
+/* =============================================================================
+ * File          : docker.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Docker engine service wrapping the docker CLI: container lifecycle
+ *   (create from typed requests, start/stop/restart/remove, logs), image
+ *   pull/remove, network inspection, port availability checks and daemon
+ *   control.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0), thiserror (>= 2)
+ *
+ * Usage:
+ *   handlers/docker.rs and the app catalog install flow.
+ * =============================================================================
+ */
+
+//! Docker engine service wrapping the docker CLI (containers, images,
+//! networks, daemon control).
+
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 use thiserror::Error;

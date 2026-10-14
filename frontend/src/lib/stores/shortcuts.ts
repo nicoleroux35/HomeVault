@@ -1,3 +1,24 @@
+/* =============================================================================
+ * File          : shortcuts.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 13/10/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Pinned web-shortcut tiles on the desktop: a small per-account,
+ *   namespaced-in-localStorage list capped at 12, carrying the metadata
+ *   fetched once server-side (SSRF-guarded) so tiles render without
+ *   re-fetching. Entries are sanitized on load and deduplicated by URL.
+ *
+ * Dependencies:
+ *   - svelte (>= 5)
+ *
+ * Usage:
+ *   shortcutsStore in DesktopShortcuts.svelte.
+ * =============================================================================
+ */
+
 import { writable, get } from 'svelte/store';
 import { authStore } from './auth';
 

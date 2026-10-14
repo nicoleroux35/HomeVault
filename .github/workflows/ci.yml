@@ -61,8 +61,9 @@ jobs:
         # (`sudo groupadd` succeeds → 200, verified failing on run
         # 36592566909). The full suite runs unprivileged as the dedicated
         # `ci` user in integration.yml on the same push; here `--lib`
-        # mirrors Gitea's unit.yml. Compile coverage for every target
-        # (including all test binaries) stays in the Build step above.
+        # focuses on unit tests to keep this gate fast. Compile coverage for
+        # every target (including all test binaries) stays in the Build step
+        # above.
         run: cargo test --locked --lib
         # The E2E Playwright suites need a live server + host tools
         # (sudo, mdadm, clamav, …) and are run separately, not in CI.

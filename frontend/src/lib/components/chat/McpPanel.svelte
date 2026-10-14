@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : McpPanel.svelte
+     Author        : Nicolas Le Roux
+     Created       : 13/10/2026
+     Last modified : 13/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       In-app management panel for the external AI-agent (MCP) server:
+       enable kill-switch, global permissions, and token mint/revoke with
+       copy-to-clipboard of the one-time plaintext token.
+
+     Dependencies:
+       - svelte (>= 5), theme primitives, stores/i18n, $lib/services/api
+
+     Usage:
+       Embedded in the Chat app's sidebar.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';

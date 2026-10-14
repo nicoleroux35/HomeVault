@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : Checkbox.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Design-system checkbox wrapping the vendored bits-ui checkbox:
+       bindable checked + indeterminate, with the label/description/error
+       layout kept on the hv-checkbox-* classes.
+
+     Dependencies:
+       - svelte (>= 5), components/ui/checkbox (vendored)
+
+     Usage:
+       `import { Checkbox } from '$lib/components/theme'`.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM - Checkbox Component

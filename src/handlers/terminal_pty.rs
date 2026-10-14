@@ -1,3 +1,32 @@
+/* =============================================================================
+ * File          : terminal_pty.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   In-process Web terminal over a native pseudo-terminal: one real login
+ *   shell (spawned via sudo -u <user> -i) per (user, tab), attachable from
+ *   several browser windows through the same opaque tab id, with
+ *   scrollback replay on reattach. Resource abuse is bounded — max 8 tabs
+ *   per user, 15-second single-use connection tickets, 30-minute idle
+ *   reaper — and a slow client only loses frames, never stalls the shell.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - bytes
+ *   - futures-util
+ *   - portable-pty (>= 0.9)
+ *   - serde (>= 1.0)
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Ticket endpoint + WebSocket upgrade route in src/web/mod.rs; consumed
+ *   by the Terminal page (see docs/guides/terminal.md).
+ * =============================================================================
+ */
+
 //! Terminal handler backed by a native pseudo-terminal (PTY).
 //!
 //! Runs entirely in-process: no external binary, no reverse proxy hop. Each

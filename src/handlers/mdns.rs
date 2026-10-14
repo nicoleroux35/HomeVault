@@ -1,3 +1,27 @@
+/* =============================================================================
+ * File          : mdns.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Read-only mDNS status endpoint: the address HomeVault is reachable at
+ *   (homevault.local) and the share protocols currently advertised on the
+ *   LAN. Publishing is automatic (background reconciler in crate::mdns);
+ *   there is nothing to configure. Session-auth rather than admin-only,
+ *   since the same information is already broadcast unauthenticated on the
+ *   local segment.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   GET /api/mdns/status in src/web/mod.rs.
+ * =============================================================================
+ */
+
 //! Read-only mDNS status endpoint — lets any signed-in user see the address
 //! HomeVault is reachable at (`homevault.local`) and which share protocols
 //! are currently advertised on the LAN. Publishing itself is automatic (see

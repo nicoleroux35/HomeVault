@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : mdns.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   mDNS/Zeroconf publishing through Avahi: makes the appliance reachable
+ *   at homevault.local and advertises the web UI plus every share service
+ *   that currently has an enabled share, so they surface in file-manager
+ *   network views. A background reconciler keeps the published set in sync
+ *   with the actual service state — nothing to configure by hand.
+ *
+ * Dependencies:
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Spawned once at startup; handlers/mdns.rs exposes the read-only
+ *   status (see docs/guides/mdns.md).
+ * =============================================================================
+ */
+
 //! mDNS / Zeroconf publishing via **Avahi** — makes HomeVault reachable at
 //! `homevault.local` on the LAN and advertises the web UI plus whichever
 //! share services (SMB / NFS / FTP / SFTP / WebDAV) currently have at least
@@ -31,9 +54,29 @@ use serde::Serialize;
 
 use crate::shares::{ShareType, SharesService};
 
-/// The name HomeVault publishes itself as — the `.local` address is always
-/// `<MDNS_HOSTNAME>.local`, independent of the OS hostname.
+/// The default name HomeVault publishes itself as — the `.local` address is
+/// `<hostname>.local`, independent of the OS hostname.
 pub const MDNS_HOSTNAME: &str = "homevault";
+
+/// The effective mDNS hostname for this instance.
+///
+/// `HV_MDNS_HOSTNAME` overrides the default so several HomeVault instances can
+/// coexist on one LAN during development (`hv-dev-1.local`, `hv-dev-2.local`,
+/// …) — see `scripts/dev-instance.sh`. Production leaves it unset and gets
+/// `homevault.local`. An override with characters Avahi would reject is
+/// ignored rather than written into the config.
+pub fn mdns_hostname() -> String {
+    std::env::var("HV_MDNS_HOSTNAME")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| {
+            !s.is_empty()
+                && s.len() <= 63
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        })
+        .unwrap_or_else(|| MDNS_HOSTNAME.to_string())
+}
 /// Avahi's main config file — we only ever touch its `host-name=` key.
 pub const AVAHI_CONF: &str = "/etc/avahi/avahi-daemon.conf";
 /// The DNS-SD service definition HomeVault owns. Avahi loads every
@@ -352,7 +395,7 @@ pub fn publish(web_port: u16) -> Result<(), String> {
 
     // 1. Pin the published name.
     let conf = std::fs::read_to_string(AVAHI_CONF).unwrap_or_default();
-    if let Some(new_conf) = ensure_host_name(&conf, MDNS_HOSTNAME) {
+    if let Some(new_conf) = ensure_host_name(&conf, &mdns_hostname()) {
         sudo_tee(AVAHI_CONF, &new_conf)?;
         needs_restart = true;
     }
@@ -438,13 +481,13 @@ pub struct MdnsStatus {
 pub fn status(web_port: u16) -> MdnsStatus {
     let available = avahi_available();
     let running = available && unit_active("avahi-daemon");
-    let fqdn = format!("{MDNS_HOSTNAME}.local");
+    let fqdn = format!("{}.local", mdns_hostname());
     let mut services = vec!["_http._tcp".to_string()];
     services.extend(detect_services().iter().map(|s| s.svc_type.to_string()));
     MdnsStatus {
         available,
         running,
-        host_name: MDNS_HOSTNAME.to_string(),
+        host_name: mdns_hostname(),
         fqdn: fqdn.clone(),
         http_url: format!("http://{fqdn}:{web_port}"),
         services,
@@ -497,8 +540,7 @@ mod tests {
     #[test]
     fn test_ensure_host_name_handles_empty_file() {
         let out = ensure_host_name("", "homevault").expect("should change");
-        assert!(out.contains("[server]"));
-        assert!(out.contains("host-name=homevault"));
+        assert!(out.contains("[server]"));        assert!(out.contains("host-name=homevault"));
     }
 
     #[test]
@@ -551,12 +593,19 @@ mod tests {
     }
 
     #[test]
+    fn test_mdns_hostname_defaults_without_override() {
+        // No `HV_MDNS_HOSTNAME` in the test process → the canonical name.
+        assert_eq!(mdns_hostname(), MDNS_HOSTNAME);
+    }
+
+    #[test]
     fn test_status_shape_without_avahi() {
         // On a box with no avahi-daemon the status is still well-formed and
         // reports the canonical address (so the UI can show it regardless).
         let s = status(8080);
-        assert_eq!(s.fqdn, "homevault.local");
-        assert_eq!(s.http_url, "http://homevault.local:8080");
+        let host = mdns_hostname();
+        assert_eq!(s.fqdn, format!("{host}.local"));
+        assert_eq!(s.http_url, format!("http://{host}.local:8080"));
         assert!(s.services.contains(&"_http._tcp".to_string()));
         if !s.available {
             assert!(!s.running);

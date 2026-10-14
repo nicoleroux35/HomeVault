@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : weatherDisplayPrefs.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Optional fields the user can toggle on the Weather widget (feels-like,
+ *   wind gusts, precipitation, cloud cover, pressure), on top of the two
+ *   always-shown ones. A pure display preference persisted in localStorage
+ *   only — unlike the chosen city, it is not synced server-side. Defaults
+ *   match the widget's original display so existing users see no change.
+ *
+ * Dependencies:
+ *   - svelte (>= 5)
+ *
+ * Usage:
+ *   weatherDisplayPrefsStore in WeatherWidget / Settings → Appearance.
+ * =============================================================================
+ */
+
 import { writable } from 'svelte/store';
 
 /**

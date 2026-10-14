@@ -1,4 +1,30 @@
+/* =============================================================================
+ * File          : api.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   The central API client for the HomeVault backend: one class through
+ *   which every screen talks to the server. It injects the session and CSRF
+ *   tokens (hydrated from localStorage so a reload keeps the session), sends
+ *   the X-HomeVault-Contract header and surfaces a contract-mismatch reload
+ *   prompt, and caches GET responses for 5 s so rapid re-renders cost
+ *   nothing. Also hosts the shared client-side types for the activity feed
+ *   and progress events.
+ *
+ * Dependencies:
+ *   - none (browser fetch + internal $lib modules)
+ *
+ * Usage:
+ *   `import { api } from '$lib/services/api'` — used by every service call
+ *   site; tokens are set once after login via api.setTokens(...).
+ * =============================================================================
+ */
+
 import type { ApiResponse, LoginRequest, LoginResponse, SetupAdminRequest, SetupStatus } from '$lib/types/api';
+import { notifyContractMismatch } from '$lib/stores/contract';
 
 /** One row of the desktop background-activity taskbar (`GET /api/activity`). */
 export interface ActivityTask {
@@ -35,6 +61,17 @@ interface CacheEntry {
   data: any;
   timestamp: number;
 }
+
+/**
+ * The client half of the versioned client/server contract.
+ *
+ * Must match `CONTRACT_VERSION` in `src/api_contract.rs`. Bump **both** only on
+ * a breaking API change (renamed field, removed endpoint, changed shape). The
+ * client sends it as `X-HomeVault-Contract` on every request, and `GET /api/meta`
+ * is compared against it so a stale cached bundle can surface a reload prompt
+ * instead of failing silently.
+ */
+export const CONTRACT_VERSION = 1;
 
 /**
  * API client for the HomeVault backend.
@@ -160,6 +197,7 @@ class ApiClient {
   private getHeaders(includeAuth = true): HeadersInit {
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
+      'X-HomeVault-Contract': String(CONTRACT_VERSION),
     };
 
     // Always re-read tokens from localStorage so requests made before
@@ -178,6 +216,18 @@ class ApiClient {
     }
 
     return headers;
+  }
+
+  /**
+   * Parse a JSON response, flagging a client/server contract mismatch
+   * (HTTP 426, see `src/middleware/contract.rs`) so the shell can prompt a
+   * reload instead of the request silently failing.
+   */
+  private async parseResponse<T>(response: Response): Promise<ApiResponse<T>> {
+    if (response.status === 426) {
+      notifyContractMismatch();
+    }
+    return await response.json();
   }
 
   /**
@@ -202,7 +252,7 @@ class ApiClient {
         headers: this.getHeaders(),
       });
 
-      const data = await response.json();
+      const data = await this.parseResponse<T>(response);
 
       // Only cache responses that indicate success
       if (useCache && data.success) {
@@ -232,7 +282,7 @@ class ApiClient {
         body: JSON.stringify(data),
       });
 
-      return await response.json();
+      return await this.parseResponse<T>(response);
     } catch (error) {
       return {
         success: false,
@@ -255,7 +305,7 @@ class ApiClient {
         body: JSON.stringify(data),
       });
 
-      return await response.json();
+      return await this.parseResponse<T>(response);
     } catch (error) {
       return {
         success: false,
@@ -280,7 +330,7 @@ class ApiClient {
         body: data !== undefined ? JSON.stringify(data) : undefined,
       });
 
-      return await response.json();
+      return await this.parseResponse<T>(response);
     } catch (error) {
       return {
         success: false,
@@ -1029,6 +1079,36 @@ class ApiClient {
   }
 
   // ==============================================
+  // What's New (release highlights)
+  // ==============================================
+
+  /** Running version's release highlights + whether this user has seen them. */
+  async getWhatsNew() {
+    return this.get('/whats-new', { ttl: 0 });
+  }
+
+  /** Acknowledge the current release so the modal stops showing. */
+  async markWhatsNewSeen() {
+    return this.post('/whats-new/seen', {});
+  }
+
+  // ==============================================
+  // Client/server contract
+  // ==============================================
+
+  /**
+   * Fetch the server's contract + build versions. Unauthenticated.
+   * Returns `null` on a network error so callers can stay silent.
+   */
+  async getMeta(): Promise<{ contract_version: number; server_version: string } | null> {
+    const res = await this.get<{ contract_version: number; server_version: string }>(
+      '/meta',
+      { ttl: 0 },
+    );
+    return res.success && res.data ? res.data : null;
+  }
+
+  // ==============================================
   // VPN
   // ==============================================
 
@@ -1772,6 +1852,28 @@ class ApiClient {
 
   async scrubVirtualDisk(name: string) {
     return this.post(`/storage/virtual-disks/${encodeURIComponent(name)}/scrub`, {});
+  }
+
+  /** Current scrub / consistency-check status of a virtual disk. */
+  async getVirtualDiskScrubStatus(name: string) {
+    return this.get(`/storage/virtual-disks/${encodeURIComponent(name)}/scrub`, { ttl: 0 });
+  }
+
+  /** Pools present on attached disks but not yet imported ("foreign" pools). */
+  async getImportablePools() {
+    return this.get('/storage/importable-pools', { ttl: 0 });
+  }
+
+  /** Import a foreign ZFS/Btrfs pool (admin). `new_name` renames on import (ZFS). */
+  async importPool(name: string, poolType: string, newName?: string) {
+    const res = await this.post('/storage/import-pool', {
+      name,
+      pool_type: poolType,
+      new_name: newName ?? null,
+    });
+    this.invalidateCache('/storage/virtual-disks');
+    this.invalidateCache('/storage/importable-pools');
+    return res;
   }
 
   // ==============================================

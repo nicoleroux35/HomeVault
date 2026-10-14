@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : SectionCard.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       The one standard titled card section: optional header (title,
+       description, right-aligned actions) over a body, reading the appliance
+       tokens directly so every section in every app is identical.
+
+     Dependencies:
+       - svelte (>= 5)
+
+     Usage:
+       `import { SectionCard } from '$lib/components/app'`.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM — SectionCard (page composite, `app/` layer)

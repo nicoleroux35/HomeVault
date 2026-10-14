@@ -1,3 +1,21 @@
+/* =============================================================================
+ * File          : setup_progress_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 13/10/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Durable first-run wizard progress (reboot-safe onboarding): the
+ *   current step and completed flags.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
 //! Durable first-run wizard progress (reboot-safe onboarding).
 //!
 //! The Setup Wizard persists its current step plus the operator's

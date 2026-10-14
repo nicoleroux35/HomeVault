@@ -1,3 +1,20 @@
+<!-- ========================================================================
+     File          : Downloader.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The Downloader app: aria2-backed download queue — add URLs/torrents,
+     pause/resume/remove, per-task and global statistics, service control.
+
+     Dependencies:
+       - svelte (>= 5), theme + app/ composites, $lib/services/api
+
+     Usage:
+     Opened as a desktop window app (admin only).
+     ======================================================================== -->
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { api } from '$lib/services/api';

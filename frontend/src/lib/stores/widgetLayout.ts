@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : widgetLayout.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 13/10/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Per-account widget layout for the /edit-widgets page: which (up to 3)
+ *   widgets are featured and the editor display order, namespaced per user
+ *   in localStorage. Visibility itself stays owned by monitorStore. Stored
+ *   orders are sanitized against the catalog, and widgets added in later
+ *   releases are appended so they always show up.
+ *
+ * Dependencies:
+ *   - svelte (>= 5), stores/widgetCatalog, stores/auth
+ *
+ * Usage:
+ *   widgetLayoutStore in EditWidgets.svelte and the desktop widget column.
+ * =============================================================================
+ */
+
 import { writable, get } from 'svelte/store';
 import { authStore } from './auth';
 import { WIDGET_DEFS } from './widgetCatalog';

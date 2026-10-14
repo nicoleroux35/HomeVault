@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : session_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Session rows backing authentication: token, CSRF token, IP,
+ *   expiry, admin flag; create/find/delete/expiry-cleanup.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
+//! Session rows (token + CSRF + expiry) backing authentication.
+
 use crate::impl_repository;
 use crate::storage::database::DbError;
 use crate::storage::models::{Session, SessionRow};

@@ -1,3 +1,22 @@
+<!-- ========================================================================
+     File          : SnmpCard.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Settings sub-card for SNMP monitoring: settings form bound to the
+       shared draft with its own save registration, availability probe and
+       live stats preview.
+
+     Dependencies:
+       - svelte (>= 5), stores/settingsDraft.svelte, $lib/services/api,
+         ./SettingsCard
+
+     Usage:
+       Embedded in routes/Settings.svelte's monitoring group.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';

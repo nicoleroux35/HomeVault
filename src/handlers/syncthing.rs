@@ -1,3 +1,30 @@
+/* =============================================================================
+ * File          : syncthing.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Syncthing integration endpoints: service status, configuration read and
+ *   update, device and folder management, connection state, rescan,
+ *   pause/resume per device, restart, and error listing. Every endpoint is
+ *   admin-only; calls are proxied to the local Syncthing REST API.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - reqwest
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/syncthing in src/web/mod.rs; the Cloud Sync desktop app
+ *   consumes them.
+ * =============================================================================
+ */
+
+//! Syncthing integration endpoints (proxying the local REST API) — admin-only.
+
 use axum::{extract::State, http::HeaderMap, Json};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};

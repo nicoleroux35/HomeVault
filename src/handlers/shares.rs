@@ -1,3 +1,31 @@
+/* =============================================================================
+ * File          : shares.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Network shares across all supported protocols (SMB, NFS, FTP, SFTP,
+ *   WebDAV): create, update, enable/disable and delete shares, per-protocol
+ *   configuration get/update, and share-service start/stop/restart. After
+ *   any SFTP-affecting change the SFTP chroot jails are rebuilt best-effort
+ *   so a stale jail never blocks the write that already succeeded.
+ *   Mutations are admin-only.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *
+ * Usage:
+ *   Routed in src/web/mod.rs (see docs/API.md, Shares section); protocol
+ *   work delegated to SharesService and SftpJailService.
+ * =============================================================================
+ */
+
+//! Network share endpoints across all supported protocols (SMB, NFS, FTP,
+//! SFTP with chroot jails, WebDAV): CRUD, per-protocol configuration and
+//! service control.
+
 use crate::handlers::AppState;
 use crate::sftp::SftpJailService;
 use crate::shares::{

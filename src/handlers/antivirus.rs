@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : antivirus.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Antivirus (ClamAV) endpoints: service status and settings, manual scan
+ *   start (runs in the background, live progress over SSE) and cancel,
+ *   scan history, quarantined threats and their resolution. Reads are
+ *   session-auth; settings updates, scan triggering/cancelling and threat
+ *   resolution are admin-only.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/antivirus in src/web/mod.rs; scans execute via
+ *   crate::antivirus, results persist in the scan/threat repositories.
+ * =============================================================================
+ */
+
 //! HTTP handlers for antivirus (ClamAV) scanning: status, settings, manual
 //! scans with live SSE progress, scan history, and quarantined threats.
 

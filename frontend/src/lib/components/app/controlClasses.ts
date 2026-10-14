@@ -1,3 +1,24 @@
+/* =============================================================================
+ * File          : controlClasses.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Shared control class constants: the recurring hand-rolled button/input
+ *   shapes defined once instead of per-route copies that had drifted.
+ *   theme/Button stays the standard for text actions; these classes cover
+ *   icon/chip controls that don't fit it.
+ *
+ * Dependencies:
+ *   - none (Tailwind class strings)
+ *
+ * Usage:
+ *   Imported by app screens rendering icon controls or chips.
+ * =============================================================================
+ */
+
 /**
  * HOMEVAULT DESIGN SYSTEM — shared control class constants (audit W5).
  *

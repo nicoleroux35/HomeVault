@@ -1,3 +1,32 @@
+/* =============================================================================
+ * File          : progress.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 12/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Real-time progress tracking for long-running operations (backups, file
+ *   copies, docker installs, antivirus scans, ...). A global ProgressManager
+ *   registry keeps one broadcast channel per job; handlers report updates
+ *   through the ProgressEmitter helper and browsers follow along on the SSE
+ *   endpoints. Jobs carry an optional owner so the unified activity feed
+ *   can scope visibility (a user's jobs stay hidden from other users).
+ *
+ * Dependencies:
+ *   - chrono (>= 0.4)
+ *   - parking_lot (>= 0.12)
+ *   - serde (>= 1.0)
+ *   - tokio (>= 1.52)
+ *   - uuid (>= 1.0)
+ *
+ * Usage:
+ *   From a handler: `ProgressEmitter::backup(...)`-style helpers (or
+ *   PROGRESS_MANAGER directly) to create/advance/close a job; clients read
+ *   the /api/progress endpoints.
+ * =============================================================================
+ */
+
 //! Server-Sent Events (SSE) progress system for long-running operations.
 //!
 //! Clients connect to an SSE endpoint and receive real-time [`ProgressEvent`]

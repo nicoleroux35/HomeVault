@@ -1,3 +1,27 @@
+/* =============================================================================
+ * File          : middleware.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Auth middleware: every request passing through it must carry a valid
+ *   X-Session-Token header; anything missing or expired is rejected with
+ *   401 before reaching the handler.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *
+ * Usage:
+ *   Re-exported by auth/mod.rs but not currently registered on any router —
+ *   handlers authenticate individually through require_auth / require_admin
+ *   (src/handlers/admin_guard.rs).
+ * =============================================================================
+ */
+
+//! Session-token validation middleware (not currently wired — see Usage).
+
 use super::service::AuthService;
 use axum::{
     extract::{Request, State},

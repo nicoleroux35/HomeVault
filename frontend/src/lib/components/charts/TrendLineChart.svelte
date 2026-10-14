@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : TrendLineChart.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Time-series line chart on LayerChart (Svelte 5 / d3), compact by
+       default for sparkline usage; supports multiple series, each falling
+       back to the --hv-* token palette.
+
+     Dependencies:
+       - svelte (>= 5), layerchart
+
+     Usage:
+       `import { TrendLineChart } from '$lib/components/charts'`.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM - TrendLineChart

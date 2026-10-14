@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : BackupProgressIsland.svelte
+     Author        : Nicolas Le Roux
+     Created       : 13/10/2026
+     Last modified : 13/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Floating persistent island for backup/restore progress: lives outside
+       the Backup window so a long run stays visible while the operator
+       works elsewhere; driven by the module-level backupJobs store.
+
+     Dependencies:
+       - svelte (>= 5), stores/backupJobs.svelte, stores/i18n
+
+     Usage:
+       Mounted by the desktop shell.
+     ======================================================================== -->
 <script lang="ts">
   import { trackedJobs, dismissJob } from '$lib/stores/backupJobs.svelte';
   import { t } from '$lib/stores/i18n';

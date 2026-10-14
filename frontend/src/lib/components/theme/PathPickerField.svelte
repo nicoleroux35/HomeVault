@@ -1,3 +1,22 @@
+<!-- ========================================================================
+     File          : PathPickerField.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Standard "pick a path" field: a read-only display of the chosen path
+       plus a Browse button opening the non-modal FloatingPathPicker — no
+       manual typing, so the user never needs to know the filesystem layout.
+       Shape-compatible with the frozen PathField.
+
+     Dependencies:
+       - svelte (>= 5)
+
+     Usage:
+       Wherever a path must be chosen (users/shares/storage forms).
+     ======================================================================== -->
 <script lang="ts">
   import { t } from '$lib/stores/i18n';
   import { IconFolderOpen, IconFile as FileIcon } from '@tabler/icons-svelte';

@@ -1,3 +1,29 @@
+/* =============================================================================
+ * File          : widgets.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Data feed for the desktop widgets: live CPU and RAM usage, network
+ *   traffic (computed from deltas between samples kept in memory), CPU
+ *   temperature and available-update info. Aggregated per request from
+ *   /proc and /sys via ProcParser; session-auth reads.
+ *
+ * Dependencies:
+ *   - parking_lot (>= 0.12)
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/widgets in src/web/mod.rs; the desktop widget cards poll
+ *   these endpoints.
+ * =============================================================================
+ */
+
+//! Dashboard widget data endpoints (CPU/RAM/traffic/temperature/updates),
+//! session-auth reads aggregated from /proc and /sys.
+
 use crate::handlers::admin_guard::require_auth;
 use crate::handlers::AppState;
 use crate::utils::{ProcParser, ResponseHelper};

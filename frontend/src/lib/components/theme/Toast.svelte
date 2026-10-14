@@ -1,3 +1,22 @@
+<!-- ========================================================================
+     File          : Toast.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       App-root toaster wrapping the vendored svelte-sonner Toaster, pinned
+       to the light theme (the appliance is light-only, so it must not follow
+       the OS preference). Ephemeral action feedback only — the
+       NotificationCenter stays the canonical surface for system events.
+
+     Dependencies:
+       - svelte (>= 5), svelte-sonner (via components/ui/sonner)
+
+     Usage:
+       Mounted once in App.svelte; trigger with toast() from svelte-sonner.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM - Toast Component

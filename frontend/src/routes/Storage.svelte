@@ -1,3 +1,23 @@
+<!-- ========================================================================
+     File          : Storage.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 10/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The Storage app: physical disks, partitions and SMART state, virtual
+     disks (mdadm/ZFS/Btrfs) with lifecycle actions, scrub start/status,
+     encrypted volumes, snapshots and importable foreign pools. Admin
+     mutations; live refresh on visibility.
+
+     Dependencies:
+       - svelte (>= 5), theme primitives, app/ composites, utils
+         (autoRevalidate), $lib/services/api
+
+     Usage:
+     Opened as a desktop window app.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { api } from '$lib/services/api';
@@ -196,6 +216,7 @@
       loadRemovable(),
       loadEncryptedVolumes(),
       loadCache(),
+      loadImportablePools(),
     ]);
     loading = false;
     setTimeout(() => heroVisible = true, 100);
@@ -235,6 +256,66 @@
   async function loadVirtualDisks() {
     const resp = await api.listVirtualDisks();
     if (resp.success && Array.isArray(resp.data)) virtualDisks = resp.data;
+  }
+
+  // Live scrub / consistency-check status, keyed by disk name. Populated on
+  // demand ("Check status") and shown inline on each card so the user can see
+  // whether a scrub is running without leaving the page.
+  interface ScrubStatus { status: string; in_progress: boolean; }
+  let scrubStatus: Record<string, ScrubStatus> = {};
+  let scrubStatusBusy = '';
+
+  async function refreshScrubStatus(v: VirtualDisk) {
+    scrubStatusBusy = v.name;
+    const r = await api.getVirtualDiskScrubStatus(v.name);
+    scrubStatusBusy = '';
+    if (r.success && r.data) {
+      scrubStatus = { ...scrubStatus, [v.name]: { status: r.data.status, in_progress: !!r.data.in_progress } };
+    } else {
+      dlg.notify(r.message || r.error || $t('storage.vd_scrub_status_failed'));
+    }
+  }
+
+  // ── Foreign (importable) pools ──
+  interface ImportablePool {
+    name: string;
+    pool_type: 'Zfs' | 'Btrfs' | 'Mdadm' | 'Unknown';
+    id: string | null;
+    devices: string[];
+    state: string;
+    status: string | null;
+  }
+  let importablePools: ImportablePool[] = [];
+  let importableLoading = false;
+  let importBusy = '';
+  let showImportModal = false;
+  let importTarget: ImportablePool | null = null;
+  let importNewName = '';
+
+  async function loadImportablePools() {
+    importableLoading = true;
+    const r = await api.getImportablePools();
+    importableLoading = false;
+    if (r.success && Array.isArray(r.data)) importablePools = r.data;
+  }
+
+  function openImportModal(pool: ImportablePool) {
+    importTarget = pool;
+    importNewName = '';
+    showImportModal = true;
+  }
+
+  async function confirmImport() {
+    if (!importTarget) return;
+    importBusy = importTarget.name;
+    const r = await api.importPool(importTarget.name, importTarget.pool_type.toLowerCase(), importNewName.trim() || undefined);
+    importBusy = '';
+    showImportModal = false;
+    if (r.success) {
+      await Promise.all([loadImportablePools(), loadVirtualDisks(), loadDisks()]);
+    } else {
+      dlg.notify(r.message || r.error || $t('storage.import_failed'));
+    }
   }
 
   function vdKindLabel(k: string): string {
@@ -441,7 +522,7 @@
 
   async function refreshAll() {
     loading = true;
-    await Promise.all([loadDisks(), loadVirtualDisks(), loadPartitions(), loadRemovable(), loadEncryptedVolumes(), loadCache()]);
+    await Promise.all([loadDisks(), loadVirtualDisks(), loadPartitions(), loadRemovable(), loadEncryptedVolumes(), loadCache(), loadImportablePools()]);
     loading = false;
   }
 
@@ -793,6 +874,29 @@
         {/if}
 
       {:else if activeTab === 'virtual'}
+        {#if importablePools.length > 0}
+          <div class="mb-4 px-5 py-4 rounded-2xl bg-[var(--hv-warning-bg)] border border-[var(--hv-warning)]" data-testid="storage-importable-pools">
+            <div class="flex items-center gap-2 mb-2">
+              <IconAlertTriangle size={18} />
+              <h3 class="text-c-card-title font-bold text-[var(--hv-shell-text-strong)]">{$t('storage.import_pools_title')}</h3>
+            </div>
+            <p class="text-xs text-[var(--hv-shell-text-2)] mb-3">{$t('storage.import_pools_hint')}</p>
+            <div class="flex flex-col gap-2">
+              {#each importablePools as p (p.pool_type + ':' + p.name)}
+                <div class="flex items-center gap-3 flex-wrap" data-testid="storage-importable-pool">
+                  <span class="text-c-base font-bold font-[family-name:var(--hv-font-mono)] text-[var(--hv-shell-text-strong)]">{p.name}</span>
+                  <span class="text-micro font-bold uppercase px-2 py-0.5 rounded-full bg-[var(--hv-shell-fill)] text-[var(--hv-shell-text-2)]">{vdKindLabel(p.pool_type)}</span>
+                  <span class="text-xs text-[var(--hv-shell-text-2)]">{p.devices.length} {$t('storage.unit_disks')}{#if p.state && p.state !== 'unknown'} · {p.state}{/if}</span>
+                  <span class="flex-1"></span>
+                  {#if isAdmin}
+                    <Button variant="primary" disabled={importBusy === p.name} onclick={() => openImportModal(p)}><IconPlus size={16} /> {$t('storage.import_pool')}</Button>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
         {#if virtualDisks.length === 0}
           <EmptyState data-testid="storage-empty" title={$t('storage.no_virtual_disks')} description={$t('storage.no_virtual_disks_hint')}>
             {#snippet iconSnippet()}<IconStack size={32} stroke={1.8} />{/snippet}
@@ -831,8 +935,15 @@
                   {:else}
                     <Button variant="ghost" disabled={virtualBusy === v.name} onclick={() => scrubVirtualDisk(v)}><IconShieldCheckered size={16} /> {$t('storage.vd_scrub')}</Button>
                   {/if}
+                  <Button variant="ghost" disabled={scrubStatusBusy === v.name} onclick={() => refreshScrubStatus(v)}><IconActivity size={16} /> {$t('storage.vd_scrub_status')}</Button>
                   <Button variant="danger" disabled={virtualBusy === v.name} onclick={() => destroyVirtualDisk(v)}><IconTrash size={16} /> {$t('storage.vd_destroy')}</Button>
                 </div>
+                {#if scrubStatus[v.name]}
+                  <div class="mt-2 flex items-center gap-2 text-xs" data-testid="storage-vd-scrub-status">
+                    {#if scrubStatus[v.name].in_progress}<IconActivity size={13} class="text-[var(--hv-primary)]" />{:else}<IconShieldCheckered size={13} class="text-[var(--hv-success)]" />{/if}
+                    <span class="text-[var(--hv-shell-text-2)]">{scrubStatus[v.name].status}</span>
+                  </div>
+                {/if}
               </div>
             {/each}
           </div>
@@ -1171,6 +1282,28 @@
     <div class="flex gap-2.5 justify-end">
       <Button variant="ghost" onclick={() => showEncryptModal = false}>{$t('common.cancel')}</Button>
       <Button variant="primary" onclick={confirmEncryptVolume} disabled={encryptionBusy}>{$t('encryption.encrypt_device')}</Button>
+    </div>
+  {/snippet}
+</Modal>
+
+<Modal open={showImportModal && !!importTarget} title={$t('storage.import_pool')} size="md" onclose={() => showImportModal = false}>
+  {#if importTarget}
+    <div data-testid="storage-import-modal">
+      <p class="m-0 mb-3 text-sm text-[var(--hv-shell-text-2)]">{$t('storage.import_pool_hint', { name: importTarget.name })}</p>
+      <p class="m-0 mb-3 flex items-center gap-2 text-c-label font-semibold text-[var(--hv-shell-text-strong)]">
+        <span>{importTarget.name}</span>
+        <span class="text-micro font-bold uppercase px-2 py-0.5 rounded-full bg-[var(--hv-shell-fill)] text-[var(--hv-shell-text-2)]">{vdKindLabel(importTarget.pool_type)}</span>
+      </p>
+      {#if importTarget.pool_type === 'Zfs'}
+        <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="importNewName">{$t('storage.import_pool_new_name')}</label>
+        <input id="importNewName" class={encInput} type="text" bind:value={importNewName} placeholder={importTarget.name} />
+      {/if}
+    </div>
+  {/if}
+  {#snippet footer()}
+    <div class="flex gap-2.5 justify-end">
+      <Button variant="ghost" onclick={() => showImportModal = false}>{$t('common.cancel')}</Button>
+      <Button variant="primary" onclick={confirmImport} disabled={!!importBusy}>{$t('storage.import_pool')}</Button>
     </div>
   {/snippet}
 </Modal>

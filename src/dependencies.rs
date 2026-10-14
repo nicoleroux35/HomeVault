@@ -1,3 +1,24 @@
+/* =============================================================================
+ * File          : dependencies.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 12/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Centralized inventory of the external system packages/binaries
+ *   HomeVault shells out to (smartctl, ufw, restic, zfs, ...), with a
+ *   presence check per entry so the startup output shows an admin at a
+ *   glance what is missing instead of a failure on the specific page.
+ *
+ * Dependencies:
+ *   - internal catalog of expected binaries
+ *
+ * Usage:
+ *   Startup banner in src/web/mod.rs; availability endpoints.
+ * =============================================================================
+ */
+
 //! Centralized inventory of external system packages/binaries HomeVault
 //! shells out to at runtime, and whether each is actually present on this
 //! host — surfaced in the startup terminal so an admin can see at a glance

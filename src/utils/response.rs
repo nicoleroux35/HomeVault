@@ -1,3 +1,33 @@
+/* =============================================================================
+ * File          : response.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Builds the uniform JSON answer shape used by every API endpoint:
+ *   a success flag, an optional data payload and an optional message.
+ *   ResponseHelper offers one constructor per common HTTP status so all
+ *   handlers stay consistent, and JsonResponse converts itself into an
+ *   axum response (error answers default to 400 Bad Request).
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *
+ * Usage:
+ *   Inside a handler: `ResponseHelper::json_success(data)` (or the status
+ *   / error variants); `JsonResponse` implements `IntoResponse`.
+ * =============================================================================
+ */
+
+//! The uniform JSON envelope every API endpoint answers with:
+//! `{ "success": bool, "data"?: …, "message"?: String }` plus ready-made
+//! constructors for the common status codes (200/400/401/403/500 and the
+//! 2FA-required shape), so handlers never hand-roll response JSON.
+
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},

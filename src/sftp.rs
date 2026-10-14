@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : sftp.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Real SFTP support for the Shares app: because SFTP is an SSH subsystem
+ *   rather than a standalone daemon, this runs a second dedicated sshd on
+ *   its own port, with per-user chroot jails (bind mounts of the granted
+ *   shares) and authorized-keys management — rebuilt whenever share or key
+ *   state changes.
+ *
+ * Dependencies:
+ *   - internal storage layer (share/key repositories)
+ *
+ * Usage:
+ *   handlers/shares.rs rebuilds jails best-effort after SFTP-affecting
+ *   changes (see docs/guides/shares.md).
+ * =============================================================================
+ */
+
 //! Real SFTP (SSH File Transfer Protocol) support for the Shares app.
 //!
 //! Unlike SMB/NFS/FTP/WebDAV, SFTP is not a standalone protocol daemon —

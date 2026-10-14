@@ -1,3 +1,28 @@
+/* =============================================================================
+ * File          : cache.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Disk cache-tier endpoints: settings (cache pool, mover cron schedule,
+ *   free-space and age thresholds, bandwidth limit), cache shares with
+ *   their automatic SMB exports, and manual mover triggering that runs in
+ *   the background and reports progress over SSE. Reads are auth-only;
+ *   mutations are admin-only and validated (cron shape, pool existence,
+ *   value ranges).
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/cache in src/web/mod.rs; the mover executes
+ *   crate::cache::run_mover, its runs are listed for the history view.
+ * =============================================================================
+ */
+
 //! HTTP handlers for the disk cache tier.
 
 use crate::cache::{mover_is_running, run_mover, CacheMode};

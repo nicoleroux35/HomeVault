@@ -1,15 +1,37 @@
+/* =============================================================================
+ * File          : mod.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Per-app reverse proxy for installed catalog apps: one listener per
+ *   running app on a dedicated port, forwarding to the container's port,
+ *   with the optional app-proxy-scoped session gate. The app's own port
+ *   stays open on the LAN — the proxy is an additional consistent entry,
+ *   not a firewall.
+ *
+ * Dependencies:
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Spawned per installed app at startup; see docs/guides/apps-center.md.
+ * =============================================================================
+ */
+
 //! Per-app reverse proxy for installed Docker catalog apps (umbrelOS-style
 //! "app proxy"). Each running app gets its own listener on a dedicated port
 //! that forwards to the container's published port, with an optional
-//! HomeVault session-cookie auth gate. The app's own published port stays
-//! open on the LAN — the proxy is an additional, consistent entry point,
-//! not a hard lockdown (deliberate: the user asked for the app to remain
-//! reachable directly on LAN and the internet).
+//! app-proxy-scoped session gate (see [`app_auth`]). The app's own published
+//! port stays open on the LAN — the proxy is an additional, consistent entry
+//! point, not a hard lockdown (deliberate: the user asked for the app to
+//! remain reachable directly on LAN and the internet).
 
+pub mod app_auth;
 pub mod cookie;
 mod serve;
 
-use crate::auth::AuthService;
 use once_cell::sync::Lazy;
 use serve::ProxyCtx;
 use std::collections::HashMap;
@@ -41,7 +63,6 @@ pub struct ProxyInfo {
 
 pub struct AppProxyManager {
     entries: RwLock<HashMap<String, ProxyEntry>>,
-    auth: OnceLock<AuthService>,
     main_port: OnceLock<u16>,
 }
 
@@ -49,14 +70,13 @@ impl AppProxyManager {
     fn new() -> Self {
         Self {
             entries: RwLock::new(HashMap::new()),
-            auth: OnceLock::new(),
             main_port: OnceLock::new(),
         }
     }
 
-    /// Called once at startup with the pieces the proxy tasks need.
-    pub fn init(&self, auth: AuthService, main_port: u16) {
-        let _ = self.auth.set(auth);
+    /// Called once at startup with the main port, for building the
+    /// `/app-auth` redirect from an unauthenticated proxy request.
+    pub fn init(&self, main_port: u16) {
         let _ = self.main_port.set(main_port);
     }
 
@@ -97,13 +117,15 @@ impl AppProxyManager {
         }
     }
 
-    /// Stop and drop the proxy for an app.
+    /// Stop and drop the proxy for an app, revoking its app sessions so a
+    /// stopped/removed app can't be reached with a still-valid cookie.
     pub async fn stop(&self, ns_id: &str) {
         if let Some(mut e) = self.entries.write().await.remove(ns_id) {
             if let Some(tx) = e.shutdown.take() {
                 let _ = tx.send(());
             }
         }
+        app_auth::APP_AUTH.revoke_all();
     }
 
     /// Start (or restart) a proxy for `ns_id` forwarding to
@@ -117,9 +139,6 @@ impl AppProxyManager {
         auth_required: bool,
         preferred_port: Option<u16>,
     ) -> Result<u16, String> {
-        let Some(auth) = self.auth.get().cloned() else {
-            return Err("app proxy not initialised".to_string());
-        };
         let main_port = self.main_port.get().copied().unwrap_or(8080);
 
         // Drop any existing proxy for this app first.
@@ -143,9 +162,9 @@ impl AppProxyManager {
 
         let auth_flag = Arc::new(AtomicBool::new(auth_required));
         let ctx = Arc::new(ProxyCtx {
+            ns_id: ns_id.to_string(),
             target_port,
             auth_required: auth_flag.clone(),
-            auth,
             main_port,
         });
 

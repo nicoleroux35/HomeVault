@@ -1,3 +1,28 @@
+/* =============================================================================
+ * File          : journal.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   System Journal viewer: aggregates host logs from journalctl, a few
+ *   well-known rotating /var/log text files, and HomeVault's own rotating
+ *   application log. Endpoints list the available sources, read paged
+ *   entries, clear a source (admin) and manage the automatic log-cleanup
+ *   settings (admin).
+ *
+ * Dependencies:
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/journal in src/web/mod.rs; entry extraction shells out to
+ *   journalctl / file reads per source (see the module doc for the source
+ *   catalogue).
+ * =============================================================================
+ */
+
 //! System Journal viewer — aggregates and serves host system logs via
 //! `journalctl` (systemd journal) plus a few well-known rotating text logs
 //! from `/var/log`, and HomeVault's own rotating application log files
