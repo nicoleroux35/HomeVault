@@ -8,6 +8,38 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Scheduled Tasks** (new app, migration `043_scheduled_tasks.sql`): one
+  generic cron engine replacing per-feature schedulers for admin-defined
+  recurring jobs — single-executable commands (no shell, absolute path,
+  30-minute timeout), pool snapshots, S.M.A.R.T. self-tests and host power
+  actions. Payloads are validated at creation *and* at run time
+  (`TaskAction::from_parts`); every execution is recorded in a run history
+  with an output tail. See `docs/guides/scheduled-tasks.md`.
+- **Metrics** (new app, migration `044_metrics_history.sql`): a 60 s
+  collector (CPU deltas, memory, load, network throughput, max thermal-zone
+  temperature) with 8-day retention, bucketed 1 h / 24 h / 7 d SVG charts,
+  gaps rendered as gaps. See `docs/guides/metrics.md`.
+- **Host power management + disk spindown** (Settings → System, migration
+  `045_disk_power.sql`): CPU governor (validated against the kernel list),
+  host reboot/shutdown/suspend, and per-disk hdparm APM + idle timeout that
+  are re-applied at every startup. See `docs/guides/power.md`.
+- **Per-event notification toggles + webhook sink formats**: every engine
+  notification carries a stable event id (`backup.jobs`, `app.updates`,
+  `health.<check>`); admins mute events individually
+  (`GET|PUT /api/notifications/events/config`, absent = enabled) and choose
+  the webhook payload shape (`generic` | Slack | Discord). See
+  `docs/guides/notifications.md`.
+- **Snapshot schedules with GFS retention** (Storage → new "Snapshots" tab,
+  migration `046_snapshot_schedules.sql`): cron-driven `{prefix}-<timestamp>`
+  snapshots per pool with grandfather-father-son pruning (newest N
+  hourly/daily/weekly/monthly/yearly generations); pruning only ever deletes
+  snapshots carrying the schedule's own prefix — manual and backup snapshots
+  are untouchable. See `docs/guides/snapshots.md`.
+- Fixed a latent `api.ts` bug where `ttl: 0` is falsy and silently fell back
+  to the 5 s default TTL (the topbar notification list, What's New, VPN peer
+  detail and SMART capabilities stayed stale for up to 5 s after a mutation;
+  now `{ cache: false }`).
+
 - Persistent notification center: the bell panel now keeps the full history
   with severity filters, an unread-only toggle and text search, and the
   "What's New" release-highlights modal shown once per version per account

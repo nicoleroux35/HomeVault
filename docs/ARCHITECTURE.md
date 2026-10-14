@@ -97,6 +97,17 @@ Loops spawned in `run()` (`src/web/mod.rs`; line numbers drift, grep for
   event-log retention; default **on / 90 days** (privacy by default). The first
   tick fires immediately: it must only *persist a baseline*, never clean, when
   there is no prior `last_cleanup_at` row.
+- **Scheduled tasks engine** (`scheduled_tasks_scheduler::run_scheduler_loop`)
+  — the generic cron loop (30 s poll): executes validated tasks by type
+  (`command` no-shell, `snapshot`, `smart_test`, `power`) and records runs;
+  see [guides/scheduled-tasks.md](./guides/scheduled-tasks.md).
+- **Snapshot scheduler** (`snapshot_scheduler::run_scheduler_loop`) — creates
+  due pool snapshots and GFS-prunes only its own `{prefix}-…` names; see
+  [guides/snapshots.md](./guides/snapshots.md).
+- **Metrics collector** (`metrics::run_collector_loop`) — one sample per
+  minute (CPU deltas from /proc/stat, meminfo, loadavg, /proc/net/dev,
+  thermal zones) into `metric_samples`, 8-day retention pruned per tick; see
+  [guides/metrics.md](./guides/metrics.md).
 - **Notification engine** (`notification_engine::run_notification_loop`) —
   polls every 60s, turns health-check transitions and restic job results into
   `notifications` rows (in-memory dedup), optionally emailed/webhooked; also runs

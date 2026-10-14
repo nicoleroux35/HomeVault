@@ -116,6 +116,7 @@ export interface DraftValues {
     smtp_enabled: boolean;
     webhook_url: string;
     webhook_enabled: boolean;
+    webhook_format: string;
   };
   update: { check_frequency: string };
   appearance: { theme: string; wallpaper: string; accent_color: string; density: string };
@@ -159,6 +160,7 @@ export const draft = $state<DraftValues>({
     smtp_enabled: false,
     webhook_url: '',
     webhook_enabled: false,
+    webhook_format: 'generic',
   },
   update: { check_frequency: 'weekly' },
   appearance: { theme: 'auto', wallpaper: '', accent_color: '#1E62AE', density: 'comfortable' },
@@ -358,6 +360,7 @@ async function saveGroup(group: SettingsGroup): Promise<void> {
         smtp_enabled: draft.notifications.smtp_enabled,
         webhook_url: draft.notifications.webhook_url,
         webhook_enabled: draft.notifications.webhook_enabled,
+        webhook_format: draft.notifications.webhook_format,
       });
       if (!res.success) throw new Error(group);
       break;

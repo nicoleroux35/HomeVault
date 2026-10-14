@@ -18,9 +18,9 @@
  * =============================================================================
  */
 
+pub mod api_contract;
 /// Core web framework modules
 pub mod auth;
-pub mod api_contract;
 pub mod config;
 pub mod handlers;
 pub mod network;
@@ -58,10 +58,13 @@ pub mod logging;
 pub mod mcp;
 pub mod mdns;
 pub mod media_ticket;
+pub mod metrics;
 pub mod middleware;
 pub mod notification_engine;
+pub mod notification_events;
 pub mod permissions;
 pub mod pools;
+pub mod power;
 pub mod quota;
 pub mod rag;
 pub mod rag_indexers;
@@ -71,6 +74,8 @@ pub mod release_notes;
 pub mod rescue;
 pub mod restic;
 pub mod restic_scheduler;
+pub mod scheduled_tasks_scheduler;
+pub mod snapshot_scheduler;
 pub mod transfer_quota;
 
 pub mod setup;

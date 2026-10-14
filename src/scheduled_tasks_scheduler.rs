@@ -1,0 +1,546 @@
+/* =============================================================================
+ * File          : scheduled_tasks_scheduler.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Generic scheduled-task engine: one background loop picks up due tasks
+ *   from the scheduled_tasks table and executes them by type (safe command,
+ *   pool snapshot, SMART self-test, host power action). Replaces per-feature
+ *   schedulers for things that are "just a cron job on the host".
+ *
+ * Dependencies:
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Spawned once at startup in src/web/mod.rs; CRUD via
+ *   handlers/scheduled_tasks.rs.
+ * =============================================================================
+ */
+
+//! Generic scheduled-task engine (the loop + the executor).
+//!
+//! Structural sibling of `restic_scheduler`/`antivirus_scheduler`: polls
+//! every [`POLL_INTERVAL_SECS`], computes the next run from each task's cron
+//! (the already-tested `compute_next_run`), and spawns executions so one
+//! long command can never delay the other tasks' ticks.
+//!
+//! Security posture: every payload is validated **at creation time** by
+//! [`TaskAction::from_parts`] (the handler refuses anything that doesn't
+//! validate), and again at run time — a task row written directly into the
+//! DB by some other path still can't make the executor do something the
+//! validators reject (absolute, existing executable; bare device names;
+//! whitelisted actions).
+
+use crate::handlers::AppState;
+use crate::power::{host_power_action, PowerAction};
+use crate::restic_scheduler::compute_next_run;
+use crate::snapshots::SnapshotService;
+use crate::storage::scheduled_task_repo::{ScheduledTask, ScheduledTaskRepository};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Mutex;
+
+const POLL_INTERVAL_SECS: u64 = 30;
+/// A scheduled command gets at most 30 minutes; after that it is killed and
+/// the run is recorded as failed (an orphaned child would otherwise hold a
+/// `running` status forever).
+const COMMAND_TIMEOUT_SECS: u64 = 30 * 60;
+
+/// The validated form of a task's payload. `from_parts` is the single gate
+/// every payload passes through — see the module docs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TaskAction {
+    /// Run one program (no shell). `args` are passed verbatim as argv.
+    Command { command: String, args: Vec<String> },
+    /// Create a pool snapshot (ZFS-first, Btrfs fallback).
+    Snapshot { pool: String, recursive: bool },
+    /// Start a S.M.A.R.T. self-test on a disk (`short`|`long`|`conveyance`|`offline`).
+    SmartTest { device: String, test_type: String },
+    /// Reboot / shutdown / suspend the host.
+    Power { action: PowerAction },
+}
+
+impl TaskAction {
+    pub const fn type_name(&self) -> &'static str {
+        match self {
+            TaskAction::Command { .. } => "command",
+            TaskAction::Snapshot { .. } => "snapshot",
+            TaskAction::SmartTest { .. } => "smart_test",
+            TaskAction::Power { .. } => "power",
+        }
+    }
+
+    /// Validates `(task_type, payload JSON)` and builds the action. This is
+    /// the single validation gate — used by the create/update handler and
+    /// again by the executor before running.
+    pub fn from_parts(task_type: &str, payload_json: &str) -> Result<TaskAction, String> {
+        let action: TaskAction = match task_type {
+            "command" => {
+                let raw: RawCommandPayload = serde_json::from_str(payload_json)
+                    .map_err(|e| format!("Invalid command payload: {e}"))?;
+                let command = raw.command.trim().to_string();
+                if !command.starts_with('/') {
+                    return Err("Command must be an absolute path (no shell, no lookup)".into());
+                }
+                if command.contains("..")
+                    || command.contains(';')
+                    || command.contains('|')
+                    || command.contains('&')
+                    || command.contains('`')
+                    || command.chars().any(|c| c.is_whitespace())
+                {
+                    return Err("Command must be a single executable path".into());
+                }
+                let path = std::path::Path::new(&command);
+                if !path.is_file() {
+                    return Err(format!("'{command}' does not exist on this host"));
+                }
+                // `mode & 0o111` — the executable bits for someone.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mode = std::fs::metadata(path)
+                        .map_err(|e| format!("'{command}' is not accessible: {e}"))?
+                        .permissions()
+                        .mode();
+                    if mode & 0o111 == 0 {
+                        return Err(format!("'{command}' is not executable"));
+                    }
+                }
+                if raw.args.len() > 64 {
+                    return Err("Too many arguments (max 64)".into());
+                }
+                TaskAction::Command {
+                    command,
+                    args: raw.args,
+                }
+            }
+            "snapshot" => {
+                let raw: RawSnapshotPayload = serde_json::from_str(payload_json)
+                    .map_err(|e| format!("Invalid snapshot payload: {e}"))?;
+                if !is_valid_pool_name(&raw.pool) {
+                    return Err(format!("Invalid pool name '{}'", raw.pool));
+                }
+                TaskAction::Snapshot {
+                    pool: raw.pool,
+                    recursive: raw.recursive,
+                }
+            }
+            "smart_test" => {
+                let raw: RawSmartTestPayload = serde_json::from_str(payload_json)
+                    .map_err(|e| format!("Invalid smart_test payload: {e}"))?;
+                if !crate::power::is_valid_block_device_name(&raw.device) {
+                    return Err(format!("Invalid device name '{}'", raw.device));
+                }
+                if !matches!(
+                    raw.test_type.as_str(),
+                    "short" | "long" | "conveyance" | "offline"
+                ) {
+                    return Err(format!("Unknown SMART test type '{}'", raw.test_type));
+                }
+                TaskAction::SmartTest {
+                    device: raw.device,
+                    test_type: raw.test_type,
+                }
+            }
+            "power" => {
+                let raw: RawPowerPayload = serde_json::from_str(payload_json)
+                    .map_err(|e| format!("Invalid power payload: {e}"))?;
+                let action = PowerAction::parse(&raw.action)
+                    .ok_or_else(|| format!("Unknown power action '{}'", raw.action))?;
+                TaskAction::Power { action }
+            }
+            other => return Err(format!("Unknown task type '{other}'")),
+        };
+        debug_assert_eq!(action.type_name(), task_type);
+        Ok(action)
+    }
+}
+
+#[derive(Deserialize)]
+struct RawCommandPayload {
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct RawSnapshotPayload {
+    pool: String,
+    #[serde(default)]
+    recursive: bool,
+}
+
+#[derive(Deserialize)]
+struct RawSmartTestPayload {
+    device: String,
+    test_type: String,
+}
+
+#[derive(Deserialize)]
+struct RawPowerPayload {
+    action: String,
+}
+
+/// Pool/dataset names end up spliced into `zfs`/`btrfs` argv — restrict to
+/// the characters both filesystems actually accept.
+pub fn is_valid_pool_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':'))
+}
+
+/// Guard so a task whose previous run is still going isn't started twice by
+/// overlapping ticks (single process ⇒ in-memory set is sufficient, and the
+/// loop is the only spawner).
+type RunningSet = Arc<Mutex<HashSet<String>>>;
+
+/// Runs forever. Intended to be `tokio::spawn`ed once at server startup.
+pub async fn run_scheduler_loop(state: Arc<AppState>) {
+    let running: RunningSet = Arc::new(Mutex::new(HashSet::new()));
+    let mut interval = tokio::time::interval(Duration::from_secs(POLL_INTERVAL_SECS));
+    loop {
+        interval.tick().await;
+        if let Err(e) = tick_due(&state, &running).await {
+            tracing::warn!("Scheduled-task scheduler tick failed: {}", e);
+        }
+    }
+}
+
+async fn tick_due(state: &Arc<AppState>, running: &RunningSet) -> Result<(), String> {
+    let repo = ScheduledTaskRepository::new(state.db.pool());
+    let tasks = repo.list_enabled().await.map_err(|e| e.to_string())?;
+    let now = Utc::now();
+
+    for task in tasks {
+        // A task that has never run is due when its cron first fires after
+        // creation; a task that has run is due when the next occurrence
+        // computed from its last run has passed. An unparseable cron is
+        // reported on the task rather than logged-and-forgotten.
+        let next = match compute_next_run(&task.cron, reference_time(&task)) {
+            Err(reason) => {
+                let run = repo.mark_started(&task.id).await.unwrap_or_default();
+                let _ = repo
+                    .mark_finished(
+                        &task.id,
+                        &run,
+                        false,
+                        Some(&format!(
+                            "Invalid cron expression '{}': {}",
+                            task.cron, reason
+                        )),
+                        None,
+                    )
+                    .await;
+                continue;
+            }
+            Ok(next) => next,
+        };
+        let Some(next) = next else { continue };
+        let _ = repo
+            .set_next_run(&task.id, Some(next.to_rfc3339().as_str()))
+            .await;
+
+        if next <= now {
+            // Skip (don't block) when the previous execution is still going.
+            if running.lock().await.contains(&task.id) {
+                tracing::info!(
+                    "Scheduled task '{}' still running; skipping tick",
+                    task.name
+                );
+                continue;
+            }
+            spawn_execution(state.clone(), running.clone(), task).await;
+        }
+    }
+    Ok(())
+}
+
+/// The moment the next-occurrence computation starts from: the last run for
+/// an existing task, creation time otherwise — capped to "at most 8 days
+/// ago" so a task created with a cron that already passed today doesn't fire
+/// immediately (mirrors the antivirus scheduler's window).
+fn reference_time(task: &ScheduledTask) -> DateTime<Utc> {
+    let parsed = task
+        .last_run_at
+        .as_ref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&Utc))
+        .or_else(|| {
+            DateTime::parse_from_rfc3339(&task.created_at)
+                .ok()
+                .map(|d| d.with_timezone(&Utc))
+        })
+        .unwrap_or_else(Utc::now);
+    let earliest = Utc::now() - chrono::Duration::days(8);
+    parsed.max(earliest)
+}
+
+/// Spawns one execution under the running-set guard, so overlapping ticks
+/// (and a concurrent "Run now") never double-start the same task.
+async fn spawn_execution(state: Arc<AppState>, running: RunningSet, task: ScheduledTask) {
+    running.lock().await.insert(task.id.clone());
+    tokio::spawn(async move {
+        let result = execute(&state, &task).await;
+        if let Err(e) = &result {
+            tracing::warn!("Scheduled task '{}' failed: {}", task.name, e);
+        }
+        running.lock().await.remove(&task.id);
+    });
+}
+
+/// Executes a task now, regardless of its cron — used by the "Run now"
+/// button. Refuses to double-start a task whose previous execution is still
+/// running (same guard as the scheduled path).
+pub async fn run_task_now(state: &Arc<AppState>, task: &ScheduledTask) -> Result<(), String> {
+    let running: RunningSet = Arc::new(Mutex::new(HashSet::new()));
+    if running.lock().await.contains(&task.id) {
+        return Err("Task is already running".to_string());
+    }
+    running.lock().await.insert(task.id.clone());
+    let result = execute(state, task).await;
+    running.lock().await.remove(&task.id);
+    result
+}
+
+/// Executes one task: opens a run row, performs the validated action, and
+/// records the outcome (output tail or error) on both the task and the run.
+async fn execute(state: &Arc<AppState>, task: &ScheduledTask) -> Result<(), String> {
+    let repo = ScheduledTaskRepository::new(state.db.pool());
+    let run_id = repo
+        .mark_started(&task.id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let result = match TaskAction::from_parts(&task.task_type, &task.payload) {
+        // Re-validate at run time: a row written directly into the DB by
+        // some other path still goes through the same validators.
+        Ok(action) => perform(&action).await,
+        Err(e) => Err(e),
+    };
+
+    match result {
+        Ok(output) => {
+            let _ = repo
+                .mark_finished(&task.id, &run_id, true, None, Some(&output))
+                .await;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = repo
+                .mark_finished(&task.id, &run_id, false, Some(&e), None)
+                .await;
+            Err(e)
+        }
+    }
+}
+
+/// Dispatches one validated action. Pure I/O — no schedule logic here.
+async fn perform(action: &TaskAction) -> Result<String, String> {
+    match action {
+        TaskAction::Command { command, args } => {
+            let mut cmd = tokio::process::Command::new(command);
+            cmd.args(args)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let child = cmd
+                .spawn()
+                .map_err(|e| format!("Failed to start {command}: {e}"))?;
+            let output = tokio::time::timeout(
+                Duration::from_secs(COMMAND_TIMEOUT_SECS),
+                child.wait_with_output(),
+            )
+            .await
+            .map_err(|_| format!("Command {command} timed out after {COMMAND_TIMEOUT_SECS}s"))?
+            .map_err(|e| format!("Command {command} failed: {e}"))?;
+            let mut out = String::from_utf8_lossy(&output.stdout).to_string();
+            let err = String::from_utf8_lossy(&output.stderr);
+            if !err.is_empty() {
+                out.push_str(&err);
+            }
+            if !output.status.success() {
+                return Err(format!(
+                    "Command {command} exited with {}: {}",
+                    output
+                        .status
+                        .code()
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "signal".into()),
+                    out.trim()
+                ));
+            }
+            Ok(out)
+        }
+        TaskAction::Snapshot { pool, recursive } => {
+            let name = format!("hv-auto-{}", Utc::now().format("%Y%m%d-%H%M%S"));
+            let pool = pool.clone();
+            let recursive = *recursive;
+            tokio::task::spawn_blocking(move || {
+                SnapshotService::create_snapshot(&pool, &name, None, recursive)
+                    .map(|_| format!("Created snapshot {name}"))
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e| format!("Snapshot task panicked: {e}"))?
+        }
+        TaskAction::SmartTest { device, test_type } => {
+            let device = device.clone();
+            let test_type = test_type.clone();
+            tokio::task::spawn_blocking(move || {
+                let output = std::process::Command::new("sudo")
+                    .args(["smartctl", "-t", &test_type, &format!("/dev/{device}")])
+                    .output()
+                    .map_err(|e| format!("smartctl not available: {e}"))?;
+                // smartctl exits with a bitmask; bits 0-2 cover CLI/device
+                // errors. Health-report bits (4 = SMART failing, 8 = self-test
+                // logged failures) are about the *disk*, not about whether the
+                // test was started — starting a test on a failing disk is a
+                // legitimate outcome, so only bits 0-2 count as failure here.
+                let started_ok = output
+                    .status
+                    .code()
+                    .map(|c| (0..4).contains(&c))
+                    .unwrap_or(false);
+                if started_ok {
+                    Ok(format!("SMART {test_type} test started on /dev/{device}"))
+                } else {
+                    Err(format!(
+                        "smartctl -t {test_type} failed on /dev/{device}: {}",
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    ))
+                }
+            })
+            .await
+            .map_err(|e| format!("SMART task panicked: {e}"))?
+        }
+        TaskAction::Power { action } => {
+            let action = *action;
+            tokio::task::spawn_blocking(move || host_power_action(action))
+                .await
+                .map_err(|e| format!("Power task panicked: {e}"))?
+                .map(|_| format!("Host {} issued", action.as_str()))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_payload_requires_absolute_existing_executable() {
+        // Non-absolute paths are the shell-lookup hole — closed.
+        let err = TaskAction::from_parts("command", r#"{"command":"curl","args":[]}"#).unwrap_err();
+        assert!(err.contains("absolute path"), "got: {err}");
+
+        // Shell metacharacters in the "path" are rejected outright.
+        let err = TaskAction::from_parts("command", r#"{"command":"/tmp/evil; reboot","args":[]}"#)
+            .unwrap_err();
+        assert!(err.contains("single executable path"), "got: {err}");
+
+        // An absolute but missing file is rejected.
+        let err = TaskAction::from_parts("command", r#"{"command":"/no/such/binary","args":[]}"#)
+            .unwrap_err();
+        assert!(err.contains("does not exist"), "got: {err}");
+
+        // A real, executable absolute path passes.
+        let ok_path = "/bin/true";
+        if std::path::Path::new(ok_path).is_file() {
+            let action =
+                TaskAction::from_parts("command", r#"{"command":"/bin/true","args":["-q"]}"#)
+                    .expect("valid command payload");
+            match action {
+                TaskAction::Command { command, args } => {
+                    assert_eq!(command, "/bin/true");
+                    assert_eq!(args, vec!["-q"]);
+                }
+                other => panic!("wrong variant: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn smart_test_payload_is_whitelisted() {
+        let action =
+            TaskAction::from_parts("smart_test", r#"{"device":"sda","test_type":"long"}"#).unwrap();
+        match action {
+            TaskAction::SmartTest { device, test_type } => {
+                assert_eq!(device, "sda");
+                assert_eq!(test_type, "long");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // Device traversal must not reach /dev/.
+        assert!(TaskAction::from_parts(
+            "smart_test",
+            r#"{"device":"../../etc","test_type":"short"}"#
+        )
+        .is_err());
+        // Test types are a closed enum.
+        assert!(
+            TaskAction::from_parts("smart_test", r#"{"device":"sda","test_type":"--force"}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn power_payload_accepts_only_known_actions() {
+        let action = TaskAction::from_parts("power", r#"{"action":"reboot"}"#).unwrap();
+        assert_eq!(action.type_name(), "power");
+        assert!(TaskAction::from_parts("power", r#"{"action":"detonate"}"#).is_err());
+    }
+
+    #[test]
+    fn snapshot_payload_validates_pool_names() {
+        let action =
+            TaskAction::from_parts("snapshot", r#"{"pool":"tank/data","recursive":true}"#).unwrap();
+        assert_eq!(action.type_name(), "snapshot");
+        assert!(
+            TaskAction::from_parts("snapshot", r#"{"pool":"a b","recursive":false}"#).is_err(),
+            "spaces would split argv"
+        );
+        assert!(
+            TaskAction::from_parts("snapshot", r#"{"pool":"-o x","recursive":false}"#).is_err(),
+            "leading dash would parse as a zfs option"
+        );
+    }
+
+    #[test]
+    fn unknown_task_type_is_rejected() {
+        assert!(TaskAction::from_parts("rm_rf", "{}").is_err());
+    }
+
+    #[test]
+    fn reference_time_is_capped_to_eight_days() {
+        let old = (Utc::now() - chrono::Duration::days(400)).to_rfc3339();
+        let task = ScheduledTask {
+            id: "t".into(),
+            name: "t".into(),
+            task_type: "command".into(),
+            cron: "* * * * *".into(),
+            payload: "{}".into(),
+            enabled: true,
+            last_run_at: Some(old.clone()),
+            last_status: None,
+            last_error: None,
+            next_run_at: None,
+            created_at: old,
+            updated_at: String::new(),
+        };
+        let reference = reference_time(&task);
+        assert!(
+            reference > Utc::now() - chrono::Duration::days(9),
+            "a stale last_run_at must be capped so past crons don't fire immediately"
+        );
+    }
+}

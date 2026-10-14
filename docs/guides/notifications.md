@@ -7,6 +7,17 @@ anything, and the frontend already had a working bell/badge/panel
 (`notificationsStore`, `NotificationCenter.svelte`) that nothing ever
 populated — this feature is the missing wire between the two.
 
+**Per-event control (2026-10-13):** every notification the engine raises
+carries a stable **event id** (`backup.jobs`, `app.updates`,
+`health.<check>` — see `src/notification_events.rs::EVENT_CATALOG`); the
+admin can mute events individually (`GET/PUT /api/notifications/events/config`,
+admin-only; Settings → Notifications). A muted event is neither persisted
+nor dispatched. Absent toggle = enabled, so the catalog can grow without
+silencing existing installs. The webhook also gained a **sink format**
+(`generic` | `slack` | `discord`) so a Slack/Discord incoming-webhook URL
+can be pasted without a relay — the payload builder matches each service's
+expected shape.
+
 ## Backend
 
 - `src/notification_engine.rs::run_notification_loop` — background loop
