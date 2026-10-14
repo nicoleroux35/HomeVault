@@ -95,7 +95,7 @@ Any **new** outbound host must be added to this table and to the CSP
 
 Rationale for on-by-default: it carries strictly less information than an
 open TCP port already does, stays on the LAN, and a name is the expected way
-to reach a home server (OpenMediaVault, TrueNAS, Synology, CasaOS all do the
+to reach a home server (every mainstream NAS distribution does the
 same). Opt-out: `sudo systemctl disable --now avahi-daemon` (or remove the
 package). Details in `docs/guides/mdns.md`.
 

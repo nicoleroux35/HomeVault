@@ -9,9 +9,9 @@ generic mDNS browsers. Implemented with **Avahi**.
 
 - One backend module, `src/mdns.rs`, plus one read-only handler,
   `src/handlers/mdns.rs`. No frontend screen.
-- Publishing is **automatic and on by default** — the same posture every NAS
-  distro ships (OpenMediaVault, CasaOS, TrueNAS, Synology all publish
-  `<host>.local` via Avahi/Bonjour out of the box).
+- Publishing is **automatic and on by default** — the same posture every
+  mainstream NAS distribution ships (publishing `<host>.local` via
+  Avahi/Bonjour out of the box).
 - **Link-local only** — multicast `224.0.0.251:5353` / `ff02::fb`. No outbound
   traffic, no third party. It advertises only service *types + ports* that
   HomeVault already listens on; never credentials or personal data. See

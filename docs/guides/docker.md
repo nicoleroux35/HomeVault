@@ -75,7 +75,7 @@ Logic lives in `src/app_catalog/{mod,manifest,store,updates}.rs`.
 
 ### App catalog phase B — dependencies, settings, compatibility (2026-10-13)
 
-Umbrel-parity additions on the same package shape (no new manifest file):
+Catalog phase-B additions on the same package shape (no new manifest file):
 
 - **Dependencies with alternatives**: `dependencies = ["postgres"]` is
   satisfied by an installed app whose bare id matches **or** whose

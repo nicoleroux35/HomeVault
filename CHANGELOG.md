@@ -30,7 +30,7 @@ follows [Semantic Versioning](https://semver.org/).
   (`playwright.vm.config.ts`, `tests/vm/*.vm.test.ts`), and
   `docs/guides/development.md`.
 
-- External AI-agent server (MCP, Streamable HTTP, Umbrel parity): `POST /mcp`
+- External AI-agent server (MCP, Streamable HTTP): `POST /mcp`
   (`initialize`, `tools/list`, `tools/call`) with opaque `hv_mcp_…` bearer
   tokens, one master kill-switch and one global permission set shared by all
   tokens (apps / App Store / files / VMs / knowledge base / reboot — deny by
@@ -38,7 +38,7 @@ follows [Semantic Versioning](https://semver.org/).
   (`GET|PUT /api/mcp/status`, `PUT /api/mcp/permissions`, `POST|DELETE
   /api/mcp/tokens`). The `knowledge.search` tool exposes the internal RAG base
   to agents. See `docs/guides/mcp.md`.
-- App catalog phase B (Umbrel parity on the same `homevault-app.toml` shape):
+- App catalog phase B (feature parity on the same `homevault-app.toml` shape):
   dependencies with `implements` alternatives + install-review endpoint,
   `[[environment]]` install settings rendered as `{{NAME}}`, `arch` +
   `min_homevault_version` compatibility (listed and enforced), per-app compose
