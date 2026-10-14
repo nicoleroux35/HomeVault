@@ -29,8 +29,8 @@
 //!
 //! Scope & privacy: this is **link-local only** (multicast 224.0.0.251:5353 /
 //! ff02::fb) — no outbound traffic, no third party. It is the same default
-//! every NAS distro ships (OpenMediaVault, CasaOS, TrueNAS, Synology all
-//! publish `<host>.local` via Avahi/Bonjour out of the box). It advertises
+//! every mainstream NAS distribution ships (publishing `<host>.local` via
+//! Avahi/Bonjour out of the box). It advertises
 //! only service *names + ports* that HomeVault already listens on; it never
 //! carries credentials or personal data. An admin who wants it off stops
 //! `avahi-daemon` (`systemctl disable --now avahi-daemon`) or deletes

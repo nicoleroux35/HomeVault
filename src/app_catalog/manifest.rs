@@ -77,8 +77,8 @@ pub struct Manifest {
     pub release_notes: Option<String>,
     /// Bare ids of other apps in the same store this one needs. A
     /// dependency is satisfied by an installed app whose bare id equals the
-    /// dependency **or** whose `implements` list contains it (Umbrel-style
-    /// alternatives: e.g. any `postgres`-implementing app satisfies a
+    /// dependency **or** whose `implements` list contains it (alternatives:
+    /// e.g. any `postgres`-implementing app satisfies a
     /// `postgres` dependency). `resolve_install_plan` in `mod.rs` computes
     /// the concrete choice; the install endpoint auto-installs missing
     /// same-store providers.
@@ -90,7 +90,7 @@ pub struct Manifest {
     #[serde(default)]
     pub implements: Vec<String>,
     /// Advanced environment variables the admin may set at install time
-    /// (Umbrel-style `environment` block). Declared values render into the
+    /// (the `environment` block). Declared values render into the
     /// compose template as `{{VAR_NAME}}` placeholders; undeclared `{{X}}`
     /// placeholders are left untouched.
     #[serde(default)]
@@ -102,7 +102,7 @@ pub struct Manifest {
     pub min_homevault_version: Option<String>,
 }
 
-/// One advanced environment variable an app package declares (Umbrel-style).
+/// One advanced environment variable an app package declares.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EnvVarDecl {
     /// `UPPER_SNAKE_CASE` name, also the `{{NAME}}` template placeholder.
