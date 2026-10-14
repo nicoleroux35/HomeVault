@@ -217,14 +217,14 @@ converted**, tracked per-screen below.
 **Per-screen native-element conversion (beyond the shared component
 library):**
 
-- **`Login.svelte` (2026-09-14 re-skin — DSM 7 gateway, see
+- **`Login.svelte` (2026-09-14 re-skin — approved gateway design, see
   `design-system.md` §6.1):** markup/CSS rewritten as pure Tailwind-on-tokens
   with **no scoped `<style>`**; the `<script>` logic (setup-status detection,
   credentials → 2FA flow, modal error handling, recovery-code reset) is
   unchanged. Visuals: full-screen pastel gradient (`--hv-login-bg-gradient`)
   with two blurred orbs, a live 24 h clock (`hour12: false`), and a 380 px
   white card with a gradient logo tile, brand title + version + step label,
-  DSM fields, the remember-me `<Toggle>`, the forgot-password link, a primary
+  gateway fields, the remember-me `<Toggle>`, the forgot-password link, a primary
   CTA via `<Button>` + `bg-[image:var(--hv-login-btn-grad)]!`, and a footer.
   The 2FA step adds a step-progress indicator, 6 code boxes (44×52 px,
   soft-indigo `--hv-login-accent-soft` filled state), a 30 s TOTP countdown
@@ -243,12 +243,12 @@ library):**
   responsive fit down to 360 px. All `login-*` testids are unchanged, so
   `tests/e2e/login/login.spec.ts` covers the new screen as-is.
 
-- **`SetupWizard.svelte` (2026-09-14 re-skin — DSM 7 gateway, see
+- **`SetupWizard.svelte` (2026-09-14 re-skin — approved gateway design, see
   `design-system.md` §6.2):** markup/CSS rewritten as pure Tailwind-on-tokens
   with **no scoped `<style>`**; the `<script>` logic (step flow, validation,
   server-side availability, account creation, one-time recovery code, optional
   2FA enrolment) is unchanged. Visuals: blurred orbs + live 24 h clock, a
-  520 px white card with the brand tile, DSM step dots (`setup-stepper-*`,
+  520 px white card with the brand tile, wizard step dots (`setup-stepper-*`,
   `class:done`/`class:current`) + gradient progress bar, welcome step with 3
   feature cards, account step (centered avatar + username/fullname fields),
   password step (strength bars + requirement checklist), and a verification
@@ -258,7 +258,7 @@ library):**
   once, non-copyable, acknowledged via checkbox) then the optional **2FA box**
   (`.hv-2fa-box`: secret, otpauth link, code input, backup codes) appear in
   the same card.
-  **Same field rules as Login**: native `<input>` kept for autofill; the DSM
+  **Same field rules as Login**: native `<input>` kept for autofill; the gateway
   field look lives on the wrapper div (`fieldWrapperClass`), the inner input is
   transparent/borderless (`textInputClass`), and raw `input`/`button` visual
   utilities carry the trailing-`!` important modifier as belt-and-braces
@@ -266,7 +266,7 @@ library):**
   the utilities win on their own — the `!` is kept for consistency with the
   still-unlayered headings). Footer CTAs stay `<Button variant="secondary|primary">`
   (`hv-btn-secondary` / `hv-btn-primary` hooks preserved) restyled with the
-  DSM gradients. **Verified live in a real browser** (mocked first-run API):
+  gateway gradients. **Verified live in a real browser** (mocked first-run API):
   step 0→3 walkthrough, strength/checklist states, availability row, recovery
   + 2FA screens, and responsive fit down to 360 px. `setup.spec.ts` was
   updated to correct broken selectors (stray `]2`/`]B` suffixes and `hv-alert-*`
@@ -306,7 +306,7 @@ Import pattern: `import { api } from '$lib/services/api';` then
 | File | Responsibility |
 |------|----------------|
 | `auth.ts` | current user, session token, login/logout |
-| `appGate.ts` | application route guard: reads `/auth/setup-status` + the session and decides `setup` / `recovery` / `login` / `app` / `error`; `App.svelte` renders from `$appGate.route` (Umbrel's `EnsureUser*` equivalent) |
+| `appGate.ts` | application route guard: reads `/auth/setup-status` + the session and decides `setup` / `recovery` / `login` / `app` / `error`; `App.svelte` renders from `$appGate.route` (the standard route-guard pattern) |
 | `i18n.ts` | active locale, `t(key)` lookup, translation map |
 | `settingsDraft.svelte.ts` | Settings draft state (per-group baseline + dirty tracking + `saveAll()`); also holds the re-hydrated theme/accent |
 | `activityStore.ts` | activity taskbar state |

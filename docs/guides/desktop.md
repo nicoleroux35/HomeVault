@@ -45,7 +45,7 @@ screenshot when its chrome moves.
   Never point one pill at the other's token again: the heights were once
   locked together, which is what made a taller dock impossible. The dock's
   84px is the mockup's own authored height and does **not** decompose as
-  `12 + 48 + 12` — DSM's dock item is a column whose label line is reserved
+  `12 + 48 + 12` — the approved dock item is a column whose label line is reserved
   even though it only paints on hover. HomeVault ships no dock labels, so 72px
   would have been honest; 84px was kept because the mockup is the reference and
   the surplus reads as breathing room. The rationale lives on the token.

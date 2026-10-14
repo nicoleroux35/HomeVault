@@ -16,7 +16,7 @@ pages all read from the `--hv-*` tokens declared in
 ## 1. Identity
 
 HomeVault Appliance is the visual language of a **serious NAS management
-console** (reference mood: Synology DSM, TrueNAS SCALE, Proxmox VE). It is:
+console** (reference mood: the approved appliance-console mocks). It is:
 
 - **Opaque and light** — solid paper surfaces, crisp 1px hairlines, layered
   soft shadows. No translucent/blur "glass" anywhere in-window (a dark photo
@@ -57,7 +57,7 @@ categories:
 | Elevation/z-index | `--hv-z-*` | 1000-point increments |
 | Motion | `--hv-transition*`, `--hv-ease-*`, `--hv-chrome-*` | transform/opacity only |
 | Desktop chrome | `--hv-chrome-*`, `--hv-window-*`, `--hv-winhdr-*`, `--hv-dock-*` | shell geometry |
-| Login gateway | `--hv-login-*` (bg gradient, orbs, accent, field, timer) + `--hv-wizard-*` (recovery box, create CTA) | scoped DSM 7 palette, login + setup wizard only — see §6.1/§6.2 |
+| Login gateway | `--hv-login-*` (bg gradient, orbs, accent, field, timer) + `--hv-wizard-*` (recovery box, create CTA) | scoped gateway palette, login + setup wizard only — see §6.1/§6.2 |
 | Settings screen | `--hv-settings-*` (slate ramp, tile/canvas/hairline/border, cat tints + 8 `--hv-settings-cat-*` accents, toggle geometry) | scoped to `routes/Settings.svelte` + `components/settings/` only — see §6.3 |
 
 ### 2.1 The two type scales (do not merge)
@@ -501,7 +501,7 @@ above. Whichever source you use, the accessible name lives on the *control*
   card hairline) under the mock's own two-layer shadow, a constant **44px**
   header bar, and the amber / blue / red control trio **inline in that bar** at
   28px — no longer 48px circles floating over the content.
-- **Chrome is Figma/DSM-inspired (2026-09-13, deepened 2026-09-14):** window
+- **Chrome is Figma-inspired (approved gateway mocks) (2026-09-13, deepened 2026-09-14):** window
   controls are traffic lights (`--hv-winctrl-*`: amber minimize, blue
   maximize, red close) instead of neutral circles, on the mock's own stops
   (`#FFB900` / `#2B7FFF` / `#FF6467` — **not** the semantic
@@ -581,10 +581,10 @@ read by the dock, the Launchpad and every `WindowHeader`, plus a handful of
 in-page buttons and chips (`Chat.svelte`, `Terminal.svelte`, `Users.svelte`,
 `Account.svelte`). It repaints the product's app identity.
 
-### 6.1 The gateway (DSM 7 login + setup wizard)
+### 6.1 The gateway (login + setup wizard)
 
-The **login and setup-wizard screens** follow the "Create DSM 7 LOGIN" and
-"Create DSM 7 WIZARD" mocks and are the one deliberate exception to the
+The **login and setup-wizard screens** follow the approved login and
+wizard mocks and are the one deliberate exception to the
 single-accent rule: a full-screen soft pastel gradient
 (`--hv-login-bg-gradient`: indigo → violet → pink) with two blurred orbs
 (`--hv-login-orb-*`), a large live 24 h clock, and a compact white card
@@ -603,7 +603,7 @@ Appliance palette; every value used by the gateway is a `--hv-login-*` or
   Tailwind's layered utilities now win over them on their own — a plain
   `bg-[var(--hv-primary)] px-4` button renders correctly without `!`. The
   `!` is still kept here (and on the headings, whose `h1..h6` rules remain
-  unlayered) so both cases read the same. The DSM field background/border/
+  unlayered) so both cases read the same. The gateway field background/border/
   focus ring live on the **wrapper** div; the inner input is transparent and
   borderless (`textInputClass` / `fieldWrapperClass` constants in
   `Login.svelte`).
@@ -618,13 +618,13 @@ Appliance palette; every value used by the gateway is a `--hv-login-*` or
   `#username`/`#password`/`#recovery-*` native inputs, the modal-based error
   flow and the 2FA code boxes are unchanged by the redesign.
 
-### 6.2 The setup wizard (DSM 7)
+### 6.2 The setup wizard
 
 `frontend/src/routes/SetupWizard.svelte` uses the same gateway vocabulary as
 the login screen (reusing the `--hv-login-*` tokens) plus its own
 `--hv-wizard-*` accents: the per-feature icon hues on the welcome step, the
 amber recovery-code box (`--hv-wizard-recovery-*`) and the emerald "create
-account" CTA (`--hv-wizard-create-grad`). Its text runs on the **DSM slate
+account" CTA (`--hv-wizard-create-grad`). Its text runs on the **gateway slate
 ramp** (`--hv-wizard-text-heading/title/label/soft/body`, slate-900→500) — one
 step lighter than the Appliance ink — and its fields are **white** with a
 hairline shadow (unlike the login's `#F8FAFC` fields). Error borders/text use
@@ -635,7 +635,7 @@ modifiers on raw `input`/`button` utilities (including the `h1` color, which
 `base.css`'s unlayered `h1 { color }` rule would otherwise override), gradients
 as `bg-[image:var(--hv-…)]!`.
 
-- The card header carries the DSM step dots (`setup-stepper-dot`/`-label`/
+- The card header carries the wizard step dots (`setup-stepper-dot`/`-label`/
   `-line` with `class:done`/`class:current`), a gradient progress bar, and the
   brand tile. The 4 steps map to HomeVault's real flow: welcome → account
   (avatar + username + fullname) → password (strength bars + checklist) →
@@ -824,7 +824,7 @@ capture a reference screenshot.
 4. ~~`Users`, `Storage`~~ **done 2026-09-12** — `Users` (card grid / settings sheet / creation, `FolderPicker`+`Modal` kept, `homevault_admin` security guards + quota slider intact), `Storage` (6 tabs: disks / virtual / partitions / removable / encryption / cache, SMART + ring chart + mover kept). **Batch 3 complete.**
 5. ~~`Network`, `VPN`, `Syncthing`, `Downloader`, `CloudSync`~~ **done 2026-09-12** — `Network` (stats + summary + ethernet/wifi tabs + config modals), `VPN` (WireGuard/OpenVPN, QR codes), `Syncthing` (3 tabs, progress), `Downloader` (aria2, `FolderPicker`), `CloudSync` (rclone 3 tabs, sync/config modals). **Batch 4 complete.**
 6. ~~`Restic`, `Chat`, `Explorer`, `Docker`~~ **done 2026-09-12** — `Restic` (repos/creation/detail, snapshots/jobs/schedules, retention policies), `Chat` (side history + message thread + suggestions), `Explorer` (full file manager: places sidebar, breadcrumb, list/grid view, trash, snapshots, rename/compress/perms/preview/collision modals), `Docker` (rail nav + metrics, 6 tabs incl. catalog + compose, inline modals). **Batch 5 complete.**
-7. ~~`Settings`, `VirtualMachines`, `Login`, `SetupWizard`~~ **done 2026-09-12** — `Settings` (category rail + cards, integrated security/monitoring/TLS cards kept, AI + weather — **re-themed 2026-09-14** on the Figma `16-6187` mock: 208 px two-line rail with one tile per category, content header, section/card/row vocabulary shared by the 6 sub-cards; scoped `--hv-settings-*` palette, see §6.3; auto-save replaced by one Save button 2026-09-23), `VirtualMachines` (machine list + detail drawer + catalog/ISO wizard, console/screen overlays), `Login` (auth + 2FA + code recovery, native inputs kept for autofill), `SetupWizard` (stepper + admin creation + recovery + 2FA). **Batch 6 complete.** — **Login re-skinned 2026-09-14** to the DSM 7 gateway (§6.1): pastel gradient + orbs + clock + 380 px card, TOTP progress indicator + countdown ring, shake on error, unlock fade; Tailwind-on-tokens, zero scoped CSS, E2E contract intact. — **SetupWizard re-skinned 2026-09-14** to the same gateway (§6.2): 520 px card + DSM step dots/progress, welcome feature cards, avatar + username/fullname, password strength + checklist, verification summary, amber recovery box, 2FA box; recovery step exercised in `setup.spec.ts` §19.
+7. ~~`Settings`, `VirtualMachines`, `Login`, `SetupWizard`~~ **done 2026-09-12** — `Settings` (category rail + cards, integrated security/monitoring/TLS cards kept, AI + weather — **re-themed 2026-09-14** on the Figma `16-6187` mock: 208 px two-line rail with one tile per category, content header, section/card/row vocabulary shared by the 6 sub-cards; scoped `--hv-settings-*` palette, see §6.3; auto-save replaced by one Save button 2026-09-23), `VirtualMachines` (machine list + detail drawer + catalog/ISO wizard, console/screen overlays), `Login` (auth + 2FA + code recovery, native inputs kept for autofill), `SetupWizard` (stepper + admin creation + recovery + 2FA). **Batch 6 complete.** — **Login re-skinned 2026-09-14** to the approved gateway (§6.1): pastel gradient + orbs + clock + 380 px card, TOTP progress indicator + countdown ring, shake on error, unlock fade; Tailwind-on-tokens, zero scoped CSS, E2E contract intact. — **SetupWizard re-skinned 2026-09-14** to the same gateway (§6.2): 520 px card + wizard step dots/progress, welcome feature cards, avatar + username/fullname, password strength + checklist, verification summary, amber recovery box, 2FA box; recovery step exercised in `setup.spec.ts` §19.
 8. ~~`Terminal`~~ **done 2026-09-12** — `PageLayout` + xterm tabs + infobar in Tailwind-on-tokens, `data-testid="terminal-*"`, zero scoped CSS.
 9. **`Desktop.svelte` (the shell) — documented exception.** Its ~2800 lines of scoped CSS are the **shared chrome CSS** (dock, topbar, launcher, windows, monitor widgets): `hv-*` classes (shared vocabulary, not a per-app prefix), **100% token-driven** (`--hv-*`/semantics — the old `rgba(15,108,189,…)` and `#fcd34d` literals were replaced by tokens/`color-mix`). It is not converted to Tailwind: this `<style>` is the equivalent of a shared `desktop.css`, and a blind migration would break drag/resize, snap zones and monitors. **The unfreeze is complete elsewhere: no screen has a per-app prefix or scoped CSS anymore** (besides the small `Settings.svelte` loader block). — Tightened 2026-09-14: the dock/topbar literals that remained (`border-radius: 16px`, the duplicated `0 2px 4px rgba(0,0,0,.14)` shadow on both pills, `background: #292929` on the tooltip, `.hv-dock-icon-chat`'s inline gradient) moved to `--hv-radius-*`, `--hv-chrome-surface-shadow`, `--hv-tooltip-bg` and `--hv-app-launchpad-grad`. A few decorative literals predating this pass remain outside the rules that were touched — they are not a licence to add more.
 

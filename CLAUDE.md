@@ -556,8 +556,8 @@ and re-capture a reference screenshot.
   recovery screen (`Login` `recoveryMode`), whose successful admin sign-in calls
   `POST /auth/setup/rebaseline` (admin-only) to rewrite the fingerprint. Showing
   the Wizard there dead-ends on "Setup already complete".
-- **`lib/stores/appGate.ts` is the one frontend route guard** (Umbrel's
-  `EnsureUserExists`/`EnsureUserDoesntExist` equivalent). `App.svelte` renders
+- **`lib/stores/appGate.ts` is the one frontend route guard** (the standard
+  route-guard pattern). `App.svelte` renders
   setup/recovery/login/desktop/error from `$appGate.route`; `Login.svelte` must
   **not** fetch `/auth/setup-status` or render `SetupWizard` inline, and
   `api.getSetupStatus()` must throw on failure (never fake `is_first_run: true`,

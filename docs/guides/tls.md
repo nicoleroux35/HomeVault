@@ -2,7 +2,7 @@
 
 **Purpose:** let HomeVault terminate HTTPS itself, so a home admin gets an
 encrypted web UI without standing up a reverse proxy. Opt-in and **additive** —
-the plain-HTTP listener on `PORT` is unchanged. Modelled on OpenMediaVault:
+the plain-HTTP listener on `PORT` is unchanged. Modelled on the standard appliance pattern:
 a self-signed certificate HomeVault generates and renews, or an admin-supplied
 PEM pair, plus an HTTP→HTTPS redirect toggle. No ACME/Let's Encrypt yet (a
 possible later phase). Lives in **Settings > Security > HTTPS/TLS**.
@@ -107,8 +107,9 @@ is active.
 
 ## Not covered / later
 
-- ACME / Let's Encrypt (public trusted certs). TrueNAS does this via DNS-01;
-  HTTP-01 / TLS-ALPN-01 need an open port 80/443, which most home NATs lack.
+- ACME / Let's Encrypt (public trusted certs). DNS-01 avoids the open-port
+  requirement; HTTP-01 / TLS-ALPN-01 need an open port 80/443, which most
+  home NATs lack.
 - Hot rebind without a restart.
 - HTTP/2 is left in the ALPN set (`axum-server` default) — WebSockets
   (Terminal, app-proxy) still negotiate HTTP/1.1; verified to work.

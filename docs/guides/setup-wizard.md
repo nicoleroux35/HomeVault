@@ -43,7 +43,7 @@ external drive) makes the whole identity — accounts, setup fingerprint,
 sessions — survive a reinstall of the system disk. With an empty database and
 no marker files, setup simply runs again.
 
-The Umbrel-style *reboot-during-setup* RAID flow (write credentials to the
+The *reboot-during-setup* RAID flow of the reference design (write credentials to the
 pool, reboot, create the account on the next boot) is **not** implemented.
 HomeVault's wizard now **does** have storage and RAID steps (steps 3 and 4), but
 they only *record the operator's intent*: the pools themselves are still created
@@ -114,8 +114,8 @@ fingerprint only exists to detect a moved system.
 
 ## Frontend route guard — `lib/stores/appGate.ts` (2026-10-08)
 
-The shell decides **once** which screen to render, the equivalent of Umbrel's
-`EnsureUserExists` / `EnsureUserDoesntExist`:
+The shell decides **once** which screen to render, the standard
+route-guard pattern:
 
 - `appGate.refresh()` reads `GET /auth/setup-status`, then:
   `is_first_run` → `setup`; `needs_recovery` → `recovery`; otherwise
