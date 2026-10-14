@@ -804,6 +804,7 @@ class ApiClient {
     smtp_enabled?: boolean;
     webhook_url?: string;
     webhook_enabled?: boolean;
+    webhook_format?: string;
   }) {
     return this.put('/settings/notifications', data);
   }
@@ -1058,7 +1059,7 @@ class ApiClient {
   // ==============================================
 
   async getNotifications() {
-    return this.get('/notifications', { ttl: 0 });
+    return this.get('/notifications', { cache: false });
   }
 
   async markNotificationRead(id: string) {
@@ -1079,12 +1080,154 @@ class ApiClient {
   }
 
   // ==============================================
+  // Scheduled tasks (generic cron engine)
+  // ==============================================
+
+  async getScheduledTasks() {
+    return this.get<{ tasks: ScheduledTask[] }>('/scheduled-tasks', { cache: false });
+  }
+
+  async createScheduledTask(task: {
+    name: string; task_type: string; cron: string; payload: Record<string, unknown>; enabled: boolean;
+  }) {
+    return this.post<ScheduledTask>('/scheduled-tasks', task);
+  }
+
+  async updateScheduledTask(id: string, task: {
+    name: string; task_type: string; cron: string; payload: Record<string, unknown>; enabled: boolean;
+  }) {
+    return this.put<ScheduledTask>(`/scheduled-tasks/${encodeURIComponent(id)}`, task);
+  }
+
+  async deleteScheduledTask(id: string) {
+    return this.delete(`/scheduled-tasks/${encodeURIComponent(id)}`);
+  }
+
+  async runScheduledTaskNow(id: string) {
+    return this.post<ScheduledTask>(`/scheduled-tasks/${encodeURIComponent(id)}/run`, {});
+  }
+
+  async getScheduledTaskRuns(id: string) {
+    return this.get<{ runs: ScheduledTaskRun[] }>(
+      `/scheduled-tasks/${encodeURIComponent(id)}/runs`,
+      { cache: false },
+    );
+  }
+
+  // ==============================================
+  // Metrics history
+  // ==============================================
+
+  async getMetricsHistory(range: '1h' | '24h' | '7d' = '1h') {
+    return this.get<{ range: string; bucket_seconds: number; points: MetricsPoint[] }>(
+      `/metrics/history?range=${encodeURIComponent(range)}`,
+      { ttl: 30000 },
+    );
+  }
+
+  async getMetricsLatest() {
+    return this.get('/metrics/latest', { cache: false });
+  }
+
+  // ==============================================
+  // Notification events (per-event toggles + webhook sink)
+  // ==============================================
+
+  async getNotificationEventsConfig() {
+    return this.get<{ events: { id: string; group: string; label_key: string; enabled: boolean }[]; webhook_format: string | null }>(
+      '/notifications/events/config',
+      { cache: false },
+    );
+  }
+
+  async updateNotificationEventsConfig(body: {
+    events?: Record<string, boolean>;
+    webhook_format?: string;
+  }) {
+    return this.put('/notifications/events/config', body);
+  }
+
+  // ==============================================
+  // Host power management + disk spindown
+  // ==============================================
+
+  async getPowerStatus() {
+    return this.get<{
+      governor: string | null;
+      available_governors: string[];
+      governor_supported: boolean;
+      spindown_supported: boolean;
+    }>('/power/status', { ttl: 10000 });
+  }
+
+  async setPowerGovernor(governor: string) {
+    return this.put('/power/governor', { governor });
+  }
+
+  async hostPowerAction(action: 'reboot' | 'shutdown' | 'suspend') {
+    return this.post(`/power/${encodeURIComponent(action)}`, {});
+  }
+
+  async getPowerSpindown() {
+    return this.get<{ settings: DiskSpindownSetting[] }>('/power/spindown', { cache: false });
+  }
+
+  async setPowerSpindown(setting: {
+    device: string; apm_level?: number | null; spindown_minutes?: number | null;
+  }) {
+    return this.put<{ setting: DiskSpindownSetting; applied: boolean }>('/power/spindown', setting);
+  }
+
+  async applyPowerSpindown() {
+    return this.post('/power/spindown/apply', {});
+  }
+
+  // ==============================================
+  // Snapshot schedules (GFS retention)
+  // ==============================================
+
+  async getSnapshotSchedules() {
+    return this.get<{ schedules: SnapshotSchedule[] }>('/snapshot-schedules', { cache: false });
+  }
+
+  async createSnapshotSchedule(schedule: {
+    pool: string; cron: string; prefix: string; recursive: boolean;
+    gfs_hourly: number; gfs_daily: number; gfs_weekly: number;
+    gfs_monthly: number; gfs_yearly: number; enabled: boolean;
+  }) {
+    return this.post<SnapshotSchedule>('/snapshot-schedules', schedule);
+  }
+
+  async updateSnapshotSchedule(id: string, schedule: {
+    pool: string; cron: string; prefix: string; recursive: boolean;
+    gfs_hourly: number; gfs_daily: number; gfs_weekly: number;
+    gfs_monthly: number; gfs_yearly: number; enabled: boolean;
+  }) {
+    return this.put<SnapshotSchedule>(`/snapshot-schedules/${encodeURIComponent(id)}`, schedule);
+  }
+
+  async deleteSnapshotSchedule(id: string) {
+    return this.delete(`/snapshot-schedules/${encodeURIComponent(id)}`);
+  }
+
+  async runSnapshotScheduleNow(id: string) {
+    return this.post<{ summary: string }>(`/snapshot-schedules/${encodeURIComponent(id)}/run`, {});
+  }
+
+  async getPoolSnapshots(pool: string) {
+    return this.get<{ snapshots: { name: string; created: string; used: number; referenced: number; auto: boolean }[] }>(
+      `/snapshot-schedules/snapshots?pool=${encodeURIComponent(pool)}`,
+      { cache: false },
+    );
+  }
+
+  // ==============================================
   // What's New (release highlights)
   // ==============================================
 
   /** Running version's release highlights + whether this user has seen them. */
   async getWhatsNew() {
-    return this.get('/whats-new', { ttl: 0 });
+    return this.get('/whats-new', { cache: false });
   }
 
   /** Acknowledge the current release so the modal stops showing. */
@@ -1103,7 +1246,7 @@ class ApiClient {
   async getMeta(): Promise<{ contract_version: number; server_version: string } | null> {
     const res = await this.get<{ contract_version: number; server_version: string }>(
       '/meta',
-      { ttl: 0 },
+      { cache: false },
     );
     return res.success && res.data ? res.data : null;
   }
@@ -1140,7 +1283,7 @@ class ApiClient {
   }
 
   async getWireGuardPeerConfig(id: string) {
-    return this.get(`/vpn/wireguard/peers/${encodeURIComponent(id)}`, { ttl: 0 });
+    return this.get(`/vpn/wireguard/peers/${encodeURIComponent(id)}`, { cache: false });
   }
 
   // OpenVPN
@@ -1792,7 +1935,7 @@ class ApiClient {
   }
 
   async getDiskSmartCapabilities(name: string) {
-    return this.get(`/storage/disks/${encodeURIComponent(name)}/smart/capabilities`, { ttl: 0 });
+    return this.get(`/storage/disks/${encodeURIComponent(name)}/smart/capabilities`, { cache: false });
   }
 
   async startDiskSmartTest(name: string, testType: string) {
@@ -1801,7 +1944,7 @@ class ApiClient {
   }
 
   async getDiskSmartTestStatus(name: string) {
-    return this.get(`/storage/disks/${encodeURIComponent(name)}/smart/test`, { ttl: 0 });
+    return this.get(`/storage/disks/${encodeURIComponent(name)}/smart/test`, { cache: false });
   }
 
   async getStoragePartitions() {
@@ -1856,12 +1999,12 @@ class ApiClient {
 
   /** Current scrub / consistency-check status of a virtual disk. */
   async getVirtualDiskScrubStatus(name: string) {
-    return this.get(`/storage/virtual-disks/${encodeURIComponent(name)}/scrub`, { ttl: 0 });
+    return this.get(`/storage/virtual-disks/${encodeURIComponent(name)}/scrub`, { cache: false });
   }
 
   /** Pools present on attached disks but not yet imported ("foreign" pools). */
   async getImportablePools() {
-    return this.get('/storage/importable-pools', { ttl: 0 });
+    return this.get('/storage/importable-pools', { cache: false });
   }
 
   /** Import a foreign ZFS/Btrfs pool (admin). `new_name` renames on import (ZFS). */
@@ -1998,7 +2141,7 @@ class ApiClient {
   }
 
   async chatListModels() {
-    return this.get('/chat/models', { ttl: 0 });
+    return this.get('/chat/models', { cache: false });
   }
 
   async chatPullModel(name: string) {
@@ -2010,7 +2153,7 @@ class ApiClient {
   }
 
   async chatRecommendModels() {
-    return this.get('/chat/models/recommend', { ttl: 0 });
+    return this.get('/chat/models/recommend', { cache: false });
   }
 
   // ==============================================
@@ -2677,6 +2820,67 @@ export interface DirectoryListing {
   total_size: number;
   file_count: number;
   directory_count: number;
+}
+
+// Scheduled tasks (generic cron engine — see docs/guides/scheduled-tasks.md)
+export interface ScheduledTask {
+  id: string;
+  name: string;
+  task_type: 'command' | 'snapshot' | 'smart_test' | 'power';
+  cron: string;
+  payload: string;
+  enabled: boolean;
+  last_run_at: string | null;
+  last_status: string | null;
+  last_error: string | null;
+  next_run_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ScheduledTaskRun {
+  id: string;
+  task_id: string;
+  status: 'running' | 'success' | 'failed';
+  started_at: string;
+  finished_at: string | null;
+  output: string | null;
+}
+
+export interface SnapshotSchedule {
+  id: string;
+  pool: string;
+  enabled: boolean;
+  cron: string;
+  prefix: string;
+  recursive: boolean;
+  gfs_hourly: number;
+  gfs_daily: number;
+  gfs_weekly: number;
+  gfs_monthly: number;
+  gfs_yearly: number;
+  last_run_at: string | null;
+  last_status: string | null;
+  last_error: string | null;
+  next_run_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MetricsPoint {
+  ts: number;
+  cpu: number | null;
+  mem: number | null;
+  load1: number | null;
+  net_rx: number | null;
+  net_tx: number | null;
+  temp: number | null;
+}
+
+export interface DiskSpindownSetting {
+  device: string;
+  apm_level: number | null;
+  spindown_minutes: number | null;
 }
 
 // Export singleton instance

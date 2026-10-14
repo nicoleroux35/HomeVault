@@ -27,7 +27,7 @@
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
   import { cn } from '$lib/utils.js';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
-  import { IconServer, IconDatabase, IconThermometer, IconUsb, IconActivity, IconLock, IconLockOpen, IconShieldCheckered, IconTrash, IconBolt, IconPlus, IconPlayerPlay, IconClock, IconAlertTriangle, IconStack, IconTool } from '@tabler/icons-svelte';
+  import { IconServer, IconDatabase, IconThermometer, IconUsb, IconActivity, IconLock, IconLockOpen, IconShieldCheckered, IconTrash, IconBolt, IconPlus, IconPlayerPlay, IconClock, IconAlertTriangle, IconStack, IconTool, IconCamera } from '@tabler/icons-svelte';
   import { t, translate } from '$lib/stores/i18n';
   import { isAdmin } from '$lib/stores/auth';
 
@@ -105,7 +105,47 @@
 
   let loading = true;
   let heroVisible = false;
-  let activeTab: 'disks' | 'virtual' | 'partitions' | 'removable' | 'encryption' | 'cache' = 'disks';
+
+  // --- Snapshot schedules (GFS) state --------------------------------
+  interface SnapshotScheduleRow {
+    id: string;
+    pool: string;
+    enabled: boolean;
+    cron: string;
+    prefix: string;
+    recursive: boolean;
+    gfs_hourly: number;
+    gfs_daily: number;
+    gfs_weekly: number;
+    gfs_monthly: number;
+    gfs_yearly: number;
+    last_run_at: string | null;
+    last_status: string | null;
+    last_error: string | null;
+    next_run_at: string | null;
+  }
+  interface PoolSnapshotRow {
+    name: string;
+    created: string;
+    used: number;
+    referenced: number;
+    auto: boolean;
+  }
+  let snapshotSchedules: SnapshotScheduleRow[] = [];
+  let snapSchedulesLoaded = false;
+  let snapScheduleModal = false;
+  let snapForm: {
+    id: string | null; pool: string; cron: string; prefix: string; recursive: boolean;
+    gfs_hourly: number; gfs_daily: number; gfs_weekly: number; gfs_monthly: number;
+    gfs_yearly: number; enabled: boolean;
+  } = { id: null, pool: '', cron: '0 */4 * * *', prefix: 'hv-auto', recursive: true,
+        gfs_hourly: 24, gfs_daily: 7, gfs_weekly: 4, gfs_monthly: 12, gfs_yearly: 1, enabled: true };
+  let snapFormError = '';
+  let snapBusyId = '';
+  let snapViewPool = '';
+  let snapViewRows: PoolSnapshotRow[] = [];
+  let snapViewLoading = false;
+  let activeTab: 'disks' | 'virtual' | 'partitions' | 'removable' | 'encryption' | 'cache' | 'snapshots' = 'disks';
 
   interface VirtualDisk {
     name: string;
@@ -208,6 +248,92 @@
   let newShareTarget = '';
   const dlg = createConfirmState();
 
+  // --- Snapshot schedules (GFS) --------------------------------------
+  async function loadSnapshotSchedules() {
+    try {
+      const res = await api.getSnapshotSchedules();
+      snapshotSchedules = res.success ? (res.data?.schedules ?? []) : [];
+    } catch {
+      snapshotSchedules = [];
+    } finally {
+      snapSchedulesLoaded = true;
+    }
+  }
+
+  function openSnapCreate() {
+    snapForm = { id: null, pool: virtualDisks[0]?.name ?? '', cron: '0 */4 * * *', prefix: 'hv-auto',
+                 recursive: true, gfs_hourly: 24, gfs_daily: 7, gfs_weekly: 4,
+                 gfs_monthly: 12, gfs_yearly: 1, enabled: true };
+    snapFormError = '';
+    snapScheduleModal = true;
+  }
+
+  function openSnapEdit(row: SnapshotScheduleRow) {
+    snapForm = { id: row.id, pool: row.pool, cron: row.cron, prefix: row.prefix,
+                 recursive: row.recursive, gfs_hourly: row.gfs_hourly, gfs_daily: row.gfs_daily,
+                 gfs_weekly: row.gfs_weekly, gfs_monthly: row.gfs_monthly,
+                 gfs_yearly: row.gfs_yearly, enabled: row.enabled };
+    snapFormError = '';
+    snapScheduleModal = true;
+  }
+
+  async function saveSnapSchedule() {
+    if (!snapForm.pool.trim()) { snapFormError = $t('tasks.error_name'); return; }
+    snapBusyId = 'form';
+    snapFormError = '';
+    const body = {
+      pool: snapForm.pool.trim(), cron: snapForm.cron.trim(), prefix: snapForm.prefix.trim(),
+      recursive: snapForm.recursive, gfs_hourly: snapForm.gfs_hourly, gfs_daily: snapForm.gfs_daily,
+      gfs_weekly: snapForm.gfs_weekly, gfs_monthly: snapForm.gfs_monthly,
+      gfs_yearly: snapForm.gfs_yearly, enabled: snapForm.enabled,
+    };
+    try {
+      const res = snapForm.id
+        ? await api.updateSnapshotSchedule(snapForm.id, body)
+        : await api.createSnapshotSchedule(body);
+      if (!res.success) { snapFormError = res.message || $t('tasks.error_save'); return; }
+      snapScheduleModal = false;
+      await loadSnapshotSchedules();
+    } catch {
+      snapFormError = $t('tasks.error_save');
+    } finally {
+      snapBusyId = '';
+    }
+  }
+
+  async function runSnapNow(row: SnapshotScheduleRow) {
+    snapBusyId = row.id;
+    try {
+      await api.runSnapshotScheduleNow(row.id);
+      await loadSnapshotSchedules();
+    } finally {
+      snapBusyId = '';
+    }
+  }
+
+  async function askSnapDelete(row: SnapshotScheduleRow) {
+    if (await dlg.ask($t('storage.snapshots.delete_confirm_msg', { pool: row.pool }))) {
+      try {
+        await api.deleteSnapshotSchedule(row.id);
+      } finally {
+        await loadSnapshotSchedules();
+      }
+    }
+  }
+
+  async function viewPoolSnapshots(pool: string) {
+    snapViewPool = pool;
+    snapViewLoading = true;
+    try {
+      const res = await api.getPoolSnapshots(pool);
+      snapViewRows = res.success ? (res.data?.snapshots ?? []) : [];
+    } catch {
+      snapViewRows = [];
+    } finally {
+      snapViewLoading = false;
+    }
+  }
+
   onMount(async () => {
     await Promise.all([
       loadDisks(),
@@ -217,12 +343,14 @@
       loadEncryptedVolumes(),
       loadCache(),
       loadImportablePools(),
+      loadSnapshotSchedules(),
     ]);
     loading = false;
     setTimeout(() => heroVisible = true, 100);
 
     removableRefreshInterval = setInterval(() => {
       if (activeTab === 'removable') loadRemovable();
+      if (activeTab === 'snapshots') loadSnapshotSchedules();
     }, 10000);
 
     if (typeof document !== 'undefined') {
@@ -792,9 +920,11 @@
     { id: 'partitions', label: $t('storage.tab_partitions'), icon: IconActivity, count: partitions.length },
     { id: 'removable', label: $t('storage.tab_removable'), icon: IconUsb, count: removable.length },
     { id: 'encryption', label: $t('encryption.tab'), icon: IconLock, count: encryptedVolumes.length },
-    { id: 'cache', label: $t('cache.tab'), icon: IconBolt, count: cacheShares.length || undefined }
+    { id: 'cache', label: $t('cache.tab'), icon: IconBolt, count: cacheShares.length || undefined },
+    { id: 'snapshots', label: $t('storage.tabs.snapshots'), icon: IconCamera, count: snapshotSchedules.length || undefined }
   ]}
   bind:activeTab
+  onTabChange={(id) => { if (id === 'snapshots') loadSnapshotSchedules(); }}
   footerMode="status"
 >
   {#snippet icon()}
@@ -1132,6 +1262,82 @@
             {/if}
           </div>
         </div>
+      {:else if activeTab === 'snapshots'}
+        <div data-testid="storage-snapshots" class="flex flex-col gap-4 max-w-[900px]">
+          <div class="flex items-center justify-between gap-3">
+            <p class="m-0 text-c-label text-[var(--hv-shell-text)]">{$t('storage.snapshots.heading')}</p>
+            <Button variant="primary" data-testid="snapshots-new-btn" onclick={openSnapCreate}>
+              <IconPlus size={16} stroke={2} /> {$t('storage.snapshots.new')}
+            </Button>
+          </div>
+
+          {#if !snapSchedulesLoaded}
+            <EmptyState title={$t('storage.analyzing_devices')} />
+          {:else if snapshotSchedules.length === 0}
+            <EmptyState data-testid="snapshots-empty" title={$t('storage.snapshots.empty_title')} description={$t('storage.snapshots.empty_desc')} />
+          {:else}
+            <div class="flex flex-col gap-3">
+              {#each snapshotSchedules as row (row.id)}
+                <div data-testid="snapshots-schedule" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
+                  <div class="flex items-start justify-between gap-3">
+                    <div class="flex flex-col gap-1">
+                      <span class="text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{row.pool}</span>
+                      <span class="text-xs text-[var(--hv-shell-text-2)]"><code>{row.cron}</code> · {$t('storage.snapshots.prefix')}: {row.prefix}{row.recursive ? ' · ' + $t('storage.snapshots.recursive') : ''}</span>
+                      <span class="text-xs text-[var(--hv-shell-text-2)]">
+                        {$t('storage.snapshots.gfs_help', { h: String(row.gfs_hourly), d: String(row.gfs_daily), w: String(row.gfs_weekly), m: String(row.gfs_monthly), y: String(row.gfs_yearly) })}
+                      </span>
+                      {#if row.last_status === 'failed'}
+                        <span class="text-xs text-[var(--hv-danger)]" data-testid="snapshots-schedule-error">{row.last_error}</span>
+                      {/if}
+                    </div>
+                    <div class="flex items-center gap-1">
+                      <button type="button" class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic" data-testid="snapshots-run-{row.id}" aria-label={$t('storage.snapshots.run_now')} disabled={snapBusyId === row.id} onclick={() => runSnapNow(row)}>
+                        <IconPlayerPlay size={18} stroke={1.8} />
+                      </button>
+                      <button type="button" class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic" data-testid="snapshots-view-{row.id}" aria-label={$t('storage.snapshots.snapshots_title')} onclick={() => viewPoolSnapshots(row.pool)}>
+                        <IconCamera size={18} stroke={1.8} />
+                      </button>
+                      <button type="button" class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic" data-testid="snapshots-edit-{row.id}" aria-label={$t('tasks.edit', { name: row.pool })} onclick={() => openSnapEdit(row)}>
+                        <IconTool size={18} stroke={1.8} />
+                      </button>
+                      <button type="button" class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic" data-testid="snapshots-delete-{row.id}" aria-label={$t('tasks.delete', { name: row.pool })} onclick={() => askSnapDelete(row)}>
+                        <IconTrash size={18} stroke={1.8} />
+                      </button>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-3 mt-2 text-xs text-[var(--hv-shell-text-2)]">
+                    <span class="inline-flex items-center gap-1"><IconClock size={14} /> {row.last_status ?? '—'} {row.last_run_at ? new Date(row.last_run_at).toLocaleString() : ''}</span>
+                    {#if row.next_run_at}<span>→ {new Date(row.next_run_at).toLocaleString()}</span>{/if}
+                    <span class={row.enabled ? 'text-[var(--hv-success)]' : 'text-[var(--hv-shell-text-2)]'}>{row.enabled ? $t('storage.snapshots.enabled') : $t('tasks.enabled_off')}</span>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+
+          {#if snapViewPool}
+            <div data-testid="snapshots-pool-list" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
+              <div class="flex items-center justify-between gap-2 mb-2">
+                <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('storage.snapshots.snapshots_title')} — {snapViewPool}</h3>
+                <button type="button" class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic" aria-label={$t('common.cancel')} onclick={() => (snapViewPool = '')}>✕</button>
+              </div>
+              {#if snapViewLoading}
+                <p class="m-0 text-xs text-[var(--hv-shell-text-2)]">{$t('storage.analyzing_devices')}</p>
+              {:else if snapViewRows.length === 0}
+                <p class="m-0 text-xs text-[var(--hv-shell-text-2)]">{$t('storage.snapshots.snapshots_empty')}</p>
+              {:else}
+                <ul class="m-0 p-0 list-none flex flex-col gap-1 max-h-64 overflow-auto">
+                  {#each snapViewRows as snap (snap.name)}
+                    <li class="flex items-center justify-between gap-2 text-xs">
+                      <span class="font-mono truncate">{snap.name}</span>
+                      {#if snap.auto}<span class="text-[var(--hv-primary)] text-[10px] uppercase">{$t('storage.snapshots.snapshots_auto')}</span>{/if}
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </div>
+          {/if}
+        </div>
       {/if}
     </div>
   {/if}
@@ -1155,6 +1361,43 @@
     oncancel={() => dlg.settle(false)}
   />
 </PageLayout>
+
+<!-- SNAPSHOT SCHEDULE MODAL -->
+<Modal open={snapScheduleModal} title={snapForm.id ? $t('storage.snapshots.edit_title') : $t('storage.snapshots.new_title')} size="md" onclose={() => (snapScheduleModal = false)}>
+  <div class="flex flex-col gap-4 p-1">
+    {#if snapFormError}
+      <p data-testid="snapshots-form-error" role="alert" class="m-0 text-c-label text-[var(--hv-danger)]">{snapFormError}</p>
+    {/if}
+    <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]">
+      <span>{$t('storage.snapshots.col_pool')}</span>
+      <input class={inpSel} type="text" bind:value={snapForm.pool} placeholder="tank/data" />
+    </label>
+    <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]">
+      <span>{$t('storage.snapshots.col_cron')}</span>
+      <input class={inpSel} type="text" bind:value={snapForm.cron} placeholder="0 3 * * *" />
+    </label>
+    <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]">
+      <span>{$t('storage.snapshots.prefix')}</span>
+      <input class={inpSel} type="text" bind:value={snapForm.prefix} placeholder="hv-auto" />
+    </label>
+    <Toggle bind:checked={snapForm.recursive} label={$t('storage.snapshots.recursive')} />
+    <div class="grid grid-cols-2 gap-3" data-testid="snapshots-gfs-fields">
+      <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]"><span>H</span><input class={inpSel} type="number" min="0" max="1024" bind:value={snapForm.gfs_hourly} /></label>
+      <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]"><span>D</span><input class={inpSel} type="number" min="0" max="1024" bind:value={snapForm.gfs_daily} /></label>
+      <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]"><span>W</span><input class={inpSel} type="number" min="0" max="1024" bind:value={snapForm.gfs_weekly} /></label>
+      <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]"><span>M</span><input class={inpSel} type="number" min="0" max="1024" bind:value={snapForm.gfs_monthly} /></label>
+      <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]"><span>Y</span><input class={inpSel} type="number" min="0" max="1024" bind:value={snapForm.gfs_yearly} /></label>
+    </div>
+    <p class="m-0 text-xs text-[var(--hv-shell-text-2)]">{$t('storage.snapshots.gfs_help', { h: String(snapForm.gfs_hourly), d: String(snapForm.gfs_daily), w: String(snapForm.gfs_weekly), m: String(snapForm.gfs_monthly), y: String(snapForm.gfs_yearly) })}</p>
+    <Toggle bind:checked={snapForm.enabled} label={$t('storage.snapshots.enabled')} />
+  </div>
+  {#snippet footer()}
+    <div class="flex gap-2.5 justify-end">
+      <Button variant="ghost" onclick={() => (snapScheduleModal = false)}>{$t('common.cancel')}</Button>
+      <Button variant="primary" data-testid="snapshots-save-btn" onclick={saveSnapSchedule} disabled={snapBusyId === 'form'}>{$t('common.save')}</Button>
+    </div>
+  {/snippet}
+</Modal>
 
 <!-- CACHE SHARE MODAL -->
 <Modal open={showCacheShareModal} title={$t('cache.add_share')} size="md" onclose={() => showCacheShareModal = false}>

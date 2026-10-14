@@ -653,6 +653,8 @@ by the background engine in `src/notification_engine.rs`. See
 | POST | `/notifications/read-all` | auth | `handle_notifications_mark_all_read` |
 | POST | `/notifications/{id}/read` | auth | `handle_notification_mark_read` |
 | DELETE | `/notifications/{id}` | auth | `handle_notification_delete` |
+| GET | `/notifications/events/config` | admin | `handle_notification_events_config_get` — event catalog + per-event state + `webhook_format` |
+| PUT | `/notifications/events/config` | admin | `handle_notification_events_config_update` — `{ events?: {id: bool}, webhook_format?: "generic"\|"slack"\|"discord" }` |
 
 ## What's New — `whats-new/*` (`auth`)
 
@@ -810,6 +812,58 @@ must not travel in a URL query string): `GET /notifications/events/ticket`
 (auth) issues a short-lived ticket, then the actual `GET /events?ticket=...`
 SSE stream (no header-based auth — the ticket is one-time use) pushes live
 notification events to the client.
+
+## Scheduled Tasks — `scheduled-tasks/*` (admin)
+
+The generic cron engine (commands, pool snapshots, SMART self-tests, host
+power actions). See [guides/scheduled-tasks.md](./guides/scheduled-tasks.md).
+
+| Method | Path | Auth | Handler |
+|--------|------|------|---------|
+| GET | `/scheduled-tasks` | admin | `handle_tasks_list` |
+| POST | `/scheduled-tasks` | admin | `handle_task_create` — payload validated at creation |
+| PUT | `/scheduled-tasks/{id}` | admin | `handle_task_update` (also enable/disable) |
+| DELETE | `/scheduled-tasks/{id}` | admin | `handle_task_delete` |
+| POST | `/scheduled-tasks/{id}/run` | admin | `handle_task_run_now` — runs regardless of cron |
+| GET | `/scheduled-tasks/{id}/runs` | admin | `handle_task_runs` — 50 newest |
+
+## Metrics history — `metrics/*` (auth)
+
+| Method | Path | Auth | Handler |
+|--------|------|------|---------|
+| GET | `/metrics/history?range=1h\|24h\|7d` | auth | `handle_metrics_history` — bucketed averages (`bucket_seconds` + `points[]`, gaps as `null`s) |
+| GET | `/metrics/latest` | auth | `handle_metrics_latest` — newest stored sample |
+
+Read-only: samples are written only by the `metrics` collector loop.
+
+## Host power — `power/*` (admin)
+
+See [guides/power.md](./guides/power.md).
+
+| Method | Path | Auth | Handler |
+|--------|------|------|---------|
+| GET | `/power/status` | admin | `handle_power_status` — governor + capability flags |
+| PUT | `/power/governor` | admin | `handle_power_governor_set` — `{ governor }` |
+| POST | `/power/reboot` | admin | `handle_power_action` — host reboot |
+| POST | `/power/shutdown` | admin | `handle_power_action` — host poweroff |
+| POST | `/power/suspend` | admin | `handle_power_action` — host suspend |
+| GET | `/power/spindown` | admin | `handle_power_spindown_get` |
+| PUT | `/power/spindown` | admin | `handle_power_spindown_set` — `{ device, apm_level?, spindown_minutes? }`, applied immediately |
+| POST | `/power/spindown/apply` | admin | `handle_power_spindown_apply` — re-apply all saved settings |
+
+## Snapshot schedules — `snapshot-schedules/*` (admin)
+
+Cron-driven pool snapshots with GFS retention. See
+[guides/snapshots.md](./guides/snapshots.md).
+
+| Method | Path | Auth | Handler |
+|--------|------|------|---------|
+| GET | `/snapshot-schedules` | admin | `handle_snapshot_schedules_list` |
+| POST | `/snapshot-schedules` | admin | `handle_snapshot_schedule_create` — `{ pool, cron, prefix, recursive, gfs_hourly..yearly, enabled }` |
+| PUT | `/snapshot-schedules/{id}` | admin | `handle_snapshot_schedule_update` |
+| DELETE | `/snapshot-schedules/{id}` | admin | `handle_snapshot_schedule_delete` — snapshots are kept |
+| POST | `/snapshot-schedules/{id}/run` | admin | `handle_snapshot_schedule_run_now` — create + GFS prune now |
+| GET | `/snapshot-schedules/snapshots?pool=` | admin | `handle_snapshot_pool_list` — pool snapshots, `auto` tags the schedules' own prefix |
 
 ## Health endpoint detail
 

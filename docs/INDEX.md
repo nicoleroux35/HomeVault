@@ -81,8 +81,17 @@ methods, and notable invariants.
 | System Journal (log viewer, auto-cleanup) | [guides/journal.md](./guides/journal.md) |
 | Widgets (desktop monitor catalog) | [guides/widgets.md](./guides/widgets.md) |
 | Web shortcuts (pinned desktop links, SSRF-guarded metadata fetch) | [guides/shortcuts.md](./guides/shortcuts.md) |
+| Scheduled Tasks (generic cron engine: commands, snapshots, SMART, power) | [guides/scheduled-tasks.md](./guides/scheduled-tasks.md) |
+| Metrics (historical CPU/memory/load/network/temperature charts) | [guides/metrics.md](./guides/metrics.md) |
+| Power (host power management, CPU governor, disk spindown) | [guides/power.md](./guides/power.md) |
 | Design system (single UI identity — tokens, components, page anatomy) | [guides/design-system.md](./guides/design-system.md) |
 | Development workflow (multi-instance `.local`, real-VM tests, client contract) | [guides/development.md](./guides/development.md) |
+
+## Build & distribution
+
+| Topic | Guide |
+|-------|-------|
+| HomeVaultOS bootable images (ready-to-use ISOs — variant A live-persistent, variant B self-install) | [guides/os-image.md](./guides/os-image.md) |
 
 ## Doc conventions
 

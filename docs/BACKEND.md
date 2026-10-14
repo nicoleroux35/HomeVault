@@ -274,7 +274,10 @@ the full list; line numbers drift, grep for `tokio::spawn`):
 `ransomware_watcher::run_watcher_loop`,
 `restic_scheduler::run_scheduler_loop` (computes next run via
 `compute_next_run`, marks jobs `completed`/`failed`), `cache_scheduler`,
-`antivirus_scheduler`, `journal_cleanup_scheduler`, and
+`antivirus_scheduler`, `journal_cleanup_scheduler`,
+`scheduled_tasks_scheduler` (generic cron engine),
+`snapshot_scheduler` (GFS-pruned pool snapshots),
+`metrics::run_collector_loop` (60 s samples), and
 `notification_engine::run_notification_loop` (polls every 60s, turning
 health-check status transitions — `HealthService::run_all_checks`, in-memory
 dedup so the same problem doesn't re-notify every tick — and new restic

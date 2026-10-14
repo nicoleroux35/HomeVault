@@ -68,7 +68,7 @@ visible from 901px, icon only below that — the touch target stays
 - Search bar with fuzzy matching on app names/descriptions
 - Keyboard navigation (arrows + Enter)
 
-### 24 available applications
+### 26 available applications
 
 | # | Application | Category | Description |
 |---|---|---|---|
@@ -96,8 +96,11 @@ visible from 901px, icon only below that — the touch target stays
 | 22 | Settings | System | Server configuration |
 | 23 | My account | System | Personal profile and security |
 | 24 | Virtual Machines | System | VMs and containers via Incus — guided wizard, shell console, graphical screen, snapshots |
+| 25 | Scheduled Tasks | System | Generic cron engine — commands, pool snapshots, SMART self-tests, power actions, run history |
+| 26 | Metrics | Monitoring | Historical performance charts (CPU, memory, load, network, temperature) over 1 h / 24 h / 7 d |
 
-> That is 21 entries in `appDefs` + Terminal + Settings + My account.
+> That is 23 entries in `appDefs` + Terminal + Settings + My account. Storage gained a 7th tab
+> ("Snapshots" — scheduled snapshots with GFS retention) and Settings gained the Power card.
 > The 27 Svelte routes = these 24 apps + Login + Setup Wizard + Desktop.
 
 ### Floating monitoring widgets (11 panels)
