@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : share_perm_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Share permission entries: per-user/per-group grants recorded
+ *   alongside their application to filesystem ACLs.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
+//! Share permission entries (user/group grants).
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;

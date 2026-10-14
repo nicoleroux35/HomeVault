@@ -1,3 +1,32 @@
+/* =============================================================================
+ * File          : rate_limit.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   In-memory rate limiting: each key (a client IP, or "action:username"
+ *   for admin actions) may perform at most `max_requests` actions inside a
+ *   time window; further attempts get HTTP 429 Too Many Requests. State
+ *   lives in memory only and resets on restart.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - parking_lot (>= 0.12)
+ *
+ * Usage:
+ *   Built in src/web/mod.rs as `AppState.admin_rate_limiter` (10 actions
+ *   per 60 s) and consulted by handlers such as user creation
+ *   (src/handlers/users.rs). The `rate_limit_middleware` function itself is
+ *   not currently wired onto any router.
+ * =============================================================================
+ */
+
+//! In-memory sliding-window rate limiter keyed by an arbitrary string (client
+//! IP or "action:username"). Each key keeps a counter that resets when the
+//! window expires; exceeding `max_requests` inside the window returns 429.
+
 use axum::{
     extract::{Request, State},
     http::StatusCode,

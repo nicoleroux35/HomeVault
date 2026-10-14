@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : index.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Barrel export of the page composites: the standardized page anatomy
+ *   (layout, cards, table, forms, states) shared by every app screen so no
+ *   screen hand-rolls its own skeleton. See docs/guides/design-system.md.
+ *
+ * Dependencies:
+ *   - none (re-exports only)
+ *
+ * Usage:
+ *   `import { PageLayout, DataTable, ... } from '$lib/components/app'`.
+ * =============================================================================
+ */
+
 /**
  * HOMEVAULT DESIGN SYSTEM — page composites (`app/` layer)
  *

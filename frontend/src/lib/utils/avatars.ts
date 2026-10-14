@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : avatars.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Shared avatar-tile palette for the Users and Groups screens: every stop
+ *   is a background for white initials and therefore clears the 4.5:1
+ *   contrast floor (the two retired stops that failed it are documented in
+ *   the code; a test guards the rule). The pick is deterministic — the same
+ *   name always lands on the same colour.
+ *
+ * Dependencies:
+ *   - none
+ *
+ * Usage:
+ *   `avatarColorFor(username)` in Users.svelte / Groups.svelte tiles.
+ * =============================================================================
+ */
+
 /**
  * Shared avatar palette — the single source of truth for the Users and
  * Groups avatar tiles (both used to carry their own copy, which is how the

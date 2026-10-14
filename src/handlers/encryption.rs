@@ -1,3 +1,29 @@
+/* =============================================================================
+ * File          : encryption.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Standalone LUKS2 disk-encryption endpoints: list volumes with their live
+ *   locked/unlocked status, create a volume on an unused device (format,
+ *   passphrase, filesystem), unlock and lock it, and permanently erase its
+ *   data (LUKS key slots + metadata) with explicit confirmation. Reads are
+ *   auth-only; mutations are admin-only.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *   - uuid (>= 1.0)
+ *
+ * Usage:
+ *   Routes under /api/encryption in src/web/mod.rs; the crypto work is
+ *   delegated to crate::encryption, metadata stored via
+ *   EncryptedVolumeRepository.
+ * =============================================================================
+ */
+
 //! HTTP handlers for standalone LUKS2 disk encryption (manual unlock only).
 
 use crate::disk::DiskService;

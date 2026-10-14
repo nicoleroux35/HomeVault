@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : backupJobs.svelte.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 13/10/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Persistent backup/restore job tracking for the floating progress
+ *   island. Module-level state (not per-component) so a job keeps reporting
+ *   while the operator navigates elsewhere; trackJob subscribes to the
+ *   job's SSE progress stream, jobs settle to done/failed and stay listed
+ *   until dismissed. Tracking is idempotent per job id.
+ *
+ * Dependencies:
+ *   - svelte (>= 5, runes)
+ *
+ * Usage:
+ *   trackJob(jobId, label) right after starting a backup/restore;
+ *   trackedJobs()/activeTrackedJobs() feed the island.
+ * =============================================================================
+ */
+
 /**
  * Persistent backup/restore job tracking for the floating progress island.
  *

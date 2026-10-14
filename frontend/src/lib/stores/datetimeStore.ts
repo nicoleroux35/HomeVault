@@ -1,3 +1,24 @@
+/* =============================================================================
+ * File          : datetimeStore.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Date/time display preferences (European/American/Asian date order,
+ *   12/24-hour clock, or follow the system), persisted in localStorage;
+ *   the mapping helpers translate the choice into Intl options.
+ *
+ * Dependencies:
+ *   - svelte (>= 5)
+ *
+ * Usage:
+ *   datetimeStore + getDateLocale/getHour12Setting wherever dates or times
+ *   are formatted.
+ * =============================================================================
+ */
+
 import { writable } from 'svelte/store';
 
 /** Date-display strategy: system-default, European (DD/MM), American (MM/DD), or Asian (YYYY/MM). */

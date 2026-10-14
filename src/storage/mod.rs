@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : mod.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Data storage layer: the SQLite database bootstrap, JSON-file storage,
+ *   and one repository module per feature table — every persistence path
+ *   in the application goes through this layer.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ *
+ * Usage:
+ *   Re-exported through crate::storage; see docs/BACKEND.md.
+ * =============================================================================
+ */
+
 //! Data storage layer: database, JSON files, repositories, and transactional logic.
 
 pub mod antivirus_repo;
@@ -38,6 +58,7 @@ pub mod user_config;
 pub mod user_home_repo;
 pub mod user_repo;
 pub mod vpn_peer_repo;
+pub mod whats_new_repo;
 pub mod widget_repo;
 
 pub use antivirus_repo::{AntivirusRepository, AvScan, AvSettings, AvThreat};
@@ -76,3 +97,4 @@ pub use user_2fa_repo::User2faRepository;
 pub use user_config::{UserConfig, UserConfigError, UserConfigManager};
 pub use user_repo::UserRepository;
 pub use widget_repo::WidgetRepository;
+pub use whats_new_repo::WhatsNewRepository;

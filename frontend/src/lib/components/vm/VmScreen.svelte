@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : VmScreen.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 13/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Graphical screen for an ISO-installed VM: noVNC client relaid by the
+       backend to the VM's loopback VNC server, single-use ticket,
+       admin-only.
+
+     Dependencies:
+       - svelte (>= 5), @novnc/novnc
+
+     Usage:
+       Opened from the Virtual Machines app.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * Graphical screen for an ISO-install VM. noVNC (`@novnc/novnc`) connected to

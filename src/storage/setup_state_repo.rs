@@ -1,3 +1,21 @@
+/* =============================================================================
+ * File          : setup_state_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 12/10/2026
+ * Last modified : 12/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Durable first-run setup state stored alongside the account data
+ *   (machine identity hash powering hardware-change recovery).
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
 //! Durable first-run setup state, stored alongside the account data.
 //!
 //! The existence of a row in `users` with the admin role is the **single source

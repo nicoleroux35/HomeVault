@@ -1,3 +1,20 @@
+<!-- ========================================================================
+     File          : VPN.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The VPN app: WireGuard server status and peer management (create with
+     config/QR download, revoke), OpenVPN profile creation and control.
+
+     Dependencies:
+       - svelte (>= 5), theme + app/ composites, $lib/services/api
+
+     Usage:
+     Opened as a desktop window app (admin only).
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import QRCode from 'qrcode';

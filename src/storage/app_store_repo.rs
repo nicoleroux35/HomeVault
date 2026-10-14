@@ -1,3 +1,21 @@
+/* =============================================================================
+ * File          : app_store_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Community app-store registry: the extra git sources the admin adds
+ *   to the Apps Center, with sync state.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
 //! Storage layer for community app stores (the extra git-repo sources the
 //! admin adds to the Docker one-click catalog). The built-in "homevault"
 //! store is embedded in the binary and never has a row here - this table

@@ -1,3 +1,23 @@
+<!-- ========================================================================
+     File          : PageLayout.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       The one standard anatomy for every in-window app screen: flush window
+       header, optional left sidebar rail, optional toolbar, scrolling body
+       and optional footer — composed from the desktop chrome so every app
+       window behaves identically.
+
+     Dependencies:
+       - svelte (>= 5), desktop/Window* chrome
+
+     Usage:
+       `import { PageLayout } from '$lib/components/app'` as every app
+       screen's root.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM — PageLayout (page composite, `app/` layer)

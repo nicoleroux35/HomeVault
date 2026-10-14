@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : cache_scheduler.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Background scheduler for the cache-tier mover: polls on a fixed
+ *   interval and runs the mover when the configured cron schedule is due
+ *   (only when the mover is enabled in the cache settings).
+ *
+ * Dependencies:
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Spawned once at startup in src/web/mod.rs.
+ * =============================================================================
+ */
+
 //! Background scheduler for the cache-tier mover.
 //!
 //! Mirrors `restic_scheduler`: polls every `POLL_INTERVAL_SECS` and runs the

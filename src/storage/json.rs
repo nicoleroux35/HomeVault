@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : json.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Tiny typed JSON-file storage: load/save a serde type under a key in
+ *   the data directory (atomic writes underneath) — the persistence used
+ *   for settings that live outside the database.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0), thiserror (>= 2), storage/atomic
+ *
+ * Usage:
+ *   SnmpService settings and similar settings-backed modules.
+ * =============================================================================
+ */
+
+//! Tiny typed JSON-file storage (load/save under a key, atomic writes).
+
 use crate::storage::atomic::{AtomicWriteError, AtomicWriter};
 use serde::{Deserialize, Serialize};
 use std::fs;

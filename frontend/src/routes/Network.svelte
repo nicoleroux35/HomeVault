@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : Network.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The Network app: interface inventory and details, configuration editor
+     (IP/gateway/DNS), Wi-Fi scan and association, diagnostics, public-IP
+     and service status.
+
+     Dependencies:
+       - svelte (>= 5), theme + app/ composites, $lib/services/api
+
+     Usage:
+     Opened as a desktop window app.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { api } from '$lib/services/api';

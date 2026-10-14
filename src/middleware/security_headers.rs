@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : security_headers.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Middleware that adds the browser-security response headers to every
+ *   response: Content-Security-Policy, HSTS (only when the request actually
+ *   arrived over TLS), plus frame, MIME-type, Referrer and Permissions
+ *   policies. The CSP connect-src list is a deliberate allow-list — any new
+ *   host the browser must talk to has to be added there on purpose.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *
+ * Usage:
+ *   Registered as a global layer in src/web/mod.rs; the `ArrivedOverTls`
+ *   marker is inserted by the HTTPS listener (see web::run).
+ * =============================================================================
+ */
+
 use axum::{
     extract::Request,
     http::{header, HeaderValue, StatusCode},

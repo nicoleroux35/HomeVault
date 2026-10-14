@@ -1,3 +1,19 @@
+<!-- ========================================================================
+     File          : NotificationBellIcon.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Inline bell SVG glyph for the notification affordances.
+
+     Dependencies:
+       - svelte (>= 5)
+
+     Usage:
+       Topbar bell / NotificationCenter header.
+     ======================================================================== -->
 <script lang="ts">
   let { size = 24, strokeWidth = 2, ...rest }: { size?: number; strokeWidth?: number; [key: string]: any } = $props();
 </script>

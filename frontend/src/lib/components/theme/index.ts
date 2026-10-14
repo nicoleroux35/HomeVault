@@ -1,3 +1,24 @@
+/* =============================================================================
+ * File          : index.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Barrel export of the design-system components. The interactive
+ *   primitives delegate to the vendored components/ui layer (shadcn-svelte /
+ *   bits-ui); the legacy layout components were deleted once their last
+ *   consumer migrated to the app/ layer.
+ *
+ * Dependencies:
+ *   - none (re-exports only)
+ *
+ * Usage:
+ *   `import { Button, Modal, ... } from '$lib/components/theme'`.
+ * =============================================================================
+ */
+
 /**
  * HOMEVAULT DESIGN SYSTEM - Component Exports
  *

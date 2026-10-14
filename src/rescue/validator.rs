@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : validator.rs
+ * Author        : Nicolas Le Roux
+ * Author note  : security boundary — every rescue input passes here
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   SecurityValidator: validates every file path and block device before a
+ *   rescue tool touches it — path-traversal rejection, device allow-listing
+ *   and existence checks. The reason arbitrary recovery tools can be
+ *   exposed through the API safely.
+ *
+ * Dependencies:
+ *   - none (std::path only)
+ *
+ * Usage:
+ *   Called by rescue/service.rs before every tool invocation.
+ * =============================================================================
+ */
+
 use super::models::RescueError;
 use std::path::{Path, PathBuf};
 

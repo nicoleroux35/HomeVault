@@ -1,3 +1,22 @@
+<!-- ========================================================================
+     File          : Select.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Design-system single-select dropdown wrapping the vendored bits-ui
+       Select: portalled to <body> (never clipped by a window), full
+       keyboard/ARIA behaviour inherited. Single-select only — the old
+       multiple/searchable options are gone with the hand-rolled listbox.
+
+     Dependencies:
+       - svelte (>= 5), components/ui/select (vendored)
+
+     Usage:
+       `import { Select } from '$lib/components/theme'`.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM - Select Component

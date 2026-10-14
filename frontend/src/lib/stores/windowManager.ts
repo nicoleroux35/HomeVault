@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : windowManager.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Desktop window manager: open/close/focus/minimize/maximize, z-order and
+ *   per-app accent colour for the windowing shell. Initial geometry
+ *   cascades clear of the desktop chrome and clamps to the viewport; under
+ *   the 820 px breakpoint new windows open maximized (a floating window
+ *   could not fit a phone screen). A user resize sets userResized, which
+ *   permanently disables the content-fit auto-grow for that window.
+ *
+ * Dependencies:
+ *   - svelte (>= 5)
+ *
+ * Usage:
+ *   windowManager from Desktop.svelte / WindowFrame.svelte / the launcher.
+ * =============================================================================
+ */
+
 import { writable } from 'svelte/store';
 import { applySnap, DEFAULT_SNAP_CONFIG } from '$lib/utils/snapUtils';
 

@@ -73,7 +73,7 @@ methods, and notable invariants.
 | Apps Center | [guides/apps-center.md](./guides/apps-center.md) |
 | Server control (restart/shutdown) | [guides/server-control.md](./guides/server-control.md) |
 | Health monitoring | [guides/health.md](./guides/health.md) |
-| Notifications (health/backup alerts, email, webhook) | [guides/notifications.md](./guides/notifications.md) |
+| Notifications (persistent center, health/backup alerts, email, webhook, What's New) | [guides/notifications.md](./guides/notifications.md) |
 | Antivirus (ClamAV) | [guides/antivirus.md](./guides/antivirus.md) |
 | Anti-Ransomware (honeypots, rate detection) | [guides/ransomware.md](./guides/ransomware.md) |
 | Firewall (ufw) | [guides/firewall.md](./guides/firewall.md) |
@@ -82,6 +82,7 @@ methods, and notable invariants.
 | Widgets (desktop monitor catalog) | [guides/widgets.md](./guides/widgets.md) |
 | Web shortcuts (pinned desktop links, SSRF-guarded metadata fetch) | [guides/shortcuts.md](./guides/shortcuts.md) |
 | Design system (single UI identity — tokens, components, page anatomy) | [guides/design-system.md](./guides/design-system.md) |
+| Development workflow (multi-instance `.local`, real-VM tests, client contract) | [guides/development.md](./guides/development.md) |
 
 ## Doc conventions
 

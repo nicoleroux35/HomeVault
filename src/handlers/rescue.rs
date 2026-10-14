@@ -1,3 +1,32 @@
+/* =============================================================================
+ * File          : rescue.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Data-recovery endpoints: tool availability check, device listing, disk
+ *   cloning with ddrescue (background job with live SSE progress and a
+ *   status endpoint), partition analysis and rebuild with TestDisk, file
+ *   carving with PhotoRec, and mdadm array diagnose/repair. All endpoints
+ *   are admin-only; every request's options are validated by the rescue
+ *   SecurityValidator before a tool runs.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/rescue in src/web/mod.rs; tool execution delegated to
+ *   crate::rescue::RescueService (see docs/guides/rescue.md).
+ * =============================================================================
+ */
+
+//! Data-recovery endpoints (ddrescue cloning, TestDisk analyze/rebuild,
+//! PhotoRec carving, mdadm repair) — all admin-only, options validated
+//! before execution.
+
 use crate::sse::{JobType, PROGRESS_MANAGER};
 use axum::{extract::Path, extract::State, http::HeaderMap, response::Response, Json, Router};
 use serde::{Deserialize, Serialize};

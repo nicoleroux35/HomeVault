@@ -1,3 +1,27 @@
+/* =============================================================================
+ * File          : compose.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Docker Compose project management: writes each app's compose file under
+ *   the compose directory, renders the {{DATA_DIR}}/{{PORT}} template
+ *   placeholders, and drives the docker compose CLI (up/down/restart/ps,
+ *   config validation) for install, update and uninstall flows.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0), thiserror (>= 2), tokio (>= 1.52)
+ *
+ * Usage:
+ *   handlers/compose.rs and the app catalog install/uninstall/update
+ *   flows (handlers/docker_catalog.rs).
+ * =============================================================================
+ */
+
+//! Docker Compose project management (files, templates, CLI lifecycle).
+
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::PathBuf;

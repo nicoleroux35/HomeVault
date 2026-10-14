@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : Account.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The My Account app: self-service profile edit, avatar regeneration,
+     password change, 2FA enrollment/management, active-session list with
+     revocation and personal login history.
+
+     Dependencies:
+       - svelte (>= 5), theme + app/ composites, $lib/services/api
+
+     Usage:
+     Opened as a desktop window app.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';

@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : VmConsole.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Shell console for one VM: WebSocket to the backend's incus-exec relay
+       using the Terminal app's wire protocol (binary frames = raw bytes,
+       JSON text frame = resize), with a single-use ticket.
+
+     Dependencies:
+       - svelte (>= 5), $lib/services/api
+
+     Usage:
+       Opened from the Virtual Machines app.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * Full-screen-ish shell console for one machine. Talks to

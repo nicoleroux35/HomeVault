@@ -1,3 +1,38 @@
+/* =============================================================================
+ * File          : dashboard.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Dashboard endpoints: the aggregated dashboard payload, per-widget data,
+ *   and the user's widget layout (add/remove/reorder — scoped to the
+ *   caller's own dashboard). Live metrics (CPU cores, RAM, network
+ *   traffic, disk I/O, storage, temperature) are computed from deltas
+ *   between samples kept in memory; the health section digs into SMART
+ *   status and self-test logs, retrying with an explicit SATA-over-USB
+ *   device type when smartctl's autodetection cannot see through a USB
+ *   bridge. All endpoints are session-auth (no admin gating — the
+ *   dashboard is per-user).
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - chrono (>= 0.4)
+ *   - parking_lot (>= 0.12)
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Routes /api/dashboard in src/web/mod.rs; consumed by the Dashboard
+ *   screen and its widgets.
+ * =============================================================================
+ */
+
+//! Dashboard endpoints: aggregated data, widget layout, live metrics and
+//! SMART-backed health — session-auth, per-user.
+
 use axum::{
     extract::{Path, State},
     http::HeaderMap,

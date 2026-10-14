@@ -1,3 +1,24 @@
+<!-- ========================================================================
+     File          : NotificationCenter.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       The bell panel: lists system notifications with relative timestamps
+       (locale-aware), read/unread state, per-item dismiss and mark-all, and
+       a live badge fed by the notifications store (30 s poll + SSE push).
+       The canonical surface for system events; toasts are only ephemeral
+       action feedback.
+
+     Dependencies:
+       - svelte (>= 5), date-fns, @tabler/icons-svelte,
+         stores/notifications, stores/i18n
+
+     Usage:
+       Mounted by the desktop shell's topbar bell.
+     ======================================================================== -->
 <script lang="ts">
   import { notificationsStore, type Notification } from '$lib/stores/notifications';
   import { api } from '$lib/services/api';
@@ -16,6 +37,35 @@
 
   /** Whether the notification panel is currently visible */
   export let isOpen = false;
+
+  /**
+   * Persistent-centre filters. The panel is not just a toast list — it keeps
+   * the full server-side history, so it needs the same affordances as any
+   * inbox: severity, unread-only and a text search.
+   */
+  let severityFilter: 'all' | 'info' | 'warning' | 'error' = 'all';
+  let unreadOnly = false;
+  let query = '';
+
+  const SEVERITY_FILTERS: Array<{ id: 'all' | 'info' | 'warning' | 'error'; label: string }> = [
+    { id: 'all', label: 'notifications.filter_all' },
+    { id: 'info', label: 'notifications.filter_info' },
+    { id: 'warning', label: 'notifications.filter_warning' },
+    { id: 'error', label: 'notifications.filter_error' },
+  ];
+
+  /** The list after applying severity / unread / search filters. */
+  $: filteredNotifications = $notificationsStore.notifications.filter((n) => {
+    if (unreadOnly && n.read) return false;
+    if (severityFilter !== 'all' && n.type !== severityFilter) return false;
+    if (query.trim()) {
+      const q = query.trim().toLowerCase();
+      if (!n.title.toLowerCase().includes(q) && !n.message.toLowerCase().includes(q)) {
+        return false;
+      }
+    }
+    return true;
+  });
 
   function getTypeColor(type: Notification['type']): string {
     switch (type) {
@@ -83,13 +133,46 @@
     </div>
 
     <div class="panel-content">
+      <div class="center-filters">
+        <div class="severity-filters" role="group" aria-label={$t('notifications.filter_severity')}>
+          {#each SEVERITY_FILTERS as f (f.id)}
+            <button
+              type="button"
+              class="severity-chip"
+              class:active={severityFilter === f.id}
+              aria-pressed={severityFilter === f.id}
+              onclick={() => (severityFilter = f.id)}
+            >
+              {$t(f.label)}
+            </button>
+          {/each}
+        </div>
+        <div class="center-filters-row">
+          <input
+            type="search"
+            class="center-search"
+            bind:value={query}
+            placeholder={$t('notifications.search_placeholder')}
+            aria-label={$t('notifications.search_placeholder')}
+          />
+          <label class="unread-toggle">
+            <input type="checkbox" bind:checked={unreadOnly} />
+            <span>{$t('notifications.unread_only')}</span>
+          </label>
+        </div>
+      </div>
+
       {#if $notificationsStore.notifications.length === 0}
         <div class="empty-state">
           <NotificationBellIcon size={48} stroke={2} />
           <p>{$t('notifications.empty')}</p>
         </div>
+      {:else if filteredNotifications.length === 0}
+        <div class="empty-state" data-testid="notifications-no-match">
+          <p>{$t('notifications.no_match')}</p>
+        </div>
       {:else}
-        {#each $notificationsStore.notifications as notification (notification.id)}
+        {#each filteredNotifications as notification (notification.id)}
           <div
             class="notification-item"
             class:unread={!notification.read}
@@ -201,6 +284,84 @@
     justify-content: center;
     padding: var(--hv-space-14) var(--hv-space-5);
     color: var(--hv-shell-text-2);
+  }
+
+  .center-filters {
+    display: flex;
+    flex-direction: column;
+    gap: var(--hv-space-2);
+    padding-bottom: var(--hv-space-2);
+    border-bottom: 1px solid var(--hv-shell-border-soft);
+  }
+
+  .severity-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--hv-space-1-5);
+  }
+
+  /* Chip buttons are real buttons at the 44px shared hit-target minimum so
+     they stay reachable with touch/pen/keyboard, not just a mouse. */
+  .severity-chip {
+    min-height: var(--hv-touch-target-min);
+    padding: 0 var(--hv-space-3);
+    background: transparent;
+    border: 1px solid var(--hv-shell-border);
+    border-radius: var(--hv-radius-pill, 999px);
+    color: var(--hv-shell-text-2);
+    font-size: var(--hv-font-size-sm);
+    font-weight: var(--hv-font-weight-semibold);
+    cursor: pointer;
+  }
+
+  .severity-chip:hover {
+    background: var(--hv-shell-border-soft);
+    color: var(--hv-shell-text-strong);
+  }
+
+  .severity-chip.active {
+    background: var(--hv-primary);
+    border-color: var(--hv-primary);
+    color: var(--hv-on-primary, #fff);
+  }
+
+  .severity-chip:focus-visible {
+    outline: none;
+    box-shadow: var(--hv-focus-ring);
+  }
+
+  .center-filters-row {
+    display: flex;
+    align-items: center;
+    gap: var(--hv-space-2);
+    flex-wrap: wrap;
+  }
+
+  .center-search {
+    flex: 1;
+    min-width: 8rem;
+    min-height: var(--hv-touch-target-min);
+    padding: 0 var(--hv-space-3);
+    background: var(--hv-shell-fill);
+    border: 1px solid var(--hv-shell-border);
+    border-radius: var(--hv-radius-sm);
+    color: var(--hv-shell-text-strong);
+    font-size: var(--hv-font-size-sm);
+  }
+
+  .center-search:focus-visible {
+    outline: none;
+    box-shadow: var(--hv-focus-ring);
+  }
+
+  .unread-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--hv-space-1-5);
+    min-height: var(--hv-touch-target-min);
+    color: var(--hv-shell-text-2);
+    font-size: var(--hv-font-size-sm);
+    cursor: pointer;
   }
 
   .empty-state :global(svg) {

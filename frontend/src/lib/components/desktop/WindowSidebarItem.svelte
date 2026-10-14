@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : WindowSidebarItem.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       One sidebar-rail entry: icon + label that collapses to an icon-only
+       44px target with a tooltip when the rail is collapsed (reads the
+       hvSidebarCollapsed context).
+
+     Dependencies:
+       - svelte (>= 5), theme/Icon, utils/cn
+
+     Usage:
+       Inside WindowSidebar.
+     ======================================================================== -->
 <script lang="ts">
   import { getContext, type Snippet } from 'svelte';
   import Icon from '$lib/components/theme/Icon.svelte';

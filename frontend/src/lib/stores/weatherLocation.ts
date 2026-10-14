@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : weatherLocation.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   The city chosen for the Weather widget, resolved through the geocoding
+ *   service and synced per account: localStorage is per-origin, so the
+ *   value is mirrored to the server (debounced push, pull on login, and a
+ *   push of the local value when the account has none yet) so every browser
+ *   origin converges on the same city. Server failures are non-fatal.
+ *
+ * Dependencies:
+ *   - svelte (>= 5)
+ *
+ * Usage:
+ *   weatherLocationStore in WeatherWidget / Settings.
+ * =============================================================================
+ */
+
 import { writable } from 'svelte/store';
 import { authStore } from './auth';
 import { api } from '$lib/services/api';

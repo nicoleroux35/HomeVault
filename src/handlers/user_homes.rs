@@ -1,3 +1,30 @@
+/* =============================================================================
+ * File          : user_homes.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Per-user home folders: get, create/update and delete a user's home
+ *   (on /home or on a chosen disk, with an optional explicit absolute path
+ *   validated against traversal), list the disks eligible to host homes,
+ *   and manage the hard size quota attached to the folder. Home-folder
+ *   mutations are admin-only.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - chrono (>= 0.4)
+ *
+ * Usage:
+ *   Routes /api/user-homes and /api/available-home-disks in
+ *   src/web/mod.rs; disk work via DiskService, quotas via QuotaService.
+ * =============================================================================
+ */
+
+//! Per-user home-folder endpoints: enable/disable a home on a chosen disk,
+//! optional custom path, hard quota, and deletion (with optional wipe).
+
 use crate::disk::DiskService;
 use crate::handlers::{users_models::*, AppState};
 use crate::quota::QuotaService;

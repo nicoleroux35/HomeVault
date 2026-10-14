@@ -1,3 +1,21 @@
+/* =============================================================================
+ * File          : vpn_peer_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   WireGuard peer registry: name, assigned IP, public key and
+ *   timestamps, plus the private-key storage for the server.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
 //! Storage layer for the `vpn_wireguard_peers` registry.
 //! Stores peer metadata (name, IP, public key) plus the private key and
 //! preshared key needed to regenerate the client config / QR code on demand.

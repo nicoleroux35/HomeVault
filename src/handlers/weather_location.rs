@@ -1,3 +1,24 @@
+/* =============================================================================
+ * File          : weather_location.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Per-account weather-widget location (the chosen city), synced
+ *   server-side so the same account sees the same city from any browser
+ *   origin. Read and write are session-auth and scoped to the caller.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   GET/PUT weather-location routes in src/web/mod.rs; consumed by the
+ *   Weather widget.
+ * =============================================================================
+ */
+
 //! Per-account desktop weather-widget location, synced server-side so the
 //! same account sees the same chosen city regardless of which browser origin
 //! (LAN IP, public IP, ...) it's accessed from - mirrors monitor_layout.rs's

@@ -1,3 +1,24 @@
+/* =============================================================================
+ * File          : updates.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   App-update detection for installed catalog apps, from two independent
+ *   signals: the running image digest vs the registry's digest for the same
+ *   tag, and the installed manifest version vs the catalog's. Feeds the
+ *   update-check and update-all endpoints.
+ *
+ * Dependencies:
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   handlers/docker_catalog.rs update endpoints.
+ * =============================================================================
+ */
+
 //! App-update detection for installed catalog apps.
 //!
 //! Two independent signals:

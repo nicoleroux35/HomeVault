@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : settingsCatalog.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 13/10/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Single source of truth for the Settings screen's 8 rail groups, shared
+ *   by the rail, the content header and the global search index — so a
+ *   category can never exist in one and be missing (or stale) in the
+ *   others. Adding a category means one entry here plus its i18n keys.
+ *
+ * Dependencies:
+ *   - @tabler/icons-svelte
+ *   - svelte (>= 5)
+ *
+ * Usage:
+ *   routes/Settings.svelte renders from it; Desktop.svelte folds
+ *   settingsSearchItems() into the search index.
+ * =============================================================================
+ */
+
 import {
   IconActivity,
   IconBrain,

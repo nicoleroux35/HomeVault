@@ -1,3 +1,22 @@
+<!-- ========================================================================
+     File          : TlsCard.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Settings sub-card for HTTPS/TLS: enable toggle, ports, certificate
+       info and regeneration, bound to the shared settings draft (its TLS
+       group), with save status tracked via a runes $derived over the
+       draft's getter.
+
+     Dependencies:
+       - svelte (>= 5), stores/settingsDraft.svelte, $lib/services/api
+
+     Usage:
+       Embedded in routes/Settings.svelte's general group.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';

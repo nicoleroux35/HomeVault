@@ -1,3 +1,28 @@
+/* =============================================================================
+ * File          : snmp.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   SNMP query endpoints for monitored network devices: system info,
+ *   interface and storage statistics, availability probes, plus the SNMP
+ *   settings (persisted as JSON, cached in a process-wide lock). Queries
+ *   run through SnmpService; every endpoint is admin-only.
+ *
+ * Dependencies:
+ *   - parking_lot (>= 0.12)
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/snmp in src/web/mod.rs; settings persist via JsonStorage.
+ * =============================================================================
+ */
+
+//! SNMP query endpoints (interfaces, storage, availability, settings) —
+//! all admin-only.
+
 use crate::handlers::AppState;
 use crate::snmp::SnmpService;
 use crate::storage::json::JsonStorage;

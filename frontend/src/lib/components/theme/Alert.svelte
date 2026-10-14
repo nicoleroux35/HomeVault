@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : Alert.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Design-system alert banner (info/success/warning/error) wrapping the
+       vendored shadcn-svelte Alert: per-variant icon and tint from the
+       --hv-* tokens, optional action buttons and dismissible close.
+
+     Dependencies:
+       - svelte (>= 5), @tabler/icons-svelte, components/ui/alert (vendored)
+
+     Usage:
+       `import { Alert } from '$lib/components/theme'` — see index.ts.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM - Alert Component

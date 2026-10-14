@@ -1,3 +1,27 @@
+/* =============================================================================
+ * File          : email.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Outgoing email for notifications: sends through whichever local mail
+ *   transfer agent binary is available (mutt, then sendmail, then msmtp),
+ *   with a deadline-aware child-process wait so a hung MTA cannot stall a
+ *   notification. SMTP credentials are read by the MTA from its own
+ *   configuration, never stored by HomeVault beyond the settings form.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0), thiserror (>= 2), tracing (>= 0.1)
+ *
+ * Usage:
+ *   notification_engine.rs (alerts) and the email test endpoint.
+ * =============================================================================
+ */
+
+//! Outgoing email via the host's available mail transfer agent binaries.
+
 use serde::{Deserialize, Serialize};
 use std::process::{Command, ExitStatus};
 use std::time::Duration;

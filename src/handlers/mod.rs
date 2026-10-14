@@ -1,3 +1,28 @@
+/* =============================================================================
+ * File          : mod.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Module index for all HTTP request handlers — one submodule per feature
+ *   area (auth, users, storage, docker, explorer, ...) — plus the shared
+ *   AppState that carries the services and repositories every handler
+ *   needs. The URL routing itself lives in src/web/mod.rs.
+ *
+ * Dependencies:
+ *   - none (module index and re-exports)
+ *
+ * Usage:
+ *   Router building in src/web/mod.rs imports `handlers::<module>::handle_*`;
+ *   AppState is injected into every handler by axum's State extractor.
+ * =============================================================================
+ */
+
+//! HTTP request handlers, one module per feature area, and the shared
+//! AppState they all receive. Routes are wired in `src/web/mod.rs`.
+
 use crate::auth::AuthService;
 use crate::config::PathGuard;
 use crate::middleware::rate_limit::RateLimitState;
@@ -25,6 +50,7 @@ pub type AppStateArc = Arc<AppState>;
 pub mod activity;
 pub mod admin_guard;
 pub mod antivirus;
+pub mod app_auth;
 pub mod auth;
 pub mod avatars;
 pub mod cache;
@@ -41,6 +67,7 @@ pub mod groups;
 pub mod journal;
 pub mod mcp;
 pub mod mdns;
+pub mod meta;
 pub mod monitor_layout;
 pub mod network;
 pub mod notifications;
@@ -72,6 +99,7 @@ pub mod users_models;
 pub mod vm;
 pub mod vpn;
 pub mod weather_location;
+pub mod whats_new;
 pub mod widgets;
 
 // Selective re-exports to prevent name clashes across handler modules

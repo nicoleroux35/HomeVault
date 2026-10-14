@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : ShareLinkModal.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Explorer "share by link" modal: mint a revocable download link to a
+       file (anyone with the link or restricted to signed-in sessions),
+       display it as copyable text and QR code, and revoke existing links.
+
+     Dependencies:
+       - svelte (>= 5), theme/Modal, $lib/services/api
+
+     Usage:
+       Opened from the Explorer's file actions.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * Explorer "share by link" modal.

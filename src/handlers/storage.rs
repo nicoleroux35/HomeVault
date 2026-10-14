@@ -1,3 +1,35 @@
+/* =============================================================================
+ * File          : storage.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Inventory and management of the server's disks and virtual disks: lists
+ *   of physical disks, partitions, RAID arrays and USB drives, system-disk
+ *   detection, health checks, and the RAID app's create/teardown endpoints
+ *   (ext4/xfs via mdadm, native ZFS, native multi-device Btrfs). Also SMART
+ *   self-tests, scrub/consistency checks, and discovery/import of pools from
+ *   disks moved between machines. Reads are auth-only; every mutation is
+ *   admin-only and written to the event log.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde_json (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/disks, /api/raid, /api/virtual-disks and /api/health in
+ *   src/web/mod.rs; the heavy lifting is delegated to DiskService,
+ *   PoolService and HealthService.
+ * =============================================================================
+ */
+
+//! Disk, RAID ("virtual disk") and health-check endpoints: inventory of
+//! physical disks, partitions and USB drives, creation and teardown of RAID
+//! sets (mdadm, ZFS, native Btrfs), SMART self-tests, scrub/consistency
+//! checks, and discovery/import of foreign pools.
+
 use crate::disk::DiskService;
 use crate::handlers::admin_guard::{require_admin, require_auth};
 use crate::handlers::AppState;
@@ -511,6 +543,155 @@ pub async fn handle_virtual_disk_scrub(
     }
 }
 
+/// Reports the current scrub / consistency-check status of a virtual disk.
+///
+/// ZFS returns the `scan:` line from `zpool status`; Btrfs the `Status:` line
+/// from `btrfs scrub status`; mdadm reads `/sys/block/mdX/md/sync_action`
+/// (`idle`, `check`, `resync`, ...). Auth-only: it's a read.
+#[axum_macros::debug_handler]
+pub async fn handle_virtual_disk_scrub_status(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers).await {
+        return response;
+    }
+
+    let kind = match virtual_disk_type(&name).await {
+        Some(k) => k,
+        None => return ResponseHelper::json_error(format!("Virtual disk '{}' not found", name)),
+    };
+
+    let n = name.clone();
+    let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
+        match kind {
+            crate::pools::PoolType::Zfs | crate::pools::PoolType::Btrfs => {
+                crate::pools::PoolService::get_scrub_status(&n, kind).map_err(|e| e.to_string())
+            }
+            crate::pools::PoolType::Mdadm => {
+                let dev = if n.starts_with("/dev/") {
+                    n.clone()
+                } else {
+                    format!("/dev/md/{}", n)
+                };
+                let md = std::fs::canonicalize(&dev)
+                    .ok()
+                    .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
+                    .ok_or_else(|| format!("Could not resolve md device for '{}'", n))?;
+                let path = format!("/sys/block/{}/md/sync_action", md);
+                std::fs::read_to_string(&path)
+                    .map(|s| s.trim().to_string())
+                    .map_err(|e| format!("Could not read {}: {}", path, e))
+            }
+            crate::pools::PoolType::Unknown => Err("Unknown virtual disk type".to_string()),
+        }
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+
+    match result {
+        Ok(status) => ResponseHelper::json_success(serde_json::json!({
+            "name": name,
+            "status": status,
+            "in_progress": scrub_in_progress(&status),
+        })),
+        Err(e) => ResponseHelper::json_error(format!("Failed to read scrub status: {}", e)),
+    }
+}
+
+/// Heuristic: whether a scrub-status string describes work in progress.
+///
+/// ZFS `scan: scrub in progress since ...`, Btrfs `Status: running` and mdadm
+/// `check`/`resync`/`repair` all mean "busy"; `idle`, `finished`, `No scrub in
+/// progress` and `Not available` mean "not busy".
+fn scrub_in_progress(status: &str) -> bool {
+    let lower = status.to_ascii_lowercase();
+    // ZFS reports the idle state as the literal phrase "No scrub in progress",
+    // which contains the "in progress" substring an active scrub uses — so the
+    // negation has to be ruled out first.
+    if lower.contains("no scrub in progress") {
+        return false;
+    }
+    if lower.contains("in progress") || lower.contains("running") {
+        return true;
+    }
+    let trimmed = lower.trim();
+    matches!(trimmed, "check" | "resync" | "repair" | "reshape")
+}
+
+/// Lists pools present on attached disks but not yet imported ("foreign"
+/// pools) — the data-recovery path when disks move between machines.
+#[axum_macros::debug_handler]
+pub async fn handle_importable_pools_list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers).await {
+        return response;
+    }
+
+    match tokio::task::spawn_blocking(crate::pools::PoolService::list_importable_pools).await {
+        Ok(Ok(pools)) => ResponseHelper::json_success(pools),
+        Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to scan importable pools: {}", e)),
+        Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct ImportPoolRequest {
+    name: String,
+    pool_type: String,
+    /// Optional rename applied at import time (ZFS only).
+    #[serde(default)]
+    new_name: Option<String>,
+}
+
+/// Imports a foreign pool (ZFS `zpool import`, Btrfs mount). Admin-only: it
+/// brings new storage online under the instance's control.
+#[axum_macros::debug_handler]
+pub async fn handle_import_pool(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::Json(req): axum::Json<ImportPoolRequest>,
+) -> Response {
+    let admin_username = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(response) => return response,
+    };
+
+    let pool_type = match req.pool_type.to_ascii_lowercase().as_str() {
+        "zfs" => crate::pools::PoolType::Zfs,
+        "btrfs" => crate::pools::PoolType::Btrfs,
+        other => {
+            return ResponseHelper::json_error(format!(
+                "Unsupported pool type '{}' (expected zfs or btrfs)",
+                other
+            ))
+        }
+    };
+
+    let name = req.name.clone();
+    let new_name = req.new_name.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::pools::PoolService::import_pool(&name, pool_type, new_name.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+
+    match result {
+        Ok(_) => {
+            crate::events::log_event(format!(
+                "Admin '{}' imported foreign pool '{}'",
+                admin_username, req.name
+            ));
+            ResponseHelper::json_success(serde_json::json!({ "message": "Pool imported" }))
+        }
+        Err(e) => ResponseHelper::json_error(format!("Failed to import pool: {}", e)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -533,5 +714,25 @@ mod tests {
     fn test_vd_name_leaves_a_zfs_or_btrfs_pool_name_untouched() {
         assert_eq!(vd_name("tank"), "tank");
         assert_eq!(vd_name("storage-pool"), "storage-pool");
+    }
+
+    #[test]
+    fn test_scrub_in_progress_detects_busy_states() {
+        assert!(scrub_in_progress(
+            "scan: scrub in progress since Sun Jan  1 00:00:00 2026"
+        ));
+        assert!(scrub_in_progress("Status: running"));
+        assert!(scrub_in_progress("check"));
+        assert!(scrub_in_progress("resync"));
+        assert!(scrub_in_progress("repair"));
+    }
+
+    #[test]
+    fn test_scrub_in_progress_detects_idle_states() {
+        assert!(!scrub_in_progress("scan: scrub repaired 0B in 00:00:01"));
+        assert!(!scrub_in_progress("idle"));
+        assert!(!scrub_in_progress("No scrub in progress"));
+        assert!(!scrub_in_progress("Not available"));
+        assert!(!scrub_in_progress("Unsupported"));
     }
 }

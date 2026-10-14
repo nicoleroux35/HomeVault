@@ -1,3 +1,22 @@
+<!-- ========================================================================
+     File          : AreaChart.svelte
+     Author        : Nicolas Le Roux
+     Created       : 13/10/2026
+     Last modified : 13/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Compact SVG area chart for rolling live metrics (CPU/memory over the
+       last N samples), supporting stacked composition (one band per app
+       summing to the host total) with stable per-series colours.
+       Hand-rolled and dependency-free so it renders inside any window.
+
+     Dependencies:
+       - svelte (>= 5)
+
+     Usage:
+       Dashboard live-usage card.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM - AreaChart

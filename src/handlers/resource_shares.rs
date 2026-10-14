@@ -1,3 +1,29 @@
+/* =============================================================================
+ * File          : resource_shares.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 13/10/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Per-member resource access on top of the coarse role model: an admin
+ *   may grant a member read/write access to one specific app, folder or
+ *   share without making them an admin. Members see exactly the resources
+ *   they hold a grant for; admins see and manage everything. The same rule
+ *   is enforced server-side by visible_resources()/can_access() — filtering
+ *   in the UI alone is not a boundary.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/shares/access (grant/revoke/list) in src/web/mod.rs; grants
+ *   stored via ResourceShareRepository, checked by every listing and the
+ *   WebSocket event fan-out.
+ * =============================================================================
+ */
+
 //! Per-member resource access (apps, folders, shares).
 //!
 //! HomeVault's coarse model is role-based (`user` / `admin`). This module adds

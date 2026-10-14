@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : monitor_layout.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Per-account desktop monitor-panel layout (position and visibility of
+ *   the floating Resource/RAID/Weather panels), synced server-side so the
+ *   same account sees the same layout from any browser origin (LAN IP,
+ *   public IP, ...). Read and write are session-auth and scoped to the
+ *   caller's own layout.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   GET/PUT layout routes in src/web/mod.rs; consumed by the frontend
+ *   monitorStore.
+ * =============================================================================
+ */
+
 //! Per-account desktop monitor layout (position + visibility of the floating
 //! Resource/RAID/Weather/... monitor panels), synced server-side so the same
 //! account sees the same layout regardless of which browser origin (LAN IP,

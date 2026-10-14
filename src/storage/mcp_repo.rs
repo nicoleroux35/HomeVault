@@ -1,3 +1,21 @@
+/* =============================================================================
+ * File          : mcp_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 13/10/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   External AI-agent (MCP) storage: issued bearer tokens (hashes only)
+ *   and the singleton kill-switch/permissions row.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
 //! Storage layer for the external AI-agent (MCP) server: issued bearer
 //! tokens and the singleton settings row. Only the SHA-256 hash of a token's
 //! secret half is stored — a database read alone never yields a usable

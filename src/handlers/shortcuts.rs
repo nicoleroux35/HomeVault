@@ -1,3 +1,28 @@
+/* =============================================================================
+ * File          : shortcuts.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 13/10/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Server-side page-metadata fetcher for pinned desktop shortcuts (title,
+ *   description, favicon). The endpoint fetches a user-supplied URL and is
+ *   therefore a deliberate SSRF sink: scheme allow-list, every resolved
+ *   address must be public, redirects resolved manually and re-checked,
+ *   response capped in size and time (details in the module doc — those
+ *   guards are the security boundary). Session-auth.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   Metadata-fetch route in src/web/mod.rs; called by the desktop shortcut
+ *   creation flow.
+ * =============================================================================
+ */
+
 //! Web shortcuts — fetch a page's metadata (title, description, favicon) so a
 //! pinned desktop shortcut can render a real icon instead of a bare URL.
 //!

@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : LazyLoad.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Lazily loads an app's component module the first time its window
+       opens (code-splitting): shows a spinner while the chunk loads and an
+       inline error with a retry when the import fails.
+
+     Dependencies:
+       - svelte (>= 5), @tabler/icons-svelte
+
+     Usage:
+       Wraps the dynamic import in the window manager's component loaders.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { IconCircleX } from '@tabler/icons-svelte';

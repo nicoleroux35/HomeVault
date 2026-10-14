@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : events.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Centralized helper for the user-facing, plain-English audit event log
+ *   (logins, user/group/share changes, Docker actions, backup runs,
+ *   security alerts). Written through the same tracing pipeline as the
+ *   rest of the logs, so the System Journal app's dedicated source can
+ *   filter them out.
+ *
+ * Dependencies:
+ *   - tracing (>= 0.1)
+ *
+ * Usage:
+ *   `crate::events::log_event(...)` / `log_event_warn(...)` from handlers
+ *   on every auditable mutation.
+ * =============================================================================
+ */
+
 //! Centralized "event log" helper for user-facing, plain-English audit
 //! events (login, user/group/share changes, Docker actions, backup runs,
 //! security alerts, etc.).

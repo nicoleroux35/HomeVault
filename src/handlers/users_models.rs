@@ -1,3 +1,28 @@
+/* =============================================================================
+ * File          : users_models.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Request and response payload types for the user-management endpoints:
+ *   create/update/delete, password and role changes, group membership and
+ *   home-folder settings. Quota sizes are expressed in bytes (0 or absent
+ *   means no limit).
+ *
+ * Dependencies:
+ *   - chrono (>= 0.4)
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   Imported by handlers/users.rs; mirrored by the frontend ApiClient
+ *   types (frontend/src/lib/services/api.ts).
+ * =============================================================================
+ */
+
+//! Request/response payload types for the user-management endpoints.
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 

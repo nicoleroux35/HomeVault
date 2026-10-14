@@ -1,3 +1,27 @@
+/* =============================================================================
+ * File          : settingsDraft.svelte.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   The Settings screen's single draft of every editable value, persisted
+ *   ONLY when the user clicks Save (no auto-save anywhere). Edits survive
+ *   category switches because the draft lives here while sub-cards unmount;
+ *   dirty detection compares a JSON snapshot per group against the last
+ *   state known to be on the server, and saveAll() advances a baseline only
+ *   on success. Svelte 5 runes module.
+ *
+ * Dependencies:
+ *   - svelte (>= 5, runes)
+ *
+ * Usage:
+ *   Bound by routes/Settings.svelte and the embedded TLS/Antivirus/
+ *   Ransomware/SNMP sub-cards.
+ * =============================================================================
+ */
+
 import { api } from '$lib/services/api';
 import { languageStore } from './i18n';
 import { get } from 'svelte/store';

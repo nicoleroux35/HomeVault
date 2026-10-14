@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : settings_persistence.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Settings persistence layer: automatic JSON-file storage for every
+ *   settings family (keyed load/save with defaults) so configuration
+ *   survives server restarts, independent of the SQLite database.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   SnmpService and other settings-backed services load/save through it.
+ * =============================================================================
+ */
+
 //! Settings persistence layer - saves settings to JSON files
 //!
 //! This module provides automatic persistence for all HomeVault settings,

@@ -1,3 +1,22 @@
+/* =============================================================================
+ * File          : repository.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.1
+ *
+ * Description:
+ *   Common trait for all SQLite repositories: standardises pool access
+ *   and transaction handling so every *_repo.rs module shares one shape.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ *
+ * Usage:
+ *   Parent of all repositories in this directory.
+ * =============================================================================
+ */
+
 use crate::storage::database::DbError;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::future::Future;

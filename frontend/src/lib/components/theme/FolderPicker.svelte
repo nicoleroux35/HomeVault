@@ -1,3 +1,23 @@
+<!-- ========================================================================
+     File          : FolderPicker.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 10/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Modal folder/file picker built on focusTrap: browses the server's
+       allowed roots with the server-side protection against escaping them,
+       and reports the selection through onselect. The modal counterpart of
+       FloatingPathPicker.
+
+     Dependencies:
+       - svelte (>= 5), @tabler/icons-svelte, $lib/utils/focusTrap,
+         $lib/services/api
+
+     Usage:
+       `import { FolderPicker } from '$lib/components/theme'`.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';

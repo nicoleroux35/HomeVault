@@ -1,3 +1,20 @@
+<!-- ========================================================================
+     File          : Terminal.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The Terminal app: multi-tab shell over WebSocket PTYs, with reconnect
+     and scrollback replay via the persisted tab ids.
+
+     Dependencies:
+       - svelte (>= 5), $lib/services/api (ticket + WS)
+
+     Usage:
+     Opened as a desktop window app.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
   import { Terminal } from 'xterm';

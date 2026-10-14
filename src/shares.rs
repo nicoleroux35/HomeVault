@@ -1,3 +1,27 @@
+/* =============================================================================
+ * File          : shares.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Network share service: share CRUD over the SQLite store, plus
+ *   generation and application of the per-protocol service configuration
+ *   (SMB/NFS/FTP/WebDAV config files) and service start/stop/restart.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0), internal storage layer
+ *
+ * Usage:
+ *   handlers/shares.rs, handlers/permissions.rs (share lookup), SFTP jail
+ *   rebuilds (see docs/guides/shares.md).
+ * =============================================================================
+ */
+
+//! Network share service (CRUD + per-protocol config generation and
+//! service control).
+
 use serde::{Deserialize, Serialize};
 use serde_json::Error as JsonError;
 use std::collections::HashMap;

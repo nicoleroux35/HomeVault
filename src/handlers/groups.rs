@@ -1,3 +1,29 @@
+/* =============================================================================
+ * File          : groups.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Endpoints managing the server's Unix groups through GroupService: list
+ *   groups and their members, create and delete groups, add and remove
+ *   member users, and list a user's current groups. Listing is open to any
+ *   authenticated user; creating, deleting and changing membership is
+ *   admin-only.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *
+ * Usage:
+ *   Routes /api/groups* in src/web/mod.rs; group creation/deletion maps to
+ *   real host groups (see src/groups.rs).
+ * =============================================================================
+ */
+
+//! Unix group management endpoints (list, create, delete, membership) on
+//! top of the host's groups via GroupService.
+
 use crate::groups::{AddMemberRequest, CreateGroupRequest, GroupListItem, GroupService};
 use crate::handlers::AppState;
 use crate::storage::database::ADMIN_GROUP_NAME;

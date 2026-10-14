@@ -1,3 +1,20 @@
+<!-- ========================================================================
+     File          : EditWidgets.svelte
+     Author        : Nicolas Le Roux
+     Created       : 13/10/2026
+     Last modified : 13/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The /edit-widgets screen: feature up to 3 widgets and reorder the
+     widget list (persisted per account via widgetLayout).
+
+     Dependencies:
+       - svelte (>= 5), stores/widgetLayout + widgetCatalog
+
+     Usage:
+     Opened as a desktop window app.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * Edit Widgets — drag & drop layout editor.

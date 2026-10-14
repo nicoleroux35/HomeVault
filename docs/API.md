@@ -178,6 +178,9 @@ home directory (best-effort — recorded even if the FS lacks `usrquota`). See
 | GET | `/storage/virtual-disks` | auth | `handle_virtual_disks_list` — **all** virtual disks (mdadm + ZFS + Btrfs) |
 | DELETE | `/storage/virtual-disks/{name}` | admin | `handle_virtual_disk_delete` — dispatches mdadm vs ZFS/Btrfs |
 | POST | `/storage/virtual-disks/{name}/scrub` | admin | `handle_virtual_disk_scrub` |
+| GET | `/storage/virtual-disks/{name}/scrub` | auth | `handle_virtual_disk_scrub_status` — current scrub state + `in_progress` |
+| GET | `/storage/importable-pools` | auth | `handle_importable_pools_list` — foreign ZFS/Btrfs pools on attached disks |
+| POST | `/storage/import-pool` | admin | `handle_import_pool` — `{ name, pool_type, new_name? }`, ZFS `zpool import` / Btrfs mount |
 | GET | `/storage/raid` | auth | `handle_raid_arrays_list` — legacy; Storage's Virtual-disks tab is preferred |
 | DELETE | `/storage/raid/{name}` | admin | `handle_raid_delete` — legacy |
 | POST | `/storage/raid/{name}/rebuild` | admin | `handle_raid_rebuild` — reused by Storage's Rebuild button |
@@ -650,6 +653,28 @@ by the background engine in `src/notification_engine.rs`. See
 | POST | `/notifications/read-all` | auth | `handle_notifications_mark_all_read` |
 | POST | `/notifications/{id}/read` | auth | `handle_notification_mark_read` |
 | DELETE | `/notifications/{id}` | auth | `handle_notification_delete` |
+
+## What's New — `whats-new/*` (`auth`)
+
+Per-user release highlights shown once per version. See
+[guides/notifications.md](./guides/notifications.md) → "What's New".
+
+| Method | Path | Auth | Handler |
+|--------|------|------|---------|
+| GET | `/whats-new` | auth | `handle_whats_new` — `{ version, title, highlights, seen }` |
+| POST | `/whats-new/seen` | auth | `handle_whats_new_seen` — per-user acknowledgement (idempotent) |
+
+## Client/server contract — `/api/meta` (public)
+
+| Method | Path | Auth | Handler |
+|--------|------|------|---------|
+| GET | `/meta` | public | `handle_meta` — `{ contract_version, server_version }` |
+
+The SPA sends `X-HomeVault-Contract: <n>` on every API request; a present but
+different value is rejected with **426 Upgrade Required** by
+`middleware::contract_middleware` (`/api/meta` exempt). A missing header is
+allowed for legacy clients. See [ARCHITECTURE.md](./ARCHITECTURE.md) →
+"Versioned client/server contract".
 
 ## Antivirus (ClamAV) — `antivirus/*`
 

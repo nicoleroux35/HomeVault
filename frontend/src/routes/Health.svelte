@@ -1,3 +1,20 @@
+<!-- ========================================================================
+     File          : Health.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The Health app: system health check results (disks, services,
+     resources) with per-check detail and re-run.
+
+     Dependencies:
+       - svelte (>= 5), theme + app/ composites, $lib/services/api
+
+     Usage:
+     Opened as a desktop window app.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';

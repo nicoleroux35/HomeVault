@@ -1,3 +1,24 @@
+/* =============================================================================
+ * File          : vocabulary.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   The Settings screen's class vocabulary — one section label, one card,
+ *   one row, one set of buttons — shared deliberately between the route
+ *   (which builds the categories) and the SettingsCard shell so the two can
+ *   never diverge.
+ *
+ * Dependencies:
+ *   - none (Tailwind class strings)
+ *
+ * Usage:
+ *   Imported by routes/Settings.svelte and components/settings/*.
+ * =============================================================================
+ */
+
 /**
  * The Settings screen's class vocabulary — one section label, one card, one
  * row, one set of buttons.

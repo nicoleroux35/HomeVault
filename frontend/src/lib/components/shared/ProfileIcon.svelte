@@ -1,3 +1,19 @@
+<!-- ========================================================================
+     File          : ProfileIcon.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Inline user/profile SVG glyph for account menus and placeholders.
+
+     Dependencies:
+       - svelte (>= 5)
+
+     Usage:
+       Topbar account menu, fallback avatar.
+     ======================================================================== -->
 <script lang="ts">
   let { size = 24, strokeWidth = 1.5, ...rest }: { size?: number; strokeWidth?: number; [key: string]: any } = $props();
 </script>

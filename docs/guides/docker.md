@@ -107,16 +107,35 @@ Umbrel-parity additions on the same package shape (no new manifest file):
   tools (`install_catalog_app` / `uninstall_catalog_app`, actor-labelled
   event log) — fix one path and both move.
 
-### Per-app reverse proxy + auth gate (`src/app_proxy/*`)
+### Per-app reverse proxy + app-scoped auth (`src/app_proxy/*`)
 
 Each installed app gets its own hyper HTTP/1 listener on a dedicated port
 (47000–47999, `AppProxyManager` / `APP_PROXY` global) forwarding to the
 container's published port on `127.0.0.1`, WebSocket `Upgrade` passed through.
-An optional gate redirects a request with no valid `hv_session` cookie to the
-main app's `/login`. `POST /docker/catalog/{id}/proxy` toggles the gate (on by
-default). **Deliberate:** the app's own published port stays bound to `0.0.0.0`
-— the proxy is an extra consistent entry point, not a lockdown; do not
-"harden" by binding containers to `127.0.0.1` without an explicit request.
+
+**Hardened 2026-10-17 — the proxy no longer trusts the API session.**
+Previously the gate read the full API session cookie (`hv_session`) directly,
+which meant a proxied app could be handed a credential valid against the whole
+dashboard. Now:
+
+- The gate accepts only an **app-proxy-scoped** session (`hv_app_session`,
+  `src/app_proxy/app_auth.rs`), minted by `GET /app-auth?app=<ns_id>` on the
+  **main origin** — the server-chosen, restricted entry. `/app-auth` validates
+  the real `hv_session` (browser navigation), confirms the app has a running
+  proxy, sets `hv_app_session` and redirects to the app origin. The token is
+  meaningless against the API and is revoked when the proxy stops or the user
+  logs out.
+- A request with no valid app session gets a 302 to `/app-auth?app=<ns_id>`,
+  never a bare `/login`.
+- **Both** HomeVault cookies (`hv_session`, `hv_app_session`) are stripped from
+  the request before it is forwarded upstream, so an installed app never sees
+  either credential while its own cookies survive
+  (`cookie::strip_homevault_cookies`).
+- `POST /docker/catalog/{id}/proxy` toggles the gate (on by default).
+
+**Deliberate:** the app's own published port stays bound to `0.0.0.0` — the
+proxy is an extra consistent entry point, not a lockdown; do not "harden" by
+binding containers to `127.0.0.1` without an explicit request.
 
 ### Update detection (`src/app_catalog/updates.rs`)
 

@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : ransomware.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Anti-ransomware protection endpoints: service status and settings,
+ *   protected paths with honeypot placement (add/remove), and the list of
+ *   detected events. The detection itself runs continuously in the
+ *   background watcher; reads are session-auth, configuration changes are
+ *   admin-only.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/ransomware in src/web/mod.rs; detection logic lives in
+ *   crate::ransomware_watcher / crate::ransomware.
+ * =============================================================================
+ */
+
 //! HTTP handlers for anti-ransomware protection: settings, protected paths
 //! (with honeypot placement), and detected events.
 

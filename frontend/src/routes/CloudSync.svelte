@@ -1,3 +1,20 @@
+<!-- ========================================================================
+     File          : CloudSync.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The Cloud Sync app: rclone remote management, mount start/stop and
+     one-shot copy/sync operations between local folders and cloud remotes.
+
+     Dependencies:
+       - svelte (>= 5), theme + app/ composites, $lib/services/api
+
+     Usage:
+     Opened as a desktop window app.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { Icon } from '$lib/components/theme';

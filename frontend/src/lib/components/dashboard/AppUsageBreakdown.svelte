@@ -1,3 +1,22 @@
+<!-- ========================================================================
+     File          : AppUsageBreakdown.svelte
+     Author        : Nicolas Le Roux
+     Created       : 13/10/2026
+     Last modified : 13/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Dashboard "Live usage by app" card: polls per-container CPU/memory/IO
+       stats alongside host totals, keeps a short rolling history, and draws
+       the stacked band chart plus a colour-chipped app list (deterministic
+       per-app colours from appColor()).
+
+     Dependencies:
+       - svelte (>= 5), charts/AreaChart, utils/appColor
+
+     Usage:
+       A featured desktop widget on the Dashboard.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * Dashboard "Live usage by app" card.

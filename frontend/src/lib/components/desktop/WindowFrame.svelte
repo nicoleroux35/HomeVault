@@ -1,3 +1,23 @@
+<!-- ========================================================================
+     File          : WindowFrame.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       The draggable/resizable/maximizable window shell of the desktop:
+       owns position, size and z-order through the window manager, drag and
+       resize with edge snapping, content-fit auto-grow until the user
+       resizes manually, a Svelte error boundary per window (with the
+       test-only RenderErrorProbe), and app-accent context for the chrome.
+
+     Dependencies:
+       - svelte (>= 5), stores/windowManager, utils/snapUtils
+
+     Usage:
+       Rendered once per open window by the desktop shell.
+     ======================================================================== -->
 <script lang="ts">
   import { createEventDispatcher, onMount, onDestroy, setContext } from 'svelte';
   import { windowManager, type Window } from '$lib/stores/windowManager';

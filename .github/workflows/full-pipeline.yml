@@ -1,5 +1,4 @@
 # Full pipeline: unit + component + integration in parallel, then E2E gated.
-# GitHub-hosted mirror of .gitea/workflows/full-pipeline.yml.
 #
 #                  Push (manual dispatch)
 #                   │
@@ -15,9 +14,9 @@
 # already run in parallel on every push via their own files, so running this
 # pipeline on push too would duplicate them. Dispatch it manually from the
 # GitHub Actions tab.
-# GitHub differences vs Gitea: github-hosted jobs run as the non-root
-# `runner` user (passwordless sudo), so privileged setup steps use sudo and
-# the integration suite runs via `sudo -u ci` instead of `su ci`.
+# github-hosted jobs run as the non-root `runner` user (passwordless sudo),
+# so privileged setup steps use sudo and the integration suite runs via
+# `sudo -u ci`.
 name: full-pipeline
 on: [workflow_dispatch]
 

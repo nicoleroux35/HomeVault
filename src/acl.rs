@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : acl.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   POSIX filesystem ACL management via the setfacl/getfacl tools: grant
+ *   or revoke per-user/per-group access on share trees (optionally
+ *   recursive), and read the effective entries back.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0), thiserror (>= 2)
+ *
+ * Usage:
+ *   permissions.rs (the higher-level grant/revoke logic) and the share
+ *   permission endpoints.
+ * =============================================================================
+ */
+
+//! POSIX ACL management via the setfacl/getfacl tools.
+
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 use thiserror::Error;

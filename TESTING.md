@@ -1611,6 +1611,38 @@ pass, each with its own tests and doc updates:
 `cargo test --lib` = **704** passing (was 689); the new guide is indexed by a
 `FeatureDoc` (`shortcuts`) so `test_every_guide_has_a_feature_doc` stays green.
 
+## 2026-10-17 — notification center, storage health, app-auth, client contract
+
+Four areas, each with its own tests and docs:
+
+1. **Persistent notification center + What's New.** Unit: `release_notes`
+   (3), `api_contract` (5), `middleware::contract` (2). Integration:
+   `tests/whats_new_integration.rs` (4 — auth guards, per-user `seen`,
+   idempotence) and `tests/api_contract_integration.rs` (2 — unauthenticated
+   `/api/meta` shape). E2E: `tests/e2e/desktop/desktop.spec.ts` 16.1–16.4.
+   Docs: `docs/guides/notifications.md`, `docs/API.md`.
+2. **Storage health — scrub status + foreign-pool import.** Unit:
+   `handlers/storage.rs::scrub_in_progress` (2) and `pools::tests`
+   `parse_zpool_import` / `parse_btrfs_show` / `import_pool` (8). Integration:
+   `tests/storage_integration.rs` 28 (was 24) — the two new read/write
+   endpoints join the auth-split tables, plus dedicated unknown-name and
+   unsupported-type tests. E2E: `tests/e2e/storage/storage.spec.ts` 14.1–14.5.
+   Docs: `docs/guides/storage.md`, `docs/API.md`.
+3. **App-proxy auth hardening.** Unit: `app_proxy::app_auth` (5),
+   `app_proxy::cookie` (3). Integration: `tests/app_proxy_integration.rs`
+   (1 end-to-end flow asserting the API session is rejected, the app session
+   is accepted, and both cookies are stripped upstream). Docs:
+   `docs/guides/docker.md`, `docs/ARCHITECTURE.md`, `CLAUDE.md`.
+4. **Versioned client contract + DX.** Covered by (1)'s unit/integration
+   tests; `src/mdns.rs` gains a `mdns_hostname` unit test. Tooling:
+   `scripts/dev-instance.sh`, `playwright.vm.config.ts` +
+   `tests/vm/smoke.vm.test.ts` (opt-in real-VM suite). Docs:
+   `docs/guides/development.md`, `docs/ARCHITECTURE.md`.
+
+`cargo test --lib` = **734** passing (was 704). The new
+`docs/guides/development.md` is registered as developer-only in
+`rag_indexers.rs`, so `test_every_guide_has_a_feature_doc` stays green.
+
 ## Verification method
 
 - `tests/*.rs` files listed via `ls`, counted via

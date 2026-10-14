@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : Badge.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Design-system status badge wrapping the vendored shadcn-svelte Badge:
+       soft background + dark ink from the --hv-badge-* tokens, optional
+       hand-built status dot (pulsing when live), three font sizes.
+
+     Dependencies:
+       - svelte (>= 5), components/ui/badge (vendored)
+
+     Usage:
+       `import { Badge } from '$lib/components/theme'`.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM - Badge Component

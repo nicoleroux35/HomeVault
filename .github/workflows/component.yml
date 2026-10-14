@@ -1,11 +1,10 @@
 # Component tests — same runner, no services, mocked or build-level checks.
-# GitHub-hosted mirror of .gitea/workflows/component.yml: no MSW/WireMock
-# vendored in this repo, so the component gate is the Svelte frontend
-# compiling clean: `svelte-check` (types) + `vite build` (wiring/assets).
-# Backend handler composition (Axum Router + oneshot, no mocks needed) is
-# covered by integration.yml.
-# GitHub differences vs Gitea: github-hosted jobs run as the non-root
-# `runner` user, so writes to /opt and /usr/local/bin use sudo.
+# No MSW/WireMock vendored in this repo, so the component gate is the Svelte
+# frontend compiling clean: `svelte-check` (types) + `vite build`
+# (wiring/assets). Backend handler composition (Axum Router + oneshot, no
+# mocks needed) is covered by integration.yml.
+# Note: github-hosted jobs run as the non-root `runner` user, so writes to
+# /opt and /usr/local/bin use sudo.
 name: component
 on:
   push:

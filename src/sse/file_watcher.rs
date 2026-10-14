@@ -1,3 +1,31 @@
+/* =============================================================================
+ * File          : file_watcher.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Pushes live directory-change events (create/modify/remove) to Explorer
+ *   clients: an inotify watcher ref-counts the directories SSE clients
+ *   currently browse and broadcasts events on a global channel. Access is
+ *   gated by short-lived, single-use tickets because the browser's
+ *   EventSource cannot send session headers.
+ *
+ * Dependencies:
+ *   - notify (>= 8)
+ *   - parking_lot (>= 0.12)
+ *   - serde (>= 1.0)
+ *   - tokio (>= 1.52)
+ *   - uuid (>= 1.0)
+ *
+ * Usage:
+ *   The /api/explorer/watch SSE handler validates a ticket via
+ *   `consume_ticket`, then calls `watch_path`/`unwatch_path` around the
+ *   connection and streams FILE_CHANGE_BUS events.
+ * =============================================================================
+ */
+
 //! Real-time filesystem watcher for the Explorer.
 //!
 //! Uses the `notify` crate (inotify on Linux) to push directory-change events

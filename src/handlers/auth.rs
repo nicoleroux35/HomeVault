@@ -1,3 +1,34 @@
+/* =============================================================================
+ * File          : auth.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Every authentication and first-run setup endpoint: login with optional
+ *   two-factor verification, logout, current-user lookup, the whole Setup
+ *   Wizard sequence (status, username check, storage options, account
+ *   creation, TOTP verification, progress tracking, re-baseline) and the
+ *   recovery-code based password reset. The endpoints that run before any
+ *   account exists are additionally restricted to the local network by the
+ *   setup guard middleware.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *
+ * Usage:
+ *   Routes under /api/auth and /api/setup in src/web/mod.rs; this is the only
+ *   place that also sets the app-proxy session cookie (on login).
+ * =============================================================================
+ */
+
+//! Authentication and first-run setup endpoints: login (with optional 2FA),
+//! logout, current-user lookup, the Setup Wizard flow, and the recovery-code
+//! password reset.
+
 use crate::auth::service::AuthError;
 use crate::handlers::AppState;
 use crate::setup::SetupService;
@@ -5,8 +36,8 @@ use crate::storage::models::{
     LoginRequest, LoginResponse, SetupRequest, SetupStatusResponse, TwoFactorSetupRequest,
     TwoFactorVerifyRequest, ADMIN_ROLE_ID,
 };
-use crate::storage::SetupProgressRepository;
 use crate::storage::SetupStateRepository;
+use crate::storage::SetupProgressRepository;
 use crate::utils::ResponseHelper;
 use axum::{extract::State, http::HeaderMap, response::Response};
 use serde::{Deserialize, Serialize};
@@ -430,9 +461,15 @@ pub async fn handle_logout(State(state): State<Arc<AppState>>, headers: HeaderMa
     match state.auth.invalidate_session(session_token).await {
         Ok(_) => {
             crate::events::log_event(format!("User '{}' logged out", username));
-            crate::app_proxy::cookie::clear_session(ResponseHelper::json_success(
-                "Logged out successfully".to_string(),
-            ))
+            // Drop any app-proxy sessions this user holds, then expire both
+            // cookies so a proxied app can't be reached after logout.
+            crate::app_proxy::app_auth::APP_AUTH.revoke_user(&username);
+            let resp = crate::app_proxy::cookie::clear_app_session(
+                crate::app_proxy::cookie::clear_session(ResponseHelper::json_success(
+                    "Logged out successfully".to_string(),
+                )),
+            );
+            resp
         }
         Err(e) => ResponseHelper::json_error(format!("Logout failed: {}", e)),
     }

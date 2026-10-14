@@ -683,6 +683,12 @@ the **window content** (`terminal-tabs`, between `WindowHeader` and
   `x-session-token` header. `app_proxy/serve.rs`'s upgrade branch sends the
   upstream request in **origin form** (path+query only) and spawns `conn`
   `.with_upgrades()` before `hyper::upgrade::on`.
+- **App-proxy auth is app-scoped (2026-10-17).** The proxy gate must accept
+  only `hv_app_session` (minted by `GET /app-auth` on the main origin), never
+  the API `hv_session`. Both HomeVault cookies are stripped from the request
+  before it is forwarded upstream (`cookie::strip_homevault_cookies`) — a
+  catalog app must never see either credential. Do not re-add an
+  `hv_session`-based shortcut to the gate.
 - `parse_ports`: Docker's `{{.Ports}}` is `IP:HOSTPORT->CONTAINERPORT/proto` —
   **the colon is LEFT of `->`**. The host-port conflict check is re-run
   server-side (`handle_docker_container_create` + `handle_catalog_install`),
@@ -946,3 +952,23 @@ comments). Blocking `ip`/`ethtool`/`ping` calls stay in `spawn_blocking`.
 - **`include_dir!` emits no `cargo:rerun-if-changed`.** After a frontend-only
   rebuild, `touch src/handlers/spa.rs` before `cargo build --release`, or the
   stale bundle (and any missing `.br` sibling) stays embedded.
+## Client/server contract & app-proxy auth (2026-10-17) · `docs/ARCHITECTURE.md`, `docs/guides/development.md`
+
+- **`CONTRACT_VERSION` is bumped in two places at once** —
+  `src/api_contract.rs` and `frontend/src/lib/services/api.ts` — and **only**
+  on a breaking API change (renamed field, removed endpoint, changed shape).
+  Additive changes never bump it. The SPA sends `X-HomeVault-Contract` on every
+  request; `middleware::contract` answers `426 Upgrade Required` on a mismatch
+  (`/api/meta` is exempt — it is the discovery endpoint). A missing header is
+  legacy and stays allowed.
+- **The app proxy never reads `hv_session`.** Its gate accepts only the
+  app-proxy-scoped `hv_app_session` minted by `GET /app-auth` (server-chosen
+  entry on the main origin), and both HomeVault cookies are stripped before the
+  request is forwarded upstream. Revoke app sessions on logout
+  (`APP_AUTH.revoke_user`) and on proxy stop. Adding a `hv_session`-based
+  shortcut back to the gate re-opens the privilege leak this closed.
+- **`HV_MDNS_HOSTNAME`** overrides the default `homevault` mDNS name for
+  multi-instance dev (`scripts/dev-instance.sh`); an Avahi-invalid value is
+  ignored, never written to the config. Real-VM specs (`tests/vm/*.vm.test.ts`,
+  `playwright.vm.config.ts`) are opt-in via `HV_VM_BASE_URL` and must stay out
+  of the default `npx playwright test` run.

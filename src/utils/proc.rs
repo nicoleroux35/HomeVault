@@ -1,3 +1,34 @@
+/* =============================================================================
+ * File          : proc.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Reads live hardware and system information directly from the Linux
+ *   kernel's /proc and /sys virtual filesystems: load average, memory,
+ *   uptime, mounted disks, network interfaces (with Wi-Fi signal/SSID where
+ *   available), CPU details, motherboard, RAM, GPU, temperature sensors,
+ *   UPS and installed-software versions. Each call parses the current
+ *   kernel state, so results are always fresh and nothing is cached.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   Called by the dashboard, widgets and network handlers
+ *   (src/handlers/dashboard.rs, widgets.rs, network.rs), e.g.
+ *   `ProcParser::parse_meminfo()`.
+ * =============================================================================
+ */
+
+//! Read-only access to live system information through the kernel's /proc
+//! and /sys virtual filesystems: CPU, memory, uptime, mounts, network
+//! interfaces (including Wi-Fi details), motherboard, GPU, sensors, UPS and
+//! installed-software versions. Everything is parsed on demand from the
+//! running kernel — no daemon, no cache, no state.
+
 use serde::Serialize;
 use std::fs;
 

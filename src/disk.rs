@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : disk.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Physical disk service: inventory of disks/partitions/removable drives,
+ *   SMART capabilities and self-tests, system-disk detection, formatting
+ *   and mounting, and the mdadm RAID create/teardown/rebuild operations
+ *   underlying the virtual-disk features.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0), thiserror (>= 2), tokio (>= 1.52)
+ *
+ * Usage:
+ *   handlers/storage.rs, handlers/explorer.rs (eject), RAID creation.
+ * =============================================================================
+ */
+
+//! Physical disk service (inventory, SMART, format/mount, mdadm RAID).
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::process::Command;

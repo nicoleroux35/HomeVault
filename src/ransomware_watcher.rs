@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : ransomware_watcher.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Background filesystem watcher for anti-ransomware protection: watches
+ *   ONLY the admin-declared protected paths (never the whole filesystem —
+ *   the appliance targets low-power boards), rates change bursts and
+ *   honeypot touches, and hands suspects to the response layer. Runs as a
+ *   long-lived task with a command channel for path updates.
+ *
+ * Dependencies:
+ *   - notify (>= 8), tokio (>= 1.52)
+ *
+ * Usage:
+ *   Spawned once at startup; settings changes arrive over the watch
+ *   command channel (AppState.ransomware_watch_tx).
+ * =============================================================================
+ */
+
 //! Background filesystem watcher for anti-ransomware protection.
 //!
 //! Watches **only** the paths an admin has explicitly added as "protected"

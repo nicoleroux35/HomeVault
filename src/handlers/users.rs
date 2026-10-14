@@ -1,3 +1,33 @@
+/* =============================================================================
+ * File          : users.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Admin user-management endpoints: list, get, create, update and delete
+ *   users, change passwords and roles (with host admin-group sync), lock or
+ *   unlock accounts, force-disable 2FA, sync group memberships and manage
+ *   home-folder settings and quotas. Listing, profile updates and password
+ *   changes also accept the account owner; every mutation that touches
+ *   another account is admin-only, and user creation is rate-limited
+ *   (10 per minute per admin).
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/users* in src/web/mod.rs; payload types live in
+ *   users_models.rs.
+ * =============================================================================
+ */
+
+//! Admin user-management endpoints (with self-service for one's own
+//! profile, password and home folder).
+
 use crate::groups::GroupService;
 use crate::handlers::{users_models::*, AppState};
 use crate::storage::user_home_repo::UserHomeRepository;

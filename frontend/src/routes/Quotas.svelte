@@ -1,3 +1,20 @@
+<!-- ========================================================================
+     File          : Quotas.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The read-only Quotas app: per-user transfer quota limits and current
+     usage (management itself lives in Settings).
+
+     Dependencies:
+       - svelte (>= 5), theme + app/ composites, $lib/services/api
+
+     Usage:
+     Opened as a desktop window app.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * Quotas — read-only transfer-quota overview (app id `quotas`).

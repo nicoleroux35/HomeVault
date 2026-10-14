@@ -1,3 +1,31 @@
+/* =============================================================================
+ * File          : docker_catalog.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.1
+ *
+ * Description:
+ *   One-click app catalog on top of Docker Compose: browse the built-in
+ *   manifest-driven catalog plus admin-added community stores, install and
+ *   uninstall apps, check and apply updates (individually or all at once),
+ *   inspect install/update progress and logs, and manage the proxy config
+ *   that exposes an app under its own port. Browsing is open to any
+ *   authenticated user; installing, updating and store management are
+ *   admin-only.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Routes /api/catalog and /api/stores in src/web/mod.rs; installs and
+ *   updates run through ComposeManager, manifests come from crate::app_catalog.
+ * =============================================================================
+ */
+
 //! HTTP handlers for the one-click Docker app catalog.
 //!
 //! The catalog is manifest-driven (see `crate::app_catalog`): apps are
