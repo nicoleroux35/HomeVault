@@ -54,7 +54,10 @@ while IFS= read -r f; do
   [ -z "$f" ] && continue
   N_TOTAL=$((N_TOTAL + 1))
 
-  gdate="$(git log -1 --format=%ad --date=format:%d/%m/%Y -- "$f" 2>/dev/null || true)"
+  # Last commit date, ignoring docs-campaign commits (subject starts with
+  # "docs:"): documenting a file must not make it look stale.
+  gdate="$(git log --format=%ad:%s --date=format:%d/%m/%Y -- "$f" 2>/dev/null \
+    | awk -F: '{ subject = substr($0, length($1) + 2); if (subject !~ /^docs/) { print $1; exit } }')"
   # No commit yet (untracked/new file): git cannot tell whether the file
   # changed since it was documented, so never flag it stale — a missing
   # header is still reported by the field checks below.
