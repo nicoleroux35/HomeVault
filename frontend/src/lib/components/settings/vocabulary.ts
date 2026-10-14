@@ -15,7 +15,7 @@
  *   - none (Tailwind class strings)
  *
  * Usage:
- *   Imported by routes/Settings.svelte and components/settings/*.
+ *   Imported by routes/Settings.svelte and the components/settings cards.
  * =============================================================================
  */
 
