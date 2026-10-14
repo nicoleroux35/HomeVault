@@ -45,7 +45,7 @@
   into empty space without ever covering the label
 - **Power** button: Logout, Restart the server, Shut down the server
 
-The four buttons are **icon + label** chips (DSM mockup): labels
+The four buttons are **icon + label** chips (approved mockup): labels
 visible from 901px, icon only below that — the touch target stays
 44×44 in both cases. Order: Network, Widgets, Notifications, Power.
 
