@@ -1,8 +1,8 @@
 # External Agents (MCP server)
 
-**Purpose:** Let an external AI agent (Claude Code, opencode, …) drive
+**Purpose:** Let an external coding agent drive
 HomeVault over the Model Context Protocol (Streamable HTTP), with granular
-permissions and revocable tokens. Modelled on Umbrel's `umbrelMcp` module:
+permissions and revocable tokens. A minimal external-agent gateway surface:
 one master kill-switch, one global permission set shared by every token,
 opaque bearer tokens. The HomeVault-only addition is the `knowledge` family,
 which exposes the internal RAG base to agents.
