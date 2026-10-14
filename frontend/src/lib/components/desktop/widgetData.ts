@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : widgetData.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Shared data-loading machinery for desktop widgets: a discriminated
+ *   result type covering every load phase, plus a small polling helper, so
+ *   widgets never reinvent the load/start/stop logic.
+ *
+ * Dependencies:
+ *   - $lib/services/api
+ *
+ * Usage:
+ *   Imported by every desktop monitor widget.
+ * =============================================================================
+ */
+
 /**
  * Shared data-loading helpers for desktop widgets.
  * Provides a discriminated result type and a small polling helper so that

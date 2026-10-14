@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : login_attempt_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Login-attempt audit trail and lockout counting: every success and
+ *   failure with IP/user-agent, pruned on retention.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
+//! Login-attempt audit trail + lockout counting.
+
 use crate::impl_repository;
 use crate::storage::database::DbError;
 use chrono::{Duration, Utc};

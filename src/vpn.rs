@@ -1,3 +1,24 @@
+/* =============================================================================
+ * File          : vpn.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   VPN engine service for WireGuard and OpenVPN: server setup and
+ *   capability detection, peer provisioning (keys, config files),
+ *   tunnel start/stop, and live status — always reading the host state
+ *   (wg show) as the source of truth.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   handlers/vpn.rs (see docs/guides/vpn.md).
+ * =============================================================================
+ */
+
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;

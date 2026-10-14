@@ -1,3 +1,21 @@
+/* =============================================================================
+ * File          : spa_assets_integration.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 12/10/2026
+ * Last modified : 12/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Embedded SPA serving tests: asset lookup, ETag/Cache-Control policies and pre-compressed variants.
+ *
+ * Dependencies:
+ *   - none (test crate: axum router + tower oneshot / Playwright)
+ *
+ * Usage:
+ *   Rust: cargo test  |  E2E: npx playwright test
+ * =============================================================================
+ */
+
 //! Integration coverage for the embedded static-asset routes
 //! (`src/handlers/spa.rs`), over a real Axum router and `tower::oneshot`.
 //!

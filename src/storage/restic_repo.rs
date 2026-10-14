@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : restic_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Backup repository definitions: target URL, stored password, source
+ *   paths, optional pre-backup snapshot settings.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
+//! Backup repository definitions (restic).
+
 use crate::restic::ResticRepo;
 use chrono::Utc;
 use sqlx::SqlitePool;

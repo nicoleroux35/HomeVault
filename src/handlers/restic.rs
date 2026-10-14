@@ -1,3 +1,34 @@
+/* =============================================================================
+ * File          : restic.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Backup endpoints backed by restic: repository CRUD (with stored
+ *   passwords and retention policies), snapshot listing and deletion,
+ *   backup/restore/check operations (long-running, tracked as background
+ *   jobs with live SSE progress), forget/prune retention runs, stats, and
+ *   the stale-repo reminder list used by the dashboard banner. Availability
+ *   and listing are session-auth; repository changes, operations and
+ *   revealing a stored password are admin-only.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Routes /api/restic in src/web/mod.rs; schedules handled by the restic
+ *   scheduler, execution by crate::restic::ResticService.
+ * =============================================================================
+ */
+
+//! Backup endpoints backed by restic (repositories, snapshots, backup /
+//! restore / check / forget / prune as tracked background jobs).
+
 use crate::handlers::admin_guard::{require_admin, require_auth};
 use crate::handlers::AppState;
 use crate::restic::{ResticRepo, ResticService};

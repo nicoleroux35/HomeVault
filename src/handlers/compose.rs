@@ -1,3 +1,29 @@
+/* =============================================================================
+ * File          : compose.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Docker Compose project endpoints: create, read, update and delete
+ *   projects, validate their configuration, start/stop/restart them, list
+ *   their services, and check availability of the compose tooling. All
+ *   endpoints are admin-only; execution is delegated to ComposeManager.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde_json (>= 1.0)
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Routes /api/compose in src/web/mod.rs; the Apps Center install flow
+ *   also goes through ComposeManager (see handlers/docker_catalog.rs).
+ * =============================================================================
+ */
+
+//! Docker Compose project endpoints (CRUD, validation, lifecycle) — admin-only.
+
 use crate::compose::ComposeManager;
 use crate::handlers::admin_guard::require_admin;
 use crate::handlers::AppState;

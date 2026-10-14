@@ -1,3 +1,24 @@
+/* =============================================================================
+ * File          : firewall.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Firewall management via ufw: rules are never mirrored in the database —
+ *   live system state is the source of truth (read from ufw status), with
+ *   mandatory self-lockout rules re-asserted on enable and a comment-based
+ *   check protecting mandatory rules from deletion.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   handlers/firewall.rs; persistence of settings via FirewallRepository.
+ * =============================================================================
+ */
+
 //! Firewall management via `ufw` (Debian/Ubuntu only, matching the OS check
 //! already in `installer/install.sh`). Follows the same "live system state
 //! is the source of truth" principle as `src/vpn.rs`'s `wg show`: rules are

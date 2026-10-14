@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : widgetCatalog.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Single source of truth for the desktop monitor widgets, shared by the
+ *   Widgets app and Settings → Widgets (one entry + its i18n keys — never a
+ *   copy-pasted tile/row). Deliberately holds no visibility flag: live
+ *   visibility belongs to monitorStore, read through isWidgetVisible() and
+ *   written through each entry's setVisible.
+ *
+ * Dependencies:
+ *   - @tabler/icons-svelte, svelte (>= 5), stores/monitorStore
+ *
+ * Usage:
+ *   WIDGET_DEFS in routes/Widgets.svelte, Settings.svelte, widgetLayout.
+ * =============================================================================
+ */
+
 import {
   IconActivity,
   IconCalendar,

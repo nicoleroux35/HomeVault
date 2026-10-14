@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : notifications.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Client-side notification list for the bell panel: replaces its contents
+ *   from the 30 s poll, accepts live SSE pushes keyed by the real server id
+ *   (so the next poll recognizes them instead of duplicating), mints ids
+ *   for client-local entries, caps the list at 50 and keeps the unread
+ *   counter consistent through every mutation.
+ *
+ * Dependencies:
+ *   - svelte (>= 5)
+ *
+ * Usage:
+ *   notificationsStore in NotificationCenter.svelte; fed by api.ts and
+ *   services/websocket.ts.
+ * =============================================================================
+ */
+
 import { writable } from 'svelte/store';
 
 /** A single notification: shown in the notification center to inform the user. */

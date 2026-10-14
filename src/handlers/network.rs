@@ -1,3 +1,32 @@
+/* =============================================================================
+ * File          : network.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Network endpoints: interface inventory and per-interface details,
+ *   configuration read/update (IP, gateway, DNS), interface up/down,
+ *   Wi-Fi scan/connect/disconnect, diagnostics (ping, DNS resolution),
+ *   public-IP lookup and system service status. Reads are session-auth;
+ *   configuration changes and Wi-Fi association are admin-only.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Routes /api/network in src/web/mod.rs; hardware facts come from
+ *   crate::network and ProcParser.
+ * =============================================================================
+ */
+
+//! Network endpoints: interfaces, configuration, Wi-Fi, diagnostics —
+//! reads session-auth, changes admin-only.
+
 use axum::{
     extract::{Path, State},
     http::HeaderMap,

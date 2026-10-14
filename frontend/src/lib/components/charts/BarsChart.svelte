@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : BarsChart.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Categorical bar chart on LayerChart (Svelte 5 / d3), compact by
+       default (no axis/grid/legend) for StatCard and panel usage; pass
+       axis/grid/rule to opt back into the full chart furniture.
+
+     Dependencies:
+       - svelte (>= 5), layerchart
+
+     Usage:
+       `import { BarsChart } from '$lib/components/charts'`.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM - BarsChart

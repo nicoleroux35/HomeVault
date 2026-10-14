@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : wallpaper.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Desktop wallpaper choice, limited to the bundled photos served from
+ *   /wallpapers/ (custom uploads and gradients are gone). Every stored or
+ *   received value — including legacy ones (bare colours, gradients, the
+ *   old default) — is normalized to a valid bundled image, so stale values
+ *   can never produce a broken desktop. Persisted in localStorage.
+ *
+ * Dependencies:
+ *   - svelte (>= 5)
+ *
+ * Usage:
+ *   wallpaperStore + BUNDLED_WALLPAPERS in Desktop.svelte and Settings →
+ *   Appearance.
+ * =============================================================================
+ */
+
 import { writable } from 'svelte/store';
 
 /**

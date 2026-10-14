@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : appColor.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 13/10/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Deterministic per-app colour for the Dashboard's live-usage card: the
+ *   hue is hashed from the container name (djb2) so a band keeps its colour
+ *   across polls and reloads; saturation and lightness are fixed so every
+ *   chip clears the 3:1 non-text contrast bar. Pure function, no Canvas, no
+ *   network.
+ *
+ * Dependencies:
+ *   - none
+ *
+ * Usage:
+ *   `appColor(containerName)` wherever a running app needs a stable colour.
+ * =============================================================================
+ */
+
 /**
  * Deterministic per-app colour.
  *

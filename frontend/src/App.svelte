@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : App.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 12/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     Application root: waits for the translation bundle, applies the chosen
+     wallpaper, boots the live SSE connection after login, and renders the
+     route the app gate selects (setup / recovery / login / desktop).
+
+     Dependencies:
+       - svelte (>= 5), stores (i18n, wallpaper, appGate), services/api
+
+     Usage:
+       Mounted once by main.ts.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { translationsReady } from '$lib/stores/i18n';

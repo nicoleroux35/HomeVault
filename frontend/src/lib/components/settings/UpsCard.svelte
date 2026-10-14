@@ -1,3 +1,20 @@
+<!-- ========================================================================
+     File          : UpsCard.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Settings sub-card for UPS monitoring: live device status and the
+       admin-managed device configuration list (add/remove hosts to poll).
+
+     Dependencies:
+       - svelte (>= 5), $lib/services/api, ./SettingsCard
+
+     Usage:
+       Embedded in routes/Settings.svelte's monitoring group.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';

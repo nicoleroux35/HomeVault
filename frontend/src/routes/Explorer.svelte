@@ -1,3 +1,24 @@
+<!-- ========================================================================
+     File          : Explorer.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 13/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The File Explorer app: browse/search within the user's allowed roots,
+     create/rename/delete/copy/move, uploads (multipart + resumable chunks),
+     downloads via tickets, previews and thumbnails, archive extract/compress,
+     trash with restore/purge, share-by-link, and per-folder permissions —
+     with the a11y row-activation helpers and confirm dialogs.
+
+     Dependencies:
+       - svelte (>= 5), theme primitives, app/ composites, utils
+         (confirmDialog, activateOnEnterOrSpace), $lib/services/api
+
+     Usage:
+     Opened as a desktop window app.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { Icon, Button, Modal } from '$lib/components/theme';

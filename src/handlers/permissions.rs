@@ -1,3 +1,30 @@
+/* =============================================================================
+ * File          : permissions.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Access-control endpoints for shares: list permission entries, grant or
+ *   revoke per-user/per-group permissions (optionally applied recursively
+ *   to the share contents), sync them onto the filesystem, and resolve one
+ *   user's effective permissions. Entry management is admin-only.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/permissions in src/web/mod.rs; rules enforced by
+ *   PermissionService, share lookup by SharesService.
+ * =============================================================================
+ */
+
+//! Share permission endpoints: grant/revoke per-user or per-group access to
+//! a share (optionally recursive), list entries, and resolve a user's
+//! effective permissions.
+
 use crate::handlers::AppState;
 use crate::permissions::PermissionService;
 use crate::shares::{ShareType, SharesService};

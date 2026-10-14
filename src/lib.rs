@@ -1,5 +1,26 @@
+/* =============================================================================
+ * File          : lib.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Library root: declares every top-level module (auth, config, handlers,
+ *   storage, services, middleware, ...) so the single server binary can
+ *   pull the whole application from one crate.
+ *
+ * Dependencies:
+ *   - none (module declarations only)
+ *
+ * Usage:
+ *   Referenced by src/bin/server.rs; see docs/BACKEND.md for the map.
+ * =============================================================================
+ */
+
 /// Core web framework modules
 pub mod auth;
+pub mod api_contract;
 pub mod config;
 pub mod handlers;
 pub mod network;
@@ -46,6 +67,7 @@ pub mod rag;
 pub mod rag_indexers;
 pub mod ransomware;
 pub mod ransomware_watcher;
+pub mod release_notes;
 pub mod rescue;
 pub mod restic;
 pub mod restic_scheduler;

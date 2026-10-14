@@ -1,3 +1,28 @@
+/* =============================================================================
+ * File          : auth.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Authentication session store: login (with the dedicated 2FA path),
+ *   logout, and startup session validation. Three ordering invariants live
+ *   here: a valid but non-admin login is invalidated server-side
+ *   immediately (the web UI is admins-only, so no dangling session may
+ *   survive a reload); tokens are persisted BEFORE the store updates (other
+ *   stores fetch as soon as the user appears); and an invalid stored token
+ *   must be cleared via api.clearTokens(), which also resets the client's
+ *   in-memory token pair, not just localStorage.
+ *
+ * Dependencies:
+ *   - svelte (>= 5)
+ *
+ * Usage:
+ *   authStore everywhere; isAdmin derived store for admin-only UI.
+ * =============================================================================
+ */
+
 import { writable, derived } from 'svelte/store';
 import type { User } from '$lib/types/api';
 import { api } from '$lib/services/api';

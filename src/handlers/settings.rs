@@ -1,3 +1,35 @@
+/* =============================================================================
+ * File          : settings.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Server and account settings endpoints: user language + UI translations,
+ *   general settings (display name sanitized into a real OS hostname via
+ *   hostnamectl), autostart, SMTP email, privacy-conservative update checks
+ *   (off by default — no outbound call without admin consent), notification
+ *   thresholds, appearance (theme/accent — non-WCAG-compliant legacy
+ *   accents are rewritten on every load path), plus export/import/reset and
+ *   the public pre-login settings subset. Most endpoints are admin-only;
+ *   translations, own language and the public subset work pre-login.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - parking_lot (>= 0.12)
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/settings in src/web/mod.rs; see docs/guides/settings.md
+ *   (8 rail groups) and docs/guides/i18n.md (translations).
+ * =============================================================================
+ */
+
+//! Server/account settings endpoints: language & translations, hostname,
+//! email, update checks, notifications, appearance, export/import/reset.
+
 use crate::i18n::{t, I18n};
 use crate::utils::ResponseHelper;
 use axum::{

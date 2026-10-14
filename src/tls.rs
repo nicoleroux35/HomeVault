@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : tls.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Built-in HTTPS/TLS: when enabled, the same router is additionally
+ *   served over HTTPS on its own port — either with a generated self-signed
+ *   certificate or operator-supplied files — while plain HTTP keeps
+ *   serving (loopback health checks and the app proxy depend on it).
+ *
+ * Dependencies:
+ *   - axum-server (>= 0.8, rustls)
+ *
+ * Usage:
+ *   web::run selects the listener pair from the TLS settings; the
+ *   ArrivedOverTls marker feeds the security-headers middleware (see
+ *   docs/guides/tls.md).
+ * =============================================================================
+ */
+
 //! Built-in HTTPS/TLS support.
 //!
 //! HomeVault serves plain HTTP on `PORT` (default 8080) as it always has. When
@@ -218,7 +241,7 @@ fn self_signed_sans() -> Vec<String> {
         }
     }
     // Stable mDNS name, independent of the OS hostname (see crate::mdns).
-    names.push(format!("{}.local", crate::mdns::MDNS_HOSTNAME));
+    names.push(format!("{}.local", crate::mdns::mdns_hostname()));
 
     if let Some(ip) = crate::network::get_connection_summary().local_ip {
         if let Ok(ip) = ip.trim().parse::<IpAddr>() {

@@ -1,3 +1,30 @@
+/* =============================================================================
+ * File          : docker.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Docker management endpoints: daemon status and control, container
+ *   lifecycle (list, start/stop/restart, create, remove, logs), image
+ *   pull/remove, network inspection, port checks and availability. Every
+ *   endpoint is admin-only; the Docker work is delegated to
+ *   crate::docker::DockerService.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/docker in src/web/mod.rs; the desktop Docker app and the
+ *   Apps Center install flow both consume these endpoints.
+ * =============================================================================
+ */
+
+//! Docker daemon and container management endpoints (admin-only).
+
 use crate::docker::{self as docker_lib, CreateContainerRequest, DockerService, PullImageRequest};
 use crate::handlers::admin_guard::require_admin;
 use crate::handlers::AppState;

@@ -1,3 +1,22 @@
+<!-- ========================================================================
+     File          : RenderErrorProbe.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Test-only companion of WindowFrame's error boundary: renders nothing
+       normally, but throws during its first render when armed so E2E tests
+       can exercise the boundary's fallback end to end.
+
+     Dependencies:
+       - svelte (>= 5)
+
+     Usage:
+       Mounted by WindowFrame only when the app is opened with
+       ?hv-render-error.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * RenderErrorProbe — test-only companion of WindowFrame's `<svelte:boundary>`

@@ -20,6 +20,28 @@
  * focus). Do not use on bits-ui Dialog content — it manages its own focus.
  */
 
+/* =============================================================================
+ * File          : focusTrap.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Svelte use:focusTrap action giving hand-rolled overlays the keyboard
+ *   behaviour of a modal dialog: focus moves in on open, Tab cycles inside,
+ *   Escape closes via callback, and focus returns to the triggering element
+ *   on destroy. Do not apply it to bits-ui Dialog content — that component
+ *   already manages its own focus.
+ *
+ * Dependencies:
+ *   - none (DOM only)
+ *
+ * Usage:
+ *   `<div role="dialog" aria-modal="true" use:focusTrap={{ escape: close }}>`.
+ * =============================================================================
+ */
+
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
   'textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [role="button"]:not([tabindex="-1"])';

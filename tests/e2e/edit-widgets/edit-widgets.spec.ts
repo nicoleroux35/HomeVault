@@ -1,3 +1,21 @@
+/* =============================================================================
+ * File          : edit-widgets.spec.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 13/10/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Edit widgets screen end-to-end tests (Playwright): covers the screen's functionality per TESTING.md.
+ *
+ * Dependencies:
+ *   - none (test crate: axum router + tower oneshot / Playwright)
+ *
+ * Usage:
+ *   Rust: cargo test  |  E2E: npx playwright test
+ * =============================================================================
+ */
+
 /**
  * Edit Widgets — End-to-End Test Suite
  *

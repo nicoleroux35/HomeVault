@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : user_config.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Per-user JSON configuration documents (display preferences synced
+ *   server-side).
+ *
+ * Dependencies:
+ *   - none (JSON storage via storage/json)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
+//! Per-user JSON configuration documents.
+
 use crate::storage::json::{JsonStorage, JsonStorageError};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

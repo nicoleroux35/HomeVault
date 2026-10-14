@@ -1,3 +1,28 @@
+/* =============================================================================
+ * File          : i18n.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Server-side translations: parses the bundled per-language TOML tables
+ *   (src/i18n, one .toml per language), caches them in a process-wide lock,
+ *   and serves them to the frontend plus the RAG document indexers. Shared
+ *   by the translations endpoint and server-side message building.
+ *
+ * Dependencies:
+ *   - once_cell, parking_lot (>= 0.12), serde (>= 1.0)
+ *
+ * Usage:
+ *   handlers/settings.rs serves translations; rag_indexers.rs indexes the
+ *   documents (see docs/guides/i18n.md).
+ * =============================================================================
+ */
+
+//! Server-side translation tables (src/i18n/*.toml) served to the frontend
+//! and indexed for the RAG knowledge base.
+
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};

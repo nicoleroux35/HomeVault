@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : resource_share_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 13/10/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Per-member resource grants (app/folder/share, read/write): the
+ *   fine-grained access layer on top of roles, enforced server-side.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
+//! Per-member resource grants (apps, folders, shares).
+
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use sqlx::SqlitePool;

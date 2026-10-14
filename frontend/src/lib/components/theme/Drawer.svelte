@@ -1,3 +1,23 @@
+<!-- ========================================================================
+     File          : Drawer.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Mobile bottom-sheet drawer rebuilt on the vendored bits-ui Dialog
+       (Svelte 5), replacing the old drag/snap library whose dependency
+       stack pinned the svelte-4 era. Public API unchanged (open,
+       onOpenChange, title, direction, header/footer, dismissible); themed
+       with the --hv-* tokens. On desktop layouts prefer Modal.
+
+     Dependencies:
+       - svelte (>= 5), bits-ui, @tabler/icons-svelte
+
+     Usage:
+       `import { Drawer } from '$lib/components/theme'`.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM - Drawer Component

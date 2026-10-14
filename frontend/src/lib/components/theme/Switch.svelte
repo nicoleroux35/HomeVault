@@ -1,3 +1,22 @@
+<!-- ========================================================================
+     File          : Switch.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Design-system switch wrapping the vendored bits-ui Switch: bindable
+       checked state, optional inline label, and an explicit accessible name
+       requirement — a bare track has no text content, so either label or
+       ariaLabel/aria-labelledby must be provided.
+
+     Dependencies:
+       - svelte (>= 5), components/ui/switch (vendored)
+
+     Usage:
+       `import { Switch } from '$lib/components/theme'`.
+     ======================================================================== -->
 <script lang="ts">
   import { cn } from '$lib/utils.js';
 

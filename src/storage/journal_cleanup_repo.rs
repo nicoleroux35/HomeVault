@@ -1,3 +1,21 @@
+/* =============================================================================
+ * File          : journal_cleanup_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   System Journal auto-cleanup setting (singleton row: enabled,
+ *   interval days, last-run timestamp).
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
 //! Storage layer for the System Journal app's auto-cleanup setting: a
 //! singleton `journal_cleanup_settings` row controlling whether HomeVault's
 //! own rotating log files (the "app" source in `src/handlers/journal.rs`)

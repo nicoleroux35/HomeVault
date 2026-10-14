@@ -1,3 +1,34 @@
+/* =============================================================================
+ * File          : rclone.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 12/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.1
+ *
+ * Description:
+ *   Cloud-sync endpoints backed by rclone: remote and provider listing,
+ *   configuration read/save (including adding and deleting remotes),
+ *   mount start/stop, one-shot copy/sync operations, and scheduled sync
+ *   jobs persisted in the database. Reads use session auth; every mutation
+ *   — and reading the raw config, which contains every remote's
+ *   credentials — requires admin. The rclone binary runs locally, spawned
+ *   per operation.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Routes /api/rclone in src/web/mod.rs; the Cloud Sync desktop app and
+ *   the backup flows consume them.
+ * =============================================================================
+ */
+
+//! Cloud-sync endpoints backed by rclone (remotes, mounts, sync jobs,
+//! copy/sync operations).
+
 use axum::{
     extract::{Path, State},
     http::HeaderMap,

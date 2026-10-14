@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : autostart.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Toggles whether the homevault systemd unit starts on boot (the
+ *   installer enables it once; this lets an admin change it from Settings
+ *   without shell access).
+ *
+ * Dependencies:
+ *   - none (systemctl via std::process::Command)
+ *
+ * Usage:
+ *   Called by the autostart settings endpoints (handlers/settings.rs).
+ * =============================================================================
+ */
+
 //! Controls whether the `homevault.service` systemd unit is enabled to
 //! start automatically on boot. `installer/install.sh` already runs
 //! `systemctl enable homevault` once at install time; this lets an admin

@@ -1,3 +1,22 @@
+<!-- ========================================================================
+     File          : VirtualMachines.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 13/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The Virtual Machines app: machine list with live status, the creation
+     wizard (curated OS list, sizes, login), lifecycle actions, CPU/memory
+     config, snapshots, browser console and graphical screen, ISO management.
+
+     Dependencies:
+       - svelte (>= 5), theme + app/ composites, components/vm/*,
+         $lib/services/api
+
+     Usage:
+     Opened as a desktop window app (admin only).
+     ======================================================================== -->
 <script lang="ts">
   /**
    * Virtual Machines — built so a person with no Linux knowledge can create a

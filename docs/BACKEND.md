@@ -27,8 +27,10 @@ src/
   config/               Settings, paths, PathGuard
   app_catalog/          Manifest-driven Docker app catalog + registry digest
                         update detection (replaces the deleted docker_catalog.rs)
-  app_proxy/            Per-installed-app reverse proxy (47000-47999) with an
-                        optional hv_session cookie auth gate
+  app_proxy/            Per-installed-app reverse proxy (47000-47999); gate
+                        accepts only the app-scoped hv_app_session minted by
+                        GET /app-auth, and strips both HomeVault cookies before
+                        forwarding upstream (app_auth.rs, cookie.rs, serve.rs)
   rescue/               ddrescue / TestDisk / PhotoRec / mdadm-repair service +
                         SecurityValidator (protected-device blocklist)
   groups.rs             GroupService (incl. is_admin_group)
@@ -248,9 +250,14 @@ privileged shell-outs stay `sudo`-wrapped, except `quota.rs`'s bare
   (does **not** consume the code). See [guides/auth.md](./guides/auth.md).
 - `middleware.rs::auth_middleware` is an Axum middleware variant (returns 401),
   but most endpoints use the `require_auth`/`require_admin` helper guards instead.
-- Login / 2FA / setup / logout also set a `hv_session` **cookie** — read only by
-  the per-app reverse proxy (`src/app_proxy`); the JSON API still reads only the
-  `x-session-token` header.
+- Login / 2FA / setup / logout also set a `hv_session` **cookie** — read only
+  by `GET /app-auth` (`src/handlers/app_auth.rs`), which mints the
+  app-proxy-scoped `hv_app_session` the proxy actually trusts; the JSON API
+  still reads only the `x-session-token` header. See
+  [guides/docker.md](./guides/docker.md).
+- `api_contract.rs` + `handlers/meta.rs` + `middleware/contract.rs` implement
+  the versioned client/server contract (`GET /api/meta`, `X-HomeVault-Contract`,
+  426 on mismatch). `release_notes.rs` holds the curated What's New highlights.
 
 ## i18n (`src/i18n.rs`)
 

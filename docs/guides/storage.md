@@ -25,6 +25,9 @@ standalone `/snapshots/*` HTTP endpoints were removed, see
 | `GET /storage/virtual-disks` | auth | **all** virtual disks — mdadm + ZFS + Btrfs (`PoolService::scan_pools`, mdadm `/dev/md/x` normalised to `x`) |
 | `DELETE /storage/virtual-disks/{name}` | admin | destroy — dispatches: mdadm → `DiskService::delete_raid`, ZFS/Btrfs → `PoolService::delete_pool` |
 | `POST /storage/virtual-disks/{name}/scrub` | admin | verify — ZFS/Btrfs → `PoolService::start_scrub`; mdadm → `echo check > /sys/block/mdX/md/sync_action` |
+| `GET /storage/virtual-disks/{name}/scrub` | auth | current scrub / consistency-check status (ZFS `scan:` line, Btrfs `Status:` line, mdadm `sync_action`) + `in_progress` |
+| `GET /storage/importable-pools` | auth | "foreign" pools present on attached disks but not imported (ZFS `zpool import`, Btrfs `btrfs filesystem show` minus mounted UUIDs) |
+| `POST /storage/import-pool` | admin | import a foreign pool — ZFS `zpool import [-N] <name>` (optional rename), Btrfs mount + `/etc/fstab` persistence |
 | `GET /storage/disks/{name}/smart/capabilities` | auth | whether `smartctl` supports this disk |
 | `GET /storage/disks/{name}/smart/test` | auth | running SMART self-test status |
 | `POST /storage/disks/{name}/smart/test` | admin | start a SMART self-test — `test_type` whitelisted to `short`/`long`/`conveyance` in `DiskService::start_smart_test`; admin-only since it runs a real `smartctl -t` on the host (records an event-log entry). Non-admins see an explanatory message instead of the control |
@@ -113,6 +116,13 @@ still binding:
   Pools tab keeps the native-ZFS/Btrfs create-pool modal + scrub + snapshots.
   Re-skinned to the mono house style 2026-09-07 (E2E hooks `.storage-page`,
   `.storage-stats .storage-stat-card` ×4, `.storage-disk-grid`, 6 `.hv-winhdr-tab`).
+- **Storage health (2026-10-17):** each virtual-disk card gained a **Check
+  status** button that fetches `GET .../scrub` and renders the scrub state
+  inline (`[data-testid="storage-vd-scrub-status"]`). When `zpool import` /
+  `btrfs filesystem show` report a pool that isn't imported, a **foreign
+  pools** section appears above the list (`[data-testid="storage-importable-pools"]`)
+  with an Import button per pool (`POST /storage/import-pool`); ZFS pools can
+  be renamed on import. Both are admin-only for the mutating action.
 - `frontend/src/lib/services/api.ts`: `getStorageDisks`, `getStoragePartitions`,
   `getStoragePools`, `getStoragePool`, `getStoragePoolDevices`,
   `getStorageRemovable`, `getStorageSystemDisk`, `getScrubStatus`,

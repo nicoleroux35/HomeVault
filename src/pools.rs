@@ -1,3 +1,29 @@
+/* =============================================================================
+ * File          : pools.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Storage-pool service for ZFS and multi-device Btrfs: scan (typed
+ *   PoolInfo for every technology), create from devices with a chosen
+ *   data profile, destroy, scrub start/status and import of foreign
+ *   pools — the second half of the virtual-disk feature set (mdadm lives
+ *   in disk.rs).
+ *
+ * Dependencies:
+ *   - serde (>= 1.0), thiserror (>= 2), tracing (>= 0.1)
+ *
+ * Usage:
+ *   handlers/storage.rs virtual-disk endpoints; RAID creation dispatches
+ *   Btrfs here (see docs/guides/storage.md).
+ * =============================================================================
+ */
+
+//! Storage-pool service for ZFS and multi-device Btrfs (scan, create,
+//! destroy, scrub, import).
+
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 use thiserror::Error;
@@ -55,6 +81,25 @@ pub struct PoolDevice {
     pub size_bytes: u64,
 }
 
+/// A pool discovered on attached disks that is **not** currently imported /
+/// mounted — the "foreign pool" case. The user can import it (ZFS) or mount
+/// it (Btrfs) from the Storage page without recreating it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportablePool {
+    /// The pool name recorded on disk (ZFS label / Btrfs label).
+    pub name: String,
+    #[serde(rename = "pool_type")]
+    pub pool_type: PoolType,
+    /// ZFS numeric pool id, when known.
+    pub id: Option<String>,
+    /// Device paths that carry the pool, when known.
+    pub devices: Vec<String>,
+    /// Reported state, e.g. `ONLINE`, `DEGRADED`, `unknown`.
+    pub state: String,
+    /// Free-form status/action text from `zpool import`.
+    pub status: Option<String>,
+}
+
 /// Service for scanning and managing ZFS pools and MD RAID arrays.
 pub struct PoolService;
 
@@ -67,6 +112,308 @@ impl PoolService {
         pools.extend(Self::scan_btrfs_pools()?);
 
         Ok(pools)
+    }
+
+    /// Lists pools present on attached disks but not currently imported.
+    ///
+    /// ZFS is the canonical case: `zpool import` with no arguments prints a
+    /// block per importable pool. Btrfs is best-effort — `btrfs filesystem
+    /// show` lists every filesystem including mounted ones, so the mounted
+    /// UUIDs are subtracted first.
+    pub fn list_importable_pools() -> Result<Vec<ImportablePool>, PoolError> {
+        let mut pools = Vec::new();
+        pools.extend(Self::list_importable_zfs_pools());
+        pools.extend(Self::list_importable_btrfs_pools());
+        Ok(pools)
+    }
+
+    fn list_importable_zfs_pools() -> Vec<ImportablePool> {
+        // `zpool import` needs root to read the on-disk labels; a system
+        // without ZFS installed simply has none.
+        let output = match Command::new("sudo").arg("zpool").arg("import").output() {
+            Ok(o) => o,
+            Err(_) => return Vec::new(),
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+        Self::parse_zpool_import(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    fn list_importable_btrfs_pools() -> Vec<ImportablePool> {
+        let output = match Command::new("sudo")
+            .arg("btrfs")
+            .args(["filesystem", "show"])
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => return Vec::new(),
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+        // Subtract filesystems that are already mounted (those aren't
+        // "foreign" — `scan_btrfs_pools` already lists them).
+        let mounted = Self::mounted_btrfs_uuids();
+        Self::parse_btrfs_show(&String::from_utf8_lossy(&output.stdout), &mounted)
+    }
+
+    /// UUIDs of Btrfs filesystems currently mounted, from `/proc/mounts`.
+    fn mounted_btrfs_uuids() -> std::collections::HashSet<String> {
+        let mut set = std::collections::HashSet::new();
+        let Ok(mounts) = std::fs::read_to_string("/proc/mounts") else {
+            return set;
+        };
+        for line in mounts.lines() {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() >= 3 && fields[2] == "btrfs" {
+                if let Some(uuid) = fields[0].strip_prefix("UUID=") {
+                    set.insert(uuid.to_string());
+                }
+            }
+        }
+        set
+    }
+
+    /// Parses `zpool import` output into one [`ImportablePool`] per block.
+    ///
+    /// A block looks like:
+    /// ```text
+    ///    pool: tank
+    ///      id: 1234567890
+    ///   state: ONLINE
+    ///  action: The pool can be imported using its name or numeric identifier.
+    ///  config:
+    ///
+    /// 	tank        ONLINE
+    /// 	  sdb       ONLINE
+    /// ```
+    /// Multiple pools are separated by a blank line. Pure function so it can
+    /// be unit-tested without `zpool` installed.
+    fn parse_zpool_import(output: &str) -> Vec<ImportablePool> {
+        let mut pools = Vec::new();
+        let mut current: Option<ImportablePool> = None;
+        let mut in_config = false;
+
+        fn flush(pools: &mut Vec<ImportablePool>, cur: &mut Option<ImportablePool>) {
+            if let Some(p) = cur.take() {
+                if !p.name.is_empty() {
+                    pools.push(p);
+                }
+            }
+        }
+
+        for line in output.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                // Real `zpool import` output has a blank line *between* the
+                // `config:` header and the device rows, so a blank line must
+                // not end the block while we're still reading the config.
+                if !in_config {
+                    flush(&mut pools, &mut current);
+                }
+                continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix("pool:") {
+                flush(&mut pools, &mut current);
+                in_config = false;
+                current = Some(ImportablePool {
+                    name: rest.trim().to_string(),
+                    pool_type: PoolType::Zfs,
+                    id: None,
+                    devices: Vec::new(),
+                    state: "unknown".to_string(),
+                    status: None,
+                });
+                continue;
+            }
+            let Some(pool) = current.as_mut() else {
+                continue;
+            };
+            if trimmed == "config:" {
+                in_config = true;
+                continue;
+            }
+            if in_config {
+                // Config rows are indented; the first token is the vdev or
+                // device name, the second the state. Only absolute device
+                // paths are real leaf devices (mirrors/raidz containers and
+                // the pool-name row are not).
+                let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                if parts.len() >= 2 && parts[0].starts_with("/dev/") {
+                    pool.devices.push(parts[0].to_string());
+                }
+                continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix("id:") {
+                pool.id = Some(rest.trim().to_string());
+            } else if let Some(rest) = trimmed.strip_prefix("state:") {
+                pool.state = rest.trim().to_string();
+            } else if let Some(rest) = trimmed.strip_prefix("status:") {
+                pool.status = Some(rest.trim().to_string());
+            }
+        }
+        flush(&mut pools, &mut current);
+        pools
+    }
+
+    /// Parses `btrfs filesystem show` output, skipping any filesystem whose
+    /// UUID is in `mounted`. Block shape:
+    /// ```text
+    /// Label: 'mypool'  uuid: 1111-2222
+    /// 	Total devices 2 FS bytes used 1.00GiB
+    /// 	devid    1 size 10.00GiB used 1.00GiB path /dev/sdb
+    /// ```
+    fn parse_btrfs_show(
+        output: &str,
+        mounted_uuids: &std::collections::HashSet<String>,
+    ) -> Vec<ImportablePool> {
+        let mut pools = Vec::new();
+        let mut current: Option<ImportablePool> = None;
+        let mut current_uuid: Option<String> = None;
+
+        fn flush(
+            pools: &mut Vec<ImportablePool>,
+            cur: &mut Option<ImportablePool>,
+            uuid: &mut Option<String>,
+            mounted_uuids: &std::collections::HashSet<String>,
+        ) {
+            if let Some(p) = cur.take() {
+                let skip = uuid
+                    .take()
+                    .map(|u| mounted_uuids.contains(&u))
+                    .unwrap_or(false);
+                if !p.name.is_empty() && !skip {
+                    pools.push(p);
+                }
+            } else {
+                uuid.take();
+            }
+        }
+
+        for line in output.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("Label:") {
+                flush(&mut pools, &mut current, &mut current_uuid, mounted_uuids);
+                let label = trimmed
+                    .split_whitespace()
+                    .nth(1)
+                    .map(|s| s.trim_matches('\'').to_string())
+                    .unwrap_or_default();
+                let uuid = trimmed
+                    .split("uuid:")
+                    .nth(1)
+                    .map(|s| s.trim().to_string());
+                current_uuid = uuid;
+                current = Some(ImportablePool {
+                    name: label,
+                    pool_type: PoolType::Btrfs,
+                    id: None,
+                    devices: Vec::new(),
+                    state: "unknown".to_string(),
+                    status: None,
+                });
+                continue;
+            }
+            if let Some(pool) = current.as_mut() {
+                if let Some(path) = trimmed.split("path ").nth(1) {
+                    let dev = path.trim().to_string();
+                    if dev.starts_with("/dev/") {
+                        pool.devices.push(dev);
+                    }
+                }
+            }
+        }
+        flush(&mut pools, &mut current, &mut current_uuid, mounted_uuids);
+        pools
+    }
+
+    /// Imports a foreign pool. ZFS: `zpool import [-N] <name>` (optionally
+    /// renamed). Btrfs: mounts the first member device at the standard pool
+    /// mount point and persists it in `/etc/fstab`.
+    pub fn import_pool(
+        name: &str,
+        pool_type: PoolType,
+        new_name: Option<&str>,
+    ) -> Result<(), PoolError> {
+        Self::validate_pool_name(name)?;
+        if let Some(rename) = new_name {
+            Self::validate_pool_name(rename)?;
+        }
+
+        match pool_type {
+            PoolType::Zfs => {
+                let mut args: Vec<&str> = vec!["import"];
+                if let Some(rename) = new_name {
+                    args.push(rename);
+                }
+                args.push(name);
+                let output = Command::new("sudo").arg("zpool").args(&args).output()?;
+                if !output.status.success() {
+                    return Err(PoolError::CommandFailed(
+                        String::from_utf8_lossy(&output.stderr).trim().to_string(),
+                    ));
+                }
+                Ok(())
+            }
+            PoolType::Btrfs => {
+                // Locate the device carrying this label from `btrfs filesystem
+                // show`, then mount it like `create_btrfs_advanced_pool` does.
+                let importable = Self::list_importable_btrfs_pools();
+                let pool = importable
+                    .into_iter()
+                    .find(|p| p.name == name)
+                    .ok_or_else(|| PoolError::PoolNotFound(name.to_string()))?;
+                let device = pool
+                    .devices
+                    .first()
+                    .ok_or_else(|| PoolError::Parse(format!("no device found for '{}'", name)))?;
+                let mount_point = format!("{}/{}", crate::config::paths::POOLS_MOUNT_BASE, name);
+
+                let mkdir = Command::new("sudo")
+                    .arg("mkdir")
+                    .args(["-p", &mount_point])
+                    .output()?;
+                if !mkdir.status.success() {
+                    return Err(PoolError::CommandFailed(format!(
+                        "Failed to create mount point: {}",
+                        String::from_utf8_lossy(&mkdir.stderr)
+                    )));
+                }
+                let mount = Command::new("sudo")
+                    .arg("mount")
+                    .args([device.as_str(), &mount_point])
+                    .output()?;
+                if !mount.status.success() {
+                    return Err(PoolError::CommandFailed(format!(
+                        "Failed to mount pool: {}",
+                        String::from_utf8_lossy(&mount.stderr)
+                    )));
+                }
+                if let Ok(uuid_output) = Command::new("sudo")
+                    .arg("blkid")
+                    .args(["-s", "UUID", "-o", "value", device])
+                    .output()
+                {
+                    let uuid = String::from_utf8_lossy(&uuid_output.stdout)
+                        .trim()
+                        .to_string();
+                    if !uuid.is_empty() {
+                        let marker = format!("# homevault-pool:{}", name);
+                        let line =
+                            format!("UUID={} {} btrfs defaults,nofail 0 2", uuid, mount_point);
+                        let _ = Self::append_pool_fstab_entry(&marker, &line);
+                    }
+                }
+                Ok(())
+            }
+            PoolType::Mdadm => Err(PoolError::CommandFailed(
+                "RAID arrays are managed by the RAID app, not Storage".to_string(),
+            )),
+            PoolType::Unknown => Err(PoolError::CommandFailed(
+                "Unsupported pool type".to_string(),
+            )),
+        }
     }
 
     pub fn get_pool(&self, name: &str) -> Result<PoolInfo, PoolError> {
@@ -1539,5 +1886,89 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("not found"), "got: {err}");
+    }
+
+    // -- parse_zpool_import (foreign-pool discovery) -----------------------
+
+    #[test]
+    fn test_parse_zpool_import_single_pool() {
+        let out = "   pool: tank\n     id: 1234567890\n  state: ONLINE\n action: The pool can be imported using its name or numeric identifier.\n config:\n\n\ttank        ONLINE\n\t  /dev/sdb    ONLINE\n";
+        let pools = PoolService::parse_zpool_import(out);
+        assert_eq!(pools.len(), 1);
+        assert_eq!(pools[0].name, "tank");
+        assert_eq!(pools[0].pool_type, PoolType::Zfs);
+        assert_eq!(pools[0].id.as_deref(), Some("1234567890"));
+        assert_eq!(pools[0].state, "ONLINE");
+        // Only the leaf device, not the pool-name row.
+        assert_eq!(pools[0].devices, vec!["/dev/sdb"]);
+    }
+
+    #[test]
+    fn test_parse_zpool_import_multiple_pools() {
+        let out = "   pool: tank\n     id: 1\n  state: ONLINE\n config:\n\n\ttank  ONLINE\n\t  /dev/sdb  ONLINE\n\n   pool: backup\n     id: 2\n  state: DEGRADED\n config:\n\n\tbackup  DEGRADED\n\t  /dev/sdc  UNAVAIL\n";
+        let pools = PoolService::parse_zpool_import(out);
+        assert_eq!(pools.len(), 2);
+        assert_eq!(pools[0].name, "tank");
+        assert_eq!(pools[1].name, "backup");
+        assert_eq!(pools[1].state, "DEGRADED");
+        assert_eq!(pools[1].devices, vec!["/dev/sdc"]);
+    }
+
+    #[test]
+    fn test_parse_zpool_import_empty_output() {
+        assert!(PoolService::parse_zpool_import("").is_empty());
+    }
+
+    #[test]
+    fn test_parse_zpool_import_ignores_vdev_container_rows() {
+        // A mirror reports `mirror-0` and the pool name in the config block;
+        // neither is a leaf device.
+        let out = "   pool: tank\n     id: 9\n  state: ONLINE\n config:\n\n\ttank        ONLINE\n\t  mirror-0  ONLINE\n\t    /dev/sdb  ONLINE\n\t    /dev/sdc  ONLINE\n";
+        let pools = PoolService::parse_zpool_import(out);
+        assert_eq!(pools[0].devices, vec!["/dev/sdb", "/dev/sdc"]);
+    }
+
+    // -- parse_btrfs_show (foreign-pool discovery) -------------------------
+
+    #[test]
+    fn test_parse_btrfs_show_returns_unmounted_only() {
+        let out = "Label: 'mypool'  uuid: 1111-2222\n\tTotal devices 2 FS bytes used 1.00GiB\n\tdevid    1 size 10.00GiB used 1.00GiB path /dev/sdb\n\tdevid    2 size 10.00GiB used 1.00GiB path /dev/sdc\n";
+        let mounted = std::collections::HashSet::new();
+        let pools = PoolService::parse_btrfs_show(out, &mounted);
+        assert_eq!(pools.len(), 1);
+        assert_eq!(pools[0].name, "mypool");
+        assert_eq!(pools[0].pool_type, PoolType::Btrfs);
+        assert_eq!(pools[0].devices, vec!["/dev/sdb", "/dev/sdc"]);
+    }
+
+    #[test]
+    fn test_parse_btrfs_show_skips_mounted_uuid() {
+        let out = "Label: 'mypool'  uuid: 1111-2222\n\tdevid    1 size 10.00GiB used 1.00GiB path /dev/sdb\n";
+        let mut mounted = std::collections::HashSet::new();
+        mounted.insert("1111-2222".to_string());
+        assert!(PoolService::parse_btrfs_show(out, &mounted).is_empty());
+    }
+
+    #[test]
+    fn test_parse_btrfs_show_multiple_labels() {
+        let out = "Label: 'one'  uuid: aaaa\n\tdevid    1 size 1.00GiB used 0 path /dev/sdb\nLabel: 'two'  uuid: bbbb\n\tdevid    1 size 1.00GiB used 0 path /dev/sdc\n";
+        let mounted = std::collections::HashSet::new();
+        let pools = PoolService::parse_btrfs_show(out, &mounted);
+        assert_eq!(pools.len(), 2);
+        assert_eq!(pools[0].name, "one");
+        assert_eq!(pools[1].name, "two");
+    }
+
+    #[test]
+    fn test_import_pool_rejects_mdadm() {
+        // Storage must never import a RAID array — that's the RAID app's job.
+        let err = PoolService::import_pool("md0", PoolType::Mdadm, None).unwrap_err();
+        assert!(err.to_string().contains("RAID"));
+    }
+
+    #[test]
+    fn test_import_pool_rejects_invalid_name_before_any_command() {
+        let err = PoolService::import_pool("bad name!", PoolType::Zfs, None).unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("name"));
     }
 }

@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : https_redirect.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Middleware that answers plain-HTTP requests with a permanent redirect
+ *   to the same address over HTTPS. Applied on the HTTP listener when the
+ *   admin enables both HTTPS and the redirect toggle. Loopback clients are
+ *   exempt so the installer health check and the internal app proxy keep
+ *   working over plain HTTP.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *
+ * Usage:
+ *   Layered on the HTTP listener in src/web/mod.rs with `HttpsRedirect
+ *   { https_port }` state (see web::run).
+ * =============================================================================
+ */
+
 //! Optional "redirect plain HTTP to HTTPS" middleware.
 //!
 //! Wired onto the **HTTP** listener only (see [`crate::web::run`]) when the

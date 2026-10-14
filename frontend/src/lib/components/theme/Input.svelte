@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : Input.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Design-system text input wrapping the vendored shadcn-svelte Input:
+       bindable value, label/error/helper layout kept on the hv-form-*
+       classes.
+
+     Dependencies:
+       - svelte (>= 5), components/ui/input (vendored)
+
+     Usage:
+       `import { Input } from '$lib/components/theme'`.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM - Input Component

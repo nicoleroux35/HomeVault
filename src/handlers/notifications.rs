@@ -1,3 +1,27 @@
+/* =============================================================================
+ * File          : notifications.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   System-notification endpoints for the topbar bell panel: list with
+ *   pagination, unread count, mark read (one or all), delete, and the
+ *   live SSE event stream. The stream authenticates with a short-lived,
+ *   single-use ticket because EventSource cannot send session headers.
+ *   All endpoints are session-auth; the notifications themselves are
+ *   persisted by the writers (see sse/notifications.rs for the live bus).
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *
+ * Usage:
+ *   Routes /api/notifications and /api/notifications/events in
+ *   src/web/mod.rs.
+ * =============================================================================
+ */
+
 //! HTTP handlers for system notifications (health alerts, backup results).
 
 use crate::handlers::admin_guard::require_auth;

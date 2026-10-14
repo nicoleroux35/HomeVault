@@ -1,3 +1,22 @@
+<!-- ========================================================================
+     File          : HvLaunchpad.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       The full-screen app launcher: searchable/filterable app grid with
+       keyboard navigation, focus-trapped while open, and drag-out support
+       that seeds the desktop drag state.
+
+     Dependencies:
+       - svelte (>= 5), theme/Icon, stores/dragState, stores/i18n,
+         utils/focusTrap
+
+     Usage:
+       Opened from the desktop dock / menubar.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import Icon from '$lib/components/theme/Icon.svelte';

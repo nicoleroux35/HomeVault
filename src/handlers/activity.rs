@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : activity.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Unified background-activity feed for the desktop taskbar: merges every
+ *   active job of the progress manager (backups, restores, cache mover,
+ *   antivirus scans, file copies/moves, ...) with in-app download tasks
+ *   into one live list. Read-only and session-auth.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0)
+ *
+ * Usage:
+ *   GET /api/activity in src/web/mod.rs; consumed by the desktop shell's
+ *   activity taskbar.
+ * =============================================================================
+ */
+
 //! Unified background-activity feed for the desktop taskbar.
 //!
 //! `GET /api/activity` merges every **active** `PROGRESS_MANAGER` job (restic

@@ -1,3 +1,20 @@
+<!-- ========================================================================
+     File          : WindowToolbar.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Standard window toolbar: left cluster (search, filters, breadcrumbs)
+       and right cluster (primary actions, kebabs) above the scrolling body.
+
+     Dependencies:
+       - svelte (>= 5)
+
+     Usage:
+       Optional toolbar slot of PageLayout.
+     ======================================================================== -->
 <script lang="ts">
   import type { Snippet } from 'svelte';
 

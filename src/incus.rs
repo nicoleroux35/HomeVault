@@ -1,3 +1,24 @@
+/* =============================================================================
+ * File          : incus.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Incus REST API client over its Unix socket — the single gateway for VM
+ *   and container management: instances, lifecycle, config, snapshots,
+ *   exec console and VNC relay wiring. Plain HTTP/1 over a Unix stream via
+ *   hyper, typed request/response structs.
+ *
+ * Dependencies:
+ *   - hyper (>= 1), tokio (>= 1.52), serde (>= 1.0)
+ *
+ * Usage:
+ *   handlers/vm.rs (Virtual Machines app); see docs/guides/vm.md.
+ * =============================================================================
+ */
+
 //! Incus REST API client over its Unix socket (`/var/lib/incus/unix.socket`).
 //!
 //! All VM / system-container management goes through this module — no `virsh`,

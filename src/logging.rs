@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : logging.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Global logger singleton implementing the log facade: writes application
+ *   log lines to HomeVault's own rotating log files (the System Journal's
+ *   application source) alongside the main tracing setup.
+ *
+ * Dependencies:
+ *   - log (facade)
+ *
+ * Usage:
+ *   Initialized once at startup; see docs/guides/journal.md.
+ * =============================================================================
+ */
+
 use log::{Level, Log, Metadata, Record};
 use std::sync::{LazyLock, RwLock};
 

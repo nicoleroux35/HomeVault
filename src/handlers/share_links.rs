@@ -1,3 +1,32 @@
+/* =============================================================================
+ * File          : share_links.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   "Share by link" for the Explorer: mint a revocable, optionally expiring
+ *   download link to a file the caller can access, list one's links, revoke
+ *   a link (owner or admin), and serve the public token-authenticated
+ *   download. The token is the secret — high-entropy, never logged; links
+ *   default to 30 days and can be restricted to signed-in users, in which
+ *   case the session token must travel in a header, never in a URL.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - bytes
+ *   - futures-util
+ *   - parking_lot (>= 0.12)
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *
+ * Usage:
+ *   GET/POST/DELETE /api/explorer/shares and public GET /share/{token} in
+ *   src/web/mod.rs; see the module doc for the full security posture.
+ * =============================================================================
+ */
+
 //! Explorer "share by link" handlers.
 //!
 //! Lets a user mint a revocable, optionally expiring download link to a file

@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : mod.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   HTTP router and server startup: assembles every API route with its
+ *   auth model, wires the middleware layers (contract, CSRF, setup guard,
+ *   security headers, CORS, body limits), spawns the background
+ *   schedulers/watchers, and brings up the HTTP/HTTPS listeners plus the
+ *   static SPA and per-app proxies.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8), tower-http, tokio (>= 1.52)
+ *
+ * Usage:
+ *   Launched by src/bin/server.rs; see docs/API.md for the route map.
+ * =============================================================================
+ */
+
 //! HTTP router and server startup — assembles all API routes and middleware.
 
 use axum::{
@@ -35,6 +57,7 @@ use crate::handlers::{
         handle_verify_recovery_code,
     },
     avatars::{handle_avatar_preview, handle_update_my_avatar, handle_user_avatar},
+    app_auth::handle_app_auth,
     cache::{
         handle_cache_mover_run, handle_cache_mover_runs, handle_cache_pools_get,
         handle_cache_settings_get, handle_cache_settings_update, handle_cache_share_create,
@@ -115,12 +138,14 @@ use crate::handlers::{
         handle_mcp_set_permissions, handle_mcp_status,
     },
     mdns::handle_mdns_status,
+    meta::handle_meta,
     monitor_layout::{handle_get_monitor_layout, handle_set_monitor_layout},
     notifications::{
         handle_notification_delete, handle_notification_mark_read, handle_notifications_events,
         handle_notifications_events_ticket, handle_notifications_list,
         handle_notifications_mark_all_read, handle_notifications_unread_count,
     },
+    whats_new::{handle_whats_new, handle_whats_new_seen},
     permissions::{
         handle_share_permission_grant, handle_share_permission_revoke,
         handle_share_permissions_list, handle_share_permissions_sync, handle_user_permissions,
@@ -191,10 +216,11 @@ use crate::handlers::{
     spa::serve_wallpapers_file,
     storage::{
         handle_disk_smart_capabilities, handle_disk_smart_test_start,
-        handle_disk_smart_test_status, handle_disks_list, handle_partitions_list,
-        handle_raid_arrays_list, handle_raid_available_devices, handle_raid_create,
-        handle_raid_delete, handle_raid_rebuild, handle_removable_disks_list,
-        handle_virtual_disk_delete, handle_virtual_disk_scrub, handle_virtual_disks_list,
+        handle_disk_smart_test_status, handle_disks_list, handle_import_pool,
+        handle_importable_pools_list, handle_partitions_list, handle_raid_arrays_list,
+        handle_raid_available_devices, handle_raid_create, handle_raid_delete,
+        handle_raid_rebuild, handle_removable_disks_list, handle_virtual_disk_delete,
+        handle_virtual_disk_scrub, handle_virtual_disk_scrub_status, handle_virtual_disks_list,
     },
     syncthing::{
         handle_syncthing_config, handle_syncthing_connections, handle_syncthing_devices,
@@ -802,6 +828,16 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/storage/virtual-disks/{name}/scrub",
             post(handle_virtual_disk_scrub),
         )
+        .route(
+            "/api/storage/virtual-disks/{name}/scrub",
+            get(handle_virtual_disk_scrub_status),
+        )
+        // Foreign (importable) pools discovered on attached disks
+        .route(
+            "/api/storage/importable-pools",
+            get(handle_importable_pools_list),
+        )
+        .route("/api/storage/import-pool", post(handle_import_pool))
         // Cache tier (HomeVault write caching)
         .route("/api/cache/settings", get(handle_cache_settings_get))
         .route("/api/cache/settings", put(handle_cache_settings_update))
@@ -857,6 +893,14 @@ pub fn create_app(state: AppStateArc) -> Router {
             post(handle_notifications_events_ticket),
         )
         .route("/api/events", get(handle_notifications_events))
+        // App-proxy auth entry (browser navigation, cookie-authenticated):
+        // mints the app-scoped session and redirects to the app origin.
+        .route("/app-auth", get(handle_app_auth))
+        // Versioned client/server contract handshake (unauthenticated).
+        .route("/api/meta", get(handle_meta))
+        // What's New (release highlights, per-user acknowledgement)
+        .route("/api/whats-new", get(handle_whats_new))
+        .route("/api/whats-new/seen", post(handle_whats_new_seen))
         // Explorer
         .route("/api/explorer/list", get(handle_explorer_list))
         .route("/api/explorer/search", get(handle_explorer_search))
@@ -1467,6 +1511,14 @@ pub fn create_app(state: AppStateArc) -> Router {
         crate::middleware::csrf_middleware,
     ));
 
+    // Versioned client/server contract: reject an explicit contract mismatch
+    // on `/api/*` with a 426 so a stale cached bundle fails loudly instead of
+    // silently misparsing. `/api/meta` is exempt (it is the discovery
+    // endpoint). Missing headers stay allowed for legacy clients.
+    let api_with_terminal = api_with_terminal.layer(axum::middleware::from_fn(
+        crate::middleware::contract_middleware,
+    ));
+
     // Cache lifetimes are set per file by the `spa` handlers themselves (see
     // `spa::asset_response` + `CACHE_IMMUTABLE` / `CACHE_REVALIDATE`), not by
     // a blanket layer here: a layer applied after the merges below would also
@@ -1677,7 +1729,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Per-app reverse proxy: initialise with the pieces its tasks need, then
     // bring back a proxy for every catalog app that had one before restart.
-    crate::app_proxy::APP_PROXY.init(state.auth.clone(), settings.port);
+    crate::app_proxy::APP_PROXY.init(settings.port);
     tokio::spawn(async {
         crate::app_proxy::restore_all(
             crate::handlers::docker_catalog::proxy_restore_entries().await,
@@ -1840,7 +1892,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if crate::mdns::avahi_available() {
         tracing::info!(
             "  mDNS:     http://{}.local:{}",
-            crate::mdns::MDNS_HOSTNAME,
+            crate::mdns::mdns_hostname(),
             settings.port
         );
     }

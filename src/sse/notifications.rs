@@ -1,3 +1,30 @@
+/* =============================================================================
+ * File          : notifications.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Fans freshly persisted notifications (health alerts, backup results,
+ *   antivirus/ransomware events) out live to connected clients for the
+ *   topbar bell panel. The database stays the source of truth — this
+ *   channel only wakes clients up sooner. Access uses the same single-use
+ *   ticket pattern as the Terminal WebSocket because EventSource cannot
+ *   set session headers.
+ *
+ * Dependencies:
+ *   - parking_lot (>= 0.12)
+ *   - tokio (>= 1.52)
+ *   - uuid (>= 1.0)
+ *
+ * Usage:
+ *   Call `publish(&notification)` right after
+ *   NotificationRepository::create; browsers open /api/events with a
+ *   ticket issued by `issue_ticket`.
+ * =============================================================================
+ */
+
 //! Real-time push for system notifications (health alerts, backup results,
 //! antivirus/ransomware/cache events, ...) to the topbar bell panel.
 //!

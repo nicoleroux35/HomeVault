@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : index.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Barrel export of the chart components: page composites (the charts/
+ *   sibling of app/) built on LayerChart and themed with the --hv-* tokens
+ *   so they render the appliance palette by default.
+ *
+ * Dependencies:
+ *   - none (re-exports only)
+ *
+ * Usage:
+ *   `import { DonutChart, ... } from '$lib/components/charts'`.
+ * =============================================================================
+ */
+
 /**
  * HOMEVAULT DESIGN SYSTEM - Chart components
  *

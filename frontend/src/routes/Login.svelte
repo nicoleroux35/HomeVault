@@ -1,3 +1,22 @@
+<!-- ========================================================================
+     File          : Login.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 12/10/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The login screen: credentials + optional 2FA step, remember-me,
+     recovery-code entry point, and admin-only enforcement (a valid
+     non-admin login is rejected with an explanatory error).
+
+     Dependencies:
+       - svelte (>= 5), stores (auth, appGate, i18n), theme primitives
+
+     Usage:
+     Rendered by App.svelte when the app gate is on 'login'; also the
+     redirect target of the app-proxy auth entry.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
   import { api } from '$lib/services/api';

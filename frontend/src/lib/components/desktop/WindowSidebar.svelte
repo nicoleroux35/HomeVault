@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : WindowSidebar.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Collapsible left rail for app windows: expanded/icon widths from
+       tokens, publishes the collapsed state through the hvSidebarCollapsed
+       context its items and sections react to.
+
+     Dependencies:
+       - svelte (>= 5)
+
+     Usage:
+       Optional rail inside PageLayout.
+     ======================================================================== -->
 <script lang="ts">
   import { setContext, type Snippet } from 'svelte';
   import { t } from '$lib/stores/i18n';

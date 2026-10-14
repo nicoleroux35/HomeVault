@@ -1,3 +1,19 @@
+<!-- ========================================================================
+     File          : FullscreenIcon.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Inline fullscreen/expand SVG glyph for window controls.
+
+     Dependencies:
+       - svelte (>= 5)
+
+     Usage:
+       Window chrome / media controls.
+     ======================================================================== -->
 <script lang="ts">
   let { size = 16, ...rest }: { size?: number; [key: string]: any } = $props();
 </script>

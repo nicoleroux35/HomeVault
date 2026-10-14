@@ -1,3 +1,50 @@
+/* =============================================================================
+ * File          : service.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   The core authentication service: login with attempt counting and
+ *   temporary account lockout, session creation and validation (24 h, or
+ *   30 days with "remember me"), two-factor authentication (TOTP plus
+ *   backup codes), password strength and history policy, and the numeric
+ *   recovery-code "forgot password" flow. Beyond HomeVault's own accounts
+ *   it also accepts host system accounts: these authenticate through the
+ *   system's PAM stack, get a mirrored row in the users table, and inherit
+ *   admin rights from their host groups.
+ *
+ * Dependencies:
+ *   - argon2 (>= 0.6)
+ *   - chrono (>= 0.4)
+ *   - hmac (>= 0.13)
+ *   - rand (>= 0.10)
+ *   - serde_json (>= 1.0)
+ *   - sha1 (>= 0.11)
+ *   - sqlx (>= 0.9)
+ *   - thiserror (>= 2)
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Built once at startup (AppState.auth) and used by the auth handlers
+ *   (src/handlers/auth.rs) and the require_auth / require_admin checks
+ *   (src/handlers/admin_guard.rs); sessions are validated on every
+ *   protected request.
+ * =============================================================================
+ */
+
+//! Authentication and account management service.
+//!
+//! Covers login (with lockout after repeated failures), session creation and
+//! validation, two-factor authentication (TOTP + backup codes), password
+//! policy and history, and the email-free numeric recovery code flow.
+//! HomeVault database accounts are the primary path; host (PAM) accounts are
+//! also accepted — they authenticate against the system's PAM stack, are
+//! mirrored into the `users` table with a sentinel password hash, and derive
+//! their admin status from host group membership
+//! (sudo/admin/wheel/homevault_admin).
+
 use super::models::{Session, User};
 use crate::storage::database::ADMIN_GROUP_NAME;
 use crate::storage::models::{ADMIN_ROLE_ID, USER_ROLE_ID};

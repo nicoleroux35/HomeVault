@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : password_history_repo.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Password history entries per user, powering the reuse-prevention
+ *   check when passwords change.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ * Usage:
+ *   Imported by the services/handlers of its feature area.
+ * =============================================================================
+ */
+
+//! Password history (reuse-prevention).
+
 use crate::impl_repository;
 use crate::storage::database::DbError;
 use chrono::Utc;

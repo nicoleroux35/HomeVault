@@ -1,3 +1,23 @@
+/* =============================================================================
+ * File          : dragState.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Tracks an ongoing drag-and-drop of an app icon from the launcher so the
+ *   desktop area can react while the drag is in progress and accept the
+ *   drop.
+ *
+ * Dependencies:
+ *   - svelte (>= 5)
+ *
+ * Usage:
+ *   startDrag/endDrag from the launcher; the desktop surface subscribes.
+ * =============================================================================
+ */
+
 import { writable } from 'svelte/store';
 
 /**

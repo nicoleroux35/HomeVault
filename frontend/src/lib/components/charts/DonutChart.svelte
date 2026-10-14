@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : DonutChart.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Reusable donut/gauge on LayerChart's ArcChart (Svelte 5 / d3): themed
+       with the --hv-* tokens by default, per-segment colour override, two
+       modes (single gauge or several labelled segments).
+
+     Dependencies:
+       - svelte (>= 5), layerchart
+
+     Usage:
+       `import { DonutChart } from '$lib/components/charts'`.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM - DonutChart

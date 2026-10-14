@@ -1,3 +1,30 @@
+/* =============================================================================
+ * File          : rag.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   RAG (Retrieval-Augmented Generation) API: index status (any session),
+ *   full reindex trigger (admin — runs in the background and shows up as a
+ *   job in the desktop activity feed), semantic search with context
+ *   building (admin, for debugging the chat grounding), and the list of
+ *   indexed documents (admin).
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *   - sqlx (>= 0.9)
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Routes /api/rag in src/web/mod.rs; indexing and search logic live in
+ *   crate::rag / crate::rag_indexers (see docs/guides/rag.md).
+ * =============================================================================
+ */
+
 //! RAG (Retrieval-Augmented Generation) API handlers.
 //!
 //! Endpoints:

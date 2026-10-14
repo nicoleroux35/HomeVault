@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : mcp.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 13/10/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   External AI-agent server (Model Context Protocol, Streamable HTTP):
+ *   lets an outside agent call a filtered tool set (file listing, docker
+ *   status, health, ...) authenticated by hashed bearer tokens with
+ *   per-token permission snapshots. Every call is event-logged with the
+ *   token id.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0), serde_json (>= 1.0)
+ *
+ * Usage:
+ *   handlers/mcp.rs routes POST /mcp here; tokens/permissions live in the
+ *   MCP repository (see docs/guides/mcp.md).
+ * =============================================================================
+ */
+
 //! External AI-agent server (Model Context Protocol, Streamable HTTP).
 //!
 //! HomeVault ships an internal Chat/RAG assistant, but nothing an external

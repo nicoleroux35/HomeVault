@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : Rescue.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+     The Rescue app: disk cloning (ddrescue) with live progress, partition
+     analysis and rebuild (TestDisk), file carving (PhotoRec), and mdadm
+     diagnose/repair — each with validated options.
+
+     Dependencies:
+       - svelte (>= 5), theme + app/ composites, $lib/services/api
+
+     Usage:
+     Opened as a desktop window app (admin only).
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, type ProgressEvent } from '$lib/services/api';

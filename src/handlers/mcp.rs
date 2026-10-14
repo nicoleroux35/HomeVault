@@ -1,3 +1,30 @@
+/* =============================================================================
+ * File          : mcp.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 13/10/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   HTTP surface of the external AI-agent (MCP) server: the admin
+ *   management API under /api/mcp (master kill-switch, global permissions,
+ *   token mint/revoke — tokens stored hashed) and the agent endpoint
+ *   POST /mcp, which speaks MCP Streamable HTTP authenticated by a bearer
+ *   token instead of a session. The tool set served to an agent is
+ *   filtered by the permission snapshot, and every mutation is
+ *   event-logged with the calling token id.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/mcp (management, admin) and /mcp (agent endpoint, bearer
+ *   token) in src/web/mod.rs; see docs/guides/mcp.md.
+ * =============================================================================
+ */
+
 //! HTTP surface of the external AI-agent (MCP) server.
 //!
 //! Two halves: the **management API** under `/api/mcp/*` (admin session,

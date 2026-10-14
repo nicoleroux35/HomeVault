@@ -1,3 +1,27 @@
+/* =============================================================================
+ * File          : setup_guard.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 12/10/2026
+ * Last modified : 12/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Middleware that keeps the unauthenticated first-run setup endpoints
+ *   (creating the first admin account) reachable only from the local
+ *   network: loopback, private, link-local and IPv6 unique-local addresses.
+ *   The peer address comes from the TCP connection itself, never from
+ *   spoofable forwarding headers. HOMEVAULT_SETUP_ALLOW_REMOTE=1 opts out
+ *   for a deliberate remote first-run setup.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *
+ * Usage:
+ *   Applied as a route_layer on the /auth/setup* bootstrap routes in
+ *   src/web/mod.rs.
+ * =============================================================================
+ */
+
 //! Restrict the unauthenticated first-run bootstrap endpoints to the local
 //! network.
 //!

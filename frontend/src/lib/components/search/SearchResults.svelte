@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : SearchResults.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Result list of the search overlay: renders SearchItem rows for the
+       store's current results and a friendly empty state when nothing
+       matches.
+
+     Dependencies:
+       - svelte (>= 5), stores/search, stores/i18n
+
+     Usage:
+       Inside SearchBar.
+     ======================================================================== -->
 <script lang="ts">
   import { searchStore, closeSearch } from '$lib/stores/search';
   import SearchItem from './SearchItem.svelte';

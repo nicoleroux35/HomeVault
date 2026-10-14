@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : Radio.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       One radio-group item wrapping the vendored bits-ui RadioGroup: fires
+       onchange when it becomes the selected value; label/description/error
+       layout kept on the hv-radio-* classes.
+
+     Dependencies:
+       - svelte (>= 5), components/ui/radio-group (vendored)
+
+     Usage:
+       Inside a shadcn RadioGroup root — see the vendored layer.
+     ======================================================================== -->
 <script lang="ts">
   /**
    * HOMEVAULT DESIGN SYSTEM - Radio Component

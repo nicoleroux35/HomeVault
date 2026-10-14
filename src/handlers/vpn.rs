@@ -1,3 +1,31 @@
+/* =============================================================================
+ * File          : vpn.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   VPN endpoints for WireGuard and OpenVPN: server status and capability
+ *   detection, WireGuard peer management (create with client config
+ *   download, list, revoke), OpenVPN profile creation and start/stop, and
+ *   connection listing. Every endpoint is admin-only; peer metadata is
+ *   stored via VpnPeerRepository, tunnels driven by crate::vpn.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *   - uuid (>= 1.0)
+ *
+ * Usage:
+ *   Routes /api/vpn in src/web/mod.rs.
+ * =============================================================================
+ */
+
+//! VPN endpoints for WireGuard and OpenVPN (status, peers, profiles) —
+//! all admin-only.
+
 use axum::{
     extract::{Path, State},
     http::HeaderMap,

@@ -1,3 +1,20 @@
+<!-- ========================================================================
+     File          : SearchItem.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       One row of the search overlay results: icon, type badge, title and
+       description, selected/highlighted state, 44px keyboard target.
+
+     Dependencies:
+       - svelte (>= 5), theme/Icon, stores/i18n
+
+     Usage:
+       Rendered by SearchResults.
+     ======================================================================== -->
 <script lang="ts">
   import type { SearchableItem } from '$lib/stores/search';
   import Icon from '$lib/components/theme/Icon.svelte';

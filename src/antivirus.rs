@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : antivirus.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 12/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Antivirus scanning service (on-demand + scheduled): runs the ClamAV
+ *   scanner CLI as the unprivileged service account over managed paths,
+ *   with a single-flight scan guard, live SSE progress parsing and
+ *   quarantine handling. Virus definitions are kept current by the OS
+ *   timer, never by this service.
+ *
+ * Dependencies:
+ *   - tokio (>= 1.52), internal SSE progress + storage repositories
+ *
+ * Usage:
+ *   handlers/antivirus.rs; spawned scans run in the background (see
+ *   docs/guides/antivirus.md).
+ * =============================================================================
+ */
+
 //! Antivirus scanning via ClamAV's `clamscan` CLI (on-demand + scheduled
 //! only — no `clamd` real-time daemon, to stay within the low-power
 //! hardware budget documented in the systemd unit `installer/install.sh`

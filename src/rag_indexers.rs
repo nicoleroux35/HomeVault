@@ -1,3 +1,25 @@
+/* =============================================================================
+ * File          : rag_indexers.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Document indexers for the RAG knowledge base: one collector per source
+ *   (catalog manifests, project feature docs, translation keys, ...) that
+ *   upserts documents and their chunks into the RAG tables on each full
+ *   reindex. A new feature or app must add its FeatureDoc here.
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9), internal app_catalog / i18n modules
+ *
+ * Usage:
+ *   handlers/rag.rs reindex endpoint (index_all); see docs/guides/rag.md
+ *   "Document Sources".
+ * =============================================================================
+ */
+
 //! Document indexers for the RAG knowledge base.
 //!
 //! Each indexer knows how to collect documents from one source and upsert
@@ -256,6 +278,8 @@ PathGuard restricts non-admin users to their home directory and allowed roots."#
 - Create ZFS pools with various redundancy levels
 - Create Btrfs volumes
 - Virtual disks tab: list, scrub/verify, rebuild degraded arrays, destroy
+- Check a virtual disk's scrub / consistency-check status inline
+- Import an existing (foreign) ZFS or Btrfs pool found on attached disks, without recreating it
 - LUKS2 encryption: create encrypted volumes, lock/unlock
 - Cache system: configure cache pools, move data between tiers
 - Monitor S.M.A.R.T. disk health
@@ -751,7 +775,9 @@ The embedding model is fixed to nomic-embed-text, which has to be pulled before 
 - A background check runs once a minute. It evaluates the system health checks and the recent backup jobs.
 - Health problems are reported on transition: a check becoming degraded, or recovering from one, produces a notification. A problem that simply persists does not re-notify every minute.
 - Backup results are reported once per genuinely new completed or failed job.
-- The bell in the top bar carries an unread count and opens a panel where notifications are read, marked as read, or cleared.
+- The bell in the top bar carries an unread count and opens a persistent notification center where the full history is kept: filter by severity, show only unread, or search by text, then mark items read or clear them.
+- New notifications also arrive live while the page is open, so the badge updates without waiting for the next refresh.
+- After an update, a "What's new" summary of the release highlights is shown once per account; acknowledging it keeps it from reappearing on other devices.
 - If alerts are enabled and a notification meets the configured severity threshold, it is also emailed through the configured mail server, and/or posted as JSON to a webhook address.
 
 Configured in Settings: the mail server and its recipients, the alert threshold and the webhook address. The test button there sends a real message through the configured server and reports genuine failures rather than assuming success."#.to_string(),
@@ -1065,7 +1091,7 @@ mod tests {
     /// user can open. They are deliberately **not** in the knowledge base: the
     /// assistant answers questions about the product, and a guide about design
     /// tokens would only pollute retrieval with internal vocabulary.
-    const DEVELOPER_ONLY_GUIDES: &[&str] = &["design-system.md"];
+    const DEVELOPER_ONLY_GUIDES: &[&str] = &["design-system.md", "development.md"];
 
     /// `FeatureDoc.id` → the guide that documents it.
     ///

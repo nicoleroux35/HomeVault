@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : snapshots.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   ZFS snapshot management for storage pools and datasets: create, list,
+ *   rollback and destroy snapshots through the zfs CLI (sudo-scoped),
+ *   feeding the Storage and Snapshots apps.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0), thiserror (>= 2)
+ *
+ * Usage:
+ *   handlers/storage.rs / handlers/explorer.rs snapshot endpoints (see
+ *   docs/guides/snapshots.md).
+ * =============================================================================
+ */
+
+//! ZFS snapshot management (create/list/rollback/destroy) for pools.
+
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 use thiserror::Error;

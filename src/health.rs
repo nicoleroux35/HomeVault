@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : health.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   System health checks: a registry of named checks (disk usage via df,
+ *   block devices via lsblk, per-disk SMART overall health via smartctl,
+ *   systemd service states) executed on demand and aggregated for the
+ *   dashboard and the notification engine.
+ *
+ * Dependencies:
+ *   - once_cell, parking_lot (>= 0.12), serde (>= 1.0)
+ *
+ * Usage:
+ *   handlers/storage.rs (health endpoints) and notification_engine.rs.
+ * =============================================================================
+ */
+
+//! System health checks (disks, SMART, services) executed on demand.
+
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};

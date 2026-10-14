@@ -1,3 +1,38 @@
+/* =============================================================================
+ * File          : explorer.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   The file Explorer: browse/search a scoped root, create/rename/delete,
+ *   download (with single-use tickets for the browser), upload via multipart
+ *   or resumable chunked sessions held in memory, copy/move, preview and
+ *   thumbnails (ticket-gated), archive extract/compress, a trash with
+ *   restore/purge, per-user roots, external-disk eject and snapshot
+ *   browsing. Every path is resolved through the user's allowed roots
+ *   (PathGuard) — traversal and escapes are rejected. Session-auth
+ *   throughout; only disk formatting is admin-only.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8)
+ *   - bytes
+ *   - futures-util
+ *   - parking_lot (>= 0.12)
+ *   - serde (>= 1.0)
+ *   - serde_json (>= 1.0)
+ *   - tokio (>= 1.52)
+ *
+ * Usage:
+ *   Routes /api/explorer in src/web/mod.rs; see docs/guides/explorer.md.
+ * =============================================================================
+ */
+
+//! File Explorer endpoints: browse, transfer (including resumable chunked
+//! uploads), archives, previews, trash — every path scoped to the caller's
+//! allowed roots.
+
 use axum::{
     body::Body,
     extract::{Multipart, Query, State},

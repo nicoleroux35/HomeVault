@@ -1,3 +1,21 @@
+<!-- ========================================================================
+     File          : SettingsSaveButton.svelte
+     Author        : Nicolas Le Roux
+     Created       : 28/09/2026
+     Last modified : 28/09/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       The settings sidebar's Save control: reflects the dirty-group count,
+       save-in-progress and per-group outcomes from the shared settings
+       draft (Save All — no auto-save anywhere).
+
+     Dependencies:
+       - svelte (>= 5), stores/settingsDraft.svelte, ./vocabulary
+
+     Usage:
+       Fixed in the Settings sidebar footer.
+     ======================================================================== -->
 <script lang="ts">
   import { t } from '$lib/stores/i18n';
   import { getSaveStatus, getDirtyCount, saveAll } from '$lib/stores/settingsDraft.svelte';

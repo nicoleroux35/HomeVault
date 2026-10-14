@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : groups.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   Unix group management mapped onto the host's group tools: every
+ *   HomeVault-managed group carries a reserved prefix to avoid colliding
+ *   with system groups; list/create/delete and membership changes shell
+ *   out to the standard group utilities.
+ *
+ * Dependencies:
+ *   - serde (>= 1.0), thiserror (>= 2)
+ *
+ * Usage:
+ *   handlers/groups.rs and the admin-group sync in auth/service.rs.
+ * =============================================================================
+ */
+
+//! Unix group management (host-mapped, HomeVault-prefixed group names).
+
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 use thiserror::Error;

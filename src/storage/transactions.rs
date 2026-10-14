@@ -1,3 +1,26 @@
+/* =============================================================================
+ * File          : transactions.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 28/09/2026
+ * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Version       : 1.0.1
+ *
+ * Description:
+ *   Transactional multi-step database operations: groups several
+ *   repository writes into one SQLite transaction so a failure mid-way
+ *   leaves no partially-applied state (user creation with groups, setup
+ *   provisioning, ...).
+ *
+ * Dependencies:
+ *   - sqlx (>= 0.9)
+ *
+ * Usage:
+ *   Called by the setup wizard flow and multi-entity handlers.
+ * =============================================================================
+ */
+
+//! Transactional multi-step database operations (all-or-nothing writes).
+
 use crate::storage::database::DbError;
 use crate::storage::models::User;
 use sqlx::SqlitePool;
