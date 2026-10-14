@@ -126,6 +126,20 @@ export const launchpadIcons = {
 <path d="M8 16h5"/>
 </svg>`,
 
+  // Scheduled tasks: a clock with a checkmark — recurring jobs that run and
+  // report, distinct from the plain clock tiles.
+  tasks: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<path d="M12 3a9 9 0 1 0 9 9"/>
+<path d="M12 7v5l3 3"/>
+<path d="M16 4l2 2 4-4"/>
+</svg>`,
+
+  // Metrics: a line chart with an axis, the chart-line convention.
+  metrics: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<path d="M3 3v18h18"/>
+<path d="M7 14l4-4 3 3 5-6"/>
+</svg>`,
+
   // Transfer quotas: a gauge dial with its needle, so the tile reads as a
   // metering app and stays distinct from Dashboard's grid and Health's pulse.
   quotas: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

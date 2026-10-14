@@ -49,15 +49,15 @@ use crate::handlers::{
         handle_antivirus_settings_get, handle_antivirus_settings_update, handle_antivirus_status,
         handle_antivirus_threat_resolve, handle_antivirus_threats_list,
     },
+    app_auth::handle_app_auth,
     auth::{
         handle_2fa_setup, handle_2fa_verify, handle_check_username, handle_generate_recovery_code,
         handle_get_current_user, handle_login, handle_logout, handle_reset_password_recovery,
-        handle_setup, handle_setup_progress_get, handle_setup_progress_put, handle_setup_rebaseline,
-        handle_setup_status, handle_setup_storage_options, handle_setup_verify_totp,
-        handle_verify_recovery_code,
+        handle_setup, handle_setup_progress_get, handle_setup_progress_put,
+        handle_setup_rebaseline, handle_setup_status, handle_setup_storage_options,
+        handle_setup_verify_totp, handle_verify_recovery_code,
     },
     avatars::{handle_avatar_preview, handle_update_my_avatar, handle_user_avatar},
-    app_auth::handle_app_auth,
     cache::{
         handle_cache_mover_run, handle_cache_mover_runs, handle_cache_pools_get,
         handle_cache_settings_get, handle_cache_settings_update, handle_cache_share_create,
@@ -109,16 +109,16 @@ use crate::handlers::{
         handle_explorer_disks, handle_explorer_download, handle_explorer_download_ticket,
         handle_explorer_eject, handle_explorer_extract, handle_explorer_favorites_add,
         handle_explorer_favorites_list, handle_explorer_favorites_remove, handle_explorer_format,
-        handle_explorer_history, handle_explorer_list, handle_explorer_mkdir,
-        handle_explorer_move, handle_explorer_network_discovery, handle_explorer_permissions,
-        handle_explorer_preview, handle_explorer_recents_clear, handle_explorer_recents_list,
-        handle_explorer_recents_touch, handle_explorer_rename, handle_explorer_roots,
-        handle_explorer_save, handle_explorer_search, handle_explorer_snapshots,
-        handle_explorer_thumbnail, handle_explorer_thumbnail_ticket, handle_explorer_trash,
-        handle_explorer_trash_empty, handle_explorer_trash_list, handle_explorer_trash_purge,
-        handle_explorer_trash_restore, handle_explorer_upload, handle_explorer_upload_chunk,
-        handle_explorer_upload_complete, handle_explorer_upload_session_abort,
-        handle_explorer_upload_session_start, handle_explorer_watch, handle_explorer_watch_ticket,
+        handle_explorer_history, handle_explorer_list, handle_explorer_mkdir, handle_explorer_move,
+        handle_explorer_network_discovery, handle_explorer_permissions, handle_explorer_preview,
+        handle_explorer_recents_clear, handle_explorer_recents_list, handle_explorer_recents_touch,
+        handle_explorer_rename, handle_explorer_roots, handle_explorer_save,
+        handle_explorer_search, handle_explorer_snapshots, handle_explorer_thumbnail,
+        handle_explorer_thumbnail_ticket, handle_explorer_trash, handle_explorer_trash_empty,
+        handle_explorer_trash_list, handle_explorer_trash_purge, handle_explorer_trash_restore,
+        handle_explorer_upload, handle_explorer_upload_chunk, handle_explorer_upload_complete,
+        handle_explorer_upload_session_abort, handle_explorer_upload_session_start,
+        handle_explorer_watch, handle_explorer_watch_ticket,
     },
     firewall::{
         handle_firewall_disable, handle_firewall_enable, handle_firewall_enable_preview,
@@ -139,16 +139,21 @@ use crate::handlers::{
     },
     mdns::handle_mdns_status,
     meta::handle_meta,
+    metrics::{handle_metrics_history, handle_metrics_latest},
     monitor_layout::{handle_get_monitor_layout, handle_set_monitor_layout},
     notifications::{
-        handle_notification_delete, handle_notification_mark_read, handle_notifications_events,
-        handle_notifications_events_ticket, handle_notifications_list,
+        handle_notification_delete, handle_notification_events_config_get,
+        handle_notification_events_config_update, handle_notification_mark_read,
+        handle_notifications_events, handle_notifications_events_ticket, handle_notifications_list,
         handle_notifications_mark_all_read, handle_notifications_unread_count,
     },
-    whats_new::{handle_whats_new, handle_whats_new_seen},
     permissions::{
         handle_share_permission_grant, handle_share_permission_revoke,
         handle_share_permissions_list, handle_share_permissions_sync, handle_user_permissions,
+    },
+    power::{
+        handle_power_action, handle_power_governor_set, handle_power_spindown_apply,
+        handle_power_spindown_get, handle_power_spindown_set, handle_power_status,
     },
     progress::{handle_cancel_job, handle_get_job_status, handle_list_jobs, handle_progress_sse},
     ransomware::{
@@ -163,6 +168,9 @@ use crate::handlers::{
         handle_list_remotes, handle_list_sync_jobs, handle_mount_start, handle_mount_stop,
         handle_rclone_status, handle_run_sync_job, handle_save_config, handle_sync,
     },
+    resource_shares::{
+        handle_grant_access, handle_list_access, handle_my_access, handle_revoke_access,
+    },
     restic::{
         handle_restic_available, handle_restic_backup_create, handle_restic_backup_jobs,
         handle_restic_check, handle_restic_forget, handle_restic_prune, handle_restic_reminders,
@@ -174,6 +182,10 @@ use crate::handlers::{
         handle_restic_stats, handle_restic_unlock, handle_restic_version,
         handle_retention_policies_list, handle_retention_policy_create,
         handle_retention_policy_delete, handle_retention_policy_update,
+    },
+    scheduled_tasks::{
+        handle_task_create, handle_task_delete, handle_task_run_now, handle_task_runs,
+        handle_task_update, handle_tasks_list,
     },
     security::{
         handle_get_active_sessions_count, handle_get_login_history, handle_get_my_sessions,
@@ -202,6 +214,12 @@ use crate::handlers::{
         handle_share_update, handle_shares_list, handle_smb_config_get, handle_smb_config_update,
         handle_webdav_config_get, handle_webdav_config_update,
     },
+    shortcuts::handle_fetch_metadata,
+    snapshot_schedules::{
+        handle_snapshot_pool_list, handle_snapshot_schedule_create,
+        handle_snapshot_schedule_delete, handle_snapshot_schedule_run_now,
+        handle_snapshot_schedule_update, handle_snapshot_schedules_list,
+    },
     snmp::{
         handle_snmp_availability, handle_snmp_info, handle_snmp_interfaces,
         handle_snmp_settings_get, handle_snmp_settings_update, handle_snmp_storage,
@@ -218,9 +236,9 @@ use crate::handlers::{
         handle_disk_smart_capabilities, handle_disk_smart_test_start,
         handle_disk_smart_test_status, handle_disks_list, handle_import_pool,
         handle_importable_pools_list, handle_partitions_list, handle_raid_arrays_list,
-        handle_raid_available_devices, handle_raid_create, handle_raid_delete,
-        handle_raid_rebuild, handle_removable_disks_list, handle_virtual_disk_delete,
-        handle_virtual_disk_scrub, handle_virtual_disk_scrub_status, handle_virtual_disks_list,
+        handle_raid_available_devices, handle_raid_create, handle_raid_delete, handle_raid_rebuild,
+        handle_removable_disks_list, handle_virtual_disk_delete, handle_virtual_disk_scrub,
+        handle_virtual_disk_scrub_status, handle_virtual_disks_list,
     },
     syncthing::{
         handle_syncthing_config, handle_syncthing_connections, handle_syncthing_devices,
@@ -248,10 +266,7 @@ use crate::handlers::{
         handle_user_update_role, handle_users_list,
     },
     weather_location::{handle_get_weather_location, handle_set_weather_location},
-    resource_shares::{
-        handle_grant_access, handle_list_access, handle_my_access, handle_revoke_access,
-    },
-    shortcuts::handle_fetch_metadata,
+    whats_new::{handle_whats_new, handle_whats_new_seen},
     widgets::{
         handle_widget_cpu_temp, handle_widget_cpu_usage, handle_widget_network_traffic,
         handle_widget_ram_usage, handle_widget_update_info,
@@ -893,6 +908,77 @@ pub fn create_app(state: AppStateArc) -> Router {
             post(handle_notifications_events_ticket),
         )
         .route("/api/events", get(handle_notifications_events))
+        // Per-event notification toggles + webhook sink format (admin).
+        .route(
+            "/api/notifications/events/config",
+            get(handle_notification_events_config_get),
+        )
+        .route(
+            "/api/notifications/events/config",
+            axum::routing::put(handle_notification_events_config_update),
+        )
+        // Scheduled tasks (generic cron engine: commands, snapshots, SMART
+        // self-tests, host power actions) — admin-only, see
+        // docs/guides/scheduled-tasks.md.
+        .route("/api/scheduled-tasks", get(handle_tasks_list))
+        .route("/api/scheduled-tasks", post(handle_task_create))
+        .route(
+            "/api/scheduled-tasks/{id}",
+            axum::routing::put(handle_task_update),
+        )
+        .route(
+            "/api/scheduled-tasks/{id}",
+            axum::routing::delete(handle_task_delete),
+        )
+        .route("/api/scheduled-tasks/{id}/run", post(handle_task_run_now))
+        .route("/api/scheduled-tasks/{id}/runs", get(handle_task_runs))
+        // Snapshot schedules: cron-driven pool snapshots with GFS retention
+        // (admin-only; see docs/guides/snapshots.md).
+        .route(
+            "/api/snapshot-schedules",
+            get(handle_snapshot_schedules_list),
+        )
+        .route(
+            "/api/snapshot-schedules",
+            post(handle_snapshot_schedule_create),
+        )
+        .route(
+            "/api/snapshot-schedules/snapshots",
+            get(handle_snapshot_pool_list),
+        )
+        .route(
+            "/api/snapshot-schedules/{id}",
+            axum::routing::put(handle_snapshot_schedule_update),
+        )
+        .route(
+            "/api/snapshot-schedules/{id}",
+            axum::routing::delete(handle_snapshot_schedule_delete),
+        )
+        .route(
+            "/api/snapshot-schedules/{id}/run",
+            post(handle_snapshot_schedule_run_now),
+        )
+        // Historical metrics (see docs/guides/metrics.md) — read-only for
+        // authed users; samples are written only by the collector loop.
+        .route("/api/metrics/history", get(handle_metrics_history))
+        .route("/api/metrics/latest", get(handle_metrics_latest))
+        // Host power management + disk spindown (admin-only; see
+        // docs/guides/power.md).
+        .route("/api/power/status", get(handle_power_status))
+        .route(
+            "/api/power/governor",
+            axum::routing::put(handle_power_governor_set),
+        )
+        .route("/api/power/{action}", post(handle_power_action))
+        .route("/api/power/spindown", get(handle_power_spindown_get))
+        .route(
+            "/api/power/spindown",
+            axum::routing::put(handle_power_spindown_set),
+        )
+        .route(
+            "/api/power/spindown/apply",
+            post(handle_power_spindown_apply),
+        )
         // App-proxy auth entry (browser navigation, cookie-authenticated):
         // mints the app-scoped session and redirects to the app origin.
         .route("/app-auth", get(handle_app_auth))
@@ -1662,7 +1748,26 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tokio::spawn(crate::journal_cleanup_scheduler::run_scheduler_loop(
         state.clone(),
     ));
-    tracing::info!("Background schedulers started (ransomware watcher, backups, cache-tier mover, antivirus, journal cleanup)");
+    tokio::spawn(crate::scheduled_tasks_scheduler::run_scheduler_loop(
+        state.clone(),
+    ));
+    tokio::spawn(crate::snapshot_scheduler::run_scheduler_loop(state.clone()));
+    tokio::spawn(crate::metrics::run_collector_loop(state.db.pool()));
+    // Re-apply persisted disk spindown settings after boot — hdparm's -S
+    // timer is per-drive volatile state.
+    {
+        let pool = state.db.pool();
+        tokio::spawn(async move {
+            let repo = crate::storage::DiskPowerRepository::new(pool);
+            if let Ok(settings) = repo.list().await {
+                let _ = tokio::task::spawn_blocking(move || {
+                    crate::power::apply_all_spindown(&settings)
+                })
+                .await;
+            }
+        });
+    }
+    tracing::info!("Background schedulers started (ransomware watcher, backups, cache-tier mover, antivirus, journal cleanup, scheduled tasks, metrics collector)");
 
     let firewall_available = crate::firewall::ufw_available();
     if firewall_available {

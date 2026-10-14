@@ -84,6 +84,8 @@
   const EditWidgets = () => import('./EditWidgets.svelte');
   const Journal = () => import('./Journal.svelte');
   const VirtualMachines = () => import('./VirtualMachines.svelte');
+  const Tasks = () => import('./Tasks.svelte');
+  const Metrics = () => import('./Metrics.svelte');
   let currentTime = new Date();
   let now = Date.now();
   let showUserMenu = false;
@@ -1052,6 +1054,8 @@
     { id: 'edit-widgets', name: 'Edit Widgets', icon: 'layout-grid', color: 'var(--hv-app-widgets-grad)', category: 'System', desc: 'Drag & drop the desktop widget layout', component: EditWidgets, customIcon: launchpadIcons.widgets },
     { id: 'journal', name: 'System Journal', icon: 'article', color: 'var(--hv-app-journal-grad)', category: 'Monitoring', desc: 'Centralized system logs & events', component: Journal, customIcon: launchpadIcons.journal },
     { id: 'virtual-machines', name: 'Virtual Machines', icon: 'server', color: 'var(--hv-app-virtual-machines-grad)', category: 'System', desc: 'Manage VMs and system containers', component: VirtualMachines, customIcon: launchpadIcons.virtualMachines },
+    { id: 'tasks', name: 'Scheduled Tasks', icon: 'clock', color: 'var(--hv-app-tasks-grad)', category: 'System', desc: 'Recurring cron jobs: snapshots, SMART, power', component: Tasks, customIcon: launchpadIcons.tasks },
+    { id: 'metrics', name: 'Metrics', icon: 'chart-line', color: 'var(--hv-app-metrics-grad)', category: 'Monitoring', desc: 'Historical performance charts', component: Metrics, customIcon: launchpadIcons.metrics },
   ];
 
   // Looks up `desktop.app_<id>_<field>` and falls back to the English

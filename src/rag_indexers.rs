@@ -692,6 +692,7 @@ Where snapshots are used:
 - The File Explorer can browse the snapshots that cover a folder (read-only, on ZFS), so an older version of a file can be copied back out without rolling anything back.
 - Backups lists the snapshots of a repository.
 - A virtual machine can take a snapshot and be restored to it.
+- Storage's Snapshots tab manages scheduled snapshots: each schedule takes a snapshot of a pool on a cron and applies GFS (grandfather-father-son) retention — keep the newest N hourly, daily, weekly, monthly and yearly generations. Pruning only ever deletes snapshots carrying the schedule's own prefix (default hv-auto-); manual and backup snapshots are never touched. Schedules are admin-only.
 
 Rolling a pool back is destructive — everything written since the snapshot is lost — so it is restricted to administrators and confirmed explicitly. Restoring a virtual machine is an administrator action as well.
 
@@ -916,7 +917,46 @@ This is what lets a user type homevault.local in a browser or a file manager ins
 - The agent sees a tool list filtered to its permissions: appliance identity and resource usage, catalog search and app control, folder listing inside the granted scope, virtual-machine power actions, semantic search over the knowledge base, and — only when explicitly granted — reboot.
 - Folder access never crosses its scope: system directories are always excluded, and links are resolved and re-checked before listing.
 - Every agent action is recorded in the event log under its token, like any administrator action."#.to_string(),
+        },        FeatureDoc {
+            id: "scheduled-tasks".to_string(),
+            title: "Scheduled Tasks".to_string(),
+            content: r#"A generic cron engine for recurring admin-defined jobs, instead of one bespoke scheduler per feature. Task types:
+
+- command: run one absolute-path executable (no shell, no interpolation) with arguments; 30-minute timeout.
+- snapshot: create a pool snapshot (ZFS/Btrfs) named hv-auto-<timestamp>.
+- smart_test: start a S.M.A.R.T. self-test (short, long, conveyance, offline) on a disk.
+- power: reboot, shutdown or suspend the host.
+
+Each task has a name, a 5-field cron expression and an enabled toggle. The task list shows the last run status/error and the computed next run; every execution is recorded in a run history (status, timing, output tail). Run now triggers a task immediately regardless of the cron. A task whose previous execution is still running is never started twice.
+
+Everything is admin-only: tasks execute host actions. Payloads are validated at creation and again at run time — commands must be absolute existing executables (no shell), devices bare kernel names, pools well-formed names, power actions from a fixed whitelist."#.to_string(),
         },
+        FeatureDoc {
+            id: "metrics".to_string(),
+            title: "Metrics (historical performance)".to_string(),
+            content: r#"Historical performance charts for the server: CPU usage, memory usage, 1-minute load average, network throughput (receive/transmit) and the maximum thermal-zone temperature. The collector samples once a minute into the database and keeps 8 days of history; three ranges are charted: one hour (1-minute buckets), 24 hours (15-minute buckets) and 7 days (2-hour buckets).
+
+Buckets without samples (the server was down) show as gaps in the chart, never as a flat zero line. The right edge of a chart is the bucket currently in progress, so the view stays live. The Metrics app is read-only: only the background collector writes samples. Available to every signed-in user, same as the dashboard."#.to_string(),
+        },
+        FeatureDoc {
+            id: "power".to_string(),
+            title: "Power management & disk spindown".to_string(),
+            content: r#"Host-level power management in Settings (admin only):
+
+- CPU scaling governor: see the current governor, the governors the kernel offers, and switch between them (for example performance vs powersave).
+- Host power actions: reboot, shutdown or suspend the whole machine (confirmed in the UI). These are distinct from the process-level restart/shutdown of the Server control area.
+- Disk spindown: per-disk hdparm settings — the APM level (1-255) and the idle timeout in minutes after which the disk parks its heads and spins down. Settings are saved per disk, applied immediately, and re-applied automatically after a server restart. A disk that refuses APM (SSD, USB bridge) is reported as not applied, but the setting stands for the next boot.
+
+Power actions can also be scheduled from the Scheduled Tasks app (for example a nightly suspend)."#.to_string(),
+        },
+        FeatureDoc {
+            id: "os-image".to_string(),
+            title: "HomeVaultOS bootable images".to_string(),
+            content: r#"HomeVaultOS turns HomeVault into a ready-to-use appliance: boot a USB stick or burn a CD and the machine is already a working NAS — HomeVault, Docker and every companion package preinstalled, web UI on http://homevault.local:8080. There is no installer wizard: the first boot only provisions storage silently, and everything a user configures happens in the web Setup Wizard.
+
+Two variants share the same system: a full variant (every dependency baked in, works fully offline) and a slim variant (smaller image that installs its packages on first boot). Images are Debian 12 live systems built with live-build, iso-hybrid (BIOS + UEFI) and can be written with dd, Rufus, Ventoy or balenaEtcher. A first-boot service (hv-firstboot) provisions storage, applies the variant defaults and starts the application; the host identity is homevault and mDNS makes homevault.local resolvable on the LAN."#.to_string(),
+        },
+
     ]
 }
 
@@ -1131,6 +1171,10 @@ mod tests {
         ("encryption", "encryption.md"),
         ("raid", "raid.md"),
         ("snapshots", "snapshots.md"),
+        ("scheduled-tasks", "scheduled-tasks.md"),
+        ("metrics", "metrics.md"),
+        ("power", "power.md"),
+        ("os-image", "os-image.md"),
         ("cache", "cache.md"),
         ("syncthing", "syncthing.md"),
         ("downloader", "downloader.md"),

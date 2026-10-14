@@ -230,7 +230,7 @@ impl Default for UpdateSettings {
     }
 }
 
-/// In-app notification settings (email, thresholds).
+/// In-app notification settings (email, thresholds, per-event toggles).
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct NotificationSettings {
     pub email: Option<String>,
@@ -239,6 +239,13 @@ pub struct NotificationSettings {
     pub webhook_url: Option<String>,
     pub webhook_enabled: Option<bool>,
     pub smtp_enabled: Option<bool>,
+    /// Per-event opt-outs keyed by event id (see
+    /// `crate::notification_events::EVENT_CATALOG`). Absent = enabled.
+    #[serde(default)]
+    pub event_toggles: Option<std::collections::HashMap<String, bool>>,
+    /// Outgoing webhook payload shape (generic | slack | discord).
+    #[serde(default)]
+    pub webhook_format: Option<String>,
 }
 
 impl Default for NotificationSettings {
@@ -250,6 +257,8 @@ impl Default for NotificationSettings {
             webhook_url: None,
             webhook_enabled: Some(false),
             smtp_enabled: Some(false),
+            event_toggles: None,
+            webhook_format: None,
         }
     }
 }
@@ -999,6 +1008,30 @@ pub async fn handle_notification_settings_update(
     if let Some(webhook_enabled) = req.webhook_enabled {
         settings.webhook_enabled = Some(webhook_enabled);
     }
+    if let Some(toggles) = &req.event_toggles {
+        // Drop ids that aren't in the catalog — stale keys from removed
+        // events shouldn't persist forever, and unknown ids are ignored by
+        // `is_event_enabled` anyway.
+        settings.event_toggles = Some(
+            toggles
+                .iter()
+                .filter(|(id, _)| {
+                    crate::notification_events::EVENT_CATALOG
+                        .iter()
+                        .any(|e| e.id == &***id)
+                })
+                .map(|(id, enabled)| (id.clone(), *enabled))
+                .collect(),
+        );
+    }
+    if let Some(format) = &req.webhook_format {
+        if crate::notification_events::WebhookFormat::parse(format).is_none() {
+            return ResponseHelper::json_error(
+                "Invalid webhook format: expected generic, slack or discord".to_string(),
+            );
+        }
+        settings.webhook_format = Some(format.clone());
+    }
     drop(settings);
 
     // Persist settings
@@ -1045,6 +1078,8 @@ pub async fn handle_notification_settings_get(
         "smtp_enabled": settings.smtp_enabled,
         "webhook_url": settings.webhook_url,
         "webhook_enabled": settings.webhook_enabled,
+        "event_toggles": settings.event_toggles,
+        "webhook_format": settings.webhook_format,
     }))
 }
 

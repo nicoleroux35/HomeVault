@@ -24,7 +24,7 @@
 
 //! HTTP handlers for system notifications (health alerts, backup results).
 
-use crate::handlers::admin_guard::require_auth;
+use crate::handlers::admin_guard::{require_admin, require_auth};
 use crate::handlers::AppState;
 use crate::storage::NotificationRepository;
 use crate::utils::ResponseHelper;
@@ -186,4 +186,84 @@ pub async fn handle_notifications_events(
     };
 
     Sse::new(stream).into_response()
+}
+
+/// GET /notifications/events — the event catalog with the admin's current
+/// per-event state, plus the webhook sink format. Admin-only: it exposes
+/// the notification configuration (who gets emailed what).
+pub async fn handle_notification_events_config_get(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers).await {
+        return response;
+    }
+    let settings = crate::handlers::settings::NOTIFICATION_SETTINGS
+        .read()
+        .clone();
+    let events: Vec<serde_json::Value> = crate::notification_events::EVENT_CATALOG
+        .iter()
+        .map(|event| {
+            serde_json::json!({
+                "id": event.id,
+                "group": event.group,
+                "label_key": event.label_key,
+                "enabled": crate::notification_events::is_event_enabled(
+                    event.id,
+                    settings.event_toggles.as_ref(),
+                ),
+            })
+        })
+        .collect();
+    ResponseHelper::json_success(serde_json::json!({
+        "events": events,
+        "webhook_format": settings.webhook_format,
+    }))
+}
+
+/// PUT /notifications/events — update per-event toggles and/or the webhook
+/// sink format. Accepts `{"events": {id: bool, ...}, "webhook_format":
+/// "generic"|"slack"|"discord"}` with either part optional. Admin-only.
+pub async fn handle_notification_events_config_update(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Json(req): axum::extract::Json<serde_json::Value>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers).await {
+        return response;
+    }
+
+    let mut settings = crate::handlers::settings::NOTIFICATION_SETTINGS.write();
+    if let Some(serde_json::Value::Object(events)) = req.get("events").cloned() {
+        let mut toggles = settings.event_toggles.clone().unwrap_or_default();
+        for (id, value) in events {
+            let known = crate::notification_events::EVENT_CATALOG
+                .iter()
+                .any(|e| e.id == id);
+            if !known {
+                return ResponseHelper::json_error(format!("Unknown event id '{id}'"));
+            }
+            let Some(enabled) = value.as_bool() else {
+                return ResponseHelper::json_error(format!("Event '{id}' must map to a boolean"));
+            };
+            toggles.insert(id.clone(), enabled);
+        }
+        settings.event_toggles = Some(toggles);
+    }
+    if let Some(format) = req.get("webhook_format") {
+        let Some(format_str) = format.as_str() else {
+            return ResponseHelper::json_error("webhook_format must be a string".to_string());
+        };
+        if crate::notification_events::WebhookFormat::parse(format_str).is_none() {
+            return ResponseHelper::json_error(
+                "Invalid webhook format: expected generic, slack or discord".to_string(),
+            );
+        }
+        settings.webhook_format = Some(format_str.to_string());
+    }
+    drop(settings);
+    crate::settings_persistence::save_all_settings();
+
+    crate::events::log_event("Admin updated notification event settings".to_string());
+    ResponseHelper::json_success(serde_json::json!({ "success": true }))
 }
