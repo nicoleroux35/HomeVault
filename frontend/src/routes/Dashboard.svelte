@@ -11,7 +11,7 @@
      charts.
 
      Dependencies:
-       - svelte (>= 5), theme + app/ composites, charts/*,
+       - svelte (>= 5), theme + app/ composites, charts barrel,
          $lib/services/api
 
      Usage:
