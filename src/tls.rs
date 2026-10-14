@@ -29,7 +29,7 @@
 //! `axum_server` task in [`crate::web::run`]. This is opt-in: an existing HTTP
 //! install is unchanged until an admin turns it on from Settings.
 //!
-//! Two certificate modes, mirroring OpenMediaVault:
+//! Two certificate modes:
 //!
 //! * **Self-signed** (default): HomeVault generates its own certificate under
 //!   `{DATA_DIRECTORY}/tls/` and regenerates it before it expires. The SAN list
@@ -197,7 +197,7 @@ fn from_env() -> TlsSettings {
 }
 
 /// Persist the admin's TLS settings. Applies after a restart (the listener is
-/// bound once at startup, like OpenMediaVault restarting nginx).
+/// bound once at startup; a restart applies it).
 pub fn save_settings(s: &TlsSettings) -> Result<(), String> {
     store().save(STORE_KEY, s).map_err(|e| e.to_string())
 }

@@ -288,7 +288,7 @@ pub fn validate_env_values(
 
 /// Every catalog app (same store first, then other stores) that can satisfy
 /// `dependency`: the canonical app itself plus any app whose `implements`
-/// list contains it. Used to offer Umbrel-style alternatives at install.
+/// list contains it. Used to offer alternative providers at install.
 pub fn providers_of<'a>(apps: &'a [CatalogApp], dependency: &str) -> Vec<&'a CatalogApp> {
     let (mut canonical, mut alternatives): (Vec<_>, Vec<_>) = apps
         .iter()

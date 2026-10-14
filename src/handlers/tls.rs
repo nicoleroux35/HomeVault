@@ -26,8 +26,8 @@
 //! * `POST /api/settings/tls/regenerate` — force self-signed regeneration
 //!
 //! The listener itself is bound once at startup ([`crate::web::run`]); saving
-//! here persists the choice and reports `requires_restart: true`, mirroring how
-//! OpenMediaVault restarts its web server to apply a certificate change.
+//! here persists the choice and reports `requires_restart: true` — applying
+//! a certificate change requires a web-server restart.
 
 use std::sync::Arc;
 

@@ -30,8 +30,7 @@ import { authStore } from '$lib/stores/auth';
 /**
  * Application-level route guard.
  *
- * The HomeVault equivalent of Umbrel's `EnsureUserExists` /
- * `EnsureUserDoesntExist`: a single place decides whether the shell shows the
+ * Route gate: a single place decides whether the shell shows the
  * Setup Wizard, the hardware-change recovery screen, the login form, the
  * desktop, or a connection-error state. It replaces the previous design where
  * `Login.svelte` fetched `/auth/setup-status` itself and rendered
