@@ -1,9 +1,0 @@
-# HomeVaultOS behaviour switches — read by /usr/local/sbin/hv-firstboot.
-#
-#   persistent  (variant A)  live system; first boot only provisions an
-#                            HV-DATA data volume. Reflashing the boot media
-#                            updates the OS and keeps the data.
-#   selfinstall (variant B)  first boot additionally clones the whole system
-#                            onto a blank internal disk (>= 32 GiB), installs
-#                            the bootloader and reboots from disk.
-HV_OS_VARIANT=persistent
