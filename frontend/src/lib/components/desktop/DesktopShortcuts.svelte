@@ -197,7 +197,7 @@
     gap: 8px;
     padding: 6px 8px;
     border: 0;
-    border-radius: 10px;
+    border-radius: var(--hv-radius-lg);
     background: transparent;
     color: #fff;
     cursor: pointer;
@@ -223,12 +223,12 @@
   .hv-shortcut-open:focus-visible {
     outline: none;
     box-shadow: var(--hv-focus-ring);
-    border-radius: 8px;
+    border-radius: var(--hv-radius-md);
   }
   .hv-shortcut-icon {
     width: 32px;
     height: 32px;
-    border-radius: 8px;
+    border-radius: var(--hv-radius-md);
     object-fit: cover;
     background: #fff;
   }
@@ -237,7 +237,7 @@
     place-items: center;
     width: 32px;
     height: 32px;
-    border-radius: 8px;
+    border-radius: var(--hv-radius-md);
     background: var(--hv-primary);
     color: #fff;
     font-weight: 700;
@@ -286,7 +286,7 @@
     place-items: center;
     width: 32px;
     height: 32px;
-    border-radius: 8px;
+    border-radius: var(--hv-radius-md);
     border: 1.5px dashed rgba(255, 255, 255, 0.6);
   }
   .hv-shortcut-btn {
@@ -296,7 +296,7 @@
     height: 38px;
     padding: 0 16px;
     border: 0;
-    border-radius: 8px;
+    border-radius: var(--hv-radius-md);
     font-weight: 600;
     cursor: pointer;
   }

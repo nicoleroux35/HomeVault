@@ -44,9 +44,12 @@ Both share the same system and differ only in
 |---|---|---|
 | ISO | `homevaultos-<version>-persistent-amd64.iso` | `homevaultos-<version>-selfinstall-amd64.iso` |
 | Boot | live from USB/CD, permanently | live once, then from disk |
-| First boot | provisions an `HV-DATA` volume | clones the system onto a blank internal disk (≥ 32 GiB), installs GRUB, reboots |
+| First boot | provisions an `HV-DATA` volume | flashes the **prebuilt disk image** embedded in the ISO onto a blank internal disk (≥ 32 GiB) with `dd` and powers off |
 | OS updates | reflash the stick (data kept) | flash a new ISO as variant A, or plain `install.sh` upgrade of the binary |
 | Best for | sticks, demo boxes, "the USB *is* the NAS" | fixed mini-PCs/NAS boxes, like umbreLOS x86 |
+
+Variant B also publishes `homevaultos-<version>-amd64.img.xz` — the same
+prebuilt image, flashable directly with balenaEtcher/Rufus.
 
 Variant A additionally passes `persistence` on the kernel command line: if
 the user creates a partition labelled `persistence` (live-boot format),
@@ -78,15 +81,34 @@ present (`incus admin init --auto` — a fresh daemon starts empty, which
 would make the first VM creation fail; `docs/guides/vm.md` → *Host
 provisioning*).
 
-### Variant B clone details
+### Variant B — prebuilt image + flash (umbreLOS pattern)
 
-The self-install partitions the target as GPT: 1 MiB BIOS boot, 512 MiB ESP,
-16 GiB ext4 root, the rest as `HV-DATA`. The rootfs is the *pristine
-squashfs* (loop-mounted, `rsync -aHAX`), plus the kernel/initrd from the live
-medium. GRUB is installed for both firmware kinds with `--removable
---no-nvram` (fallback `EFI/BOOT/BOOTX64.EFI` path — no NVRAM writes), and a
-minimal `boot/grub/grub.cfg` boots `root=UUID=… ro quiet`. `machine-id` and
-SSH host keys are reset so every installation is unique. After `systemctl
+The ISO embeds a **prebuilt raw disk image** — `os/build-disk-image.sh`, run
+by `build.sh` between the live-build `chroot` and `binary` stages: GPT with a
+1 MiB BIOS boot, a 512 MiB ESP and an 8 GiB ext4 root carrying the full
+rootfs, with GRUB installed for **both BIOS and UEFI at build time** inside
+a chroot of the image itself (grub-install on a live system fails with
+`failed to get canonical path of 'overlay'` — the exact failure that killed
+the earlier live-clone approach). fstab (FS UUIDs), the `homevault` hostname
+and a blanked `machine-id` are baked in as well.
+
+On first boot, `hv-firstboot::selfinstall` only streams bytes:
+`xz --decompress --stdout image | dd` onto the biggest blank internal disk
+(≥ 32 GiB — never a disk with any existing content) and **powers off**;
+remove the media and power back on, like the umbreLOS USB installer. The
+flashed system ships no data partition by design: on its first boot,
+`prepare_data_storage` claims the free space **behind the OS partitions**
+on the system disk as `HV-DATA` (ext4, label, fstab entry) before
+`docker.service`/`homevault.service` start — `sgdisk --move-second-header`
+first relocates the backup GPT header to the real end of the disk (the
+flashed image's GPT still claims the image's size). The installed system's
+kernel line also carries a serial console (`console=ttyS0,115200n8`) for
+headless debugging, and the system sshd stays disabled — HomeVault's own
+SFTP subsystem is the only SSH surface.
+
+The `.img.xz` is also published as a standalone artifact
+(`os/dist/homevaultos-<version>-amd64.img.xz`) for direct flashing with
+balenaEtcher/Rufus — the third delivery path after both ISOs. After `systemctl
 reboot` the box boots from disk; re-booting the same stick never re-clones
 (the target disk is no longer blank). Secure Boot must be disabled in the
 firmware — enabling signed shim/grub is future work.

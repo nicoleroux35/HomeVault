@@ -73,6 +73,16 @@ pub fn database_path() -> PathBuf {
     data_dir().join("homevault.db")
 }
 
+/// Directory holding HomeVault's own database snapshots.
+///
+/// The database runs in WAL mode, so the `.db` file alone is *not* a usable
+/// backup — every committed transaction may still live in `-wal`. Snapshots
+/// here are produced with `VACUUM INTO`, which writes a single self-contained
+/// file, so copying one of these is enough to restore the appliance.
+pub fn db_backup_dir() -> PathBuf {
+    data_dir().join("backups")
+}
+
 /// Root directory of Docker Compose projects (one sub-directory per app).
 pub fn compose_dir() -> PathBuf {
     base_dir().join("compose")

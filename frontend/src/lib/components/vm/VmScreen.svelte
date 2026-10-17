@@ -172,7 +172,7 @@
   .scr-window {
     width: min(1280px, 100%); height: min(860px, 96vh);
     display: flex; flex-direction: column;
-    border-radius: 16px; overflow: hidden; background: #0b0e14;
+    border-radius: var(--hv-radius-2xl); overflow: hidden; background: #0b0e14;
     border: 1px solid rgba(255, 255, 255, 0.12);
     box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
   }
@@ -188,7 +188,7 @@
   .scr-actions { display: flex; align-items: center; gap: var(--hv-space-2); flex-wrap: wrap; justify-content: flex-end; }
   .scr-btn {
     display: inline-flex; align-items: center; gap: 6px; height: 31px; padding: 0 11px;
-    border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: var(--hv-radius-control); border: 1px solid rgba(255, 255, 255, 0.16);
     background: rgba(255, 255, 255, 0.06); color: #d7dae0;
     font-family: inherit; font-size: var(--hv-text-sm); font-weight: var(--hv-font-weight-medium); cursor: pointer; white-space: nowrap;
   }

@@ -6,14 +6,15 @@
  * Version       : 1.0.0
  *
  * Description:
- *   The core authentication service: login with attempt counting and
- *   temporary account lockout, session creation and validation (24 h, or
- *   30 days with "remember me"), two-factor authentication (TOTP plus
- *   backup codes), password strength and history policy, and the numeric
- *   recovery-code "forgot password" flow. Beyond HomeVault's own accounts
- *   it also accepts host system accounts: these authenticate through the
- *   system's PAM stack, get a mirrored row in the users table, and inherit
- *   admin rights from their host groups.
+ *   The core authentication service: login with a per-account lockout that
+ *   expires on its own (and a per-client-IP throttle against password
+ *   spraying), session creation and validation (24 h, or 30 days with
+ *   "remember me"), two-factor authentication (TOTP plus backup codes),
+ *   password strength and history policy, and the numeric recovery-code
+ *   "forgot password" flow. Beyond HomeVault's own accounts it also accepts
+ *   host system accounts: these authenticate through the system's PAM stack,
+ *   get a mirrored row in the users table, and inherit admin rights from
+ *   their host groups.
  *
  * Dependencies:
  *   - argon2 (>= 0.6)
@@ -63,7 +64,11 @@ const REMEMBER_ME_SESSION_LIFETIME_SECONDS: i64 = 30 * 86400;
 const MAX_LOGIN_ATTEMPTS: u32 = 5;
 const LOCKOUT_DURATION_SECONDS: i64 = 300;
 const PASSWORD_HISTORY_SIZE: usize = 5;
-const MIN_PASSWORD_LENGTH: usize = 8;
+/// Delegates to the single shared policy in [`crate::setup::SetupService`]
+/// (12 characters, mixed case + digit, no compromised/obvious password, no
+/// long repeated run) so the first-run admin, an admin-created user and a
+/// password change can never disagree about what "strong enough" means.
+const MIN_PASSWORD_LENGTH: usize = crate::setup::SetupService::MIN_PASSWORD_LEN;
 /// Number of 4-digit groups in a generated recovery code. 8 groups = 32 digits
 /// ≈ 106 bits of entropy (log2(10^32)), comfortably above the 96-bit target.
 const RECOVERY_CODE_GROUPS: usize = 8;
@@ -131,11 +136,36 @@ impl From<sqlx::Error> for AuthError {
 #[derive(Clone)]
 pub struct AuthService {
     pool: Arc<sqlx::SqlitePool>,
+    /// Per-client-IP throttle for authentication attempts.
+    ///
+    /// The per-account counter ([`MAX_LOGIN_ATTEMPTS`]) stops a brute force on
+    /// one account, but on its own it is *only* per account: an attacker
+    /// spraying one password across many usernames never trips it, and a flood
+    /// of attempts spread over different accounts was unlimited. This is the
+    /// missing other axis. Both windows are checked on every attempt:
+    /// 30 per minute and 120 per hour, per client IP.
+    login_ip_limiter: Arc<crate::middleware::rate_limit::RateLimitState>,
+    login_ip_hourly_limiter: Arc<crate::middleware::rate_limit::RateLimitState>,
 }
 
 impl AuthService {
+    /// Authentication attempts allowed per client IP inside one minute.
+    pub const LOGIN_IP_MAX_PER_MINUTE: u32 = 30;
+    /// Authentication attempts allowed per client IP inside one hour.
+    pub const LOGIN_IP_MAX_PER_HOUR: u32 = 120;
+
     pub fn new(db: Database) -> Self {
-        Self { pool: db.pool() }
+        Self {
+            pool: db.pool(),
+            login_ip_limiter: Arc::new(crate::middleware::rate_limit::RateLimitState::new(
+                Self::LOGIN_IP_MAX_PER_MINUTE,
+                60,
+            )),
+            login_ip_hourly_limiter: Arc::new(crate::middleware::rate_limit::RateLimitState::new(
+                Self::LOGIN_IP_MAX_PER_HOUR,
+                3600,
+            )),
+        }
     }
 
     pub async fn init(&self) -> Result<(), AuthError> {
@@ -165,6 +195,98 @@ impl AuthService {
         Ok(())
     }
 
+    /// Per-client-IP throttle, the axis the per-account counter cannot cover:
+    /// one password tried against many usernames, or a plain flood.
+    ///
+    /// Returns [`AuthError::TooManyAttempts`] once either window is exhausted.
+    /// The key is the caller-supplied client IP, which the handlers derive from
+    /// the TCP peer (see `handlers::auth::client_ip`) — never from a
+    /// client-settable header alone.
+    pub fn check_ip_rate_limit(&self, ip_address: &str) -> Result<(), AuthError> {
+        let key = if ip_address.trim().is_empty() {
+            "unknown"
+        } else {
+            ip_address
+        };
+        self.login_ip_limiter.check_rate_limit(key).map_err(|_| {
+            tracing::warn!(ip = %key, "Authentication rate limit exceeded for this client IP");
+            AuthError::TooManyAttempts
+        })?;
+        self.login_ip_hourly_limiter
+            .check_rate_limit(key)
+            .map_err(|_| {
+                tracing::warn!(
+                    ip = %key,
+                    "Authentication hourly rate limit exceeded for this client IP"
+                );
+                AuthError::TooManyAttempts
+            })?;
+        Ok(())
+    }
+
+    /// Locks an account automatically and records when the lock expires.
+    ///
+    /// `locked_until` is what separates this from an admin lock: an automatic
+    /// lock lifts itself, a deliberate one (no `locked_until`) does not.
+    async fn lock_account_temporarily(&self, username: &str) -> Result<(), AuthError> {
+        let until = Utc::now() + chrono::Duration::seconds(LOCKOUT_DURATION_SECONDS);
+        sqlx::query("UPDATE users SET locked = 1, locked_until = ? WHERE username = ?")
+            .bind(until.to_rfc3339())
+            .bind(username)
+            .execute(self.pool.as_ref())
+            .await?;
+        Ok(())
+    }
+
+    /// Lifts an automatic lock once its expiry has passed.
+    ///
+    /// Returns `true` when the account is now usable. A permanent lock (no
+    /// `locked_until`, i.e. an admin action) is never lifted here — it returns
+    /// `false` and the caller keeps refusing the login.
+    async fn release_expired_temporary_lock(&self, username: &str) -> Result<bool, AuthError> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT locked_until FROM users WHERE username = ?")
+                .bind(username)
+                .fetch_optional(self.pool.as_ref())
+                .await?;
+
+        let Some((locked_until,)) = row else {
+            return Ok(false);
+        };
+        let Some(locked_until) = locked_until else {
+            // No expiry: a deliberate, permanent lock. Only an admin lifts it.
+            return Ok(false);
+        };
+
+        let expired = chrono::DateTime::parse_from_rfc3339(&locked_until)
+            .map(|until| until.with_timezone(&Utc) <= Utc::now())
+            .unwrap_or(true);
+        if !expired {
+            return Ok(false);
+        }
+
+        sqlx::query("UPDATE users SET locked = 0, locked_until = NULL WHERE username = ?")
+            .bind(username)
+            .execute(self.pool.as_ref())
+            .await?;
+        self.clear_failed_attempts(username).await?;
+        tracing::info!(username = %username, "Temporary account lock expired; account unlocked");
+        Ok(true)
+    }
+
+    /// Clears an automatic lock after a successful authentication, if one is
+    /// still recorded (e.g. it expired between the check and the password
+    /// verification). A permanent lock is deliberately left untouched.
+    async fn clear_temporary_lock(&self, username: &str) -> Result<(), AuthError> {
+        sqlx::query(
+            "UPDATE users SET locked = 0, locked_until = NULL WHERE username = ? AND locked_until IS NOT NULL",
+        )
+        .bind(username)
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(())
+    }
+
     async fn record_failed_attempt(
         &self,
         username: &str,
@@ -180,11 +302,10 @@ impl AuthService {
             .get_attempts_count(username, LOCKOUT_DURATION_SECONDS)
             .await?;
         if count >= MAX_LOGIN_ATTEMPTS as i64 {
-            let user_repo = UserRepository::new(Arc::clone(&self.pool));
-            if let Ok(Some(mut user)) = user_repo.find_by_username(username).await {
-                user.locked = true;
-                let _ = user_repo.update(&user).await;
-            }
+            // Automatic lock WITH an expiry: five wrong passwords must not
+            // brick the account for good (there is no support desk on a NAS,
+            // and the only admin may be the locked account).
+            self.lock_account_temporarily(username).await?;
             return Err(AuthError::AccountLocked);
         }
 
@@ -223,6 +344,15 @@ impl AuthService {
         let has_digit = password.chars().any(|c| c.is_ascii_digit());
 
         if !has_uppercase || !has_lowercase || !has_digit {
+            return Err(AuthError::WeakPassword);
+        }
+
+        // Same shared policy the Setup Wizard uses: compromised / obvious
+        // passwords and long repeated runs are refused even when they satisfy
+        // the composition rules above.
+        if crate::setup::SetupService::is_banned_password(password)
+            || crate::setup::SetupService::has_long_repeated_run(password)
+        {
             return Err(AuthError::WeakPassword);
         }
 
@@ -399,6 +529,7 @@ impl AuthService {
         ip_address: &str,
         user_agent: Option<&str>,
     ) -> Result<bool, AuthError> {
+        self.check_ip_rate_limit(ip_address)?;
         self.check_rate_limit(username).await?;
 
         let user_repo = UserRepository::new(Arc::clone(&self.pool));
@@ -406,12 +537,16 @@ impl AuthService {
 
         match user {
             Some(user) => {
-                if user.locked {
+                // An automatic lock lifts itself once its expiry has passed; a
+                // permanent one (admin action) never does, and is reported as
+                // such below.
+                if user.locked && !self.release_expired_temporary_lock(username).await? {
                     return Err(AuthError::UserLocked);
                 }
 
                 if self.verify_password(password, &user.password_hash) {
                     self.clear_failed_attempts(username).await?;
+                    self.clear_temporary_lock(username).await?;
                     return Ok(true);
                 }
 
@@ -423,6 +558,7 @@ impl AuthService {
                 {
                     self.ensure_pam_user_row(username).await?;
                     self.clear_failed_attempts(username).await?;
+                    self.clear_temporary_lock(username).await?;
                     return Ok(true);
                 }
 
@@ -1011,6 +1147,14 @@ except Exception as e:
         user.locked = locked;
         user_repo.update(&user).await?;
 
+        // `locked_until` must follow the admin's intent, not a stale automatic
+        // expiry: locking by hand clears it (a permanent lock), and unlocking by
+        // hand clears it too (nothing left to expire).
+        sqlx::query("UPDATE users SET locked_until = NULL WHERE username = ?")
+            .bind(username)
+            .execute(self.pool.as_ref())
+            .await?;
+
         if !locked {
             self.clear_failed_attempts(username).await?;
         }
@@ -1324,6 +1468,12 @@ except Exception as e:
         if user.locked {
             user.locked = false;
             user_repo.update(&user).await?;
+            // A recovery-code reset is an explicit unlock: drop any automatic
+            // expiry along with the flag.
+            sqlx::query("UPDATE users SET locked_until = NULL WHERE username = ?")
+                .bind(username)
+                .execute(self.pool.as_ref())
+                .await?;
             self.clear_failed_attempts(username).await?;
         }
 

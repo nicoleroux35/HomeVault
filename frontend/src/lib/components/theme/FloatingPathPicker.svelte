@@ -483,7 +483,7 @@
     flex-direction: column;
     background: var(--hv-surface-container-lowest);
     border: 1px solid var(--hv-border);
-    border-radius: 14px;
+    border-radius: var(--hv-radius-xl);
     box-shadow: 0 18px 50px rgba(10, 14, 40, 0.28);
     overflow: hidden;
     font-size: var(--hv-text-base);
@@ -516,7 +516,7 @@
   .hv-fpp-viewtoggle {
     display: inline-flex;
     border: 1px solid var(--hv-border);
-    border-radius: 8px;
+    border-radius: var(--hv-radius-control);
     overflow: hidden;
     background: var(--hv-surface-container-lowest);
   }
@@ -542,7 +542,7 @@
     height: var(--hv-touch-target-min, 44px);
     border: none;
     background: transparent;
-    border-radius: 7px;
+    border-radius: var(--hv-radius-control);
     color: var(--hv-text-tertiary);
     cursor: pointer;
   }
@@ -584,7 +584,7 @@
     padding: var(--hv-space-1-5) var(--hv-space-2);
     border: none;
     background: transparent;
-    border-radius: 7px;
+    border-radius: var(--hv-radius-control);
     text-align: left;
     cursor: pointer;
     color: var(--hv-text-primary);
@@ -630,7 +630,7 @@
     height: var(--hv-touch-target-min, 44px);
     border: none;
     background: transparent;
-    border-radius: 6px;
+    border-radius: var(--hv-radius-control);
     color: var(--hv-text-secondary);
     cursor: pointer;
     flex-shrink: 0;
@@ -673,7 +673,7 @@
     padding: var(--hv-space-2) var(--hv-space-2);
     border: none;
     background: transparent;
-    border-radius: 8px;
+    border-radius: var(--hv-radius-control);
     text-align: left;
     cursor: pointer;
     color: var(--hv-text-primary);
@@ -699,7 +699,7 @@
     padding: var(--hv-space-2-5) var(--hv-space-1);
     border: none;
     background: transparent;
-    border-radius: 9px;
+    border-radius: var(--hv-radius-control);
     cursor: pointer;
     color: var(--hv-text-primary);
   }
@@ -745,7 +745,7 @@
     height: var(--hv-touch-target-min, 44px);
     padding: 0 12px;
     border: 1px solid var(--hv-primary);
-    border-radius: 8px;
+    border-radius: var(--hv-radius-control);
     background: var(--hv-primary);
     color: var(--hv-on-primary);
     font-size: var(--hv-text-base);

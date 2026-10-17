@@ -459,9 +459,10 @@ against it. Full detail: `docs/guides/design-system.md` → §7.1. The rules:
 3. **Contrast floor.** Any token used for text must be ≥4.5:1 on every surface
    it renders on; status dots / focus rings / control boundaries ≥3:1 (1.4.3 +
    1.4.11). The audited tokens already hold (`--hv-shell-text-3` #5F6B76,
-   `--hv-login-muted` #64748B, `--hv-settings-label` #64748B,
+   `--hv-login-muted` = `--hv-shell-text-3`, `--hv-settings-label` #64748B,
    `--hv-shell-border-strong` #87929E, badge `--hv-chrome-badge-bg` #DC2626,
-   `--hv-wizard-error`/timer hues). A new page-scoped palette must be
+   the gateway `--hv-login-*`/`--hv-wizard-*` aliases and their timer hues).
+   A new page-scoped palette must be
    contrast-checked before it lands. The shipped accent default is
    `#1E62AE` (≥4.5:1 both behind white text and as text on the light
    surfaces/tints); the legacy `#4a90d9` fails both directions and is
@@ -738,7 +739,8 @@ before handing it to the `cron` crate (`1=Sun…7=Sat`).
 - `handle_explorer_download` must go through `api.downloadFile()`, not a bare
   anchor click. `check_quota` compares in `u128` (an `as i64` on a huge value
   goes negative and slips under the limit). Transfer quotas meter **only**
-  Explorer transfers — SMB/NFS/FTP/WebDAV are separate daemons.
+  Explorer transfers — SMB/NFS/FTP are separate daemons and WebDAV is the
+  in-process `crate::webdav` server; none of them meter a transfer.
 - **Quotas screen live-audited 2026-10-07** — it was the last screen with no
   live audit and no green E2E run. `tests/e2e/quotas/quotas.spec.ts` is now
   green end-to-end (**38/38**, Firefox, scratch `PORT=` + isolated

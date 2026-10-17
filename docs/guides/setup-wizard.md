@@ -33,6 +33,7 @@ concurrency lock (`SetupService::mark_setup_in_progress`, `O_EXCL`).
 | `needs_recovery` | `is_first_run == false && hardware_changed` — show the recovery screen |
 | `server_machine_id` | `/etc/machine-id`, or a hostname fallback |
 | `sudo_available` | `which sudo` succeeded (terminal capability banner) |
+| `system_language` | the host's POSIX locale mapped to `en`/`fr`/`de`/`es` (English when unsupported) — the wizard's initial language |
 
 ### Durability — surviving a system-disk reinstall
 
@@ -44,36 +45,23 @@ sessions — survive a reinstall of the system disk. With an empty database and
 no marker files, setup simply runs again.
 
 The *reboot-during-setup* RAID flow of the reference design (write credentials to the
-pool, reboot, create the account on the next boot) is **not** implemented.
-HomeVault's wizard now **does** have storage and RAID steps (steps 3 and 4), but
-they only *record the operator's intent*: the pools themselves are still created
-from the Storage app *after* setup. The wizard's own progress is reboot-safe on
-its own (see *Progress persistence*), which is the part of that flow that
-mattered. Deferred, tracked here rather than silently assumed.
+pool, reboot, create the account on the next boot) is **not** implemented, and
+the wizard deliberately has **no storage, RAID or restore step**: the appliance
+is installed by script on an existing OS, pools/arrays are created from the
+Storage app and a backup is restored from the Backup app — all *after* setup.
+What the wizard does keep from that flow is its own reboot-safe progress (see
+*Progress persistence*). Deferred, tracked here rather than silently assumed.
 
-## Flow (wizard, 8 steps)
+## Flow (wizard, 4 steps)
 
-The wizard is **reboot-safe**: the current step and the non-secret choices are
-persisted server-side (see *Progress persistence* below), so a reboot or a
-closed browser resumes where the operator left off.
+The wizard is **reboot-safe**: the current step is persisted server-side (see
+*Progress persistence* below), so a reboot or a closed browser resumes where
+the operator left off.
 
 1. **Step 1 (Welcome)** — what HomeVault is; no input.
-2. **Step 2 (Language)** — pick the interface language (EN/FR/DE/ES). The
-   embedded dictionary switches instantly; the choice is persisted.
-3. **Step 3 (Storage)** — pick where data should live: the system disk (default)
-   or one of the detected spare disks (`GET /auth/setup/storage-options`,
-   `role == "Available"`). Detection is best-effort — with nothing detected the
-   step degrades to "system disk".
-4. **Step 4 (RAID)** — optionally choose a RAID mode (none / mirror / stripe)
-   and the disks for the array. Advisory at this stage: the actual pools are
-   created from the Storage app after setup.
-5. **Step 5 (Restore)** — optionally point at an encrypted Restic backup to
-   restore from (repository + optional snapshot id). The **passphrase is never
-   collected or stored here** — it is asked when the restore actually runs, from
-   Backup → Restore. Leaving it blank means a fresh start.
-6. **Step 6 (Account)** — username + optional fullname; live availability check
+2. **Step 2 (Account)** — username + optional fullname; live availability check
    (`GET /auth/check-username`) blocks the step while the name is taken.
-7. **Step 7 (Password)** — password + confirmation. Optional **TOTP
+3. **Step 3 (Password)** — password + confirmation. Optional **TOTP
    enrolment**: a `theme/Switch` toggle reveals a QR code rendered client-side
    (`qrcode` npm package) from a client-generated base32 secret
    (`crypto.getRandomValues`, 20 bytes), plus a message listing compatible
@@ -81,8 +69,8 @@ closed browser resumes where the operator left off.
    2FAS…) with iOS/Android availability. The 6-digit code is validated via the
    stateless `POST /auth/setup/verify-totp` endpoint; the step cannot be left
    until the toggle is off or the code is verified.
-8. **Step 8 (Verify & create)** — server-side summary (account, storage, RAID
-   and restore choices); "Create" submits `POST /auth/setup` with optional
+4. **Step 4 (Verify & create)** — server-side summary (account); "Create"
+   submits `POST /auth/setup` with optional
    `totp_secret` + `totp_code`. The server re-verifies the code **before**
    creating any row (invalid code → clean rejection, nothing persisted), then
    enables 2FA (`enable_2fa`, best-effort) and returns `totp_enabled` +
@@ -90,6 +78,24 @@ closed browser resumes where the operator left off.
    **after** account creation (mandatory, non-copyable, acknowledged once),
    followed — when TOTP was enrolled — by a short backup-codes summary, then
    finish (`/login`). There is **no** post-creation 2FA-enrolment screen.
+
+### Interface language — detected, never asked (2026-10-17)
+
+The wizard has **no language step**. `languageStore`
+(`frontend/src/lib/stores/i18n.ts`) resolves the dictionary in this order:
+
+1. an explicit saved choice (`localStorage['hv-language']`, written only by
+   Settings);
+2. the browser/OS locale (`navigator.language`, which follows the OS);
+3. the **host's own POSIX locale**, reported by `GET /auth/setup-status` as
+   `system_language` and applied through `languageStore.applySystemLanguage()`
+   from `appGate.refresh()` — `SetupService::detect_system_language()` reads
+   `LC_ALL` → `LC_MESSAGES` → `LANG` → `LANGUAGE`, then `/etc/default/locale`;
+4. English.
+
+Anything unsupported (`it_IT`, `ja_JP`, `C`, `POSIX`, …) falls back to English.
+Settings (`settings.language_label`) is the only place a preference is stored,
+so the detection never pins a language permanently.
 
 ## Progress persistence (reboot-safe)
 
@@ -99,13 +105,11 @@ The step and the non-secret choices live in a **singleton `setup_progress` row**
 - `GET /auth/setup/progress` → `{ step, data }`; `PUT /auth/setup/progress`
   (`{ step, data }`) saves it. Both are behind the same first-run guard as the
   other bootstrap routes and return **403 once an admin exists**.
-- `data` holds only choices: `language`, `storage`, `raid_mode`, `raid_devices`,
-  `restore_repo`, `restore_snapshot`. Secrets — the password, the TOTP secret and
-  the restore passphrase — are **never** part of this payload.
+- `data` is always an empty object now: no wizard choice is worth remembering
+  (the interface language is detected from the OS). Secrets — the password and
+  the TOTP secret — are **never** part of this payload.
 - On load the wizard resumes at the saved step and shows a "picked up where you
   left off" banner; the banner clears on the next step change.
-- `GET /auth/setup/storage-options` lists the physical disks + RAID candidates
-  for steps 3 and 4 (first-run-only, 403 after setup).
 
 `POST /auth/setup` then records the fingerprint via
 `SetupStateRepository::mark_complete` and drops the lock. Recording the
@@ -142,11 +146,44 @@ This replaces the previous dead-end where the Wizard was shown for
 `hardware_changed` but `/auth/setup` correctly answered "Setup already
 complete".
 
-## Local-network restriction (2026-10-08)
+## Bootstrap endpoint hardening (2026-10-17)
 
 The bootstrap endpoints are public by necessity — they exist because no admin
-exists yet — so `middleware::setup_guard` restricts them to clients whose TCP
-peer is loopback or in a private / link-local / ULA range:
+exists yet — so `middleware::setup_guard` applies **three** independent checks,
+in this order:
+
+### 1. Same-origin (defeats cross-site CSRF)
+
+The CORS layer (`src/web/mod.rs`) is permissive (`allow_origin(Any)`), so the
+local-network check alone is not enough: the operator's browser *is* on the LAN,
+and the mDNS name (`homevault.local`) is predictable, so any website the
+operator visits could `POST /api/auth/setup` and claim the first admin. The
+guard therefore refuses:
+
+- an `Origin` header that does not match the request's `Host` (authority only,
+scheme-agnostic);
+- `Origin: null` (sandboxed iframe, `file://`);
+- `Sec-Fetch-Site` other than `same-origin` / `none` — so `cross-site` **and**
+  `same-site` (a sibling subdomain is a different origin) are refused;
+- requests with **neither** header are allowed: non-browser clients (curl, a
+  provisioning script over SSH) send neither and are already covered by the
+  network check and the lock.
+
+Rejection: `403 {"success":false,"message":"First-run setup is only available
+from HomeVault's own interface"}`. The check applies even with
+`HOMEVAULT_SETUP_ALLOW_REMOTE=1` — it protects a different hole.
+
+### 2. Rate limit (per peer)
+
+20 requests per 60 s per peer address, on all guarded routes, before the
+handlers run. Exceeding it returns
+`429 {"success":false,"message":"Too many setup requests, please wait a
+minute"}`. The limiter lives in a `OnceLock` inside `setup_guard.rs` rather
+than `AppState`, so the guard stays a self-contained route layer.
+
+### 3. Local network (unchanged)
+
+Clients whose TCP peer is loopback or in a private / link-local / ULA range:
 
 - Guarded: `POST /auth/setup`, `POST /auth/setup/verify-totp`,
   `GET /auth/check-username`.
@@ -154,18 +191,43 @@ peer is loopback or in a private / link-local / ULA range:
   anywhere) and `POST /auth/setup/rebaseline` (already admin-authenticated).
 - The peer address comes from `ConnectInfo`, **never** from
   `X-Forwarded-For`/`X-Real-IP` (client-settable → forgeable).
-- `HOMEVAULT_SETUP_ALLOW_REMOTE=1` (or `true`/`yes`) lifts the restriction for
-  a deliberate remote first-run setup.
+- `HOMEVAULT_SETUP_ALLOW_REMOTE=1` (or `true`/`yes`) lifts only this check.
 
-Rejected requests get `403 {"success":false,"message":"First-run setup is only
-available from the local network"}`.
+Rejection: `403 {"success":false,"message":"First-run setup is only available
+from the local network"}`.
+
+## The setup lock is self-healing (2026-10-17)
+
+`.setup_lock` (under `base_dir()`) still serialises concurrent setups with
+`O_EXCL`, but it now records its owner:
+
+```
+pid=<pid>
+created_at=<unix seconds>
+```
+
+An existing lock is honoured only while it is **live**: the PID still exists
+(`/proc/<pid>`, or `kill -0` where `/proc` is absent) *and* the lock is younger
+than `SETUP_LOCK_MAX_AGE` (15 min). Anything else — dead PID, older than 15 min,
+unreadable, or a legacy lock written by an older build — is **reclaimed**:
+`mark_setup_in_progress` removes it and re-creates it under `O_EXCL` (so a
+concurrent reclaim still yields exactly one winner).
+
+`SetupService::cleanup_stale_setup_lock()` also runs once at startup, so a
+reboot after a crashed first run starts clean even when the stale lock is still
+young. Before this, a single interrupted setup dead-ended the wizard forever:
+`is_first_run` stayed `true`, the UI kept offering setup, and every submission
+answered "Setup is already in progress".
 
 ## Backend
 
 - `GET /auth/setup-status` (`handle_setup_status`) — DB-derived status (table above).
 - `POST /auth/setup` (`handle_setup`) — creates the initial admin. Guarded by
-  `has_admin()`, not a marker file; the `O_EXCL` lock still serialises
-  concurrent calls. Uses the **single** correct path `/api/auth/setup`.
+  `has_admin()`, not a marker file; the `O_EXCL` lock (PID + age, self-healing)
+  still serialises concurrent calls. The password goes through
+  `SetupService::validate_password` (12 chars, mixed case + digit, no
+  compromised password, no 5+ repeated run — see `auth.md` → *Password policy*).
+  Uses the **single** correct path `/api/auth/setup`.
 - `GET /auth/check-username` (`handle_check_username`) — live username availability.
 - `POST /auth/setup/verify-totp` (`handle_setup_verify_totp`) — stateless,
   first-run-only pre-creation TOTP validation (`{ secret, code }` → `{ valid }`),
@@ -175,8 +237,6 @@ available from the local network"}`.
 - `GET/PUT /auth/setup/progress` (`handle_setup_progress_get` / `_put`) —
   reboot-safe wizard progress (step + non-secret choices), 403 once an admin
   exists.
-- `GET /auth/setup/storage-options` (`handle_setup_storage_options`) — physical
-  disks + RAID candidates for the storage/RAID steps, 403 once an admin exists.
 
 ## Frontend
 
@@ -190,8 +250,7 @@ available from the local network"}`.
   panel; `recoveryMode` banner + re-baseline, `connectionError` screen.
 - `frontend/src/lib/services/api.ts`: `getSetupStatus` (throws on failure,
   never faked as first-run), `setupAdmin`, `checkUsername`, `verifySetupTotp`,
-  `rebaselineSetup`, `getSetupProgress`/`saveSetupProgress`,
-  `getSetupStorageOptions`.
+  `rebaselineSetup`, `getSetupProgress`/`saveSetupProgress`.
 - `src/setup.rs` `SetupService`; `src/storage/setup_state_repo.rs`;
   `src/storage/setup_progress_repo.rs`; `src/middleware/setup_guard.rs`; models
   in `src/storage/models.rs`.
@@ -207,18 +266,35 @@ available from the local network"}`.
 - The TOTP code is verified **twice** server-side-path: at the password step
   (stateless UX check) and inside `handle_setup` before any row is written.
 - The recovery code remains generated **after** account creation, shown once,
-  non-copyable; only its hash is stored.
+  non-copyable; only its hash is stored. The screen is **blocking**: a failed
+  generation offers a retry and never a "continue", because the code is the
+  only offline way back into the account.
 - After account creation the "Previous" button is disabled.
-- The `.setup_lock` `O_EXCL` lock is kept; it is the only filesystem state.
-- **Wizard progress holds no secret.** `setup_progress.data` may only carry
-  `language`, `storage`, `raid_mode`, `raid_devices`, `restore_repo`,
-  `restore_snapshot` — the password, TOTP secret and restore passphrase must
-  never be added to it.
-- **The storage/RAID/restore steps record intent only.** They do not create a
-  pool or start a restore; those happen after setup (Storage / Backup apps). Do
-  not wire a `mkfs`/`zpool`/restore into `/auth/setup`.
+- The `.setup_lock` `O_EXCL` lock is kept; it is the only filesystem state. It
+  records `pid` + `created_at` and is **self-healing**: a dead PID or an age
+  over 15 min makes it reclaimable, and `cleanup_stale_setup_lock()` runs at
+  startup. Never go back to a bare marker file that can dead-end the wizard.
+- **The bootstrap routes are same-origin + rate-limited.** The CORS layer is
+  permissive, so `setup_guard` must keep rejecting a foreign `Origin` /
+  `Sec-Fetch-Site` and keep its 20 req/min per-peer limiter. Removing either
+  re-opens remote admin takeover from a cross-site page.
+- **One password policy.** `SetupService::validate_password` is the only one:
+  12 chars minimum, mixed case + digit, no compromised password, no run of 5+
+  identical characters. `AuthService::validate_password_strength` delegates to
+  it, and the wizard's checklist must list every rule (it is what enables
+  "Next").
+- **Wizard progress holds no secret.** `setup_progress.data` must stay empty
+  of secrets — the password and the TOTP secret can never be added to it.
+- **The wizard never asks for a language.** It is detected from the OS/browser
+  locale (English when unsupported) and changed in Settings; do not add a
+  language step or a language field to `POST /auth/setup`.
+- **The wizard has no storage, RAID or restore step.** Pools and arrays are
+  created from the Storage app and a backup is restored from the Backup app,
+  all after setup; do not add disk detection, a `mkfs`/`zpool` call or a
+  restore into the wizard or `/auth/setup`.
 - The bootstrap endpoints stay local-network-only unless
-  `HOMEVAULT_SETUP_ALLOW_REMOTE` is set.
+  `HOMEVAULT_SETUP_ALLOW_REMOTE` is set; the same-origin and rate-limit checks
+  apply regardless.
 - Must cover all four locales for the TOTP-enrolment step, the sudo prerequisite
   banner and the hardware-recovery banner (FR/DE/ES were missing these strings;
   now present).

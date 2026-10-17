@@ -42,7 +42,7 @@ not re-read it); a service-file-only change needs just `avahi-daemon
 | SMB | `_smb._tcp` | 445 | ≥1 enabled SMB share **and** `smbd` active |
 | NFS | `_nfs._tcp` | 2049 | ≥1 enabled NFS share **and** `nfs-server` active |
 | FTP | `_ftp._tcp` | `FtpConfig.port` | ≥1 enabled FTP share **and** `vsftpd` active |
-| WebDAV | `_webdav._tcp` | `WebdavConfig.port` | ≥1 enabled WebDAV share **and** `homevault-webdav` active |
+| WebDAV | `_webdav._tcp` | `WebdavConfig.port` | ≥1 enabled WebDAV share **and** the in-process WebDAV server listening (`crate::webdav::running_port()`) |
 | SFTP | `_sftp-ssh._tcp` | `SftpConfig.port` (2222) | ≥1 enabled SFTP share **and** `homevault-sftp` active |
 
 `detect_services()` derives this from `SharesService::get_shares()` (the

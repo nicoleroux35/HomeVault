@@ -7,10 +7,12 @@
 **Features:**
 - Username/password form with show/hide password
 - "Remember me" checkbox
-- "Forgot password" link — requests a reset token
-- Password reset flow (via link with token)
+- "Forgot password" link — offline numeric recovery code (no email)
+- Password reset flow (recovery code → new password)
 - Two-factor authentication (2FA) — entry of the 6-digit TOTP code
-- Error modal with translated messages (invalid credentials, locked account, rate limiting, invalid TOTP, network timeout)
+- Lockout: 5 wrong passwords lock the account for 5 minutes, then it lifts itself; the message points at the recovery-code path
+- Per-client-IP throttle on login and 2FA attempts (429)
+- Error modal with translated messages (invalid credentials, locked account, rate limiting, invalid TOTP, network timeout); inline error is an assertive live region, fields carry `aria-invalid`, focus returns to the form on close
 - Unable-to-connect state with a reconnect button
 - First-launch detection — shows the Setup Wizard instead
 
@@ -23,9 +25,14 @@
 **Features (4 steps):**
 - Step 0 — Welcome: presentation of the features (accounts, encryption, security)
 - Step 1 — Account: username, optional full name, avatar selection (DiceBear)
-- Step 2 — Password: entry + confirmation with a real-time strength indicator and a requirements checklist
-- Step 3 — Verification: account summary, server-side username availability check
-- 2FA enrollment (after account creation): display of the TOTP secret, QR code, verification, backup codes
+- Step 2 — Password: entry + confirmation with a real-time strength indicator and a requirements checklist; optional TOTP enrollment (toggle → QR code → verified 6-digit code)
+- Step 3 — Verification: account summary, server-side username availability check, then creation + one-time recovery code
+- Interface language detected from the OS/browser locale (English when unsupported), changed in Settings — never asked by the wizard
+- Reboot-safe progress: the current step persists server-side
+- Storage pools, RAID arrays and backup restores are configured from their own apps *after* setup — the wizard has no storage/RAID/restore step
+- Password policy: 12+ chars, mixed case + digit, no common password, no 5+ repeated run (live checklist of all 6 rules)
+- Mandatory, blocking recovery-code screen (retry on failure — never skippable)
+- Bootstrap endpoints: local-network + same-origin + rate-limited; self-healing setup lock
 - Progress stepper with animations
 
 ---

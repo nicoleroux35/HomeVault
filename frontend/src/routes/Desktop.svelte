@@ -1631,9 +1631,10 @@
     }
   }
 
-  // paper wallpaper — soft slate-paper gradient + faint light facets (the
-  // "Clean Paper & Slate" default; mirrored in Login.svelte's .hv-login-page)
-  const defaultDesktopGradient = `linear-gradient(135deg, #f4f6fb 0%, #eaeef7 32%, #eef2f9 58%, #e2e8f4 82%, #dae2f1 100%)`;
+  // paper wallpaper — the appliance canvas gradient, declared once in
+  // `tokens.css` as `--hv-desktop-bg` (read by the desktop, the login screen
+  // and the setup wizard, so the three can never drift apart).
+  const defaultDesktopGradient = `var(--hv-desktop-bg)`;
 
   // Derive the desktop background from the wallpaper store. A bundled photo
   // is shown with two `cover` layers: a blurred, zoomed copy fills every
@@ -3296,7 +3297,7 @@
     width: 52px;
     height: 52px;
     margin-left: var(--hv-space-3);
-    border-radius: 16px;
+    border-radius: var(--hv-radius-2xl);
     background: var(--hv-primary-selected-bg);
     color: var(--hv-primary);
     flex-shrink: 0;
@@ -3366,7 +3367,7 @@
     width: 48px;
     height: 48px;
     border: none;
-    border-radius: 16px;
+    border-radius: var(--hv-radius-2xl);
     background: var(--hv-shell-fill);
     color: var(--hv-shell-text-2);
     cursor: pointer;
@@ -4797,7 +4798,7 @@
        Constant in every state — no full-width active/multi bar. */
     width: calc(100% * 20 / 48);
     height: 4px;
-    border-radius: 999px;
+    border-radius: var(--hv-radius-full);
     /* The app's own solid hue (--hv-dock-c set inline per dock button) —
        Figma-style running indicator, not the old ink dot. */
     background: var(--dock-c, var(--hv-primary));
@@ -5079,7 +5080,7 @@
     right: 16px;
     bottom: 7px;
     height: 3px;
-    border-radius: 999px;
+    border-radius: var(--hv-radius-full);
     background: var(--hv-shell-border);
     overflow: hidden;
   }
@@ -5090,7 +5091,7 @@
     top: 0;
     bottom: 0;
     width: 38%;
-    border-radius: 999px;
+    border-radius: var(--hv-radius-full);
     /* Brand wash via color-mix so the strip follows --hv-primary. */
     background: linear-gradient(90deg, color-mix(in srgb, var(--hv-primary) 0%, transparent), color-mix(in srgb, var(--hv-primary) 95%, transparent), color-mix(in srgb, var(--hv-primary) 0%, transparent));
     animation: hvActivitySlide 1.4s linear infinite;
@@ -5169,7 +5170,7 @@
     grid-area: track;
     position: relative;
     height: 4px;
-    border-radius: 999px;
+    border-radius: var(--hv-radius-full);
     background: var(--hv-shell-border);
     overflow: hidden;
   }
@@ -5180,7 +5181,7 @@
     top: 0;
     bottom: 0;
     left: 0;
-    border-radius: 999px;
+    border-radius: var(--hv-radius-full);
     background: var(--hv-primary);
     transition: width 0.3s ease;
   }
@@ -5241,7 +5242,7 @@
     padding: var(--hv-space-4);
     background: var(--hv-shell-glass);
     border: 1px solid var(--hv-shell-border);
-    border-radius: 28px;
+    border-radius: var(--hv-radius-4xl);
     box-shadow: var(--hv-shell-shadow-card);
     animation: hvPowerAppear 200ms ease-out;
     overflow: hidden;
@@ -5268,7 +5269,7 @@
     padding: var(--hv-space-2) var(--hv-space-3) var(--hv-space-2) var(--hv-space-4);
     background: var(--hv-shell-fill);
     border-bottom: 1px solid var(--hv-shell-border-soft);
-    border-radius: 28px 28px 0 0;
+    border-radius: var(--hv-radius-4xl) var(--hv-radius-4xl) 0 0;
     font-size: var(--hv-text-md);
     font-weight: var(--hv-font-weight-semibold);
   }
@@ -5642,7 +5643,7 @@
   .hv-security-status,
   .hv-syncthing-status {
     padding: var(--hv-space-0-75) var(--hv-space-2-5);
-    border-radius: 999px;
+    border-radius: var(--hv-radius-full);
     width: fit-content;
     max-width: 100%;
   }

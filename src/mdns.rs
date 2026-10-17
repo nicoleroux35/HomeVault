@@ -347,10 +347,8 @@ pub fn detect_services() -> Vec<AdvertisedService> {
                     txt: vec![],
                 });
             }
-            ShareType::Webdav if unit_active("homevault-webdav") => {
-                let port = SharesService::get_webdav_config()
-                    .map(|c| c.port)
-                    .unwrap_or(8082);
+            ShareType::Webdav if crate::webdav::running_port().is_some() => {
+                let port = crate::webdav::running_port().unwrap_or(8082);
                 out.push(AdvertisedService {
                     svc_type: "_webdav._tcp",
                     port,
@@ -540,7 +538,8 @@ mod tests {
     #[test]
     fn test_ensure_host_name_handles_empty_file() {
         let out = ensure_host_name("", "homevault").expect("should change");
-        assert!(out.contains("[server]"));        assert!(out.contains("host-name=homevault"));
+        assert!(out.contains("[server]"));
+        assert!(out.contains("host-name=homevault"));
     }
 
     #[test]

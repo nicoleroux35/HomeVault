@@ -69,6 +69,13 @@
   // Inline field error (the approved mock shows it under the fields) — shown
   // alongside the modal so the E2E error flow stays intact.
   let inlineError = '';
+  // Plain-HTTP warning: the password travels in the clear and the browser gives
+  // no hint. Loopback is exempt — nothing leaves the machine there.
+  let insecureConnection = false;
+  // The element that had focus when the error modal opened. The modal moves
+  // focus into itself; on close we must put it back where the user was
+  // (WCAG 2.4.3 / the project's overlay invariant), not drop it on <body>.
+  let errorModalTrigger: HTMLElement | null = null;
 
   $: t = (key: string) =>
     (translations as any)?.[$languageStore]?.[key] || (translations as any)?.en?.[key] || key;
@@ -98,9 +105,9 @@
   const textInputClass =
     'min-w-0 flex-1 p-0! border-none! bg-transparent! text-[var(--hv-shell-text-strong)] caret-[var(--hv-login-accent)] outline-none placeholder:text-[var(--hv-login-muted)]! focus:shadow-none! disabled:bg-transparent!';
   const fieldWrapperClass =
-    'flex h-11 items-center gap-2 rounded-lg border border-[var(--hv-login-field-border)] bg-[var(--hv-login-field-bg)] px-3 text-sm focus-within:border-[var(--hv-login-accent)] focus-within:shadow-[0_0_0_3px_var(--hv-login-accent-ring)]';
+    'flex h-11 items-center gap-2 rounded-md border border-[var(--hv-login-field-border)] bg-[var(--hv-login-field-bg)] px-3 text-sm focus-within:border-[var(--hv-login-accent)] focus-within:shadow-[0_0_0_3px_var(--hv-login-accent-ring)]';
   const ctaClass =
-    'bg-[image:var(--hv-login-btn-grad)]! rounded-lg! shadow-[var(--hv-login-btn-shadow)] hover:brightness-105 active:scale-[0.98] disabled:opacity-60 disabled:shadow-none';
+    'bg-[image:var(--hv-login-btn-grad)]! rounded-md! shadow-[var(--hv-login-btn-shadow)] hover:brightness-105 active:scale-[0.98] disabled:opacity-60 disabled:shadow-none';
 
   let clock = '';
   let dateLabel = '';
@@ -135,6 +142,7 @@
   }
 
   onMount(() => {
+    insecureConnection = isInsecureConnection();
     api.getPublicSettings().then((res) => {
       if (res.success && res.data?.version) serverVersion = res.data.version;
     }).catch(() => {});
@@ -154,16 +162,70 @@
     showPassword = !showPassword;
   }
 
+  /// `true` when the page is served over plain HTTP on a non-loopback host.
+  function isInsecureConnection(): boolean {
+    if (typeof window === 'undefined') return false;
+    if (window.location.protocol !== 'http:') return false;
+    const host = window.location.hostname;
+    return !(host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1');
+  }
+
   function showLoginError(key: string) {
     const message = t(key);
     errorModalMessage = message;
     inlineError = message;
+    if (!showErrorModal) {
+      // Only a real element counts: the form submit is handled asynchronously,
+      // so by the time the failure arrives the browser may already have dropped
+      // focus to <body>. Storing <body> would make the restore a no-op.
+      const active = document.activeElement;
+      errorModalTrigger =
+        active instanceof HTMLElement && active !== document.body ? active : null;
+    }
     showErrorModal = true;
     shake();
   }
 
+  /**
+   * Put focus back on the element the user was on before the error modal
+   * opened (WCAG 2.4.3 — never strand a keyboard user on <body>).
+   *
+   * The shared `Modal` wraps bits-ui, which restores focus itself a frame or
+   * two after teardown — landing on <body> whenever its recorded trigger was
+   * re-rendered meanwhile (our submit button re-renders as `isLoading` flips).
+   * So rather than race it once, re-assert the target each frame while focus is
+   * still on <body>, and stop as soon as it holds (or after ~20 frames).
+   */
+  function restoreFocusAfterModal(target: HTMLElement | null) {
+    // The dialog marks the rest of the page `inert` while it is open and lifts
+    // that only after its teardown animation, so a single `focus()` right after
+    // closing is silently dropped (an `inert` subtree refuses focus). Poll for
+    // up to ~1.2 s and stop as soon as the focus has actually landed.
+    // `setTimeout`, not `requestAnimationFrame`: rAF does not fire in a
+    // background tab or in headless browsers.
+    let attempts = 0;
+    const attempt = () => {
+      attempts += 1;
+      const el =
+        target && document.contains(target)
+          ? target
+          : (document.getElementById('username') as HTMLInputElement | null);
+      if (!el) return;
+      if (document.activeElement !== el) el.focus();
+      if (document.activeElement === el || attempts >= 24) return;
+      setTimeout(attempt, 50);
+    };
+    attempt();
+  }
+
   function closeErrorModal() {
     showErrorModal = false;
+    // Restore focus to whatever the user was on before the modal opened; if
+    // that element is gone, fall back to the first credential field so the
+    // keyboard user is never stranded on <body>.
+    const target = errorModalTrigger;
+    errorModalTrigger = null;
+    restoreFocusAfterModal(target);
   }
 
   function handleCodeInput(index: number, event: Event) {
@@ -379,7 +441,7 @@
         const msg = (result.message || (result as any).error || '').toLowerCase();
         if (msg.includes('too many')) recoveryResetError = t('login.recovery_error_ratelimited');
         else if (msg.includes('recently') || msg.includes('reused')) recoveryResetError = t('login.reset_error_reused');
-        else if (msg.includes('security requirements') || msg.includes('at least 8')) recoveryResetError = t('login.reset_error_weak');
+        else if (msg.includes('security requirements') || msg.includes('at least 12') || msg.includes('too common')) recoveryResetError = t('login.reset_error_weak');
         else if (msg.includes('incorrect') || msg.includes('recovery')) recoveryResetError = t('login.recovery_error_invalid');
         else recoveryResetError = result.message || t('login.reset_error');
       }
@@ -425,7 +487,7 @@
             <div class="flex flex-col gap-4 px-8 py-6 max-[480px]:px-6 max-[480px]:py-5">
               {#if recoveryResetSuccess}
                 <p class="m-0 text-center text-sm text-[var(--hv-shell-text-2)]" data-testid="login-recovery-success">{t('login.recovery_success')}</p>
-                <Button variant="primary" size="lg" fullWidth type="button" onclick={backToLoginFromForgot}>
+                <Button variant="primary" class={ctaClass} size="lg" fullWidth type="button" onclick={backToLoginFromForgot}>
                   <IconLogin size={18} stroke={2} />
                   <span>{t('login.sign_in')}</span>
                 </Button>
@@ -446,7 +508,7 @@
                       <input id="recovery-code" type="text" class={textInputClass} value={recoveryCodeInput} oninput={handleRecoveryCodeInput} placeholder={t('login.recovery_code_placeholder')} disabled={isVerifyingRecovery} inputmode="numeric" maxlength="39" autocomplete="off" required />
                     </div>
                   </div>
-                  {#if recoveryVerifyError}<p class="m-0 mt-2 text-[13px] text-[var(--hv-error-text)]" role="alert" data-testid="login-reset-error">{recoveryVerifyError}</p>{/if}
+                  {#if recoveryVerifyError}<p class="m-0 mt-2 text-[13px] text-[var(--hv-login-error)]" role="alert" data-testid="login-reset-error">{recoveryVerifyError}</p>{/if}
                   <Button variant="primary" class={ctaClass} size="lg" fullWidth type="submit" disabled={isVerifyingRecovery} data-testid="login-recovery-submit">
                     {#if isVerifyingRecovery}<div class="hv-spinner"></div><span>{t('login.signing_in')}</span>{:else}<span>{t('login.recovery_submit')}</span>{/if}
                   </Button>
@@ -467,8 +529,14 @@
 
             <form onsubmit={(e)=>{e.preventDefault();handleLogin();}}>
               <div class="flex flex-col gap-4 px-8 py-6 max-[480px]:px-6 max-[480px]:py-5">
+                {#if insecureConnection}
+                  <div class="flex items-start gap-2 rounded-md border border-[var(--hv-login-timer-warn)] bg-[var(--hv-login-accent-soft)] px-3 py-2.5" role="status" data-testid="login-insecure-banner">
+                    <IconAlertTriangle size={18} stroke={2} class="mt-0.5 shrink-0 text-[var(--hv-login-timer-warn)]" />
+                    <p class="m-0 text-[13px] leading-relaxed text-[var(--hv-shell-text-2)]">{t('login.insecure_notice')}</p>
+                  </div>
+                {/if}
                 {#if recoveryMode}
-                  <div class="flex items-start gap-2 rounded-lg border border-[var(--hv-login-timer-warn)] bg-[var(--hv-login-accent-soft)] px-3 py-2.5" role="status" data-testid="login-hardware-recovery">
+                  <div class="flex items-start gap-2 rounded-md border border-[var(--hv-login-timer-warn)] bg-[var(--hv-login-accent-soft)] px-3 py-2.5" role="status" data-testid="login-hardware-recovery">
                     <IconAlertTriangle size={18} stroke={2} class="mt-0.5 shrink-0 text-[var(--hv-login-timer-warn)]" />
                     <p class="m-0 text-[13px] leading-relaxed text-[var(--hv-shell-text-2)]">{t('login.hardware_recovery.notice')}</p>
                   </div>
@@ -477,22 +545,22 @@
                   <label for="username" class="text-xs font-medium uppercase tracking-[0.1em] text-[var(--hv-login-muted)]">{t('login.username_label')}</label>
                   <div class={fieldWrapperClass}>
                     <IconUser size={19} stroke={1.7} class="shrink-0 text-[var(--hv-login-muted)]" />
-                    <input id="username" type="text" class={textInputClass} bind:value={username} oninput={() => inlineError = ''} placeholder={t('login.username_placeholder')} disabled={isLoading} required autocomplete="username" />
+                    <input id="username" type="text" class={textInputClass} bind:value={username} oninput={() => inlineError = ''} placeholder={t('login.username_placeholder')} disabled={isLoading} required autocomplete="username" aria-invalid={inlineError ? 'true' : undefined} aria-describedby={inlineError ? 'login-inline-error' : undefined} />
                   </div>
                 </div>
                 <div class="flex flex-col gap-1.5">
                   <label for="password" class="text-xs font-medium uppercase tracking-[0.1em] text-[var(--hv-login-muted)]">{t('login.password_label')}</label>
                   <div class={fieldWrapperClass}>
                     <IconLock size={19} stroke={1.7} class="shrink-0 text-[var(--hv-login-muted)]" />
-                    <input id="password" type={showPassword ? 'text' : 'password'} class={textInputClass} bind:value={password} oninput={() => inlineError = ''} placeholder={t('login.password_placeholder')} disabled={isLoading} required autocomplete="current-password" />
+                    <input id="password" type={showPassword ? 'text' : 'password'} class={textInputClass} bind:value={password} oninput={() => inlineError = ''} placeholder={t('login.password_placeholder')} disabled={isLoading} required autocomplete="current-password" aria-invalid={inlineError ? 'true' : undefined} aria-describedby={inlineError ? 'login-inline-error' : undefined} />
                     <button type="button" data-testid="login-password-toggle" class="grid h-8 w-8 flex-none cursor-pointer place-items-center rounded-full border-none bg-transparent text-[var(--hv-login-muted)] hover:text-[var(--hv-shell-text-strong)] disabled:opacity-60 hv-ic" aria-label={showPassword ? t('login.hide_password') : t('login.show_password')} onclick={togglePasswordVisibility} disabled={isLoading}>
                       {#if showPassword}<IconEyeOff size={20} stroke={1.7}/>{:else}<IconEye size={20} stroke={1.7}/>{/if}
                     </button>
                   </div>
                 </div>
                 {#if inlineError}
-                  <div class="flex items-center gap-2 text-xs text-[var(--hv-login-error)]">
-                    <svg viewBox="0 0 16 16" fill="currentColor" class="h-3.5 w-3.5 shrink-0"><circle cx="8" cy="8" r="7" opacity=".15"/><path d="M8 4v5M8 11v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                  <div id="login-inline-error" role="alert" aria-live="assertive" class="flex items-center gap-2 text-xs text-[var(--hv-login-error)]" data-testid="login-inline-error">
+                    <svg viewBox="0 0 16 16" fill="currentColor" class="h-3.5 w-3.5 shrink-0" aria-hidden="true"><circle cx="8" cy="8" r="7" opacity=".15"/><path d="M8 4v5M8 11v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                     {inlineError}
                   </div>
                 {/if}
@@ -561,8 +629,8 @@
                 </div>
 
                 {#if inlineError}
-                  <div class="flex items-center justify-center gap-2 text-xs text-[var(--hv-login-error)]">
-                    <svg viewBox="0 0 16 16" fill="currentColor" class="h-3.5 w-3.5 shrink-0"><circle cx="8" cy="8" r="7" opacity=".15"/><path d="M8 4v5M8 11v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                  <div id="login-inline-error" role="alert" aria-live="assertive" class="flex items-center justify-center gap-2 text-xs text-[var(--hv-login-error)]" data-testid="login-inline-error">
+                    <svg viewBox="0 0 16 16" fill="currentColor" class="h-3.5 w-3.5 shrink-0" aria-hidden="true"><circle cx="8" cy="8" r="7" opacity=".15"/><path d="M8 4v5M8 11v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                     {inlineError}
                   </div>
                 {/if}
@@ -596,7 +664,7 @@
           <div data-testid="login-error-state" class="flex flex-col items-center gap-3 px-6 py-10 text-center text-[var(--hv-shell-text-2)]">
             <IconWifiOff size={32} stroke={2} class="text-[var(--hv-login-muted)]" />
             <p class="m-0 text-sm">{t('login.connection_error')}</p>
-            <Button variant="primary" class="hv-error-retry" onclick={retryConnection}><IconRefresh size={16} stroke={2} /> {t('login.retry')}</Button>
+            <Button variant="primary" class={cn('hv-error-retry', ctaClass)} onclick={retryConnection}><IconRefresh size={16} stroke={2} /> {t('login.retry')}</Button>
           </div>
         {:else}
           <div class="hv-spinner hv-login-spinner h-8 w-8 border-4" data-testid="login-spinner"></div>
@@ -607,8 +675,8 @@
 
 <Modal open={showErrorModal} title={t('login.error_title')} size="sm" onclose={closeErrorModal}>
   {#snippet icon()}<IconAlertTriangle size={22} stroke={2} />{/snippet}
-  {#snippet children()}<p class="m-0 text-sm text-[var(--hv-text-secondary)]" data-testid="login-error-msg">{errorModalMessage}</p>{/snippet}
-  {#snippet footer()}<Button variant="primary" onclick={closeErrorModal} data-testid="login-error-dismiss">{t('login.error_dismiss')}</Button>{/snippet}
+  {#snippet children()}<p class="m-0 text-sm text-[var(--hv-shell-text-2)]" data-testid="login-error-msg">{errorModalMessage}</p>{/snippet}
+  {#snippet footer()}<Button variant="primary" class={ctaClass} onclick={closeErrorModal} data-testid="login-error-dismiss">{t('login.error_dismiss')}</Button>{/snippet}
 </Modal>
 
 <Modal open={showNewPasswordModal} title={t('login.recovery_modal_title')} size="sm" onclose={closeNewPasswordModal}>
@@ -616,24 +684,24 @@
   {#snippet children()}
     <form onsubmit={(e)=>{e.preventDefault();handleRecoveryReset();}}>
       <div class="mb-4">
-        <label for="recovery-new-pw" class="block mb-1.5 text-c-label font-semibold text-[var(--hv-text-primary)]">{t('login.reset_new_password_label')}</label>
-        <div class="flex items-center gap-2 h-12 px-3 rounded-xl border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] focus-within:border-[var(--hv-primary)]">
-          <IconLock size={19} stroke={1.7} class="text-[var(--hv-text-tertiary)]" />
-          <input id="recovery-new-pw" type={showNewPasswordText ? 'text' : 'password'} class="flex-1 min-w-0 border-none bg-transparent text-sm text-[var(--hv-text-primary)] outline-none" bind:value={newPassword} placeholder={t('login.reset_new_password_placeholder')} disabled={isResettingRecovery} required autocomplete="new-password" />
-          <button type="button" class="grid place-items-center w-8 h-8 flex-none rounded-full border-none bg-transparent text-[var(--hv-text-tertiary)] cursor-pointer hover:text-[var(--hv-text-primary)] hv-ic" aria-label={showNewPasswordText ? t('login.hide_password') : t('login.show_password')} onclick={() => showNewPasswordText = !showNewPasswordText} disabled={isResettingRecovery}>
+        <label for="recovery-new-pw" class="block mb-1.5 text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{t('login.reset_new_password_label')}</label>
+        <div class="flex items-center gap-2 h-12 px-3 rounded-md border border-[var(--hv-login-field-border)] bg-[var(--hv-login-field-bg)] focus-within:border-[var(--hv-login-accent)]">
+          <IconLock size={19} stroke={1.7} class="text-[var(--hv-login-muted)]" />
+          <input id="recovery-new-pw" type={showNewPasswordText ? 'text' : 'password'} class="flex-1 min-w-0 border-none bg-transparent text-sm text-[var(--hv-shell-text-strong)] outline-none" bind:value={newPassword} placeholder={t('login.reset_new_password_placeholder')} disabled={isResettingRecovery} required autocomplete="new-password" />
+          <button type="button" class="grid place-items-center w-8 h-8 flex-none rounded-full border-none bg-transparent text-[var(--hv-login-muted)] cursor-pointer hover:text-[var(--hv-shell-text-strong)] hv-ic" aria-label={showNewPasswordText ? t('login.hide_password') : t('login.show_password')} onclick={() => showNewPasswordText = !showNewPasswordText} disabled={isResettingRecovery}>
             {#if showNewPasswordText}<IconEyeOff size={20} stroke={1.7}/>{:else}<IconEye size={20} stroke={1.7}/>{/if}
           </button>
         </div>
       </div>
       <div class="mb-4">
-        <label for="recovery-confirm-pw" class="block mb-1.5 text-c-label font-semibold text-[var(--hv-text-primary)]">{t('login.reset_confirm_password_label')}</label>
-        <div class="flex items-center gap-2 h-12 px-3 rounded-xl border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] focus-within:border-[var(--hv-primary)]">
-          <IconLock size={19} stroke={1.7} class="text-[var(--hv-text-tertiary)]" />
-          <input id="recovery-confirm-pw" type={showNewPasswordText ? 'text' : 'password'} class="flex-1 min-w-0 border-none bg-transparent text-sm text-[var(--hv-text-primary)] outline-none" bind:value={newPasswordConfirm} placeholder={t('login.reset_confirm_password_placeholder')} disabled={isResettingRecovery} required autocomplete="new-password" />
+        <label for="recovery-confirm-pw" class="block mb-1.5 text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{t('login.reset_confirm_password_label')}</label>
+        <div class="flex items-center gap-2 h-12 px-3 rounded-md border border-[var(--hv-login-field-border)] bg-[var(--hv-login-field-bg)] focus-within:border-[var(--hv-login-accent)]">
+          <IconLock size={19} stroke={1.7} class="text-[var(--hv-login-muted)]" />
+          <input id="recovery-confirm-pw" type={showNewPasswordText ? 'text' : 'password'} class="flex-1 min-w-0 border-none bg-transparent text-sm text-[var(--hv-shell-text-strong)] outline-none" bind:value={newPasswordConfirm} placeholder={t('login.reset_confirm_password_placeholder')} disabled={isResettingRecovery} required autocomplete="new-password" />
         </div>
       </div>
-      {#if recoveryResetError}<p class="m-0 mb-2 text-xs text-[var(--hv-error-text)]" role="alert" data-testid="login-reset-error">{recoveryResetError}</p>{/if}
-      <Button variant="primary" size="lg" fullWidth type="submit" disabled={isResettingRecovery} data-testid="login-recovery-submit">
+      {#if recoveryResetError}<p class="m-0 mb-2 text-xs text-[var(--hv-login-error)]" role="alert" data-testid="login-reset-error">{recoveryResetError}</p>{/if}
+      <Button variant="primary" class={ctaClass} size="lg" fullWidth type="submit" disabled={isResettingRecovery} data-testid="login-recovery-submit">
         {#if isResettingRecovery}<div class="hv-spinner"></div><span>{t('login.signing_in')}</span>{:else}<span>{t('login.recovery_modal_submit')}</span>{/if}
       </Button>
     </form>

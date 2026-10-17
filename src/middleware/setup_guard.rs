@@ -8,10 +8,14 @@
  * Description:
  *   Middleware that keeps the unauthenticated first-run setup endpoints
  *   (creating the first admin account) reachable only from the local
- *   network: loopback, private, link-local and IPv6 unique-local addresses.
- *   The peer address comes from the TCP connection itself, never from
- *   spoofable forwarding headers. HOMEVAULT_SETUP_ALLOW_REMOTE=1 opts out
- *   for a deliberate remote first-run setup.
+ *   network (loopback, private, link-local, IPv6 unique-local) *and* only
+ *   from a same-origin browser context. The peer address comes from the TCP
+ *   connection itself, never from spoofable forwarding headers; the
+ *   same-origin check defeats a cross-site page in the operator's own browser
+ *   (the CORS layer is permissive, so without it any website could claim the
+ *   first admin). Requests are also rate-limited per peer.
+ *   HOMEVAULT_SETUP_ALLOW_REMOTE=1 opts out of the local-network check for a
+ *   deliberate remote first-run setup (the same-origin check stays on).
  *
  * Dependencies:
  *   - axum (>= 0.8)
@@ -23,7 +27,7 @@
  */
 
 //! Restrict the unauthenticated first-run bootstrap endpoints to the local
-//! network.
+//! network *and* to same-origin browser contexts, rate-limited per peer.
 //!
 //! `POST /auth/setup`, `POST /auth/setup/verify-totp` and `GET
 //! /auth/check-username` are public by necessity — they exist precisely
@@ -45,8 +49,11 @@
 //! re-baseline endpoint (it already requires an admin session).
 
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 
-use axum::{extract::ConnectInfo, middleware::Next, response::Response};
+use axum::{extract::ConnectInfo, http::HeaderMap, middleware::Next, response::Response};
+
+use crate::middleware::rate_limit::RateLimitState;
 
 /// Whether a peer address may reach the first-run bootstrap endpoints.
 pub fn is_local_peer(ip: &IpAddr) -> bool {
@@ -76,8 +83,101 @@ fn remote_allowed_by_env() -> bool {
     )
 }
 
-/// Middleware enforcing [`is_local_peer`] on the setup bootstrap routes.
+// ---------------------------------------------------------------------------
+// Same-origin check
+// ---------------------------------------------------------------------------
+
+/// Whether a bootstrap request may be treated as coming from the appliance's
+/// own UI rather than from a third-party page open in the same browser.
+///
+/// The CORS layer in `web/mod.rs` is permissive (`allow_origin(Any)`) so the
+/// desktop can talk to its own API from any host name. That would let *any*
+/// website the operator happens to visit fire `POST /api/auth/setup` from
+/// their browser — the local-network guard does not help, because the browser
+/// itself sits on the LAN. This check closes that hole:
+///
+/// * an `Origin` header, when present, must match the request's `Host` (same
+///   scheme-agnostic authority) — a cross-site `fetch`/form always carries a
+///   foreign `Origin`;
+/// * `Sec-Fetch-Site`, when the browser sends it, must be `same-origin` or
+///   `none` (a user-initiated navigation / address-bar request). `cross-site`
+///   and `same-site` (a sibling subdomain, which is a different origin) are
+///   rejected;
+/// * requests with neither header are allowed: non-browser clients (curl, a
+///   provisioning script over SSH) send neither, and they are already gated by
+///   the local-network check plus the setup lock.
+fn is_same_origin(headers: &HeaderMap) -> bool {
+    if let Some(site) = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
+        let site = site.trim().to_ascii_lowercase();
+        if !matches!(site.as_str(), "same-origin" | "none") {
+            return false;
+        }
+    }
+
+    let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok()) else {
+        return true;
+    };
+    let origin = origin.trim();
+    // `Origin: null` (sandboxed iframe, file://) can never be the appliance.
+    if origin.is_empty() || origin.eq_ignore_ascii_case("null") {
+        return false;
+    }
+
+    // Compare authorities only: `http://nas.local:8080` vs `Host: nas.local:8080`.
+    let Some(origin_host) = origin
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .and_then(|rest| rest.split('/').next())
+    else {
+        return false;
+    };
+    let Some(host) = headers.get("host").and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+
+    origin_host.eq_ignore_ascii_case(host.trim())
+}
+
+// ---------------------------------------------------------------------------
+// Per-peer rate limit
+// ---------------------------------------------------------------------------
+
+/// Bootstrap endpoints get their own limiter: 20 requests per minute per peer.
+/// Generous enough for the wizard's live username checks and TOTP retries, far
+/// below what a brute-force or a flood needs. The limiter lives in a `OnceLock`
+/// rather than `AppState` so the guard stays a self-contained route layer (and
+/// the many `AppState` fixtures in the test suites need no change).
+fn setup_rate_limiter() -> &'static Arc<RateLimitState> {
+    static LIMITER: std::sync::OnceLock<Arc<RateLimitState>> = std::sync::OnceLock::new();
+    LIMITER.get_or_init(|| Arc::new(RateLimitState::new(20, 60)))
+}
+
+/// Middleware enforcing [`is_local_peer`] + [`is_same_origin`] + the per-peer
+/// rate limit on the setup bootstrap routes.
 pub async fn setup_guard_middleware(request: axum::extract::Request, next: Next) -> Response {
+    // Same-origin and rate limiting apply even when the local-network check is
+    // deliberately lifted: they protect a different hole.
+    if !is_same_origin(request.headers()) {
+        tracing::warn!(
+            origin = ?request.headers().get("origin"),
+            "Rejected a cross-origin first-run setup request"
+        );
+        return crate::utils::ResponseHelper::json_forbidden(
+            "First-run setup is only available from HomeVault's own interface".to_string(),
+        );
+    }
+
+    let peer_key = match request.extensions().get::<ConnectInfo<SocketAddr>>() {
+        Some(ConnectInfo(addr)) => addr.ip().to_string(),
+        None => "in-process".to_string(),
+    };
+    if setup_rate_limiter().check_rate_limit(&peer_key).is_err() {
+        return crate::utils::ResponseHelper::json_error_with_status(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "Too many setup requests, please wait a minute".to_string(),
+        );
+    }
+
     if remote_allowed_by_env() {
         return next.run(request).await;
     }

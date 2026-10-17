@@ -3,6 +3,46 @@
 **Purpose:** Let a user review/revoke their own sessions and review login history
 (admin-only per-user history).
 
+## Content Security Policy (2026-10-17)
+
+`script-src` no longer allows `'unsafe-inline'`. The policy lists a **per-response
+nonce** instead (`middleware::csp_nonce`):
+
+- `security_headers_middleware` — the outermost layer — generates 16 random
+  bytes (hex) per request and inserts them as `CspNonce` in the request
+  extensions;
+- `handlers::spa::serve_spa` replaces the `__HV_CSP_NONCE__` placeholder in
+  `index.html` with that exact value, so the one inline boot script (the
+  service-worker registration) carries `nonce="…"` matching the header;
+- the two must agree **within one response** — a test asserts it.
+
+Why it matters: with `'unsafe-inline'` and the session token in `localStorage`,
+any injected script could read the token and exfiltrate a full session. A nonce
+is unguessable, so injected markup cannot run.
+
+`style-src` **keeps** `'unsafe-inline'`: Svelte emits scoped `<style>` blocks
+and components set `style="…"` attributes, neither of which a nonce can cover.
+Accepted debt — CSS cannot read the session token.
+
+Adding an inline script later means adding `nonce="__HV_CSP_NONCE__"` to it in
+`frontend/index.html`; anything without it will simply not run.
+
+## Brute-force protection (2026-10-17)
+
+There is deliberately **no fail2ban module**. An earlier
+`src/middleware/fail2ban.rs` defined an in-memory IP ban list that no route or
+handler ever referenced — dead code that read like an active protection. It was
+removed; brute-force defence lives in two places instead:
+
+- **Per account** — 5 failed logins inside 5 minutes lock the account, and the
+  lock records an expiry (`users.locked_until`), so it lifts itself. See
+  [auth.md](./auth.md) → *Login lockout and throttling*.
+- **Per client IP** — 30 attempts/minute and 120/hour on `/auth/login` **and**
+  `/auth/2fa/verify`, keyed by the TCP peer address.
+
+Do not reintroduce an unwired "protection" module: either wire it and test it,
+or leave it out.
+
 ## Backend
 
 Handlers in `src/handlers/security.rs`.

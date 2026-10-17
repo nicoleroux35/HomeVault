@@ -184,7 +184,7 @@
   .con-window {
     width: min(1100px, 100%); height: min(720px, 94vh);
     display: flex; flex-direction: column;
-    border-radius: 16px; overflow: hidden; background: #0b0e14;
+    border-radius: var(--hv-radius-2xl); overflow: hidden; background: #0b0e14;
     border: 1px solid rgba(255, 255, 255, 0.12);
     box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
   }
@@ -200,7 +200,7 @@
   .con-actions { display: flex; align-items: center; gap: 8px; }
   .con-btn {
     display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px;
-    border-radius: 9px; border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: var(--hv-radius-control); border: 1px solid rgba(255, 255, 255, 0.16);
     background: rgba(255, 255, 255, 0.06); color: #d7dae0;
     font-family: inherit; font-size: var(--hv-text-sm); font-weight: var(--hv-font-weight-medium); cursor: pointer;
   }

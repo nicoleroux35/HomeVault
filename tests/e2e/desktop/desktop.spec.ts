@@ -905,6 +905,30 @@ test.describe('7 — Power menu', () => {
     await page.locator('.hv-power-overlay').click({ position: { x: 5, y: 5 } });
     await expect(page.locator('.hv-power-dialog')).toHaveCount(0);
   });
+
+  test('7.4 — the power dialog and the topbar popovers share the chrome corner (--hv-radius-4xl, 24px)', async ({ page }) => {
+    await gotoDesktop(page, adminTokens);
+
+    // The account menu is the shared `.hv-topbar-panel` chrome — the same
+    // floating surface family as the power dialog.
+    await page.locator('.hv-user-pill').click();
+    const panel = page.locator('.hv-topbar-panel').first();
+    await expect(panel).toBeVisible();
+    const panelRadius = await panel.evaluate((el) =>
+      parseFloat(getComputedStyle(el).borderRadius),
+    );
+    await page.locator('.hv-desktop').click({ position: { x: 400, y: 400 } });
+
+    await page.locator('[data-testid="topbar-power"]').click();
+    const dialog = page.locator('.hv-power-dialog');
+    await expect(dialog).toBeVisible();
+    const dialogRadius = await dialog.evaluate((el) =>
+      parseFloat(getComputedStyle(el).borderRadius),
+    );
+
+    expect(panelRadius, 'topbar popover chrome corner').toBe(24);
+    expect(dialogRadius, 'power dialog chrome corner').toBe(24);
+  });
 });
 
 // ===========================================================================

@@ -198,11 +198,11 @@ const size = formatBytes(1024000); // '1 MB'
 
 ### Colors
 
-- **Primary**: `--hv-primary` (#2E72C9)
-- **Secondary**: `--hv-secondary` (#505f76)
-- **Success**: `--hv-success` (#10b981)
-- **Error**: `--hv-error` (#ba1a1a)
-- **Warning**: `--hv-warning` (#f59e0b)
+- **Primary**: `--hv-primary` (#1E62AE — "HomeVault Blue", the product's one accent)
+- **Secondary**: `--hv-secondary` (#454F5B)
+- **Success**: `--hv-success` (#1E7E34)
+- **Error**: `--hv-error` (#C22B21)
+- **Warning**: `--hv-warning` (#B45309)
 
 ### Spacings
 
@@ -212,12 +212,12 @@ const size = formatBytes(1024000); // '1 MB'
 ### Typography
 
 - **Font Family**: Inter
-- **Sizes**: micro (10px) to 4xl (30px)
+- **Sizes**: micro/xs (11px — the readability floor, nothing readable renders smaller) to 5xl (62px)
 - **Weights**: regular (400), medium (500), semibold (600), bold (700)
 
 ### Border Radius
 
-- `--hv-radius-sm` (2px) to `--hv-radius-2xl` (16px)
+- `--hv-radius-sm` (4px) to `--hv-radius-4xl` (24px)
 - `--hv-radius-full` (9999px) for circles
 
 ### Shadows

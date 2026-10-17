@@ -22,6 +22,42 @@ access-control list), key-only auth (`AuthorizedKeysFile` under
 `ensure_linux_user` provisioning a real, shell-less (`nologin`) Linux account
 on first grant, since regular HomeVault users are DB-only otherwise.
 
+### WebDAV — in-process Rust server (2026-10-14)
+
+WebDAV is **not** a system daemon: it is an axum listener owned by HomeVault
+(`src/webdav/`), built on the `dav-server` crate (hyper 1.x, same stack as the
+app proxy). The previous implementation generated a Python
+`/usr/local/bin/homevault-webdav.py` + a root-owned `homevault-webdav.service`
+via `systemctl`; that is gone. `WEBDAV` is a process-wide manager
+(`src/webdav/mod.rs`, mirrors `APP_PROXY`) with `start`/`stop`/`reload`;
+`reload_if_running` rebuilds the listener after a share change.
+
+- **Filesystem** — `src/webdav/vfs.rs` (`WebdavFs`) implements
+  `GuardedFileSystem<WebdavCreds>`. The first URL segment is a share **name**
+  (never a path); each request is delegated to a `LocalFs` rooted at that
+  share's root, so `..` / symlinks can never leave the share. A cross-share
+  `COPY`/`MOVE` is refused. Path mapping is in `src/webdav/fs.rs` (pure,
+  unit-tested).
+- **Auth** — `src/webdav/serve.rs` reads `Authorization: Basic`, verifies the
+  credentials through `AuthService::authenticate` (real HomeVault accounts,
+  lockout included) and answers 401 with the standard challenge otherwise.
+  `require_auth: false` is the only open mode, and it is opt-in.
+- **Per-member grants** — the `share` kind of `resource_shares` is enforced:
+  a non-admin caller only reaches the shares named in its grants
+  (`ResourceShareRepository::list_for_member`). This is the first consumer of
+  the `can_access` layer for shares.
+- **Config honored** — `port`, `path_prefix` (mount point), `require_auth`,
+  `require_ssl` (reuses the HomeVault TLS certificate; refuses to start when
+  TLS is required but not enabled), `locking` (`MemLs` vs `FakeLs`),
+  `allowed_methods` (`DavMethodSet`). The default config is closed:
+  `WebdavConfig::default()` is port 8082 + `require_auth: true` (the old
+  derived default was port 0 + auth off).
+- **Lifecycle** — the server runs iff at least one enabled WebDAV share
+  exists; `POST /shares/webdav/start|stop|restart` drives `WEBDAV`. Startup
+  also calls `cleanup_legacy_service()` to disable and remove the old
+  systemd unit + Python script on an upgraded host. mDNS uses
+  `crate::webdav::running_port()`, not `unit_active`.
+
 | Endpoint | Auth | Notes |
 |----------|------|-------|
 | `GET /shares` | admin | list shares |
@@ -64,6 +100,13 @@ Granting first fails with a `setfacl` error.
 
 ## Invariants
 
+- **WebDAV has no systemd unit.** Never reintroduce `systemctl` calls for the
+  `webdav` protocol, a generated `homevault-webdav.py`, or a root-owned DAV
+  process. `SharesService::start/stop/restart_service(Webdav)` returns an
+  error on purpose; the routes go through `crate::webdav::WEBDAV`. The share
+  table and per-member grants are the boundary — a URL's first segment is a
+  share *name*, and `WebdavFs` re-checks the caller's grant on every
+  operation, including both sides of `COPY`/`MOVE`.
 - **All** Shares endpoints require `require_admin` (a past bug accepted any
   non-empty token on `handle_shares_list`/`handle_share_get`; they now use
   `require_admin`, like every other handler in `src/handlers/shares.rs`).

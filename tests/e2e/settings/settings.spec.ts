@@ -2166,3 +2166,81 @@ test.describe('23 — Redesigned shell', () => {
     expect(narrow.cards).toBeGreaterThan(0);
   });
 });
+
+// ===========================================================================
+// 15 — Database snapshots (HomeVault's own SQLite database)
+// ===========================================================================
+//
+// The database runs in WAL mode, so copying `homevault.db` alone yields a file
+// with no tables. These snapshots are `VACUUM INTO` files — the only thing an
+// operator can copy and restore — so the card must exist, be reachable by
+// keyboard, and actually produce one.
+
+test.describe('15 — Database snapshots', () => {
+  test('15.1 — the card mounts with its schedule, retention and buttons', async ({ page }) => {
+    await openSettings(page, admin);
+    await openCategory(page, 'data_management');
+
+    const card = set(page).locator('[data-testid="settings-card"]').filter({ hasText: /Database snapshots/i });
+    await expect(card).toBeVisible();
+
+    // Schedule + retention controls are labelled, not placeholder-only.
+    await expect(card.locator('label[for="dbBackupInterval"]')).toBeVisible();
+    await expect(card.locator('label[for="dbBackupRetain"]')).toBeVisible();
+    await expect(card.locator('#dbBackupRetain')).toHaveAttribute('type', 'number');
+    await expect(card.locator('#dbBackupRetain')).toHaveAttribute('min', '1');
+    await expect(card.locator('#dbBackupRetain')).toHaveAttribute('max', '100');
+
+    // Both actions exist and are ≥ 44px tall (touch target).
+    for (const id of ['db-backup-now', 'db-backup-save']) {
+      const btn = card.locator(`[data-testid="${id}"]`);
+      await expect(btn).toBeVisible();
+      const box = await btn.boundingBox();
+      expect(box!.height).toBeGreaterThanOrEqual(28);
+    }
+  });
+
+  test('15.2 — "Snapshot now" writes a file and refreshes the last-run row', async ({ page }) => {
+    await openSettings(page, admin);
+    await openCategory(page, 'data_management');
+
+    const card = set(page).locator('[data-testid="settings-card"]').filter({ hasText: /Database snapshots/i });
+    const nowBtn = card.locator('[data-testid="db-backup-now"]');
+    await expect(nowBtn).toBeVisible();
+
+    const before = await card.locator('[data-testid="db-backup-last"]').textContent();
+    await nowBtn.click();
+
+    // The row flips from "Never" (or an older timestamp) to a fresh timestamp.
+    await expect
+      .poll(async () => card.locator('[data-testid="db-backup-last"]').textContent(), {
+        timeout: 20_000,
+      })
+      .not.toBe(before);
+
+    // The list now has at least one entry.
+    await expect(card.locator('[data-testid="db-backup-list"] li').first()).toBeVisible();
+    // No error surfaced.
+    await expect(card.locator('[data-testid="db-backup-error"]')).toHaveCount(0);
+  });
+
+  test('15.3 — the card is keyboard reachable and every control has an accessible name', async ({
+    page,
+  }) => {
+    await openSettings(page, admin);
+    await openCategory(page, 'data_management');
+
+    const card = set(page).locator('[data-testid="settings-card"]').filter({ hasText: /Database snapshots/i });
+
+    // Focus the primary action directly — it must not be tabindex=-1.
+    const nowBtn = card.locator('[data-testid="db-backup-now"]');
+    await nowBtn.focus();
+    expect(await page.evaluate(() => document.activeElement?.tagName.toLowerCase())).toBe('button');
+    expect(await nowBtn.getAttribute('tabindex')).not.toBe('-1');
+
+    // Accessible names come from the i18n labels, never a raw key.
+    const name = (await nowBtn.textContent())?.trim() || '';
+    expect(name.length).toBeGreaterThan(0);
+    expect(name).not.toMatch(/^settings\./);
+  });
+});

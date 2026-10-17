@@ -1,0 +1,30 @@
+#!/bin/bash
+set -e
+
+# HomeVaultOS chroot hook — appliance identity + per-image hygiene.
+#
+# * hostname: every machine boots up as `homevault` and is advertised by
+#   avahi as homevault.local (the kernel cmdline also passes
+#   hostname=homevault for the live boot).
+# * machine-id: blanked so systemd generates a fresh one per installation —
+#   a hard-coded id cloned to every NAS would make SQLite/Incus/journald
+#   believe they share an identity.
+# * SSH host keys: removed so each installation (and each live boot) generates
+#   its own (hv-firstboot runs `ssh-keygen -A` when none exist). The system
+#   sshd is NOT enabled — only HomeVault's own SFTP subsystem uses these
+#   binaries, on its own port.
+
+echo homevault > /etc/hostname
+
+# Regenerated per boot / per installation.
+truncate -s0 /etc/machine-id
+rm -f /var/lib/dbus/machine-id
+
+# Regenerated at first boot (see hv-firstboot::ensure_ssh_host_keys).
+rm -f /etc/ssh/ssh_host_*
+
+# Shrink the squashfs a bit.
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+
+echo "[hv-os] ✓ appliance identity configured (hostname, machine-id, ssh keys)"

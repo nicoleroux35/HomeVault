@@ -17,7 +17,7 @@ Handlers in `src/handlers/users.rs`; models in `src/handlers/users_models.rs`.
 | `DELETE /users/{username}` | admin | delete (kills PTY sessions via `state.pty_manager.kill_session`; also revokes the account's direct share permissions, see Invariants) |
 | `PUT /users/{username}/password` | admin | reset password |
 | `PUT /users/{username}/role` | admin | change role |
-| `PUT /users/{username}/locked` | admin | lock/unlock |
+| `PUT /users/{username}/locked` | admin | lock/unlock — a **permanent** lock (clears `locked_until`); the automatic lockout from failed logins expires by itself |
 | `POST /users/{username}/2fa/disable` | admin | admin disable 2FA |
 | `PUT /users/{username}/groups` | admin | set group membership |
 | `GET/PUT/DELETE /users/{username}/home` | admin | home folder (enabled + disk + size limit) |

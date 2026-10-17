@@ -337,7 +337,11 @@
   /* ============================================
      DESKTOP SPECIFIC
      ============================================ */
-  --hv-desktop-bg: linear-gradient(135deg, #EDF2F8 0%, #E2E9F2 35%, #E8EEF5 60%, #D7E0EC 100%);
+  /* The desktop canvas. Single source since 2026-10-17 — Desktop.svelte
+     used to carry its own copy of this gradient, which is exactly how the
+     login/wizard canvas and the desktop canvas could drift apart. The
+     login and the wizard now paint this same gradient. */
+  --hv-desktop-bg: linear-gradient(135deg, #f4f6fb 0%, #eaeef7 32%, #eef2f9 58%, #e2e8f4 82%, #dae2f1 100%);
   --hv-desktop-icon-bg: 56px;
 
   /* ============================================
@@ -433,89 +437,103 @@
   --hv-login-info-icon: #1E62AE;
 
   /* ============================================
-     LOGIN — DSM 7 GATEWAY (2026-09-14)
+     LOGIN + WIZARD — GATEWAY SURFACES (2026-10-17)
      --------------------------------------------
-     The login screen follows the "Create DSM 7 LOGIN" mock: a full-screen
-     soft indigo/violet/pink gradient with blurred orbs, a large live clock
-     and a compact white card with a gradient logo tile. This vocabulary is
-     scoped to the login screen only — the rest of the product stays on the
-     Appliance palette (single `--hv-primary` accent, opaque paper).
+     The login and setup-wizard screens used to run a second, page-scoped
+     identity: a soft indigo/violet/pink gradient, blurred orbs and an
+     indigo card. They now derive from the Appliance palette the desktop
+     shell, the dock/topbar chrome and every in-window app already use —
+     one accent (`--hv-primary` #1E62AE), the appliance ink ramp
+     (`--hv-shell-text-*`), the appliance surfaces/hairlines and the
+     desktop's own canvas gradient (`--hv-desktop-bg`).
+
+     The `--hv-login-*` names stay because both screens read them, but
+     every value below is an alias of an Appliance token (or an appliance
+     stop), so retuning `--hv-primary` repaints the gateway too and the
+     product keeps a single accent. Contrast, all against the white card
+     unless noted: accent #1E62AE 6.15:1 (text) and 4.99:1 on
+     `accent-soft`; both gradient stops ≥4.69:1 under their white glyph /
+     label. Guard: `tests/e2e/login/login.spec.ts` 13.6.
      ============================================ */
-  --hv-login-bg-gradient: linear-gradient(135deg, #DBEAFE 0%, #EDE9FE 50%, #FCE7F3 100%);
-  --hv-login-orb-indigo: radial-gradient(circle, #C7D2FE 0%, rgba(199, 210, 254, 0) 70%);
-  --hv-login-orb-pink: radial-gradient(circle, #FBCFE8 0%, rgba(251, 207, 232, 0) 70%);
-  --hv-login-clock: #334155;                       /* big clock numerals */
-  --hv-login-muted: #64748B;                       /* labels, date, placeholders — slate-500, ≥4.5:1 on white (1.4.3) */
-  --hv-login-faint: #CBD5E1;                       /* decorative accents / borders ONLY — never readable text */
-  --hv-login-hairline: #F1F5F9;                    /* card header bottom border */
-  --hv-login-card-border: #CBD5E1;
-  --hv-login-card-shadow: 0 8px 32px rgba(99, 102, 241, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+  --hv-login-bg-gradient: var(--hv-desktop-bg);    /* the desktop canvas, not a second identity */
+  --hv-login-orb-indigo: radial-gradient(circle, #BAD2EF 0%, rgba(186, 210, 239, 0) 70%); /* --hv-primary-200 */
+  --hv-login-orb-pink: radial-gradient(circle, #DCE9F7 0%, rgba(220, 233, 247, 0) 70%);   /* --hv-primary-100 */
+  --hv-login-clock: var(--hv-shell-text-strong);   /* big clock numerals — appliance ink */
+  --hv-login-muted: var(--hv-shell-text-3);        /* labels, date, placeholders — #5F6B76, ≥4.5:1 on white (1.4.3) */
+  --hv-login-faint: var(--hv-shell-border);        /* decorative accents / borders ONLY — never readable text */
+  --hv-login-hairline: var(--hv-shell-border-soft);/* card header bottom border */
+  --hv-login-card-border: var(--hv-window-border); /* the card is a desktop window: same slate-300 hairline */
+  --hv-login-card-shadow: var(--hv-shadow-xl);
   --hv-login-card-width: 380px;
-  /* 2026-09-23 contrast standardization: `accent` renders as TEXT (wizard
-     step labels, the "Welcome" kicker, the step-number circle on
-     `accent-soft`) and `soft-border` renders as TEXT too (a *completed*
-     step label) plus as a control boundary (regenerate-avatar button) —
-     so the old indigo-500 (#6366F1 = 4.47:1 text) and violet-400
-     (#A78BFA = 2.72:1) both failed 1.4.3. The ladder indigo-600 →
-     indigo-700 keeps the two accents distinct and clears both floors
-     everywhere they render (text ≥4.5:1, boundaries/white-on-fill ≥3:1).
-     Same for the two gradients carrying white glyphs/labels. */
-  --hv-login-accent: #4F46E5;                      /* indigo accent (focus, links, step text) — 6.29:1 on white, was #6366F1 at 4.47:1 */
-  --hv-login-accent-deep: #4338CA;                 /* indigo-700 — 7.90:1 on white (was #4F46E5, collided with accent) */
-  --hv-login-accent-soft: #EDE9FE;                 /* active code box bg */
-  --hv-login-accent-soft-border: #7C3AED;          /* step indicator / progress — violet-600, 5.70:1 on white (was #A78BFA at 2.72:1, it doubles as completed-step text) */
-  --hv-login-accent-ring: rgba(79, 70, 229, 0.10); /* halo only — the focus indicator is the accent border itself (6.29:1 ≥3:1) */
-  --hv-login-logo-grad: linear-gradient(135deg, #4F46E5, #7C3AED); /* white step number/glyph: 6.29 → 5.70:1 (was 4.47 → 2.72:1) */
-  --hv-login-logo-shadow: 0 6px 20px rgba(99, 102, 241, 0.30);
-  --hv-login-btn-grad: linear-gradient(135deg, #4F46E5, #4338CA); /* white button label: ≥6.29:1 (was ≥4.47:1) */
-  --hv-login-btn-shadow: 0 4px 14px rgba(99, 102, 241, 0.30);
-  --hv-login-field-bg: #F8FAFC;
-  --hv-login-field-border: #E2E8F0;
-  --hv-login-timer-track: #E2E8F0;
-  --hv-login-timer-ok: #4F46E5;                 /* ≥4.5:1 text on white (was #6366F1 at 4.47:1) */
-  --hv-login-timer-warn: #B45309;               /* amber-700, 5.02:1 on white (was #F59E0B at 2.15:1) */
-  --hv-login-timer-danger: #C22B21;             /* 5.74:1 on white (was #EF4444 at 3.76:1) */
-  --hv-login-step-line: #C7D2FE;      /* indigo-200 — step connector */
-  --hv-login-error: #C22B21;          /* inline field error — ≥4.5:1 on white (was #EF4444 at 3.76:1) */
+  /* One accent, no ladder. `accent` renders as TEXT (wizard step labels, the
+     "Welcome" kicker, the step-number circle on `accent-soft`) and
+     `soft-border` renders as TEXT too (a *completed* step label) plus as a
+     control boundary, so both are the brand accent: 6.15:1 on white, 4.99:1
+     on `accent-soft` — one hue that clears every floor it is used on. */
+  --hv-login-accent: var(--hv-primary);            /* #1E62AE — focus, links, step text */
+  --hv-login-accent-deep: var(--hv-primary-hover); /* #18508D — link hover / pressed */
+  --hv-login-accent-soft: var(--hv-primary-fixed); /* #DCE9F7 — active code box bg */
+  --hv-login-accent-soft-border: var(--hv-primary);/* step indicator / progress + completed-step text */
+  --hv-login-accent-ring: rgba(30, 98, 174, 0.10); /* halo only — the focus indicator is the accent border itself (6.15:1 ≥3:1) */
+  --hv-login-logo-grad: linear-gradient(135deg, #3275C4, #1E62AE); /* white glyph: 4.69 → 6.15:1 — the --hv-app-accent-grad stops */
+  --hv-login-logo-shadow: 0 6px 20px rgba(30, 98, 174, 0.30);
+  --hv-login-btn-grad: linear-gradient(135deg, #1E62AE, #18508D);  /* white label: 6.15 → 7.90:1 */
+  --hv-login-btn-shadow: 0 4px 14px rgba(30, 98, 174, 0.30);
+  --hv-login-field-bg: var(--hv-shell-card);       /* #F7F8FA */
+  --hv-login-field-border: var(--hv-shell-border); /* #DCE1E7 */
+  --hv-login-timer-track: var(--hv-shell-border);
+  --hv-login-timer-ok: var(--hv-primary);          /* 6.15:1 on white */
+  --hv-login-timer-warn: var(--hv-warning);        /* #B45309, 5.02:1 on white */
+  --hv-login-timer-danger: var(--hv-error);        /* #C22B21, 5.74:1 on white */
+  --hv-login-step-line: var(--hv-primary-200);     /* #BAD2EF — step connector */
+  --hv-login-error: var(--hv-error);               /* inline field error — ONE red for every login error (was #C22B21 vs #8A1A13) */
 
   /* ============================================
-     WIZARD — DSM 7 SETUP (2026-09-14)
+     WIZARD — SETUP SURFACES (2026-10-17)
      --------------------------------------------
-     The setup wizard shares the DSM 7 gateway vocabulary from above
-     (--hv-login-bg-gradient, orbs, clock, card, accent, CTA gradient) and
-     adds only its own accents: the per-feature icon hues on the welcome
-     step, the amber recovery-code box and the emerald "create account"
-     CTA. Scoped to SetupWizard.svelte; everything else stays Appliance.
+     The wizard reuses the gateway surfaces above (canvas gradient, orbs,
+     clock, card, accent, CTA gradient) and adds only the two hues it needs
+     of its own: the amber recovery box and the green "create account"
+     CTA. Both are Appliance semantic families (`--hv-warning*` /
+     `--hv-success*`), so the wizard reads as the same product as the
+     desktop instead of a lighter, greener variant of it.
+
+     2026-10-17 — the emerald family it used before (`#10B981` /
+     `#22C55E` / `#16A34A` / the create gradient) failed WCAG 1.4.3 / 1.4.11
+     everywhere it carried ink: 2.54:1 as the welcome glyph, 2.28:1 as the
+     strength label and behind the white check circles, 2.54 → 3.77:1 under
+     the white "create account" label. The Appliance success ramp
+     (`--hv-success` #1E7E34 = 5.14:1, `--hv-success-text` #166428 = 7.27:1)
+     clears all three roles.
      ============================================ */
-  --hv-wizard-feature-violet: #8B5CF6;
-  --hv-wizard-feature-emerald: #10B981;
-  --hv-wizard-recovery-bg: #FFFBEB;
-  --hv-wizard-recovery-border: #FBBF24;
-  --hv-wizard-recovery-code-bg: #FEF3C7;
-  --hv-wizard-recovery-code-text: #78350F;
-  --hv-wizard-recovery-title: #92400E;
-  --hv-wizard-recovery-desc: #B45309;
-  --hv-wizard-create-grad: linear-gradient(135deg, #10B981, #059669);
-  --hv-wizard-create-shadow: 0 4px 14px rgba(16, 185, 129, 0.30);
-  --hv-wizard-create-disabled: #86EFAC;
-  --hv-wizard-success: #22C55E;
-  --hv-wizard-success-strong: #16A34A;
-  /* DSM slate text ramp — the wizard copy uses Tailwind slate greys, one step
-     lighter than the Appliance ink, so heading/body/label tints stay true to
-     the mock. --hv-login-muted (#94A3B8) / --hv-login-faint (#CBD5E1) cover
-     the two lightest steps. */
-  --hv-wizard-text-heading: #0F172A;   /* slate-900 — step H1s */
-  --hv-wizard-text-title: #1E293B;     /* slate-800 — card/feature titles */
-  --hv-wizard-text-label: #334155;     /* slate-700 — field labels */
-  --hv-wizard-text-soft: #475569;      /* slate-600 — small labels, secret */
-  --hv-wizard-text-body: #64748B;      /* slate-500 — descriptions */
-  --hv-wizard-track: #F1F5F9;          /* slate-100 — progress track, step dots */
-  --hv-wizard-divide: #F8FAFC;         /* slate-50 — summary row dividers */
-  --hv-wizard-error: #C22B21;          /* field error border + text — ≥4.5:1 on white (was #EF4444) */
-  --hv-wizard-strength-weak: #C22B21;  /* red — weak label (was #EF4444) */
-  --hv-wizard-strength-mid: #C2410C;   /* orange-700 — fair label, 5.18:1 on white (was #F97316 at 2.80:1) */
-  --hv-wizard-field-shadow: 0 1px 2px rgba(0, 0, 0, 0.04); /* white field hairline */
-  --hv-wizard-step-glow: 0 2px 8px rgba(99, 102, 241, 0.35); /* active step-dot glow */
+  --hv-wizard-feature-violet: var(--hv-settings-cat-appearance); /* #8B5CF6 — the product's violet (Settings rail), 4.23:1 as a glyph */
+  --hv-wizard-feature-emerald: var(--hv-success);      /* #1E7E34 — 5.14:1, ≥3:1 as a glyph on its 8% tint */
+  --hv-wizard-recovery-bg: var(--hv-shell-glass);     /* white paper — the wizard's own field material */
+  --hv-wizard-recovery-border: var(--hv-warning);      /* #B45309 — 5.02:1 on white, ≥3:1 as a boundary (1.4.11) */
+  --hv-wizard-recovery-code-bg: var(--hv-warning-light); /* #FBEEDD — the one tinted element of the box */
+  --hv-wizard-recovery-code-text: var(--hv-warning-text); /* #8E4106 — 6.32:1 on the chip tint */
+  --hv-wizard-recovery-title: var(--hv-warning-text);
+  --hv-wizard-recovery-desc: var(--hv-warning);        /* #B45309 — 5.02:1 on the white box */
+  --hv-wizard-create-grad: linear-gradient(135deg, #1E7E34, #166428); /* --hv-success → --hv-success-hover; white label 5.14 → 7.27:1 */
+  --hv-wizard-create-shadow: 0 4px 14px rgba(30, 126, 52, 0.30);
+  --hv-wizard-create-disabled: var(--hv-button-disabled); /* unused today; was #86EFAC, an off-palette emerald */
+  --hv-wizard-success: var(--hv-success);              /* #1E7E34 — 5.14:1 as text and under a white glyph */
+  --hv-wizard-success-strong: var(--hv-success-text);  /* #166428 — 7.27:1 on white */
+  /* Appliance ink ramp — the wizard headings/body/labels are the same values
+     the desktop and every in-window app use, so it can no longer drift one
+     step lighter than the rest of the product. */
+  --hv-wizard-text-heading: var(--hv-shell-text-strong); /* step H1s */
+  --hv-wizard-text-title: var(--hv-shell-text-strong);   /* card/feature titles */
+  --hv-wizard-text-label: var(--hv-shell-text-2);        /* field labels */
+  --hv-wizard-text-soft: var(--hv-shell-text-2);         /* small labels, secret */
+  --hv-wizard-text-body: var(--hv-shell-text-3);         /* descriptions */
+  --hv-wizard-track: var(--hv-shell-border-soft);        /* progress track, step dots */
+  --hv-wizard-divide: var(--hv-shell-card);              /* summary row dividers */
+  --hv-wizard-error: var(--hv-error);                    /* field error border + text — 5.74:1 on white */
+  --hv-wizard-strength-weak: var(--hv-error);            /* red — weak label */
+  --hv-wizard-strength-mid: var(--hv-warning);           /* amber — fair label, 5.02:1 on white */
+  --hv-wizard-field-shadow: var(--hv-shadow-xs);         /* white field hairline */
+  --hv-wizard-step-glow: 0 2px 8px rgba(30, 98, 174, 0.35); /* active step-dot glow */
 
   /* ============================================
      SETTINGS SCREEN (2026-09-14)
@@ -745,7 +763,9 @@
   --hv-window-default-height: 720px;
   --hv-window-max-width: 90vw;
   --hv-window-max-height: 85vh;
-  --hv-window-border-radius: 16px;
+  /* Single source for the window corner: the WINDOW KIT block below owns
+     `--hv-window-radius`; this legacy name is kept as an alias. */
+  --hv-window-border-radius: var(--hv-window-radius);
 
   /* ============================================
      WINDOW KIT — the standard in-window app anatomy

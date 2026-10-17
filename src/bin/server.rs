@@ -23,10 +23,15 @@ use std::error::Error;
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
+        // Propagate the failure instead of swallowing it: a refused start (for
+        // example "the database was written by a newer HomeVault") must exit
+        // non-zero, otherwise systemd's `Restart=on-failure` cannot tell the
+        // difference and an operator sees a clean exit on a server that never
+        // came up.
         if let Err(e) = homevault::web::run().await {
             eprintln!("Server error: {}", e);
+            return Err(e);
         }
-    });
-
-    Ok(())
+        Ok(())
+    })
 }
