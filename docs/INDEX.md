@@ -91,7 +91,6 @@ methods, and notable invariants.
 
 | Topic | Guide |
 |-------|-------|
-| HomeVaultOS bootable images (ready-to-use ISOs — variant A live-persistent, variant B self-install) | [guides/os-image.md](./guides/os-image.md) |
 
 ## Doc conventions
 

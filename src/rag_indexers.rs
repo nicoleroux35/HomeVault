@@ -958,13 +958,6 @@ Buckets without samples (the server was down) show as gaps in the chart, never a
 
 Power actions can also be scheduled from the Scheduled Tasks app (for example a nightly suspend)."#.to_string(),
         },
-        FeatureDoc {
-            id: "os-image".to_string(),
-            title: "HomeVaultOS bootable images".to_string(),
-            content: r#"HomeVaultOS turns HomeVault into a ready-to-use appliance: boot a USB stick or burn a CD and the machine is already a working NAS — HomeVault, Docker and every companion package preinstalled, web UI on http://homevault.local:8080. There is no installer wizard: the first boot only provisions storage silently, and everything a user configures happens in the web Setup Wizard.
-
-Two variants share the same system: a full variant (every dependency baked in, works fully offline) and a slim variant (smaller image that installs its packages on first boot). Images are Debian 12 live systems built with live-build, iso-hybrid (BIOS + UEFI) and can be written with dd, Rufus, Ventoy or balenaEtcher. A first-boot service (hv-firstboot) provisions storage, applies the variant defaults and starts the application; the host identity is homevault and mDNS makes homevault.local resolvable on the LAN."#.to_string(),
-        },
 
     ]
 }
@@ -1183,7 +1176,6 @@ mod tests {
         ("scheduled-tasks", "scheduled-tasks.md"),
         ("metrics", "metrics.md"),
         ("power", "power.md"),
-        ("os-image", "os-image.md"),
         ("cache", "cache.md"),
         ("syncthing", "syncthing.md"),
         ("downloader", "downloader.md"),

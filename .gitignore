@@ -86,9 +86,5 @@ ses_*
 # Generated type declaration emitted by Vite (build artifact).
 /frontend/vite.config.d.ts
 
-# HomeVaultOS image build (os/build.sh workspaces, ISOs, QEMU test disks)
-/os/build/
-/os/dist/
-
 # doc-sources skill: generated coverage index (rebuild with scripts/scan.sh)
 /.agents/skills/doc-sources/INDEX.md

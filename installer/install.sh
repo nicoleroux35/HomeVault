@@ -25,10 +25,6 @@ set -euo pipefail
 # run from a checkout):
 #   ./installer/install.sh --package
 #
-# Alternative packaging — HomeVaultOS, the ready-to-use appliance ISOs (boot
-# and everything is already installed, no installer wizard) are built with
-# `os/build.sh` and documented in docs/guides/os-image.md.
-#
 # ---------------------------------------------------------------------------
 # Maintainer mode — `install.sh --package`
 #
