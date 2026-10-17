@@ -23,6 +23,7 @@
   import { onMount } from 'svelte';
   import { get } from 'svelte/store';
   import { api } from '$lib/services/api';
+  import type { DbBackupStatus } from '$lib/types/api';
   import { notificationsStore } from '$lib/stores/notifications';
   import { wallpaperStore, BUNDLED_WALLPAPERS } from '$lib/stores/wallpaper';
   import { monitorStore, REFRESH_INTERVAL_OPTIONS } from '$lib/stores/monitorStore';
@@ -148,6 +149,16 @@
   let loading = true;
   let testingEmail = false;
   let checkingUpdate = false;
+
+  // Database snapshots (HomeVault's own SQLite database). The database runs in
+  // WAL mode, so the `.db` file alone is NOT restorable — the backend writes
+  // `VACUUM INTO` snapshots into `data/backups/`.
+  let dbBackup: DbBackupStatus | null = null;
+  let dbBackupLoading = true;
+  let dbBackupBusy = false;
+  let dbBackupError = '';
+  let dbBackupInterval = 24;
+  let dbBackupRetain = 7;
 
   // Data management (export/import/reset)
   let exportingSettings = false;
@@ -323,7 +334,8 @@
       loadRecommendations(),
       loadAutostart(),
       loadNotificationEvents(),
-      loadPower()
+      loadPower(),
+      loadDbBackup()
     ]);
     // After a save flushes the AI group, keep the display model in step.
     onGroupSaved('ai', () => {
@@ -496,6 +508,72 @@
       if (row) row.enabled = !enabled;
       notifySettings(res.message || translate('settings.save_failed'), 'error');
     }
+  }
+
+  // ── Database snapshots ──────────────────────────────────────────────
+  async function loadDbBackup() {
+    dbBackupLoading = true;
+    try {
+      const res = await api.getDbBackupStatus();
+      if (res.success && res.data) {
+        dbBackup = res.data;
+        dbBackupInterval = res.data.settings.interval_hours;
+        dbBackupRetain = res.data.settings.retain;
+      }
+    } catch {
+      /* the card degrades to its empty state */
+    } finally {
+      dbBackupLoading = false;
+    }
+  }
+
+  async function handleBackupNow() {
+    dbBackupBusy = true;
+    dbBackupError = '';
+    try {
+      const res = await api.backupDatabaseNow();
+      if (res.success && res.data?.status) {
+        dbBackup = res.data.status;
+      } else {
+        dbBackupError = res.message || translate('settings.db_backup_failed');
+      }
+    } catch {
+      dbBackupError = translate('settings.db_backup_failed');
+    } finally {
+      dbBackupBusy = false;
+    }
+  }
+
+  async function handleSaveDbBackup() {
+    dbBackupBusy = true;
+    dbBackupError = '';
+    try {
+      const res = await api.saveDbBackupSettings(dbBackupInterval, dbBackupRetain);
+      if (res.success && res.data) {
+        dbBackup = res.data;
+      } else {
+        dbBackupError = res.message || translate('settings.db_backup_failed');
+      }
+    } catch {
+      dbBackupError = translate('settings.db_backup_failed');
+    } finally {
+      dbBackupBusy = false;
+    }
+  }
+
+  /// Human-readable size for a snapshot row.
+  function formatBytes(bytes: number): string {
+    if (!bytes || bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+    return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+  }
+
+  /// Short local timestamp for a snapshot row.
+  function formatBackupDate(iso: string): string {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
   }
 
   async function loadPower() {
@@ -1284,6 +1362,77 @@
           </div>
         </div>
       {/if}
+      {#if activeCategory === 'system'}
+        <!-- Database snapshots. The database runs in WAL mode, so copying
+             `homevault.db` alone yields a file with no tables; these are
+             `VACUUM INTO` snapshots, self-contained and restorable. -->
+        <div data-testid="settings-card-title" class={secLabel}></div>
+        <div data-testid="settings-card" class={settingsCard}>
+          <div class={settingsRowStacked}>
+            <span class={settingsRowLabel}>{$t('settings.db_backup_title')}</span>
+            <p class={settingsRowHint}>{$t('settings.db_backup_hint')}</p>
+          </div>
+
+          {#if dbBackupLoading}
+            <div class="py-3 text-sm text-[var(--hv-settings-label)]">{$t('settings.db_backup_loading')}</div>
+          {:else}
+            <div class={settingsRow}>
+              <span class={settingsRowLabel}>{$t('settings.db_backup_last')}</span>
+              <span class="text-sm font-semibold text-[var(--hv-settings-title)]" data-testid="db-backup-last">
+                {dbBackup?.last_backup_at ? formatBackupDate(dbBackup.last_backup_at) : $t('settings.db_backup_never')}
+              </span>
+            </div>
+
+            <div class={settingsRow}>
+              <label class={settingsRowLabel} for="dbBackupInterval">{$t('settings.db_backup_interval')}</label>
+              <select id="dbBackupInterval" class={cn(settingsSelect, 'max-w-[200px]')} bind:value={dbBackupInterval} disabled={dbBackupBusy}>
+                {#each [0, 6, 12, 24, 48, 168] as hours}
+                  <option value={hours}>{hours === 0 ? $t('settings.db_backup_interval_off') : $t('settings.db_backup_interval_hours', { hours: String(hours) })}</option>
+                {/each}
+              </select>
+            </div>
+
+            <div class={settingsRow}>
+              <label class={settingsRowLabel} for="dbBackupRetain">{$t('settings.db_backup_retain')}</label>
+              <input id="dbBackupRetain" type="number" min="1" max="100" class={cn(settingsInput, 'max-w-[120px]')} bind:value={dbBackupRetain} disabled={dbBackupBusy} />
+            </div>
+
+            <div class={cn(settingsRowStacked, 'settings-field-full')}>
+              <span class={settingsRowLabel}>{$t('settings.db_backup_snapshots', { count: String(dbBackup?.backups?.length ?? 0), size: formatBytes(dbBackup?.total_size_bytes ?? 0) })}</span>
+              {#if dbBackup && dbBackup.backups.length > 0}
+                <ul class="m-0 mt-1 flex list-none flex-col gap-1 p-0" data-testid="db-backup-list">
+                  {#each dbBackup.backups as entry (entry.name)}
+                    <li class="flex items-center justify-between gap-3 rounded-md border border-[var(--hv-settings-hairline)] px-3 py-1.5 text-xs">
+                      <span class="min-w-0 flex-1 truncate font-[family-name:var(--hv-font-mono)] text-[var(--hv-settings-title)]">{entry.name}</span>
+                      <span class="shrink-0 tabular-nums text-[var(--hv-settings-label)]">{formatBytes(entry.size_bytes)}</span>
+                    </li>
+                  {/each}
+                </ul>
+              {:else}
+                <p class={settingsRowHint}>{$t('settings.db_backup_empty')}</p>
+              {/if}
+            </div>
+
+            {#if dbBackupError}
+              <div class={cn(settingsRow, 'settings-field-full')}>
+                <p class="m-0 flex items-center gap-1.5 text-xs text-[var(--hv-error)]" role="alert" data-testid="db-backup-error">
+                  <IconAlertTriangle size={16} /> <span>{dbBackupError}</span>
+                </p>
+              </div>
+            {/if}
+
+            <div class={cn(settingsCardFooter, 'flex gap-2 flex-wrap')}>
+              <button class={cn(settingsBtn, settingsBtnPrimary)} onclick={handleBackupNow} disabled={dbBackupBusy} data-testid="db-backup-now">
+                {dbBackupBusy ? $t('settings.db_backup_working') : $t('settings.db_backup_now')}
+              </button>
+              <button class={cn(settingsBtn, settingsBtnGhost)} onclick={handleSaveDbBackup} disabled={dbBackupBusy} data-testid="db-backup-save">
+                {$t('settings.db_backup_save')}
+              </button>
+            </div>
+          {/if}
+        </div>
+      {/if}
+
       {#if activeCategory === 'system'}
         <!-- Host power management (admin actions, confirmed) -->
         <div data-testid="settings-card-title" class={secLabelFirst}></div>

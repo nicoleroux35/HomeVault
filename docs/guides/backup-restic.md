@@ -1,7 +1,66 @@
 # Backup / Restic
 
-**Purpose:** restic repositories, snapshots, manual backup/restore, and scheduled
-backups with retention policies.
+**Purpose:** restic repositories, snapshots, manual backup/restore, scheduled
+backups with retention policies — and snapshots of **HomeVault's own database**.
+
+## HomeVault's own database (2026-10-17)
+
+HomeVault's SQLite database (`{DATA_DIRECTORY}/data/homevault.db`) holds
+accounts, settings, quotas, schedules and sessions. It runs in **WAL mode**, so
+copying `homevault.db` on its own is **not a backup**: every committed
+transaction may still sit in the `-wal` sidecar, and a copied `.db` file alone
+can open with *no tables at all* (measured: a 4 KB `.db` next to a 1.8 MB
+`-wal`).
+
+Snapshots solve that. They are written with `VACUUM INTO`, which produces a
+single **self-contained** file — restoring one needs neither `-wal` nor `-shm`.
+
+| What | Where |
+|---|---|
+| Snapshots | `{DATA_DIRECTORY}/data/backups/homevault-YYYYMMDD-HHMMSS.db` |
+| Service | `src/db_backup.rs` (`DbBackupService`) |
+| Handlers | `src/handlers/db_backup.rs` |
+| Settings | `data/db_backup.json` (`interval_hours`, `retain`) |
+
+| Endpoint | Auth | Notes |
+|----------|------|-------|
+| `GET /settings/backup/db` | admin | settings + every snapshot on disk + total size |
+| `PUT /settings/backup/db` | admin | update the interval / retention (applies the new retention immediately) |
+| `POST /settings/backup/db/now` | admin | take a snapshot now |
+
+Behaviour:
+
+- **At startup** — when the database existed and the newest snapshot is older
+  than the interval, one is taken (best-effort; a failure never blocks boot).
+- **Daily** — the scheduler loop snapshots when due and also folds the WAL back
+  with `PRAGMA wal_checkpoint(TRUNCATE)`, so `-wal` cannot grow without bound.
+- **Before any migration** — when pending migrations exist, a
+  `homevault-…pre-migration.db` snapshot is written first, so an upgrade always
+  has a point to come back to.
+- **Retention** — only the newest `retain` snapshots are kept (default 7,
+  1–100); pruning runs after every snapshot. Settings changes persist in
+  `data/db_backup.json` and survive restarts.
+- **Serialised** — a manual click while the scheduler is snapshotting waits
+  rather than producing two files; the write goes to a `.tmp` name and is
+  renamed into place, so an interrupted snapshot never looks restorable.
+
+### Restoring
+
+1. `systemctl stop homevault`.
+2. Copy the snapshot over the live database:
+   `cp {DATA_DIRECTORY}/data/backups/homevault-YYYYMMDD-HHMMSS.db {DATA_DIRECTORY}/data/homevault.db`
+   and delete any leftover `homevault.db-wal` / `homevault.db-shm`.
+3. `systemctl start homevault`.
+
+Point the `DATA_DIRECTORY` at a persistent volume and the snapshots — like the
+database itself — survive a reinstall of the system disk.
+
+## Backend
+
+Handlers in `src/handlers/restic.rs`. Scheduler in `src/restic_scheduler.rs`
+(`compute_next_run`, `run_scheduler_loop`). Repos in
+`src/storage/restic_repo.rs`, schedules in `src/storage/restic_schedule_repo.rs`,
+retention in `src/storage/backup_retention_repo.rs`. Wrapper in `src/restic.rs`.
 
 ## Backend
 

@@ -112,10 +112,44 @@ Loops spawned in `run()` (`src/web/mod.rs`; line numbers drift, grep for
   polls every 60s, turns health-check transitions and restic job results into
   `notifications` rows (in-memory dedup), optionally emailed/webhooked; also runs
   the every-6h Docker-app-update check (`check_app_updates`).
+- **Database backup scheduler** (`db_backup::DbBackupService::run_scheduler_loop`)
+  — every 15 min: takes a `VACUUM INTO` snapshot when the newest one is older
+  than the configured interval, then folds the WAL back
+  (`PRAGMA wal_checkpoint(TRUNCATE)`) so `-wal` cannot grow unbounded. See
+  [guides/backup-restic.md](./guides/backup-restic.md) → *HomeVault's own
+  database*.
 
 **Terminal PTY cleanup**: on graceful shutdown the `shutdown_signal` handler
 calls `pty_manager.cleanup_all()` so shells never outlive the server
 (`src/web/mod.rs`, `shutdown_signal` at the bottom of the file).
+
+## Database lifecycle
+
+Startup order in `run()` (`src/web/mod.rs`), and why each step is there:
+
+1. **Open** the pool (`Database::new` — WAL, `busy_timeout`, foreign keys).
+2. **Schema guard** — `run_migrations` compares `app_meta.schema_version` with
+   the highest migration embedded in the binary and **refuses to start** when
+   the file is newer (`DbError::SchemaTooNew`). Migrations are append-only and
+   never reverted, so an older binary would otherwise run happily and then fail
+   on the first query expecting a column it does not know about.
+   `src/bin/server.rs` propagates that error, so the process exits **non-zero**
+   and systemd's `Restart=on-failure` sees it.
+   An **unreadable** `app_meta` (corruption) is deliberately *not* an error:
+   the guard treats it as "version unknown" and lets the appliance start, so an
+   operator can reach it and restore a snapshot. The damage is reported by the
+   integrity check on the next line. Without this, a single damaged page in
+   `app_meta` refused the whole startup — the opposite of the intent.
+3. **Pre-migration snapshot** — when pending migrations exist, a
+   `homevault-…pre-migration.db` snapshot is written before anything is applied,
+   so an upgrade always has a rollback point.
+4. **Apply + record** — migrations run, then `record_schema_version` stores the
+   new version and the release that brought it there.
+5. **Integrity check** — `PRAGMA quick_check(1)`; a damaged file is logged and
+   surfaced through `GET /api/health/ready` (503), but the appliance still
+   starts — a degraded server that can export its data beats one that refuses
+   to boot.
+6. **Startup snapshot** — when due, before the HTTP listener comes up.
 
 ## Middleware / cross-cutting
 
@@ -130,7 +164,7 @@ calls `pty_manager.cleanup_all()` so shells never outlive the server
   and shows a reload banner on a 426. See "Versioned client/server contract"
   below.
 - Rate limiting: admin rate limiter 10 ops/min.
-- `fail2ban` and `security_headers` middleware in `src/middleware/`. HSTS is
+- `security_headers` middleware in `src/middleware/`. HSTS is
   emitted only when the built-in HTTPS listener is active
   (`crate::tls::tls_active()`).
 - `middleware::https_redirect` — added to the **HTTP** router only when the
@@ -198,6 +232,26 @@ re-compresses an already-encoded body — so the compressor is now only a
 fallback for files that were too small to bother with. Compressed siblings are
 never addressable directly (a `.br` path 404s).
 
+## Data directory layout
+
+`{DATA_DIRECTORY}` (default `/var/lib/homevault`):
+
+```
+data/            homevault.db (+ -wal, -shm), *.json settings
+data/backups/    homevault-YYYYMMDD-HHMMSS.db  (VACUUM INTO snapshots)
+compose/         Docker Compose projects (one dir per app)
+apps/            persistent data of installed Docker apps
+rescue/          file-recovery working data
+syncthing/       Syncthing configuration
+logs/            HomeVault's own rotating application log
+quarantine/      antivirus quarantine
+vm/isos/         Virtual Machines install media
+```
+
+`data/` and `data/backups/` are what an operator must keep: pointing
+`DATA_DIRECTORY` at a persistent volume makes the whole identity — accounts,
+setup fingerprint, sessions, snapshots — survive a reinstall of the system disk.
+
 ## Deployment model (runs as root)
 
 Since commit `2d5ba40` (2026-09-04) there is **no dedicated `homevault` service
@@ -262,6 +316,35 @@ Five steps, in order (`STEP_TOTAL` in the script):
    daemon's API, not just the binary.
 5. **Done** — English summary plus the LAN address and the public address
    (the latter only works with port forwarding).
+
+### Lifecycle modes (2026-10-17)
+
+Besides installing, the same script handles the rest of an appliance's life:
+
+| Mode | Effect |
+|---|---|
+| *(default)* | install, or upgrade in place — data kept |
+| `--rollback` | swap back to `/opt/homevault/homevault.previous` |
+| `--uninstall` | remove the unit + `/opt/homevault`, **keep** the data |
+| `--uninstall --purge` | also delete `/var/lib/homevault` and `/etc/homevault.env`, behind a typed `PURGE` confirmation |
+| `--dry-run` | print every action and change nothing (works without root) |
+
+Two design points are load-bearing:
+
+- **Every upgrade copies the running binary to `homevault.previous` first.**
+  Without it `--rollback` has nothing to swap in, and a bad release has no way
+  back.
+- **`--rollback` rolls back the binary, not the database.** Migrations are
+  append-only and `run_migrations` refuses a newer schema (see *Database
+  lifecycle* → schema guard), so the older binary exits with a clear message
+  instead of corrupting data. The mode prints the exact commands to restore the
+  `data/backups/homevault-*pre-migration.db` snapshot that the upgrade wrote.
+- **`--uninstall` keeps the data by default.** An uninstall that silently
+  deleted accounts, settings and snapshots would be a trap; deletion requires
+  `--purge` *and* typing `PURGE`.
+
+All destructive actions go through one `run()` helper that honours `--dry-run`,
+so the preview is faithful rather than approximate.
 
 Maintainers produce the release assets with the same file, from a checkout
 (needs Rust + Node ≥ 20):

@@ -8,11 +8,11 @@
  * Description:
  *   Every authentication and first-run setup endpoint: login with optional
  *   two-factor verification, logout, current-user lookup, the whole Setup
- *   Wizard sequence (status, username check, storage options, account
- *   creation, TOTP verification, progress tracking, re-baseline) and the
- *   recovery-code based password reset. The endpoints that run before any
- *   account exists are additionally restricted to the local network by the
- *   setup guard middleware.
+ *   Wizard sequence (status, username check, account creation, TOTP
+ *   verification, progress tracking, re-baseline) and the recovery-code based
+ *   password reset. The endpoints that run before any account exists are
+ *   additionally restricted to the local network by the setup guard
+ *   middleware.
  *
  * Dependencies:
  *   - axum (>= 0.8)
@@ -96,20 +96,65 @@ pub async fn extract_session(
     state.auth.get_username_from_token(session_token).await
 }
 
-/// Extracts the client IP from forwarded-headers, falling back to `"unknown"`.
-pub fn extract_client_ip(headers: &HeaderMap) -> String {
-    headers
-        .get("x-forwarded-for")
-        .and_then(|h| h.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .map(|s| s.trim().to_string())
-        .or_else(|| {
-            headers
-                .get("x-real-ip")
-                .and_then(|h| h.to_str().ok())
-                .map(|s| s.to_string())
+/// Resolves the client IP for audit records and rate limiting.
+///
+/// The **TCP peer** is the authority. `X-Forwarded-For` / `X-Real-IP` are
+/// client-settable, so trusting them unconditionally (as this used to do) let
+/// anyone forge the address recorded in the login history and — now that the
+/// authentication throttle is keyed by IP — sidestep it entirely by rotating a
+/// header value.
+///
+/// They are honoured only when the request really came through a reverse proxy
+/// on this host, i.e. when the peer is loopback, or when the peer is listed in
+/// `HOMEVAULT_TRUSTED_PROXIES` (comma-separated IPs). Otherwise the peer address
+/// wins and the headers are ignored.
+pub fn client_ip(headers: &HeaderMap, peer: Option<std::net::IpAddr>) -> String {
+    let forwarded = || {
+        headers
+            .get("x-forwarded-for")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                headers
+                    .get("x-real-ip")
+                    .and_then(|h| h.to_str().ok())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            })
+    };
+
+    match peer {
+        Some(ip) if ip.is_loopback() || is_trusted_proxy(&ip) => {
+            forwarded().unwrap_or_else(|| ip.to_string())
+        }
+        Some(ip) => ip.to_string(),
+        // No connection metadata (in-process calls, e.g. tests): fall back to
+        // the headers, then to "unknown".
+        None => forwarded().unwrap_or_else(|| "unknown".to_string()),
+    }
+}
+
+/// Whether `ip` is listed in `HOMEVAULT_TRUSTED_PROXIES`.
+fn is_trusted_proxy(ip: &std::net::IpAddr) -> bool {
+    std::env::var("HOMEVAULT_TRUSTED_PROXIES")
+        .ok()
+        .map(|list| {
+            list.split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .any(|s| s.parse::<std::net::IpAddr>().map(|p| p == *ip).unwrap_or(false))
         })
-        .unwrap_or_else(|| "unknown".to_string())
+        .unwrap_or(false)
+}
+
+/// Legacy helper kept for callers that have no connection metadata.
+///
+/// Prefer [`client_ip`]: this one trusts the forwarding headers outright and is
+/// only correct for in-process calls.
+pub fn extract_client_ip(headers: &HeaderMap) -> String {
+    client_ip(headers, None)
 }
 
 /// Guards a handler to admins only.
@@ -156,10 +201,13 @@ pub async fn require_admin(
 pub async fn handle_login(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    peer: crate::middleware::PeerAddr,
+    over_tls: Option<axum::Extension<crate::middleware::ArrivedOverTls>>,
     req: axum::extract::Json<LoginRequest>,
 ) -> Response {
-    let ip_address = extract_client_ip(&headers);
+    let ip_address = client_ip(&headers, peer.0);
     let user_agent = headers.get("user-agent").and_then(|h| h.to_str().ok());
+    let over_tls = over_tls.is_some();
 
     match state
         .auth
@@ -208,6 +256,7 @@ pub async fn handle_login(
                         ResponseHelper::json_success(response),
                         &token,
                         req.remember_me,
+                        over_tls,
                     )
                 }
                 Err(e) => {
@@ -247,11 +296,11 @@ pub async fn handle_login(
                 ),
             };
 
-            if status == axum::http::StatusCode::UNAUTHORIZED {
-                ResponseHelper::json_unauthorized(message)
-            } else {
-                ResponseHelper::json_error(message)
-            }
+            // Honour the status chosen above: a throttled client must see 429,
+            // not a generic 400 (the frontend branches on it, and a 400 tells a
+            // monitoring tool the request was malformed rather than rate
+            // limited).
+            ResponseHelper::json_error_with_status(status, message)
         }
     }
 }
@@ -261,10 +310,13 @@ pub async fn handle_login(
 pub async fn handle_2fa_verify(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    peer: crate::middleware::PeerAddr,
+    over_tls: Option<axum::Extension<crate::middleware::ArrivedOverTls>>,
     req: axum::extract::Json<TwoFactorVerifyRequest>,
 ) -> Response {
-    let ip_address = extract_client_ip(&headers);
+    let ip_address = client_ip(&headers, peer.0);
     let user_agent = headers.get("user-agent").and_then(|h| h.to_str().ok());
+    let over_tls = over_tls.is_some();
 
     match state
         .auth
@@ -294,6 +346,7 @@ pub async fn handle_2fa_verify(
                 ResponseHelper::json_success(response),
                 &token,
                 req.remember_me,
+                over_tls,
             )
         }
         Err(e) => {
@@ -556,6 +609,7 @@ pub async fn handle_setup_status(State(state): State<Arc<AppState>>) -> Response
         needs_recovery: admin_exists && hardware_changed,
         server_machine_id: SetupService::get_machine_id(),
         sudo_available: SetupService::is_command_available("sudo"),
+        system_language: SetupService::detect_system_language().to_string(),
     })
 }
 
@@ -640,9 +694,10 @@ pub async fn handle_setup_verify_totp(
 #[derive(Debug, Deserialize)]
 pub struct SetupProgressRequest {
     pub step: i64,
-    /// Operator choices (language, storage, RAID, restore intent) as a JSON
-    /// object. Never secrets — the restore passphrase is intentionally not
-    /// part of this payload (see `storage/setup_progress_repo.rs`).
+    /// Operator choices (currently just the interface language) as a JSON
+    /// object. Never secrets — the password and the TOTP secret are
+    /// intentionally not part of this payload (see
+    /// `storage/setup_progress_repo.rs`).
     pub data: serde_json::Value,
 }
 
@@ -694,25 +749,6 @@ pub async fn handle_setup_progress_put(
     }
 }
 
-/// Lists the physical disks and RAID candidate devices for the Setup Wizard's
-/// storage/RAID steps. First-run-only (403 once an admin exists): it exposes
-/// real host block-device names, like the authenticated storage endpoints do
-/// after setup.
-pub async fn handle_setup_storage_options(State(state): State<Arc<AppState>>) -> Response {
-    let setup_repo = SetupStateRepository::new(state.db.pool());
-    if setup_repo.has_admin().await.unwrap_or(true) {
-        return ResponseHelper::json_forbidden("Setup already complete".to_string());
-    }
-    let disks = crate::disk::DiskService::list_disks().await.unwrap_or_default();
-    let raid_devices = crate::disk::DiskService::get_available_devices()
-        .await
-        .unwrap_or_default();
-    ResponseHelper::json_success(serde_json::json!({
-        "disks": disks,
-        "raid_devices": raid_devices,
-    }))
-}
-
 #[axum_macros::debug_handler]
 /// Bootstraps the first admin user, creates the system group, and issues a session.
 ///
@@ -720,8 +756,10 @@ pub async fn handle_setup_storage_options(State(state): State<Arc<AppState>>) ->
 pub async fn handle_setup(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    over_tls: Option<axum::Extension<crate::middleware::ArrivedOverTls>>,
     req: axum::extract::Json<SetupRequest>,
 ) -> Response {
+    let over_tls = over_tls.is_some();
     let setup_repo = SetupStateRepository::new(state.db.pool());
 
     // The database is the single source of truth for "already configured": a
@@ -938,6 +976,7 @@ pub async fn handle_setup(
                 ResponseHelper::json_success(data),
                 &token,
                 false,
+                over_tls,
             )
         }
         Err(e) => {
@@ -1110,7 +1149,7 @@ pub async fn handle_reset_password_recovery(
             ));
             match e {
                 AuthError::WeakPassword => ResponseHelper::json_error(
-                    "Password does not meet security requirements. It must be at least 8 characters long and contain uppercase, lowercase, and numbers.".to_string(),
+                    "Password does not meet security requirements. It must be at least 12 characters long, contain uppercase, lowercase, and numbers, and not be a commonly used password.".to_string(),
                 ),
                 AuthError::PasswordReused => ResponseHelper::json_error(
                     "This password was used recently. Please choose a different password.".to_string(),
@@ -1125,5 +1164,70 @@ pub async fn handle_reset_password_recovery(
                 ),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod client_ip_tests {
+    use super::client_ip;
+    use axum::http::{HeaderMap, HeaderValue};
+    use std::net::IpAddr;
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in pairs {
+            map.insert(
+                axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        map
+    }
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    /// The common case: a LAN client talking to HomeVault directly. A forged
+    /// `X-Forwarded-For` must not be believed.
+    #[test]
+    fn test_direct_peer_wins_over_a_forged_forwarded_header() {
+        let h = headers(&[("x-forwarded-for", "1.2.3.4"), ("x-real-ip", "5.6.7.8")]);
+        assert_eq!(client_ip(&h, Some(ip("192.168.1.50"))), "192.168.1.50");
+    }
+
+    /// A reverse proxy on the same host is the one case where the header is
+    /// authoritative.
+    #[test]
+    fn test_loopback_peer_honours_the_forwarded_header() {
+        let h = headers(&[("x-forwarded-for", "203.0.113.7, 10.0.0.1")]);
+        assert_eq!(client_ip(&h, Some(ip("127.0.0.1"))), "203.0.113.7");
+    }
+
+    #[test]
+    fn test_loopback_peer_without_a_header_reports_loopback() {
+        let h = HeaderMap::new();
+        assert_eq!(client_ip(&h, Some(ip("::1"))), "::1");
+    }
+
+    #[test]
+    fn test_forwarded_header_is_ignored_for_a_non_loopback_peer() {
+        let h = headers(&[("x-forwarded-for", "203.0.113.7")]);
+        assert_eq!(client_ip(&h, Some(ip("10.0.0.9"))), "10.0.0.9");
+    }
+
+    /// In-process calls (tests, `oneshot`) have no peer metadata: the header is
+    /// the only signal, then `unknown`.
+    #[test]
+    fn test_missing_peer_falls_back_to_the_header_then_unknown() {
+        let h = headers(&[("x-real-ip", "198.51.100.4")]);
+        assert_eq!(client_ip(&h, None), "198.51.100.4");
+        assert_eq!(client_ip(&HeaderMap::new(), None), "unknown");
+    }
+
+    #[test]
+    fn test_blank_forwarded_values_are_ignored() {
+        let h = headers(&[("x-forwarded-for", "  ")]);
+        assert_eq!(client_ip(&h, Some(ip("127.0.0.1"))), "127.0.0.1");
     }
 }

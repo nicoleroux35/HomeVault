@@ -23,7 +23,7 @@
  * =============================================================================
  */
 
-import type { ApiResponse, LoginRequest, LoginResponse, SetupAdminRequest, SetupStatus } from '$lib/types/api';
+import type { ApiResponse, DbBackupEntry, DbBackupStatus, LoginRequest, LoginResponse, SetupAdminRequest, SetupStatus } from '$lib/types/api';
 import { notifyContractMismatch } from '$lib/stores/contract';
 
 /** One row of the desktop background-activity taskbar (`GET /api/activity`). */
@@ -436,11 +436,6 @@ class ApiClient {
     return this.put<{ step: number; saved: boolean }>('/auth/setup/progress', { step, data }, false);
   }
 
-  /** Physical disks + RAID candidates for the Setup Wizard (first-run-only). */
-  async getSetupStorageOptions(): Promise<ApiResponse<{ disks: unknown[]; raid_devices: unknown[] }>> {
-    return this.get<{ disks: unknown[]; raid_devices: unknown[] }>('/auth/setup/storage-options', { cache: false });
-  }
-
   // 2FA enrollment (reuses the authenticated 2FA setup endpoints)
   async setup2FASecret(): Promise<ApiResponse<{ secret: string; qrcode_url: string }>> {
     return this.post<{ secret: string; qrcode_url: string }>('/auth/2fa/setup', { action: 'generate' });
@@ -847,6 +842,21 @@ class ApiClient {
 
   async resetSettings() {
     return this.post('/settings/reset');
+  }
+
+  // Snapshots of HomeVault's own database. The database runs in WAL mode, so
+  // the `.db` file alone is not restorable — these endpoints produce and list
+  // `VACUUM INTO` snapshots (see docs/guides/backup-restic.md).
+  async getDbBackupStatus(): Promise<ApiResponse<DbBackupStatus>> {
+    return this.get<DbBackupStatus>('/settings/backup/db', { cache: false });
+  }
+
+  async backupDatabaseNow(): Promise<ApiResponse<{ backup: DbBackupEntry; status: DbBackupStatus }>> {
+    return this.post<{ backup: DbBackupEntry; status: DbBackupStatus }>('/settings/backup/db/now', {});
+  }
+
+  async saveDbBackupSettings(intervalHours: number, retain: number): Promise<ApiResponse<DbBackupStatus>> {
+    return this.put<DbBackupStatus>('/settings/backup/db', { interval_hours: intervalHours, retain: retain });
   }
 
   // SNMP

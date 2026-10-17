@@ -18,10 +18,11 @@
 
 //! Durable first-run wizard progress (reboot-safe onboarding).
 //!
-//! The Setup Wizard persists its current step plus the operator's
-//! storage/RAID/restore choices into the singleton `setup_progress` row, so a
-//! reboot or a closed browser resumes where it left off. Only non-secret
-//! choices are stored — the encrypted-restore passphrase is never persisted.
+//! The Setup Wizard persists its current step into the singleton
+//! `setup_progress` row, so a reboot or a closed browser resumes where it left
+//! off. No choice is stored any more — the interface language is detected from
+//! the OS and changed in Settings — and secrets (password, TOTP secret) never
+//! were.
 
 use crate::impl_repository;
 use crate::storage::database::DbError;
@@ -29,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::sync::Arc;
 
-pub const MAX_SETUP_STEP: i64 = 7;
+pub const MAX_SETUP_STEP: i64 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetupProgress {
@@ -112,8 +113,8 @@ mod tests {
     fn test_validate_step_data_accepts_object() {
         assert!(SetupProgressRepository::validate_step_data(0, "{}").is_ok());
         assert!(SetupProgressRepository::validate_step_data(
-            7,
-            r#"{"language":"fr","storage":"sda"}"#
+            3,
+            r#"{"language":"fr"}"#
         )
         .is_ok());
     }
@@ -121,7 +122,7 @@ mod tests {
     #[test]
     fn test_validate_step_data_rejects_bad_step() {
         assert!(SetupProgressRepository::validate_step_data(-1, "{}").is_err());
-        assert!(SetupProgressRepository::validate_step_data(8, "{}").is_err());
+        assert!(SetupProgressRepository::validate_step_data(4, "{}").is_err());
     }
 
     #[test]

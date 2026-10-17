@@ -61,6 +61,8 @@ src/
   email.rs              EmailService (mutt/sendmail/msmtp)
   permissions.rs        PermissionService (POSIX ACLs for shares)
   shares.rs             Share model/service (SMB/NFS/FTP/WebDAV/SFTP)
+  webdav/               Built-in WebDAV server (in-process, dav-server):
+                        per-member share grants, Basic auth, TLS
   browser.rs            FileBrowser (Explorer: list/copy/move/trash, collisions)
   snapshots.rs          ZFS/Btrfs snapshot create/list/rollback
   network.rs vpn.rs …   Domain services
@@ -71,7 +73,7 @@ src/
                         (auto reconciler, spawned from web/mod.rs)
   settings_persistence.rs  SettingsPersistence (export/import; redacts smtp_password)
   i18n.rs               Translation engine, embeds src/i18n/*.toml at compile time
-  middleware/           csrf, rate_limit, fail2ban, security_headers, logging
+  middleware/           csrf, rate_limit, setup_guard, peer_addr, security_headers, logging
   sse/                  Server-sent-event progress stream (ProgressManager: last
                         event retained + owner, feeds GET /api/activity)
   health.rs             HealthService

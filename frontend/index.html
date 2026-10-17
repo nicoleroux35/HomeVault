@@ -19,7 +19,10 @@
   <body>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
-    <script>
+    <!-- The backend replaces __HV_CSP_NONCE__ with the per-response nonce. The
+         CSP no longer allows 'unsafe-inline', so an unstamped copy would simply
+         not run. Keep the placeholder on every inline <script>. -->
+    <script nonce="__HV_CSP_NONCE__">
       // Register Service Worker for PWA and offline support
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {

@@ -600,13 +600,13 @@ test.describe('4 — Interactions', () => {
     expect(await pw.getAttribute('type')).toBe('password');
   });
 
-  test('4.6 — "Generate" fills a password of at least 8 characters and reveals it', async ({ page }) => {
+  test('4.6 — "Generate" fills a password of at least 12 characters and reveals it', async ({ page }) => {
     await gotoUsers(page, adminTokens);
     await win(page).getByRole('button', { name: 'New user' }).first().click();
     const pw = win(page).locator('#c-password');
     await win(page).getByRole('button', { name: 'Generate' }).click();
     const value = await pw.inputValue();
-    expect(value.length).toBeGreaterThanOrEqual(8);
+    expect(value.length).toBeGreaterThanOrEqual(12);
     expect(await pw.getAttribute('type')).toBe('text');
   });
 

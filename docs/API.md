@@ -28,7 +28,7 @@ SPA's `ApiClient` (`frontend/src/lib/services/api.ts`) prefixes every call with
 
 | Method | Path | Auth | Handler |
 |--------|------|------|---------|
-| POST | `/auth/login` | public | `handle_login` |
+| POST | `/auth/login` | public | `handle_login` — 401 bad credentials, 429 per-IP throttle / account lockout |
 | POST | `/auth/logout` | auth | `handle_logout` |
 | GET | `/auth/me` | auth | `handle_get_current_user` |
 | POST | `/auth/2fa/verify` | public | `handle_2fa_verify` |
@@ -36,7 +36,7 @@ SPA's `ApiClient` (`frontend/src/lib/services/api.ts`) prefixes every call with
 | POST | `/auth/recovery-code` | auth | `handle_generate_recovery_code` (400 if one exists unless `?regenerate=true`) |
 | POST | `/auth/verify-recovery-code` | public | `handle_verify_recovery_code` — `{ username, code }` |
 | POST | `/auth/reset-password-recovery` | public | `handle_reset_password_recovery` — code is not consumed |
-| GET | `/auth/setup-status` | public | `handle_setup_status` — `is_first_run` (DB-derived), `is_setup_valid`, `hardware_changed`, `needs_recovery`, `server_machine_id`, `sudo_available` |
+| GET | `/auth/setup-status` | public | `handle_setup_status` — `is_first_run` (DB-derived), `is_setup_valid`, `hardware_changed`, `needs_recovery`, `server_machine_id`, `sudo_available`, `system_language` (host POSIX locale → `en`/`fr`/`de`/`es`) |
 | GET | `/auth/check-username` | public (local network only) | `handle_check_username` |
 | POST | `/auth/setup` | public (local network only) | `handle_setup` — accepts optional `totp_secret` + `totp_code` (enrolled at the wizard's password step); response may include `totp_enabled` + `backup_codes`. Refused once an admin exists |
 | POST | `/auth/setup/verify-totp` | public (local network only, first-run only) | `handle_setup_verify_totp` — stateless pre-creation check of a client-generated TOTP secret: `{ secret, code }` → `{ valid }` |
@@ -44,8 +44,11 @@ SPA's `ApiClient` (`frontend/src/lib/services/api.ts`) prefixes every call with
 
 The three unauthenticated bootstrap routes (`/auth/setup`,
 `/auth/setup/verify-totp`, `/auth/check-username`) accept only loopback /
-private / link-local peers (`middleware::setup_guard`); `HOMEVAULT_SETUP_ALLOW_REMOTE=1`
-lifts the restriction. `/auth/setup-status` is exempt.
+private / link-local peers (`middleware::setup_guard`), **only same-origin
+browser contexts** (a foreign `Origin` or `Sec-Fetch-Site: cross-site` → `403`),
+and are **rate-limited to 20 requests/min per peer** (`429`).
+`HOMEVAULT_SETUP_ALLOW_REMOTE=1` lifts only the network check.
+`/auth/setup-status` is exempt.
 
 Login returns a session token (stored as `session-token` in localStorage) and
 sets an `hv_session` cookie read only by the per-app reverse proxy.
@@ -75,6 +78,9 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 | POST | `/settings/reset` | admin | reset to defaults |
 | GET/PUT | `/settings/tls` | admin | built-in HTTPS config + cert info; PUT returns `requires_restart` |
 | POST | `/settings/tls/regenerate` | admin | force self-signed cert regeneration |
+| GET | `/settings/backup/db` | admin | snapshots of HomeVault's own database — settings + files on disk + total size (the DB is WAL, so the `.db` alone is not restorable) |
+| PUT | `/settings/backup/db` | admin | update `interval_hours` / `retain`; a lower retention prunes immediately |
+| POST | `/settings/backup/db/now` | admin | take a `VACUUM INTO` snapshot now → `{ backup, status }` |
 | GET/PUT | `/settings/autostart` | admin | start-on-boot (systemd) for `homevault.service` |
 
 ## Security — `security/*` (auth)
@@ -106,6 +112,8 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 | GET | `/dashboard/health` | auth | |
 | GET | `/dashboard/server-details` | auth | motherboard/BIOS model |
 | GET | `/health` | auth | overall health + CPU/mem from `/proc` |
+| GET | `/health/live` | public | liveness probe — `200 {"status":"ok"}` whenever the HTTP stack responds. No host detail (public route) |
+| GET | `/health/ready` | public | readiness probe — `200` ready / `503` degraded. Runs `SELECT 1` (1 s cache) and reports a failed boot-time `PRAGMA quick_check`. No host detail |
 | GET | `/widgets/cpu` | auth | desktop widget |
 | GET | `/widgets/ram` | auth | |
 | GET | `/widgets/network-traffic` | auth | |
@@ -132,7 +140,7 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 | DELETE | `/users/{username}` | admin | `handle_user_delete` (kills PTY sessions; revokes the account's direct share grants — ACL + DB — and purges its SFTP jail) |
 | PUT | `/users/{username}/password` | admin | `handle_user_update_password` |
 | PUT | `/users/{username}/role` | admin | `handle_user_update_role` |
-| PUT | `/users/{username}/locked` | admin | `handle_user_set_locked` |
+| PUT | `/users/{username}/locked` | admin | `handle_user_set_locked` — a **permanent** lock (clears `locked_until`); an automatic lockout instead expires on its own (see `guides/auth.md`) |
 | POST | `/users/{username}/2fa/disable` | admin | `handle_admin_disable_2fa` |
 | PUT | `/users/{username}/groups` | admin | `handle_user_update_groups` |
 | GET | `/users/{username}/home` | admin | `handle_user_home_get` (returns `size_bytes`) |

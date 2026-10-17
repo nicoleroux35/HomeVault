@@ -1,0 +1,22 @@
+#!/bin/bash
+set -e
+
+# HomeVaultOS chroot hook — bake the ClamAV virus definitions into the image
+# so the Antivirus app works offline on first boot. Best-effort: freshclam
+# needs network at build time; a failure just means the app fetches its
+# definitions at first runtime update instead. `build.sh --skip-clamav`
+# drops a flag file to skip this entirely (smaller ISO).
+
+if [ -e /root/.hv-os-skip-clamav ]; then
+    echo "[hv-os] ClamAV definitions skipped (--skip-clamav)"
+    exit 0
+fi
+
+if command -v freshclam >/dev/null 2>&1; then
+    echo "[hv-os] Downloading ClamAV virus definitions (best-effort, up to 15 min)…"
+    if timeout 900 freshclam --quiet; then
+        echo "[hv-os] ✓ ClamAV definitions baked into the image"
+    else
+        echo "[hv-os] WARNING: freshclam failed — definitions will update at runtime"
+    fi
+fi

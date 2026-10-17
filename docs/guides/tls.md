@@ -54,13 +54,40 @@ Browsers show a trust warning for the self-signed cert — expected, as with eve
 self-signed appliance. For a trusted cert, use **manual** mode with a cert from
 your own CA, `certbot`, `mkcert`, or an existing reverse proxy.
 
-## HTTP → HTTPS redirect
+## HTTP → HTTPS redirect (on by default, 2026-10-17)
 
 `middleware::https_redirect` is layered onto the **HTTP** router only (never the
 HTTPS one) when `redirect` is on. Loopback clients (`127.0.0.1`, `::1`) are
 exempt so the installer health check (`curl http://127.0.0.1:PORT/...`) and the
 internal app-proxy keep working over plain HTTP. Requests with no usable `Host`
 header are served normally rather than redirected to a broken URL.
+
+**`redirect` now defaults to `true`.** It used to default to `false`, which
+meant enabling HTTPS produced a server that still served the login form — and
+the admin password — in clear on `PORT`, with nothing telling the operator.
+`TlsSettings::default()` sets it, and `#[serde(default = "redirect_default")]`
+makes a `data/tls.json` written before the field existed deserialize to `true`
+rather than silently to `false`. Opt out with `TLS_REDIRECT=0` (or the toggle in
+Settings) when both listeners must stay usable.
+
+## The session cookie follows the connection
+
+`app_proxy::cookie::attach_session(resp, token, remember_me, over_tls)` adds
+`Secure` **only when the request arrived over TLS**. It cannot be
+unconditional: HomeVault is commonly served over plain HTTP on a LAN, and a
+`Secure` cookie is dropped outright by the browser there — the app proxy would
+break with no visible cause. `over_tls` comes from the `ArrivedOverTls`
+extension the HTTPS listener inserts.
+
+## Plain-HTTP warning in the UI (2026-10-17)
+
+Because plain HTTP remains a supported deployment, the wizard and the login
+screen warn when they are served over `http://` on a **non-loopback** host
+(`data-testid="setup-insecure-banner"` / `login-insecure-banner`,
+`role="status"`): the password is about to cross the network unencrypted, and
+the browser gives no other hint. `localhost` / `127.0.0.1` / `::1` are exempt —
+nothing leaves the machine. The copy points at Settings → Security, where the
+TLS card turns HTTPS on in one toggle plus a restart.
 
 ## HSTS
 

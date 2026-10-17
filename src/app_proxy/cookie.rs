@@ -44,16 +44,28 @@ pub const APP_SESSION_COOKIE: &str = "hv_app_session";
 const REMEMBER_MAX_AGE: i64 = 60 * 60 * 24 * 30;
 
 /// Attach `Set-Cookie: hv_session=<token>` to a login/2FA success response.
+///
 /// `SameSite=Lax` so a top-level navigation to the app port carries it;
-/// `HttpOnly` so page scripts can't read it; not `Secure` because HomeVault
-/// is commonly served over plain HTTP on a LAN.
-pub fn attach_session(mut resp: Response, token: &str, remember_me: bool) -> Response {
+/// `HttpOnly` so page scripts can't read it.
+///
+/// `Secure` is added when the request actually arrived over TLS (`over_tls`).
+/// It cannot be unconditional — HomeVault is commonly served over plain HTTP on
+/// a LAN, and a `Secure` cookie is simply dropped by the browser there, which
+/// would silently break the app proxy. Conditional is the only correct answer:
+/// the flag follows the connection that set it.
+pub fn attach_session(
+    mut resp: Response,
+    token: &str,
+    remember_me: bool,
+    over_tls: bool,
+) -> Response {
+    let secure = if over_tls { "; Secure" } else { "" };
     let cookie = if remember_me {
         format!(
-            "{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={REMEMBER_MAX_AGE}"
+            "{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax{secure}; Max-Age={REMEMBER_MAX_AGE}"
         )
     } else {
-        format!("{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax")
+        format!("{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax{secure}")
     };
     if let Ok(v) = HeaderValue::from_str(&cookie) {
         resp.headers_mut().append(SET_COOKIE, v);
@@ -193,5 +205,50 @@ mod tests {
         // Only HomeVault cookies present → header dropped entirely.
         assert_eq!(strip_homevault_cookies(" hv_session=abc "), None);
         assert_eq!(strip_homevault_cookies(""), None);
+    }
+}
+
+#[cfg(test)]
+mod secure_cookie_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::header::SET_COOKIE;
+
+    fn cookie_of(resp: &Response) -> String {
+        resp.headers()
+            .get(SET_COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string()
+    }
+
+    /// Plain HTTP on a LAN is the common deployment: a `Secure` cookie would be
+    /// silently dropped by the browser and the app proxy would break.
+    #[test]
+    fn test_plain_http_cookie_has_no_secure_flag() {
+        let resp = attach_session(Response::new(Body::empty()), "tok", false, false);
+        let cookie = cookie_of(&resp);
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("SameSite=Lax"));
+        assert!(!cookie.contains("Secure"), "got: {cookie}");
+    }
+
+    /// Over TLS the flag must be set, otherwise the cookie can be replayed over
+    /// a downgraded connection.
+    #[test]
+    fn test_tls_cookie_carries_the_secure_flag() {
+        let resp = attach_session(Response::new(Body::empty()), "tok", false, true);
+        let cookie = cookie_of(&resp);
+        assert!(cookie.contains("; Secure"), "got: {cookie}");
+        assert!(cookie.contains("HttpOnly"));
+    }
+
+    #[test]
+    fn test_remember_me_keeps_secure_and_max_age_together() {
+        let resp = attach_session(Response::new(Body::empty()), "tok", true, true);
+        let cookie = cookie_of(&resp);
+        assert!(cookie.contains("; Secure"), "got: {cookie}");
+        assert!(cookie.contains("Max-Age="), "got: {cookie}");
+        assert!(cookie.contains("HttpOnly"));
     }
 }

@@ -299,7 +299,7 @@
                       {#each col.blocks as block}
                         <span
                           class={cn(
-                            'w-5 h-[18px] rounded-[4px] flex-none',
+                            'w-5 h-[18px] rounded-sm flex-none',
                             block === 'data' && 'bg-[var(--hv-primary)]',
                             block === 'mirror' && 'bg-[var(--hv-primary-300)]',
                             block === 'parity' && 'bg-[var(--hv-warning)]',

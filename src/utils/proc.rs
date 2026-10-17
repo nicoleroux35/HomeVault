@@ -492,7 +492,9 @@ impl ProcParser {
             ServiceStatus {
                 name: "webdav".to_string(),
                 display_name: "WebDAV".to_string(),
-                running: Self::check_service_status("homevault-webdav"),
+                // WebDAV is served in-process (`crate::webdav`), so its status
+                // is the bound port, not a systemd unit.
+                running: crate::webdav::running_port().is_some(),
             },
             ServiceStatus {
                 name: "sftp".to_string(),

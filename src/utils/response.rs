@@ -108,6 +108,11 @@ impl ResponseHelper {
             .into_response()
     }
 
+    /// A structured error carrying an explicit status (429, 409, …).
+    pub fn json_error_with_status(status: StatusCode, message: String) -> Response {
+        (status, AxumJson(JsonResponse::<()>::error(message))).into_response()
+    }
+
     pub fn json_internal_error(message: String) -> Response {
         (
             StatusCode::INTERNAL_SERVER_ERROR,

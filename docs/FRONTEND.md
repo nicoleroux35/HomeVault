@@ -221,14 +221,19 @@ library):**
   `design-system.md` §6.1):** markup/CSS rewritten as pure Tailwind-on-tokens
   with **no scoped `<style>`**; the `<script>` logic (setup-status detection,
   credentials → 2FA flow, modal error handling, recovery-code reset) is
-  unchanged. Visuals: full-screen pastel gradient (`--hv-login-bg-gradient`)
-  with two blurred orbs, a live 24 h clock (`hour12: false`), and a 380 px
+  unchanged. Visuals: the desktop's own canvas gradient
+  (`--hv-login-bg-gradient`, an alias of `--hv-desktop-bg`) with two blurred
+  orbs, a live 24 h clock (`hour12: false`), and a 380 px
   white card with a gradient logo tile, brand title + version + step label,
   gateway fields, the remember-me `<Toggle>`, the forgot-password link, a primary
   CTA via `<Button>` + `bg-[image:var(--hv-login-btn-grad)]!`, and a footer.
   The 2FA step adds a step-progress indicator, 6 code boxes (44×52 px,
-  soft-indigo `--hv-login-accent-soft` filled state), a 30 s TOTP countdown
-  ring and a back link. Errors open the shared error `<Modal>` and shake the
+  brand-tinted `--hv-login-accent-soft` filled state), a 30 s TOTP countdown
+  ring and a back link. Every primary button on the screen (sign in, verify,
+  recovery, retry, the error modal's dismiss) shares that one CTA treatment.
+  The accent is the brand accent — `--hv-login-accent` **is** `--hv-primary`
+  (#1E62AE), so the screen is the desktop palette, not a second identity
+  (`design-system.md` §6.1, 2026-10-17). Errors open the shared error `<Modal>` and shake the
   card (`animate-[hv-shake_0.4s_ease]`); a successful login scales + fades the
   card out before navigating to `/desktop`.
   **Still native**: username/password/recovery-code/new-password `<input>`
@@ -253,9 +258,17 @@ library):**
   feature cards, account step (centered avatar + username/fullname fields),
   password step (strength bars + requirement checklist), and a verification
   step with a summary card (avatar, username, admin badge, availability +
-  masked password rows) before the emerald "create account" CTA. After
-  creation the mandatory **amber recovery box** (`.hv-recovery-box`, code shown
-  once, non-copyable, acknowledged via checkbox) then the optional **2FA box**
+  masked password rows) before the green "create account" CTA (the Appliance
+  success ramp since 2026-10-17 — `design-system.md` §6.2). **Since 2026-10-17
+the wizard is 4 steps** (welcome, account, password, verify): storage, RAID,
+  restore and the language picker were all removed — the language is detected
+  from the OS/browser locale (see `I18N.md` → *How the active language is
+  chosen*) and changed in Settings, while disks and backups live in their own
+  apps. After
+  creation the mandatory **amber recovery box** (`.hv-recovery-box`: white
+  paper inside a 2px `--hv-warning` border, the one-time code on an amber
+  `--hv-warning-light` chip, non-copyable, acknowledged via checkbox) then the
+  optional **2FA box**
   (`.hv-2fa-box`: secret, otpauth link, code input, backup codes) appear in
   the same card.
   **Same field rules as Login**: native `<input>` kept for autofill; the gateway
