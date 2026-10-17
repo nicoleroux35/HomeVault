@@ -324,7 +324,7 @@ async fn reset_rejects_weak_password() {
 #[tokio::test]
 async fn reset_rejects_a_recently_used_password() {
     let (state, _tmp, _g) = setup_state().await;
-    create_user(&state, "frank", "FirstPass1").await;
+    create_user(&state, "frank", "FirstPassw0rd1").await;
     let code = state.auth.set_recovery_code("frank").await.unwrap();
     let app = router(state.clone());
 
@@ -333,7 +333,7 @@ async fn reset_rejects_a_recently_used_password() {
         .clone()
         .oneshot(post(
             "/api/auth/reset-password-recovery",
-            json!({ "username": "frank", "recovery_code": code, "new_password": "SecondPass2" }),
+            json!({ "username": "frank", "recovery_code": code, "new_password": "SecondPassw0rd2" }),
         ))
         .await
         .unwrap();
@@ -343,7 +343,7 @@ async fn reset_rejects_a_recently_used_password() {
     let resp = app
         .oneshot(post(
             "/api/auth/reset-password-recovery",
-            json!({ "username": "frank", "recovery_code": code, "new_password": "FirstPass1" }),
+            json!({ "username": "frank", "recovery_code": code, "new_password": "FirstPassw0rd1" }),
         ))
         .await
         .unwrap();

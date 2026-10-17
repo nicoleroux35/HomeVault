@@ -306,13 +306,13 @@ async fn get_json_with_token(router: &mut Router, path: &str, token: &str) -> (S
 #[tokio::test]
 async fn test_login_success() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "testuser", "TestPass123").await;
+    create_test_user(&state, "testuser", "TestPassw0rd123").await;
     let mut app = login_router(state);
 
     let (status, body) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "testuser", "password": "TestPass123"}),
+        json!({"username": "testuser", "password": "TestPassw0rd123"}),
     )
     .await;
 
@@ -326,7 +326,7 @@ async fn test_login_success() {
 #[tokio::test]
 async fn test_login_wrong_password() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "testuser", "TestPass123").await;
+    create_test_user(&state, "testuser", "TestPassw0rd123").await;
     let mut app = login_router(state);
 
     let (status, body) = post_json(
@@ -354,7 +354,7 @@ async fn test_login_user_not_found() {
     let (status, body) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "nonexistent", "password": "TestPass123"}),
+        json!({"username": "nonexistent", "password": "TestPassw0rd123"}),
     )
     .await;
 
@@ -401,13 +401,13 @@ async fn test_login_empty_body() {
 #[tokio::test]
 async fn test_login_remember_me_sets_longer_session() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "testuser", "TestPass123").await;
+    create_test_user(&state, "testuser", "TestPassw0rd123").await;
     let mut app = login_router(state);
 
     let (_, body_normal) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "testuser", "password": "TestPass123", "remember_me": false}),
+        json!({"username": "testuser", "password": "TestPassw0rd123", "remember_me": false}),
     )
     .await;
     let token_normal = body_normal["data"]["token"].as_str().unwrap_or("");
@@ -415,7 +415,7 @@ async fn test_login_remember_me_sets_longer_session() {
     let (_, body_remember) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "testuser", "password": "TestPass123", "remember_me": true}),
+        json!({"username": "testuser", "password": "TestPassw0rd123", "remember_me": true}),
     )
     .await;
     let token_remember = body_remember["data"]["token"].as_str().unwrap_or("");
@@ -428,13 +428,13 @@ async fn test_login_remember_me_sets_longer_session() {
 #[tokio::test]
 async fn test_login_returns_is_admin_for_admin_user() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_admin_user(&state, "admincheck", "AdminPass1").await;
+    create_admin_user(&state, "admincheck", "AdminPassw0rd1").await;
     let mut app = login_router(state);
 
     let (_, body) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "admincheck", "password": "AdminPass1"}),
+        json!({"username": "admincheck", "password": "AdminPassw0rd1"}),
     )
     .await;
 
@@ -445,13 +445,13 @@ async fn test_login_returns_is_admin_for_admin_user() {
 #[tokio::test]
 async fn test_login_returns_false_is_admin_for_regular_user() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "regularuser", "TestPass123").await;
+    create_test_user(&state, "regularuser", "TestPassw0rd123").await;
     let mut app = login_router(state);
 
     let (_, body) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "regularuser", "password": "TestPass123"}),
+        json!({"username": "regularuser", "password": "TestPassw0rd123"}),
     )
     .await;
 
@@ -462,7 +462,7 @@ async fn test_login_returns_false_is_admin_for_regular_user() {
 #[tokio::test]
 async fn test_login_locks_after_max_attempts() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "lockme", "TestPass123").await;
+    create_test_user(&state, "lockme", "TestPassw0rd123").await;
     let mut app = login_router(state);
 
     // 5 wrong attempts
@@ -503,13 +503,13 @@ async fn test_login_locks_after_max_attempts() {
 #[tokio::test]
 async fn test_me_valid_token() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "meuser", "TestPass123").await;
+    create_test_user(&state, "meuser", "TestPassw0rd123").await;
     let mut app = login_router(state);
 
     let (_, login_body) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "meuser", "password": "TestPass123"}),
+        json!({"username": "meuser", "password": "TestPassw0rd123"}),
     )
     .await;
     let token = login_body["data"]["token"].as_str().unwrap();
@@ -549,13 +549,13 @@ async fn test_me_invalid_token() {
 #[tokio::test]
 async fn test_logout_valid_token() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "logoutuser", "TestPass123").await;
+    create_test_user(&state, "logoutuser", "TestPassw0rd123").await;
     let mut app = login_router(state);
 
     let (_, login_body) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "logoutuser", "password": "TestPass123"}),
+        json!({"username": "logoutuser", "password": "TestPassw0rd123"}),
     )
     .await;
     let token = login_body["data"]["token"].as_str().unwrap();
@@ -582,13 +582,13 @@ async fn test_logout_invalid_token() {
 #[tokio::test]
 async fn test_me_after_logout_fails() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "logoutuser2", "TestPass123").await;
+    create_test_user(&state, "logoutuser2", "TestPassw0rd123").await;
     let mut app = login_router(state);
 
     let (_, login_body) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "logoutuser2", "password": "TestPass123"}),
+        json!({"username": "logoutuser2", "password": "TestPassw0rd123"}),
     )
     .await;
     let token = login_body["data"]["token"].as_str().unwrap();
@@ -613,7 +613,7 @@ async fn test_2fa_verify_no_session() {
     let (status, body) = post_json(
         &mut app,
         "/api/auth/2fa/verify",
-        json!({"username": "testuser", "password": "TestPass123", "totp_code": "123456"}),
+        json!({"username": "testuser", "password": "TestPassw0rd123", "totp_code": "123456"}),
     )
     .await;
 
@@ -625,13 +625,13 @@ async fn test_2fa_verify_no_session() {
 #[tokio::test]
 async fn test_2fa_verify_without_2fa_enabled() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "twofauser", "TestPass123").await;
+    create_test_user(&state, "twofauser", "TestPassw0rd123").await;
     let mut app = login_router(state);
 
     let (status, body) = post_json(
         &mut app,
         "/api/auth/2fa/verify",
-        json!({"username": "twofauser", "password": "TestPass123", "totp_code": "000000"}),
+        json!({"username": "twofauser", "password": "TestPassw0rd123", "totp_code": "000000"}),
     )
     .await;
 
@@ -644,7 +644,7 @@ async fn test_2fa_verify_without_2fa_enabled() {
 #[tokio::test]
 async fn test_2fa_verify_wrong_password() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "twofauser2", "TestPass123").await;
+    create_test_user(&state, "twofauser2", "TestPassw0rd123").await;
     let mut app = login_router(state);
 
     let (status, body) = post_json(
@@ -692,14 +692,14 @@ async fn test_2fa_verify_empty_body() {
 #[tokio::test]
 async fn test_full_auth_flow() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_admin_user(&state, "flowadmin", "FlowPass123").await;
+    create_admin_user(&state, "flowadmin", "FlowPassw0rd123").await;
     let mut app = login_router(Arc::clone(&state));
 
     // Step 1: Login succeeds
     let (login_status, login_body) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "flowadmin", "password": "FlowPass123"}),
+        json!({"username": "flowadmin", "password": "FlowPassw0rd123"}),
     )
     .await;
     assert_eq!(login_status, StatusCode::OK);
@@ -749,13 +749,13 @@ async fn test_login_json_malformed() {
 #[tokio::test]
 async fn test_login_returns_csrf_token() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "csrfuser", "TestPass123").await;
+    create_test_user(&state, "csrfuser", "TestPassw0rd123").await;
     let mut app = login_router(state);
 
     let (_, body) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "csrfuser", "password": "TestPass123"}),
+        json!({"username": "csrfuser", "password": "TestPassw0rd123"}),
     )
     .await;
 
@@ -795,7 +795,7 @@ async fn session_expires_at(state: &AppState, token: &str) -> String {
 #[tokio::test]
 async fn test_login_with_2fa_enabled_returns_requires_2fa() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "twofa_login", "TestPass123").await;
+    create_test_user(&state, "twofa_login", "TestPassw0rd123").await;
     state
         .auth
         .enable_2fa("twofa_login", "JBSWY3DPEHPK3PXP")
@@ -806,7 +806,7 @@ async fn test_login_with_2fa_enabled_returns_requires_2fa() {
     let (status, body) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "twofa_login", "password": "TestPass123"}),
+        json!({"username": "twofa_login", "password": "TestPassw0rd123"}),
     )
     .await;
 
@@ -822,7 +822,7 @@ async fn test_login_with_2fa_enabled_returns_requires_2fa() {
 #[tokio::test]
 async fn test_2fa_verify_with_valid_backup_code_succeeds() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "twofa_bc", "TestPass123").await;
+    create_test_user(&state, "twofa_bc", "TestPassw0rd123").await;
     let codes = state
         .auth
         .enable_2fa("twofa_bc", "JBSWY3DPEHPK3PXP")
@@ -833,7 +833,7 @@ async fn test_2fa_verify_with_valid_backup_code_succeeds() {
     let (status, body) = post_json(
         &mut app,
         "/api/auth/2fa/verify",
-        json!({"username": "twofa_bc", "password": "TestPass123", "totp_code": codes[0]}),
+        json!({"username": "twofa_bc", "password": "TestPassw0rd123", "totp_code": codes[0]}),
     )
     .await;
 
@@ -845,7 +845,7 @@ async fn test_2fa_verify_with_valid_backup_code_succeeds() {
 #[tokio::test]
 async fn test_2fa_verify_with_invalid_code_fails() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "twofa_bad", "TestPass123").await;
+    create_test_user(&state, "twofa_bad", "TestPassw0rd123").await;
     state
         .auth
         .enable_2fa("twofa_bad", "JBSWY3DPEHPK3PXP")
@@ -856,7 +856,7 @@ async fn test_2fa_verify_with_invalid_code_fails() {
     let (status, body) = post_json(
         &mut app,
         "/api/auth/2fa/verify",
-        json!({"username": "twofa_bad", "password": "TestPass123", "totp_code": "999999"}),
+        json!({"username": "twofa_bad", "password": "TestPassw0rd123", "totp_code": "999999"}),
     )
     .await;
 
@@ -873,7 +873,7 @@ async fn test_2fa_verify_with_invalid_code_fails() {
 #[tokio::test]
 async fn test_2fa_verify_backup_code_is_single_use() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "twofa_reuse", "TestPass123").await;
+    create_test_user(&state, "twofa_reuse", "TestPassw0rd123").await;
     let codes = state
         .auth
         .enable_2fa("twofa_reuse", "JBSWY3DPEHPK3PXP")
@@ -885,7 +885,7 @@ async fn test_2fa_verify_backup_code_is_single_use() {
     let (first, _) = post_json(
         &mut app,
         "/api/auth/2fa/verify",
-        json!({"username": "twofa_reuse", "password": "TestPass123", "totp_code": codes[0]}),
+        json!({"username": "twofa_reuse", "password": "TestPassw0rd123", "totp_code": codes[0]}),
     )
     .await;
     assert_eq!(first, StatusCode::OK);
@@ -894,7 +894,7 @@ async fn test_2fa_verify_backup_code_is_single_use() {
     let (second, body) = post_json(
         &mut app,
         "/api/auth/2fa/verify",
-        json!({"username": "twofa_reuse", "password": "TestPass123", "totp_code": codes[0]}),
+        json!({"username": "twofa_reuse", "password": "TestPassw0rd123", "totp_code": codes[0]}),
     )
     .await;
     assert_eq!(second, StatusCode::UNAUTHORIZED);
@@ -904,7 +904,7 @@ async fn test_2fa_verify_backup_code_is_single_use() {
 #[tokio::test]
 async fn test_2fa_verify_wrong_password_with_valid_backup_code() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "twofa_wp", "TestPass123").await;
+    create_test_user(&state, "twofa_wp", "TestPassw0rd123").await;
     let codes = state
         .auth
         .enable_2fa("twofa_wp", "JBSWY3DPEHPK3PXP")
@@ -931,7 +931,7 @@ async fn test_2fa_verify_nonexistent_user() {
     let (status, body) = post_json(
         &mut app,
         "/api/auth/2fa/verify",
-        json!({"username": "nobody_here", "password": "TestPass123", "totp_code": "123456"}),
+        json!({"username": "nobody_here", "password": "TestPassw0rd123", "totp_code": "123456"}),
     )
     .await;
 
@@ -946,7 +946,7 @@ async fn test_2fa_verify_nonexistent_user() {
 #[tokio::test]
 async fn test_login_locked_account_is_rejected() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "lockedacct", "TestPass123").await;
+    create_test_user(&state, "lockedacct", "TestPassw0rd123").await;
     sqlx::query("UPDATE users SET locked = 1 WHERE username = ?")
         .bind("lockedacct")
         .execute(&*state.db.pool())
@@ -957,7 +957,7 @@ async fn test_login_locked_account_is_rejected() {
     let (status, body) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "lockedacct", "password": "TestPass123"}),
+        json!({"username": "lockedacct", "password": "TestPassw0rd123"}),
     )
     .await;
 
@@ -977,13 +977,13 @@ async fn test_login_locked_account_is_rejected() {
 #[tokio::test]
 async fn test_logout_only_invalidates_the_calling_session() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "multisess", "TestPass123").await;
+    create_test_user(&state, "multisess", "TestPassw0rd123").await;
     let mut app = login_router(state);
 
     let (_, a) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "multisess", "password": "TestPass123"}),
+        json!({"username": "multisess", "password": "TestPassw0rd123"}),
     )
     .await;
     let token_a = a["data"]["token"].as_str().unwrap().to_string();
@@ -991,7 +991,7 @@ async fn test_logout_only_invalidates_the_calling_session() {
     let (_, b) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "multisess", "password": "TestPass123"}),
+        json!({"username": "multisess", "password": "TestPassw0rd123"}),
     )
     .await;
     let token_b = b["data"]["token"].as_str().unwrap().to_string();
@@ -1010,19 +1010,19 @@ async fn test_logout_only_invalidates_the_calling_session() {
 #[tokio::test]
 async fn test_remember_me_grants_a_longer_lived_session() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "rmexpiry", "TestPass123").await;
+    create_test_user(&state, "rmexpiry", "TestPassw0rd123").await;
     let mut app = login_router(Arc::clone(&state));
 
     let (_, normal) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "rmexpiry", "password": "TestPass123", "remember_me": false}),
+        json!({"username": "rmexpiry", "password": "TestPassw0rd123", "remember_me": false}),
     )
     .await;
     let (_, remembered) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "rmexpiry", "password": "TestPass123", "remember_me": true}),
+        json!({"username": "rmexpiry", "password": "TestPassw0rd123", "remember_me": true}),
     )
     .await;
 
@@ -1041,7 +1041,7 @@ async fn test_remember_me_grants_a_longer_lived_session() {
 #[tokio::test]
 async fn test_concurrent_sessions_are_both_valid() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "concurrent", "TestPass123").await;
+    create_test_user(&state, "concurrent", "TestPassw0rd123").await;
     let mut app = login_router(state);
 
     let mut tokens = Vec::new();
@@ -1049,7 +1049,7 @@ async fn test_concurrent_sessions_are_both_valid() {
         let (_, body) = post_json(
             &mut app,
             "/api/auth/login",
-            json!({"username": "concurrent", "password": "TestPass123"}),
+            json!({"username": "concurrent", "password": "TestPassw0rd123"}),
         )
         .await;
         tokens.push(body["data"]["token"].as_str().unwrap().to_string());
@@ -1064,13 +1064,13 @@ async fn test_concurrent_sessions_are_both_valid() {
 #[tokio::test]
 async fn test_login_csrf_token_differs_from_session_token() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "csrfdiff", "TestPass123").await;
+    create_test_user(&state, "csrfdiff", "TestPassw0rd123").await;
     let mut app = login_router(state);
 
     let (_, body) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "csrfdiff", "password": "TestPass123"}),
+        json!({"username": "csrfdiff", "password": "TestPassw0rd123"}),
     )
     .await;
 
@@ -1087,13 +1087,13 @@ async fn test_login_csrf_token_differs_from_session_token() {
 #[tokio::test]
 async fn test_me_returns_full_profile_fields() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_full_user(&state, "profileuser", "TestPass123").await;
+    create_full_user(&state, "profileuser", "TestPassw0rd123").await;
     let mut app = login_router(state);
 
     let (_, login_body) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "profileuser", "password": "TestPass123"}),
+        json!({"username": "profileuser", "password": "TestPassw0rd123"}),
     )
     .await;
     let token = login_body["data"]["token"].as_str().unwrap();
@@ -1133,7 +1133,7 @@ async fn test_login_missing_password_field_rejected() {
 #[tokio::test]
 async fn test_login_ignores_unknown_extra_fields() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "extrafields", "TestPass123").await;
+    create_test_user(&state, "extrafields", "TestPassw0rd123").await;
     let mut app = login_router(state);
 
     let (status, body) = post_json(
@@ -1141,7 +1141,7 @@ async fn test_login_ignores_unknown_extra_fields() {
         "/api/auth/login",
         json!({
             "username": "extrafields",
-            "password": "TestPass123",
+            "password": "TestPassw0rd123",
             "totally_unknown": "ignored",
             "is_admin": true
         }),
@@ -1157,13 +1157,13 @@ async fn test_login_ignores_unknown_extra_fields() {
 #[tokio::test]
 async fn test_login_username_is_case_sensitive() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "casesensitive", "TestPass123").await;
+    create_test_user(&state, "casesensitive", "TestPassw0rd123").await;
     let mut app = login_router(state);
 
     let (status, _) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "CaseSensitive", "password": "TestPass123"}),
+        json!({"username": "CaseSensitive", "password": "TestPassw0rd123"}),
     )
     .await;
 
@@ -1174,7 +1174,7 @@ async fn test_login_username_is_case_sensitive() {
 #[tokio::test]
 async fn test_login_wrong_password_does_not_leak_user_existence() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "realuser", "TestPass123").await;
+    create_test_user(&state, "realuser", "TestPassw0rd123").await;
     let mut app = login_router(state);
 
     let (s1, b1) = post_json(
@@ -1205,13 +1205,13 @@ async fn test_login_wrong_password_does_not_leak_user_existence() {
 #[tokio::test]
 async fn test_csrf_rejects_authenticated_post_without_token() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "csrfmw", "TestPass123").await;
+    create_test_user(&state, "csrfmw", "TestPassw0rd123").await;
     let mut app = login_router_with_csrf(state);
 
     let (_, login) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "csrfmw", "password": "TestPass123"}),
+        json!({"username": "csrfmw", "password": "TestPassw0rd123"}),
     )
     .await;
     let token = login["data"]["token"].as_str().unwrap().to_string();
@@ -1236,13 +1236,13 @@ async fn test_csrf_rejects_authenticated_post_without_token() {
 #[tokio::test]
 async fn test_csrf_rejects_wrong_token_and_accepts_matching_token() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "csrfmw2", "TestPass123").await;
+    create_test_user(&state, "csrfmw2", "TestPassw0rd123").await;
     let mut app = login_router_with_csrf(state);
 
     let (_, login) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "csrfmw2", "password": "TestPass123"}),
+        json!({"username": "csrfmw2", "password": "TestPassw0rd123"}),
     )
     .await;
     let token = login["data"]["token"].as_str().unwrap().to_string();
@@ -1282,13 +1282,13 @@ async fn test_csrf_rejects_wrong_token_and_accepts_matching_token() {
 #[tokio::test]
 async fn test_csrf_does_not_touch_get_requests() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "csrfget", "TestPass123").await;
+    create_test_user(&state, "csrfget", "TestPassw0rd123").await;
     let mut app = login_router_with_csrf(state);
 
     let (_, login) = post_json(
         &mut app,
         "/api/auth/login",
-        json!({"username": "csrfget", "password": "TestPass123"}),
+        json!({"username": "csrfget", "password": "TestPassw0rd123"}),
     )
     .await;
     let token = login["data"]["token"].as_str().unwrap().to_string();
@@ -1319,7 +1319,7 @@ async fn insert_session(state: &AppState, token: &str, username: &str, expires_a
 #[tokio::test]
 async fn test_me_rejects_an_expired_session_token() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "expsess", "TestPass123").await;
+    create_test_user(&state, "expsess", "TestPassw0rd123").await;
     insert_session(
         &state,
         "expired-token-xyz",
@@ -1336,7 +1336,7 @@ async fn test_me_rejects_an_expired_session_token() {
 #[tokio::test]
 async fn test_refresh_session_extends_expiry() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "refreshme", "TestPass123").await;
+    create_test_user(&state, "refreshme", "TestPassw0rd123").await;
     insert_session(
         &state,
         "soon-token",
@@ -1375,7 +1375,7 @@ async fn test_refresh_session_unknown_token_errors() {
 #[tokio::test]
 async fn test_cleanup_expired_sessions_removes_only_expired_rows() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "cleanup", "TestPass123").await;
+    create_test_user(&state, "cleanup", "TestPassw0rd123").await;
     insert_session(&state, "dead-1", "cleanup", "2001-01-01T00:00:00+00:00").await;
     insert_session(&state, "dead-2", "cleanup", "2002-01-01T00:00:00+00:00").await;
     insert_session(&state, "alive-1", "cleanup", "2999-01-01T00:00:00+00:00").await;
@@ -1400,7 +1400,7 @@ async fn test_cleanup_expired_sessions_removes_only_expired_rows() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_concurrent_wrong_logins_still_lock_the_account() {
     let (state, _tmp, _lock) = setup_state().await;
-    create_test_user(&state, "raceme", "TestPass123").await;
+    create_test_user(&state, "raceme", "TestPassw0rd123").await;
     let app = login_router(Arc::clone(&state));
 
     // Fire 12 wrong-password logins concurrently.
@@ -1430,7 +1430,7 @@ async fn test_concurrent_wrong_logins_still_lock_the_account() {
     let (status, body) = post_json(
         &mut app2,
         "/api/auth/login",
-        json!({"username": "raceme", "password": "TestPass123"}),
+        json!({"username": "raceme", "password": "TestPassw0rd123"}),
     )
     .await;
     let msg = body["message"].as_str().unwrap_or("");
@@ -1646,8 +1646,8 @@ async fn test_email_delivery_fails_cleanly_without_an_mta() {
 async fn test_login_history_persists_real_success_and_user_agent() {
     let (state, _tmp, _lock) = setup_state().await;
     create_admin_user(&state, "histadmin", "AdminPass123").await;
-    create_test_user(&state, "histfail", "Passw0rd123").await;
-    create_test_user(&state, "histok", "Passw0rd123").await;
+    create_test_user(&state, "histfail", "Passw0rd123456").await;
+    create_test_user(&state, "histok", "Passw0rd123456").await;
     let mut app = login_router(state);
 
     // Failed login — the audit trail must record success=false + the browser UA.
@@ -1664,7 +1664,7 @@ async fn test_login_history_persists_real_success_and_user_agent() {
     let (status, _) = post_json_ua(
         &mut app,
         "/api/auth/login",
-        json!({"username": "histok", "password": "Passw0rd123"}),
+        json!({"username": "histok", "password": "Passw0rd123456"}),
         "Chrome-Agent/120",
     )
     .await;
@@ -1703,4 +1703,185 @@ async fn test_login_history_persists_real_success_and_user_agent() {
     let ok = ok_row.unwrap();
     assert_eq!(ok["success"], json!(true));
     assert_eq!(ok["user_agent"], json!("Chrome-Agent/120"));
+}
+
+// ========================================================================
+// 23. Lockout expiry & per-IP throttle (2026-10-17 hardening)
+// ========================================================================
+//
+// Five wrong passwords used to set `users.locked = 1` and never clear it: on a
+// single-admin appliance that bricked the only account (there is no support
+// desk), with "temporarily locked" in the message and no way back in short of
+// the offline recovery code or editing the database. An automatic lock now
+// records `locked_until` and lifts itself; a deliberate admin lock (no
+// `locked_until`) stays permanent. Separately, the only throttle used to be per
+// *account*, so spraying one password across many usernames was unlimited.
+
+/// Five wrong passwords lock the account *with* an expiry recorded.
+#[tokio::test]
+async fn test_failed_logins_record_a_temporary_lock_expiry() {
+    let (state, _tmp, _lock) = setup_state().await;
+    create_test_user(&state, "expirylock", "TestPassw0rd123").await;
+    let mut app = login_router(Arc::clone(&state));
+
+    for _ in 0..5 {
+        post_json(
+            &mut app,
+            "/api/auth/login",
+            json!({"username": "expirylock", "password": "WrongPass999"}),
+        )
+        .await;
+    }
+
+    let (locked, locked_until): (bool, Option<String>) =
+        sqlx::query_as("SELECT locked, locked_until FROM users WHERE username = ?")
+            .bind("expirylock")
+            .fetch_one(&*state.db.pool())
+            .await
+            .expect("read lock state");
+
+    assert!(locked, "the account must be locked after 5 failures");
+    assert!(
+        locked_until.is_some(),
+        "an automatic lock must record when it expires, otherwise it is permanent"
+    );
+}
+
+/// Once `locked_until` has passed, the correct password works again — the whole
+/// point of the fix.
+#[tokio::test]
+async fn test_expired_temporary_lock_lifts_itself_on_login() {
+    let (state, _tmp, _lock) = setup_state().await;
+    create_test_user(&state, "autounlock", "TestPassw0rd123").await;
+
+    // Simulate the 5-minute window having elapsed.
+    sqlx::query(
+        "UPDATE users SET locked = 1, locked_until = ? WHERE username = ?",
+    )
+    .bind((chrono::Utc::now() - chrono::Duration::seconds(60)).to_rfc3339())
+    .bind("autounlock")
+    .execute(&*state.db.pool())
+    .await
+    .unwrap();
+
+    let mut app = login_router(Arc::clone(&state));
+    let (status, body) = post_json(
+        &mut app,
+        "/api/auth/login",
+        json!({"username": "autounlock", "password": "TestPassw0rd123"}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "expired lock must not block: {body}");
+    assert_eq!(body["success"], json!(true));
+
+    let (locked, locked_until): (bool, Option<String>) =
+        sqlx::query_as("SELECT locked, locked_until FROM users WHERE username = ?")
+            .bind("autounlock")
+            .fetch_one(&*state.db.pool())
+            .await
+            .expect("read lock state");
+    assert!(!locked, "the lock must be cleared");
+    assert!(locked_until.is_none(), "the expiry must be cleared too");
+}
+
+/// A lock that has not expired yet still refuses the login.
+#[tokio::test]
+async fn test_unexpired_temporary_lock_still_blocks() {
+    let (state, _tmp, _lock) = setup_state().await;
+    create_test_user(&state, "stilllocked", "TestPassw0rd123").await;
+
+    sqlx::query("UPDATE users SET locked = 1, locked_until = ? WHERE username = ?")
+        .bind((chrono::Utc::now() + chrono::Duration::minutes(4)).to_rfc3339())
+        .bind("stilllocked")
+        .execute(&*state.db.pool())
+        .await
+        .unwrap();
+
+    let mut app = login_router(state);
+    let (status, body) = post_json(
+        &mut app,
+        "/api/auth/login",
+        json!({"username": "stilllocked", "password": "TestPassw0rd123"}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .to_lowercase()
+        .contains("locked"));
+}
+
+/// A deliberate admin lock carries no expiry and must survive forever, even
+/// with the correct password.
+#[tokio::test]
+async fn test_admin_lock_without_expiry_is_permanent() {
+    let (state, _tmp, _lock) = setup_state().await;
+    create_test_user(&state, "adminlocked", "TestPassw0rd123").await;
+    state
+        .auth
+        .set_user_locked("adminlocked", true)
+        .await
+        .expect("admin lock");
+
+    let mut app = login_router(state);
+    let (status, body) = post_json(
+        &mut app,
+        "/api/auth/login",
+        json!({"username": "adminlocked", "password": "TestPassw0rd123"}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .to_lowercase()
+        .contains("locked"));
+}
+
+/// Password spraying — one password tried across many usernames — used to be
+/// unlimited because the only counter was per account. It is now throttled per
+/// client IP.
+#[tokio::test]
+async fn test_password_spraying_is_throttled_per_ip() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let mut app = login_router(state);
+
+    let mut statuses = Vec::new();
+    // Well past the per-minute budget (30), each attempt a different username.
+    for i in 0..40 {
+        let (status, _) = post_json(
+            &mut app,
+            "/api/auth/login",
+            json!({"username": format!("spray{i}"), "password": "SprayPass123"}),
+        )
+        .await;
+        statuses.push(status);
+    }
+
+    assert!(
+        statuses.contains(&StatusCode::TOO_MANY_REQUESTS),
+        "spraying must eventually be throttled, got: {statuses:?}"
+    );
+}
+
+/// The per-IP throttle must not fire for a handful of legitimate retries.
+#[tokio::test]
+async fn test_a_few_failed_logins_are_not_ip_throttled() {
+    let (state, _tmp, _lock) = setup_state().await;
+    create_test_user(&state, "fewfails", "TestPassw0rd123").await;
+    let mut app = login_router(state);
+
+    for _ in 0..4 {
+        let (status, _) = post_json(
+            &mut app,
+            "/api/auth/login",
+            json!({"username": "fewfails", "password": "WrongPass999"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "must stay a normal 401");
+    }
 }

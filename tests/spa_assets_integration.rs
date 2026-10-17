@@ -256,3 +256,116 @@ async fn dist_files_get_a_validator_but_no_pinning_cache_control() {
     // would strand clients on a previous release's service worker.
     assert_eq!(header_of(&res, header::CACHE_CONTROL), None);
 }
+
+// =========================================================================
+// CSP nonce (2026-10-17)
+// =========================================================================
+//
+// The policy used to allow `script-src 'unsafe-inline'`. Combined with the
+// session token in `localStorage`, any injected script could have exfiltrated a
+// full session. It now lists a per-response nonce instead, and the single
+// inline boot script in `index.html` carries that exact value — so the two must
+// agree, in the same response, or the shell never boots.
+
+mod csp_nonce {
+    use super::*;
+    use homevault::middleware::{security_headers_middleware, stamp_nonce, CspNonce, NONCE_PLACEHOLDER};
+
+    /// The SPA route behind the real security-headers layer, i.e. the shape
+    /// `create_app` builds.
+    fn hardened_router() -> Router {
+        Router::new()
+            .route("/", get(spa::serve_spa))
+            .layer(axum::middleware::from_fn(security_headers_middleware))
+    }
+
+    async fn get_root() -> (HeaderMap, String) {
+        let res = hardened_router()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .expect("router");
+        let headers = res.headers().clone();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.expect("body");
+        (headers, String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    /// `nonce-…` token out of the CSP header.
+    fn header_nonce(headers: &HeaderMap) -> Option<String> {
+        let csp = headers
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok())?;
+        let start = csp.find("'nonce-")? + "'nonce-".len();
+        let rest = &csp[start..];
+        let end = rest.find('\'')?;
+        Some(rest[..end].to_string())
+    }
+
+    #[tokio::test]
+    async fn csp_no_longer_allows_unsafe_inline_scripts() {
+        let (headers, _) = get_root().await;
+        let csp = headers
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok())
+            .expect("CSP header");
+
+        // `unsafe-inline` may still appear in style-src (Svelte scoped styles +
+        // style attributes); it must not appear in the script directive.
+        let script_src = csp
+            .split(';')
+            .find(|d| d.trim_start().starts_with("script-src"))
+            .expect("a script-src directive");
+        assert!(
+            !script_src.contains("unsafe-inline"),
+            "script-src must not allow inline scripts: {script_src:?}"
+        );
+        assert!(
+            script_src.contains("'nonce-"),
+            "script-src must carry a nonce: {script_src:?}"
+        );
+        assert!(script_src.contains("'self'"), "bundles still load: {script_src:?}");
+    }
+
+    #[tokio::test]
+    async fn the_header_nonce_matches_the_stamped_html() {
+        let (headers, body) = get_root().await;
+        if !body.contains("id=\"app\"") {
+            return; // no frontend build in this job — see the module docs
+        }
+
+        let nonce = header_nonce(&headers).expect("nonce in the CSP header");
+        assert!(!nonce.is_empty());
+        assert!(
+            body.contains(&format!("nonce=\"{nonce}\"")),
+            "the inline script must carry the very nonce the policy lists"
+        );
+        assert!(
+            !body.contains(NONCE_PLACEHOLDER),
+            "the placeholder must never reach the browser"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_response_gets_a_fresh_nonce() {
+        let (a, _) = get_root().await;
+        let (b, _) = get_root().await;
+        let na = header_nonce(&a).expect("nonce a");
+        let nb = header_nonce(&b).expect("nonce b");
+        assert_ne!(na, nb, "a reused nonce is as good as unsafe-inline");
+    }
+
+    #[test]
+    fn stamping_replaces_the_placeholder_and_leaves_other_markup_alone() {
+        let html = r#"<div id="app"></div><script nonce="__HV_CSP_NONCE__">boot()</script>"#;
+        let out = stamp_nonce(html, "deadbeef");
+        assert!(out.contains(r#"nonce="deadbeef""#));
+        assert!(out.contains(r#"<div id="app"></div>"#));
+        assert!(!out.contains(NONCE_PLACEHOLDER));
+    }
+
+    #[test]
+    fn a_nonce_is_128_bits_of_hex() {
+        let n = CspNonce::generate();
+        assert_eq!(n.as_str().len(), 32);
+        assert!(n.as_str().chars().all(|c| c.is_ascii_hexdigit()));
+    }
+}

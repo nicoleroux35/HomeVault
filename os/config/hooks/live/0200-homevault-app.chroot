@@ -1,0 +1,102 @@
+#!/bin/bash
+set -e
+
+# HomeVaultOS chroot hook — preinstall the HomeVault application exactly the
+# way installer/install.sh would on a plain system. The binary is already in
+# place (build.sh extracted the release tarball into includes.chroot/opt/
+# homevault/ before the chroot was assembled); the systemd units and the
+# udiskie config come from includes.chroot/. This hook mirrors the remaining
+# setup steps: directories, environment file, service configuration, and the
+# enable decisions (symlinks are preserved into the squashfs, so everything
+# is already running at first boot — nothing is downloaded at boot).
+
+INSTALL_DIR=/opt/homevault
+DATA_DIR=/var/lib/homevault
+
+chmod 0755 "$INSTALL_DIR/homevault"
+
+# Fail-fast on the one portability trap the ISO has: a binary built against a
+# newer glibc than the image's (Debian 12 = 2.36) crashes at startup with
+# `version GLIBC_2.3X not found` — exactly what happened when the release
+# tarball was packaged on an Ubuntu 24.04 host (see installer/install.sh
+# --package). Run it briefly with throwaway state; a glibc mismatch exits
+# immediately, a healthy binary is killed by the timeout after a few seconds.
+mkdir -p /tmp/hv-glibc-test
+HV_PROBE=$(timeout 6 env PORT=19999 DATA_DIRECTORY=/tmp/hv-glibc-test \
+    HOME=/tmp/hv-glibc-test "$INSTALL_DIR/homevault" 2>&1 | head -3) || true
+rm -rf /tmp/hv-glibc-test
+if echo "$HV_PROBE" | grep -q 'GLIBC_2.*not found'; then
+    echo "[hv-os] ERROR: the packaged binary was built against a newer glibc" >&2
+    echo "[hv-os]        than this image — it would crash on every boot." >&2
+    echo "$HV_PROBE" >&2
+    echo "[hv-os]        Build it in the oldest supported distro container:" >&2
+    echo "[hv-os]        docker run --rm -v \"\$PWD\":/repo -w /repo rust:1-bookworm cargo build --release --bin homevault" >&2
+    exit 1
+fi
+
+echo "[hv-os] ✓ binary runs on this OS base (glibc probe)"
+
+# Everything lives under /var/lib/homevault (same layout as install.sh):
+#   data/ SQLite + settings, compose/ Docker projects, apps/ app data,
+#   rescue/, syncthing/, logs/, quarantine/, vm/isos/ — plus system/ which is
+#   HomeVaultOS-specific (docker data-root, user homes).
+for sub in data compose apps rescue syncthing logs quarantine vm/isos \
+           system/docker system/home; do
+    mkdir -p "$DATA_DIR/$sub"
+done
+mkdir -p /home/homevault /etc/homevault
+# Mount point bases so the first RAID/pool/encrypted/rclone item doesn't fail.
+mkdir -p /mnt/raid /mnt/pools /mnt/encrypted /mnt/rclone
+
+touch /etc/homevault.env
+chmod 600 /etc/homevault.env
+
+# Enable the appliance stack — policy-rc.d blocks *starting* services inside
+# the chroot, `systemctl enable` only writes the symlinks that ship in the
+# squashfs, so the real start happens on (every) real boot.
+systemctl enable homevault.service
+systemctl enable homevault-firstboot.service
+systemctl enable udiskie.service
+# The system sshd stays DISABLED: the appliance exposes no shell access —
+# HomeVault's own SFTP subsystem runs a dedicated sshd instance on its own
+# port (src/sftp.rs), and the system unit would just crash-loop on the
+# stripped host keys until firstboot regenerates them.
+systemctl disable ssh.service 2>/dev/null || true
+systemctl enable docker.service 2>/dev/null || true
+systemctl enable NetworkManager.service 2>/dev/null || true
+systemctl enable avahi-daemon.service 2>/dev/null || true
+
+# --- SNMP: extend the default `systemonly` view (same drop-in install.sh
+# writes) so the Settings > Monitoring card shows interfaces and storage.
+if [ -d /etc/snmp ]; then
+    mkdir -p /etc/snmp/snmpd.conf.d
+    cat > /etc/snmp/snmpd.conf.d/homevault.conf <<'EOF'
+view systemonly included .1.3.6.1.2.1.2
+view systemonly included .1.3.6.1.2.1.25.2
+EOF
+fi
+
+# --- NUT: standalone mode + auto-detected USB UPS (same as install.sh).
+if [ -d /etc/nut ]; then
+    if ! grep -qE '^[[:space:]]*MODE[[:space:]]*=[[:space:]]*(standalone|netserver)' \
+            /etc/nut/nut.conf 2>/dev/null; then
+        if grep -qE '^[[:space:]]*MODE[[:space:]]*=' /etc/nut/nut.conf 2>/dev/null; then
+            sed -i 's/^[[:space:]]*MODE[[:space:]]*=.*/MODE=standalone/' /etc/nut/nut.conf
+        else
+            echo 'MODE=standalone' >> /etc/nut/nut.conf
+        fi
+    fi
+    if ! grep -qE '^[[:space:]]*\[' /etc/nut/ups.conf 2>/dev/null; then
+        cat >> /etc/nut/ups.conf <<'EOF'
+
+# HomeVaultOS — auto-detect a USB (HID) UPS.
+[ups]
+    driver = usbhid-ups
+    port = auto
+    desc = "HomeVault auto-detected USB UPS"
+EOF
+    fi
+    systemctl enable nut-driver.target nut-server >/dev/null 2>&1 || true
+fi
+
+echo "[hv-os] ✓ HomeVault application preinstalled and enabled"

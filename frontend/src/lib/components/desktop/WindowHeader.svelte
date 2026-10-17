@@ -354,7 +354,7 @@
     .hv-winhdr-tabs::-webkit-scrollbar { display: block; height: 3px; }
     .hv-winhdr-tabs::-webkit-scrollbar-thumb {
       background: var(--hv-shell-border);
-      border-radius: 3px;
+      border-radius: var(--hv-radius-sm);
     }
   }
 
@@ -399,7 +399,7 @@
     min-width: 17px;
     height: 17px;
     padding: 0 5px;
-    border-radius: 999px;
+    border-radius: var(--hv-radius-full);
     background: var(--hv-shell-fill);
     color: var(--hv-shell-text);
     font-size: var(--hv-font-size-micro);

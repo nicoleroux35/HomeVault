@@ -51,6 +51,15 @@ async fn rebuild_sftp_jails_best_effort(state: &AppState) {
     }
 }
 
+/// Rebuilds the in-process WebDAV listener after a share change, so a new or
+/// renamed share is reachable immediately.
+///
+/// Only a *running* server is reloaded (`crate::webdav::reload_if_running`):
+/// editing shares must never start a service the admin had turned off.
+async fn reload_webdav_best_effort(state: &std::sync::Arc<AppState>) {
+    crate::webdav::reload_if_running(state).await;
+}
+
 /// Body for creating a new share.
 #[derive(serde::Deserialize)]
 pub struct CreateShareRequest {
@@ -176,6 +185,9 @@ pub async fn handle_share_update(
             if share_type == ShareType::Sftp {
                 rebuild_sftp_jails_best_effort(&state).await;
             }
+            if share_type == ShareType::Webdav {
+                reload_webdav_best_effort(&state).await;
+            }
             ResponseHelper::json_success("Share updated successfully".to_string())
         }
         Err(e) => ResponseHelper::json_error(format!("Failed to update share: {}", e)),
@@ -220,6 +232,9 @@ pub async fn handle_share_create(
             if share_type == ShareType::Sftp {
                 rebuild_sftp_jails_best_effort(&state).await;
             }
+            if share_type == ShareType::Webdav {
+                reload_webdav_best_effort(&state).await;
+            }
             ResponseHelper::json_success("Share created successfully".to_string())
         }
         Err(e) => ResponseHelper::json_error(format!("Failed to create share: {}", e)),
@@ -250,6 +265,9 @@ pub async fn handle_share_delete(
             ));
             if share_type == ShareType::Sftp {
                 rebuild_sftp_jails_best_effort(&state).await;
+            }
+            if share_type == ShareType::Webdav {
+                reload_webdav_best_effort(&state).await;
             }
             ResponseHelper::json_success("Share deleted successfully".to_string())
         }
@@ -354,7 +372,8 @@ pub async fn handle_nfs_config_update(
     }
 }
 
-/// Starts a network share service (smbd, nfs-server, vsftpd, homevault-webdav).
+/// Starts a network share service (smbd, nfs-server, vsftpd, SFTP; WebDAV is
+/// in-process and handled before this call).
 #[axum_macros::debug_handler]
 pub async fn handle_share_service_start(
     State(state): State<Arc<AppState>>,
@@ -369,13 +388,27 @@ pub async fn handle_share_service_start(
         return ResponseHelper::json_error("Invalid share type".to_string());
     };
 
-    match SharesService::start_service(share_type) {
+    // WebDAV is served in-process, not by a systemd unit — driving it through
+    // `systemctl` would fail with "Unit homevault-webdav.service not found".
+    if share_type == ShareType::Webdav {
+        return match crate::webdav::WEBDAV.start(&state).await {
+            Ok(0) => ResponseHelper::json_success(
+                "No enabled WebDAV share yet — the server is not listening".to_string(),
+            ),
+            Ok(port) => {
+                ResponseHelper::json_success(format!("WebDAV service started on port {port}"))
+            }
+            Err(e) => ResponseHelper::json_error(format!("Failed to start WebDAV: {}", e)),
+        };
+    }
+
+    match SharesService::start_service(share_type.clone()) {
         Ok(_) => ResponseHelper::json_success("Service started".to_string()),
         Err(e) => ResponseHelper::json_error(format!("Failed to start service: {}", e)),
     }
 }
 
-/// Stops a network service (smbd, nfs-server, vsftpd, homevault-webdav).
+/// Stops a network service (smbd, nfs-server, vsftpd, WebDAV, SFTP).
 #[axum_macros::debug_handler]
 pub async fn handle_share_service_stop(
     State(state): State<Arc<AppState>>,
@@ -390,13 +423,20 @@ pub async fn handle_share_service_stop(
         return ResponseHelper::json_error("Invalid share type".to_string());
     };
 
-    match SharesService::stop_service(share_type) {
+    if share_type == ShareType::Webdav {
+        return match crate::webdav::WEBDAV.stop().await {
+            Ok(_) => ResponseHelper::json_success("WebDAV service stopped".to_string()),
+            Err(e) => ResponseHelper::json_error(format!("Failed to stop WebDAV: {}", e)),
+        };
+    }
+
+    match SharesService::stop_service(share_type.clone()) {
         Ok(_) => ResponseHelper::json_success("Service stopped".to_string()),
         Err(e) => ResponseHelper::json_error(format!("Failed to stop service: {}", e)),
     }
 }
 
-/// Restarts a network service (smbd, nfs-server, vsftpd, homevault-webdav).
+/// Restarts a network service (smbd, nfs-server, vsftpd, WebDAV, SFTP).
 #[axum_macros::debug_handler]
 pub async fn handle_share_service_restart(
     State(state): State<Arc<AppState>>,
@@ -411,7 +451,19 @@ pub async fn handle_share_service_restart(
         return ResponseHelper::json_error("Invalid share type".to_string());
     };
 
-    match SharesService::restart_service(share_type) {
+    if share_type == ShareType::Webdav {
+        return match crate::webdav::WEBDAV.reload(&state).await {
+            Ok(0) => ResponseHelper::json_success(
+                "No enabled WebDAV share — the server is not listening".to_string(),
+            ),
+            Ok(port) => {
+                ResponseHelper::json_success(format!("WebDAV service restarted on port {port}"))
+            }
+            Err(e) => ResponseHelper::json_error(format!("Failed to restart WebDAV: {}", e)),
+        };
+    }
+
+    match SharesService::restart_service(share_type.clone()) {
         Ok(_) => ResponseHelper::json_success("Service restarted".to_string()),
         Err(e) => ResponseHelper::json_error(format!("Failed to restart service: {}", e)),
     }
@@ -478,7 +530,15 @@ pub async fn handle_webdav_config_update(
     }
 
     match SharesService::save_webdav_config(&req) {
-        Ok(_) => ResponseHelper::json_success("WebDAV config updated".to_string()),
+        Ok(_) => {
+            // Rebuild the in-process listener from the new config: saving the
+            // settings is the admin's explicit "apply" action, so it starts
+            // (or restarts) the server just like the old systemd unit did.
+            if let Err(e) = crate::webdav::WEBDAV.reload(&state).await {
+                tracing::warn!("WebDAV: reload after config save failed: {e}");
+            }
+            ResponseHelper::json_success("WebDAV config updated".to_string())
+        }
         Err(e) => ResponseHelper::json_error(format!("Failed to save WebDAV config: {}", e)),
     }
 }

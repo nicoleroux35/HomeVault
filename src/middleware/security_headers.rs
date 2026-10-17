@@ -36,18 +36,33 @@ pub struct ArrivedOverTls;
 
 /// Inject security-related HTTP headers into every response (CSP, HSTS, etc.).
 pub async fn security_headers_middleware(
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
     let over_tls = request.extensions().get::<ArrivedOverTls>().is_some();
+
+    // One nonce per response. It is put on the *request* so the SPA handler can
+    // stamp the inline boot script in `index.html` with the very value the
+    // policy below will list — the two must match or the shell never boots.
+    let nonce = crate::middleware::csp_nonce::CspNonce::generate();
+    request
+        .extensions_mut()
+        .insert(nonce.clone());
+
     let mut response = next.run(request).await;
 
     let headers = response.headers_mut();
 
     // CSP: restrict sources to reduce XSS risk.
-    // - script/style 'unsafe-inline': the bundled SPA ships inline boot code
-    //   and Svelte scoped styles; tightening to nonces/hashes is tracked
-    //   separately.
+    // - script-src uses a per-response nonce, NOT 'unsafe-inline'. The only
+    //   inline script in the bundle is the service-worker registration in
+    //   `index.html`; it carries `nonce="__HV_CSP_NONCE__"`, which the SPA
+    //   handler replaces with the value generated for this response. With
+    //   'unsafe-inline' plus the session token in localStorage, any injected
+    //   script could have exfiltrated a full session.
+    // - style-src keeps 'unsafe-inline': Svelte emits scoped <style> blocks and
+    //   components set `style="..."` attributes, which a nonce cannot cover.
+    //   Accepted, documented debt — CSS cannot read the session token.
     // - connect-src is an explicit allow-list: 'self' + the app's own
     //   WebSocket (terminal/SSE) + the two third parties the browser talks
     //   to directly and deliberately (Open-Meteo for the Weather widget,
@@ -56,21 +71,22 @@ pub async fn security_headers_middleware(
     // - frame-src http/https: the Docker app-proxy "Open" feature embeds
     //   container web UIs.
     // - frame-ancestors 'none': nobody may embed HomeVault (clickjacking).
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(
-            "default-src 'self'; \
-             script-src 'self' 'unsafe-inline'; \
-             style-src 'self' 'unsafe-inline'; \
-             font-src 'self'; \
-             img-src 'self' data: blob: https:; \
-             connect-src 'self' ws: wss: https://api.open-meteo.com https://geocoding-api.open-meteo.com https://ipwho.is; \
-             frame-src 'self' http: https:; \
-             base-uri 'self'; \
-             form-action 'self'; \
-             frame-ancestors 'none';"
-        ),
+    let csp = format!(
+        "default-src 'self'; \
+         script-src 'self' 'nonce-{nonce}'; \
+         style-src 'self' 'unsafe-inline'; \
+         font-src 'self'; \
+         img-src 'self' data: blob: https:; \
+         connect-src 'self' ws: wss: https://api.open-meteo.com https://geocoding-api.open-meteo.com https://ipwho.is; \
+         frame-src 'self' http: https:; \
+         base-uri 'self'; \
+         form-action 'self'; \
+         frame-ancestors 'none';",
+        nonce = nonce.as_str()
     );
+    if let Ok(value) = HeaderValue::from_str(&csp) {
+        headers.insert(header::CONTENT_SECURITY_POLICY, value);
+    }
 
     // HSTS: instruct browsers to always use HTTPS — but only once this instance
     // actually serves HTTPS. A browser ignores HSTS received over plain HTTP,

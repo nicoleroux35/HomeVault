@@ -91,7 +91,7 @@
   .hv-whats-new-version {
     align-self: flex-start;
     padding: 0.125rem 0.5rem;
-    border-radius: 999px;
+    border-radius: var(--hv-radius-full);
     background: var(--hv-primary-selected-bg);
     color: var(--hv-primary);
     font-size: var(--hv-text-sm, 0.8125rem);

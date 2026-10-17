@@ -24,22 +24,25 @@
  * =============================================================================
  */
 
-//! HTTP middleware: logging, rate limiting, CSRF protection, fail2ban, and security headers.
+//! HTTP middleware: logging, rate limiting, CSRF protection, the first-run
+//! setup guard, and security headers.
 
 pub mod contract;
+pub mod csp_nonce;
 pub mod csrf;
-pub mod fail2ban;
 pub mod https_redirect;
 pub mod logging;
+pub mod peer_addr;
 pub mod rate_limit;
 pub mod security_headers;
 pub mod setup_guard;
 
 pub use contract::contract_middleware;
+pub use csp_nonce::{stamp_nonce, CspNonce, NONCE_PLACEHOLDER};
 pub use csrf::csrf_middleware;
-pub use fail2ban::Fail2BanState;
 pub use https_redirect::{https_redirect_middleware, HttpsRedirect};
 pub use logging::logging_middleware;
+pub use peer_addr::PeerAddr;
 pub use rate_limit::rate_limit_middleware;
 pub use security_headers::{security_headers_middleware, ArrivedOverTls};
 pub use setup_guard::setup_guard_middleware;

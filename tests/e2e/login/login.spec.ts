@@ -1102,59 +1102,183 @@ test.describe('13 — Accessibility', () => {
     }
   });
 
-  // 2026-09-23 standardization: `--hv-login-accent` and its `soft-border`
-  // variant both render as TEXT (wizard step labels, the "Welcome" kicker,
-  // the completed-step label) and both gradients carry white glyphs/labels
-  // (logo tile step number, sign-in button), so the whole ladder must clear
-  // 4.5:1 against white (1.4.3). The old indigo-500 (4.47:1) and violet-400
-  // (2.72:1) did not. Values are read from the live :root, never hardcoded.
-  test('13.6 — the login accent ladder clears 4.5:1 wherever it carries text', async ({ page }) => {
+  // 2026-10-17: the login and setup-wizard screens used to run a second,
+  // page-scoped identity (an indigo/violet pastel "gateway"). They now derive
+  // from the Appliance palette the desktop shell uses — one accent, one ink
+  // ramp, one canvas — so this test guards two things: that the aliases still
+  // point at the brand tokens, and that every gateway value which carries ink
+  // clears its WCAG floor. Values are read from the live :root through a probe
+  // element (a token that is an alias must be measured as its colour, not as
+  // the `var(...)` text) and never hardcoded.
+  test('13.6 — the gateway palette derives from the Appliance palette and clears every contrast floor', async ({ page }) => {
     await gotoLogin(page);
-    const tokens = await page.evaluate(() => {
-      const cs = getComputedStyle(document.documentElement);
-      const get = (n: string) => cs.getPropertyValue(n).trim();
-      return {
-        accent: get('--hv-login-accent'),
-        deep: get('--hv-login-accent-deep'),
-        soft: get('--hv-login-accent-soft'),
-        softBorder: get('--hv-login-accent-soft-border'),
-        logoGrad: get('--hv-login-logo-grad'),
-        btnGrad: get('--hv-login-btn-grad'),
-      };
-    });
 
-    const lum = (hex: string): number => {
-      const h = hex.replace('#', '');
-      const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
-      const ch = (i: number) => {
-        const c = parseInt(full.slice(i, i + 2), 16) / 255;
-        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-      };
-      return 0.2126 * ch(0) + 0.7152 * ch(2) + 0.0722 * ch(4);
+    const colorTokens = [
+      '--hv-primary',
+      '--hv-login-accent',
+      '--hv-login-accent-deep',
+      '--hv-login-accent-soft',
+      '--hv-login-accent-soft-border',
+      '--hv-login-clock',
+      '--hv-login-muted',
+      '--hv-login-field-bg',
+      '--hv-login-error',
+      '--hv-wizard-text-heading',
+      '--hv-wizard-text-title',
+      '--hv-wizard-text-label',
+      '--hv-wizard-text-soft',
+      '--hv-wizard-text-body',
+      '--hv-wizard-success',
+      '--hv-wizard-success-strong',
+      '--hv-wizard-feature-emerald',
+      '--hv-wizard-feature-violet',
+      '--hv-wizard-error',
+      '--hv-wizard-strength-mid',
+      '--hv-wizard-recovery-border',
+      '--hv-wizard-recovery-title',
+      '--hv-wizard-recovery-desc',
+      '--hv-wizard-recovery-code-bg',
+      '--hv-wizard-recovery-code-text',
+    ];
+    const imageTokens = [
+      '--hv-login-bg-gradient',
+      '--hv-desktop-bg',
+      '--hv-login-logo-grad',
+      '--hv-login-btn-grad',
+      '--hv-wizard-create-grad',
+    ];
+
+    const probe = await page.evaluate(
+      ({ colors, images }: { colors: string[]; images: string[] }) => {
+        const el = document.createElement('span');
+        el.style.display = 'none';
+        document.body.appendChild(el);
+        const out: { colors: Record<string, string>; images: Record<string, string> } = {
+          colors: {},
+          images: {},
+        };
+        for (const n of colors) {
+          el.style.color = `var(${n})`;
+          out.colors[n] = getComputedStyle(el).color;
+        }
+        for (const n of images) {
+          el.style.backgroundImage = `var(${n})`;
+          out.images[n] = getComputedStyle(el).backgroundImage;
+        }
+        el.remove();
+        return out;
+      },
+      { colors: colorTokens, images: imageTokens },
+    );
+
+    type Rgb = [number, number, number];
+    const parse = (value: string): Rgb => {
+      const m = value.match(/rgba?\(([^)]+)\)/);
+      if (!m) throw new Error(`not a resolved colour: ${value}`);
+      const p = m[1].split(/[\s,/]+/).filter(Boolean).map(Number);
+      return [p[0], p[1], p[2]];
     };
-    const ratio = (a: string, b: string): number => {
+    const lum = ([r, g, b]: Rgb): number => {
+      const ch = (v: number) => {
+        const s = v / 255;
+        return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b);
+    };
+    const ratio = (a: Rgb, b: Rgb): number => {
       const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
       return Math.round(((hi + 0.05) / (lo + 0.05)) * 100) / 100;
     };
+    const tok = (n: string) => parse(probe.colors[n]);
+    const WHITE: Rgb = [255, 255, 255];
 
-    // Text usages: step labels / kicker on the white card, the step number
-    // inside the `accent-soft` circle.
-    expect(ratio(tokens.accent, '#ffffff'), '--hv-login-accent on white').toBeGreaterThanOrEqual(4.5);
-    expect(ratio(tokens.deep, '#ffffff'), '--hv-login-accent-deep on white').toBeGreaterThanOrEqual(4.5);
-    expect(ratio(tokens.softBorder, '#ffffff'), 'soft-border (completed-step text) on white').toBeGreaterThanOrEqual(4.5);
-    expect(ratio(tokens.accent, tokens.soft), 'step number: accent on accent-soft').toBeGreaterThanOrEqual(4.5);
+    // ONE accent — the gateway accent IS the brand accent, and `soft-border`
+    // (a completed step's text plus its circle outline) is the same hue, so
+    // the product no longer carries a second, indigo identity.
+    expect(probe.colors['--hv-login-accent'], '--hv-login-accent is the brand accent').toBe(
+      probe.colors['--hv-primary'],
+    );
+    expect(probe.colors['--hv-login-accent-soft-border'], 'soft-border is the brand accent').toBe(
+      probe.colors['--hv-primary'],
+    );
 
-    // White glyph/label on every stop of the two gradients.
-    for (const [name, grad] of [
-      ['logo', tokens.logoGrad],
-      ['button', tokens.btnGrad],
-    ] as const) {
-      const stops = grad.match(/#[0-9a-fA-F]{6}\b/g) ?? [];
-      expect(stops.length, `${name} gradient stops`).toBeGreaterThanOrEqual(2);
+    // ONE canvas — the login and the wizard paint the desktop's own gradient.
+    expect(probe.images['--hv-login-bg-gradient'], 'gateway canvas = desktop canvas').toBe(
+      probe.images['--hv-desktop-bg'],
+    );
+
+    // Text on the white card (1.4.3 → 4.5:1).
+    for (const n of [
+      '--hv-login-accent',
+      '--hv-login-accent-deep',
+      '--hv-login-accent-soft-border',
+      '--hv-login-clock',
+      '--hv-login-muted',
+      '--hv-login-error',
+      '--hv-wizard-text-heading',
+      '--hv-wizard-text-title',
+      '--hv-wizard-text-label',
+      '--hv-wizard-text-soft',
+      '--hv-wizard-text-body',
+      '--hv-wizard-success',
+      '--hv-wizard-success-strong',
+      '--hv-wizard-feature-emerald',
+      '--hv-wizard-error',
+      '--hv-wizard-strength-mid',
+      '--hv-wizard-recovery-border',
+      '--hv-wizard-recovery-title',
+      '--hv-wizard-recovery-desc',
+    ]) {
+      expect(ratio(tok(n), WHITE), `${n} on white`).toBeGreaterThanOrEqual(4.5);
+    }
+
+    // ... and on the tints they actually sit on: the step-number circle, the
+    // login field fill, the amber recovery chip.
+    expect(ratio(tok('--hv-login-accent'), tok('--hv-login-accent-soft')), 'accent on accent-soft').toBeGreaterThanOrEqual(4.5);
+    expect(ratio(tok('--hv-login-muted'), tok('--hv-login-field-bg')), 'muted on the field fill').toBeGreaterThanOrEqual(4.5);
+    expect(
+      ratio(tok('--hv-wizard-recovery-code-text'), tok('--hv-wizard-recovery-code-bg')),
+      'recovery code on the chip tint',
+    ).toBeGreaterThanOrEqual(4.5);
+
+    // A welcome feature glyph is a graphical object (1.4.11 → 3:1): it renders
+    // on the white card and on its own 8% `color-mix` tint.
+    expect(ratio(tok('--hv-wizard-feature-violet'), WHITE), 'feature violet glyph').toBeGreaterThanOrEqual(3);
+
+    // White glyph/label on every stop of the three gradients (logo tile, CTA,
+    // "create account").
+    for (const n of ['--hv-login-logo-grad', '--hv-login-btn-grad', '--hv-wizard-create-grad']) {
+      const stops = (probe.images[n].match(/rgba?\([^)]*\)/g) ?? []).map((v) => parse(v));
+      expect(stops.length, `${n} stops`).toBeGreaterThanOrEqual(2);
       for (const stop of stops) {
-        expect(ratio('#ffffff', stop), `${name} stop ${stop} under white`).toBeGreaterThanOrEqual(4.5);
+        expect(ratio(WHITE, stop), `${n} stop under white`).toBeGreaterThanOrEqual(4.5);
       }
     }
+  });
+
+  test('13.7 — the gateway corners use the standard stops (card 16px, fields 8px)', async ({ page }) => {
+    await gotoLogin(page);
+    const state = await detectState(page);
+    if (state === 'error') return; // no gateway card is rendered in the error state
+
+    // Wizard state: the setup card is a desktop-window surface (--hv-radius-2xl).
+    const setupCard = page.locator('[data-testid="setup-card"]');
+    if (await setupCard.isVisible().catch(() => false)) {
+      const cardRadius = await setupCard.evaluate((el) =>
+        parseFloat(getComputedStyle(el).borderRadius),
+      );
+      expect(cardRadius, 'setup card corner (--hv-radius-2xl)').toBe(16);
+      return;
+    }
+
+    // Login state: the username field wrapper is the control stop
+    // (--hv-radius-control), matching the shared Input/Button.
+    const username = page.locator('#username');
+    await expect(username).toBeVisible();
+    const fieldRadius = await username.evaluate((el) =>
+      parseFloat(getComputedStyle(el.parentElement as HTMLElement).borderRadius),
+    );
+    expect(fieldRadius, 'login field corner (--hv-radius-control)').toBe(8);
   });
 });
 
@@ -1773,8 +1897,8 @@ test.describe.serial('23 — Non-admin login', () => {
 
 test.describe.serial('24 — Recovery-code reset (end to end)', () => {
   const user = `rec_${Date.now()}`;
-  const oldPass = 'OldRecP1a';
-  const newPass = 'NewRecP2b';
+  const oldPass = 'OldRecPassw0rd1';
+  const newPass = 'NewRecPassw0rd2';
   let created = false;
   let recoveryCode = '';
   let ctx: APIRequestContext;
@@ -1874,5 +1998,159 @@ test.describe.serial('24 — Recovery-code reset (end to end)', () => {
       data: { username: user, recovery_code: recoveryCode },
     });
     expect((await res.json())?.data?.valid).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 25. Lockout & throttle hardening (2026-10-17)
+// ---------------------------------------------------------------------------
+//
+// Five wrong passwords used to set `users.locked` and never clear it: on a
+// single-admin appliance that bricked the only account, with "temporarily
+// locked" in the message. The lock now records `locked_until` and lifts itself,
+// the message points at the recovery-code path, and a per-client-IP throttle
+// covers password spraying (one password across many usernames), which the
+// per-account counter could never see.
+
+test.describe('25 — Lockout hardening', () => {
+  // Pin the browser locale: 25.3 asserts on the locked-account copy, which is
+  // translated (the SPA follows navigator.language, i.e. the OS locale).
+  test.use({ locale: 'en-US' });
+
+  test('25.1 — the inline error is an assertive live region', async ({ page }) => {
+    await page.goto('/login');
+    await page.waitForSelector('#username', { timeout: 15_000 });
+
+    await page.fill('#username', 'no_such_user_e2e');
+    await page.fill('#password', 'WrongPassw0rd1');
+    await page.locator('form button[type="submit"]').first().click();
+    await page.waitForTimeout(2_000);
+
+    const inline = page.locator('#login-inline-error');
+    await expect(inline).toBeVisible({ timeout: 8_000 });
+    expect(await inline.getAttribute('role')).toBe('alert');
+    expect(await inline.getAttribute('aria-live')).toBe('assertive');
+    // ... and the fields point at it, so a screen reader reads the reason.
+    expect(await page.locator('#username').getAttribute('aria-invalid')).toBe('true');
+    expect(await page.locator('#username').getAttribute('aria-describedby')).toBe(
+      'login-inline-error',
+    );
+    await dismissModal(page);
+  });
+
+  test('25.2 — closing the error modal returns focus to the form', async ({ page }) => {
+    await page.goto('/login');
+    await page.waitForSelector('#username', { timeout: 15_000 });
+
+    await page.fill('#username', 'no_such_user_e2e');
+    await page.fill('#password', 'WrongPassw0rd1');
+    await page.locator('form button[type="submit"]').first().click();
+    await page.waitForTimeout(2_000);
+
+    await expect(page.locator('[data-testid="login-error-msg"]')).toBeVisible({ timeout: 8_000 });
+    await dismissModal(page);
+    await page.waitForTimeout(1_200);
+
+    // Never stranded on <body>: WCAG 2.4.3 / the project's overlay invariant.
+    const focused = await page.evaluate(() => {
+      const el = document.activeElement as HTMLElement | null;
+      return el ? `${el.tagName.toLowerCase()}#${el.id}` : 'none';
+    });
+    expect(focused).not.toBe('body#');
+    expect(focused).toMatch(/^(input|button)/);
+  });
+
+  test('25.3 — five wrong passwords lock the account, and the copy explains how to get back in', async ({
+    page,
+    playwright,
+  }) => {
+    // The lockout *expiry* is pinned by the Rust suites
+    // (`test_expired_temporary_lock_lifts_itself_on_login`,
+    // `test_admin_lock_without_expiry_is_permanent`) — waiting five real minutes
+    // is not an option here. What this covers is what a user actually sees.
+    const { ctx, headers } = await adminSession(playwright);
+    const user = `lock_${Date.now()}`;
+    const pass = 'LockoutPassw0rd1';
+    let created = false;
+    try {
+      created = await createViewer(ctx, headers, user, pass);
+      test.skip(!created, 'could not create a throwaway account');
+
+      await gotoLogin(page);
+      if ((await detectState(page)) !== 'login') return;
+
+      // Four wrong passwords → still a plain credentials error.
+      for (let i = 0; i < 4; i++) {
+        await fillAndSubmit(page, user, 'WrongPassw0rd9');
+        await page.waitForTimeout(1_200);
+        await dismissModal(page);
+      }
+
+      // The fifth trips the lock: the message must say so AND point at the way
+      // back in (wait, or the recovery code) — not "contact support".
+      await fillAndSubmit(page, user, 'WrongPassw0rd9');
+      const msg = page.locator('[data-testid="login-error-msg"]');
+      await expect(msg).toBeVisible({ timeout: 10_000 });
+      const text = (await msg.textContent()) || '';
+      expect(text.toLowerCase()).toMatch(/lock/);
+      expect(text.toLowerCase()).toMatch(/5 minutes|recovery code|forgot/);
+      expect(text.toLowerCase()).not.toMatch(/contact support/);
+      await dismissModal(page);
+
+      // The account really is locked: even the right password is refused.
+      const still = await ctx.post('/api/auth/login', {
+        data: { username: user, password: pass },
+      });
+      expect(still.status()).not.toBe(200);
+    } finally {
+      if (created) await deleteUser(ctx, headers, user).catch(() => {});
+      await ctx.dispose();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 26. Plain-HTTP warning (2026-10-17)
+// ---------------------------------------------------------------------------
+//
+// Over `http://` the admin password crosses the network in clear and the
+// browser says nothing. The banner is the only signal the operator gets; it is
+// shown for a real network host and deliberately suppressed on loopback, where
+// nothing leaves the machine. `--host-resolver-rules` maps a fake LAN name onto
+// 127.0.0.1 so a "non-loopback" hostname can be exercised without a real box.
+
+test.describe('26 — Plain-HTTP warning', () => {
+  // `test.use({ launchOptions })` is rejected inside a describe (it would force a
+  // new worker), so the LAN-named browser is launched per test instead.
+  test('26.1 — a non-loopback host over HTTP shows the warning', async ({ playwright, baseURL }) => {
+    const browser = await playwright.chromium.launch({
+      args: ['--host-resolver-rules=MAP homevault.test 127.0.0.1'],
+    });
+    try {
+      const ctx = await browser.newContext({ locale: 'en-US' });
+      const page = await ctx.newPage();
+      const port = new URL(baseURL || 'http://127.0.0.1:8080').port || '8080';
+      await page.goto(`http://homevault.test:${port}/login`);
+      if (!(await page.locator('#username').isVisible().catch(() => false))) {
+        test.skip(true, 'homevault.test is not reachable in this environment');
+      }
+
+      const banner = page.locator('[data-testid="login-insecure-banner"]');
+      await expect(banner).toBeVisible({ timeout: 8_000 });
+      // Announced, not just painted.
+      expect(await banner.getAttribute('role')).toBe('status');
+      // Translated copy, never a raw key.
+      const text = (await banner.textContent())?.trim() || '';
+      expect(text.length).toBeGreaterThan(20);
+      expect(text).not.toMatch(/^login\./);
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test('26.2 — loopback is exempt (nothing leaves the machine)', async ({ page }) => {
+    await page.goto('/login');
+    await page.waitForSelector('#username', { timeout: 15_000 });
+    await expect(page.locator('[data-testid="login-insecure-banner"]')).toHaveCount(0);
   });
 });

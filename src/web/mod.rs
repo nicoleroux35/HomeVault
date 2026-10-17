@@ -54,7 +54,7 @@ use crate::handlers::{
         handle_2fa_setup, handle_2fa_verify, handle_check_username, handle_generate_recovery_code,
         handle_get_current_user, handle_login, handle_logout, handle_reset_password_recovery,
         handle_setup, handle_setup_progress_get, handle_setup_progress_put,
-        handle_setup_rebaseline, handle_setup_status, handle_setup_storage_options,
+        handle_setup_rebaseline, handle_setup_status,
         handle_setup_verify_totp, handle_verify_recovery_code,
     },
     avatars::{handle_avatar_preview, handle_update_my_avatar, handle_user_avatar},
@@ -524,6 +524,18 @@ pub fn create_app(state: AppStateArc) -> Router {
             get(crate::handlers::tls::handle_tls_settings_get)
                 .put(crate::handlers::tls::handle_tls_settings_update),
         )
+        // Settings - snapshots of HomeVault's own database (admin-only). The
+        // database runs in WAL mode, so the `.db` file alone is not a backup;
+        // these produce and list `VACUUM INTO` snapshots.
+        .route(
+            "/api/settings/backup/db",
+            get(crate::handlers::db_backup::handle_db_backup_status)
+                .put(crate::handlers::db_backup::handle_db_backup_settings_update),
+        )
+        .route(
+            "/api/settings/backup/db/now",
+            post(crate::handlers::db_backup::handle_db_backup_now),
+        )
         .route(
             "/api/settings/tls/regenerate",
             post(crate::handlers::tls::handle_tls_regenerate),
@@ -649,6 +661,19 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/dashboard/health", get(handle_health_data))
         .route("/api/dashboard/server-details", get(handle_server_details))
         .route("/api/health", get(handle_health_endpoint))
+        // Public liveness/readiness probes for external monitoring. Deliberately
+        // unauthenticated and deliberately terse: no hostname, no disk names,
+        // no version, no machine id. `/api/health` above stays authenticated
+        // and detailed — it answers 200 even when the DB is unusable, which is
+        // exactly why a monitor cannot be built on it.
+        .route(
+            "/api/health/live",
+            get(crate::handlers::health_probe::handle_health_live),
+        )
+        .route(
+            "/api/health/ready",
+            get(crate::handlers::health_probe::handle_health_ready),
+        )
         // Docker
         .route("/api/docker/info", get(handle_docker_info))
         .route("/api/docker/containers", get(handle_docker_containers_list))
@@ -1505,10 +1530,6 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/auth/setup/progress",
             get(handle_setup_progress_get).put(handle_setup_progress_put),
         )
-        .route(
-            "/api/auth/setup/storage-options",
-            get(handle_setup_storage_options),
-        )
         .route_layer(axum::middleware::from_fn(
             crate::middleware::setup_guard_middleware,
         ))
@@ -1630,6 +1651,7 @@ pub fn create_app(state: AppStateArc) -> Router {
 /// Initialize the database, auth service, and HTTP server, then start listening.
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use crate::config::Settings;
+    use crate::storage::database::DbError;
     use crate::storage::Database;
     use tracing_subscriber::layer::{Layer, SubscriberExt};
     use tracing_subscriber::util::SubscriberInitExt;
@@ -1694,12 +1716,89 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
 
     tracing::info!("Opening database at {}", db_path.display());
+    // An existing file means there may be something to migrate — and therefore
+    // something worth snapshotting before we touch it. A brand-new database has
+    // nothing to lose, so it gets no pre-migration snapshot.
+    let database_existed = db_path.exists();
     let db = Database::new(&db_url).await?;
-    db.run_migrations().await?;
+
+    // Snapshot before applying anything. An upgrade that goes wrong then always
+    // has a point to come back to, and it is the only moment the pre-upgrade
+    // state is still reachable. Best-effort: a snapshot failure must not stop a
+    // migration the operator may be depending on to boot.
+    if database_existed {
+        let pending = db.pending_migrations().await;
+        if !pending.is_empty() {
+            tracing::info!(
+                count = pending.len(),
+                "Pending migrations — taking a pre-migration snapshot"
+            );
+            match crate::db_backup::snapshot_before_migration(
+                &db,
+                &crate::config::paths::db_backup_dir(),
+            )
+            .await
+            {
+                Ok(path) => tracing::info!(path = %path.display(), "Pre-migration snapshot written"),
+                Err(e) => tracing::warn!(error = %e, "Pre-migration snapshot failed"),
+            }
+        }
+    }
+
+    // Point 2 of the production-readiness pass: an older binary must not run
+    // against a newer schema (migrations are append-only and never reverted).
+    // `run_migrations` refuses in that case; surface it as a clear, fatal
+    // startup error instead of a mystery on the first query.
+    match db.run_migrations().await {
+        Ok(()) => {}
+        Err(DbError::SchemaTooNew {
+            db_version,
+            binary_version,
+        }) => {
+            tracing::error!(
+                db_schema = db_version,
+                binary_schema = binary_version,
+                "Refusing to start: the database was written by a newer HomeVault. \
+                 Reinstall the newer version, or restore a snapshot from \
+                 data/backups/ taken before the upgrade."
+            );
+            return Err("Database schema is newer than this HomeVault build".into());
+        }
+        Err(e) => return Err(e.into()),
+    }
     db.migrate_roles_005().await?;
+    // Record what this binary brought the file to, so a later downgrade is
+    // detected instead of corrupting data quietly.
+    if let Err(e) = db.record_schema_version().await {
+        tracing::warn!(error = %e, "Could not record the schema version");
+    }
+
+    // Point 7: a fast structural check at boot. A damaged file is logged and
+    // surfaced through `/api/health/ready`, but never blocks startup — a
+    // degraded appliance that can still export its data beats one that refuses
+    // to boot.
+    match db.quick_check().await {
+        Ok(result) => crate::handlers::health_probe::record_integrity_result(&result),
+        Err(e) => tracing::warn!(error = %e, "Database integrity check could not run"),
+    }
+
+    // Point 1: snapshot the database at startup when the last one is older than
+    // the interval. Best-effort — the appliance must still boot if the backup
+    // directory is unwritable.
+    if database_existed {
+        let backup_service = crate::db_backup::DbBackupService::new(db.clone());
+        backup_service.backup_if_due().await;
+    }
 
     let auth_service = crate::auth::AuthService::new(db.clone());
     auth_service.init().await?;
+
+    // A first-run setup that was interrupted (OOM kill, systemd restart, power
+    // cut) leaves `.setup_lock` behind; without this the wizard would keep
+    // showing while every submission answered "Setup is already in progress".
+    // `mark_setup_in_progress` also reclaims a stale lock on demand, so this is
+    // the fast path at boot, not the only line of defence.
+    crate::setup::SetupService::cleanup_stale_setup_lock();
 
     // Settings persistence must be initialised before the first load.
     // It writes to `{base}/data/settings.json`, so we pass the base directory.
@@ -1741,6 +1840,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ransomware_watch_rx,
     ));
     tokio::spawn(crate::restic_scheduler::run_scheduler_loop(state.clone()));
+    // Snapshots of HomeVault's own database (WAL mode: the `.db` file alone is
+    // not restorable) plus the periodic WAL checkpoint that keeps `-wal` bounded.
+    tokio::spawn(crate::db_backup::DbBackupService::new(db.clone()).run_scheduler_loop());
     tokio::spawn(crate::cache_scheduler::run_scheduler_loop(state.clone()));
     tokio::spawn(crate::antivirus_scheduler::run_scheduler_loop(
         state.clone(),
@@ -1841,6 +1943,20 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .await;
     });
+
+    // Built-in WebDAV server (in-process, `crate::webdav`): drop the legacy
+    // generated Python/systemd service on an upgraded host, then start it when
+    // at least one enabled WebDAV share exists. A failure to bind is logged
+    // and never stops the rest of HomeVault.
+    crate::webdav::cleanup_legacy_service();
+    {
+        let webdav_state = state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::webdav::WEBDAV.start(&webdav_state).await {
+                tracing::warn!("WebDAV: startup failed: {e}");
+            }
+        });
+    }
 
     // Progress job map (compress/extract/copy/move, restic, rescue) is only
     // ever pruned on explicit cancellation — without this, completed/failed

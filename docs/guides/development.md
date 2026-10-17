@@ -48,6 +48,19 @@ Without `HV_VM_BASE_URL` every VM spec skips itself with a message, so the
 suite can sit in the repo (and in an optional CI job) without failing on a
 machine that has no VM. `HV_VM_HOSTNAME` is only used by the mDNS assertion.
 
+## Server environment variables
+
+Read by the running binary (not by `dev-instance.sh`):
+
+| Variable | Effect |
+|----------|--------|
+| `PORT` | HTTP listen port (default 8080) |
+| `DATA_DIRECTORY` | data root (default `/var/lib/homevault`) — DB, uploads, logs |
+| `HV_MDNS_HOSTNAME` | `.local` name (default `homevault`) |
+| `LOG_LEVEL` | tracing filter (default `info`) |
+| `HOMEVAULT_SETUP_ALLOW_REMOTE` | `1`/`true`/`yes` lifts the **local-network** check on the first-run bootstrap routes — the same-origin and rate-limit checks still apply (see `setup-wizard.md`) |
+| `HOMEVAULT_TRUSTED_PROXIES` | comma-separated IPs whose `X-Forwarded-For` / `X-Real-IP` are believed for the client IP used by the login throttle and the audit history. A **loopback** peer is always trusted (a reverse proxy on this host); every other peer's headers are ignored (see `auth.md`) |
+
 ## Versioned client/server contract
 
 The SPA and backend ship together, but a cached bundle can outlive an update.

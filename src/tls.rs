@@ -99,7 +99,7 @@ pub enum TlsMode {
 
 /// Persisted TLS settings (`data/tls.json`). Contains file *paths* only — never
 /// a private key or any other secret — so it needs no export redaction.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsSettings {
     pub enabled: bool,
     /// `None` -> [`DEFAULT_HTTPS_PORT`].
@@ -108,7 +108,37 @@ pub struct TlsSettings {
     pub cert_path: Option<String>,
     pub key_path: Option<String>,
     /// Redirect non-loopback plain-HTTP requests to HTTPS with a 301.
+    ///
+    /// `serde(default)` so a `data/tls.json` written before this field existed
+    /// deserializes to the safe default (`true`) instead of failing or, worse,
+    /// silently reading as `false`.
+    #[serde(default = "redirect_default")]
     pub redirect: bool,
+}
+
+/// Serde default for [`TlsSettings::redirect`].
+fn redirect_default() -> bool {
+    true
+}
+
+impl Default for TlsSettings {
+    /// Redirect-on by default, and only meaningful when `enabled` is set.
+    ///
+    /// Leaving it off meant that enabling HTTPS produced a server that still
+    /// happily served the login form — and the admin password — in clear on
+    /// port 8080, with no indication anything was wrong. An operator who
+    /// deliberately wants both listeners sets `TLS_REDIRECT=0` (or clears the
+    /// toggle in Settings).
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            https_port: None,
+            mode: TlsMode::default(),
+            cert_path: None,
+            key_path: None,
+            redirect: true,
+        }
+    }
 }
 
 impl TlsSettings {
@@ -552,6 +582,27 @@ mod tests {
 
     /// `DATA_DIRECTORY` is process-global; serialise the tests that mutate it.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Enabling HTTPS used to leave plain HTTP serving the login form — and the
+    /// admin password — in clear on 8080 with no warning. Redirect-on is now the
+    /// default, so enabling TLS actually protects the traffic.
+    #[test]
+    fn test_redirect_is_on_by_default() {
+        assert!(
+            TlsSettings::default().redirect,
+            "enabling HTTPS must redirect plain HTTP unless explicitly opted out"
+        );
+    }
+
+    /// A settings file written before this change has no `redirect` field; it
+    /// must deserialize to the new default rather than to `false`.
+    #[test]
+    fn test_legacy_settings_without_redirect_default_to_redirect_on() {
+        let legacy = r#"{"enabled":true,"https_port":8443,"mode":"self-signed","cert_path":null,"key_path":null}"#;
+        let parsed: TlsSettings = serde_json::from_str(legacy).expect("legacy settings parse");
+        assert!(parsed.redirect, "a legacy file must pick up the safe default");
+        assert!(parsed.enabled);
+    }
 
     #[test]
     fn test_effective_https_port_applies_default() {

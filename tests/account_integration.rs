@@ -461,7 +461,7 @@ async fn test_password_change_success() {
     let (status, body) = put_json_with_token(
         &mut app,
         "/api/users/charlie/password",
-        json!({"current_password": "OldPass123", "new_password": "NewPass456"}),
+        json!({"current_password": "OldPass123", "new_password": "NewPassw0rd456"}),
         &token,
     )
     .await;
@@ -485,7 +485,7 @@ async fn test_password_change_missing_current_password() {
     let (status, body) = put_json_with_token(
         &mut app,
         "/api/users/dave/password",
-        json!({"new_password": "NewPass123"}),
+        json!({"new_password": "NewPassw0rd123"}),
         &token,
     )
     .await;
@@ -511,7 +511,7 @@ async fn test_password_change_wrong_current_password() {
     let (status, body) = put_json_with_token(
         &mut app,
         "/api/users/eve/password",
-        json!({"current_password": "WrongPass999", "new_password": "NewPass123"}),
+        json!({"current_password": "WrongPass999", "new_password": "NewPassw0rd123"}),
         &token,
     )
     .await;
@@ -554,7 +554,7 @@ async fn test_password_change_no_token() {
     let (status, body) = put_json_with_token(
         &mut app,
         "/api/users/grace/password",
-        json!({"current_password": "Passw0rd!", "new_password": "NewPass123"}),
+        json!({"current_password": "Passw0rd!", "new_password": "NewPassw0rd123"}),
         "",
     )
     .await;

@@ -183,7 +183,7 @@ pub struct FtpConfig {
 }
 
 /// Global WebDAV service configuration persisted to `/etc/homevault/webdav.json`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebdavConfig {
     pub port: u16,
     pub path_prefix: String,
@@ -192,6 +192,23 @@ pub struct WebdavConfig {
     pub compression: bool,
     pub locking: bool,
     pub allowed_methods: Vec<String>,
+}
+
+impl Default for WebdavConfig {
+    /// A usable, **closed** default: a real port (the old derived default was
+    /// `0`, which cannot be bound) and authentication ON — an appliance must
+    /// never expose its shares because the config file happened to be absent.
+    fn default() -> Self {
+        Self {
+            port: 8082,
+            path_prefix: "/".to_string(),
+            require_ssl: false,
+            require_auth: true,
+            compression: false,
+            locking: true,
+            allowed_methods: Vec::new(),
+        }
+    }
 }
 
 /// Global SFTP service configuration persisted to `/etc/homevault/sftp.json`.
@@ -623,6 +640,13 @@ impl SharesService {
 
     /// Start a network service via systemctl.
     pub fn start_service(share_type: ShareType) -> Result<(), ShareError> {
+        // WebDAV has no systemd unit any more — it is the in-process listener
+        // in `crate::webdav`. Callers must go through `WEBDAV.start/stop/reload`.
+        if share_type == ShareType::Webdav {
+            return Err(ShareError::CommandFailed(
+                "WebDAV is served in-process (crate::webdav), not by systemctl".to_string(),
+            ));
+        }
         let service_name = match share_type {
             ShareType::Smb => "smbd",
             ShareType::Nfs => "nfs-server",
@@ -649,6 +673,13 @@ impl SharesService {
 
     /// Stop a network service via systemctl.
     pub fn stop_service(share_type: ShareType) -> Result<(), ShareError> {
+        // WebDAV has no systemd unit any more — it is the in-process listener
+        // in `crate::webdav`. Callers must go through `WEBDAV.start/stop/reload`.
+        if share_type == ShareType::Webdav {
+            return Err(ShareError::CommandFailed(
+                "WebDAV is served in-process (crate::webdav), not by systemctl".to_string(),
+            ));
+        }
         let service_name = match share_type {
             ShareType::Smb => "smbd",
             ShareType::Nfs => "nfs-server",
@@ -675,6 +706,13 @@ impl SharesService {
 
     /// Restart a network service via systemctl.
     pub fn restart_service(share_type: ShareType) -> Result<(), ShareError> {
+        // WebDAV has no systemd unit any more — it is the in-process listener
+        // in `crate::webdav`. Callers must go through `WEBDAV.start/stop/reload`.
+        if share_type == ShareType::Webdav {
+            return Err(ShareError::CommandFailed(
+                "WebDAV is served in-process (crate::webdav), not by systemctl".to_string(),
+            ));
+        }
         let service_name = match share_type {
             ShareType::Smb => "smbd",
             ShareType::Nfs => "nfs-server",
@@ -792,7 +830,11 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
         }
     }
 
-    /// Persist the WebDAV service config to disk and generate a systemd service.
+    /// Persist the WebDAV service config to disk.
+    ///
+    /// The server itself is the in-process listener in [`crate::webdav`]: it
+    /// is (re)built from this file and the live share table, so there is no
+    /// generated script, no systemd unit and no root-owned process to manage.
     pub fn save_webdav_config(config: &WebdavConfig) -> Result<(), ShareError> {
         let path = get_webdav_config_path();
         if let Some(parent) = path.parent() {
@@ -802,127 +844,6 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
             &path.to_string_lossy(),
             &serde_json::to_string_pretty(config)?,
         )?;
-        Self::apply_webdav_config(config)?;
-        Ok(())
-    }
-
-    fn apply_webdav_config(_config: &WebdavConfig) -> Result<(), ShareError> {
-        let webdav_py = "/usr/local/bin/homevault-webdav.py";
-        let webdav_service = "/etc/systemd/system/homevault-webdav.service";
-
-        // Write the Python WebDAV server
-        let py_content = r#"#!/usr/bin/env python3
-import http.server
-import json
-import os
-
-CONFIG = json.load(open("/etc/homevault/webdav.json"))
-PORT = CONFIG.get("port", 8082)
-AUTH = CONFIG.get("require_auth", True)
-
-class Handler(http.server.SimpleHTTPRequestHandler):
-    def do_OPTIONS(self):
-        self.send_response(204)
-        self.send_header("DAV", "1,2")
-        self.send_header("Allow", "GET,PUT,DELETE,MKCOL,PROPFIND,COPY,MOVE,LOCK,UNLOCK,OPTIONS")
-        self.send_header("Content-Length", "0")
-        self.end_headers()
-    def do_PROPFIND(self):
-        self.send_response(207)
-        self.send_header("DAV", "1,2")
-        self.send_header("Content-Type", "text/xml; charset=utf-8")
-        self.end_headers()
-        path = self.translate_path(self.path)
-        if os.path.exists(path):
-            self.wfile.write(b'<?xml version="1.0"?><multistatus xmlns="DAV:"><response><href>')
-            self.wfile.write(self.path.encode())
-            self.wfile.write(b'</href></response></multistatus>')
-    def do_GET(self):
-        if AUTH and not self._check_auth():
-            return
-        super().do_GET()
-    def do_HEAD(self):
-        if AUTH and not self._check_auth():
-            return
-        super().do_HEAD()
-    def do_PUT(self):
-        if AUTH and not self._check_auth():
-            return
-        super().do_PUT()
-    def do_DELETE(self):
-        if AUTH and not self._check_auth():
-            return
-        super().do_DELETE()
-    def do_MKCOL(self):
-        if AUTH and not self._check_auth():
-            return
-        super().do_MKCOL()
-    def do_COPY(self):
-        if AUTH and not self._check_auth():
-            return
-        super().do_COPY()
-    def do_MOVE(self):
-        if AUTH and not self._check_auth():
-            return
-        super().do_MOVE()
-    def do_LOCK(self):
-        if AUTH and not self._check_auth():
-            return
-        self.send_response(200)
-        self.end_headers()
-    def do_UNLOCK(self):
-        if AUTH and not self._check_auth():
-            return
-        self.send_response(204)
-        self.end_headers()
-    def _check_auth(self):
-        auth = self.headers.get("Authorization", "")
-        if not auth.startswith("Basic "):
-            self.send_response(401)
-            self.send_header("WWW-Authenticate", 'Basic realm="HomeVault WebDAV"')
-            self.end_headers()
-            return False
-        return True
-
-if __name__ == "__main__":
-    http.server.HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
-"#
-        .to_string();
-
-        write_file_as_root(webdav_py, &py_content)?;
-        let _ = Command::new("sudo")
-            .args(["chmod", "+x", webdav_py])
-            .output();
-
-        // Write systemd service
-        let svc = format!(
-            "[Unit]\nDescription=HomeVault WebDAV Server\nAfter=network.target\n\n[Service]\nType=simple\nExecStart={}\nUser=root\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
-            webdav_py
-        );
-        write_file_as_root(webdav_service, &svc)?;
-        let _ = Command::new("sudo")
-            .arg("systemctl")
-            .args(["daemon-reload"])
-            .output();
-        let _ = Command::new("sudo")
-            .arg("systemctl")
-            .args(["enable", "homevault-webdav"])
-            .output();
-
-        // Try to restart or start
-        let restart = Command::new("sudo")
-            .arg("systemctl")
-            .args(["restart", "homevault-webdav"])
-            .output();
-        match restart {
-            Ok(o) if o.status.success() => {}
-            _ => {
-                let _ = Command::new("sudo")
-                    .arg("systemctl")
-                    .args(["start", "homevault-webdav"])
-                    .output();
-            }
-        }
         Ok(())
     }
 

@@ -75,6 +75,26 @@ export interface SetupStatus {
   needs_recovery: boolean;
   server_machine_id: string;
   sudo_available?: boolean;
+  /** Host interface language detected from its POSIX locale (`en`/`fr`/`de`/`es`). */
+  system_language?: string;
+}
+
+/** One snapshot of HomeVault's own database (`data/backups/*.db`). */
+export interface DbBackupEntry {
+  name: string;
+  path: string;
+  size_bytes: number;
+  created_at: string;
+}
+
+/** Snapshot settings plus the current state of the backup directory. */
+export interface DbBackupStatus {
+  settings: { interval_hours: number; retain: number };
+  last_backup_at: string | null;
+  last_error: string | null;
+  backups: DbBackupEntry[];
+  total_size_bytes: number;
+  directory: string;
 }
 
 export interface User {

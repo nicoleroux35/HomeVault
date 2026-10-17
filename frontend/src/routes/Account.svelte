@@ -154,7 +154,7 @@
       passwordErrors = { current: translate('account.current_password_required') };
       return;
     }
-    if (!passwordForm.newPassword || passwordForm.newPassword.length < 8) {
+    if (!passwordForm.newPassword || passwordForm.newPassword.length < 12) {
       passwordErrors = { new: translate('users.password_min') };
       return;
     }

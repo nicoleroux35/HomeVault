@@ -173,7 +173,7 @@
     const dragImage = document.createElement('div');
     dragImage.style.cssText = `
       position: absolute; top: -1000px; width: 64px; height: 64px;
-      border-radius: 20px; background: var(--hv-launcher-surface);
+      border-radius: var(--hv-radius-2xl); background: var(--hv-launcher-surface);
       display: flex; align-items: center; justify-content: center;
       box-shadow: 0 4px 8px rgba(0,0,0,0.14), 0 0 2px rgba(0,0,0,0.12);
     `;
@@ -466,7 +466,7 @@
   .lp-panel::-webkit-scrollbar { width: 8px; }
   .lp-panel::-webkit-scrollbar-thumb {
     background: rgba(255, 255, 255, 0.28);
-    border-radius: 4px;
+    border-radius: var(--hv-radius-sm);
   }
 
   @keyframes lpPop {

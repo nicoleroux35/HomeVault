@@ -281,7 +281,7 @@
     min-width: 18px;
     height: 18px;
     padding: 0 5px;
-    border-radius: 999px;
+    border-radius: var(--hv-radius-full);
     background: var(--hv-shell-border-soft);
     color: var(--hv-shell-text-2);
     font-size: var(--hv-font-size-micro, 11px);

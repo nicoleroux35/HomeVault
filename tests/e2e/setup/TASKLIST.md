@@ -1,16 +1,18 @@
 # Setup Wizard — Test Tasklist
 
-> Last validated: 2026-09-01 · Firefox · all layers green
-> (E2E count re-verified 2026-10-10: 90 `test(` + 2 `test.slow` = 92 runtime; spec edited 2026-09-28 since)
+> Last validated: 2026-10-17 · Rust suites re-run green; Playwright spec edited
+> but not re-run (no fresh first-run server) — the flow was verified live in a
+> real browser against a fresh instance instead.
+> (E2E count: 96 `test(` + 2 `test.slow`; `npx playwright test --list` = 200)
 
 ## Summary
 
 | Layer | File | Tests | Status |
 |-------|------|-------|--------|
-| Backend unit | `src/setup.rs` | 43 | ✅ 43/43 |
-| Backend integration | `tests/setup_integration.rs` | 28 | ✅ 28/28 |
-| Frontend E2E | `tests/e2e/setup/setup.spec.ts` | 90 `test(` + 2 `test.slow` = 92 runtime | ✅ last green 2026-09-01 |
-| **Total** | | **164** | ✅ |
+| Backend unit | `src/setup.rs` | 61 | ✅ 61/61 |
+| Backend integration | `tests/setup_integration.rs` | 60 | ✅ 60/60 |
+| Frontend E2E | `tests/e2e/setup/setup.spec.ts` | 96 `test(` + 2 `test.slow` | ⏳ edited, not re-run |
+| **Total** | | **217** | ✅ (Rust) |
 
 **2026-09-01 restructure.** The E2E suite had ~40 tests that silently no-op'd:
 the first test to click "Create Account" completed first-run setup, and every
@@ -166,7 +168,7 @@ later `ensureWizard()`-gated test then hit `if (!isWizard) return`. Fixed:
 - [x] 3.5 — Previous button is enabled on step 1
 - [x] 3.6 — Previous button is disabled after returning to step 0
 - [x] 3.7 — stepper line between done steps has done class
-- [x] 3.8 — complete full flow: step 0 → 1 → 2 → 3
+- [x] 3.8 — complete full flow: welcome → account → password → verify
 
 ### 4. Account form (12 tests)
 - [x] 4.1 — step 1 has title and description
@@ -182,19 +184,22 @@ later `ensureWizard()`-gated test then hit `if (!isWizard) return`. Fixed:
 - [x] 4.11 — username validation: reserved name → button stays disabled
 - [x] 4.12 — valid username allows next step
 
-### 5. Password form (12 tests)
+### 5. Password form (15 tests)
 - [x] 5.1 — step 2 has title and description
 - [x] 5.2 — password input: type=password, autocomplete=new-password
 - [x] 5.3 — confirm password input: type=password, autocomplete=new-password
 - [x] 5.4 — password strength bar appears when typing
 - [x] 5.5 — strength label shows correct level for weak password
 - [x] 5.6 — strength label shows correct level for strong password
-- [x] 5.7 — password requirement checklist shows all 4 items
+- [x] 5.7 — password requirement checklist shows all 6 items
 - [x] 5.8 — requirement items show met/unmet state
 - [x] 5.9 — mismatched passwords → button stays disabled
 - [x] 5.10 — matching valid passwords allow next step
 - [x] 5.11 — password validation: empty → button stays disabled
 - [x] 5.12 — password validation: too short → button stays disabled
+- [x] 5.13 — password validation: 11 characters (composition OK) still disabled
+- [x] 5.14 — password validation: a common password is refused
+- [x] 5.15 — password validation: a repeated run is refused
 
 ### 6. Verification step (7 tests)
 - [x] 6.1 — step 3 has title and description
@@ -214,6 +219,8 @@ end-to-end flow.
 - [x] 9.2 — warning lists sudo as missing
 
 ### 10. Responsive (5 tests)
+> Each also asserts the card block stays centred (horizontally always, vertically
+> whenever it fits) and never overlaps the clock or overflows the viewport.
 - [x] 10.x — renders correctly at 360px (phone)
 - [x] 10.x — renders correctly at 390px (iPhone 14)
 - [x] 10.x — renders correctly at 768px (tablet)
@@ -265,11 +272,14 @@ end-to-end flow.
 - [x] 17.2 — username typing × 20 does not accumulate DOM nodes
 - [x] 17.3 — avatar regenerate × 10 does not leak
 
-### 18. i18n (4 tests)
+### 18. i18n (7 tests)
 - [x] 18.1 — French: welcome title, stepper label, Next button
 - [x] 18.2 — German: Next button
 - [x] 18.3 — Spanish: Next button
 - [x] 18.4 — no raw `setup.*` keys leak into the wizard
+- [x] 18.5 — the wizard has no language step (4 dots, no picker, Next → account)
+- [x] 18.6 — a French OS locale (`fr-FR`) opens the wizard in French
+- [x] 18.7 — an unsupported OS locale (`it-IT`) falls back to a shipped language, never Italian
 
 ### 19. Account creation & 2FA — RUNS LAST, completes first-run setup (1 test, `test.slow()`)
 - [x] 19.1 — wizard → Create Account (1 no-auth POST, `Previous` locked, session

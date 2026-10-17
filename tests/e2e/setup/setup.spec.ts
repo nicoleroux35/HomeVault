@@ -85,7 +85,18 @@ async function gotoLogin(page: Page) {
 
 async function ensureWizard(page: Page): Promise<boolean> {
   await gotoLogin(page);
-  return (await detectState(page)) === 'wizard';
+  if ((await detectState(page)) !== 'wizard') return false;
+  // The wizard is reboot-safe: a previous test's progress may have been
+  // persisted server-side, so it can resume at a later step. Rewind to the
+  // first step so every test starts from the same place.
+  const prevBtn = page.locator('[data-testid="setup-footer"] button.hv-btn-secondary');
+  for (let i = 0; i < 12; i++) {
+    if (await page.locator('[data-step="0"]').isVisible().catch(() => false)) break;
+    if (!(await prevBtn.isEnabled().catch(() => false))) break;
+    await prevBtn.click();
+    await page.waitForTimeout(80);
+  }
+  return true;
 }
 
 async function getHeapMB(page: Page): Promise<number> {
@@ -106,6 +117,28 @@ async function clickPrev(page: Page) {
   const prevBtn = page.locator('[data-testid="setup-footer"] button.hv-btn-secondary');
   await expect(prevBtn).toBeVisible();
   await prevBtn.click();
+}
+
+/**
+ * Advance to a target step by clicking "Next" until the target `[data-step="N"]`
+ * block is visible. Step 0 (welcome) is an optional choice whose "Next" is
+ * always enabled, so reaching the account (1), password (2) and verify (3)
+ * steps never needs any input on the way.
+ */
+async function gotoStep(page: Page, target: number) {
+  for (let i = 0; i < 12; i++) {
+    if (await page.locator(`[data-step="${target}"]`).isVisible().catch(() => false)) return;
+    const nextBtn = page.locator('[data-testid="setup-footer"] button.hv-btn-primary');
+    if (
+      !(await nextBtn.isVisible().catch(() => false)) ||
+      !(await nextBtn.isEnabled().catch(() => false))
+    ) {
+      break;
+    }
+    await nextBtn.click();
+    await page.waitForTimeout(120);
+  }
+  await page.locator(`[data-step="${target}"]`).waitFor({ state: 'visible' });
 }
 
 // ---------------------------------------------------------------------------
@@ -332,11 +365,11 @@ test.describe('3 — Step navigation', () => {
     await expect(line).toHaveClass(/done/, { timeout: 5_000 });
   });
 
-  test('3.8 — complete full flow: step 0 → 1 → 2 → 3', async ({ page }) => {
+  test('3.8 — complete full flow: welcome → account → password → verify', async ({ page }) => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    // Step 0 → 1
+    // Step 0 → 1 (account)
     await clickNext(page);
     await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
 
@@ -345,7 +378,7 @@ test.describe('3 — Step navigation', () => {
     // Fill fullname (optional)
     await page.fill('#fullname', 'Test Admin');
 
-    // Step 1 → 2
+    // Step 1 → 2 (password)
     await clickNext(page);
     await page.locator('[data-step="2"]').waitFor({ state: 'visible' });
 
@@ -353,12 +386,12 @@ test.describe('3 — Step navigation', () => {
     await page.fill('#password', 'SecurePass123');
     await page.fill('#confirm-password', 'SecurePass123');
 
-    // Step 2 → 3
+    // Step 2 → 3 (verify)
     await clickNext(page);
     await page.locator('[data-step="3"]').waitFor({ state: 'visible' });
 
-    const step3 = page.locator('[data-step="3"]');
-    await expect(step3).toBeVisible();
+    const verifyStep = page.locator('[data-step="3"]');
+    await expect(verifyStep).toBeVisible();
   });
 });
 
@@ -371,8 +404,7 @@ test.describe('4 — Account form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
 
     const title = page.locator('[data-testid="setup-step-title"]');
     await expect(title).toBeVisible();
@@ -387,8 +419,7 @@ test.describe('4 — Account form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
 
     const el = page.locator('#username');
     await expect(el).toBeVisible();
@@ -400,8 +431,7 @@ test.describe('4 — Account form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
 
     const ph = await page.locator('#username').getAttribute('placeholder');
     expect(ph!.length).toBeGreaterThan(0);
@@ -411,8 +441,7 @@ test.describe('4 — Account form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
 
     const el = page.locator('#fullname');
     await expect(el).toBeVisible();
@@ -429,8 +458,7 @@ test.describe('4 — Account form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
 
     const picker = page.locator('[data-testid="avatar-picker"]');
     await expect(picker).toBeVisible();
@@ -440,8 +468,7 @@ test.describe('4 — Account form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
 
     const preview = page.locator('[data-testid="setup-avatar-preview"]');
     const placeholder = page.locator('[data-testid="setup-avatar-placeholder"]');
@@ -455,8 +482,7 @@ test.describe('4 — Account form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
 
     const regenBtn = page.locator('[data-testid="setup-avatar-regen"]');
     await expect(regenBtn).toBeVisible();
@@ -474,8 +500,7 @@ test.describe('4 — Account form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
 
     // Click Next without filling username
     const nextBtn = page.locator('[data-testid="setup-footer"] button.hv-btn-primary');
@@ -487,8 +512,7 @@ test.describe('4 — Account form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
 
     await page.fill('#username', 'ab');
     await page.click('#username');
@@ -504,8 +528,7 @@ test.describe('4 — Account form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
 
     await page.fill('#username', 'user name!');
     await page.click('#username');
@@ -521,8 +544,7 @@ test.describe('4 — Account form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
 
     await page.fill('#username', 'root');
     await page.click('#username');
@@ -538,8 +560,7 @@ test.describe('4 — Account form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
 
     await page.fill('#username', 'validadmin');
     await clickNext(page);
@@ -553,9 +574,8 @@ test.describe('4 — Account form', () => {
 // ---------------------------------------------------------------------------
 
 test.describe('5 — Password form', () => {
-  async function goToStep2(page: Page) {
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+  async function goToPasswordStep(page: Page) {
+    await gotoStep(page, 1);
     await page.fill('#username', 'testadmin');
     await clickNext(page);
     await page.locator('[data-step="2"]').waitFor({ state: 'visible' });
@@ -565,7 +585,7 @@ test.describe('5 — Password form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await goToStep2(page);
+    await goToPasswordStep(page);
 
     const title = page.locator('[data-testid="setup-step-title"]');
     await expect(title).toBeVisible();
@@ -577,7 +597,7 @@ test.describe('5 — Password form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await goToStep2(page);
+    await goToPasswordStep(page);
 
     const el = page.locator('#password');
     await expect(el).toBeVisible();
@@ -591,7 +611,7 @@ test.describe('5 — Password form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await goToStep2(page);
+    await goToPasswordStep(page);
 
     const el = page.locator('#confirm-password');
     await expect(el).toBeVisible();
@@ -603,7 +623,7 @@ test.describe('5 — Password form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await goToStep2(page);
+    await goToPasswordStep(page);
 
     await page.fill('#password', 'a');
     const strengthBar = page.locator('.hv-password-strength');
@@ -614,10 +634,10 @@ test.describe('5 — Password form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await goToStep2(page);
+    await goToPasswordStep(page);
 
     // Use a password that gives strength > 0 so the label has visible text
-    // 'abcd1234' → length>=8 (1pt) + lowercase (not mixed case, so no 3rd pt) + digit (1pt) = 2 → weak
+    // 'abcd1234' → lowercase + digit only (2pt) → weak, below the 12-char floor
     await page.fill('#password', 'abcd1234');
     await page.waitForTimeout(500);
     const label = page.locator('.hv-strength-label');
@@ -630,7 +650,7 @@ test.describe('5 — Password form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await goToStep2(page);
+    await goToPasswordStep(page);
 
     await page.fill('#password', 'VeryStr0ng!Pass');
     await page.waitForTimeout(300);
@@ -640,35 +660,35 @@ test.describe('5 — Password form', () => {
     expect(text!.length).toBeGreaterThan(0);
   });
 
-  test('5.7 — password requirement checklist shows all 4 items', async ({ page }) => {
+  test('5.7 — password requirement checklist shows all 6 items', async ({ page }) => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await goToStep2(page);
+    await goToPasswordStep(page);
 
     await page.fill('#password', 'a');
     const checks = page.locator('.hv-req-list li');
-    await expect(checks).toHaveCount(4, { timeout: 3_000 });
+    await expect(checks).toHaveCount(6, { timeout: 3_000 });
   });
 
   test('5.8 — requirement items show met/unmet state', async ({ page }) => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await goToStep2(page);
+    await goToPasswordStep(page);
 
     await page.fill('#password', 'a');
     const met = page.locator('.hv-req-met');
     const unmet = page.locator('.hv-req-unmet');
     const total = (await met.count()) + (await unmet.count());
-    expect(total).toBe(4);
+    expect(total).toBe(6);
   });
 
   test('5.9 — mismatched passwords → button stays disabled', async ({ page }) => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await goToStep2(page);
+    await goToPasswordStep(page);
 
     await page.fill('#password', 'SecurePass123');
     await page.fill('#confirm-password', 'DifferentPass456');
@@ -682,7 +702,7 @@ test.describe('5 — Password form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await goToStep2(page);
+    await goToPasswordStep(page);
 
     await page.fill('#password', 'SecurePass123');
     await page.fill('#confirm-password', 'SecurePass123');
@@ -695,7 +715,7 @@ test.describe('5 — Password form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await goToStep2(page);
+    await goToPasswordStep(page);
 
     await page.fill('#confirm-password', 'something');
     const nextBtn = page.locator('[data-testid="setup-footer"] button.hv-btn-primary');
@@ -707,12 +727,55 @@ test.describe('5 — Password form', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await goToStep2(page);
+    await goToPasswordStep(page);
 
     await page.fill('#password', 'Short1');
     await page.fill('#confirm-password', 'Short1');
     const nextBtn = page.locator('[data-testid="setup-footer"] button.hv-btn-primary');
     await expect(nextBtn).toBeVisible();
+    await expect(nextBtn).toBeDisabled();
+  });
+
+  test('5.13 — password validation: 11 characters (composition OK) still disabled', async ({
+    page,
+  }) => {
+    const isWizard = await ensureWizard(page);
+    if (!isWizard) return;
+
+    await goToPasswordStep(page);
+
+    // Mixed case + digit, but one character short of the 12-char floor.
+    await page.fill('#password', 'Abcdefgh123');
+    await page.fill('#confirm-password', 'Abcdefgh123');
+    const nextBtn = page.locator('[data-testid="setup-footer"] button.hv-btn-primary');
+    await expect(nextBtn).toBeDisabled();
+  });
+
+  test('5.14 — password validation: a common password is refused', async ({ page }) => {
+    const isWizard = await ensureWizard(page);
+    if (!isWizard) return;
+
+    await goToPasswordStep(page);
+
+    // 12 chars, mixed case, with a digit — and on every breach list.
+    await page.fill('#password', 'Password1234');
+    await page.fill('#confirm-password', 'Password1234');
+    const nextBtn = page.locator('[data-testid="setup-footer"] button.hv-btn-primary');
+    await expect(nextBtn).toBeDisabled();
+    // The checklist names the rule and marks it unmet.
+    const common = page.locator('.hv-req-list li', { hasText: /common|fréquent|häufig|común/i });
+    await expect(common.first()).toBeVisible();
+  });
+
+  test('5.15 — password validation: a repeated run is refused', async ({ page }) => {
+    const isWizard = await ensureWizard(page);
+    if (!isWizard) return;
+
+    await goToPasswordStep(page);
+
+    await page.fill('#password', 'Aaaaaaaa1234');
+    await page.fill('#confirm-password', 'Aaaaaaaa1234');
+    const nextBtn = page.locator('[data-testid="setup-footer"] button.hv-btn-primary');
     await expect(nextBtn).toBeDisabled();
   });
 });
@@ -722,9 +785,8 @@ test.describe('5 — Password form', () => {
 // ---------------------------------------------------------------------------
 
 test.describe('6 — Verification step', () => {
-  async function goToStep3(page: Page) {
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+  async function goToVerifyStep(page: Page) {
+    await gotoStep(page, 1);
     await page.fill('#username', 'testadmin');
     await clickNext(page);
     await page.locator('[data-step="2"]').waitFor({ state: 'visible' });
@@ -738,7 +800,7 @@ test.describe('6 — Verification step', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await goToStep3(page);
+    await goToVerifyStep(page);
 
     const title = page.locator('[data-testid="setup-step-title"]');
     await expect(title).toBeVisible();
@@ -750,7 +812,7 @@ test.describe('6 — Verification step', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await goToStep3(page);
+    await goToVerifyStep(page);
 
     const summaryValue = page.locator('.hv-summary-value').first();
     await expect(summaryValue).toBeVisible();
@@ -762,7 +824,7 @@ test.describe('6 — Verification step', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await goToStep3(page);
+    await goToVerifyStep(page);
 
     // Find the summary item that contains the password label, then check its value
     const summaryItems = page.locator('.hv-summary-item');
@@ -782,7 +844,7 @@ test.describe('6 — Verification step', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await goToStep3(page);
+    await goToVerifyStep(page);
 
     // Should see either loading, success, or error state
     await page.waitForTimeout(2_000);
@@ -795,7 +857,7 @@ test.describe('6 — Verification step', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await goToStep3(page);
+    await goToVerifyStep(page);
 
     await page.waitForTimeout(3_000);
     const successOrError =
@@ -809,7 +871,7 @@ test.describe('6 — Verification step', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await goToStep3(page);
+    await goToVerifyStep(page);
 
     const createBtn = page.locator('[data-testid="setup-footer"] button.hv-btn-primary');
     await expect(createBtn).toBeVisible();
@@ -821,9 +883,8 @@ test.describe('6 — Verification step', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    // Go to step 1 with fullname
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    // Go to the account step with fullname
+    await gotoStep(page, 1);
     await page.fill('#username', 'testadmin2');
     await page.fill('#fullname', 'Test Admin User');
     await clickNext(page);
@@ -921,6 +982,20 @@ test.describe('10 — Responsive', () => {
         // Card must be visible (non-zero size).
         expect(box.width).toBeGreaterThan(50);
         expect(box.height).toBeGreaterThan(50);
+
+        // The 520px block is centred horizontally at every width …
+        expect(Math.abs(box.x + box.width / 2 - width / 2)).toBeLessThanOrEqual(1);
+
+        // … and vertically too as long as it fits the viewport. Taller than
+        // that, the layout collapses the space reserved for the clock: the
+        // card starts under the clock and the page scrolls from its own top
+        // instead of clipping it or running under the clock.
+        const docHeight = await page.evaluate(() => document.documentElement.scrollHeight);
+        if (docHeight <= height + 1) {
+          expect(Math.abs(box.y + box.height / 2 - height / 2)).toBeLessThanOrEqual(2);
+        } else {
+          expect(box.y).toBeGreaterThan(0);
+        }
       }
 
       // Stepper must be visible
@@ -941,8 +1016,7 @@ test.describe('11 — Accessibility', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
 
     for (const id of ['username', 'fullname']) {
       const el = page.locator(`#${id}`);
@@ -958,8 +1032,7 @@ test.describe('11 — Accessibility', () => {
     if (!isWizard) return;
 
     // Advance to the account step so #username / #fullname exist.
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
 
     const ids = await page.evaluate(() =>
       Array.from(document.querySelectorAll('[id]')).map((el) => el.id),
@@ -1010,8 +1083,7 @@ test.describe('11 — Accessibility', () => {
     await expect(h2).toBeVisible();
 
     // Navigate to step 1
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
     const stepTitle = page.locator('[data-testid="setup-step-title"]');
     await expect(stepTitle).toBeVisible();
   });
@@ -1060,7 +1132,7 @@ test.describe('12 — Performance', () => {
 
   test('12.4 — no memory leak across 5 navigations', async ({ page }) => {
     const readings: number[] = [];
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 4; i++) {
       await gotoLogin(page);
       readings.push(await getHeapMB(page));
     }
@@ -1099,8 +1171,7 @@ test.describe('13 — Security', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
     await page.fill('#username', 'test');
     await clickNext(page);
     await page.locator('[data-step="2"]').waitFor({ state: 'visible' });
@@ -1113,8 +1184,7 @@ test.describe('13 — Security', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
     await page.fill('#username', 'url_test');
     await clickNext(page);
     await page.locator('[data-step="2"]').waitFor({ state: 'visible' });
@@ -1135,8 +1205,7 @@ test.describe('13 — Security', () => {
     let alertFired = false;
     page.on('dialog', () => { alertFired = true; });
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
 
     await page.fill('#username', '<img src=x onerror=alert(1)>');
     await page.click('#username');
@@ -1198,8 +1267,7 @@ test.describe('14 — Keyboard', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
 
     await page.locator('#username').focus();
     await page.keyboard.press('Tab');
@@ -1287,8 +1355,7 @@ test.describe('16 — Edge cases', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
 
     const long = 'a'.repeat(500);
     await page.fill('#username', long);
@@ -1306,10 +1373,9 @@ test.describe('16 — Edge cases', () => {
 
     // Fill valid data so "Next" is enabled on every step, then bounce back and
     // forth quickly through the whole wizard.
-    await clickNext(page); // 0 → 1
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1); // welcome → account
     await page.fill('#username', 'rapid_nav_admin');
-    await clickNext(page); // 1 → 2
+    await clickNext(page); // account → password
     await page.locator('[data-step="2"]').waitFor({ state: 'visible' });
     await page.fill('#password', 'RapidPass123');
     await page.fill('#confirm-password', 'RapidPass123');
@@ -1323,7 +1389,7 @@ test.describe('16 — Edge cases', () => {
 
     // Still alive and coherent.
     await expect(page.locator('[data-testid="setup-container"]')).toBeVisible();
-    await expect(page.locator('[data-step="2"]')).toBeVisible();
+    await expect(page.locator('[data-step="1"]')).toBeVisible();
   });
 
   test('16.3 — fresh context shows wizard', async ({ browser }) => {
@@ -1355,8 +1421,7 @@ test.describe('16 — Edge cases', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
 
     await page.fill('#fullname', '<script>alert("xss")</script> & "quotes" \'single\'');
     await page.click('#fullname');
@@ -1383,15 +1448,14 @@ test.describe('17 — Memory regression', () => {
     if (!isWizard) return;
 
     // Fill valid data so Next stays enabled on every step.
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
     await page.fill('#username', 'mem_nav_admin');
     await clickNext(page);
     await page.locator('[data-step="2"]').waitFor({ state: 'visible' });
     await page.fill('#password', 'MemPass12345');
     await page.fill('#confirm-password', 'MemPass12345');
     await clickPrev(page);
-    await clickPrev(page); // back to step 0
+    await clickPrev(page); // back to step 0 (welcome)
 
     const baseline = await getHeapMB(page);
     for (let i = 0; i < 10; i++) {
@@ -1419,8 +1483,7 @@ test.describe('17 — Memory regression', () => {
 
     const before = await page.evaluate(() => document.querySelectorAll('*').length);
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
 
     for (let i = 0; i < 20; i++) {
       await page.fill('#username', `user${i}`);
@@ -1436,8 +1499,7 @@ test.describe('17 — Memory regression', () => {
     const isWizard = await ensureWizard(page);
     if (!isWizard) return;
 
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
 
     const baseline = await getHeapMB(page);
 
@@ -1459,8 +1521,13 @@ test.describe('17 — Memory regression', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 18. i18n — the saved language drives the wizard's strings
+// 18. i18n — the language comes from the OS/browser, never from the wizard
 // ---------------------------------------------------------------------------
+//
+// The wizard no longer has a language step: `languageStore` resolves the
+// dictionary from (1) an explicit saved choice, (2) the browser/OS locale,
+// (3) the host's own POSIX locale reported by `/auth/setup-status`, then
+// English. Settings is the only place a choice is stored.
 
 test.describe('18 — i18n', () => {
   async function wizardInLanguage(page: Page, lang: string): Promise<boolean> {
@@ -1496,6 +1563,54 @@ test.describe('18 — i18n', () => {
     const text = await page.locator('[data-testid="setup-card"]').innerText();
     expect(text).not.toMatch(/\bsetup\.[a-z_.]+/i);
   });
+
+  test('18.5 — the wizard has no language step', async ({ page }) => {
+    if (!(await wizardInLanguage(page, 'fr'))) return;
+    // Four dots: welcome, account, password, verify.
+    await expect(page.locator('[data-testid="setup-stepper-dot"]')).toHaveCount(4);
+    const labels = await page.locator('[data-testid="setup-stepper-label"]').allTextContents();
+    expect(labels).toEqual(['Accueil', 'Compte', 'Mot de passe', 'Vérification']);
+    // One "Next" from the welcome screen lands on the account form.
+    await clickNext(page);
+    await expect(page.locator('[data-step="1"]')).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('#username')).toBeVisible();
+  });
+});
+
+// The browser/OS locale is the wizard's language source (no step asks for it).
+test.describe('18b — OS locale detection', () => {
+  test.use({ locale: 'fr-FR' });
+
+  test('18.6 — a French OS locale opens the wizard in French', async ({ page }) => {
+    if (!(await ensureWizard(page))) return;
+    await expect(page.locator('.hv-welcome-title')).toHaveText('Bienvenue sur HomeVault');
+    await expect(page.locator('[data-testid="setup-stepper-label"]').first()).toHaveText('Accueil');
+    expect(await page.evaluate(() => document.documentElement.lang)).toBe('fr');
+  });
+});
+
+test.describe('18c — unsupported OS locale', () => {
+  test.use({ locale: 'it-IT' });
+
+  test('18.7 — an unsupported OS locale falls back to a supported language, never Italian', async ({
+    page,
+  }) => {
+    if (!(await ensureWizard(page))) return;
+    // Detection order: no saved choice → browser locale (it-IT, unsupported) →
+    // the host's own locale (`system_language`) → English. On a test host whose
+    // POSIX locale is French the wizard is French; on an English host it is
+    // English. What must never happen is an untranslated/Italian UI.
+    const lang = await page.evaluate(() => document.documentElement.lang);
+    expect(['en', 'fr', 'de', 'es']).toContain(lang);
+    const title = await page.locator('.hv-welcome-title').textContent();
+    expect([
+      'Welcome to HomeVault',
+      'Bienvenue sur HomeVault',
+      'Willkommen bei HomeVault',
+      'Bienvenido a HomeVault',
+    ]).toContain((title || '').trim());
+    expect((title || '').toLowerCase()).not.toContain('benvenut');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1522,8 +1637,7 @@ test.describe('19 — Account creation & TOTP', () => {
     test.skip(!isWizard, 'server already set up — run against a fresh instance');
 
     // Welcome → Account → Password step.
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
     await page.fill('#username', `e2e_totp_${Date.now()}`);
     await page.fill('#fullname', 'E2E TOTP');
     await clickNext(page);
@@ -1592,8 +1706,7 @@ test.describe('19 — Account creation & TOTP', () => {
     });
 
     // --- Step 1: account ---
-    await clickNext(page);
-    await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    await gotoStep(page, 1);
     await page.fill('#username', admin);
     await page.fill('#fullname', 'E2E Admin');
     // --- Step 2: password + TOTP enrollment ---

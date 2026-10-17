@@ -109,6 +109,27 @@ of execution. On first launch, a setup wizard will guide you through
 creating the administrator account. Useful commands:
 `systemctl status homevault` and `journalctl -u homevault -f`.
 
+### Upgrading, rolling back, uninstalling
+
+```bash
+sudo ./installer/install.sh                 # upgrade (data kept)
+sudo ./installer/install.sh --rollback      # back to the previous build
+sudo ./installer/install.sh --uninstall     # remove the app, KEEP the data
+sudo ./installer/install.sh --uninstall --purge   # ...and delete the data too
+./installer/install.sh --dry-run            # preview, changes nothing
+```
+
+Every upgrade keeps the running binary as `/opt/homevault/homevault.previous`,
+which is what `--rollback` swaps back in. It does **not** roll back the
+database: migrations are append-only, so an older binary refuses to start on a
+newer schema (it says so at startup). To go back all the way, restore the
+snapshot the upgrade wrote first — `data/backups/homevault-*pre-migration.db`.
+See [docs/guides/backup-restic.md](docs/guides/backup-restic.md).
+
+`--uninstall` deliberately keeps `/var/lib/homevault`: accounts, settings,
+snapshots and app data survive so a reinstall picks up where it left off.
+`--purge` deletes them and asks you to type `PURGE` to confirm.
+
 ## Project structure
 
 | Folder       | Contents                                             |

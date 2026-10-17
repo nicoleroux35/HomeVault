@@ -9,8 +9,9 @@
  *   First-run system setup service: creates the initial admin (with
  *   username/password/fullname validation), records the machine identity
  *   (machine id + system hash powering the hardware-change recovery
- *   decision), guards the one-time setup with a lock file, and configures
- *   the scoped sudoers grant the service account needs.
+ *   decision), guards the one-time setup with a lock file, detects the
+ *   host's interface language, and configures the scoped sudoers grant the
+ *   service account needs.
  *
  * Dependencies:
  *   - thiserror (>= 2)
@@ -46,7 +47,42 @@ pub enum SetupError {
 /// Service for first-run setup: flag files, hardware detection, user/password validation, sudoers.
 pub struct SetupService;
 
+/// Seconds after which a first-run setup lock is considered abandoned even if
+/// its recorded PID still resolves. A real setup takes seconds (Argon2 hashing
+/// plus a couple of row inserts), so 15 minutes means the process is wedged.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Whether a PID belongs to a running process.
+///
+/// `/proc/<pid>` is the authority on Linux; where it is unavailable the check
+/// falls back to `kill -0`. Either way a permission error counts as *alive* —
+/// the process exists, we just cannot signal it.
+fn process_is_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    if std::path::Path::new("/proc").is_dir() {
+        return std::path::Path::new(&format!("/proc/{pid}")).exists();
+    }
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(true)
+}
+
 impl SetupService {
+    /// How long a first-run setup lock stays valid.
+    pub const SETUP_LOCK_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
     fn data_dir() -> std::path::PathBuf {
         crate::config::paths::base_dir()
     }
@@ -108,6 +144,80 @@ impl SetupService {
             })
     }
 
+    /// The interface languages the appliance ships translations for.
+    pub const SUPPORTED_LANGUAGES: [&'static str; 4] = ["en", "fr", "de", "es"];
+
+    /// Maps a POSIX locale string (`fr_FR.UTF-8`, `de_AT`, `es-MX.UTF-8`, …)
+    /// to one of [`Self::SUPPORTED_LANGUAGES`], or `"en"` when unsupported.
+    ///
+    /// Only the language part matters: the territory (`_FR`, `-MX`), the
+    /// encoding (`.UTF-8`) and the modifier (`@euro`) are irrelevant to which
+    /// dictionary is loaded. Pure, so the locale-parsing rules stay
+    /// unit-testable without touching the host.
+    pub fn language_from_locale(locale: &str) -> &'static str {
+        // `LANGUAGE` may hold a colon-separated priority list (`fr:de:en`) —
+        // the first entry wins, like gettext does.
+        let first = locale.split(':').next().unwrap_or("");
+        // Strip the encoding (`.UTF-8`) and the modifier (`@euro`), then the
+        // territory, leaving the bare language code.
+        let base = first
+            .split(['.', '@'])
+            .next()
+            .unwrap_or("")
+            .split(['_', '-'])
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        Self::SUPPORTED_LANGUAGES
+            .iter()
+            .copied()
+            .find(|l| *l == base)
+            .unwrap_or("en")
+    }
+
+    /// Detects the host's interface language from its configured locale — the
+    /// Setup Wizard's initial language, since the wizard no longer asks.
+    ///
+    /// Order matters and mirrors how a shell resolves a locale: `LC_ALL`
+    /// overrides everything, then `LC_MESSAGES`, then `LANG`, then the
+    /// `LANGUAGE` priority list. A systemd service often runs with a minimal
+    /// environment (no `LANG` at all), so `/etc/default/locale` — where
+    /// Debian/Ubuntu persist the system locale — is read as the fallback
+    /// before giving up. Anything unsupported, or a `C`/`POSIX` locale, falls
+    /// back to English; the user can still change it in Settings.
+    pub fn detect_system_language() -> &'static str {
+        for key in ["LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"] {
+            if let Ok(value) = std::env::var(key) {
+                if !value.trim().is_empty() {
+                    return Self::language_from_locale(&value);
+                }
+            }
+        }
+
+        if let Ok(contents) = std::fs::read_to_string("/etc/default/locale") {
+            for line in contents.lines() {
+                let line = line.trim();
+                if line.starts_with('#') {
+                    continue;
+                }
+                let Some((key, value)) = line.split_once('=') else {
+                    continue;
+                };
+                if !matches!(key.trim(), "LC_ALL" | "LC_MESSAGES" | "LANG" | "LANGUAGE") {
+                    continue;
+                }
+                // Values may be quoted (`LANG="fr_FR.UTF-8"`).
+                let value = value.trim().trim_matches('"').trim_matches('\'');
+                if !value.is_empty() {
+                    return Self::language_from_locale(value);
+                }
+            }
+        }
+
+        "en"
+    }
+
     pub fn generate_system_hash() -> String {
         use sha2::{Digest, Sha256};
 
@@ -146,24 +256,130 @@ impl SetupService {
         stored_hash == Self::generate_system_hash()
     }
 
-    /// Atomically mark setup as in progress to prevent race conditions
+    /// Atomically mark setup as in progress to prevent race conditions.
+    ///
+    /// The lock file records the owner PID and its creation time. A lock left
+    /// behind by a process that died mid-setup (OOM kill, systemd restart, a
+    /// power cut) would otherwise dead-end the wizard forever: `is_first_run`
+    /// stays true, the UI keeps offering setup, and every submission answers
+    /// "Setup is already in progress" with no way out. So an existing lock is
+    /// only honoured while it is *live* — its PID still exists and it is
+    /// younger than [`SETUP_LOCK_MAX_AGE`]. Anything else is reclaimed.
     pub fn mark_setup_in_progress() -> Result<(), SetupError> {
         std::fs::create_dir_all(Self::data_dir())?;
 
-        // O_EXCL ensures atomicity - fails if file already exists
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(Self::setup_lock_file())
-        {
+        let path = Self::setup_lock_file();
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut file) => {
-                file.write_all(b"in_progress")?;
+                let body = format!(
+                    "pid={}\ncreated_at={}\n",
+                    std::process::id(),
+                    unix_now()
+                );
+                file.write_all(body.as_bytes())?;
+                file.flush()?;
                 Ok(())
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                Err(SetupError::SetupInProgress)
+                if Self::setup_lock_is_live(&path) {
+                    return Err(SetupError::SetupInProgress);
+                }
+                tracing::warn!(
+                    lock = %path.display(),
+                    "Reclaiming a stale first-run setup lock (owner process gone or too old)"
+                );
+                let _ = std::fs::remove_file(&path);
+                // Re-create with O_EXCL: if another request raced us to the
+                // reclaim, exactly one of the two wins.
+                match OpenOptions::new().write(true).create_new(true).open(&path) {
+                    Ok(mut file) => {
+                        let body = format!(
+                            "pid={}\ncreated_at={}\n",
+                            std::process::id(),
+                            unix_now()
+                        );
+                        file.write_all(body.as_bytes())?;
+                        file.flush()?;
+                        Ok(())
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                        Err(SetupError::SetupInProgress)
+                    }
+                    Err(e) => Err(SetupError::Io(e)),
+                }
             }
             Err(e) => Err(SetupError::Io(e)),
+        }
+    }
+
+    /// Whether an existing lock file belongs to a setup that is still running.
+    ///
+    /// Conservative on purpose: an unreadable or unparseable lock is treated as
+    /// **stale** (it cannot be attributed to a live process), while a lock whose
+    /// PID is alive and that is younger than the maximum age is honoured.
+    fn setup_lock_is_live(path: &std::path::Path) -> bool {
+        let Ok(contents) = std::fs::read_to_string(path) else {
+            return false;
+        };
+
+        // The lock's own timestamp drives the age rule. A lock written by an
+        // older build (plain "in_progress", no metadata) has none, so fall back
+        // to the file's mtime — which still lets a reboot clean it up.
+        let created_at: Option<u64> = contents
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .find(|(k, _)| k.trim() == "created_at")
+            .and_then(|(_, v)| v.trim().parse().ok());
+        let age = match created_at {
+            Some(ts) => unix_now().saturating_sub(ts),
+            None => std::fs::metadata(path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| unix_now().saturating_sub(d.as_secs()))
+                .unwrap_or(u64::MAX),
+        };
+
+        Self::lock_contents_is_live(&contents, age, process_is_alive)
+    }
+
+    /// The staleness rule itself, with the two impure inputs (age, liveness of
+    /// a PID) injected so the decision is unit-testable without touching the
+    /// real lock file or the process table.
+    pub fn lock_contents_is_live(
+        contents: &str,
+        age_seconds: u64,
+        is_alive: impl Fn(u32) -> bool,
+    ) -> bool {
+        if age_seconds > Self::SETUP_LOCK_MAX_AGE.as_secs() {
+            return false;
+        }
+
+        let pid: Option<u32> = contents
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .find(|(k, _)| k.trim() == "pid")
+            .and_then(|(_, v)| v.trim().parse().ok());
+
+        match pid {
+            Some(pid) => is_alive(pid),
+            // No PID recorded (legacy lock): honour it only while it is young,
+            // which the age check above already enforced.
+            None => true,
+        }
+    }
+
+    /// Remove a lock left over by a crashed setup. Called once at startup so a
+    /// reboot after a failed first run starts from a clean state even when the
+    /// stale lock is still younger than [`SETUP_LOCK_MAX_AGE`].
+    pub fn cleanup_stale_setup_lock() {
+        let path = Self::setup_lock_file();
+        if path.exists() && !Self::setup_lock_is_live(&path) {
+            tracing::warn!(
+                lock = %path.display(),
+                "Removing a stale first-run setup lock at startup"
+            );
+            let _ = std::fs::remove_file(&path);
         }
     }
 
@@ -204,9 +420,78 @@ impl SetupService {
         Ok(())
     }
 
+    /// Minimum admin password length.
+    ///
+    /// 12 rather than 8: this is the single credential that owns the whole
+    /// appliance (root-level control of every app, share and disk), and NIST
+    /// SP 800-63B pairs a minimum length with a compromised-password check
+    /// precisely because composition rules alone yield `Password1`-style
+    /// secrets. The wizard and Settings both surface the live checklist.
+    pub const MIN_PASSWORD_LEN: usize = 12;
+
+    /// Passwords rejected outright regardless of their shape: the perennial
+    /// top-of-the-breach-lists entries plus this product's own obvious
+    /// candidates. Compared case-insensitively against the whole password, so
+    /// `Homevault1`, `H0MEVAULT1` and `homevault1` are all refused.
+    const BANNED_PASSWORDS: &'static [&'static str] = &[
+        "password",
+        "password1",
+        "password12",
+        "password123",
+        "password1234",
+        "passw0rd",
+        "p@ssw0rd",
+        "p@ssword1",
+        "p@ssw0rd1",
+        "qwerty",
+        "qwerty123",
+        "qwertyuiop",
+        "azerty",
+        "azerty123",
+        "123456789012",
+        "1234567890123",
+        "letmein",
+        "letmein123",
+        "welcome",
+        "welcome1",
+        "welcome123",
+        "iloveyou1",
+        "admin",
+        "admin123",
+        "administrator",
+        "changeme",
+        "changeme123",
+        "secret",
+        "secret123",
+        "homevault",
+        "homevault1",
+        "homevault12",
+        "homevault123",
+        "homevault2024",
+        "homevault2025",
+        "homevault2026",
+        "homevaultadmin",
+        "motdepasse",
+        "motdepasse1",
+        "motdepasse123",
+        "motdepasse1234",
+        "passwort",
+        "passwort1",
+        "passwort123",
+        "contrasena",
+        "contrasena1",
+        "contrasena123",
+    ];
+
+    /// Longest run of identical characters tolerated (`aaaaaaaaaaaa`).
+    const MAX_REPEATED_RUN: usize = 4;
+
     pub fn validate_password(password: &str) -> Result<(), String> {
-        if password.len() < 8 {
-            return Err("Password must be at least 8 characters".to_string());
+        if password.len() < Self::MIN_PASSWORD_LEN {
+            return Err(format!(
+                "Password must be at least {} characters",
+                Self::MIN_PASSWORD_LEN
+            ));
         }
 
         if password.len() > 128 {
@@ -225,7 +510,66 @@ impl SetupService {
             return Err("Password must contain at least one digit".to_string());
         }
 
+        // Compromised / obvious passwords: refused even when they satisfy every
+        // composition rule above (`Password1234` is 12 chars, mixed, with a
+        // digit — and still the first guess of every credential-stuffing list).
+        if Self::is_banned_password(password) {
+            return Err(
+                "Password is too common — choose something no one else would use".to_string(),
+            );
+        }
+
+        if Self::has_long_repeated_run(password) {
+            return Err(
+                "Password must not repeat the same character more than 4 times in a row"
+                    .to_string(),
+            );
+        }
+
         Ok(())
+    }
+
+    /// Whether the password (or its letters-only form) appears in
+    /// [`Self::BANNED_PASSWORDS`].
+    ///
+    /// Also strips the trailing digits from the candidate so that `Password123`
+    /// and `Homevault2026` are caught by the `password` / `homevault` entries
+    /// without listing every year and counter.
+    pub fn is_banned_password(password: &str) -> bool {
+        let lowered = password.to_lowercase();
+        let stripped: String = lowered
+            .trim_end_matches(|c: char| c.is_ascii_digit())
+            .to_string();
+        let letters_only: String = lowered
+            .chars()
+            .filter(|c| c.is_ascii_alphabetic())
+            .collect();
+
+        Self::BANNED_PASSWORDS.iter().any(|banned| {
+            *banned == lowered
+                || *banned == stripped
+                || *banned == letters_only
+                || (letters_only.len() >= 6 && *banned == letters_only.as_str())
+        })
+    }
+
+    /// Whether any character is repeated more than [`Self::MAX_REPEATED_RUN`]
+    /// times consecutively.
+    pub fn has_long_repeated_run(password: &str) -> bool {
+        let mut previous: Option<char> = None;
+        let mut run = 0usize;
+        for c in password.chars() {
+            if Some(c) == previous {
+                run += 1;
+                if run > Self::MAX_REPEATED_RUN {
+                    return true;
+                }
+            } else {
+                previous = Some(c);
+                run = 1;
+            }
+        }
+        false
     }
 
     pub fn validate_fullname(fullname: &str) -> Result<(), String> {
@@ -361,23 +705,31 @@ impl SetupService {
         let journalctl = Self::resolve_bin("journalctl", "/usr/bin/journalctl");
         let tail = Self::resolve_bin("tail", "/usr/bin/tail");
 
-        // Shares page service control (smbd/nfs-server/vsftpd/homevault-webdav)
+        // Shares page service control (smbd/nfs-server/vsftpd/homevault-sftp)
         // — `homevault` needs root to start/stop/restart/reload these systemd
         // units the same way it needs root for mdadm/zpool above; unlike those,
         // `systemctl` itself is not scoped to a single subsystem (it can control
         // *any* unit on the host, including sshd or homevault's own service), so
         // this grant is deliberately scoped to the exact reload/start/stop/
         // restart/enable/daemon-reload commands src/shares.rs actually runs,
-        // rather than the whole `systemctl` binary.
+        // rather than the whole `systemctl` binary. WebDAV is not in this list:
+        // it is served in-process (`crate::webdav`), so there is no unit left
+        // to drive.
         let systemctl = Self::resolve_bin("systemctl", "/usr/bin/systemctl");
 
         // Shares system config writes — /etc/samba/smb.conf, /etc/vsftpd.conf,
-        // /etc/exports, and the WebDAV service/script must stay root-owned
-        // (unlike /etc/homevault's own smb.json/nfs.json/etc, which install.sh
-        // chowns to homevault directly), so src/shares.rs writes them via
-        // `sudo tee`. Scoped to the exact files, not the whole `tee` binary —
-        // an unscoped grant would let homevault overwrite any file on the
-        // host as root, e.g. /etc/shadow or this very sudoers file.
+        // /etc/exports must stay root-owned (unlike /etc/homevault's own
+        // smb.json/nfs.json/etc, which install.sh chowns to homevault directly),
+        // so src/shares.rs writes them via `sudo tee`. Scoped to the exact
+        // files, not the whole `tee` binary — an unscoped grant would let
+        // homevault overwrite any file on the host as root, e.g. /etc/shadow or
+        // this very sudoers file.
+        //
+        // `webdav_py`/`webdav_service` are the *legacy* generated WebDAV
+        // service (a Python script + systemd unit, root-owned). They are never
+        // written any more — they are only named here so
+        // `crate::webdav::cleanup_legacy_service` can `rm -f` them (scoped to
+        // exactly these two paths) when an upgraded host still has them.
         let exportfs = Self::resolve_bin("exportfs", "/usr/sbin/exportfs");
         let chmod = Self::resolve_bin("chmod", "/usr/bin/chmod");
         let webdav_py = "/usr/local/bin/homevault-webdav.py";
@@ -493,9 +845,11 @@ homevault ALL=(root) NOPASSWD: {zpool}, {zfs}, {mkfs_btrfs}, {mkfs_ext4}, {mkfs_
 homevault ALL=(root) NOPASSWD: {journalctl}, {tail}
 
 # Shares page service control — scoped to the exact smbd/nfs-server/vsftpd/
-# homevault-webdav commands src/shares.rs runs, not the whole systemctl binary
-# (see the comment above where `systemctl` is resolved for why).
-homevault ALL=(root) NOPASSWD: {systemctl} reload smbd, {systemctl} start smbd, {systemctl} stop smbd, {systemctl} restart smbd, {systemctl} reload vsftpd, {systemctl} start vsftpd, {systemctl} stop vsftpd, {systemctl} restart vsftpd, {systemctl} start nfs-server, {systemctl} stop nfs-server, {systemctl} restart nfs-server, {systemctl} start homevault-webdav, {systemctl} stop homevault-webdav, {systemctl} restart homevault-webdav, {systemctl} start homevault-sftp, {systemctl} stop homevault-sftp, {systemctl} restart homevault-sftp, {systemctl} enable homevault-sftp, {systemctl} daemon-reload, {systemctl} enable homevault-webdav
+# homevault-sftp commands src/shares.rs runs, not the whole systemctl binary
+# (see the comment above where `systemctl` is resolved for why). WebDAV is
+# served in-process; the only WebDAV systemctl call left is the one-shot
+# `disable --now` that retires the legacy generated unit.
+homevault ALL=(root) NOPASSWD: {systemctl} reload smbd, {systemctl} start smbd, {systemctl} stop smbd, {systemctl} restart smbd, {systemctl} reload vsftpd, {systemctl} start vsftpd, {systemctl} stop vsftpd, {systemctl} restart vsftpd, {systemctl} start nfs-server, {systemctl} stop nfs-server, {systemctl} restart nfs-server, {systemctl} start homevault-sftp, {systemctl} stop homevault-sftp, {systemctl} restart homevault-sftp, {systemctl} enable homevault-sftp, {systemctl} disable --now homevault-webdav, {systemctl} daemon-reload
 
 # Docker daemon start — the Docker page's "daemon down" state lets an admin
 # bring the daemon back up (and enable it for boot persistence) without a
@@ -506,8 +860,10 @@ homevault ALL=(root) NOPASSWD: {systemctl} start docker, {systemctl} enable dock
 
 # Shares system config writes — see the comment above where `exportfs`/
 # `webdav_py`/`webdav_service` are resolved for why this is scoped to exact
-# files rather than the whole `tee` binary.
-homevault ALL=(root) NOPASSWD: {tee} {smb_conf}, {tee} -a {smb_conf}, {tee} {vsftpd_conf}, {tee} {exports}, {tee} -a {exports}, {tee} {webdav_py}, {tee} {webdav_service}, {exportfs}, {chmod} +x {webdav_py}
+# files rather than the whole `tee` binary. The two `rm -f` grants exist only
+# to retire the legacy generated WebDAV service, and are scoped to those two
+# exact paths.
+homevault ALL=(root) NOPASSWD: {tee} {smb_conf}, {tee} -a {smb_conf}, {tee} {vsftpd_conf}, {tee} {exports}, {tee} -a {exports}, {exportfs}, {rm} -f {webdav_py}, {rm} -f {webdav_service}
 
 # SFTP — see the comment above where `groupadd`/`useradd`/`usermod_sftp`/
 # `gpasswd` are resolved for why these are scoped to exact arguments.
@@ -821,7 +1177,7 @@ mod tests {
     fn test_validate_password_empty() {
         assert_eq!(
             SetupService::validate_password("").unwrap_err(),
-            "Password must be at least 8 characters"
+            "Password must be at least 12 characters"
         );
     }
 
@@ -829,8 +1185,15 @@ mod tests {
     fn test_validate_password_too_short() {
         assert_eq!(
             SetupService::validate_password("Short1").unwrap_err(),
-            "Password must be at least 8 characters"
+            "Password must be at least 12 characters"
         );
+    }
+
+    /// 11 characters: rejected by exactly one (the new 12-char floor).
+    #[test]
+    fn test_validate_password_eleven_chars_rejected() {
+        let err = SetupService::validate_password("Abcdefghi12").unwrap_err();
+        assert!(err.contains("12 characters"), "got: {err}");
     }
 
     #[test]
@@ -853,7 +1216,7 @@ mod tests {
 
     #[test]
     fn test_validate_password_no_uppercase() {
-        let err = SetupService::validate_password("nouppercase1").unwrap_err();
+        let err = SetupService::validate_password("nouppercase1234").unwrap_err();
         assert!(
             err.contains("uppercase"),
             "Expected uppercase error, got: {}",
@@ -863,7 +1226,7 @@ mod tests {
 
     #[test]
     fn test_validate_password_no_lowercase() {
-        let err = SetupService::validate_password("NOLOWERCASE1").unwrap_err();
+        let err = SetupService::validate_password("NOLOWERCASE1234").unwrap_err();
         assert!(
             err.contains("lowercase"),
             "Expected lowercase error, got: {}",
@@ -873,36 +1236,135 @@ mod tests {
 
     #[test]
     fn test_validate_password_no_digit() {
-        let err = SetupService::validate_password("NoDigitsHere").unwrap_err();
+        let err = SetupService::validate_password("NoDigitsHereAtAll").unwrap_err();
         assert!(err.contains("digit"), "Expected digit error, got: {}", err);
     }
 
     #[test]
     fn test_validate_password_valid() {
-        assert!(SetupService::validate_password("Valid1Pass").is_ok());
+        assert!(SetupService::validate_password("Valid1Passw0rd").is_ok());
     }
 
     #[test]
     fn test_validate_password_valid_with_special() {
-        assert!(SetupService::validate_password("V4l!d_Pass").is_ok());
+        assert!(SetupService::validate_password("V4l!d_Passw0rd").is_ok());
     }
 
     #[test]
-    fn test_validate_password_exactly_8_chars() {
-        assert!(SetupService::validate_password("Abcdef12").is_ok());
+    fn test_validate_password_exactly_12_chars() {
+        assert_eq!("Abcdefgh1234".len(), SetupService::MIN_PASSWORD_LEN);
+        assert!(SetupService::validate_password("Abcdefgh1234").is_ok());
     }
 
     #[test]
     fn test_validate_password_exactly_128_chars() {
-        let mut pass = String::new();
-        // Build a 128-char password that satisfies all rules
-        pass.push_str("Ab"); // 2 chars: uppercase + lowercase
-        for _ in 0..124 {
-            pass.push('a');
+        // Build a 128-char password that satisfies every rule: mixed case, a
+        // digit, no repeated run longer than 4, and not on the ban list.
+        let mut pass = String::from("Ab");
+        while pass.len() < 126 {
+            pass.push_str("xY7z");
         }
-        pass.push_str("12"); // 2 digits
+        pass.push_str("12");
+        pass.truncate(128);
+        pass.push('1');
+        pass.truncate(128);
         assert_eq!(pass.len(), 128);
         assert!(SetupService::validate_password(&pass).is_ok());
+    }
+
+    // =====================================================================
+    // Compromised / obvious passwords
+    // =====================================================================
+
+    #[test]
+    fn test_validate_password_rejects_banned_passwords() {
+        // Each of these satisfies the composition rules (length + case +
+        // digit) and must still be refused.
+        for pass in [
+            "Password1234",
+            "Password12345",
+            "Homevault123",
+            "Motdepasse123",
+            "Passwort1234",
+            "Changeme1234",
+            "Qwerty123456",
+            "Welcome12345",
+        ] {
+            let err = SetupService::validate_password(pass)
+                .expect_err(&format!("{pass} must be refused"));
+            assert!(err.contains("too common"), "{pass} → {err}");
+        }
+    }
+
+    #[test]
+    fn test_validate_password_rejects_repeated_runs() {
+        let err = SetupService::validate_password("Aaaaaaaa1234").unwrap_err();
+        assert!(err.contains("repeat"), "got: {err}");
+    }
+
+    #[test]
+    fn test_banned_password_matching_is_case_insensitive() {
+        assert!(SetupService::is_banned_password("PASSWORD123"));
+        assert!(SetupService::is_banned_password("HoMeVaUlT2026"));
+        assert!(!SetupService::is_banned_password("Tr0ub4dor&3xyz"));
+    }
+
+    #[test]
+    fn test_has_long_repeated_run_boundary() {
+        // Exactly 4 in a row is allowed, 5 is not.
+        assert!(!SetupService::has_long_repeated_run("Abc1aaaa"));
+        assert!(SetupService::has_long_repeated_run("Abc1aaaaa"));
+    }
+
+    // =====================================================================
+    // setup lock staleness
+    // =====================================================================
+
+    #[test]
+    fn test_lock_with_live_pid_and_young_age_is_honoured() {
+        let contents = "pid=4242\ncreated_at=1700000000\n";
+        assert!(SetupService::lock_contents_is_live(contents, 5, |pid| {
+            pid == 4242
+        }));
+    }
+
+    #[test]
+    fn test_lock_with_dead_pid_is_stale() {
+        let contents = "pid=4242\ncreated_at=1700000000\n";
+        assert!(!SetupService::lock_contents_is_live(contents, 5, |_| false));
+    }
+
+    #[test]
+    fn test_lock_older_than_the_max_age_is_stale_even_with_a_live_pid() {
+        let contents = "pid=4242\ncreated_at=1700000000\n";
+        let too_old = SetupService::SETUP_LOCK_MAX_AGE.as_secs() + 1;
+        assert!(!SetupService::lock_contents_is_live(contents, too_old, |_| true));
+    }
+
+    #[test]
+    fn test_legacy_lock_without_pid_is_honoured_only_while_young() {
+        // Pre-metadata lock file: plain "in_progress".
+        assert!(SetupService::lock_contents_is_live("in_progress", 10, |_| true));
+        let too_old = SetupService::SETUP_LOCK_MAX_AGE.as_secs() + 1;
+        assert!(!SetupService::lock_contents_is_live(
+            "in_progress",
+            too_old,
+            |_| true
+        ));
+    }
+
+    #[test]
+    fn test_lock_with_malformed_pid_is_treated_as_legacy() {
+        // An unparseable pid cannot be attributed to a process, so the age
+        // rule alone decides — a young lock still blocks a concurrent setup.
+        let contents = "pid=not-a-number\ncreated_at=1700000000\n";
+        assert!(SetupService::lock_contents_is_live(contents, 5, |_| false));
+    }
+
+    #[test]
+    fn test_process_is_alive_recognises_this_process_and_rejects_pid_zero() {
+        assert!(process_is_alive(std::process::id()));
+        assert!(!process_is_alive(0));
     }
 
     // =====================================================================
@@ -954,6 +1416,50 @@ mod tests {
     #[test]
     fn test_is_valid_username_reserved() {
         assert!(!SetupService::is_valid_username("root"));
+    }
+
+    // =====================================================================
+    // language_from_locale / detect_system_language
+    // =====================================================================
+
+    #[test]
+    fn test_language_from_locale_supported() {
+        assert_eq!(SetupService::language_from_locale("fr_FR.UTF-8"), "fr");
+        assert_eq!(SetupService::language_from_locale("de_DE.UTF-8"), "de");
+        assert_eq!(SetupService::language_from_locale("es_ES.UTF-8"), "es");
+        assert_eq!(SetupService::language_from_locale("en_GB.UTF-8"), "en");
+    }
+
+    #[test]
+    fn test_language_from_locale_territory_and_case() {
+        assert_eq!(SetupService::language_from_locale("fr_CA"), "fr");
+        assert_eq!(SetupService::language_from_locale("DE_at@euro"), "de");
+        assert_eq!(SetupService::language_from_locale("es-MX.UTF-8"), "es");
+    }
+
+    #[test]
+    fn test_language_from_locale_unsupported_falls_back_to_english() {
+        assert_eq!(SetupService::language_from_locale("it_IT.UTF-8"), "en");
+        assert_eq!(SetupService::language_from_locale("pt_BR"), "en");
+        assert_eq!(SetupService::language_from_locale("C"), "en");
+        assert_eq!(SetupService::language_from_locale("POSIX"), "en");
+        assert_eq!(SetupService::language_from_locale(""), "en");
+    }
+
+    #[test]
+    fn test_language_from_locale_priority_list_uses_the_first_entry() {
+        assert_eq!(SetupService::language_from_locale("fr:de:en"), "fr");
+        assert_eq!(SetupService::language_from_locale("de_DE.UTF-8:en"), "de");
+        assert_eq!(SetupService::language_from_locale("it:fr"), "en");
+    }
+
+    #[test]
+    fn test_detect_system_language_is_one_of_the_supported_codes() {
+        let lang = SetupService::detect_system_language();
+        assert!(
+            SetupService::SUPPORTED_LANGUAGES.contains(&lang),
+            "detected {lang:?} must be a shipped language"
+        );
     }
 
     // =====================================================================

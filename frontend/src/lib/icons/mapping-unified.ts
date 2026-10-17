@@ -1,23 +1,3 @@
-/* =============================================================================
- * File          : mapping-unified.ts
- * Author        : Nicolas Le Roux
- * Created       : 28/09/2026
- * Last modified : 12/10/2026 by Nicolas Le Roux
- * Version       : 1.0.0
- *
- * Description:
- *   The unified icon-name mapping (generated from the bundled icon sets):
- *   resolves an icon name to its library entry for the theme/Icon
- *   component, with existence checks and library listing.
- *
- * Dependencies:
- *   - none (generated lookup tables)
- *
- * Usage:
- *   theme/Icon.svelte resolves every icon through it.
- * =============================================================================
- */
-
 /**
  * Unified Icon Mapping
  * Generated from: Phosphor Icons, Tabler Icons
@@ -35,9 +15,9 @@ export interface IconEntry {
 }
 
 export const iconCount = {
-  phosphor: 51,
-  tabler: 80,
-  total: 131
+  phosphor: 55,
+  tabler: 85,
+  total: 140
 };
 
 export const iconLookup: Record<string, IconEntry> = {
@@ -68,16 +48,32 @@ export const iconLookup: Record<string, IconEntry> = {
     "phosphor": "phosphor-certificate",
     "tabler": "tabler-certificate"
   },
+  "chart-line": {
+    "phosphor": "phosphor-chart-line",
+    "tabler": "tabler-chart-line"
+  },
   "chat": {
     "phosphor": "phosphor-chat"
+  },
+  "clock": {
+    "phosphor": "phosphor-clock",
+    "tabler": "tabler-clock"
   },
   "cloud": {
     "phosphor": "phosphor-cloud",
     "tabler": "tabler-cloud"
   },
+  "command": {
+    "phosphor": "phosphor-command",
+    "tabler": "tabler-command"
+  },
   "copy": {
     "phosphor": "phosphor-copy",
     "tabler": "tabler-copy"
+  },
+  "cpu": {
+    "phosphor": "phosphor-cpu",
+    "tabler": "tabler-cpu"
   },
   "database": {
     "phosphor": "phosphor-database",
@@ -262,6 +258,9 @@ export const iconLookup: Record<string, IconEntry> = {
   },
   "folder": {
     "tabler": "tabler-folder"
+  },
+  "history": {
+    "tabler": "tabler-history"
   },
   "home": {
     "tabler": "tabler-home"
