@@ -34,9 +34,7 @@ For the ready-made path the product makes five decisions so the UI stays short:
 
 ### Host provisioning (done by the installers, not the app)
 
-The VM stack is provisioned outside the app — by `installer/install.sh` on a
-plain system, by HomeVaultOS first boot (`hv-firstboot`) on the appliance
-image:
+The VM stack is provisioned outside the app, by `installer/install.sh`:
 
 | Step | What happens |
 |------|--------------|
