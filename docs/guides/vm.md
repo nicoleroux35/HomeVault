@@ -32,6 +32,22 @@ For the ready-made path the product makes five decisions so the UI stays short:
 
 ## Backend
 
+### Host provisioning (done by the installers, not the app)
+
+The VM stack is provisioned outside the app — by `installer/install.sh` on a
+plain system, by HomeVaultOS first boot (`hv-firstboot`) on the appliance
+image:
+
+| Step | What happens |
+|------|--------------|
+| Packages | `incus`, `qemu-system-x86`, `qemu-system-modules-spice` (**required** for any VM to boot — Incus always passes `-spice`), `swtpm`/`swtpm-tools` (TPM 2.0 for Windows 11), `virtiofsd`, `ovmf` (UEFI firmware) |
+| Repository | Debian 13+ / Ubuntu 24.04+ → base repos; Debian 12 → `bookworm-backports` (added by `ensure_incus_repo`); Ubuntu 20.04/22.04 → Zabbly stable repo |
+| Daemon init | `incus admin init --auto` — a freshly installed daemon starts **empty** (no storage pool, `default` profile without a NIC) so the first `vm/create` would fail with "No storage pool found"; the auto-init provisions a `dir` pool and the `incusbr0` bridge non-interactively. Idempotent: an already-initialized daemon (detected via its storage pool list) is left untouched |
+
+The app itself never runs init — it only talks to the socket and inherits the
+`default` profile (see `src/incus.rs:496`), which is why this provisioning
+must exist on every install path.
+
 REST routes are registered in `src/web/mod.rs` (`/api/vm/*`); the console
 WebSocket is a nested router built by `src/handlers/vm.rs::create_vm_router`.
 

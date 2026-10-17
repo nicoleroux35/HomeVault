@@ -3,6 +3,54 @@
 **Purpose:** System health checks and status overview (memory, disk space,
 S.M.A.R.T., network, services, temperatures).
 
+## Probes for monitoring (2026-10-17)
+
+`GET /api/health` cannot be used as a probe: it answers **HTTP 200** even when
+the caller is unauthenticated and even when the database is unusable. A
+monitoring system built on it can never detect an outage. Two public,
+deliberately terse routes fix that (`src/handlers/health_probe.rs`):
+
+| Route | Auth | Answers |
+|-------|------|---------|
+| `GET /api/health/live` | none | `200 {"status":"ok"}` whenever the HTTP stack responds |
+| `GET /api/health/ready` | none | `200 {"status":"ready"}` or `503 {"status":"degraded","checks":{…}}` |
+
+`/ready` runs `SELECT 1` against the pool (memoised for one second, so a
+one-second poll does not hammer the database) and reports `degraded` when:
+
+- the database is unreachable or times out (2 s), or
+- the **boot-time integrity check failed** — `run_migrations` is followed by
+  `PRAGMA quick_check(1)`, and a damaged file is logged and surfaced here
+  instead of waiting for the first query to blow up.
+
+A corrupt database does **not** stop the appliance from starting: a degraded
+server that can still export its data is more useful than one that refuses to
+boot. `PRAGMA integrity_check` (the slow, complete check) is available
+separately for on-demand use.
+
+Both routes are **public**, so they must never carry host detail: no hostname,
+no disk names, no version, no machine id. Anything added to their body is
+public information.
+
+Example probes:
+
+```ini
+# systemd (a slow answer counts as a failure)
+ExecStartPost=/usr/bin/curl -fsS --max-time 5 http://127.0.0.1:8080/api/health/live
+```
+
+```yaml
+# docker-compose
+healthcheck:
+  test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/health/ready"]
+  interval: 30s
+  timeout: 5s
+  retries: 3
+```
+
+Point a load balancer / reverse proxy at `/ready` and a supervisor restart
+policy at `/live`.
+
 ## Backend
 
 - `GET /health` (`handle_health_endpoint`, `src/web/mod.rs`) requires a valid

@@ -57,7 +57,7 @@ categories:
 | Elevation/z-index | `--hv-z-*` | 1000-point increments |
 | Motion | `--hv-transition*`, `--hv-ease-*`, `--hv-chrome-*` | transform/opacity only |
 | Desktop chrome | `--hv-chrome-*`, `--hv-window-*`, `--hv-winhdr-*`, `--hv-dock-*` | shell geometry |
-| Login gateway | `--hv-login-*` (bg gradient, orbs, accent, field, timer) + `--hv-wizard-*` (recovery box, create CTA) | scoped gateway palette, login + setup wizard only — see §6.1/§6.2 |
+| Login + wizard gateway | `--hv-login-*` (canvas, orbs, accent, field, timer) + `--hv-wizard-*` (recovery box, create CTA) | **aliases of the Appliance palette** — same accent, ink ramp and canvas as the desktop — see §6.1/§6.2 |
 | Settings screen | `--hv-settings-*` (slate ramp, tile/canvas/hairline/border, cat tints + 8 `--hv-settings-cat-*` accents, toggle geometry) | scoped to `routes/Settings.svelte` + `components/settings/` only — see §6.3 |
 
 ### 2.1 The two type scales (do not merge)
@@ -164,11 +164,32 @@ The four interaction states are tokens, never ad-hoc fills:
 | `--hv-radius-lg` | 10px | default card corners |
 | `--hv-radius-xl` | 12px | large cards, sections |
 | `--hv-radius-2xl` | 16px | window corners, large surfaces |
-| `--hv-radius-3xl` | 20px | hero surfaces |
-| `--hv-radius-4xl` | 24px | login/setup cards |
+| `--hv-radius-3xl` | 16px | compat alias of `--hv-radius-2xl` — prefer 2xl in new code |
+| `--hv-radius-4xl` | 24px | large floating chrome panels (topbar popovers, power dialog, activity panel) |
 | `--hv-radius-full` | 9999px | pills, circular icon buttons |
 | `--hv-radius-card` | 12px | semantic card corner |
 | `--hv-radius-control` | 8px | interactive control corner |
+
+**Corner audit (2026-10-17).** Every visible corner reads one of the stops
+above — no literal `border-radius` outside the scale. The only literals left
+are the 2px micro-radius on the 8–10px legend swatches (`Raid`, `Storage`)
+and the tooltip arrow: a data-encoding dot, not a UI corner. The element →
+stop mapping the shell and the gateway share:
+
+| Element | Stop |
+|---|---|
+| App window, tablet-maximized window | `--hv-window-radius` (16px, aliased by `--hv-window-border-radius`) |
+| Maximized window on desktop / edge-to-edge phone | `0` (intentional) |
+| Dock pill, topbar pill, dock + launchpad icon tiles | `--hv-radius-2xl` (16px) |
+| Topbar popovers, power dialog, activity panel | `--hv-radius-4xl` (24px) |
+| Desktop widget/monitor panels, in-window cards, modals, drawers, folder pickers | `--hv-radius-card`/`--hv-radius-xl` (12px) |
+| Inputs, buttons, selects, list rows, chips (non-pill) | `--hv-radius-control`/`--hv-radius-md` (8px) |
+| Window header icon tile + control trio | `--hv-winctrl-radius`/`--hv-winhdr-icon-radius` (8px) |
+| Pills, dots, status chips, avatars, spinners | `--hv-radius-full` / `50%` |
+
+Login and SetupWizard are Tailwind-on-tokens: card `rounded-2xl` (16px),
+fields/buttons `rounded-md` (8px, matching the shared `Input`/`Button`),
+inner cards `rounded-xl` (12px). They use no radius outside this map.
 
 ## 4. Component architecture — one library, three layers
 
@@ -536,8 +557,9 @@ above. Whichever source you use, the accessible name lives on the *control*
   scroller. The
   tiles are the per-app `--hv-app-<id>-grad`, never the mock's flat white —
   §6 is binding.
-- The desktop wallpaper is a light blue-grey gradient (`--hv-desktop-bg`) by
-  default; a photo wallpaper may be chosen in Settings → Appearance.
+- The desktop wallpaper is a photo (or the light blue-grey canvas gradient
+  `--hv-desktop-bg`) — the login screen and the setup wizard paint that same
+  canvas token, so the three can never drift apart.
 - Every dock/topbar/launcher control is ≥44px; `:hover` lifts flatten under
   `@media (hover: none)`.
 
@@ -583,19 +605,41 @@ in-page buttons and chips (`Chat.svelte`, `Terminal.svelte`, `Users.svelte`,
 
 ### 6.1 The gateway (login + setup wizard)
 
-The **login and setup-wizard screens** follow the approved login and
-wizard mocks and are the one deliberate exception to the
-single-accent rule: a full-screen soft pastel gradient
-(`--hv-login-bg-gradient`: indigo → violet → pink) with two blurred orbs
+The **login and setup-wizard screens** are the product's front door: a
+full-screen canvas gradient (`--hv-login-bg-gradient`) with two blurred orbs
 (`--hv-login-orb-*`), a large live 24 h clock, and a compact white card
-(380 px login / 520 px wizard). The rest of the product stays on the
-Appliance palette; every value used by the gateway is a `--hv-login-*` or
-`--hv-wizard-*` token declared in `tokens.css`.
+(380 px login / 520 px wizard).
+
+Since **2026-10-17** they no longer run a palette of their own. They used to
+carry a page-scoped indigo/violet/pink "gateway" identity from an earlier
+mock; every value now **derives from the Appliance palette** the desktop
+shell, the dock/topbar chrome and every in-window app already use:
+
+- one accent — `--hv-login-accent` **is** `--hv-primary` (#1E62AE), and
+  `--hv-login-accent-soft-border` is the same hue (no second accent, no
+  ladder);
+- one canvas — `--hv-login-bg-gradient` **is** `--hv-desktop-bg`, the
+  desktop's own gradient, declared once in `tokens.css` and read by
+  `Desktop.svelte` too;
+- one ink ramp — `--hv-login-clock/muted/faint` alias `--hv-shell-text-*` /
+  `--hv-shell-border`, and the card borrows the desktop window's hairline
+  (`--hv-window-border`) and elevation (`--hv-shadow-xl`);
+- the semantic hues alias their Appliance tokens (`--hv-login-error` =
+  `--hv-error`, `--hv-login-timer-warn` = `--hv-warning`, …).
+
+The `--hv-login-*` names stay because both screens read them; a component may
+still use an Appliance token directly (the recovery modal's fields do). The
+contrast floors hold everywhere: accent 6.15:1 on white and 4.99:1 on
+`--hv-login-accent-soft`, both gradient stops ≥4.69:1 under their white glyph
+/ label. Guard: `login.spec.ts` **13.6**, which also asserts the aliases
+(`--hv-login-accent` === `--hv-primary`, gateway canvas === desktop canvas).
 
 - `frontend/src/routes/Login.svelte` is pure **Tailwind-on-tokens** (no scoped
   `<style>`), built from the shared `Button`/`Toggle`/`Modal` (shadcn-svelte /
   Melt UI) components + native inputs kept for autofill. The primary CTA uses
-  the theme `Button` with `bg-[image:var(--hv-login-btn-grad)]!`.
+  the theme `Button` with `bg-[image:var(--hv-login-btn-grad)]!` — and so does
+  every other primary button on the screen (recovery, retry, modal footer), so
+  one screen has one button treatment.
 - Raw `<input>`/`<button>` elements keep the trailing `!` important modifier
   on their visual utilities as belt-and-braces. `base.css`'s global
   `input`/`button` defaults (`width:100%`, white background, `--hv-primary`
@@ -623,18 +667,40 @@ Appliance palette; every value used by the gateway is a `--hv-login-*` or
 `frontend/src/routes/SetupWizard.svelte` uses the same gateway vocabulary as
 the login screen (reusing the `--hv-login-*` tokens) plus its own
 `--hv-wizard-*` accents: the per-feature icon hues on the welcome step, the
-amber recovery-code box (`--hv-wizard-recovery-*`) and the emerald "create
-account" CTA (`--hv-wizard-create-grad`). Its text runs on the **gateway slate
-ramp** (`--hv-wizard-text-heading/title/label/soft/body`, slate-900→500) — one
-step lighter than the Appliance ink — and its fields are **white** with a
-hairline shadow (unlike the login's `#F8FAFC` fields). Error borders/text use
-`--hv-wizard-error` (#EF4444) and update live like the mock (username invalid
-→ red / valid → indigo, confirm mismatch → red / match → green). Same styling
-rules as §6.1 — Tailwind-on-tokens, no scoped `<style>`, trailing-`!`
-modifiers on raw `input`/`button` utilities (including the `h1` color, which
-`base.css`'s unlayered `h1 { color }` rule would otherwise override), gradients
-as `bg-[image:var(--hv-…)]!`.
+amber recovery box (`--hv-wizard-recovery-*`) and the green "create account"
+CTA (`--hv-wizard-create-grad`). Its text runs on the **Appliance ink ramp**
+(`--hv-wizard-text-heading/title/label/soft/body` → `--hv-shell-text-*`) —
+since 2026-10-17 the wizard no longer drifts a step lighter than the rest of
+the product — and its fields are **white** with a hairline shadow (unlike the
+login's `#F7F8FA` fields). Error borders/text use `--hv-wizard-error`
+(= `--hv-error`, #C22B21) and update live (username invalid → red / valid →
+brand blue, confirm mismatch → red / match → green).
 
+**2026-10-17 — the emerald family was replaced by the Appliance success ramp.**
+The wizard's own `#10B981` / `#22C55E` / `#16A34A` / `#10B981→#059669` stops
+failed WCAG 1.4.3 / 1.4.11 in every role they carried ink: 2.54:1 as the
+welcome feature glyph, 2.28:1 as the strength label and behind the white
+check circles, and 2.54 → 3.77:1 under the white "create account" label.
+`--hv-wizard-feature-emerald` / `-success` / `-success-strong` /
+`-create-grad` now alias `--hv-success` (#1E7E34, 5.14:1) and
+`--hv-success-text` (#166428, 7.27:1). The amber recovery box became white
+paper with a 2px `--hv-warning` border, its copy on `--hv-warning-text` /
+`--hv-warning`, and only the code chip keeps a tint (`--hv-warning-light`,
+code text 6.32:1 on it) — the box's own tint used to leave the 12 px
+description at 4.39:1. Same styling rules as §6.1 — Tailwind-on-tokens, no
+scoped `<style>`, trailing-`!` modifiers on raw `input`/`button` utilities
+(including the `h1` color, which `base.css`'s unlayered `h1 { color }` rule
+would otherwise override), gradients as `bg-[image:var(--hv-…)]!`.
+
+- **Page layout (2026-10-16).** The root is a one-column grid
+  (`grid-rows-[minmax(auto,1fr)_auto_minmax(3rem,1fr)]`): the live clock owns
+  row 1 — its `auto` minimum *is* the clock's rendered height, so no
+  hard-coded band value can drift from it — and the 520 px card owns row 2.
+  The two `1fr` rows split the leftover space evenly, so the card block is
+  centred on both axes at every resolution. When the card is taller than the
+  leftover space the split collapses, the card starts right under the clock and
+  the page scrolls from the card's top: never clipped, never under the clock.
+  Covered by `setup.spec.ts` §10 (centring + no-overflow assertions).
 - The card header carries the wizard step dots (`setup-stepper-dot`/`-label`/
   `-line` with `class:done`/`class:current`), a gradient progress bar, and the
   brand tile. The 4 steps map to HomeVault's real flow: welcome → account
@@ -771,8 +837,9 @@ These are correctness rules, enforced by review and by the E2E
 - **Contrast floor.** Any token used for *text* must be ≥4.5:1 on every
   surface it renders on; any status dot / focus / boundary colour ≥3:1.
   The audited text tokens already sit above the floor (`--hv-shell-text-3`
-  #5F6B76, `--hv-login-muted` #64748B, `--hv-settings-label` #64748B,
-  `--hv-shell-border-strong` #87929E, badge bg #DC2626, wizard/timer hues).
+  #5F6B76, `--hv-login-muted` = `--hv-shell-text-3`, `--hv-settings-label`
+  #64748B, `--hv-shell-border-strong` #87929E, badge bg #DC2626, wizard/timer
+  hues).
   A new page-scoped palette must be contrast-checked before landing.
   The accent counts both as text and as fill: its shipped default `#1E62AE`
   clears 4.5:1 behind white text *and* as text on `--hv-surface` and the
@@ -787,11 +854,15 @@ These are correctness rules, enforced by review and by the E2E
   white, and the Chat tile's light stop is `#0d9488` (3.74:1 with its white
   glyph). The Settings rail's eight category accents clear 3:1 in **both**
   tile states (full-colour glyph on the 9% tint at rest, white glyph on the
-  solid active — §6.3), and the Login/Wizard indigo ladder renders ≥4.5:1
-  wherever it carries text (`accent` `#4F46E5`, `soft-border` `#7C3AED`,
-  both gradients ≥5.70:1 under white). Runtime guards: `groups.spec.ts`
+  solid active — §6.3), and the gateway ladder renders ≥4.5:1 wherever it
+  carries text (`accent` `#1E62AE`, 4.99:1 on `accent-soft`, both gradient
+  stops ≥4.69:1 under white) — the wizard's own emerald family did not and was
+  replaced by the Appliance success ramp on 2026-10-17 (§6.2). Runtime guards:
+  `groups.spec.ts`
   16.1 (avatars), `settings.spec.ts` 17.5 (rail tiles), `login.spec.ts`
-  13.6 (login tokens) — each reads live values, never hardcoded RGB.
+  13.6 (gateway tokens — accent ladder, wizard ink ramp, success/warning
+  families, recovery box, all three gradients) — each reads live values,
+  never hardcoded RGB.
 - **Modals trap focus.** Prefer the bits-ui Dialog (`theme/Modal`,
   `theme/Drawer` — trap + Escape + focus restore built in). Hand-rolled
   overlays (Desktop power/confirm, `HvLaunchpad`) must use

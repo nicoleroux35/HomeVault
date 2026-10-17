@@ -888,3 +888,84 @@ async fn test_sftp_rebuild_admin_path_never_500s() {
     // a clean failure are both acceptable; a panic / 500 is not.
     assert!(body.is_object());
 }
+
+// ===========================================================================
+// 9. WebDAV — in-process service lifecycle
+// ===========================================================================
+
+#[tokio::test]
+async fn test_webdav_service_start_is_admin_only_and_never_binds_without_shares() {
+    // The WebDAV server is now in-process. With no WebDAV share defined it has
+    // nothing to serve, so `start` reports success without binding a port —
+    // this keeps the endpoint testable without opening a real socket.
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "regular1", "Passw0rd!123", 1).await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = shares_router(state);
+
+    // No token -> refused.
+    let (status, body) = send(&mut r, Method::POST, "/api/shares/webdav/start", None, None).await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+
+    // A member session is refused with an admin message.
+    let regular = login(&mut r, "regular1", "Passw0rd!123").await;
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/shares/webdav/start",
+        Some(&regular),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], json!(false));
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .to_lowercase()
+        .contains("admin"));
+
+    // An admin gets a clean success (port 0 = nothing bound, no shares).
+    let admin = login(&mut r, "admin1", "Passw0rd!123").await;
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/shares/webdav/start",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["success"], json!(true), "{body}");
+
+    // Stopping is idempotent and also admin-only.
+    let (status, _) = send(
+        &mut r,
+        Method::POST,
+        "/api/shares/webdav/stop",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_webdav_config_default_is_closed_and_bindable() {
+    // The old derived `Default` gave port 0 and auth OFF — an unconfigured
+    // appliance could neither bind nor be safe. Both are pinned here.
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = shares_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/shares/webdav/config",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["require_auth"], json!(true), "{body}");
+    assert_ne!(body["data"]["port"], json!(0), "{body}");
+}

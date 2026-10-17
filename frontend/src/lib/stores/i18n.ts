@@ -6,11 +6,12 @@
  * Version       : 1.0.0
  *
  * Description:
- *   The i18n runtime: language detection (explicit choice, then browser
- *   locale) across the four supported languages, translation rows fetched
- *   from the server into a flat key→string map, and the translate helper
- *   used everywhere in the UI. Unknown keys fall back to the key itself so
- *   a missing translation can never blank out a label.
+ *   The i18n runtime: language detection (explicit choice, then the
+ *   browser/OS locale, then the host's own POSIX locale as a last hint)
+ *   across the four supported languages, translation rows fetched from the
+ *   server into a flat key→string map, and the translate helper used
+ *   everywhere in the UI. Unknown keys fall back to the key itself so a
+ *   missing translation can never blank out a label.
  *
  * Dependencies:
  *   - svelte (>= 5)
@@ -43,31 +44,35 @@ const LANGUAGE_MAP: Record<string, Language> = {
 };
 
 function createLanguageStore() {
-  // Detect language from localStorage, browser, or OS
-  const detectLanguage = (): Language => {
-    // 1. Check localStorage (user's explicit choice)
+  /** The user's explicit choice, when they made one (Settings, legacy wizard). */
+  function savedChoice(): Language | null {
     const saved = localStorage.getItem('hv-language') || localStorage.getItem('language');
-    if (saved && SUPPORTED_LANGUAGES.includes(saved as Language)) {
-      return saved as Language;
-    }
+    return saved && SUPPORTED_LANGUAGES.includes(saved as Language) ? (saved as Language) : null;
+  }
 
-    // 2. Detect from browser/OS language
-    const browserLang = (navigator.language || 'en').toLowerCase();
-    
-    // Try exact match first
-    if (LANGUAGE_MAP[browserLang]) {
-      return LANGUAGE_MAP[browserLang];
-    }
-    
-    // Try base language (e.g., 'fr' from 'fr-FR')
+  /**
+   * The language the browser/OS asks for, or `null` when it is not one
+   * HomeVault ships a dictionary for (Italian, Japanese, … → caller decides).
+   */
+  function browserLanguage(): Language | null {
+    const browserLang = (navigator.language || '').toLowerCase();
+    if (LANGUAGE_MAP[browserLang]) return LANGUAGE_MAP[browserLang];
+
+    // Base language (e.g. 'fr' from 'fr-FR').
     const baseLang = browserLang.split('-')[0];
-    if (SUPPORTED_LANGUAGES.includes(baseLang as Language)) {
-      return baseLang as Language;
-    }
+    return SUPPORTED_LANGUAGES.includes(baseLang as Language) ? (baseLang as Language) : null;
+  }
 
-    // 3. Default to English
-    return 'en';
-  };
+  // Detect language from localStorage, browser, or OS.
+  //
+  // 1. the user's explicit choice always wins;
+  // 2. then the browser/OS locale (navigator.language follows the OS);
+  // 3. otherwise the host's own POSIX locale, handed over later by
+  //    `applySystemLanguage()` once `/auth/setup-status` has answered —
+  //    a headless/remote client whose browser is in an unsupported language
+  //    still gets the appliance's language;
+  // 4. English last.
+  const detectLanguage = (): Language => savedChoice() ?? browserLanguage() ?? 'en';
 
   const initialLanguage = detectLanguage();
   const { subscribe, set } = writable<Language>(initialLanguage);
@@ -92,6 +97,23 @@ function createLanguageStore() {
      */
     getDetectedLanguage(): Language {
       return initialLanguage;
+    },
+
+    /**
+     * Apply the host's OS locale (from `/auth/setup-status`) as a fallback.
+     *
+     * Only acts when the user has made no explicit choice *and* the browser
+     * locale is not one we ship — so a French browser on an English appliance
+     * stays French, while an Italian browser on a French appliance gets
+     * French instead of English. Never persists anything: this is detection,
+     * not a preference, so Settings stays the single place a choice is stored.
+     */
+    applySystemLanguage(code: string | null | undefined) {
+      if (savedChoice() || browserLanguage()) return;
+      const lang = (code || '').toLowerCase() as Language;
+      if (!SUPPORTED_LANGUAGES.includes(lang)) return;
+      document.documentElement.setAttribute('lang', lang);
+      set(lang);
     },
 
     /**
@@ -198,8 +220,10 @@ export const translations = {
     'setup.password': 'Password',
     'setup.confirm_password': 'Confirm Password',
     'setup.create_account': 'Create Administrator Account',
-    'setup.password_requirements': 'Minimum 8 characters with uppercase, lowercase, and numbers',
-    'setup.password_min_length': 'At least 8 characters',
+    'setup.password_requirements': 'Minimum 12 characters with uppercase, lowercase and a number',
+    'setup.password_min_length': 'At least 12 characters',
+    'setup.password_too_common': 'Not a commonly used password',
+    'setup.password_no_repeats': 'No character repeated more than 4 times in a row',
     'setup.password_uppercase': 'One uppercase letter',
     'setup.password_lowercase': 'One lowercase letter',
     'setup.password_digit': 'One number',
@@ -233,6 +257,7 @@ export const translations = {
     'login.back': 'Back',
     'login.connection_error': 'Unable to connect to the server',
     'login.hardware_recovery.notice': 'This device\'s hardware fingerprint changed since it was set up. Sign in as an administrator to confirm the new hardware and continue.',
+    'login.insecure_notice': 'This page is served over plain HTTP: your password travels unencrypted on the network. An administrator can turn on HTTPS in Settings → Security.',
     'login.hardware_recovery.failed': 'Could not confirm the hardware change. Please try again.',
     'login.retry': 'Retry',
     'login.forgot_password_link': 'Forgot password?',
@@ -243,7 +268,7 @@ export const translations = {
     'login.reset_confirm_password_placeholder': 'Re-enter the new password',
     'login.reset_mismatch': 'The two passwords do not match.',
     'login.reset_error_reused': 'That password was used recently. Please choose a different one.',
-    'login.reset_error_weak': 'Password must be at least 8 characters with uppercase, lowercase and a digit.',
+    'login.reset_error_weak': 'Password must be at least 12 characters with uppercase, lowercase and a digit, and not be a commonly used one.',
     'login.reset_error': 'Could not reset the password. Please try again.',
     // Recovery-code password reset (email-free)
     'login.recovery_description': 'Enter your username and the recovery code you wrote down during setup.',
@@ -264,7 +289,7 @@ export const translations = {
     // Login errors (user-friendly)
     'login.error': 'Unable to sign in. Please try again',
     'login.error.invalid_credentials': 'Incorrect username or password',
-    'login.error.account_locked': 'Your account has been locked. Please contact support',
+    'login.error.account_locked': 'Your account is locked. Wait 5 minutes, or use “Forgot password?” with your recovery code to unlock it now.',
     'login.error.rate_limited': 'Too many login attempts. Please try again later',
     'login.error.network': 'Cannot connect to server. Please check your connection',
     'login.error.server': 'Server error. Please try again in a moment',
@@ -311,36 +336,6 @@ export const translations = {
     'setup.stepper.account': 'Account',
     'setup.stepper.password': 'Password',
     'setup.stepper.verify': 'Verify',
-    'setup.stepper.language': 'Language',
-    'setup.stepper.storage': 'Storage',
-    'setup.stepper.raid': 'RAID',
-    'setup.stepper.restore': 'Restore',
-    'setup.language.title': 'Choose your language',
-    'setup.language.description': 'The interface language. You can change it later in Settings.',
-    'setup.storage.title': 'Where should your data live?',
-    'setup.storage.description': 'Pick the disk that will hold shares and app data. You can manage pools later in Storage.',
-    'setup.storage.loading': 'Detecting disks…',
-    'setup.storage.empty': 'No extra disks detected — the system disk will be used.',
-    'setup.storage.system': 'System disk (default)',
-    'setup.storage.skip': 'Skip for now',
-    'setup.raid.title': 'Protect your data with RAID?',
-    'setup.raid.description': 'Mirroring keeps a second copy of everything. You can also set this up later in Storage.',
-    'setup.raid.none': 'No RAID for now',
-    'setup.raid.none_hint': 'Single disk, no redundancy.',
-    'setup.raid.mirror': 'Mirror (2 disks, safest)',
-    'setup.raid.mirror_hint': 'Every byte is written twice — one disk can fail.',
-    'setup.raid.stripe': 'Stripe (2+ disks, fastest)',
-    'setup.raid.stripe_hint': 'Speed and capacity added up, but no safety net.',
-    'setup.raid.devices': 'Disks for the array',
-    'setup.raid.empty': 'Not enough spare disks for an array — connect at least two.',
-    'setup.restore.title': 'Restore from an encrypted backup?',
-    'setup.restore.description': 'If this machine replaces an older one, point at its backup. The passphrase is asked when the restore runs — it is never stored.',
-    'setup.restore.skip': 'Fresh start — no restore',
-    'setup.restore.repo': 'Backup location',
-    'setup.restore.repo_placeholder': '/backup/restic-repo or s3:bucket:/path',
-    'setup.restore.snapshot': 'Snapshot id (optional, latest by default)',
-    'setup.restore.passphrase': 'Backup passphrase (asked again later)',
-    'setup.restore.defer': 'The restore runs after your account is created, from Backup > Restore.',
     'setup.resumed': 'Picked up where you left off — even across a reboot.',
     'setup.next': 'Next',
     'setup.previous': 'Previous',
@@ -359,7 +354,7 @@ export const translations = {
     'setup.step1.title': 'Choose your username',
     'setup.step1.description': 'This will be your administrator username. You can also add your full name.',
     'setup.step2.title': 'Create a strong password',
-    'setup.step2.description': 'Enter a password and confirm it. At least 8 characters recommended.',
+    'setup.step2.description': 'Enter a password and confirm it. At least 12 characters, with uppercase, lowercase and a number.',
     'setup.step3.title': 'Verify and create',
     'setup.step3.description': 'Please verify your information before creating your administrator account.',
     'setup.verification.message': 'Click "Create Account" to finalize the setup. This account will have full administrative privileges.',
@@ -396,9 +391,11 @@ export const translations = {
     'setup.validation.username.invalid_chars': 'Use only letters, numbers and underscores',
     'setup.validation.username.reserved': 'This username cannot be used',
     'setup.validation.password.required': 'Please enter a password',
-    'setup.validation.password.too_short': 'Password must be at least 8 characters',
+    'setup.validation.password.too_short': 'Password must be at least 12 characters',
     'setup.validation.password.mismatch': 'Passwords do not match',
     // Setup prerequisites (terminal access)
+    'setup.insecure.title': 'Connection is not encrypted',
+    'setup.insecure.body': 'HomeVault is running over plain HTTP, so the administrator password you are about to set will cross the network unencrypted. Enable HTTPS afterwards in Settings → Security.',
     'setup.prereq.title': 'Terminal access may be limited',
     'setup.prereq.sudo': 'sudo is not installed on this host',
     'setup.prereq.note': 'The web terminal requires sudo. Install it with: apt-get install sudo',
@@ -430,7 +427,9 @@ export const translations = {
     'setup.recovery_warning': 'It will not be shown again, and it cannot be copied or downloaded.',
     'setup.recovery_ack': 'I have written these numbers down on paper',
     'setup.recovery_continue': 'Continue',
-    'setup.recovery_error': 'Could not generate a recovery code right now. You can create one later from your account settings.',
+    'setup.recovery_error': 'Could not generate a recovery code right now.',
+    'setup.recovery_required': 'Your recovery code is the only offline way back into this account — it must be generated before you continue.',
+    'setup.recovery_retry': 'Generate the recovery code again',
     // Users
     'users.title': 'User Management',
     'users.subtitle': 'Manage accounts, groups, and permissions.',
@@ -487,8 +486,10 @@ export const translations = {
     'setup.password': 'Mot de passe',
     'setup.confirm_password': 'Confirmer le mot de passe',
     'setup.create_account': 'Créer le compte administrateur',
-    'setup.password_requirements': 'Minimum 8 caractères avec majuscules, minuscules et chiffres',
-    'setup.password_min_length': 'Au moins 8 caractères',
+    'setup.password_requirements': 'Minimum 12 caractères avec majuscules, minuscules et un chiffre',
+    'setup.password_min_length': 'Au moins 12 caractères',
+    'setup.password_too_common': 'Pas un mot de passe courant',
+    'setup.password_no_repeats': 'Aucun caractère répété plus de 4 fois de suite',
     'setup.password_uppercase': 'Une lettre majuscule',
     'setup.password_lowercase': 'Une lettre minuscule',
     'setup.password_digit': 'Un chiffre',
@@ -501,6 +502,8 @@ export const translations = {
     'setup.error.server': 'Erreur serveur. Veuillez réessayer dans un instant',
     'setup.error.invalid_input': 'Veuillez vérifier vos informations et réessayer',
     'setup.error.timeout': 'La requête a expiré. Veuillez réessayer',
+    'setup.insecure.title': 'Connexion non chiffrée',
+    'setup.insecure.body': 'HomeVault fonctionne en HTTP simple : le mot de passe administrateur que vous allez définir traversera le réseau non chiffré. Activez HTTPS ensuite dans Réglages → Sécurité.',
     'setup.prereq.title': "L'accès au terminal peut être limité",
     'setup.prereq.sudo': "sudo n'est pas installé sur cet hôte",
     'setup.prereq.note': 'Le terminal web nécessite sudo. Installez-le avec : apt-get install sudo',
@@ -530,7 +533,9 @@ export const translations = {
     'setup.recovery_warning': 'Il ne sera plus affiché, et il ne peut être ni copié ni téléchargé.',
     'setup.recovery_ack': "J'ai recopié ces chiffres sur papier",
     'setup.recovery_continue': 'Continuer',
-    'setup.recovery_error': "Impossible de générer un code de récupération pour le moment. Vous pourrez en créer un plus tard depuis les paramètres de votre compte.",
+    'setup.recovery_error': "Impossible de générer un code de récupération pour le moment.",
+    'setup.recovery_required': "Votre code de récupération est le seul moyen hors ligne de retrouver ce compte — il doit être généré avant de continuer.",
+    'setup.recovery_retry': 'Générer à nouveau le code de récupération',
     // Login page UI
     'login.subtitle': 'Connexion sécurisée à votre système',
     'login.secure_signin': 'Connexion sécurisée',
@@ -552,6 +557,7 @@ export const translations = {
     'login.back': 'Retour',
     'login.connection_error': 'Impossible de se connecter au serveur',
     'login.hardware_recovery.notice': 'L\'empreinte matérielle de cet appareil a changé depuis son installation. Connectez-vous en tant qu\'administrateur pour confirmer le nouveau matériel et continuer.',
+    'login.insecure_notice': "Cette page est servie en HTTP simple : votre mot de passe circule non chiffré sur le réseau. Un administrateur peut activer HTTPS dans Réglages → Sécurité.",
     'login.hardware_recovery.failed': 'Impossible de confirmer le changement de matériel. Veuillez réessayer.',
     'login.retry': 'Réessayer',
     'login.forgot_password_link': 'Mot de passe oublié ?',
@@ -562,7 +568,7 @@ export const translations = {
     'login.reset_confirm_password_placeholder': 'Ressaisissez le nouveau mot de passe',
     'login.reset_mismatch': 'Les deux mots de passe ne correspondent pas.',
     'login.reset_error_reused': 'Ce mot de passe a été utilisé récemment. Choisissez-en un autre.',
-    'login.reset_error_weak': 'Le mot de passe doit contenir au moins 8 caractères avec majuscule, minuscule et chiffre.',
+    'login.reset_error_weak': 'Le mot de passe doit contenir au moins 12 caractères avec majuscule, minuscule et chiffre, et ne pas être un mot de passe courant.',
     'login.reset_error': 'Impossible de réinitialiser le mot de passe. Réessayez.',
     'login.recovery_description': "Entrez votre nom d'utilisateur et le code de récupération que vous avez noté lors de l'installation.",
     'login.recovery_code_label': 'Code de récupération',
@@ -582,7 +588,7 @@ export const translations = {
     // Login errors (user-friendly)
     'login.error': 'Impossible de se connecter. Veuillez réessayer',
     'login.error.invalid_credentials': 'Nom d\'utilisateur ou mot de passe incorrect',
-    'login.error.account_locked': 'Votre compte a été verrouillé. Contactez le support',
+    'login.error.account_locked': 'Votre compte est verrouillé. Attendez 5 minutes, ou utilisez « Mot de passe oublié ? » avec votre code de récupération pour le déverrouiller.',
     'login.error.rate_limited': 'Trop de tentatives de connexion. Veuillez réessayer plus tard',
     'login.error.network': 'Impossible de se connecter au serveur. Vérifiez votre connexion',
     'login.error.server': 'Erreur serveur. Veuillez réessayer dans un instant',
@@ -628,36 +634,6 @@ export const translations = {
     'setup.stepper.account': 'Compte',
     'setup.stepper.password': 'Mot de passe',
     'setup.stepper.verify': 'Vérification',
-    'setup.stepper.language': 'Langue',
-    'setup.stepper.storage': 'Stockage',
-    'setup.stepper.raid': 'RAID',
-    'setup.stepper.restore': 'Restauration',
-    'setup.language.title': 'Choisissez votre langue',
-    'setup.language.description': "La langue de l'interface. Modifiable plus tard dans Réglages.",
-    'setup.storage.title': 'Où doivent vivre vos données ?',
-    'setup.storage.description': 'Choisissez le disque qui accueillera partages et données. Gérable plus tard dans Stockage.',
-    'setup.storage.loading': 'Détection des disques…',
-    'setup.storage.empty': 'Aucun disque supplémentaire détecté — le disque système sera utilisé.',
-    'setup.storage.system': 'Disque système (défaut)',
-    'setup.storage.skip': 'Passer pour l’instant',
-    'setup.raid.title': 'Protéger vos données avec RAID ?',
-    'setup.raid.description': 'La mise en miroir garde une seconde copie de tout. Configurable plus tard dans Stockage.',
-    'setup.raid.none': 'Pas de RAID pour l’instant',
-    'setup.raid.none_hint': 'Un seul disque, sans redondance.',
-    'setup.raid.mirror': 'Miroir (2 disques, le plus sûr)',
-    'setup.raid.mirror_hint': 'Chaque octet est écrit deux fois — un disque peut tomber en panne.',
-    'setup.raid.stripe': 'Stripe (2+ disques, le plus rapide)',
-    'setup.raid.stripe_hint': 'Vitesse et capacité cumulées, mais sans filet.',
-    'setup.raid.devices': 'Disques de la grappe',
-    'setup.raid.empty': 'Pas assez de disques libres pour une grappe — branchez-en au moins deux.',
-    'setup.restore.title': 'Restaurer depuis une sauvegarde chiffrée ?',
-    'setup.restore.description': "Si cette machine en remplace une ancienne, indiquez sa sauvegarde. La phrase secrète sera demandée au moment de la restauration — elle n'est jamais stockée.",
-    'setup.restore.skip': 'Départ à neuf — sans restauration',
-    'setup.restore.repo': 'Emplacement de la sauvegarde',
-    'setup.restore.repo_placeholder': '/backup/restic-repo or s3:bucket:/path',
-    'setup.restore.snapshot': 'Identifiant du snapshot (optionnel, le plus récent par défaut)',
-    'setup.restore.passphrase': 'Phrase secrète (redemandée plus tard)',
-    'setup.restore.defer': "La restauration s'exécute après la création du compte, depuis Sauvegarde > Restaurer.",
     'setup.resumed': 'Reprise là où vous étiez — même après un redémarrage.',
     'setup.next': 'Suivant',
     'setup.previous': 'Précédent',
@@ -676,7 +652,7 @@ export const translations = {
     'setup.step1.title': 'Choisissez votre nom d\'utilisateur',
     'setup.step1.description': 'Ce sera votre nom d\'utilisateur administrateur. Vous pouvez aussi ajouter votre nom complet.',
     'setup.step2.title': 'Créez un mot de passe fort',
-    'setup.step2.description': 'Entrez un mot de passe et confirmez-le. Au moins 8 caractères recommandés.',
+    'setup.step2.description': 'Entrez un mot de passe et confirmez-le. Au moins 12 caractères, avec majuscule, minuscule et chiffre.',
     'setup.step3.title': 'Vérification et création',
     'setup.step3.description': 'Veuillez vérifier vos informations avant de créer votre compte administrateur.',
     'setup.verification.message': 'Cliquez sur "Créer le compte" pour finaliser la configuration. Ce compte aura tous les privilèges administrateur.',
@@ -697,7 +673,7 @@ export const translations = {
     'setup.validation.username.invalid_chars': "Utilisez uniquement lettres, chiffres et underscores",
     'setup.validation.username.reserved': "Ce nom d'utilisateur ne peut pas être utilisé",
     'setup.validation.password.required': 'Veuillez entrer un mot de passe',
-    'setup.validation.password.too_short': 'Le mot de passe doit contenir au moins 8 caractères',
+    'setup.validation.password.too_short': 'Le mot de passe doit contenir au moins 12 caractères',
     'setup.validation.password.mismatch': 'Les mots de passe ne correspondent pas',
     // Labels wizard
     'setup.username.label': "Nom d'utilisateur",
@@ -772,8 +748,10 @@ export const translations = {
     'setup.password': 'Passwort',
     'setup.confirm_password': 'Passwort bestätigen',
     'setup.create_account': 'Administratorkonto erstellen',
-    'setup.password_requirements': 'Mindestens 8 Zeichen mit Groß-, Kleinbuchstaben und Zahlen',
-    'setup.password_min_length': 'Mindestens 8 Zeichen',
+    'setup.password_requirements': 'Mindestens 12 Zeichen mit Groß-, Kleinbuchstaben und einer Zahl',
+    'setup.password_min_length': 'Mindestens 12 Zeichen',
+    'setup.password_too_common': 'Kein häufig verwendetes Passwort',
+    'setup.password_no_repeats': 'Kein Zeichen mehr als 4-mal hintereinander',
     'setup.password_uppercase': 'Ein Großbuchstabe',
     'setup.password_lowercase': 'Ein Kleinbuchstabe',
     'setup.password_digit': 'Eine Zahl',
@@ -786,6 +764,8 @@ export const translations = {
     'setup.error.server': 'Serverfehler. Bitte versuchen Sie es in einem Moment erneut',
     'setup.error.invalid_input': 'Bitte überprüfen Sie Ihre Angaben und versuchen Sie es erneut',
     'setup.error.timeout': 'Zeitüberschreitung der Anfrage. Bitte versuchen Sie es erneut',
+    'setup.insecure.title': 'Verbindung ist nicht verschlüsselt',
+    'setup.insecure.body': 'HomeVault läuft über unverschlüsseltes HTTP: das Administratorpasswort, das Sie gleich setzen, wandert unverschlüsselt durchs Netzwerk. Aktivieren Sie danach HTTPS unter Einstellungen → Sicherheit.',
     'setup.prereq.title': 'Der Terminalzugriff könnte eingeschränkt sein',
     'setup.prereq.sudo': 'sudo ist auf diesem Host nicht installiert',
     'setup.prereq.note': 'Das Web-Terminal benötigt sudo. Installieren Sie es mit: apt-get install sudo',
@@ -815,7 +795,9 @@ export const translations = {
     'setup.recovery_warning': 'Er wird nicht erneut angezeigt und kann nicht kopiert oder heruntergeladen werden.',
     'setup.recovery_ack': 'Ich habe diese Zahlen auf Papier notiert',
     'setup.recovery_continue': 'Weiter',
-    'setup.recovery_error': 'Es konnte gerade kein Wiederherstellungscode erzeugt werden. Sie können später einen in Ihren Kontoeinstellungen erstellen.',
+    'setup.recovery_error': 'Es konnte gerade kein Wiederherstellungscode erzeugt werden.',
+    'setup.recovery_required': 'Ihr Wiederherstellungscode ist der einzige Offline-Weg zurück in dieses Konto — er muss vor dem Fortfahren erzeugt werden.',
+    'setup.recovery_retry': 'Wiederherstellungscode erneut erzeugen',
     // Login page UI
     'login.subtitle': 'Sichere Verbindung zu Ihrem System',
     'login.secure_signin': 'Sichere Anmeldung',
@@ -837,6 +819,7 @@ export const translations = {
     'login.back': 'Zurück',
     'login.connection_error': 'Verbindung zum Server nicht möglich',
     'login.hardware_recovery.notice': 'Der Hardware-Fingerabdruck dieses Geräts hat sich seit der Einrichtung geändert. Melden Sie sich als Administrator an, um die neue Hardware zu bestätigen und fortzufahren.',
+    'login.insecure_notice': 'Diese Seite wird über unverschlüsseltes HTTP ausgeliefert: Ihr Passwort wandert unverschlüsselt durchs Netzwerk. Ein Administrator kann unter Einstellungen → Sicherheit HTTPS aktivieren.',
     'login.hardware_recovery.failed': 'Die Hardware-Änderung konnte nicht bestätigt werden. Bitte erneut versuchen.',
     'login.retry': 'Erneut versuchen',
     'login.forgot_password_link': 'Passwort vergessen?',
@@ -847,7 +830,7 @@ export const translations = {
     'login.reset_confirm_password_placeholder': 'Neues Passwort erneut eingeben',
     'login.reset_mismatch': 'Die beiden Passwörter stimmen nicht überein.',
     'login.reset_error_reused': 'Dieses Passwort wurde kürzlich verwendet. Bitte wählen Sie ein anderes.',
-    'login.reset_error_weak': 'Das Passwort muss mindestens 8 Zeichen mit Groß-, Kleinbuchstaben und einer Ziffer enthalten.',
+    'login.reset_error_weak': 'Das Passwort muss mindestens 12 Zeichen mit Groß-, Kleinbuchstaben und einer Ziffer enthalten und darf kein häufig verwendetes sein.',
     'login.reset_error': 'Passwort konnte nicht zurückgesetzt werden. Bitte erneut versuchen.',
     'login.recovery_description': 'Geben Sie Ihren Benutzernamen und den Wiederherstellungscode ein, den Sie bei der Einrichtung notiert haben.',
     'login.recovery_code_label': 'Wiederherstellungscode',
@@ -867,7 +850,7 @@ export const translations = {
     // Login errors (user-friendly)
     'login.error': 'Anmeldung fehlgeschlagen. Bitte versuchen Sie es erneut',
     'login.error.invalid_credentials': 'Benutzername oder Passwort falsch',
-    'login.error.account_locked': 'Ihr Konto wurde gesperrt. Bitte kontaktieren Sie den Support',
+    'login.error.account_locked': 'Ihr Konto ist gesperrt. Warten Sie 5 Minuten, oder nutzen Sie „Passwort vergessen?“ mit Ihrem Wiederherstellungscode, um es sofort zu entsperren.',
     'login.error.rate_limited': 'Zu viele Anmeldeversuche. Bitte versuchen Sie es später erneut',
     'login.error.network': 'Verbindung zum Server nicht möglich. Bitte überprüfen Sie Ihre Verbindung',
     'login.error.server': 'Serverfehler. Bitte versuchen Sie es in einem Moment erneut',
@@ -913,36 +896,6 @@ export const translations = {
     'setup.stepper.account': 'Konto',
     'setup.stepper.password': 'Passwort',
     'setup.stepper.verify': 'Überprüfung',
-    'setup.stepper.language': 'Sprache',
-    'setup.stepper.storage': 'Speicher',
-    'setup.stepper.raid': 'RAID',
-    'setup.stepper.restore': 'Wiederherstellung',
-    'setup.language.title': 'Wähle deine Sprache',
-    'setup.language.description': 'Die Sprache der Oberfläche. Später in den Einstellungen änderbar.',
-    'setup.storage.title': 'Wo sollen deine Daten leben?',
-    'setup.storage.description': 'Wähle die Platte für Freigaben und App-Daten. Später unter Speicher verwaltbar.',
-    'setup.storage.loading': 'Platten werden erkannt…',
-    'setup.storage.empty': 'Keine weiteren Platten gefunden — die Systemplatte wird verwendet.',
-    'setup.storage.system': 'Systemplatte (Standard)',
-    'setup.storage.skip': 'Erstmal überspringen',
-    'setup.raid.title': 'Deine Daten mit RAID schützen?',
-    'setup.raid.description': 'Spiegelung hält von allem eine zweite Kopie. Auch später unter Speicher einrichtbar.',
-    'setup.raid.none': 'Erstmal kein RAID',
-    'setup.raid.none_hint': 'Eine Platte, keine Redundanz.',
-    'setup.raid.mirror': 'Spiegel (2 Platten, am sichersten)',
-    'setup.raid.mirror_hint': 'Jedes Byte wird zweimal geschrieben — eine Platte darf ausfallen.',
-    'setup.raid.stripe': 'Stripe (2+ Platten, am schnellsten)',
-    'setup.raid.stripe_hint': 'Tempo und Kapazität addiert, aber ohne Sicherheitsnetz.',
-    'setup.raid.devices': 'Platten für das Array',
-    'setup.raid.empty': 'Nicht genug freie Platten — mindestens zwei anschließen.',
-    'setup.restore.title': 'Aus einer verschlüsselten Sicherung wiederherstellen?',
-    'setup.restore.description': 'Wenn diese Maschine eine alte ersetzt, zeige auf deren Sicherung. Die Passphrase wird bei der Wiederherstellung abgefragt — sie wird nie gespeichert.',
-    'setup.restore.skip': 'Neu anfangen — ohne Wiederherstellung',
-    'setup.restore.repo': 'Sicherungsort',
-    'setup.restore.repo_placeholder': '/backup/restic-repo or s3:bucket:/path',
-    'setup.restore.snapshot': 'Snapshot-ID (optional, Standard: neueste)',
-    'setup.restore.passphrase': 'Sicherungs-Passphrase (wird erneut abgefragt)',
-    'setup.restore.defer': 'Die Wiederherstellung läuft nach der Kontoerstellung, unter Sicherung > Wiederherstellen.',
     'setup.resumed': 'Weiter genau da — selbst nach einem Neustart.',
     'setup.next': 'Weiter',
     'setup.previous': 'Zurück',
@@ -953,7 +906,7 @@ export const translations = {
     'setup.validation.username.invalid_chars': 'Nur Buchstaben, Zahlen und Unterstriche erlaubt',
     'setup.validation.username.reserved': 'Dieser Benutzername ist reserviert',
     'setup.validation.password.required': 'Passwort ist erforderlich',
-    'setup.validation.password.too_short': 'Passwort muss mindestens 8 Zeichen lang sein',
+    'setup.validation.password.too_short': 'Passwort muss mindestens 12 Zeichen lang sein',
     'setup.validation.password.mismatch': 'Passwörter stimmen nicht überein',
     // Labels wizard
     'setup.username.label': 'Benutzername',
@@ -985,7 +938,7 @@ export const translations = {
     'setup.step1.title': 'Wählen Sie Ihren Benutzernamen',
     'setup.step1.description': 'Dies wird Ihr Administratorkonto sein. Sie können auch Ihren vollständigen Namen hinzufügen.',
     'setup.step2.title': 'Erstellen Sie ein starkes Passwort',
-    'setup.step2.description': 'Geben Sie ein Passwort ein und bestätigen Sie es. Mindestens 8 Zeichen empfohlen.',
+    'setup.step2.description': 'Geben Sie ein Passwort ein und bestätigen Sie es. Mindestens 12 Zeichen, mit Groß-, Kleinbuchstaben und einer Ziffer.',
     'setup.step3.title': 'Überprüfen und erstellen',
     'setup.step3.description': 'Bitte überprüfen Sie Ihre Informationen, bevor Sie Ihr Administratorkonto erstellen.',
     'setup.verification.message': 'Klicken Sie auf "Konto erstellen", um die Einrichtung abzuschließen.',
@@ -1056,8 +1009,10 @@ export const translations = {
     'setup.password': 'Contraseña',
     'setup.confirm_password': 'Confirmar contraseña',
     'setup.create_account': 'Crear cuenta de administrador',
-    'setup.password_requirements': 'Mínimo 8 caracteres con mayúsculas, minúsculas y números',
-    'setup.password_min_length': 'Al menos 8 caracteres',
+    'setup.password_requirements': 'Mínimo 12 caracteres con mayúsculas, minúsculas y un número',
+    'setup.password_min_length': 'Al menos 12 caracteres',
+    'setup.password_too_common': 'No es una contraseña de uso común',
+    'setup.password_no_repeats': 'Ningún carácter repetido más de 4 veces seguidas',
     'setup.password_uppercase': 'Una letra mayúscula',
     'setup.password_lowercase': 'Una letra minúscula',
     'setup.password_digit': 'Un número',
@@ -1070,6 +1025,8 @@ export const translations = {
     'setup.error.server': 'Error del servidor. Inténtelo de nuevo en un momento',
     'setup.error.invalid_input': 'Compruebe su información e inténtelo de nuevo',
     'setup.error.timeout': 'La solicitud ha expirado. Inténtelo de nuevo',
+    'setup.insecure.title': 'Conexión no cifrada',
+    'setup.insecure.body': 'HomeVault funciona por HTTP simple: la contraseña de administrador que va a establecer viajará sin cifrar por la red. Active HTTPS después en Ajustes → Seguridad.',
     'setup.prereq.title': 'El acceso al terminal puede ser limitado',
     'setup.prereq.sudo': 'sudo no está instalado en este host',
     'setup.prereq.note': 'El terminal web requiere sudo. Instálelo con: apt-get install sudo',
@@ -1099,7 +1056,9 @@ export const translations = {
     'setup.recovery_warning': 'No se volverá a mostrar y no se puede copiar ni descargar.',
     'setup.recovery_ack': 'He anotado estos números en papel',
     'setup.recovery_continue': 'Continuar',
-    'setup.recovery_error': 'No se pudo generar un código de recuperación ahora. Podrá crear uno más tarde desde la configuración de su cuenta.',
+    'setup.recovery_error': 'No se pudo generar un código de recuperación ahora.',
+    'setup.recovery_required': 'Su código de recuperación es la única forma sin conexión de recuperar esta cuenta — debe generarse antes de continuar.',
+    'setup.recovery_retry': 'Generar de nuevo el código de recuperación',
     // Login page UI
     'login.subtitle': 'Conexión segura a su sistema',
     'login.secure_signin': 'Inicio de sesión seguro',
@@ -1121,6 +1080,7 @@ export const translations = {
     'login.back': 'Atrás',
     'login.connection_error': 'No se puede conectar al servidor',
     'login.hardware_recovery.notice': 'La huella de hardware de este dispositivo ha cambiado desde su instalación. Inicie sesión como administrador para confirmar el nuevo hardware y continuar.',
+    'login.insecure_notice': 'Esta página se sirve por HTTP simple: su contraseña viaja sin cifrar por la red. Un administrador puede activar HTTPS en Ajustes → Seguridad.',
     'login.hardware_recovery.failed': 'No se pudo confirmar el cambio de hardware. Inténtelo de nuevo.',
     'login.retry': 'Reintentar',
     'login.forgot_password_link': '¿Olvidó su contraseña?',
@@ -1131,7 +1091,7 @@ export const translations = {
     'login.reset_confirm_password_placeholder': 'Vuelva a introducir la nueva contraseña',
     'login.reset_mismatch': 'Las dos contraseñas no coinciden.',
     'login.reset_error_reused': 'Esa contraseña se ha utilizado recientemente. Elija otra distinta.',
-    'login.reset_error_weak': 'La contraseña debe tener al menos 8 caracteres con mayúscula, minúscula y un dígito.',
+    'login.reset_error_weak': 'La contraseña debe tener al menos 12 caracteres con mayúscula, minúscula y un dígito, y no ser una contraseña de uso común.',
     'login.reset_error': 'No se pudo restablecer la contraseña. Inténtelo de nuevo.',
     'login.recovery_description': 'Introduzca su nombre de usuario y el código de recuperación que anotó durante la instalación.',
     'login.recovery_code_label': 'Código de recuperación',
@@ -1151,7 +1111,7 @@ export const translations = {
     // Login errors (user-friendly)
     'login.error': 'No se pudo iniciar sesión. Inténtelo de nuevo',
     'login.error.invalid_credentials': 'Nombre de usuario o contraseña incorrectos',
-    'login.error.account_locked': 'Su cuenta ha sido bloqueada. Contacte con soporte',
+    'login.error.account_locked': 'Su cuenta está bloqueada. Espere 5 minutos, o use «¿Olvidó su contraseña?» con su código de recuperación para desbloquearla.',
     'login.error.rate_limited': 'Demasiados intentos de inicio de sesión. Inténtelo de nuevo más tarde',
     'login.error.network': 'No se puede conectar al servidor. Compruebe su conexión',
     'login.error.server': 'Error del servidor. Inténtelo de nuevo en un momento',
@@ -1197,36 +1157,6 @@ export const translations = {
     'setup.stepper.account': 'Cuenta',
     'setup.stepper.password': 'Contraseña',
     'setup.stepper.verify': 'Verificación',
-    'setup.stepper.language': 'Idioma',
-    'setup.stepper.storage': 'Almacenamiento',
-    'setup.stepper.raid': 'RAID',
-    'setup.stepper.restore': 'Restauración',
-    'setup.language.title': 'Elige tu idioma',
-    'setup.language.description': 'El idioma de la interfaz. Puedes cambiarlo luego en Ajustes.',
-    'setup.storage.title': '¿Dónde vivirán tus datos?',
-    'setup.storage.description': 'Elige el disco para compartidos y datos. Podrás gestionarlo luego en Almacenamiento.',
-    'setup.storage.loading': 'Detectando discos…',
-    'setup.storage.empty': 'No se detectaron discos extra — se usará el disco del sistema.',
-    'setup.storage.system': 'Disco del sistema (predeterminado)',
-    'setup.storage.skip': 'Omitir por ahora',
-    'setup.raid.title': '¿Proteger tus datos con RAID?',
-    'setup.raid.description': 'El espejo guarda una segunda copia de todo. También puedes configurarlo luego en Almacenamiento.',
-    'setup.raid.none': 'Sin RAID por ahora',
-    'setup.raid.none_hint': 'Un solo disco, sin redundancia.',
-    'setup.raid.mirror': 'Espejo (2 discos, lo más seguro)',
-    'setup.raid.mirror_hint': 'Cada byte se escribe dos veces — un disco puede fallar.',
-    'setup.raid.stripe': 'Stripe (2+ discos, lo más rápido)',
-    'setup.raid.stripe_hint': 'Velocidad y capacidad sumadas, pero sin red de seguridad.',
-    'setup.raid.devices': 'Discos del conjunto',
-    'setup.raid.empty': 'No hay suficientes discos libres — conecta al menos dos.',
-    'setup.restore.title': '¿Restaurar desde una copia cifrada?',
-    'setup.restore.description': 'Si esta máquina reemplaza a otra, indica su copia. La contraseña se pedirá al restaurar — nunca se almacena.',
-    'setup.restore.skip': 'Empezar de cero — sin restauración',
-    'setup.restore.repo': 'Ubicación de la copia',
-    'setup.restore.repo_placeholder': '/backup/restic-repo or s3:bucket:/path',
-    'setup.restore.snapshot': 'Id de snapshot (opcional, el último por defecto)',
-    'setup.restore.passphrase': 'Contraseña de la copia (se pedirá de nuevo)',
-    'setup.restore.defer': 'La restauración se ejecuta tras crear tu cuenta, desde Copias > Restaurar.',
     'setup.resumed': 'Continuamos donde lo dejaste — incluso tras un reinicio.',
     'setup.next': 'Siguiente',
     'setup.previous': 'Anterior',
@@ -1237,7 +1167,7 @@ export const translations = {
     'setup.validation.username.invalid_chars': 'Solo letras, números y guiones bajos',
     'setup.validation.username.reserved': 'Este nombre de usuario está reservado',
     'setup.validation.password.required': 'La contraseña es obligatoria',
-    'setup.validation.password.too_short': 'La contraseña debe tener al menos 8 caracteres',
+    'setup.validation.password.too_short': 'La contraseña debe tener al menos 12 caracteres',
     'setup.validation.password.mismatch': 'Las contraseñas no coinciden',
     // Labels wizard
     'setup.username.label': 'Usuario',
@@ -1269,7 +1199,7 @@ export const translations = {
     'setup.step1.title': 'Elija su nombre de usuario',
     'setup.step1.description': 'Este será su nombre de usuario administrador. También puede añadir su nombre completo.',
     'setup.step2.title': 'Cree una contraseña segura',
-    'setup.step2.description': 'Introduzca una contraseña y confírmela. Se recomiendan al menos 8 caracteres.',
+    'setup.step2.description': 'Introduzca una contraseña y confírmela. Al menos 12 caracteres, con mayúscula, minúscula y un número.',
     'setup.step3.title': 'Verificar y crear',
     'setup.step3.description': 'Por favor, verifique su información antes de crear su cuenta de administrador.',
     'setup.verification.message': 'Haga clic en "Crear cuenta" para finalizar la configuración.',

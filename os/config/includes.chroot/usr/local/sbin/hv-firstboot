@@ -1,0 +1,431 @@
+#!/bin/bash
+set -u
+export LC_ALL=C
+
+# HomeVaultOS first boot — storage provisioning + optional self-install.
+#
+# Runs as a systemd oneshot on EVERY boot, ordered before homevault.service,
+# docker.service and udiskie.service. Idempotent by design.
+#
+# Variant A (persistent): the system runs live from USB/ISO. On first boot the
+#   script provisions a data volume (labelled HV-DATA) on the biggest blank
+#   disk — or in the free space after the ISO on the boot stick — and mounts
+#   it over /var/lib/homevault. Subsequent boots just find and mount it again.
+#   Reflashing the boot media then updates the OS while keeping all data.
+#
+# Variant B (selfinstall): additionally, on the first boot from live media,
+#   the script clones the whole system onto the biggest blank INTERNAL disk
+#   (>= 32 GiB), installs GRUB (BIOS + UEFI) and reboots. From then on the
+#   machine boots from disk and the USB stick can be removed. A disk is only
+#   ever erased when it is completely blank (no partition table, no
+#   filesystem signature) — existing data is never touched automatically.
+#
+# On an installed system (booted from disk) the script never creates new
+# volumes: mounting an existing HV-DATA by label stays automatic, but any
+# further storage is configured through HomeVault's Storage app.
+#
+# Everything is logged to the journal (and the console) and appended to
+# /var/log/homevault-os-firstboot.log.
+
+LOG_FILE=/var/log/homevault-os-firstboot.log
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+log()  { echo "[hv-firstboot] $*"; }
+warn() { echo "[hv-firstboot] WARNING: $*"; }
+
+DATA_MP=/var/lib/homevault
+MIN_DATA_DISK_BYTES=$((16 * 1024 * 1024 * 1024))    # 16 GiB
+MIN_INSTALL_DISK_BYTES=$((32 * 1024 * 1024 * 1024)) # 32 GiB
+MIN_MEDIUM_FREE_BYTES=$((8 * 1024 * 1024 * 1024))   # 8 GiB
+
+HV_OS_VARIANT=persistent
+[ -r /etc/default/homevault-os ] && . /etc/default/homevault-os
+
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+
+# Is this a live boot (running from the ISO/USB medium)?
+live_boot() {
+    grep -qs 'boot=live' /proc/cmdline
+}
+
+# Whole disk (not loop/sr/partition/raid/dm).
+is_disk() {
+    [ "$(lsblk -dnro TYPE "$1" 2>/dev/null)" = "disk" ]
+}
+
+# A disk that can be provisioned automatically: no partition table, no
+# partitions, no filesystem signature, not read-only. NEVER true for a disk
+# with any existing content — protecting user data outranks convenience.
+disk_is_blank() {
+    local d="$1"
+    is_disk "$d" || return 1
+    case "$d" in /dev/loop*|/dev/ram*|/dev/zram*|/dev/sr*|/dev/md*|/dev/dm-*)
+        return 1 ;;
+    esac
+    [ -z "$(lsblk -dnro PTTYPE "$d" 2>/dev/null)" ] || return 1
+    [ -z "$(lsblk -nro NAME "$d" 2>/dev/null | tail -n +2 | tr -d '[:space:]')" ] || return 1
+    [ -z "$(wipefs "$d" 2>/dev/null)" ] || return 1
+    [ "$(lsblk -dnro RO "$d" 2>/dev/null)" = "0" ] || return 1
+    return 0
+}
+
+# Biggest blank disk (optionally internal-only) of at least $1 bytes.
+# Prints the device on stdout; fails (empty) when nothing qualifies.
+select_blank_disk() {
+    local min_bytes="$1" internal="${2:-}" best="" bestsz=0 d sz rm
+    while read -r d; do
+        [ -n "$d" ] || continue
+        disk_is_blank "$d" || continue
+        if [ "$internal" = "internal" ]; then
+            rm=$(lsblk -dnro RM "$d" 2>/dev/null)
+            [ "$rm" = "0" ] || continue
+        fi
+        sz=$(lsblk -bnro SIZE "$d" 2>/dev/null | tail -n1)
+        case "$sz" in ''|*[!0-9]*) continue ;; esac
+        [ "$sz" -ge "$min_bytes" ] || continue
+        if [ "$sz" -gt "$bestsz" ]; then best="$d"; bestsz="$sz"; fi
+    done < <(lsblk -dnpo NAME 2>/dev/null)
+    [ -n "$best" ] && printf '%s\n' "$best"
+    return 0
+}
+
+# The device the live system was booted from (whole disk, e.g. /dev/sdb),
+# empty when unknown (e.g. QEMU cdrom). Probes both live-boot mount points.
+boot_medium_disk() {
+    local mp src parent
+    for mp in /run/live/medium /live/image; do
+        src=$(findmnt -nro SOURCE "$mp" 2>/dev/null) && [ -n "$src" ] && break
+        src=""
+    done
+    [ -n "$src" ] || return 0
+    parent=$(lsblk -dnro PKNAME "$src" 2>/dev/null)
+    [ -n "$parent" ] || parent="${src#/dev/}"
+    echo "/dev/$parent"
+    return 0
+}
+
+# Recreate HomeVault's directory layout on a (freshly mounted) data volume.
+ensure_data_layout() {
+    local sub
+    for sub in data compose apps rescue syncthing logs quarantine vm/isos \
+               system/docker system/home; do
+        mkdir -p "$DATA_MP/$sub"
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Variant A (and post-install B): data volume provisioning
+# ---------------------------------------------------------------------------
+
+# Find/mount HV-DATA, or create it on a blank disk (live boots only), or on
+# the free space after the ISO on the boot stick itself.
+prepare_data_storage() {
+    # Already mounted (installed system with fstab entry, or re-run)?
+    if findmnt -n "$DATA_MP" >/dev/null 2>&1; then
+        log "data volume already mounted at $DATA_MP"
+        ensure_data_layout
+        return 0
+    fi
+
+    # Existing HV-DATA by label (persistent across reboots in live mode).
+    local dev
+    dev=$(blkid -l -t LABEL=HV-DATA -o device 2>/dev/null | head -n1 || true)
+    if [ -n "$dev" ]; then
+        if mount -o noatime "$dev" "$DATA_MP" 2>/dev/null; then
+            log "mounted existing data volume $dev at $DATA_MP"
+            ensure_data_layout
+            return 0
+        fi
+        warn "found HV-DATA on $dev but could not mount it"
+        return 1
+    fi
+
+    # Creating volumes: on live boots a blank disk (or the stick's free
+    # space) is provisioned; on an installed system (variant B after the
+    # flash) the free space BEHIND the OS partitions is claimed. Any other
+    # disk on an installed system belongs to the Storage app.
+    if ! live_boot; then
+        if claim_installed_free_space; then
+            ensure_data_layout
+            return 0
+        fi
+        log "no HV-DATA volume — configure storage with the Storage app"
+        return 1
+    fi
+
+    local cand
+    cand=$(select_blank_disk "$MIN_DATA_DISK_BYTES")
+    if [ -n "$cand" ]; then
+        log "provisioning data volume on blank disk $cand (this erases it)"
+        if ! parted -s "$cand" mklabel gpt mkpart HV-DATA ext4 1MiB 100%; then
+            warn "could not partition $cand"
+            return 1
+        fi
+        partprobe "$cand" 2>/dev/null || true
+        udevadm settle 2>/dev/null || true
+        local part
+        part=$(lsblk -nro NAME "$cand" 2>/dev/null | tail -n1)
+        if [ -z "$part" ] || ! mkfs.ext4 -F -L HV-DATA "/dev/$part"; then
+            warn "could not create the HV-DATA filesystem on $cand"
+            return 1
+        fi
+        if ! mount -o noatime "/dev/$part" "$DATA_MP"; then
+            warn "could not mount /dev/$part at $DATA_MP"
+            return 1
+        fi
+        log "data volume ready on $cand (labelled HV-DATA)"
+        ensure_data_layout
+        return 0
+    fi
+
+    # Last resort: free space behind the ISO on the boot stick itself.
+    if provision_on_medium_free_space "$(boot_medium_disk)"; then
+        log "data volume ready on the boot medium (labelled HV-DATA)"
+        ensure_data_layout
+        return 0
+    fi
+
+    log "no data volume available — running fully from RAM (demo mode)"
+    return 1
+}
+
+# Create HV-DATA in the largest free gap (>= 8 GiB) of the boot medium —
+# this is what makes a plain USB stick self-sufficient in VMs / demo boxes.
+provision_on_medium_free_space() {
+    local d="$1" line num start end size
+    [ -n "$d" ] || return 1
+    is_disk "$d" || return 1
+    case "$d" in /dev/sr*|/dev/loop*) return 1 ;; esac
+    [ "$(lsblk -dnro RO "$d" 2>/dev/null)" = "0" ] || return 1
+
+    local best_size=0 best_start=""
+    while IFS=: read -r _num start _end size _rest; do
+        # Machine mode: free-space entries are flagged `free;` (see the note
+        # in claim_installed_free_space).
+        case "$_rest" in *free*) ;; *) continue ;; esac
+        case "$size" in *B) ;; *) continue ;; esac
+        size="${size%B}"
+        case "$size" in ''|*[!0-9]*) continue ;; esac
+        if [ "$size" -gt "$best_size" ]; then best_size="$size"; best_start="${start%B}"; fi
+    done < <(parted -sm "$d" unit B print free 2>/dev/null)
+
+    [ "$best_size" -ge "$MIN_MEDIUM_FREE_BYTES" ] 2>/dev/null || return 1
+
+    local start_mib=$(( (best_start + 1048575) / 1048576 ))
+    [ "$start_mib" -ge 1 ] || start_mib=1
+    log "provisioning data volume in ${best_size}B of free space on $d"
+    parted -s "$d" mkpart HV-DATA ext4 "${start_mib}MiB" 100% || return 1
+    partprobe "$d" 2>/dev/null || true
+    udevadm settle 2>/dev/null || true
+    local part
+    part=$(lsblk -nro NAME "$d" 2>/dev/null | tail -n1)
+    [ -n "$part" ] || return 1
+    mkfs.ext4 -F -L HV-DATA "/dev/$part" || return 1
+    mount -o noatime "/dev/$part" "$DATA_MP"
+}
+
+# ---------------------------------------------------------------------------
+# Runtime directories that must live on the data volume
+# ---------------------------------------------------------------------------
+
+# Docker images/containers are state the user expects to survive reboots —
+# point the daemon at the data volume before it ever starts (ordering: this
+# unit runs Before=docker.service).
+ensure_docker_data_root() {
+    mkdir -p /etc/docker "$DATA_MP/system/docker"
+    if [ -f /etc/docker/daemon.json ]; then
+        grep -q '"data-root"' /etc/docker/daemon.json && return 0
+        warn "daemon.json exists without a data-root — leaving it untouched"
+        return 0
+    fi
+    printf '{\n  "data-root": "%s/system/docker"\n}\n' "$DATA_MP" \
+        > /etc/docker/daemon.json
+    log "docker data-root set to $DATA_MP/system/docker"
+}
+
+# Personal user homes (created by the Setup Wizard) go to the data volume.
+ensure_home_bind() {
+    local base=/home/homevault store="$DATA_MP/system/home"
+    findmnt -n "$base" >/dev/null 2>&1 && return 0
+    findmnt -n "$DATA_MP" >/dev/null 2>&1 || return 0
+    mkdir -p "$store" "$base"
+    rsync -a "$base/" "$store/" 2>/dev/null || true
+    if mount --bind "$store" "$base"; then
+        log "user homes moved to $store (bind-mounted at $base)"
+        if ! live_boot && ! grep -qs "$store" /etc/fstab; then
+            echo "$store $base none bind 0 0" >> /etc/fstab
+        fi
+    else
+        warn "could not bind-mount $base onto the data volume"
+        return 1
+    fi
+}
+
+# SSH host keys were stripped at build time so every installation generates
+# its own (live boots regenerate per session). The system sshd stays
+# disabled — only HomeVault's SFTP subsystem uses these keys.
+ensure_ssh_host_keys() {
+    [ -d /etc/ssh ] || return 0
+    ls /etc/ssh/ssh_host_* >/dev/null 2>&1 && return 0
+    ssh-keygen -A >/dev/null 2>&1 || true
+    log "SSH host keys generated"
+}
+
+# The Incus daemon starts EMPTY (no storage pool, `default` profile without a
+# NIC), which would make the first VM creation fail with "No storage pool
+# found". The VM app inherits the default profile's NIC (src/incus.rs), so
+# provision the baseline non-interactively when the VM stack is present.
+# Best-effort: the daemon may still be starting when this runs (hence the
+# retry loop) and a failure only means the VM app stays unavailable until
+# `incus admin init --auto` is run manually.
+ensure_incus_init() {
+    systemctl is-active --quiet incus 2>/dev/null || return 0
+    if incus storage list --format csv 2>/dev/null | grep -q .; then
+        return 0
+    fi
+    for _ in $(seq 1 10); do
+        if incus admin init --auto >/dev/null 2>&1; then
+            log "Incus daemon initialized (default storage pool + incusbr0 bridge)"
+            return 0
+        fi
+        sleep 2
+    done
+    warn "Incus daemon not initialized — run 'incus admin init --auto' to enable VMs"
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# Variant B: self-install — flash the PREBUILT disk image embedded in the
+# ISO onto a blank internal disk, then power off (the umbreLOS USB-installer
+# pattern). All the fragile work — partitioning, GRUB (BIOS + UEFI), fstab,
+# machine-id — happened at BUILD time inside the image
+# (os/build-disk-image.sh); the first boot only streams bytes with dd, which
+# is why this replaces the earlier live-clone approach (rsync + runtime
+# grub-install) that failed on live systems.
+selfinstall() {
+    # Only ever from live media.
+    live_boot || return 0
+
+    local mp img=""
+    for mp in /run/live/medium /live/image; do
+        if [ -f "$mp/homevaultos/homevaultos-amd64.img.xz" ]; then
+            img="$mp/homevaultos/homevaultos-amd64.img.xz"
+            break
+        fi
+    done
+    if [ -z "$img" ]; then
+        log "self-install: no embedded disk image on the boot medium — nothing to flash"
+        return 1
+    fi
+
+    # A disk is only ever erased when it is completely blank (no partition
+    # table, no partitions, no filesystem signature) — existing data is
+    # never touched automatically.
+    local boot_med cand
+    boot_med=$(boot_medium_disk)
+    cand=$(select_blank_disk "$MIN_INSTALL_DISK_BYTES" internal)
+    if [ -z "$cand" ]; then
+        log "self-install: no blank internal disk of 32 GiB or more — staying on live media"
+        return 1
+    fi
+
+    log "self-install: flashing HomeVaultOS onto $cand (the disk will be erased)"
+    if ! xz --decompress --stdout "$img" | dd of="$cand" bs=4M status=progress \
+            >>"$LOG_FILE" 2>&1; then
+        warn "self-install: flashing $cand failed — staying on live media"
+        sync
+        return 1
+    fi
+    sync
+    log "self-install: HomeVaultOS installed on $cand — powering off in 3 seconds"
+    log "self-install: remove the USB stick / installation media, then power the machine back on"
+    sleep 3
+    systemctl poweroff
+    exit 0
+}
+
+# The flashed system ships no data partition (the disk image only covers the
+# OS): on an installed system with no HV-DATA anywhere, claim the free space
+# BEHIND the OS partitions on the system disk as the data volume — the
+# appliance experience, mirroring what the earlier clone-time layout did.
+claim_installed_free_space() {
+    local root_src root_disk
+    root_src=$(findmnt -nro SOURCE / 2>/dev/null)
+    [ -n "$root_src" ] || { log "claim: cannot resolve the root device"; return 1; }
+    root_disk="/dev/$(lsblk -dnro PKNAME "$root_src" 2>/dev/null)"
+    if [ -z "${root_disk#/dev/}" ] || [ ! -b "$root_disk" ]; then
+        log "claim: root disk not found (root_src=$root_src)"
+        return 1
+    fi
+
+    # The disk image is baked at a fixed size: after flashing onto a larger
+    # disk, the GPT still claims the image's size. Move the backup header to
+    # the real end of the disk so the free space behind the OS partitions
+    # becomes addressable (idempotent when the GPT already fits).
+    if command -v sgdisk >/dev/null 2>&1; then
+        sgdisk --move-second-header "$root_disk" >>"$LOG_FILE" 2>&1 \
+            || warn "claim: sgdisk could not move the backup GPT header"
+    fi
+
+    local best_size=0 best_start=""
+    while IFS=: read -r _num start _end size _rest; do
+        # parteds machine mode flags free-space entries as `free;` in the
+        # fifth field (NOT "free space" — that is the human format; matching
+        # it never finds any gap).
+        case "$_rest" in *free*) ;; *) continue ;; esac
+        case "$size" in *B) ;; *) continue ;; esac
+        size="${size%B}"
+        case "$size" in ''|*[!0-9]*) continue ;; esac
+        if [ "$size" -gt "$best_size" ]; then best_size="$size"; best_start="${start%B}"; fi
+    done < <(parted -sm "$root_disk" unit B print free 2>/dev/null)
+
+    if [ "$best_size" -lt "$MIN_MEDIUM_FREE_BYTES" ]; then
+        log "claim: only ${best_size}B free on $root_disk — not enough for a data volume"
+        return 1
+    fi
+    log "claim: using ${best_size}B of free space on $root_disk"
+
+    local start_mib=$(( (best_start + 1048575) / 1048576 ))
+    [ "$start_mib" -ge 1 ] || start_mib=1
+    log "creating the data volume in ${best_size}B of free space on $root_disk"
+    parted -s "$root_disk" mkpart HV-DATA ext4 "${start_mib}MiB" 100% || return 1
+    partprobe "$root_disk" 2>/dev/null || true
+    udevadm settle 2>/dev/null || true
+    local part
+    part=$(lsblk -nro NAME "$root_disk" 2>/dev/null | tail -n1)
+    [ -n "$part" ] || return 1
+    mkfs.ext4 -F -L HV-DATA "/dev/$part" || return 1
+
+    # Persist: on an installed system /etc is real.
+    local uuid
+    uuid=$(blkid -s UUID -o value "/dev/$part")
+    if [ -n "$uuid" ] && ! grep -qs "UUID=$uuid" /etc/fstab; then
+        echo "UUID=$uuid $DATA_MP ext4 defaults,noatime 0 2" >> /etc/fstab
+        echo "$DATA_MP/system/home /home/homevault none bind 0 0" >> /etc/fstab
+    fi
+    mount -o noatime "/dev/$part" "$DATA_MP" || return 1
+    log "data volume ready on /dev/$part (labelled HV-DATA)"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+log "HomeVaultOS first boot (variant: $HV_OS_VARIANT)"
+
+case "$HV_OS_VARIANT" in
+    selfinstall) selfinstall || true ;;
+    *) : ;;
+esac
+
+prepare_data_storage || true
+ensure_docker_data_root
+ensure_home_bind || true
+ensure_ssh_host_keys
+ensure_incus_init || true
+
+log "HomeVaultOS ready — open http://homevault.local:8080 (IP: $(hostname -I 2>/dev/null || echo unknown))"
+exit 0

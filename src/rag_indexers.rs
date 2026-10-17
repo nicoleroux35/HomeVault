@@ -334,7 +334,8 @@ RAID levels: RAID0 (stripe), RAID1 (mirror), RAID5 (parity), RAID6 (double parit
 - Backup scheduling with cron expressions
 - Progress tracking via SSE, and a floating progress panel that stays visible while you use other apps
 
-Schedule lifecycle: create schedule -> set retention policy -> enable. Failed runs are rescheduled automatically."#.to_string(),
+Schedule lifecycle: create schedule -> set retention policy -> enable. Failed runs are rescheduled automatically.
+HomeVault also snapshots its own database. That matters because the database runs in write-ahead-log mode: copying the single database file on its own gives a file with no tables in it, so the obvious manual backup silently produces nothing restorable. The snapshots here are self-contained single files, written automatically at startup when due, daily, and before any upgrade that changes the database layout — and on demand from Settings, where the schedule and how many to keep are also configurable. Restoring one is a matter of stopping the service, copying the file over the live database and starting it again."#.to_string(),
         },
         FeatureDoc {
             id: "users".to_string(),
@@ -402,10 +403,11 @@ requires a session."#.to_string(),
 - SMB/CIFS: Windows-compatible file sharing
 - SFTP: SSH-based file transfer with jail (chroot)
 - FTP: Traditional file transfer
-- WebDAV: HTTP-based file access
+- WebDAV: HTTP-based file access, served by HomeVault itself (in-process Rust server on its own port)
 
 Features:
 - Per-user ACL grants on shares
+- Per-member share access grants (a member sees only the shares they hold)
 - SFTP jail: users are chrooted to their granted shares
 - Public key authentication for SFTP
 - Share enable/disable toggle
@@ -450,7 +452,8 @@ DNS updates preserve existing search/domains. IPv6 nameservers are appended."#.t
 7. Backup: last backup freshness
 8. Services: critical service status
 
-Each check returns: healthy, warning, or unhealthy. The overall status is the worst individual check."#.to_string(),
+Each check returns: healthy, warning, or unhealthy. The overall status is the worst individual check.
+For monitoring, two small public addresses answer without a login: one says the server process is alive, the other says it is actually ready to serve — that second one fails when the database cannot be queried or was found damaged at startup, so an external monitor can take the appliance out of rotation instead of feeding it requests that will fail. Neither reveals anything about the machine."#.to_string(),
         },
         FeatureDoc {
             id: "terminal".to_string(),
@@ -482,7 +485,8 @@ Features:
 - Honeypot debounce (10s per-path)
 - Firewall: mandatory rules can't be deleted
 - Enable requires {confirmed:true} confirmation
-- Locale-independent status detection (LC_ALL=C)"#.to_string(),
+- Locale-independent status detection (LC_ALL=C)
+The interface is delivered with a strict content policy: inline scripts are only allowed when the server stamped them for that exact page load, so a script injected into the page cannot run — which matters because the session credential lives in browser storage. The installer also handles the rest of the appliance's life: it can roll back to the previous build, uninstall while keeping all data, or uninstall and delete everything after an explicit typed confirmation, and every mode has a preview that changes nothing."#.to_string(),
         },
         FeatureDoc {
             id: "tls".to_string(),
@@ -497,7 +501,8 @@ Details:
 - Additive second listener on HTTPS_PORT (default 8443); plain HTTP on PORT (8080) still works.
 - Optional "redirect HTTP to HTTPS" toggle (loopback exempt).
 - Applies after a restart. A broken certificate never stops the server (HTTP-only fallback).
-- No ACME/Let's Encrypt yet. An external reverse proxy terminating TLS is still supported."#.to_string(),
+- No ACME/Let's Encrypt yet. An external reverse proxy terminating TLS is still supported.
+Turning HTTPS on redirects plain-HTTP visitors to it by default, so the password never travels in clear once encryption is configured. Until it is, the first-run wizard and the login screen say so plainly whenever the page is opened over plain HTTP from another machine — localhost is exempt, since nothing leaves the computer there. The session cookie is marked as HTTPS-only exactly when it was issued over HTTPS."#.to_string(),
         },
         FeatureDoc {
             id: "vpn".to_string(),
@@ -562,6 +567,8 @@ Endpoint: GET /api/activity (any signed-in user; non-admins only see their own t
             content: r#"Signing in, and getting back in when something is lost.
 
 - Log in with a username and password. When two-factor authentication is enabled, the login returns a second step that asks for the current 6-digit code before the session opens.
+- Five wrong passwords lock the account for five minutes. The lock lifts itself — waiting, or resetting the password with the recovery code, gets you straight back in — so a mistyped password can never lock you out of your own appliance for good.
+- Attempts are also throttled per client address, so a password tried against many usernames at once is slowed down instead of running unchecked.
 - Two-factor authentication is TOTP: it can be turned on from the account page, during the first-run wizard, or by an administrator for someone else's account. Any standard authenticator app works (Google Authenticator, Microsoft Authenticator, Aegis, Ente Auth, 2FAS).
 - One-time backup codes are issued when two-factor authentication is enabled, for the case where the authenticator device is lost.
 - Offline recovery: an account can generate a single recovery code from its own page. Entering that code at the login screen opens a "choose a new password" step. Using it does not consume it — regenerating the code invalidates the previous one.
@@ -576,20 +583,22 @@ There is no email "forgot password" flow: recovery is code-based only. A first-r
             title: "Setup Wizard (first run)".to_string(),
             content: r#"The wizard shown on a fresh installation, while no administrator account exists yet. Until it is finished, the web interface only serves this flow.
 
-The wizard is reboot-safe: the current step and the choices made so far are remembered on the server, so a reboot or a closed browser resumes where the person left off (passwords and secrets are never among the saved choices).
+The wizard is reboot-safe: the current step is remembered on the server, so a reboot or a closed browser resumes where the person left off (passwords and secrets are never saved).
 
 - Step 1 — welcome: what HomeVault is.
-- Step 2 — language: pick the interface language; it can be changed later in Settings.
-- Step 3 — storage: choose the disk that will hold shares and app data (the system disk by default, or a detected spare disk).
-- Step 4 — RAID: optionally protect data with a mirror or a stripe, and pick the disks for the array. The actual pool is created later from the Storage app.
-- Step 5 — restore: optionally point at an encrypted backup to restore from. The backup passphrase is not asked here — it is asked when the restore actually runs, from the Backup app.
-- Step 6 — account: choose the administrator username, with availability checked as you type, and optionally a full name.
-- Step 7 — password: type it and confirm it. Two-factor authentication can be enrolled right here: a QR code is generated in the browser from a fresh secret and the first 6-digit code is verified before the account exists, so a mis-scanned code is caught immediately instead of locking the administrator out later.
-- Step 8 — review and create: a summary of the chosen account and options, then creation. A one-time recovery code is shown once afterwards and has to be stored somewhere safe; it is the only offline way back into the account. When two-factor authentication was enrolled, the one-time backup codes are shown next.
+- Step 2 — account: choose the administrator username, with availability checked as you type, and optionally a full name.
+- Step 3 — password: type it and confirm it. Two-factor authentication can be enrolled right here: a QR code is generated in the browser from a fresh secret and the first 6-digit code is verified before the account exists, so a mis-scanned code is caught immediately instead of locking the administrator out later.
+- Step 4 — review and create: a summary of the chosen account, then creation. A one-time recovery code is shown once afterwards and has to be stored somewhere safe; it is the only offline way back into the account. When two-factor authentication was enrolled, the one-time backup codes are shown next.
 
-The whole wizard, including the QR-code step, follows the chosen interface language. It refuses to run twice: once an administrator exists, the setup endpoints report that the server is already configured.
+The interface language is never asked: it is detected from the operating system or browser (English when that language is not one HomeVault ships) and can be changed afterwards in Settings.
 
-For safety, the first-run endpoints only answer clients on the local network, so a fresh appliance on a shared network cannot have its administrator account claimed by a stranger. If the hardware fingerprint changes later (after moving the system disk or cloning the machine), the interface asks an administrator to sign in once and confirm the new hardware instead of showing the wizard again."#.to_string(),
+Storage pools, RAID arrays and backup restores are deliberately not part of the wizard: the appliance is installed on an existing system, and disks are configured afterwards from the Storage app while a backup is restored from the Backup app.
+
+The whole wizard, including the QR-code step, follows the interface language detected from the operating system or browser — English when that language is not one HomeVault ships — and that language can be changed in Settings. The wizard refuses to run twice: once an administrator exists, the setup endpoints report that the server is already configured.
+
+The administrator password must be at least 12 characters, mix upper and lower case with a digit, must not be a commonly used password, and must not repeat one character more than four times in a row. The same rule applies everywhere else a password is set.
+
+For safety, the first-run endpoints only answer clients on the local network and only from HomeVault's own interface in the browser — a website open in the same browser cannot claim the administrator account — and they are rate-limited. If a first-run setup is interrupted (crash, power cut), the leftover lock is detected as abandoned and the setup can be run again instead of being blocked forever. If the hardware fingerprint changes later (after moving the system disk or cloning the machine), the interface asks an administrator to sign in once and confirm the new hardware instead of showing the wizard again."#.to_string(),
         },
         FeatureDoc {
             id: "account".to_string(),
@@ -869,7 +878,7 @@ The panels are read-only: they display system state and link to the app that man
 - A user's effective limit is their own cap plus every group they belong to, each evaluated independently: exceeding any of them blocks the transfer.
 - Usage is reserved before a transfer starts and debited when it lands, and refunded if an upload or download is abandoned — so a failed transfer does not consume quota. Concurrent transfers of the same subject are serialised, so two parallel transfers cannot both slip past the check.
 
-Scope, precisely: this applies to transfers made through the built-in File Explorer. Shares served by SMB, NFS, FTP and WebDAV are handled by separate system services with no per-request visibility here, so transfers over those protocols are neither counted nor capped by this feature, whatever is configured.
+Scope, precisely: this applies to transfers made through the built-in File Explorer. Shares served by SMB, NFS and FTP are handled by separate system services, and WebDAV by the in-process server, with no per-request visibility here, so transfers over those protocols are neither counted nor capped by this feature, whatever is configured.
 
 Not to be confused with the disk-space quota, which limits how much data a group may store on a drive."#.to_string(),
         },

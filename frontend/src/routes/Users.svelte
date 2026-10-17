@@ -452,7 +452,7 @@
     errors = {};
     if (!createForm.username.trim()) { errors = { username: translate('users.username_required2') }; return; }
     if (!createForm.password) { errors = { password: translate('users.password_required') }; return; }
-    if (createForm.password.length < 8) { errors = { password: translate('users.password_min') }; return; }
+    if (createForm.password.length < 12) { errors = { password: translate('users.password_min') }; return; }
     submitting = true;
     const res = await api.post('/users', {
       username: createForm.username.trim(),
@@ -570,7 +570,7 @@
     if (!selectedUser) return;
     errors = {};
     if (!passwordValue) { errors = { password: translate('users.password_required') }; return; }
-    if (passwordValue.length < 8) { errors = { password: translate('users.password_min') }; return; }
+    if (passwordValue.length < 12) { errors = { password: translate('users.password_min') }; return; }
     submitting = true;
     const isSelf = selectedUser.username === $authStore.user?.username;
     const res = await api.updateUserPassword(selectedUser.username, passwordValue);

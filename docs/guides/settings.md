@@ -33,6 +33,9 @@ Handlers in `src/handlers/settings.rs`. Persistence via
 | `GET /settings/export` | admin | JSON dump |
 | `POST /settings/import` | admin | JSON import |
 | `POST /settings/reset` | admin | reset to defaults |
+| `GET /settings/backup/db` | admin | snapshots of HomeVault's own database (settings + files on disk + total size) |
+| `PUT /settings/backup/db` | admin | update `interval_hours` / `retain`; a lower retention prunes immediately |
+| `POST /settings/backup/db/now` | admin | take a `VACUUM INTO` snapshot now |
 | `GET/PUT /snmp/settings` | admin | SNMP community/version |
 | `GET /snmp/availability\|info\|interfaces\|storage` | admin | SNMP-discoverable device data |
 | `GET /ups/availability\|list\|status/{name}\|variables/{name}` | admin | UPS/NUT monitoring (live readings) |
@@ -191,6 +194,27 @@ wording already exists there — no duplicated string.
     real `/etc/nut/ups.conf` + systemd.
 - ~~`QuotaCard.svelte`~~ — deleted 2026-09-09 with the per-group filesystem
   quota feature; see [Disk Quotas](./quotas.md).
+
+## System → Database snapshots (2026-10-17)
+
+The **System** category carries a "Database snapshots" card, below *Data
+management*. It exists because the database runs in WAL mode: copying
+`homevault.db` on its own yields a file with **no tables**, so the obvious
+manual backup silently produces nothing restorable. The card surfaces:
+
+- the last snapshot time (or "Never"),
+- the schedule (`interval_hours`, including "manual only") and retention
+  (`retain`, 1–100),
+- every snapshot on disk with its size, newest first,
+- **Snapshot now** and **Save schedule** buttons.
+
+State lives in `Settings.svelte` (`dbBackup`, `dbBackupInterval`,
+`dbBackupRetain`, `dbBackupBusy`, `dbBackupError`), loaded in `onMount` through
+`loadDbBackup()`; `handleBackupNow()` and `handleSaveDbBackup()` call the two
+mutating endpoints. A failure renders in an `role="alert"` row
+(`data-testid="db-backup-error"`) instead of being swallowed. See
+[backup-restic.md](./backup-restic.md) → *HomeVault's own database* for the
+mechanics and the restore procedure.
 
 ## Widgets category — real monitors + refresh interval
 

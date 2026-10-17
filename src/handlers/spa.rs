@@ -365,18 +365,32 @@ pub async fn serve_static_file(Path(path): Path<String>, headers: HeaderMap) -> 
 /// Deliberately not cached and not validated: `index.html` is what points the
 /// browser at the currently-hashed bundles, so a stale copy would keep an
 /// upgraded client on a previous release forever.
-pub async fn serve_spa() -> Response {
-    match STATIC_DIR
+///
+/// The inline boot script (service-worker registration) is stamped with the
+/// per-request CSP nonce: the policy lists that exact value and no longer
+/// allows `'unsafe-inline'`, so an unstamped copy would simply not run.
+pub async fn serve_spa(
+    nonce: Option<axum::Extension<crate::middleware::CspNonce>>,
+) -> Response {
+    let Some(content) = STATIC_DIR
         .get_file("dist/index.html")
         .and_then(|f| f.contents_utf8())
-    {
-        Some(content) => Html(content).into_response(),
-        None => (
+    else {
+        return (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Failed to load application. Please rebuild the frontend.",
         )
-            .into_response(),
-    }
+            .into_response();
+    };
+
+    let body = match nonce {
+        Some(axum::Extension(n)) => crate::middleware::csp_nonce::stamp_nonce(content, n.as_str()),
+        // No nonce in scope (a hand-mounted router in a test): serve the file
+        // as-is rather than failing.
+        None => content.to_string(),
+    };
+
+    Html(body).into_response()
 }
 
 #[cfg(test)]

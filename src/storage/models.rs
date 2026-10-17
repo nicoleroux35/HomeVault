@@ -247,4 +247,14 @@ pub struct SetupStatusResponse {
     /// Whether `sudo` is available on the host (required for terminal access).
     #[serde(default)]
     pub sudo_available: bool,
+    /// The host's interface language, detected from its POSIX locale (the
+    /// Setup Wizard's initial language — the wizard no longer asks). Always
+    /// one of `en` / `fr` / `de` / `es`; unsupported locales fall back to
+    /// English, and the user can change it later in Settings.
+    #[serde(default = "default_language")]
+    pub system_language: String,
+}
+
+fn default_language() -> String {
+    "en".to_string()
 }

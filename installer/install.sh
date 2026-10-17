@@ -25,12 +25,26 @@ set -euo pipefail
 # run from a checkout):
 #   ./installer/install.sh --package
 #
+# Alternative packaging — HomeVaultOS, the ready-to-use appliance ISOs (boot
+# and everything is already installed, no installer wizard) are built with
+# `os/build.sh` and documented in docs/guides/os-image.md.
+#
 # ---------------------------------------------------------------------------
 # Maintainer mode — `install.sh --package`
 #
 # Builds the per-architecture release archive this installer downloads:
 #   installer/release/homevault-<arch>.tar.gz  (+ .sha256)
 # It never touches the running system and never needs root.
+#
+# PORTABILITY WARNING — the binary is linked against the glibc of the build
+# machine. A binary built on Ubuntu 24.04 (glibc 2.39) will not run on the
+# supported matrix below (Debian 12 = 2.36, Ubuntu 22.04 = 2.35): it crashes
+# at startup with `version GLIBC_2.3X not found`. Before publishing a
+# release, build inside the OLDEST supported base:
+#   docker run --rm -v "$PWD":/repo -w /repo rust:1-bookworm \
+#       cargo build --release --bin homevault
+# (then re-run `--package` so the tarball picks it up — sqlx bundles SQLite,
+# so the glibc is the only portability axis).
 # ---------------------------------------------------------------------------
 if [[ "${1:-}" == "--package" || "${1:-}" == "-p" ]]; then
     case "$0" in
@@ -67,6 +81,146 @@ if [[ "${1:-}" == "--package" || "${1:-}" == "-p" ]]; then
     echo "✓ $ASSET"
     echo "  sha256: $(cat "${ASSET}.sha256")"
     echo "  Publish it as a GitHub Release asset so the default install URL resolves."
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Uninstall / rollback / dry-run
+#
+# `--uninstall` removes the application but KEEPS the data: an appliance that
+# silently deleted accounts, settings and backups on an uninstall would be a
+# trap. `--purge` (only valid with `--uninstall`) also removes the data root and
+# the environment file, behind a typed confirmation.
+#
+# `--rollback` swaps back to `homevault.previous`, which every upgrade keeps.
+# It does NOT restore the database: migrations are append-only, so rolling the
+# binary back over a newer schema is refused at startup (see
+# `DbError::SchemaTooNew`). The message says so and points at
+# `data/backups/…pre-migration.db`.
+#
+# `--dry-run` (any mode) prints what would happen and changes nothing.
+# ---------------------------------------------------------------------------
+
+INSTALL_DIR_DEFAULT="/opt/homevault"
+DATA_DIR_DEFAULT="/var/lib/homevault"
+SERVICE_NAME_DEFAULT="homevault"
+SERVICE_FILE_DEFAULT="/etc/systemd/system/homevault.service"
+ENV_FILE_DEFAULT="/etc/homevault.env"
+
+MODE="install"
+PURGE=0
+DRY_RUN=0
+for arg in "$@"; do
+    case "$arg" in
+        --uninstall) MODE="uninstall" ;;
+        --rollback)  MODE="rollback" ;;
+        --purge)     PURGE=1 ;;
+        --dry-run)   DRY_RUN=1 ;;
+    esac
+done
+
+# Print-or-run: every destructive action goes through this, so --dry-run is a
+# faithful preview rather than an approximation.
+run() {
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        echo "  [dry-run] $*"
+    else
+        "$@"
+    fi
+}
+
+if [[ "$MODE" == "uninstall" ]]; then
+    # A dry run changes nothing, so it does not need root — that is what makes
+    # it safe to preview before deciding.
+    if [[ $EUID -ne 0 && "$DRY_RUN" -eq 0 ]]; then
+        echo "This operation must be run as root:  sudo $0 --uninstall [--purge] [--dry-run]"
+        exit 1
+    fi
+    if [[ "$PURGE" -eq 1 && "$DRY_RUN" -eq 0 ]]; then
+        echo "This will permanently DELETE all HomeVault data:"
+        echo "  $DATA_DIR_DEFAULT  (database, snapshots, app data, VMs)"
+        echo "  $ENV_FILE_DEFAULT"
+        read -r -p "Type PURGE to confirm: " CONFIRM || CONFIRM=""
+        if [[ "$CONFIRM" != "PURGE" ]]; then
+            echo "Aborted — nothing was deleted."
+            exit 1
+        fi
+    fi
+
+    echo "▶ Uninstalling HomeVault"
+    run systemctl stop "$SERVICE_NAME_DEFAULT" 2>/dev/null || true
+    run systemctl disable "$SERVICE_NAME_DEFAULT" 2>/dev/null || true
+    run rm -f "$SERVICE_FILE_DEFAULT"
+    run rm -f "${SERVICE_FILE_DEFAULT}.bak"
+    run systemctl daemon-reload 2>/dev/null || true
+    run rm -rf "$INSTALL_DIR_DEFAULT"
+
+    if [[ "$PURGE" -eq 1 ]]; then
+        run rm -rf "$DATA_DIR_DEFAULT"
+        run rm -f "$ENV_FILE_DEFAULT"
+        echo "  Data and environment file removed."
+    else
+        echo "  Data kept in $DATA_DIR_DEFAULT (use --purge to remove it too)."
+    fi
+    echo "✓ Done."
+    exit 0
+fi
+
+if [[ "$MODE" == "rollback" ]]; then
+    if [[ $EUID -ne 0 && "$DRY_RUN" -eq 0 ]]; then
+        echo "This operation must be run as root:  sudo $0 --rollback [--dry-run]"
+        exit 1
+    fi
+    PREV="$INSTALL_DIR_DEFAULT/homevault.previous"
+    if [[ ! -x "$PREV" ]]; then
+        echo "No previous version to roll back to ($PREV is missing)."
+        echo "Every upgrade keeps one; a fresh install has none."
+        exit 1
+    fi
+
+    echo "▶ Rolling back to the previous HomeVault build"
+    run systemctl stop "$SERVICE_NAME_DEFAULT" 2>/dev/null || true
+    run mv "$INSTALL_DIR_DEFAULT/homevault" "$INSTALL_DIR_DEFAULT/homevault.failed"
+    run mv "$PREV" "$INSTALL_DIR_DEFAULT/homevault"
+    run chmod +x "$INSTALL_DIR_DEFAULT/homevault"
+    run systemctl start "$SERVICE_NAME_DEFAULT" 2>/dev/null || true
+
+    cat <<'EOM'
+
+  The binary is rolled back. The DATABASE is not.
+  Migrations are append-only: if the newer build already migrated the database,
+  this older binary will refuse to start ("database was written by a newer
+  HomeVault"). In that case restore the snapshot taken before the upgrade:
+
+    systemctl stop homevault
+    cp /var/lib/homevault/data/backups/*pre-migration.db /var/lib/homevault/data/homevault.db
+    rm -f /var/lib/homevault/data/homevault.db-wal /var/lib/homevault/data/homevault.db-shm
+    systemctl start homevault
+EOM
+    echo "✓ Done."
+    exit 0
+fi
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+    # A dry run of the *install* path stops here: the installer is long and
+    # touches apt, so a preview that then went ahead and did it would be worse
+    # than no flag at all.
+    echo "▶ Dry run — nothing will be changed."
+    echo "  install dir : $INSTALL_DIR_DEFAULT"
+    echo "  data dir    : $DATA_DIR_DEFAULT"
+    echo "  service     : $SERVICE_FILE_DEFAULT"
+    # `$1` may be a flag rather than an archive path — only show it when it is
+    # an actual file the caller passed.
+    ARCHIVE_ARG=""
+    for a in "$@"; do
+        case "$a" in --*) ;; *) [[ -f "$a" ]] && ARCHIVE_ARG="$a" ;; esac
+    done
+    echo "  archive     : ${ARCHIVE_ARG:-<downloaded from the GitHub release asset>}"
+    echo ""
+    echo "  Actions a real run would take: verify packages, download/extract the"
+    echo "  binary to $INSTALL_DIR_DEFAULT, write $SERVICE_FILE_DEFAULT, enable and"
+    echo "  start $SERVICE_NAME_DEFAULT."
+    echo "  Use --uninstall [--purge] or --rollback to act on an existing install."
     exit 0
 fi
 
@@ -338,8 +492,13 @@ info "Base tools (build toolchain, databases)..."
 # repos — src/app_catalog/store.rs) and `python3` the Linux-user/PAM login
 # path (src/auth/service.rs). Both are Priority-standard and always present
 # in the base repos, so they ride along the required group.
+# `sudo` is the workhorse of host management (180+ call sites across the
+# app). Even though HomeVault itself runs as root, the binary must exist —
+# Ubuntu always ships it, but a minimal Debian (netinst without the standard
+# taskset, containers, small VPS images) can genuinely lack it, and every
+# feature that shells out would break at once.
 install_packages "Base tools (build toolchain, databases)" required \
-    build-essential pkg-config libsqlite3-dev sqlite3 wget curl ca-certificates git python3
+    build-essential pkg-config libsqlite3-dev sqlite3 wget curl ca-certificates git python3 sudo
 
 info "Storage and monitoring..."
 # `dmidecode` (Dashboard: motherboard/BIOS/RAM details), `ethtool` (Network:
@@ -471,6 +630,67 @@ fi
 # qemu-system-modules-spice is REQUIRED for any VM to boot on Debian/Ubuntu
 # (Incus always passes -spice to qemu); ovmf provides the UEFI + Secure Boot
 # firmware Windows needs; swtpm + swtpm-tools the software TPM 2.0 (Win11).
+#
+# Incus is NOT in every supported base repository, so where it is missing the
+# same pattern as the Docker repository above applies (keyring + sources
+# entry + update, best-effort):
+#   Debian 13+, Ubuntu 24.04+ → in the base repos, nothing to add;
+#   Debian 12                 → bookworm-backports only;
+#   Ubuntu 20.04 / 22.04      → not packaged: official Zabbly repository.
+ensure_incus_repo() {
+    if pkg_available incus; then
+        return 0
+    fi
+    . /etc/os-release
+    info "Incus not in the current repositories — adding one (VM stack)..."
+    if grep -qi '^ID=debian' /etc/os-release; then
+        # Backports carry Incus on stable Debian releases.
+        if ! grep -qs "${VERSION_CODENAME}-backports" /etc/apt/sources.list \
+                /etc/apt/sources.list.d/* 2>/dev/null; then
+            echo "deb http://deb.debian.org/debian ${VERSION_CODENAME}-backports main" \
+                > /etc/apt/sources.list.d/incus-backports.list
+        fi
+    else
+        install -m 0755 -d /etc/apt/keyrings
+        if ! curl -fsSL https://pkgs.zabbly.com/key.asc -o /etc/apt/keyrings/zabbly.asc \
+                || ! chmod a+r /etc/apt/keyrings/zabbly.asc; then
+            warn "Could not fetch the Zabbly repository key — VMs will stay disabled"
+            return 0
+        fi
+        echo "deb [signed-by=/etc/apt/keyrings/zabbly.asc] https://pkgs.zabbly.com/incus/stable ${VERSION_CODENAME} main" \
+            > /etc/apt/sources.list.d/zabbly-incus-stable.list
+    fi
+    apt-get update -qq
+}
+
+# A freshly installed Incus daemon starts EMPTY: no storage pool and a
+# `default` profile without a NIC — the very first vm/create would fail with
+# "No storage pool found". The VM app inherits the default profile's NIC
+# (src/incus.rs), so provisioning that baseline non-interactively here makes
+# VMs work out of the box. Idempotent: an initialized daemon is detected via
+# its storage pool list and left untouched; failures are non-fatal (the VM
+# app then shows its "Incus unavailable" state until init is run).
+init_incus_daemon() {
+    systemctl is-active --quiet incus || return 0
+    if incus storage list --format csv 2>/dev/null | grep -q .; then
+        ok "Incus daemon already initialized"
+        return 0
+    fi
+    local incus_ready=0
+    for _ in $(seq 1 10); do
+        if incus admin init --auto >/dev/null 2>&1; then
+            incus_ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [[ "$incus_ready" -eq 1 ]]; then
+        ok "Incus daemon initialized (default storage pool + incusbr0 bridge)"
+    else
+        warn "Incus daemon not initialized — run 'incus admin init --auto' before creating VMs"
+    fi
+}
+
 install_incus() {
     if command -v incus &> /dev/null; then
         ok "Incus (containers + VMs) already installed"
@@ -481,16 +701,28 @@ install_incus() {
         # VM needs before it can start.
         install_packages "Incus: VM modules (QEMU SPICE, TPM)" optional qemu-system-modules-spice swtpm-tools
     else
-        # First install: Incus + the VM stack (UEFI ovmf, software TPM swtpm*,
-        # the SPICE qemu module, virtiofsd). Best-effort like the rest — an
-        # unavailable package just disables VMs while the containers half of
-        # the app keeps working (see docs/guides/vm.md).
+        # First install, in dependency order: incus FIRST — it depends on
+        # qemu-system-x86 (>= 1:8.0) and pulls a consistent QEMU from the
+        # backports/Zabbly repo added above (bookworm stable only has 7.2,
+        # which would conflict). swtpm/ovmf are version-independent.
+        ensure_incus_repo
         install_packages "Incus (containers + VMs)" optional \
-            incus qemu-system-x86 qemu-system-modules-spice swtpm swtpm-tools virtiofsd ovmf
+            incus swtpm swtpm-tools ovmf
+        # Then the QEMU pieces that incus's dependencies may not cover:
+        # qemu-system-modules-spice is REQUIRED for any VM to boot when QEMU
+        # is >= 8.1 (Incus always passes -spice to qemu); virtiofsd does not
+        # exist on Debian 12 and is only requested where the repos carry it
+        # (same pattern as the 7zip rename above) — the app never requires it.
+        install_packages "Incus: QEMU + SPICE VM modules" optional \
+            qemu-system-x86 qemu-system-modules-spice
+        if pkg_available virtiofsd; then
+            install_optional virtiofsd "virtiofsd (VM shared folders)"
+        fi
     fi
 
     if command -v incus &> /dev/null; then
         systemctl enable --now incus &> /dev/null || true
+        init_incus_daemon
     else
         warn "Incus not installed — virtual machines will be disabled"
     fi
@@ -571,7 +803,12 @@ fi
 # on a fresh host rclone mount (FUSE3) and NTFS/exFAT USB drives were never
 # available. All are small and in the base repos; installed as options.
 install_optional rclone "rclone (cloud synchronization)"
-install_optional fuse3 "FUSE3 (rclone mounting)"
+# FUSE3 only — and that is enough: the fuse3 package ships a
+# `/bin/fusermount -> fusermount3` compatibility symlink (Replaces: fuse) that
+# the app's unmount path calls by its FUSE2 name (src/handlers/rclone.rs),
+# while the real fuse2 package `Breaks: fuse` unversioned against fuse3 and
+# cannot coinstall with it on Debian 12. No second FUSE generation here.
+install_optional fuse3 "FUSE3 (rclone mounting + fusermount)"
 install_optional ntfs-3g "NTFS-3G"
 install_optional exfat-fuse "exFAT (USB drives / SD cards)"
 
@@ -751,6 +988,13 @@ UPGRADE=0
 if [[ -f "$SERVICE_FILE" ]]; then
     UPGRADE=1
     info "Existing installation detected — updating the application (your data is kept)"
+    # Keep the running binary so `--rollback` has something to go back to. Only
+    # one previous build is retained: more would just accumulate disk usage
+    # without a way to choose between them.
+    if [[ -x "$INSTALL_DIR/homevault" ]]; then
+        cp -f "$INSTALL_DIR/homevault" "$INSTALL_DIR/homevault.previous"
+        ok "Previous build kept for rollback ($INSTALL_DIR/homevault.previous)"
+    fi
 fi
 
 tar -xzf "$PACKAGE" -C "$INSTALL_DIR"
@@ -786,8 +1030,11 @@ Environment="DATA_DIRECTORY=$DATA_DIR"
 # Built-in HTTPS is opt-in (Settings > Security > HTTPS/TLS, or set
 # TLS_ENABLED=true here / in /etc/homevault.env). When enabled, HomeVault
 # adds a TLS listener on HTTPS_PORT (default $HTTPS_PORT) alongside HTTP.
+# Plain HTTP is then redirected to it by default (TLS_REDIRECT=0 keeps both
+# listeners usable), so the admin password is never served in clear.
 #Environment="TLS_ENABLED=true"
 #Environment="HTTPS_PORT=$HTTPS_PORT"
+#Environment="TLS_REDIRECT=0"
 EnvironmentFile=-$ENV_FILE
 
 # Resource ceiling: HomeVault targets low-power boards and modest mini-PCs,
@@ -817,8 +1064,11 @@ ok "System service unit written to $SERVICE_FILE"
 # Settings > Security > HTTPS/TLS. The plain-HTTP port keeps working.
 if [[ "$UPGRADE" -eq 0 ]]; then
     REPLY="n"
-    read -r -p "Enable HTTPS with a self-signed certificate? (browser warning, encrypts the LAN) [y/N] " REPLY || REPLY="n"
-    if [[ "$REPLY" =~ ^[OoYy]$ ]]; then
+    # Default YES: the wizard and the login form carry the administrator
+    # password, and over plain HTTP it crosses the network in clear. The cost is
+    # a one-time browser warning about the self-signed certificate.
+    read -r -p "Enable HTTPS with a self-signed certificate? (browser warning, encrypts the LAN) [Y/n] " REPLY || REPLY="y"
+    if [[ ! "$REPLY" =~ ^[Nn]$ ]]; then
         touch "$ENV_FILE"
         grep -q '^TLS_ENABLED=' "$ENV_FILE" || echo "TLS_ENABLED=true" >> "$ENV_FILE"
         grep -q '^HTTPS_PORT='  "$ENV_FILE" || echo "HTTPS_PORT=$HTTPS_PORT" >> "$ENV_FILE"
@@ -887,6 +1137,10 @@ if command -v docker &> /dev/null; then
     check "Docker Compose"             "docker compose version"
 fi
 check "Incus hypervisor"               "command -v incus"
+check "VM virtualizer (QEMU)"          "command -v qemu-system-x86_64"
+# Incus always passes -spice to qemu, so without the SPICE module NO VM can
+# boot (containers are unaffected) — mirrors dependencies.rs::check_qemu_spice.
+check "VM display (SPICE module)"      "ls /usr/lib/x86_64-linux-gnu/qemu /usr/lib/qemu /usr/lib64/qemu 2>/dev/null | grep -q spice"
 check "SNMP monitoring"                "command -v snmpd"
 check "UPS monitoring (NUT)"           "command -v upsc"
 check "Hardware sensors (lm-sensors)"  "command -v sensors"
@@ -903,6 +1157,25 @@ check "File archives (unzip/zip/7z)"   "command -v unzip && command -v zip && co
 check "Hardware info (lspci)"          "command -v lspci"
 check "Host identity (hostname)"       "command -v hostname"
 check "Linux-user login (python3)"     "command -v python3"
+# Feature groups that arrived after the first verification list was written,
+# aligned with src/dependencies.rs so the report matches what the app probes
+# at runtime (each one degrades in the UI when absent).
+check "ACLs (setfacl)"                 "command -v setfacl"
+check "Disk quotas (repquota)"         "command -v repquota"
+check "Disk encryption (LUKS2)"        "command -v cryptsetup"
+check "ZFS storage pools"              "command -v zpool"
+check "Btrfs storage pools"            "command -v btrfs"
+check "Backups (restic)"               "command -v restic"
+check "Syncthing"                      "command -v syncthing"
+check "Cloud sync (rclone)"            "command -v rclone"
+check "Cloud sync unmount (fusermount)" "command -v fusermount"
+check "Rescue cloning (ddrescue)"      "command -v ddrescue"
+check "Rescue repair (testdisk + photorec)" "command -v testdisk && command -v photorec"
+check "mDNS discovery (avahi)"         "command -v avahi-daemon"
+check "Hardware info (dmidecode)"      "command -v dmidecode"
+check "Network diagnostics (ethtool)"  "command -v ethtool"
+check "VM UEFI firmware (OVMF)"        "test -f /usr/share/OVMF/OVMF_CODE.fd || test -f /usr/share/OVMF/OVMF_CODE_4M.fd"
+check "VM TPM (swtpm_setup)"           "command -v swtpm_setup"
 check "Web terminal (native PTY)"      "true" # always available, built into the binary
 
 # Where the application actually landed + is executable.

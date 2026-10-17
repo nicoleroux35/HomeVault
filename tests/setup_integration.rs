@@ -51,7 +51,7 @@ use homevault::handlers::{
     auth::{
         handle_check_username, handle_setup, handle_setup_progress_get,
         handle_setup_progress_put, handle_setup_rebaseline, handle_setup_status,
-        handle_setup_storage_options, handle_setup_verify_totp,
+        handle_setup_verify_totp,
     },
     AppState,
 };
@@ -127,10 +127,6 @@ fn test_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/auth/setup/progress",
             get(handle_setup_progress_get).put(handle_setup_progress_put),
-        )
-        .route(
-            "/api/auth/setup/storage-options",
-            get(handle_setup_storage_options),
         )
         .with_state(state)
 }
@@ -237,6 +233,23 @@ async fn test_setup_status_has_sudo_available_field() {
     );
 }
 
+/// The wizard no longer asks for a language: the host's POSIX locale is
+/// reported so the frontend can pick the initial dictionary itself.
+#[tokio::test]
+async fn test_setup_status_reports_a_supported_system_language() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let mut app = test_router(state);
+
+    let (_, body) = get_json(&mut app, "/api/auth/setup-status").await;
+    let lang = body["data"]["system_language"]
+        .as_str()
+        .expect("system_language should be a string");
+    assert!(
+        ["en", "fr", "de", "es"].contains(&lang),
+        "system_language {lang:?} must be one of the shipped languages"
+    );
+}
+
 #[tokio::test]
 async fn test_setup_status_has_machine_id() {
     let (state, _tmp, _lock) = setup_state().await;
@@ -319,7 +332,7 @@ async fn test_setup_empty_username() {
     let (status, body) = post_json(
         &mut app,
         "/api/auth/setup",
-        json!({"username": "", "password": "ValidPass1"}),
+        json!({"username": "", "password": "ValidPassw0rd"}),
     )
     .await;
 
@@ -336,7 +349,7 @@ async fn test_setup_reserved_username() {
     let (status, body) = post_json(
         &mut app,
         "/api/auth/setup",
-        json!({"username": "root", "password": "ValidPass1"}),
+        json!({"username": "root", "password": "ValidPassw0rd"}),
     )
     .await;
 
@@ -357,7 +370,7 @@ async fn test_setup_weak_password_no_uppercase() {
     let (status, body) = post_json(
         &mut app,
         "/api/auth/setup",
-        json!({"username": "testuser", "password": "lowercase1"}),
+        json!({"username": "testuser", "password": "lowercase1234"}),
     )
     .await;
 
@@ -402,10 +415,54 @@ async fn test_setup_password_too_short() {
     assert_ne!(status, StatusCode::OK);
     let msg = body["message"].as_str().unwrap_or("");
     assert!(
-        msg.contains("8 characters"),
+        msg.contains("12 characters"),
         "Expected length error, got: {}",
         msg
     );
+}
+
+/// An 11-character password that satisfies every composition rule is still
+/// rejected: the floor is 12 (the admin credential owns the whole appliance).
+#[tokio::test]
+async fn test_setup_password_eleven_chars_rejected() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let mut app = test_router(state);
+
+    let (status, body) = post_json(
+        &mut app,
+        "/api/auth/setup",
+        json!({"username": "testuser", "password": "Abcdefgh123"}),
+    )
+    .await;
+
+    assert_ne!(status, StatusCode::OK);
+    let msg = body["message"].as_str().unwrap_or("");
+    assert!(msg.contains("12 characters"), "got: {msg}");
+}
+
+/// A compromised / obvious password is refused even when it clears the length
+/// and composition rules — and no admin row is created.
+#[tokio::test]
+async fn test_setup_password_too_common_rejected() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let mut app = test_router(state.clone());
+
+    let (status, body) = post_json(
+        &mut app,
+        "/api/auth/setup",
+        json!({"username": "testuser", "password": "Password1234"}),
+    )
+    .await;
+
+    assert_ne!(status, StatusCode::OK);
+    let msg = body["message"].as_str().unwrap_or("");
+    assert!(msg.contains("too common"), "got: {msg}");
+
+    let admin_exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE role_id = 2")
+        .fetch_one(&*state.db.pool())
+        .await
+        .expect("count admins");
+    assert_eq!(admin_exists, 0, "no admin may be created");
 }
 
 // ========================================================================
@@ -720,7 +777,7 @@ async fn test_setup_long_username() {
     let (status, body) = post_json(
         &mut app,
         "/api/auth/setup",
-        json!({"username": long_username, "password": "ValidPass1"}),
+        json!({"username": long_username, "password": "ValidPassw0rd"}),
     )
     .await;
 
@@ -741,7 +798,7 @@ async fn test_setup_invalid_chars_username() {
     let (status, body) = post_json(
         &mut app,
         "/api/auth/setup",
-        json!({"username": "user name!", "password": "ValidPass1"}),
+        json!({"username": "user name!", "password": "ValidPassw0rd"}),
     )
     .await;
 
@@ -1010,7 +1067,7 @@ async fn test_concurrent_setup_only_one_succeeds() {
                 .body(axum::body::Body::from(
                     serde_json::to_vec(&json!({
                         "username": username,
-                        "password": "ValidPass1",
+                        "password": "ValidPassw0rd",
                     }))
                     .unwrap(),
                 ))
@@ -1341,7 +1398,6 @@ async fn get_as_peer(app: &Router, ip: &str, path: &str) -> (StatusCode, Value) 
         .body(axum::body::Body::empty())
         .unwrap();
     req.extensions_mut().insert(ConnectInfo(peer(ip)));
-
     let mut app = app.clone();
     let resp = ServiceExt::<Req>::ready(&mut app)
         .await
@@ -1380,6 +1436,169 @@ async fn test_setup_guard_blocks_setup_from_a_public_peer() {
         .as_str()
         .unwrap_or("")
         .contains("local network"));
+}
+
+// ------------------------------------------------------------------------
+// Same-origin guard: the CORS layer is permissive, so a cross-site page in the
+// operator's own browser must not be able to claim the first admin.
+// ------------------------------------------------------------------------
+
+/// Drive the real router with arbitrary extra headers (same-origin probes).
+async fn post_as_peer_with_headers(
+    app: &Router,
+    ip: &str,
+    path: &str,
+    body: Value,
+    headers: &[(&str, &str)],
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .header("content-type", "application/json");
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let mut req = builder
+        .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    req.extensions_mut().insert(ConnectInfo(peer(ip)));
+
+    let mut app = app.clone();
+    let resp = ServiceExt::<Req>::ready(&mut app)
+        .await
+        .unwrap()
+        .call(req)
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap_or(json!({}));
+    (status, json)
+}
+
+/// A LAN peer whose browser was lured into a cross-site POST is refused, even
+/// though the peer address itself is allowed.
+#[tokio::test]
+async fn test_setup_guard_rejects_a_cross_site_origin() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let app = create_app(state);
+
+    let (status, body) = post_as_peer_with_headers(
+        &app,
+        "192.168.1.30",
+        "/api/auth/setup",
+        json!({"username": "attacker", "password": "SecurePass123"}),
+        &[
+            ("host", "homevault.local:8080"),
+            ("origin", "https://evil.example"),
+            ("sec-fetch-site", "cross-site"),
+        ],
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("own interface"));
+}
+
+/// `Sec-Fetch-Site: cross-site` alone (no Origin) is enough to refuse.
+#[tokio::test]
+async fn test_setup_guard_rejects_cross_site_fetch_metadata() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let app = create_app(state);
+
+    let (status, body) = post_as_peer_with_headers(
+        &app,
+        "192.168.1.30",
+        "/api/auth/setup",
+        json!({"username": "attacker", "password": "SecurePass123"}),
+        &[("sec-fetch-site", "cross-site")],
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+}
+
+/// `Origin: null` (sandboxed iframe / file://) can never be the appliance.
+#[tokio::test]
+async fn test_setup_guard_rejects_a_null_origin() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let app = create_app(state);
+
+    let (status, body) = post_as_peer_with_headers(
+        &app,
+        "192.168.1.30",
+        "/api/auth/setup",
+        json!({"username": "attacker", "password": "SecurePass123"}),
+        &[("origin", "null")],
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+}
+
+/// The appliance's own UI (same Origin/Host, or a plain non-browser client
+/// sending neither header) still reaches the handler.
+#[tokio::test]
+async fn test_setup_guard_allows_a_same_origin_request() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let app = create_app(state);
+
+    let (status, body) = post_as_peer_with_headers(
+        &app,
+        "192.168.1.30",
+        "/api/auth/setup",
+        json!({"username": "firstadmin", "password": "SecurePass123"}),
+        &[
+            ("host", "homevault.local:8080"),
+            ("origin", "http://homevault.local:8080"),
+            ("sec-fetch-site", "same-origin"),
+        ],
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["username"], json!("firstadmin"));
+}
+
+/// A bare non-browser client (no Origin, no Sec-Fetch-Site) is still allowed.
+#[tokio::test]
+async fn test_setup_guard_allows_a_header_less_client() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let app = create_app(state);
+
+    let (status, body) = post_as_peer(
+        &app,
+        "192.168.1.30",
+        "/api/auth/setup",
+        json!({"username": "scriptadmin", "password": "SecurePass123"}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// The bootstrap routes are rate-limited per peer: a flood gets 429 rather
+/// than hammering the handlers.
+#[tokio::test]
+async fn test_setup_bootstrap_endpoints_are_rate_limited() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let app = create_app(state);
+
+    // `check-username` is the cheapest bootstrap route and hits no DB write.
+    let mut saw_429 = false;
+    for _ in 0..40 {
+        let (status, _) = get_as_peer(&app, "203.0.113.9", "/api/auth/check-username?username=probe").await;
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            saw_429 = true;
+            break;
+        }
+    }
+    assert!(saw_429, "the bootstrap routes must rate-limit per peer");
 }
 
 #[tokio::test]
@@ -1488,17 +1707,16 @@ async fn test_setup_progress_save_and_resume() {
     let (status, body) = put_json(
         &mut app,
         "/api/auth/setup/progress",
-        json!({"step": 4, "data": {"language": "fr", "storage": "sda"}}),
+        json!({"step": 3, "data": {"language": "fr"}}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["data"]["step"], json!(4));
+    assert_eq!(body["data"]["step"], json!(3));
 
     let (status, body) = get_json(&mut app, "/api/auth/setup/progress").await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["data"]["step"], json!(4));
+    assert_eq!(body["data"]["step"], json!(3));
     assert_eq!(body["data"]["data"]["language"], json!("fr"));
-    assert_eq!(body["data"]["data"]["storage"], json!("sda"));
 }
 
 /// Out-of-range steps and non-object payloads are rejected, never stored.
@@ -1542,31 +1760,8 @@ async fn test_setup_progress_forbidden_after_setup() {
     let (status, body) = put_json(
         &mut app,
         "/api/auth/setup/progress",
-        json!({"step": 3, "data": {}}),
+        json!({"step": 2, "data": {}}),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-}
-
-/// Storage options are listed on a fresh box and close after setup.
-#[tokio::test]
-async fn test_setup_storage_options_first_run_only() {
-    let (state, _tmp, _lock) = setup_state().await;
-    let mut app = test_router(state.clone());
-
-    let (status, body) = get_json(&mut app, "/api/auth/setup/storage-options").await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(body["data"]["disks"].is_array());
-    assert!(body["data"]["raid_devices"].is_array());
-
-    sqlx::query(
-        "INSERT INTO users (username, password_hash, fullname, email, role_id, locked, created_at, avatar_seed)
-         VALUES ('boss', 'x', 'Boss', 'b@example.com', 2, false, datetime('now'), 's')",
-    )
-    .execute(&*state.db.pool())
-    .await
-    .expect("insert admin");
-
-    let (status, _) = get_json(&mut app, "/api/auth/setup/storage-options").await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
 }

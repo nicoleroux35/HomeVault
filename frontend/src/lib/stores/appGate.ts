@@ -26,6 +26,7 @@ import { get, writable } from 'svelte/store';
 import type { SetupStatus } from '$lib/types/api';
 import { api } from '$lib/services/api';
 import { authStore } from '$lib/stores/auth';
+import { languageStore } from '$lib/stores/i18n';
 
 /**
  * Application-level route guard.
@@ -68,6 +69,12 @@ function createAppGate() {
       set({ route: 'error', status: null });
       return;
     }
+
+    // The host's own POSIX locale is the last language hint (see
+    // `languageStore.applySystemLanguage`): it only applies when the user made
+    // no explicit choice and the browser locale is not one we ship. The wizard
+    // no longer asks for a language — Settings is where a choice is stored.
+    languageStore.applySystemLanguage(status.system_language);
 
     // First run: nobody has claimed the appliance yet — the wizard owns it.
     if (status.is_first_run) {
