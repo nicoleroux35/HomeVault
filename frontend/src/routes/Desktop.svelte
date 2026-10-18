@@ -2,7 +2,7 @@
      File          : Desktop.svelte
      Author        : Nicolas Le Roux
      Created       : 28/09/2026
-     Last modified : 13/10/2026 by Nicolas Le Roux
+     Last modified : 18/10/2026 by Nicolas Le Roux
      Version       : 1.0.0
 
      Description:
@@ -1457,6 +1457,15 @@
     }
   }
 
+  /** Frame-footer help action — opens the in-product assistant, which is
+   *  HomeVault's help channel: its RAG knowledge base indexes the docs, the
+   *  app catalogue and the system settings, so "how do I …?" is answered from
+   *  the same window the user is asking from. */
+  function openHelp() {
+    const chat = apps.find(a => a.id === 'chat');
+    if (chat) openApp(chat);
+  }
+
   /** Open a URL (a Docker catalog app's web UI) in a new browser tab or a
    *  real new window — the popup feature string is what makes the browser
    *  spawn a window rather than a tab. Mirrors Docker.svelte's
@@ -1718,21 +1727,25 @@
 
       <span class="hv-menubar-divider"></span>
 
-      <!-- Connection Status -->
+      <!-- Connection Status. Icon-only circle (--hv-chrome-topbar-btn-size,
+           uniform with every other topbar control): the name is the
+           `aria-label`, surfaced on hover / focus by the shared
+           `.hv-topbar-btn::before` tooltip. No `title` — a native tooltip
+           would double up with the CSS one. -->
       <div class="hv-connection-wrap">
         <button
           class="hv-topbar-btn"
           data-testid="topbar-network"
           onclick={(e) => toggleTopbarPanel('net', e)}
           aria-label={$t('desktop.app_network_name')}
-          title={$t('desktop.app_network_name')}
         >
+          <!-- No `size`: `.hv-topbar-btn :global(svg)` owns the glyph box
+               (half the control) and a stylesheet beats the SVG attribute. -->
           {#if connectionType === 'WiFi'}
-            <WifiIcon size={26} />
+            <WifiIcon />
           {:else}
-            <EthernetIcon size={26} />
+            <EthernetIcon />
           {/if}
-          <span class="hv-topbar-btn-label">{$t('desktop.app_network_name')}</span>
         </button>
 
         {#if showConnectionInfo}
@@ -1789,15 +1802,13 @@
       <!-- Notifications — a single button (the panel anchors to the
            menubar pill, not to a wrapper). The count badge stays a child of
            the BUTTON, not of the bell span: the mockup pins it to the button's
-           top-right corner, and the button is the chip whose corner that is
-           once the label appears at 901px — see rule 12 for why the badge can
-           never land on the label. -->
+           top-right corner, and the button is the circle whose corner that
+           is — see rule 12. -->
       <div class="hv-notifications-trigger">
-        <button class="hv-topbar-btn hv-notif-btn" data-testid="topbar-notifications" class:hv-bell-swing={bellSwing} onclick={(e)=>toggleTopbarPanel('notifications', e)} aria-label={$t('desktop.notifications')} title={$t('desktop.notifications')}>
+        <button class="hv-topbar-btn hv-notif-btn" data-testid="topbar-notifications" class:hv-bell-swing={bellSwing} onclick={(e)=>toggleTopbarPanel('notifications', e)} aria-label={$t('desktop.notifications')}>
           <span class="hv-notif-bell-icon">
-            <NotificationBellIcon size={26} stroke={2} />
+            <NotificationBellIcon stroke={2} />
           </span>
-          <span class="hv-topbar-btn-label">{$t('desktop.notifications')}</span>
           {#if $notificationsStore.unreadCount > 0}
             <span class="hv-notification-badge">{$notificationsStore.unreadCount > 99 ? '99+' : $notificationsStore.unreadCount}</span>
           {/if}
@@ -1805,12 +1816,11 @@
         <NotificationCenter isOpen={showNotifications} />
       </div>
 
-      <!-- Power — stays LAST: the label reuses the orphan `desktop.power`
-           key, while aria-label/title keep the longer `power_options` (the
-           accessible name must contain the visible label — WCAG 2.5.3). -->
-      <button class="hv-topbar-btn" data-testid="topbar-power" onclick={() => (showPowerModal = true)} aria-label={$t('desktop.power_options')} title={$t('desktop.power_options')}>
-        <IconPower size={26} stroke={2} />
-        <span class="hv-topbar-btn-label">{$t('desktop.power')}</span>
+      <!-- Power — stays LAST (section 15.3 pins that order). The accessible
+           name is the longer `power_options`; with no visible label left there
+           is no WCAG 2.5.3 pair to keep in sync any more. -->
+      <button class="hv-topbar-btn" data-testid="topbar-power" onclick={() => (showPowerModal = true)} aria-label={$t('desktop.power_options')}>
+        <IconPower stroke={2} />
       </button>
 
       <!-- User Menu Dropdown -->
@@ -1854,7 +1864,7 @@
         color={MONITOR_COLOR.resource}
         label={$t('desktop.resources')}
       >
-        {#snippet icon()}<IconActivity size={16} stroke={2} />{/snippet}
+        {#snippet icon()}<IconActivity stroke={1.8} />{/snippet}
       </WidgetHeader>
 
       <div class="hv-gauge-row">
@@ -1995,7 +2005,7 @@
         color={MONITOR_COLOR.raid}
         label={$t('desktop.raid_arrays')}
       >
-        {#snippet icon()}<IconDatabase size={16} stroke={2} />{/snippet}
+        {#snippet icon()}<IconDatabase stroke={1.8} />{/snippet}
       </WidgetHeader>
 
       {#if raidData.status === 'ready' && raidData.data.arrays && raidData.data.arrays.length > 0}
@@ -2067,7 +2077,7 @@
         color={MONITOR_COLOR.security}
         label={$t('desktop.security_monitor')}
       >
-        {#snippet icon()}<IconShieldCheckered size={16} stroke={2} />{/snippet}
+        {#snippet icon()}<IconShieldCheckered stroke={1.8} />{/snippet}
       </WidgetHeader>
 
       {#if securityData.status === 'loading' || securityData.status === 'idle'}
@@ -2175,7 +2185,7 @@
         color={MONITOR_COLOR.vpn}
         label={$t('desktop.vpn_monitor')}
       >
-        {#snippet icon()}<IconLock size={16} stroke={2} />{/snippet}
+        {#snippet icon()}<IconLock stroke={1.8} />{/snippet}
       </WidgetHeader>
 
       {#if vpnData.status === 'loading' || vpnData.status === 'idle'}
@@ -2222,7 +2232,7 @@
         color={MONITOR_COLOR.downloader}
         label={$t('desktop.downloader_monitor')}
       >
-        {#snippet icon()}<IconDownload size={16} stroke={2} />{/snippet}
+        {#snippet icon()}<IconDownload stroke={1.8} />{/snippet}
       </WidgetHeader>
 
       {#if downloaderData.status === 'loading' || downloaderData.status === 'idle'}
@@ -2264,7 +2274,7 @@
         color={MONITOR_COLOR.syncthing}
         label={$t('desktop.syncthing_monitor')}
       >
-        {#snippet icon()}<IconRefresh size={16} stroke={2} />{/snippet}
+        {#snippet icon()}<IconRefresh stroke={1.8} />{/snippet}
       </WidgetHeader>
 
       {#if syncthingData.status === 'loading' || syncthingData.status === 'idle'}
@@ -2299,7 +2309,7 @@
         color={MONITOR_COLOR.calendar}
         label={$t('desktop.calendar_monitor')}
       >
-        {#snippet icon()}<IconCalendar size={16} stroke={2} />{/snippet}
+        {#snippet icon()}<IconCalendar stroke={1.8} />{/snippet}
       </WidgetHeader>
 
       <div class="hv-calendar-weekdays">
@@ -2352,7 +2362,7 @@
         color={MONITOR_COLOR.docker}
         label={$t('desktop.docker_monitor')}
       >
-        {#snippet icon()}<ContainerIcon size={16} stroke={2} />{/snippet}
+        {#snippet icon()}<ContainerIcon stroke={1.8} />{/snippet}
       </WidgetHeader>
 
       {#if dockerData.status === 'loading' || dockerData.status === 'idle'}
@@ -2425,7 +2435,7 @@
         color={MONITOR_COLOR.weather}
         label={$t('desktop.weather_monitor')}
       >
-        {#snippet icon()}<IconSun size={16} stroke={2} />{/snippet}
+        {#snippet icon()}<IconSun stroke={1.8} />{/snippet}
       </WidgetHeader>
 
       {#if !$weatherLocationStore}
@@ -2487,7 +2497,7 @@
         color={MONITOR_COLOR.sessions}
         label={$t('desktop.sessions_monitor')}
       >
-        {#snippet icon()}<IconUsers size={16} stroke={2} />{/snippet}
+        {#snippet icon()}<IconUsers stroke={1.8} />{/snippet}
       </WidgetHeader>
 
       {#if sessionsData.status === 'loading' || sessionsData.status === 'idle'}
@@ -2515,7 +2525,7 @@
         color={MONITOR_COLOR.health}
         label={$t('desktop.health_monitor')}
       >
-        {#snippet icon()}<IconHeartbeat size={16} stroke={2} />{/snippet}
+        {#snippet icon()}<IconHeartbeat stroke={1.8} />{/snippet}
       </WidgetHeader>
 
       {#if healthData.status === 'loading' || healthData.status === 'idle'}
@@ -2571,6 +2581,7 @@
         onFocus={() => handleFocusWindow(window.id)}
         onUpdatePosition={(x, y) => handleUpdatePosition(window.id, x, y)}
         onUpdateSize={(w, h) => handleUpdateSize(window.id, w, h)}
+        onHelp={openHelp}
       >
         {#if window.componentLoader}
           <LazyLoad componentLoader={window.componentLoader} windowTitle={window.title} />
@@ -2998,7 +3009,7 @@
     padding: 0 var(--hv-space-3);
     background: var(--hv-warning);
     border: none;
-    border-radius: var(--hv-radius-sm);
+    border-radius: var(--hv-radius-control);
     color: #fff;
     font-weight: var(--hv-font-weight-semibold);
     cursor: pointer;
@@ -3070,11 +3081,14 @@
     background: radial-gradient(60% 40% at 42% 24%, rgba(255, 255, 255, 0.65), rgba(255, 255, 255, 0) 70%);
   }
 
-  /* Menu Bar — floating pill. Solid paper (`--hv-shell-glass`: opaque white,
+  /* Menu Bar — floating CAPSULE. Solid paper (`--hv-shell-glass`: opaque white,
      no blur) — a bundled wallpaper can be dark, and the solid pill keeps its
      slate-ink text legible at both extremes. Its surface material comes from
      `--hv-chrome-surface-*`, shared with the dock AND with the popovers that
-     hang off this pill, so the pill and its own panels never mismatch. */
+     hang off this pill, so the pill and its own panels never mismatch.
+     Same silhouette language as the dock: `--hv-radius-full` clamps to half
+     the --hv-chrome-topbar-h box (31px at 62px, 28px on the phone's 56px), so
+     both ends are EXACT semicircles and no corner is visible anywhere. */
   .hv-menubar {
     position: fixed;
     top: var(--hv-chrome-topbar-offset-y);
@@ -3087,9 +3101,13 @@
     box-sizing: border-box;
     height: var(--hv-chrome-topbar-h);
     /* Vertical padding is a no-op at a fixed height + align-items:center —
-       only the horizontal value actually does anything. */
-    padding: 0 var(--hv-space-2);
-    border-radius: var(--hv-radius-2xl);
+       only the horizontal value actually does anything. It is derived from the
+       two tokens so the END CONTROLS sit concentric with the capsule's own
+       arcs: (62 − 48) / 2 = 7px, i.e. the 48px circle's centre lands on the
+       31px arc's centre. A fixed padding would drift the moment either token
+       changes (the phone pair is 56 / 44). */
+    padding: 0 calc((var(--hv-chrome-topbar-h) - var(--hv-chrome-topbar-btn-size)) / 2);
+    border-radius: var(--hv-radius-full);
     background: var(--hv-shell-glass);
     border: 1px solid var(--hv-chrome-surface-border);
     box-shadow: var(--hv-chrome-surface-shadow);
@@ -3191,22 +3209,28 @@
     white-space: nowrap;
   }
 
-  /* Topbar buttons (network, widgets, notifications, power) — 44px tall, flat,
-     on the pill: no tile, no border, no shadow, just a subtle hover wash so
-     the pill reads as one surface. From 901px up each one is an icon + label
-     chip; the width/padding/gap below are the ICON-ONLY defaults, and the
-     ≥901px block further down widens them (the label is hidden below 901px).
-     Height stays 44px either way, so the shell's touch rhythm is unchanged. */
+  /* Topbar buttons (network, notifications, power) — PERFECT CIRCLES, one
+     uniform size, icon-only at every width: the same shape language as the
+     dock's circular app tiles, inside the capsule. The diameter is
+     --hv-chrome-topbar-btn-size (48px, i.e. 0.775 × the 62px pill — the dock
+     tile's own proportion; 44px on the phone). No tile, no border, no shadow —
+     just a subtle hover wash so the pill still reads as one surface. The
+     accessible name lives on `aria-label` (never on a glyph), and the CSS
+     tooltip below surfaces it on hover/focus exactly like `.hv-dock-item`.
+     `border-radius: 50%` (not a px radius) is what keeps the shape circular at
+     both sizes. */
   .hv-topbar-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 0;
     padding: 0;
-    width: 44px;
-    height: 44px;
+    /* 0.775 × the pill height — the dock tile's own proportion, so the two
+       pills carry the same icon-to-bar weight (48px desktop, 44px phone). */
+    width: var(--hv-chrome-topbar-btn-size);
+    height: var(--hv-chrome-topbar-btn-size);
     border: none;
-    border-radius: var(--hv-radius-xl);
+    border-radius: 50%;
     background: transparent;
     color: var(--hv-shell-text-strong);
     cursor: pointer;
@@ -3224,27 +3248,50 @@
     outline-offset: -2px;
   }
 
+  /* Glyph = half the control, the same ratio as the dock tile (24px in a 48px
+     circle, 22px in the phone's 44px one). The SVG `size` prop on the three
+     glyphs is therefore inert — a stylesheet beats a presentation attribute —
+     which is why the markup no longer passes one (same rule as the in-window
+     WindowHeader tile). `stroke` is NOT clamped and stays explicit. */
   .hv-topbar-btn :global(svg) {
-    width: 22px;
-    height: 22px;
+    width: calc(var(--hv-chrome-topbar-btn-size) / 2);
+    height: calc(var(--hv-chrome-topbar-btn-size) / 2);
     flex-shrink: 0;
   }
 
-  /* The chip's label. It stays in the DOM at every width — the ≤900px rule
-     further down hides it with `display:none`, the same pattern
-     `.hv-user-pill-name` uses, so there is no second markup branch and no JS
-     width check. `display:none` also keeps it out of the accessibility tree,
-     so the button's accessible name stays the `aria-label` alone instead of
-     doubling up. `nowrap` matters: „Benachrichtigungen" would otherwise wrap
-     inside the chip and push it past the 44px height. Ink matches
-     `.hv-user-pill-name` and the icon it sits beside (inherited currentColor)
-     — an icon + label control at two tones reads as a bug. */
-  .hv-topbar-btn-label {
-    font-size: var(--hv-text-sm);
+  /* Icon-only controls need a name the pointer can read, so the topbar
+     borrows the dock's tooltip verbatim: `content: attr(aria-label)` on the
+     same `--hv-tooltip-bg` label chip, same --hv-chrome-tooltip-delay (no
+     strobing while the pointer sweeps the pill), same suppression on touch.
+     It opens BELOW the control — the pill is anchored to the top edge, so
+     there is no room above it. 12px, not the dock's 8px: the button already
+     sits 9px inside the pill, so 8px would land the chip 1px *inside* the
+     capsule's bottom edge; 12px clears it by 3px, like the dock's 4px. */
+  .hv-topbar-btn::before {
+    content: attr(aria-label);
+    position: absolute;
+    top: calc(100% + var(--hv-space-3));
+    left: 50%;
+    transform: translateX(-50%) translateY(calc(var(--hv-space-1) * -1));
+    padding: var(--hv-space-0-5) var(--hv-space-2);
+    border-radius: var(--hv-radius-default);
+    background: var(--hv-tooltip-bg);
+    color: var(--hv-text-inverse);
+    font-size: var(--hv-text-xs);
     font-weight: var(--hv-font-weight-medium);
-    color: var(--hv-shell-text-strong);
-    line-height: var(--hv-line-height-tight);
     white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity var(--hv-chrome-dur-fast) ease, transform var(--hv-chrome-dur-fast) ease;
+    z-index: 10;
+  }
+
+  .hv-topbar-btn:hover::before,
+  .hv-topbar-btn:focus::before,
+  .hv-topbar-btn:active::before {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+    transition-delay: var(--hv-chrome-tooltip-delay);
   }
 
   .hv-notif-btn {
@@ -3367,7 +3414,8 @@
     width: 48px;
     height: 48px;
     border: none;
-    border-radius: var(--hv-radius-2xl);
+    /* A button, so the one control corner — not a surface corner. */
+    border-radius: var(--hv-radius-control);
     background: var(--hv-shell-fill);
     color: var(--hv-shell-text-2);
     cursor: pointer;
@@ -4504,6 +4552,9 @@
     padding: 0 24px;
     background: transparent;
     border: none;
+    /* Menu row buttons: the one control corner, so their hover wash has the
+       same silhouette as every other control. */
+    border-radius: var(--hv-radius-control);
     color: var(--hv-shell-text-strong);
     font-size: var(--hv-font-size-lg);
     font-weight: var(--hv-font-weight-medium);
@@ -4564,12 +4615,16 @@
     color: var(--hv-text-tertiary);
   }
 
-  /* Dock — solid white pill, taller than the topbar pill on purpose: it is
-     the primary target and its tiles need the room. Same
-     `--hv-chrome-surface-*` material as the topbar pill — see the topbar
-     comment above for why the surface stays opaque whatever the wallpaper.
-     Its height token is its OWN (--hv-chrome-dock-h): the two pills were
-     once locked to one height and must never be again. */
+  /* Dock — solid white CAPSULE, taller than the topbar pill on purpose: it is
+     the primary target and its tiles need the room (64px circles in an 84px
+     bar, the reference dock's own proportion). --hv-radius-full (9999px)
+     is clamped by the browser to half the --hv-chrome-dock-h box, so both
+     ends render as EXACT semicircles: a wide, compact silhouette with no
+     visible corner anywhere. Same `--hv-chrome-surface-*` material as the
+     topbar pill — see the topbar comment above for why the surface stays
+     opaque whatever the wallpaper. Its height token is its OWN
+     (--hv-chrome-dock-h): the two pills were once locked to one height and
+     must never be again. */
   .hv-dock {
     position: fixed;
     bottom: var(--hv-chrome-dock-offset);
@@ -4578,12 +4633,16 @@
     display: flex;
     align-items: center;
     gap: var(--hv-space-1);
-    padding: var(--hv-space-3);
+    /* 10px: (--hv-chrome-dock-h − --hv-dock-item-size) / 2, i.e. the tile fills
+       the bar's height with the reference dock's breathing room on both sides
+       — the same value horizontally (0.146 × the tile). */
+    padding: var(--hv-space-2-5);
     /* box-sizing so the padding lives inside the fixed height, which is what
        makes --hv-chrome-dock-keepout exact. Do not remove it. */
     box-sizing: border-box;
     height: var(--hv-chrome-dock-h);
-    border-radius: var(--hv-radius-2xl);
+    /* Capsule: 9999px clamps to height/2 → perfectly circular extremities. */
+    border-radius: var(--hv-radius-full);
     background: var(--hv-shell-glass);
     border: 1px solid var(--hv-chrome-surface-border);
     box-shadow: var(--hv-chrome-surface-shadow);
@@ -4611,7 +4670,11 @@
     padding: 0;
     background: transparent;
     border: none;
-    border-radius: 0;
+    /* The button's own box takes the one control corner even though it paints
+       nothing (the circular tile inside carries the shape, and the ripple is
+       its own `::after` at 50%): every button in the product answers with the
+       same corner, so nothing has to special-case the dock. */
+    border-radius: var(--hv-radius-control);
     cursor: pointer;
     transition: transform var(--hv-chrome-dur-fast) var(--hv-chrome-ease-spring);
     transform-origin: bottom center;
@@ -4623,11 +4686,15 @@
 
   /* Every app's dock icon uses its own dedicated gradient (tokens.css).
      The base rule is the fallback; the per-app classes below override it.
-     Radius is --hv-radius-2xl (16px) at 48px — the same ratio as the pills. */
+     Shape: PERFECT CIRCLES — `50%` on a square tile, one uniform size for
+     every app, echoing the capsule's circular ends. Size comes from
+     --hv-dock-item-size (64px = 0.775 × the 84px bar, the reference dock's
+     proportion), so the tile fills the capsule's height instead of floating
+     small inside it. */
   .hv-dock-icon {
-    width: 48px;
-    height: 48px;
-    border-radius: var(--hv-radius-2xl);
+    width: var(--hv-dock-item-size);
+    height: var(--hv-dock-item-size);
+    border-radius: 50%;
     display: grid;
     place-items: center;
     background: var(--hv-app-accent-grad);
@@ -4646,9 +4713,11 @@
     filter: brightness(1.05);
   }
 
+  /* Glyph = 0.5 × the tile (the dock's own ratio, unchanged by the 2026-10-18
+     proportions pass: 24px on the old 48px tile, 32px on the 64px one). */
   .hv-dock-icon :global(svg) {
-    width: 24px;
-    height: 24px;
+    width: 32px;
+    height: 32px;
     stroke: currentColor;
     transition:
       stroke var(--hv-chrome-dur-fast) var(--hv-chrome-ease-out),
@@ -4731,7 +4800,9 @@
   .hv-dock-item::before {
     content: attr(aria-label);
     position: absolute;
-    bottom: calc(100% + var(--hv-space-2));
+    /* 12px, not 8px: the tile now fills the bar's height (10px of padding), so
+       the label has to clear the capsule's top arc to stay readable. */
+    bottom: calc(100% + var(--hv-space-3));
     left: 50%;
     transform: translateX(-50%) translateY(var(--hv-space-1));
     padding: var(--hv-space-0-5) var(--hv-space-2);
@@ -4793,7 +4864,7 @@
     bottom: -8px;
     left: 50%;
     /* Proportional to the tile, converted to a clean 20px on the standard
-       48px dock tile via calc (20/48): the dot keeps its ratio on the
+       64px dock tile via calc (20/48): the dot keeps its ratio on the
        smaller phone tiles (≈44–46px) instead of being a fixed px (2026-09-15).
        Constant in every state — no full-width active/multi bar. */
     width: calc(100% * 20 / 48);
@@ -4938,42 +5009,11 @@
     transform: scale(var(--hv-chrome-press));
   }
 
-  /* ============================================================
-     TOPBAR CHIPS — icon + label from 901px up
-     901 is not a new breakpoint: it is already the shell's "full desktop
-     chrome" threshold (`chromeAutoHideEligible`, viewportWidth > 900, in the
-     script — the ≤900px maximized-window inset uses the same split). Below
-     it the pill cannot afford the labels. This block MUST stay after the
-     base `.hv-topbar-btn` rules and after the motion section above: the
-     `:hover` override below only wins the equal-specificity tie by coming
-     last in the source.
-     ============================================================ */
-  @media (max-width: 900px) {
-    .hv-topbar-btn-label {
-      display: none;
-    }
-  }
-
-  @media (min-width: 901px) {
-    .hv-topbar-btn {
-      width: auto;
-      padding: 0 var(--hv-space-3);
-      gap: var(--hv-space-1-5);
-    }
-
-    /* A ~137px chip at the shared `scale(1.08)` would grow ~11px and bite
-       into the 4px gap between chips — it reads as a wobble, not a lift, so
-       the chips keep the translate and drop the scale. `:active` has to be
-       restated here: this block is later in the source than rule 9b, so
-       without it a hovered + pressed chip would keep the hover transform and
-       lose its press dip. */
-    .hv-topbar-btn:hover {
-      transform: translateY(-4px);
-    }
-    .hv-topbar-btn:active {
-      transform: scale(var(--hv-chrome-press));
-    }
-  }
+  /* The topbar buttons are icon-only 44px circles at EVERY width — there is no
+     chip/label regime left to switch between, so the old ≤900px / ≥901px pair
+     is gone (2026-10-18). One consequence to keep in mind: the pill's width no
+     longer depends on the language, so the German locale can no longer widen
+     it past the viewport. */
 
   /* 10. Idle dim — dock + topbar fade back after inactivity; any click /
       key / wheel restores them (see markActivity in the script). */
@@ -5011,17 +5051,16 @@
 
   /* 12. Notification badge — its own shape, no longer rule 7's. The mockup
       pins it to the top-right corner of the Notifications BUTTON (not to the
-      22px bell inside it), at ~16px, poking just past the corner. 16px is also
-      what the geometry needs: at 901px up the button is an icon + label chip,
-      and the badge has to read as a corner marker on the chip rather than a
-      blob over its text.
+      24px bell inside it), at ~16px, poking just past the corner. 16px is also
+      what the geometry needs: the button is a 48px circle, so the badge reads
+      as a corner marker on that circle instead of a blob over its glyph.
 
-      Why `top: -3px` is enough to keep it off the label, without any horizontal
-      gymnastics: the badge spans y = button.top-3 … +13, while the label's line
-      box is vertically centred in the 44px button (≈ y = +14.5 … +29.5). The
-      badge sits wholly in the band ABOVE the label — it can widen all it wants
-      when the count reaches "99+" and still never touch a glyph.
-      Horizontally: button.right+3 is inside the pill's 6px padding (+1px
+      Why `top: -3px` is enough to keep it off the icon, without any horizontal
+      gymnastics: the badge spans y = button.top-3 … +13, while the 24px glyph
+      is centred in the 48px button (≈ y = +12 … +36). The badge sits wholly in
+      the band ABOVE the glyph — it can widen all it wants when the count
+      reaches "99+" and still never touch it.
+      Horizontally: button.right+3 is inside the capsule's 7px padding (+1px
       border), so even the badge's 2px `--hv-shell-glass` ring stays on the
       pill. Do NOT "tidy" an oversized badge with `overflow: hidden` on
       `.hv-menubar` — that would clip the ring and the pop-in.
@@ -5107,7 +5146,8 @@
      running task: name + % on top, a progress track below. Display-only.
      Floats on the DOCK's band, not the topbar's: it is anchored to the dock
      and must clear it by the dock's height + gap, whatever the pill heights
-     become. Radius is the large chrome-surface stop (--hv-radius-4xl). */
+     become. Radius is the single surface stop (--hv-radius-4xl), the same
+     corner as a window, a widget or the power dialog. */
   .hv-activity-panel {
     position: fixed;
     left: 50%;
@@ -5323,7 +5363,8 @@
     padding: 0;
   }
 
-  /* Power Options — 3 compact rounded-rectangle buttons */
+  /* Power Options — 3 compact buttons (the one control corner, like every
+     other button in the product) */
   .hv-power-options {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -5338,7 +5379,7 @@
     gap: var(--hv-space-2);
     padding: 16px 8px;
     border: 1px solid var(--hv-shell-border);
-    border-radius: var(--hv-radius-3xl);
+    border-radius: var(--hv-radius-control);
     background: var(--hv-shell-card);
     color: var(--hv-shell-text-strong);
     cursor: pointer;
@@ -5708,13 +5749,13 @@
       font-size: var(--hv-text-xs);
     }
 
-    .hv-topbar-btn :global(svg) {
-      width: 20px;
-      height: 20px;
-    }
+    /* No glyph override here: the button box is fixed, so shrinking the glyph
+       bought no width — it only broke the 0.5 ratio the topbar shares with the
+       dock tile (the row fits by dropping the username and slimming the
+       clock). */
 
-    /* The dock keeps its 48px tiles and its own height token; only the
-       gutter tightens, so the same row fits a 768px viewport. */
+    /* The dock keeps its own height token; only the gutter tightens, so the
+       same row fits a 768px viewport. */
     .hv-dock {
       padding: var(--hv-space-2-5) var(--hv-space-3);
     }
@@ -5737,9 +5778,11 @@
       filter: none;
     }
 
-    /* No hover, no tooltip — and a label pinned open by a sticky :hover
-       would sit on top of the dock for good. */
-    .hv-dock-item::before {
+    /* No hover, no tooltip — a label pinned open by a sticky :hover would
+       sit on top of the pill's own content for good. Same reason as
+       `.hv-dock-item::before`. */
+    .hv-dock-item::before,
+    .hv-topbar-btn::before {
       display: none;
     }
 
@@ -5778,11 +5821,13 @@
 
   @media (max-width: 480px) {
     /* The pill spans the full width and space-betweens its buttons so
-       nothing spills off either edge. */
+       nothing spills off either edge. The capsule radius survives (it clamps
+       to half the phone height, 28px) and the padding stays derived from the
+       height, so the end circles remain concentric with the arcs. */
     .hv-menubar {
       left: var(--hv-chrome-inset);
-      padding: 0 var(--hv-space-2-5);
-      border-radius: var(--hv-radius-2xl);
+      padding: 0 calc((var(--hv-chrome-topbar-h) - var(--hv-chrome-topbar-btn-size)) / 2);
+      border-radius: var(--hv-radius-full);
     }
 
     .hv-menubar-inner {
@@ -5805,24 +5850,19 @@
       padding: var(--hv-space-1);
     }
 
-    .hv-topbar-btn {
-      width: 44px;
-      height: 44px;
-      border-radius: var(--hv-radius-xl);
-    }
-
-    .hv-topbar-btn :global(svg) {
-      width: 22px;
-      height: 22px;
-    }
+    /* The pill's own controls are sized by --hv-chrome-topbar-btn-size, which
+       this breakpoint already sets to 44px (0.786 × the 56px pill) — no local
+       override, or the two tokens would drift apart again. */
 
     .hv-dock {
       /* Height comes from --hv-chrome-dock-h (56px on phone); the 44px icons
          are centred in it by align-items, so the vertical padding drops to
          zero — the desktop value would make the content taller than the box.
-         Radius matches the phone topbar pill so the two pills stay identical. */
+         The capsule survives: the full radius still clamps to height/2, so
+         the phone dock keeps its perfectly circular ends (the topbar pill
+         keeps its own 16px — the two no longer match on purpose). */
       padding: 0 var(--hv-space-2-5);
-      border-radius: var(--hv-radius-2xl);
+      border-radius: var(--hv-radius-full);
     }
 
     /* Decorative hairlines — drop them so the 7 real items fit the width. */
@@ -5855,7 +5895,7 @@
     .hv-dock-icon {
       width: 44px;
       height: 44px;
-      border-radius: var(--hv-radius-xl);
+      border-radius: 50%;
     }
 
     .hv-dock-icon :global(svg) {

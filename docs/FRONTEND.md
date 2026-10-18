@@ -74,8 +74,18 @@ reference is **`docs/guides/design-system.md`**; the summary:
   fill `#EFF1F4` / hairlines `#DCE1E7`; no backdrop blur anywhere in-window
   (a dark photo wallpaper must never wash out ink text). Depth comes from the
   layered shadow scale.
-- **Appliance radius stops** — controls 4–8px, cards 10–12px, large surfaces
-  16px, hero cards 20–24px. **Typeface: Inter** (self-hosted), two deliberate
+- **Appliance radius stops** — three corners, one value each: the **badge**
+  stop (**8px**: inline badges, micro chips — `--hv-radius-badge`), the
+  **control** stop (**12px**: buttons, inputs, selects, chips, rows — pinned on
+  every button of every screen by E2E `desktop.spec.ts` `14.12`) and the
+  **surface** stop (**18px**: windows, monitor widgets, modals, drawers,
+  popovers, cards). `--hv-radius-pill` (980px) is the tag corner for filter /
+  severity / category chips. The ladder was retuned 4/6/12 → 8/12/18 on
+  2026-10-19 from `design-tokens.md` §4 (see
+  `docs/guides/design-system.md` §2.2/§3.2); the 16px window, 24px chrome-panel,
+  8px and 10px control stops stay retired, and the aliases (`md`/`lg`,
+  `2xl`/`3xl`/`4xl`, `sm`) resolve to those three values, so retune each family
+  in one place. **Typeface: Inter** (self-hosted), two deliberate
   scales: `--hv-font-size-*` (content) and `--hv-text-*` (compact chrome, one
   step smaller). In markup both go through the one `app.css` `@theme inline`
   bridge — `text-*` = content, `text-c-*` = compact (UI audit W1); the
@@ -392,7 +402,9 @@ Dashboard metrics are fetched directly via `api.ts`. There is no
   the title and nothing else — page-level actions go in a `WindowToolbar` row
   under it. The props stay for the frame-provided header; E2E `14.11` fails any
   app that refills one. The tile is `--hv-winhdr-icon-size` = `--hv-winctrl-size`,
-  the same 28px as the min/max/close trio, on one shared centre line; the tile
+  the same 28px as the min/max/close trio, on one shared centre line, and it is
+  a **perfect circle** (`--hv-winhdr-icon-radius: 50%`, the dock/topbar shape
+  language — the trio stays square); the tile
   glyph is **16px, owned by `.hv-winhdr-icon :global(svg)`** — do not pass
   `size` on an icon snippet, the CSS clamp wins and the prop is dead noise,
   while `stroke` is not clamped and must stay),
@@ -410,6 +422,10 @@ Dashboard metrics are fetched directly via `api.ts`. There is no
   and `WindowSidebarSection` (uppercase micro-label, hidden when collapsed),
   `WindowToolbar`, `WindowFooter`, `WidgetHeader`, `HvLaunchpad`, monitor-tile
   components. (`Wallpaper*`, `AppHeader`, `MonitorHeader` removed.)
+  `WindowFrame` also renders the shared 36px **frame footer** under every
+  window — help far left (opens the assistant), SE resize grip far right
+  (the old invisible corner hotspot, now a labelled, keyboard-operable
+  button) — see [desktop.md](./guides/desktop.md#frame-footer--help--resize-grip-2026-10-18).
 - `settings/` — `vocabulary.ts` (the shared section/card/row/button class
   strings) + `SettingsCard.svelte` (the shell every sub-card is built on) +
   the embedded cards `AntivirusCard`, `AntiRansomwareCard`, `FirewallCard`,

@@ -6,6 +6,35 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Every app window now ends in a shared frame footer.** `WindowFrame`
+  renders one 36px chrome strip under the page: a help button on the far left
+  (opens the in-product assistant) and the window's resize grip on the far
+  right. The grip replaces the invisible 18px SE corner hotspot and uses the
+  `resize-circle-horizontal` glyph rotated 45° clockwise, so it reads as the
+  bottom-right diagonal it pulls; it is a real button (pointer drag + arrow
+  keys, 16px a press, 64px with Shift) and is omitted while the window is
+  maximized. The seven edge strips are unchanged. New i18n keys
+  `desktop.window_help` / `desktop.window_resize` in all four locales. See
+  `docs/guides/desktop.md` → *Frame footer*.
+
+- **Design tokens now follow `design-tokens.md` for everything except colour.**
+  The Apple-style spec at the repo root is adopted as the reference for the
+  non-colour craft, translated onto the `--hv-*` vocabulary in
+  `frontend/src/lib/styles/theme/tokens.css`: a layout rhythm
+  (`--hv-section-gap-*`, `--hv-component-gap-*`, `--hv-card-padding-*`,
+  `--hv-content-max-width*`), a 8/12/18 corner ladder
+  (`--hv-radius-badge` / `-default` / `-2xl`, plus `--hv-radius-pill` for
+  tags), multi-layer contact + ambient elevation (`--hv-shadow-*`), the 400–900
+  weight scale, 1.1 title / 1.53 body leading, -0.015em title tracking and the
+  734/1068/1440 layout breakpoints. `.hv-card` takes the 32px card padding and
+  the resting card shadow; `.hv-badge` takes the 8px badge corner. Its **colour
+  palette is deliberately not adopted** — one accent (`#1E62AE`) and the
+  blue-grey ink ramp stay the only colour authority — and form buttons keep the
+  control corner rather than the reference's pill (one documented deviation).
+  See `docs/guides/design-system.md` §2.2 and §3.2.
+
 ### Added
 
 - **Scheduled Tasks** (new app, migration `043_scheduled_tasks.sql`): one

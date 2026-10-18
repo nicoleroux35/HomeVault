@@ -34,28 +34,49 @@ screenshot when its chrome moves.
   A shared motion vocabulary (`--hv-chrome-*`) lives in `tokens.css`. Both the
   pill and the dock use `--hv-shell-glass` (never a bespoke low-alpha white —
   it fails contrast over a dark photo wallpaper) plus the dedicated chrome
-  border/shadow pair below. Maximizing a window above 900px hides both; below
-  900px it insets instead.
+  border/shadow pair below. **Both are capsules** (2026-10-18):
+  `border-radius: var(--hv-radius-full)`, which the browser clamps to half the
+  box height, so each end is an exact semicircle and no corner is visible
+  anywhere — see *Capsule silhouette* below. Maximizing a window above 900px
+  hides both; below 900px it insets instead.
 - **Each pill owns its height.** `--hv-chrome-topbar-h` (62px) and
   `--hv-chrome-dock-h` (84px) are separate tokens, and the dock is
-  deliberately the taller one — it is the primary target and its 48px tiles
+  deliberately the taller one — it is the primary target and its 64px tiles
   need the room. `.hv-menubar` and `.hv-dock` are both
   `box-sizing: border-box`, so each token is the *rendered* height, which is
   what makes `--hv-chrome-topbar-keepout` / `--hv-chrome-dock-keepout` exact.
   Never point one pill at the other's token again: the heights were once
   locked together, which is what made a taller dock impossible. The dock's
-  84px is the mockup's own authored height and does **not** decompose as
-  `12 + 48 + 12` — the approved dock item is a column whose label line is reserved
-  even though it only paints on hover. HomeVault ships no dock labels, so 72px
-  would have been honest; 84px was kept because the mockup is the reference and
-  the surplus reads as breathing room. The rationale lives on the token.
+  84px is the mockup's own authored height. Since the 2026-10-18 proportions
+  pass it decomposes **exactly** as `10 + 64 + 10` — the tile is
+  `--hv-dock-item-size` (64px, i.e. 0.775 × the bar, the ratio measured on the
+  approved reference dock) and the padding is `(84 − 64) / 2` = 10px, the same
+  value used horizontally (0.146 × the tile). DSM's own dock item was a column
+  whose label line was reserved even though it only painted on hover;
+  HomeVault ships no dock labels, so that surplus now goes into the tiles
+  instead of dead space around them. The rationale lives on the tokens.
+- **Capsule silhouette (2026-10-18).** Both chrome surfaces are stadiums:
+  `.hv-menubar` and `.hv-dock` take `border-radius: var(--hv-radius-full)`, and
+  the browser clamps a 9999px radius to **half the box height** — 31px on the
+  62px pill, 42px on the 84px dock, 28px on the phone's 56px pills. That clamp
+  is the whole trick: both ends are exact semicircles at every breakpoint, with
+  no corner anywhere, and no new token to keep in sync. The topbar's horizontal
+  padding is derived from its own height
+  (`calc((var(--hv-chrome-topbar-h) - var(--hv-touch-target-min)) / 2)` = 9px)
+  so the end controls sit **concentric** with the pill's arcs instead of drifting
+  the moment the height token changes — the dock does the same with its 64px
+  circular tiles (10px of padding against a 64px tile inside an 84px bar, so
+  the arcs hug the tiles). E2E `8.5` asserts
+  `computed radius >= height / 2` on both pills at 400/768/1440px.
 - **Dock tile pitch — `--hv-chrome-dock-gap` (10px).** `.hv-dock-container`'s
   `gap` (not `.hv-dock`'s) is what spaces the tiles, because the dividers are
   flex children of that same row. A hovered tile runs
   `.hv-dock-item:hover { translateY(-10px) scale(1.18) }`, i.e.
-  48 × 0.18 / 2 ≈ **4.3px on each side** — so at the old 4px gap two
+  64 × 0.18 / 2 ≈ **5.8px on each side** — so at the old 4px gap two
   neighbours visibly overlapped mid-hover and appeared to touch. 10px keeps
-  ~6px of real clearance at the hover peak. The ≤480px block keeps a 6px gap:
+  ~4.2px of real clearance at the hover peak, and it is also the reference
+  dock's own pitch ratio (0.152 × the tile), which is why it was not raised
+  with the tiles. The ≤480px block keeps a 6px gap:
   the lift is flattened there (no `:hover` on touch), so tight spacing is
   safe. E2E `14.10` hovers a middle tile, measures the settled clearance to
   both neighbours and requires it to clear the growth the animation actually
@@ -77,49 +98,62 @@ screenshot when its chrome moves.
   `<img>` to `width/height:100%` + `object-fit:cover` — the `<UserAvatar>`
   renders at `size=62` while the wrapper is `--hv-chrome-avatar-size` (32px),
   so without the override the face is centre-cropped. The 32px avatar is
-  smaller than the 44px it replaced on purpose: at pill height the username
-  carries the identity and the picture is only a marker.
-- **Topbar buttons are icon + label chips (adopted 2026-09-14).** The mockup's
-  icon + label layout was declined once, on three grounds that no longer hold:
-  it was said to need four new i18n keys per locale (false — every label reuses
-  an existing key: `app_network_name`, `notifications`, and the previously
-  orphaned `desktop.power`), and to break the 44px touch rhythm
-  (false — the mockup itself specifies `height: 44px`, so only the *width*
-  grows). The third — that it widens the pill — is real and is what the
-  breakpoint handles. (The topbar **Widgets** button was removed 2026-09-15 —
-  adding/removing desktop widgets lives in Settings > Widgets, so the pill is
-  Network / Notifications / Power.)
-  - From **901px** up each button is `width: auto`, `padding: 0 var(--hv-space-3)`,
-    `gap: var(--hv-space-1-5)` — icon then label. Below 901px
-    `.hv-topbar-btn-label` is `display: none`, so the button collapses back to
-    its 44×44 icon-only default. The label stays in the DOM at every width (the
-    `.hv-user-pill-name` pattern): one markup branch, no JS width check, and
-    `display:none` also keeps it out of the accessibility tree so the button's
-    accessible name stays the `aria-label` alone.
-  - **901 is not a new breakpoint** — it is the shell's existing "full desktop
-    chrome" threshold (`chromeAutoHideEligible`, `viewportWidth > 900`, in
-    `Desktop.svelte`; the ≤900px maximized-window inset uses the same split).
-  - The two responsive blocks sit **after** the motion section, not next to the
-    base rule, and the ≥901 block re-asserts `:hover`/`:active`: the shared
-    `translateY(-4px) scale(1.08)` lift would grow a ~137px chip ~11px and bite
-    into the 4px inter-chip gap, so the chips drop the scale; and because the
-    block is later in source than the motion rule, a hovered + pressed chip
-    would otherwise lose its press dip to the equal-specificity tie.
-  - Icons stay 22px, radius `--hv-radius-xl`. **No token, no height and no
-    keep-out changed** — the pill's 62px is still driven by the 48px user chip
-    (`8 + 32 + 8`), so the delta is purely horizontal. E2E `14.1`/`8.3` pin that
-    and must stay green untouched.
+  smaller than the control circles it sits beside on purpose: at pill height
+  the username carries the identity and the picture is only a marker — and
+  with `padding: 8px` the user pill still totals **48px**, i.e. exactly one
+  control row of the pill (`8 + 32 + 8`).
+- **Topbar buttons are icon-only CIRCLES (2026-10-18).** This is the third
+  shape they have worn: 44×44 squares, then icon + label chips from 901px up
+  (2026-09-14), and now circles at every width — the same shape language as
+  the dock's circular app tiles, inside the new capsule pill. Their diameter
+  is `--hv-chrome-topbar-btn-size` (**48px**, 0.775 × the 62px pill — the dock
+  tile's own ratio; 44px on the phone's 56px pill), and both the pill's
+  horizontal padding and the glyph size are derived from it
+  (`(h − btn) / 2` = 7px, glyph = btn / 2 = 24px), so the control row stays
+  concentric with the capsule's arcs and the glyph keeps the dock's
+  half-the-tile ratio. The
+  visible label is **gone**; the name is carried by `aria-label` and surfaced on
+  hover/focus by the shared `.hv-topbar-btn::before` tooltip, which is the
+  dock's pattern verbatim (`content: attr(aria-label)`, `--hv-tooltip-bg`,
+  `--hv-chrome-tooltip-delay`, suppressed under `@media (hover: none)`, and
+  opening *below* the control because the pill hugs the top edge).
+  - `border-radius: 50%`, not a px radius: the same button renders at 44px
+    inside the phone's 56px pill, and only a percentage keeps it circular.
+  - The glyph is `calc(--hv-chrome-topbar-btn-size / 2)`, which makes the SVG
+    `size` prop on those three icons inert (a stylesheet beats a presentation
+    attribute) — the markup therefore passes none, exactly like the in-window
+    `WindowHeader` tile. `stroke` is not clamped and stays explicit.
+  - **No `title` on these buttons.** With the CSS tooltip in place a native
+    tooltip would stack a second, slower one on top of it; the dock made the
+    same call. E2E `15.5` asserts its absence and that the tooltip's
+    `content` equals the `aria-label`.
+  - Both responsive regimes are gone: there is no `width: auto` / `padding` /
+    `gap` / `display: none` switch left, so the pill's width no longer depends
+    on the language. `--hv-chrome-topbar-h` stays **62px** and the keep-out is
+    untouched (`14.1`/`8.3` stay green) — only the horizontal content shrank.
+  - The `desktop.power` key (reused by the old label) is orphaned again and was
+    removed from the four locale files in the same change.
+  - **Capsule pill.** `.hv-menubar` takes `--hv-radius-full`, which the browser
+    clamps to half the box height (31px at 62px, 28px on the phone) — both ends
+    are exact semicircles. Its horizontal padding is derived from the two
+    tokens, `calc((var(--hv-chrome-topbar-h) - var(--hv-chrome-topbar-btn-size)) / 2)`
+    = 7px (6px on the phone), so the end controls sit **concentric** with the
+    pill's own arcs instead of drifting when either token changes. The dock's capsule (2026-10-18) and
+    this one are the same silhouette; E2E `8.5` now requires
+    `radius >= height / 2` on **both** pills.
 - **The notification badge is anchored to the button, not to the bell.** It
   measures `16px` on `top: -3px; right: -3px` — the mockup's own value, and what
-  a chip can carry (the 26px `.hv-dock-badge` shape belongs to a 48px dock
-  tile). Its invariant is vertical: the badge spans `y = button.top-3 … +13`
-  while the label's line box is centred in the 44px button (≈ `+14.5 … +29.5`),
-  so the badge lives in the band **above** the label and a `99+` count widens
-  into empty space instead of covering a glyph. Horizontally `button.right + 3`
+  a 44px circle can carry (the 26px `.hv-dock-badge` shape belongs to a 64px
+  dock tile — deliberately left at 26px by the proportions pass, so the badge
+  reads as a corner marker on the bigger tile instead of growing with it). Its invariant is now quadrant-based: the badge stays wholly inside
+  the button's **top-right quadrant**, so it can never drift onto the bell's
+  centre. (With the label chips the invariant was "above the label's line
+  box"; a 26px glyph centred in a 44px circle leaves no such band — their boxes
+  overlap by 4px, exactly as in the mockup.) Horizontally `button.right + 3`
   keeps even the badge's 2px `--hv-shell-glass` ring on the pill. Never "tidy"
   an oversized badge with `overflow: hidden` on `.hv-menubar` — that clips the
   ring and the pop-in. Two badges, two rules: `.hv-dock-badge` and
-  `.hv-notification-badge` are deliberately **not** shared any more.
+  `.hv-notification-badge` are deliberately **not** shared.
 - Topbar popovers (network `.hv-net-dropdown`, account `.hv-user-dropdown` in
   `Desktop.svelte`; `.notifications-panel` in `NotificationCenter.svelte`) are
   fully standardized by the shared `.hv-topbar-panel` class
@@ -130,14 +164,30 @@ screenshot when its chrome moves.
   and the 160ms `hvTopbarPanelAppear` scale-in. A panel's own rule only
   carries body content (e.g. `.notifications-panel` keeps just `max-height` +
   flex column). Don't re-add per-panel background/border/radius/animation.
-- Dock tiles are 48px with a `--hv-radius-2xl` (16px) radius, one
-  `--hv-app-<id>-grad` gradient per app (see
+- **The dock is a capsule** (2026-10-18 redesign): `.hv-dock` uses
+  `--hv-radius-full`, which the browser clamps to half the
+  `--hv-chrome-dock-h` box (42px at 84px, 28px at the phone's 56px) — both
+  ends are **exact semicircles**, so the silhouette is a wide, compact
+  stadium with **no visible corner anywhere**. The topbar pill deliberately
+  keeps its own `--hv-radius-2xl` (**18px**, the surface stop — the capsule's
+  `--hv-radius-full` is a shape, not a corner value): the two chrome siblings
+  no longer share a radius, and re-locking the old equality (E2E 8.5
+  pre-2026-10-18) would flatten the capsule back into a rounded rectangle.
+- Dock tiles are 64px **perfect circles** (`border-radius: 50%` on the square
+  tile — a px radius would silently square it back on resize), one uniform
+  size for every app (44px on the phone), echoing the capsule's circular
+  ends. The diameter is `--hv-dock-item-size`, set from the approved reference
+  dock's own proportions (its tiles are 158px in a 204px bar → **0.775 × the
+  bar height**), and the glyph inside is 0.5 × the tile (32px). Padding and
+  pitch follow the same measurements: 10px of padding (0.146 × tile) and a
+  10px gap (0.152 × tile). one `--hv-app-<id>-grad` gradient per app (see
   [design-system.md](./design-system.md) §6); the Launchpad launcher is not an
   app and keeps its own pale `--hv-app-launchpad-grad` with dark ink. Hover
   lifts the tile (`translateY(-10px) scale(1.18)` on the
   `--hv-chrome-ease-spring` curve) and adds `brightness(1.05)`; the tooltip is
   `.hv-dock-item::before` (reading `aria-label`, on `--hv-tooltip-bg`) and the
-  click ripple is `::after` — both pseudo-elements are taken, so a third
+  click ripple is `::after` (already a `50%` circle) — both pseudo-elements
+  are taken, so a third
   effect needs a real element. The tooltip is suppressed under
   `@media (hover: none)`, where a sticky `:hover` would pin a label open for
   good. The dock/topbar divider and the dividers inside `.hv-topbar-panel` all
@@ -294,13 +344,14 @@ selectors.
 ## In-window anatomy (AppWindow mock, 2026-09-14)
 
 Every app window is the same skeleton — `WindowFrame.svelte` (frame, drag,
-resize, the min/max/close trio) + `WindowHeader.svelte` (one header per
+resize, the min/max/close trio, and the **frame footer**: in-product help far
+left, resize grip far right — see *Frame footer* below) + `WindowHeader.svelte` (one header per
 window: app-gradient icon tile + title, and — since 2026-09-17 — **nothing
 else in the bar**; the tab row lives in the wrap above it) + optional
 `WindowToolbar.svelte` (44px action row under the header, where every
 page-level action now lives), `WindowSidebar.svelte` (256px left rail, 44px
 nav rows) and `WindowFooter.svelte` (`actions` 56px button bar or `status`
-32px strip).
+32px strip, **inside** the page — the frame footer below it is chrome).
 
 ### The window itself — Figma "Sans titre" node `3:76`
 
@@ -310,8 +361,12 @@ export; E2E `14.5`–`14.8` pin them.
 
 - **Frame:** fill `--hv-window-bg` (`#FFFFFF`, **opaque** — a dark wallpaper
   must not show through), a 1px `--hv-window-border` (`#CBD5E1`, slate-300)
-  hairline, `--hv-window-radius` (16px), and the mock's own two-layer shadow
-  `--hv-window-shadow` (`0 4px 16px rgba(0,0,0,.06), 0 1px 3px rgba(0,0,0,.08)`).
+  hairline, `--hv-window-radius` (**18px** — the product's single surface
+  corner, shared with the monitor widgets, modals, drawers and popovers; the
+  mock's taller 16px stop was retired on 2026-10-18 and the stop moved 12 → 18px
+  with `design-tokens.md` §4 on 2026-10-19, so a window and a widget read as the
+  same material), and the app's two-layer elevation
+  `--hv-window-shadow` (an alias of `--hv-shadow-lg`: contact + ambient).
   Note the hairline is **deliberately darker than `--hv-shell-border`**: the
   frame reads as a distinct object over the wallpaper where a card hairline
   would dissolve. Maximized windows are square (edge-to-edge); tablet-inset
@@ -334,7 +389,10 @@ export; E2E `14.5`–`14.8` pin them.
   `14.6` failed the first time it ran.
 - **Icon tile:** `--hv-winhdr-icon-size` (**= `var(--hv-winctrl-size)`, 28px**
   — see the standardization section below; it was 24px before 2026-09-14),
-  `--hv-winhdr-icon-radius` **8px**, the app's own `--hv-app-<id>-grad` (never
+  `--hv-winhdr-icon-radius` **`50%` — a perfect circle** (2026-10-18, the dock
+  tiles' / topbar buttons' shape language; it was an 8px rounded square before,
+  and `50%` rather than a px stop is what keeps it round if the size moves), the
+  app's own `--hv-app-<id>-grad` (never
   flat — see the one-colour-per-app rule in `CLAUDE.md`), white glyph
   **clamped to 16px by CSS**. The glyph size is *not* a prop: a route's icon
   snippet must not pass `size=`, because
@@ -346,14 +404,17 @@ export; E2E `14.5`–`14.8` pin them.
   This is `--hv-text-md`, the compact chrome step — the bar is only 44px, so
   the old 16px `--hv-font-size-*` content step no longer fits it.
 - **Control trio (min / max / close):** `--hv-winctrl-size` **28px**,
-  `--hv-winctrl-radius` **8px**, `--hv-winctrl-gap` **6px**, flat fills
+  `--hv-winctrl-radius` **`50%` — a perfect circle** (2026-10-18, the dock
+  tiles' / topbar buttons' shape language; it was an 8px rounded square
+  before), `--hv-winctrl-gap` **6px**, flat fills
   `--hv-winctrl-min` `#FFB900` / `--hv-winctrl-max` `#2B7FFF` /
   `--hv-winctrl-close` `#FF6467` (each with a `-hover` step) and the mock's
   own 14×14 white glyphs, at `stroke-width: 1.458` (the SVG's own value — it
   is what makes the glyphs read the mock's weight at 14px). **These are the
   mock's literal stops, not the semantic tokens**: `#FFB900` and `#FF6467`
   are brighter than `--hv-warning`/`--hv-error` by design, so do not
-  "harmonise" them back.
+  "harmonise" them back. The trio is the only round *control* in the window
+  chrome; a labelled button still takes `--hv-radius-control` (12px).
 
 ### Where the trio lives — and the reserve that protects the title
 
@@ -380,6 +441,41 @@ the 6px gap allows before neighbouring targets overlap). Don't grow the visual
 to 44px "for the target": that is the mock's geometry, and the hit pad is the
 compromise.
 
+### Frame footer — help + resize grip (2026-10-18)
+
+`WindowFrame.svelte` closes every window with one shared 36px chrome strip
+(`.hv-winframe-footer`, `--hv-shell-fill` on a `--hv-shell-border-soft`
+hairline, `4px 12px` padding). It is **frame chrome, not page anatomy**: an
+app's own `WindowFooter` (actions/status) still sits inside its page body,
+above it, and no app renders this strip itself.
+
+- **Far left — help** (`data-testid="win-help"`): a 28px icon button with the
+  shared `.hv-ic` 44px hit pad, `--hv-radius-control`, the standard
+  `--hv-focus-ring`, and an `aria-label` from `desktop.window_help`. It opens
+  the in-product assistant (`Chat`), HomeVault's help channel — its RAG index
+  covers the docs, the app catalogue and the system settings. Wired by
+  `Desktop.svelte`'s `openHelp()` through the frame's `onHelp` prop, so the
+  frame itself stays free of the app catalogue.
+- **Far right — resize grip** (`data-testid="win-resize-grip"`): the SE
+  resize corner made visible. It replaces the old invisible 18px
+  `.hv-resize-se-corner` hotspot (removed) and keeps the seven edge/corner
+  strips, so every edge stays resizable. The glyph is the
+  `resize-circle-horizontal` asset (a circle with two horizontal arrows)
+  **rotated 45° clockwise** (`.hv-winframe-grip svg { transform: rotate(45deg) }`)
+  so its arrows read as the bottom-right diagonal the grip actually pulls.
+  Pointer: `onpointerdown` starts the same `handleResizeStart(e, 'se')` drag as
+  the strips (`touch-action: none` keeps touch/pen from scrolling instead).
+  Keyboard: a real `<button>`, so `←/→/↑/↓` resize by 16px (64px with Shift),
+  clamped to `MIN_WIDTH`/`MIN_HEIGHT` and to the room left in the viewport;
+  both paths mark the window `userResized` like any deliberate resize.
+  On a maximized window the grip is not rendered — nothing to resize — while
+  help stays reachable.
+
+Both icons are inline SVG on `currentColor` (`--hv-shell-text-2`, 4.82:1 on
+`--hv-shell-fill`), so they follow the theme and stay ≥3:1 as non-text
+controls. E2E does not pin this strip; the frame's own E2E contract (`14.5`–
+`14.11`) is unchanged.
+
 ### One header per window — `OWN_HEADER_APPS`
 
 Every app renders its own `<WindowHeader>` (directly or through
@@ -400,8 +496,11 @@ else. One control row, everything on one shared vertical centre line:
 - `WindowHeader`'s `subtitle` prop was **removed** (along with `PageLayout`'s),
   and every route that passed one dropped it. The title is the bar's only text.
 - The icon tile is `--hv-winhdr-icon-size`, defined as `var(--hv-winctrl-size)`
-  — deliberately the **same 28px** as each of the trio's squares, so the app
-  glyph and the window controls read as one control row.
+  — deliberately the **same 28px** as each of the trio's buttons, so the app
+  glyph and the window controls read as one control row — and it is a
+  **perfect circle** (`--hv-winhdr-icon-radius: 50%`, 2026-10-18: same shape as
+  the dock tiles and topbar buttons). The trio follows the same circle rule
+  (`--hv-winctrl-radius: 50%`), so the whole window chrome speaks one shape.
 - The tile's glyph is **clamped to 16px by `.hv-winhdr-icon :global(svg)`**,
   which is the single owner of that size. The `size={26}` every route's icon
   snippet used to pass was therefore inert, and passing it *at all* was a
@@ -478,20 +577,28 @@ anatomy, enforced by the trailing `FLOATING WIDGET PANELS` override block in
 `Desktop.svelte` (one rule for all 11 — never style a panel's surface
 individually):
 
-- Surface: white card, 1px hairline, **12px** floating-card corner
+- Surface: white card, 1px hairline, **18px** floating-card corner
   (`--hv-radius-card`, the same stop as in-window cards — not a control
   radius), layered shadow. Widths use the shared `--hv-monitor-w-compact`
   (280px) / `--hv-monitor-w` (300px) / `--hv-monitor-w-wide` (320px) token
   set. `WidgetHeader.svelte` owns the 44px drag bar (`--hv-widget-header-h`,
   matching the in-window app header): a 28px accent icon tile
-  (`--hv-winhdr-icon-size`) + a 14px semibold title — **no close/action
+  (`--hv-winhdr-icon-size`, a **perfect circle** — `--hv-winhdr-icon-radius:
+  50%`, same as the app header) + a 14px semibold title — **no close/action
   button** (2026-09-15: monitor visibility is managed from Settings > Widgets,
-  so the bar is icon + title only).
+  so the bar is icon + title only). The tile follows the in-window header's
+  contract to the letter: white glyph **clamped to 16px by
+  `.hv-widget-tile :global(svg)`** (so a monitor's icon snippet passes no
+  `size` — the prop would be inert, and the 11 snippets lost theirs on
+  2026-10-18) with `stroke` explicit at **1.8**, the app-header weight. The
+  tile is a **flat** accent (`MONITOR_COLOR`) where an app's is a gradient:
+  a monitor is not an app and has no `--hv-app-<id>-grad`.
 - The maximized-window inset above the dock derives from
   `--hv-chrome-dock-keepout`, which is `--hv-chrome-dock-offset` +
   `--hv-chrome-dock-h` (the dock's own height; it used to borrow the topbar's)
-  — never hardcode the dock height again (a stale 56px `--hv-dock-item-size`
-  once left a 6px overlap on tablet).
+  — never hardcode the dock height again (a stale `--hv-dock-item-size`
+  once left a 6px overlap on tablet; the token now means the tile diameter,
+  not the bar height — derive the bar from `--hv-chrome-dock-h` alone).
 - Body rhythm: 16px panel padding, 12px section gaps, 8px row gaps
   (`--hv-space-4/3/2`); data numerals tabular; empty states in secondary
   ink (never tertiary grey as sole content).
@@ -515,7 +622,7 @@ individually):
   washes out ink text), layered shadows, 1px hairlines. Floating chrome radii
   are appliance-tight (pills full, 44px+ controls 16, compact 8–12, window
   controls are the AppWindow mock's traffic lights — `--hv-winctrl-*`, 28px
-  at an 8px radius —
+  perfect circles (`50%`, like the dock tiles and topbar buttons) —
   and the topbar buttons are flat chips on the pill, no tile,
   tooltips 4). Full palette + the governance rules live in
   `docs/guides/design-system.md`; the per-token values are in `tokens.css`
@@ -529,8 +636,9 @@ individually):
   touch screens. Both blocks must stay **before** the trailing
   `PHONE CHROME OVERRIDES` block (equal-specificity source-order ties).
 - **Touch targets & chrome labels (2026-09-11):** every desktop-chrome
-  control is a ≥ 44px touch target — 44px topbar buttons (the 62px is the
-  *pill's* height, not the target's), 48px dock icons, 44px widget
+  control is a ≥ 44px touch target — 48px topbar buttons (the 62px is the
+  *pill's* height, not the target's; the phone drops them to the 44px floor),
+  64px dock icons, 44px widget
   close/action buttons on the 48px
   `WidgetHeader` bar, 44px launchpad sidebar rows (phone chips included).
   Documented exceptions: the calendar widget's nav row uses compact **36px**
@@ -541,30 +649,31 @@ individually):
   34px being the widest a target can be at the mock's 6px gap without
   overlapping its neighbour. Both are compromises on the rule, not its
   removal — don't "fix" either by resizing the visual.
-- **Chrome labelling (2026-09-11):** every chrome button carries both
-  `aria-label` and `title` from the same translated key, so hover tooltips,
-  screen readers, and the dock's CSS tooltip (`::before` reads `aria-label`)
-  always agree. Dock buttons use the translated app names
-  (`desktop.app_<id>_name` — the Health entry reads "Santé", never the old
-  hardcoded "Security"); topbar buttons use `app_network_name`,
-  `notifications` (`desktop.notifications`); window
-  controls use `window_minimize` / `window_maximize` / `window_restore` +
-  `common.close`. The notifications toggle is a single `<button>` (a
-  `div[role=button]` wrapping a `<button>` double-announced and swallowed
-  Space).
-  - Since the icon + label chips landed (2026-09-14) the topbar buttons have a
-    **visible** label too, so the accessible name must satisfy WCAG 2.5.3
-    "Label in Name" — it has to contain the label. Network / Notifications
-    use the same key for both. Power is the one deliberate pair:
-    the visible label is the short `desktop.power` ("Alimentation", "Energie"),
-    while `aria-label`/`title` keep the longer `power_options` ("Options
-    d'alimentation", "Energieoptionen") — each of the four locales' longer
-    string contains its shorter one. E2E `15.5` enforces the containment.
+- **Chrome labelling (2026-09-11, revised 2026-10-18):** every chrome button
+  carries an `aria-label` from a translated key, so screen readers and the CSS
+  tooltips (`::before` reads `aria-label`) always agree. Dock buttons use the
+  translated app names (`desktop.app_<id>_name` — the Health entry reads
+  "Santé", never the old hardcoded "Security"); topbar buttons use
+  `app_network_name`, `notifications` (`desktop.notifications`) and
+  `power_options`; window controls use `window_minimize` / `window_maximize` /
+  `window_restore` + `common.close`. The notifications toggle is a single
+  `<button>` (a `div[role=button]` wrapping a `<button>` double-announced and
+  swallowed Space).
+  - The topbar buttons are **icon-only since 2026-10-18** (circles, 48px
+    desktop / 44px phone), so
+    there is no visible label left and no WCAG 2.5.3 pair to keep in sync: the
+    short `desktop.power` key went back to being orphaned and was removed from
+    the four locales. `aria-label` is the whole name.
+  - **`title` is deliberately absent on the topbar buttons.** The dock never had
+    one (its CSS tooltip carries the name), and now that the topbar has the
+    same tooltip a native one would only stack a second, slower copy on top.
+    E2E `15.5` asserts `title` is `null` and that the tooltip's `content` equals
+    the `aria-label`.
   - E2E suites must NOT match on these translated labels to *locate* an
     element. The hooks are `data-testid="dock-<appId>"`,
-    `"win-minimize|maximize|close"`, and — since the chips made both the text
-    and the old "power is the last `.hv-topbar-btn`" trick unusable —
-    `"topbar-network|notifications|power"` (see
+    `"win-minimize|maximize|close"`, and — since the topbar controls are
+    icon-only (no text, and the old "power is the last `.hv-topbar-btn`" trick
+    was never safe) — `"topbar-network|notifications|power"` (see
     `tests/e2e/desktop/desktop.spec.ts::dockApp` / `topbarBtn`).
 
 ## Activity taskbar
