@@ -20,7 +20,7 @@ Handlers in `src/handlers/auth.rs`; service in `src/auth/service.rs`; types in
 | `POST /auth/verify-recovery-code` | public | `{ username, code }` → opens the new-password step |
 | `POST /auth/reset-password-recovery` | public | `{ username, code, new_password }` — the code is **not** consumed |
 | `GET /auth/setup-status` | public | `is_first_run` (derived from the admin row in `users`), `is_setup_valid`, `hardware_changed`, `needs_recovery`, `server_machine_id`, `sudo_available`, `system_language`. Never cached by the SPA. |
-| `GET /auth/check-username` | public (local network only) | availability check |
+| `GET /auth/check-username` | public (local network only, first-run only) | availability check — 403 once an admin exists: post-setup it would be a free username oracle (HomeVault + host accounts enumeration) |
 | `POST /auth/setup` | public (local network only) | create first admin (Setup Wizard); accepts optional `totp_secret` + `totp_code`, returns extra `totp_enabled` + `backup_codes`. Refused once an admin exists (DB check, not a marker file). |
 | `POST /auth/setup/verify-totp` | public (local network only, first-run only) | stateless pre-creation TOTP check: `{ secret, code }` → `{ valid }` (403 once an admin exists) |
 | `POST /auth/setup/rebaseline` | admin | re-baselines the recorded hardware fingerprint after a confirmed hardware change (recovery flow); writes `setup_state` + logs an event. |
@@ -161,6 +161,26 @@ the form rather than dropping it on `<body>`.
   leaves the account usable without 2FA, surfaced via `totp_enabled: false`)
   and returns the one-time backup codes in the setup response. The one-time
   backup codes are shown on a short summary screen after the recovery code.
+- **TOTP secrets are encrypted at rest (2026-10-18).** The
+  `user_2fa.totp_secret_encrypted` column stores an `hv1:`-prefixed
+  AES-256-GCM blob — the plaintext base32 exists only in memory. The key is
+  32 random bytes in `{DATA_DIRECTORY}/data/2fa.key` (mode 0600),
+  deliberately **outside the database**: a leaked `homevault.db` alone — a
+  `VACUUM INTO` snapshot, a SQLite browser — carries no secrets. The username
+  is the GCM associated data, so a blob pasted over another user's row fails
+  instead of verifying the wrong codes. Rows written before 2026-10-18 hold
+  the raw base32 and are re-encrypted in place on first read (transparent
+  upgrade). Losing the key file makes stored secrets undecryptable — back it
+  up with the data directory; backup codes keep working (they never touch
+  the key), and a fresh enrollment after `disable` also writes a new secret
+  under the existing key.
+- **Login verification accepts a −1..=1 time-step window (2026-10-18)** —
+  RFC 6238's recommended tolerance, matching the setup-path check
+  (`verify_totp_code_with_secret`). Before, the login check only looked
+  forward (0..=1), so a code displayed by the authenticator in the last
+  seconds of a period was rejected the moment the window rolled; a slow
+  typist could hit the race with every login. The extra past window adds
+  one accepted code out of a million.
 - Existing self-service enrolment in "My Account" is unchanged
   (`POST /auth/2fa/setup` with `action: generate`/`verify`).
 

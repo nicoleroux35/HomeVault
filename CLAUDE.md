@@ -570,6 +570,34 @@ and re-capture a reference screenshot.
   (forgeable). `/auth/setup-status` and the admin-authenticated
   `/auth/setup/rebaseline` are exempt. `HOMEVAULT_SETUP_ALLOW_REMOTE=1` is the
   documented opt-out.
+- **Bootstrap endpoints are first-run-only at the handler level (2026-10-18).**
+  `/auth/check-username` joins `verify-totp` and `progress` in answering 403
+  once `has_admin()` — post-setup it was a free username oracle (HomeVault +
+  host account enumeration) even behind the LAN guard. Do not reintroduce a
+  post-setup availability probe without auth; the wizard is the only consumer.
+- **The 20/min bootstrap budget meters only the guessable routes (2026-10-18).**
+  `middleware::setup_guard::counts_against_setup_budget` exempts
+  `/auth/setup/progress` (the wizard's per-navigation bookkeeping) while
+  `setup`, `verify-totp` and `check-username` stay metered. Metering progress
+  made the wizard exhaust the budget and starve its own `check-username` calls.
+  The wizard's `checkUsernameAvailability()` must also keep its
+  `success && data` check: anything less definite (429/5xx/network) fails open,
+  because `/auth/setup` revalidates the name — treating it as "taken" wedged
+  the account step permanently.
+- **TOTP secrets are AES-256-GCM-encrypted at rest (2026-10-18).**
+  `user_2fa.totp_secret_encrypted` stores an `hv1:` blob (username as GCM AAD);
+  the key lives in `{DATA_DIRECTORY}/data/2fa.key` (0600), outside the DB so a
+  leaked database snapshot carries no secrets. `User2fa.totp_secret` is the
+  in-memory plaintext — never write it back to the column directly; go through
+  `User2faRepository::save`/`save_pending`. Pre-encryption rows (raw base32,
+  no prefix) are read transparently and re-encrypted in place.
+- **TOTP login verification accepts a −1..=1 window (2026-10-18).**
+  `verify_totp_code` used to look forward only (0..=1), rejecting a code
+  displayed in the last seconds of a period the moment the window rolled;
+  it now matches RFC 6238's ±1 tolerance, same as the setup-path
+  `verify_totp_code_with_secret`. Do not narrow it back "for security" — the
+  extra window is one code in a million, and the E2E suite's TOTP helpers
+  rely on edge-of-window codes verifying.
 
 ## Users / Groups / Accounts · `docs/guides/users.md`, `groups.md`, `account.md`
 

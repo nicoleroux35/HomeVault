@@ -147,9 +147,26 @@ fn is_same_origin(headers: &HeaderMap) -> bool {
 /// below what a brute-force or a flood needs. The limiter lives in a `OnceLock`
 /// rather than `AppState` so the guard stays a self-contained route layer (and
 /// the many `AppState` fixtures in the test suites need no change).
+///
+/// `/auth/setup/progress` is deliberately **exempt** (see
+/// [`setup_guard_middleware`]): it is wizard bookkeeping fired on every step
+/// navigation, not a security-sensitive endpoint. Counting it made the wizard
+/// exhaust its own budget — a few step round-trips and the next
+/// `check-username` came back 429, which the UI then read as "username already
+/// taken" and refused to leave the account step. The budget is for guessing
+/// (`setup`, `verify-totp`) and enumeration (`check-username`).
 fn setup_rate_limiter() -> &'static Arc<RateLimitState> {
     static LIMITER: std::sync::OnceLock<Arc<RateLimitState>> = std::sync::OnceLock::new();
     LIMITER.get_or_init(|| Arc::new(RateLimitState::new(20, 60)))
+}
+
+/// Whether a bootstrap request counts against [`setup_rate_limiter`].
+///
+/// Only the three endpoints a guess or an enumeration can target are metered;
+/// `GET/PUT /auth/setup/progress` stores the wizard's own step counter and is
+/// reachable only from the same guarded, local, same-origin context anyway.
+fn counts_against_setup_budget(path: &str) -> bool {
+    !path.trim_end_matches('/').ends_with("/auth/setup/progress")
 }
 
 /// Middleware enforcing [`is_local_peer`] + [`is_same_origin`] + the per-peer
@@ -171,7 +188,9 @@ pub async fn setup_guard_middleware(request: axum::extract::Request, next: Next)
         Some(ConnectInfo(addr)) => addr.ip().to_string(),
         None => "in-process".to_string(),
     };
-    if setup_rate_limiter().check_rate_limit(&peer_key).is_err() {
+    if counts_against_setup_budget(request.uri().path())
+        && setup_rate_limiter().check_rate_limit(&peer_key).is_err()
+    {
         return crate::utils::ResponseHelper::json_error_with_status(
             axum::http::StatusCode::TOO_MANY_REQUESTS,
             "Too many setup requests, please wait a minute".to_string(),
@@ -247,5 +266,18 @@ mod tests {
         assert!(!is_local_peer(&v4("1.1.1.1")));
         assert!(!is_local_peer(&v4("172.32.0.1")));
         assert!(!is_local_peer(&v4("2001:4860:4860::8888")));
+    }
+
+    #[test]
+    fn test_progress_route_is_exempt_from_the_setup_budget() {
+        // Wizard bookkeeping must not eat the budget meant for guessing /
+        // enumeration — the wizard fires one PUT per step navigation and then
+        // needs a check-username right after.
+        assert!(!counts_against_setup_budget("/api/auth/setup/progress"));
+        assert!(!counts_against_setup_budget("/api/auth/setup/progress/"));
+        // The three endpoints a guess or an enumeration can target stay metered.
+        assert!(counts_against_setup_budget("/api/auth/setup"));
+        assert!(counts_against_setup_budget("/api/auth/setup/verify-totp"));
+        assert!(counts_against_setup_budget("/api/auth/check-username"));
     }
 }

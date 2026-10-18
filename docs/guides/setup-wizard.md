@@ -228,7 +228,10 @@ answered "Setup is already in progress".
   `SetupService::validate_password` (12 chars, mixed case + digit, no
   compromised password, no 5+ repeated run — see `auth.md` → *Password policy*).
   Uses the **single** correct path `/api/auth/setup`.
-- `GET /auth/check-username` (`handle_check_username`) — live username availability.
+- `GET /auth/check-username` (`handle_check_username`) — live username
+  availability, **first-run-only** (403 once an admin exists, like
+  `verify-totp`/`progress` — post-setup the wizard is gone and the endpoint
+  would be a free username oracle).
 - `POST /auth/setup/verify-totp` (`handle_setup_verify_totp`) — stateless,
   first-run-only pre-creation TOTP validation (`{ secret, code }` → `{ valid }`),
   backed by `AuthService::verify_totp_code_with_secret` (window −1..=1 time step).
@@ -236,7 +239,16 @@ answered "Setup is already in progress".
   fingerprint re-baseline for the recovery flow.
 - `GET/PUT /auth/setup/progress` (`handle_setup_progress_get` / `_put`) —
   reboot-safe wizard progress (step + non-secret choices), 403 once an admin
-  exists.
+  exists. Guarded by the same network + same-origin check as the other
+  bootstrap routes but **exempt from their 20/min rate budget**: the wizard
+  fires one PUT per step navigation, so metering it made the wizard starve its
+  own `check-username` calls (the account step then refused to advance).
+- The wizard's `checkUsernameAvailability()` treats only a **definite verdict**
+  (`success && data`) as an answer: a 429/5xx/network failure fails open (no
+  "username already taken" message, step allowed to advance) because
+  `POST /auth/setup` revalidates the name server-side. Reading
+  `data?.available !== true` alone turned every refusal into a permanent
+  "this name is taken" dead end.
 
 ## Frontend
 

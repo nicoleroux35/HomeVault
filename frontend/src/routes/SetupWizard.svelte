@@ -362,22 +362,37 @@
   // system accounts). Runs when the user blurs a valid username at the account
   // step AND again as a blocking gate before leaving it — the account step must
   // not be passable while the name is already taken. Returns true only when the
-  // name is confirmed available; a network error fails open (the final verify
-  // step re-checks server-side).
+  // name is confirmed available; anything that is not a definite verdict fails
+  // open (the final verify step re-checks server-side).
+  //
+  // A definite verdict requires BOTH `success` and a `data` payload. Reading
+  // `res.data?.available !== true` alone made every non-answer — the bootstrap
+  // rate limiter's 429 (`{success:false, message:"Too many setup requests…"}`,
+  // no `data`), a 500, a proxy error page — look like "username already taken":
+  // the step showed "this name is taken" and refused to advance, with no way
+  // forward but a reload. `api.get()` never throws (it returns the parsed body),
+  // so the `catch` below only covers a transport failure; the explicit
+  // `success`/`data` check is what actually covers a refusal.
   async function checkUsernameAvailability(): Promise<boolean> {
     if (!validateUsername()) return false;
     checkingUsername = true;
     usernameAvailable = null;
     try {
       const res = await api.checkUsername(username);
-      const available = res.data?.available === true;
+      if (!res.success || !res.data) {
+        // Indeterminate (rate-limited / server error): fail open, no error
+        // message — the final `/auth/setup` call revalidates server-side.
+        usernameAvailable = null;
+        return true;
+      }
+      const available = res.data.available === true;
       usernameAvailable = available;
       if (!available) {
         usernameError = t('setup.error.username_exists');
       }
       return available;
     } catch {
-      // Network/backend issue: cannot determine availability — fail open.
+      // Transport failure: cannot determine availability — fail open.
       usernameAvailable = null;
       return true;
     } finally {
