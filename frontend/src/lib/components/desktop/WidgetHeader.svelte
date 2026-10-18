@@ -6,8 +6,8 @@
      Version       : 1.0.0
 
      Description:
-       Standard floating-widget title bar: accent icon tile + label, shared
-       by every desktop monitor panel so they read as one family.
+       Standard floating-widget title bar: circular accent icon tile + label,
+       shared by every desktop monitor panel so they read as one family.
 
      Dependencies:
        - svelte (>= 5)
@@ -69,8 +69,10 @@
     cursor: grabbing;
   }
 
-  /* The app-header icon tile: --hv-winhdr-icon-size (28px), glyph clamped to
-     the 16px the app header uses, white on the accent background. */
+  /* The app-header icon tile: --hv-winhdr-icon-size (28px) PERFECT CIRCLE
+     (--hv-winhdr-icon-radius, 50% — same shape as the dock tiles and topbar
+     buttons), glyph clamped to the 16px the app header uses, white on the
+     accent background. */
   .hv-widget-tile {
     display: grid;
     place-items: center;
@@ -81,6 +83,12 @@
     flex: none;
   }
 
+  /* The glyph size is owned HERE, exactly like `.hv-winhdr-icon :global(svg)`
+     in the in-window header: 16px in the 28px tile, i.e. the same glyph the
+     app header shows. A snippet must therefore not pass `size` — a stylesheet
+     beats the SVG width/height attribute, so the prop is dead noise (the 11
+     monitor snippets carried `size={16}` until 2026-10-18 and had it removed).
+     `stroke` is NOT clamped by any rule and stays explicit. */
   .hv-widget-tile :global(svg) {
     width: 16px;
     height: 16px;

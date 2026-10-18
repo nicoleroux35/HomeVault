@@ -238,6 +238,9 @@ test.describe('2 — Tile / desktop consistency', () => {
         headerH: Math.round(hb.height),
         tileW: Math.round(tb.width),
         tileH: Math.round(tb.height),
+        // Perfect circle, like the dock tiles / topbar buttons / in-window app
+        // header (--hv-winhdr-icon-radius: 50%).
+        tileRadius: getComputedStyle(tile).borderTopLeftRadius,
         tileCentered: Math.abs((tb.top + tb.height / 2) - (hb.top + hb.height / 2)),
         // Width stops come from the shared --hv-monitor-w* token set.
         compactW: widthOf('.hv-resource-monitor'),
@@ -245,13 +248,14 @@ test.describe('2 — Tile / desktop consistency', () => {
         wideW: widthOf('.hv-raid-monitor'),
       };
     });
-    // Floating widget-card corner (--hv-radius-card = 12px) — not a control radius.
-    expect(parseFloat(geo.radius)).toBe(12);
+    // Floating widget-card corner (--hv-radius-card = 18px) — not a control radius.
+    expect(parseFloat(geo.radius)).toBe(18);
     // The header is the app-header bar: 44px, a 28px icon tile dead-centre, and
     // no close/action button (monitor visibility is managed in Settings).
     expect(geo.headerH).toBe(44);
     expect(geo.tileW).toBe(28);
     expect(geo.tileH).toBe(28);
+    expect(geo.tileRadius, 'widget header icon tile is a perfect circle').toBe('50%');
     expect(geo.tileCentered).toBeLessThanOrEqual(2);
     // Width stops: compact 280 / standard 300 / wide 320.
     expect(geo.compactW).toBe(280);

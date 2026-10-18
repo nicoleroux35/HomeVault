@@ -173,7 +173,7 @@
     const dragImage = document.createElement('div');
     dragImage.style.cssText = `
       position: absolute; top: -1000px; width: 64px; height: 64px;
-      border-radius: var(--hv-radius-2xl); background: var(--hv-launcher-surface);
+      border-radius: 50%; background: var(--hv-launcher-surface);
       display: flex; align-items: center; justify-content: center;
       box-shadow: 0 4px 8px rgba(0,0,0,0.14), 0 0 2px rgba(0,0,0,0.12);
     `;
@@ -478,6 +478,10 @@
      The mock's row is 56px tall (12px padding around a 32px input). The input
      itself carries the 44px touch floor here and the row padding drops to 6px,
      so the bar renders at the mock's 56px with a compliant target inside it.
+     Shape: a CAPSULE (`--hv-radius-full`, clamped to height/2 = 28px), the same
+     silhouette as the dock and topbar pills — the launcher is part of the same
+     chrome family, and a 16px rounded rectangle here was the last surface that
+     did not speak that language (it was 20px before the 2026-09-16 restyle).
      Sticky because the panel is the scroller (see `.lp-panel`), so the query
      field would otherwise scroll away with the tiles. `sticky` is a positioned
      value, so the clear button's `.hv-ic-abs` still finds this bar as its
@@ -490,9 +494,11 @@
     align-items: center;
     gap: 12px;
     flex-shrink: 0;
+    /* Left padding clears the capsule's arc (the magnifier is the first thing
+       in the bar); the clear button owns the right end. */
     padding: 6px 16px;
     margin-bottom: 16px;
-    border-radius: var(--hv-radius-2xl);
+    border-radius: var(--hv-radius-full);
     background: var(--hv-launcher-surface);
     box-shadow: var(--hv-launcher-search-shadow);
   }
@@ -547,25 +553,28 @@
      neighbouring control).
 
      The row is a sibling of the grid in the same column, so it is always the
-     6-column width — but a chip is only as wide as its label, so with a short
-     category list the chips stopped two thirds of the way across and the
-     module *read* as narrower than the tiles under it. Hence `flex: 1 1 auto`
-     below: the free space of a line is shared out among its chips, so the row
-     ends flush with the grid's right edge however few categories the host
-     has. That is the whole point of the rule — not symmetry for its own sake.
+     6-column width. What must reach the grid's right edge is therefore the
+     ROW, not each chip: the chips keep their own label width (`flex: 0 0
+     auto`) and `justify-content: space-between` pushes the last one flush with
+     the edge. The earlier `flex: 1 1 auto` did make every line flush too, but
+     by stretching each chip: with six categories on an 818px row a chip grew
+     to 172 × 32, i.e. a 5:1 bar rather than the 32px pill it is declared as —
+     the *shape* was wrong even though the geometry passed. Equal-delta growth
+     still made the longest label the widest chip, which is the part worth
+     keeping, and `space-between` keeps it.
 
-     `flex-grow` and not `justify-content: space-between`, deliberately: a
-     fully populated catalog has up to 13 chips and wraps, and both spread the
-     trailing line, but `space-between` spreads it as a void between two
-     far-apart pills while `grow` spreads it as slightly wider pills. Growth is
-     equal *delta*, not equal width: a longer label stays the wider chip.
+     Chips are capsules (`--hv-radius-full`): the same pill silhouette as the
+     search bar above them, the dock and the topbar. A chip is never narrower
+     than its label and never a stretched bar.
 
-     The `<=640px` block pins `flex: none` back, because there the row is a
-     one-line `overflow-x: auto` scroller and stretching it would defeat the
-     sideways scroll (it is later in the file, so it wins). */
+     The `<=640px` block pins `flex: none` (identical to `0 0 auto`) and turns
+     the row into a one-line `overflow-x: auto` scroller. */
   .lp-cats {
     display: flex;
     flex-wrap: wrap;
+    /* The row spans the grid's width; `space-between` spends the leftover on
+       the gaps instead of on the chips, so every chip stays a pill. */
+    justify-content: space-between;
     gap: 8px;
     flex-shrink: 0;
     padding-bottom: 20px;
@@ -576,7 +585,9 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    flex: 1 1 auto;
+    /* Natural width: a chip is a 32px pill sized by its label, never stretched
+       into a bar (see the `.lp-cats` comment). */
+    flex: 0 0 auto;
     height: 32px;
     padding: 0 16px;
     border: none;
@@ -668,7 +679,9 @@
     padding: 16px 8px;
     min-width: 0;
     border: none;
-    border-radius: var(--hv-radius-2xl);
+    /* A launcher tile is a button: the one control corner, like every other
+       button in the product (its circular icon inside carries the shape). */
+    border-radius: var(--hv-radius-control);
     background: var(--hv-launcher-tile);
     color: var(--hv-launcher-tile-fg);
     font-family: inherit;
@@ -688,7 +701,13 @@
   .lp-card-open { background: var(--hv-launcher-tile-hover); }
 
   /* The app's own gradient — the one-colour-per-app rule (CLAUDE.md) is what
-     the launchpad tile shares with the dock tile and the in-window header. */
+     the launchpad tile shares with the dock tile and the in-window header.
+     Shape: a PERFECT CIRCLE (`50%`, never a px stop), like `.hv-dock-icon`,
+     `.hv-topbar-btn` and the `WindowHeader` tile — the launcher was the last
+     place where the same app glyph appeared on a rounded square instead, so
+     one app read as two different marks depending on where you looked at it.
+     The glyph inside is half the tile (28px of 56px), the ratio every other
+     chrome tile uses. */
   .lp-card-icon {
     position: relative;
     display: grid;
@@ -696,7 +715,7 @@
     width: var(--hv-launcher-icon-size);
     height: var(--hv-launcher-icon-size);
     flex: none;
-    border-radius: var(--hv-radius-2xl);
+    border-radius: 50%;
     color: var(--hv-launcher-tile-fg);
     /* `--lp-ic` is usually a `linear-gradient(...)` — the `background`
        shorthand takes either; `background-color` would silently drop the
@@ -819,13 +838,15 @@
     text-align: center;
   }
 
+  /* Also a circle: it is the same "icon tile" role as the app tiles above, so
+     it follows the same shape rule (see `.lp-card-icon`). */
   .lp-empty-icon {
     display: grid;
     place-items: center;
     width: 64px;
     height: 64px;
     margin-bottom: 16px;
-    border-radius: var(--hv-radius-3xl);
+    border-radius: 50%;
     background: var(--hv-launcher-tile);
     color: var(--hv-launcher-tile-muted-fg);
   }
@@ -847,7 +868,8 @@
     height: var(--hv-touch-target-min);
     padding: 0 24px;
     border: none;
-    border-radius: var(--hv-radius-full);
+    /* An action button, not a chip: control corner, not a capsule. */
+    border-radius: var(--hv-radius-control);
     background: var(--hv-launcher-chip-active);
     color: var(--hv-launcher-chip-active-fg);
     font-family: inherit;

@@ -166,19 +166,19 @@
           </div>
           <div class="ups-item-stats grid grid-cols-[repeat(auto-fit,minmax(100px,1fr))] gap-3">
             <div class="ups-stat flex flex-col gap-0.5">
-              <span class="ups-stat-label text-[11px] uppercase tracking-[0.03em] text-[var(--hv-settings-label)]">{$t('ups.battery_charge')}</span>
+              <span class="ups-stat-label text-t-subheadline uppercase tracking-[0.03em] text-[var(--hv-settings-label)]">{$t('ups.battery_charge')}</span>
               <span class="ups-stat-value text-sm font-medium text-[var(--hv-settings-title)]">{Math.round(ups.battery_charge_percent ?? 0)}%</span>
             </div>
             <div class="ups-stat flex flex-col gap-0.5">
-              <span class="ups-stat-label text-[11px] uppercase tracking-[0.03em] text-[var(--hv-settings-label)]">{$t('ups.load')}</span>
+              <span class="ups-stat-label text-t-subheadline uppercase tracking-[0.03em] text-[var(--hv-settings-label)]">{$t('ups.load')}</span>
               <span class="ups-stat-value text-sm font-medium text-[var(--hv-settings-title)]">{Math.round(ups.load_percent ?? 0)}%</span>
             </div>
             <div class="ups-stat flex flex-col gap-0.5">
-              <span class="ups-stat-label text-[11px] uppercase tracking-[0.03em] text-[var(--hv-settings-label)]">{$t('ups.runtime')}</span>
+              <span class="ups-stat-label text-t-subheadline uppercase tracking-[0.03em] text-[var(--hv-settings-label)]">{$t('ups.runtime')}</span>
               <span class="ups-stat-value text-sm font-medium text-[var(--hv-settings-title)]">{ups.runtime_remaining ?? 0}s</span>
             </div>
             <div class="ups-stat flex flex-col gap-0.5">
-              <span class="ups-stat-label text-[11px] uppercase tracking-[0.03em] text-[var(--hv-settings-label)]">{$t('ups.status')}</span>
+              <span class="ups-stat-label text-t-subheadline uppercase tracking-[0.03em] text-[var(--hv-settings-label)]">{$t('ups.status')}</span>
               <span
                 class="ups-stat-value text-sm font-medium"
                 class:ups-online={ups.is_online}

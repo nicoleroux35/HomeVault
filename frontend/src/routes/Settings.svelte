@@ -1492,15 +1492,15 @@
             {/if}
             <div class={settingsRowLast} data-testid="power-spindown-add">
               <div class="flex flex-wrap items-end gap-2 w-full">
-                <label class="flex flex-col gap-1 text-xs text-[var(--hv-settings-label)]">
+                <label class="flex flex-col gap-1 text-c-label text-[var(--hv-settings-label)]">
                   <span>{$t('power.device')}</span>
                   <input class={cn(settingsInput, 'w-32')} type="text" bind:value={newSpindown.device} placeholder="sda" aria-label={$t('power.device')} />
                 </label>
-                <label class="flex flex-col gap-1 text-xs text-[var(--hv-settings-label)]">
+                <label class="flex flex-col gap-1 text-c-label text-[var(--hv-settings-label)]">
                   <span>{$t('power.apm')}</span>
                   <input class={cn(settingsInput, 'w-24')} type="number" min="1" max="255" bind:value={newSpindown.apm_level} aria-label={$t('power.apm')} />
                 </label>
-                <label class="flex flex-col gap-1 text-xs text-[var(--hv-settings-label)]">
+                <label class="flex flex-col gap-1 text-c-label text-[var(--hv-settings-label)]">
                   <span>{$t('power.minutes')}</span>
                   <input class={cn(settingsInput, 'w-24')} type="number" min="0" max="330" bind:value={newSpindown.spindown_minutes} aria-label={$t('power.minutes')} />
                 </label>

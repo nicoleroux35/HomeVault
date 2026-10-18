@@ -118,12 +118,13 @@ function dockApp(page: Page, id: string) {
   return page.locator(`[data-testid="dock-${id}"]`);
 }
 
-// Same reason for the topbar pill's three buttons: from 901px up each one
-// renders its own translated LABEL next to the icon, so neither the visible
-// text nor the old "power is the last .hv-topbar-btn" positional trick is a
-// safe handle any more. The hooks are `topbar-network`,
-// `topbar-notifications`, `topbar-power`. (The former topbar "Widgets" button
-// was removed 2026-09-15 — adding/removing widgets lives in Settings now.)
+// Same reason for the topbar pill's three buttons: their accessible names are
+// translated (Network / Réseau / Netzwerk …) and they are icon-only 44px
+// circles since 2026-10-18, so neither visible text nor the old "power is the
+// last .hv-topbar-btn" positional trick is a safe handle any more. The hooks are
+// `topbar-network`, `topbar-notifications`, `topbar-power`. (The former topbar
+// "Widgets" button was removed 2026-09-15 — adding/removing widgets lives in
+// Settings now.)
 function topbarBtn(page: Page, id: string) {
   return page.locator(`[data-testid="topbar-${id}"]`);
 }
@@ -166,6 +167,25 @@ test.beforeAll(async ({ playwright }) => {
   const { token, csrf } = await apiLogin(ctx, ADMIN_USER, ADMIN_PASS);
   if (!token) throw new Error(`Could not log in as ${ADMIN_USER} — seed this account first.`);
   adminTokens = { username: ADMIN_USER, password: ADMIN_PASS, token, csrf };
+
+  // A freshly seeded server answers `GET /api/whats-new` with `seen: false` for
+  // the first admin, and the desktop then opens a bits-ui modal whose full-screen
+  // overlay swallows every pointer event. It landed on whichever test happened
+  // to load the desktop first (measured: 14.7/14.8 and 16.2/16.4 failed with
+  // "dialog-overlay intercepts pointer events" on a fresh scratch server, and
+  // 15.5 could not even hover the Power button). Acknowledging the release once
+  // here — with the same authenticated + CSRF'd call the modal's own close
+  // button makes — takes the overlay out of every test's path, deterministically.
+  // The session travels in `X-Session-Token`, not `Authorization`: that is what
+  // `ApiClient.headers()` sends (see frontend/src/lib/services/api.ts).
+  const seen = await ctx.post('/api/whats-new/seen', {
+    headers: { 'X-Session-Token': token, 'X-CSRF-Token': csrf },
+  });
+  if (!seen.ok()) {
+    throw new Error(
+      `Could not acknowledge the release notes (${seen.status()}) — the What's New overlay would block pointer tests.`,
+    );
+  }
   await ctx.dispose();
 });
 
@@ -906,7 +926,7 @@ test.describe('7 — Power menu', () => {
     await expect(page.locator('.hv-power-dialog')).toHaveCount(0);
   });
 
-  test('7.4 — the power dialog and the topbar popovers share the chrome corner (--hv-radius-4xl, 24px)', async ({ page }) => {
+  test('7.4 — the power dialog and the topbar popovers share the surface corner (--hv-radius-4xl, 18px)', async ({ page }) => {
     await gotoDesktop(page, adminTokens);
 
     // The account menu is the shared `.hv-topbar-panel` chrome — the same
@@ -926,8 +946,10 @@ test.describe('7 — Power menu', () => {
       parseFloat(getComputedStyle(el).borderRadius),
     );
 
-    expect(panelRadius, 'topbar popover chrome corner').toBe(24);
-    expect(dialogRadius, 'power dialog chrome corner').toBe(24);
+    // 12px: the popover and the dialog are containers like a window or a
+    // widget, so they take the single surface stop rather than a taller one.
+    expect(panelRadius, 'topbar popover surface corner').toBe(18);
+    expect(dialogRadius, 'power dialog surface corner').toBe(18);
   });
 });
 
@@ -1011,21 +1033,74 @@ test.describe('8 — Responsive', () => {
     expect(fit!.dh).toBeLessThanOrEqual(1);
   });
 
-  test('8.5 — the dock and topbar pills share the same corner radius at every width', async ({ page }) => {
+  test('8.5 — both floating pills are capsules with perfectly circular ends', async ({ page }) => {
     for (const w of [400, 768, 1440]) {
       await page.setViewportSize({ width: w, height: 900 });
       await gotoDesktop(page, adminTokens);
       const radii = await page.evaluate(() => {
-        const r = (sel: string) => {
-          const el = document.querySelector(sel);
-          return el ? parseFloat(getComputedStyle(el).borderRadius) : -1;
+        const read = (sel: string) => {
+          const el = document.querySelector(sel) as HTMLElement | null;
+          if (!el) return null;
+          return {
+            r: parseFloat(getComputedStyle(el).borderRadius),
+            h: el.getBoundingClientRect().height,
+          };
         };
-        return { topbar: r('.hv-menubar'), dock: r('.hv-dock') };
+        return { topbar: read('.hv-menubar'), dock: read('.hv-dock') };
       });
-      expect(radii.topbar, `topbar radius @${w}px`).toBeGreaterThan(0);
-      // Both pills are chrome siblings built from the same geometry — a phone
-      // override shrinks them together (both 24px), never one ahead of the other.
-      expect(Math.abs(radii.dock - radii.topbar), `pill radius mismatch @${w}px`).toBeLessThanOrEqual(1);
+      // Capsule: the full radius token (9999px) is clamped by the browser to
+      // half the box height, so BOTH ends render as exact semicircles — the
+      // assertion is radius >= height/2, deliberately not the literal 9999px.
+      for (const [name, box] of [
+        ['dock', radii.dock],
+        ['topbar', radii.topbar],
+      ] as const) {
+        expect(box, `${name} element @${w}px`).not.toBeNull();
+        expect(box!.r, `${name} capsule radius @${w}px`).toBeGreaterThanOrEqual(box!.h / 2);
+      }
+    }
+  });
+
+  test('8.7 — the dock app icons are perfect circles of one uniform size', async ({ page }) => {
+    for (const w of [400, 768, 1440]) {
+      await page.setViewportSize({ width: w, height: 900 });
+      await gotoDesktop(page, adminTokens);
+      // The dock items stagger in (hvDockItemIn, ~750ms after mount, with the
+      // `backwards` fill) and a mid-animation tile measures at 0.9× its size —
+      // wait for the choreography to be over before reading any rectangle.
+      // getAnimations() only lists running/pending animations, so an empty
+      // list on every item means the entrance is done at any viewport.
+      await page.waitForFunction(
+        () => {
+          const items = [...document.querySelectorAll('.hv-dock-container .hv-dock-item')];
+          return (
+            items.length > 0 && items.every((el) => (el as HTMLElement).getAnimations().length === 0)
+          );
+        },
+        undefined,
+        { timeout: 5_000 },
+      );
+      const tiles = await page.evaluate(() => {
+        const icons = [...document.querySelectorAll('.hv-dock-container .hv-dock-icon')] as HTMLElement[];
+        return icons.map((el) => {
+          const b = el.getBoundingClientRect();
+          const s = getComputedStyle(el);
+          return {
+            // `50%` on a square tile is the only value that renders a perfect
+            // circle — a px radius would silently square it back on resize.
+            radius: s.borderRadius,
+            width: b.width,
+            height: b.height,
+          };
+        });
+      });
+      expect(tiles.length, `dock icons @${w}px`).toBeGreaterThan(5);
+      const sizes = new Set(tiles.map((t) => Math.round(t.width)));
+      expect(sizes.size, `uniform icon size @${w}px`).toBe(1);
+      for (const t of tiles) {
+        expect(t.radius, `icon radius @${w}px`).toBe('50%');
+        expect(t.width, `icon width @${w}px`).toBe(t.height);
+      }
     }
   });
 
@@ -1584,7 +1659,9 @@ test.describe('14 — Chrome geometry & material', () => {
     expect(s.bg, 'window surface is opaque paper').toBe('rgb(255, 255, 255)');
     expect(s.border, 'window hairline is --hv-window-border (#CBD5E1)').toBe('rgb(203, 213, 225)');
     expect(parseFloat(s.borderWidth), 'hairline width').toBe(1);
-    expect(parseFloat(s.radius), 'window radius').toBe(16);
+    // The one surface corner (--hv-window-radius): the same 18px a monitor
+    // widget, a modal and a popover use, so the shell reads as one material.
+    expect(parseFloat(s.radius), 'window radius is the surface stop').toBe(18);
     expect(s.shadow, 'mock shadow, both layers').toContain('rgba(0, 0, 0, 0.06)');
     expect(s.shadow, 'mock shadow, both layers').toContain('rgba(0, 0, 0, 0.08)');
     expect(s.backdrop, 'no blur behind a window').toBe('none');
@@ -1655,7 +1732,10 @@ test.describe('14 — Chrome geometry & material', () => {
     // control row and must read as the same size.
     expect(Math.round(tile.w), 'icon tile width matches the control trio').toBe(28);
     expect(Math.round(tile.h), 'icon tile height matches the control trio').toBe(28);
-    expect(parseFloat(tile.radius), 'icon tile radius').toBe(8);
+    // A PERFECT CIRCLE since 2026-10-18 — the dock tiles' and topbar buttons'
+    // shape language. Computed `50%`, never a px stop: a px radius would
+    // square the tile back the moment --hv-winhdr-icon-size moves.
+    expect(tile.radius, 'icon tile is a perfect circle').toBe('50%');
     // The tile is never flat — it carries the app's own gradient.
     expect(tile.bg, 'icon tile is a gradient, not a flat fill').toContain('gradient');
 
@@ -1668,7 +1748,7 @@ test.describe('14 — Chrome geometry & material', () => {
         lineHeight: c.lineHeight,
       };
     });
-    expect(parseFloat(title.size), 'title font-size').toBe(14);
+    expect(parseFloat(title.size), 'title font-size').toBe(15);
     expect(title.weight, 'title weight').toBe('600');
     expect(title.color, 'title ink is --hv-winhdr-title (#314158)').toBe('rgb(49, 65, 88)');
     expect(parseFloat(title.lineHeight), 'title line-height').toBe(20);
@@ -1730,11 +1810,13 @@ test.describe('14 — Chrome geometry & material', () => {
       };
     });
 
-    // All three are the mock's 28px rounded square, with a 6px gap.
+    // All three are 28px PERFECT CIRCLES (2026-10-18; they were the mock's
+    // 8px rounded squares), with a 6px gap. `50%` rather than a px stop: a px
+    // radius would square them back the moment --hv-winctrl-size moves.
     for (const [i, b] of geometry.boxes.entries()) {
       expect(Math.round(b.w), `button ${i} width`).toBe(28);
       expect(Math.round(b.h), `button ${i} height`).toBe(28);
-      expect(parseFloat(geometry.styles[i].radius), `button ${i} radius`).toBe(8);
+      expect(geometry.styles[i].radius, `button ${i} is a perfect circle`).toBe('50%');
       // Flat colour, no drop shadow (the mock draws none).
       expect(geometry.styles[i].shadow, `button ${i} has no shadow`).toBe('none');
     }
@@ -1856,10 +1938,11 @@ test.describe('14 — Chrome geometry & material', () => {
   });
 
   test('14.10 — the dock gap clears the hover-lift, so neighbours never touch', async ({ page }) => {
-    // A hovered tile grows by `.hv-dock-item:hover { scale(1.18) }`, i.e. ~4.3px
-    // on EACH side of a 48px icon. With the old 4px gap two neighbours overlapped
-    // mid-hover; the gap has to stay above that growth or the tiles visibly
-    // collide. Measured from the live boxes at the hover peak, not token-read.
+    // A hovered tile grows by `.hv-dock-item:hover { scale(1.18) }`, i.e. ~5.8px
+    // on EACH side of the 64px icon (--hv-dock-item-size). With the old 4px gap
+    // two neighbours overlapped mid-hover; the gap has to stay above that growth
+    // or the tiles visibly collide. Measured from the live boxes at the hover
+    // peak, not token-read.
     await page.setViewportSize({ width: 1440, height: 900 });
     await gotoDesktop(page, adminTokens);
 
@@ -2032,64 +2115,147 @@ test.describe('14 — Chrome geometry & material', () => {
       await expect(windows(page), `${appId} window closes`).toHaveCount(0);
     }
   });
+
+  test('14.12 — every button on every screen carries the one control corner', async ({ page }) => {
+    // One control corner, everywhere (2026-10-18). The radius scale used to
+    // carry three control stops (6 / 8 / 10px) plus hand-written `rounded-xl`
+    // overrides, so the same button read differently depending on which screen
+    // it lived on — and a button next to the input it submits did not line up.
+    // Every `<button>` / `[role="button"]` now resolves to
+    // `--hv-radius-control` (12px since the 2026-10-19 design-tokens.md
+    // retune), with four deliberate exceptions this test encodes:
+    //   * `50%`   — the circular shape language (window trio, dock tiles,
+    //               topbar buttons, avatars).
+    //   * `9999px`— capsule chips/pills (launcher category chips, filter and
+    //               severity chips, the user pill).
+    //   * `0px`   — table/list rows whose hairline separators define them
+    //               (Explorer's file list, the Journal log) and the children of
+    //               a segmented control, which the group clips.
+    // Anything else (12px on a button, an 8px leftover, a px literal) fails
+    // here, for every app in the registry, in one pass.
+    test.setTimeout(300_000);
+    const APPS = [
+      'terminal', 'chat', 'docker', 'dashboard', 'users', 'groups', 'shares',
+      'settings', 'explorer', 'backup', 'health', 'network', 'vpn', 'rescue',
+      'downloader', 'rclone', 'storage', 'raid', 'journal', 'syncthing', 'widgets',
+      'virtual-machines', 'quotas',
+    ];
+    const DOCK_ONLY = ['terminal', 'settings'];
+    const ALLOWED = new Set(['12px', '50%', '9999px', '0px']);
+    await gotoDesktop(page, adminTokens);
+    for (const appId of APPS) {
+      if (DOCK_ONLY.includes(appId)) await clickDock(page, appId);
+      else {
+        await page.evaluate((id) => {
+          window.dispatchEvent(new CustomEvent('hv-open-app', { detail: { id } }));
+        }, appId);
+      }
+      await expect(windows(page), `${appId} opened exactly one window`).toHaveCount(1);
+      const win = windows(page).first();
+      await expect(win, `${appId} window is visible`).toBeVisible();
+
+      const corners = await win.evaluate(() => {
+        const out: Record<string, string[]> = {};
+        for (const el of Array.from(
+          document.querySelectorAll<HTMLElement>('button, [role="button"]'),
+        )) {
+          const r = getComputedStyle(el).borderTopLeftRadius;
+          out[r] ??= [];
+          if (out[r].length < 3) {
+            out[r].push(
+              (el.getAttribute('class') ?? '')
+                .split(/\s+/)
+                .filter((c) => c && !c.startsWith('svelte-'))
+                .slice(0, 4)
+                .join(' '),
+            );
+          }
+        }
+        return out;
+      });
+      for (const [radius, examples] of Object.entries(corners)) {
+        expect
+          .soft(ALLOWED.has(radius), `${appId}: unexpected button corner ${radius} on ${examples.join(' | ')}`)
+          .toBe(true);
+      }
+      // The control corner must actually be the 12px token, not a coincidence.
+      const token = await page.evaluate(() =>
+        getComputedStyle(document.documentElement).getPropertyValue('--hv-radius-control').trim(),
+      );
+      expect.soft(token, `${appId}: --hv-radius-control`).toBe('12px');
+
+      await win.locator('[data-testid="win-close"]').click();
+      await expect(windows(page), `${appId} window closes`).toHaveCount(0);
+    }
+  });
 });
 
 // ===========================================================================
-// 15. Topbar icon + label chips
+// 15. Topbar circular icon buttons
 // ===========================================================================
 
-// The pill's three buttons used to be icon-only 44x44 squares. They now carry a
-// visible label from 901px up, matching the reference mockup's icon + label
-// chip — so this section pins the chip geometry, the collapse below the
-// breakpoint, the resulting DOM order, and the notification badge that had to
-// be rescaled to sit on a chip instead of on a 48px dock tile.
-test.describe('15 — Topbar icon + label chips', () => {
-  test('15.1 — at 1440px each topbar button is an icon + label chip', async ({ page }) => {
+// The pill's three buttons have been through both shapes: icon-only squares,
+// then icon + label chips from 901px up, and since 2026-10-18 icon-only
+// CIRCLES — the same shape language as the dock's circular app tiles, inside
+// the capsule pill. Since the dock proportions pass of the same day the
+// diameter is `--hv-chrome-topbar-btn-size`: **0.775 × the pill height**, the
+// dock tile's own ratio (48px in the 62px desktop pill, 44px in the phone's
+// 56px one). There is no label regime left, so this section pins the circle
+// geometry (uniform size, `50%` radius), its stability across widths, the
+// resulting DOM order, the name that replaced the visible label (aria-label +
+// the shared CSS tooltip), and the notification badge that now hangs off a
+// circular button.
+test.describe('15 — Topbar circular icon buttons', () => {
+  test('15.1 — at 1440px each topbar button is a 48px perfect circle, icon-only', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await gotoDesktop(page, adminTokens);
+    const sizes: number[] = [];
     for (const id of TOPBAR_IDS) {
       const btn = topbarBtn(page, id);
       await expect(btn, `${id} exists`).toBeVisible();
       const box = (await btn.boundingBox())!;
-      const label = btn.locator('.hv-topbar-btn-label');
-      await expect(label, `${id} shows its label`).toBeVisible();
-      const labelBox = (await label.boundingBox())!;
-      const svgBox = (await btn.locator('svg').first().boundingBox())!;
+      const radius = await btn.evaluate((el) => getComputedStyle(el).borderRadius);
 
-      // The 44px touch rhythm is preserved — only the WIDTH grows.
-      expect(Math.round(box.height), `${id} keeps the 44px height`).toBe(44);
-      expect(box.width, `${id} is wider than the icon-only default`).toBeGreaterThan(44);
-      // Label to the right of the icon, both centred on the chip's mid-line.
-      expect(labelBox.x, `${id} label follows the icon`).toBeGreaterThanOrEqual(
-        svgBox.x + svgBox.width - 1,
-      );
-      const labelMid = labelBox.y + labelBox.height / 2;
-      const boxMid = box.y + box.height / 2;
-      expect(Math.abs(labelMid - boxMid), `${id} label is vertically centred`).toBeLessThanOrEqual(2);
+      // `50%` — not a px radius: that is the only value that keeps the control
+      // a circle whatever the tile size is (the phone renders the same button
+      // at 44px inside a 56px pill).
+      expect(radius, `${id} is a circle`).toBe('50%');
+      // 0.775 × the 62px pill — the dock tile's proportion, so both pills carry
+      // the same icon-to-bar weight.
+      expect(Math.round(box.height), `${id} height`).toBe(48);
+      expect(Math.round(box.width), `${id} width`).toBe(48);
+      sizes.push(Math.round(box.width));
+
+      // Icon-only: the glyph is there, the label markup is gone for good (it
+      // was a `display:none` span from 901px down before this redesign).
+      await expect(btn.locator('svg').first(), `${id} shows its glyph`).toBeVisible();
+      await expect(btn.locator('.hv-topbar-btn-label'), `${id} carries no label`).toHaveCount(0);
     }
+    // Uniform size across the row — the "one tile size" rule of the dock.
+    expect(new Set(sizes).size, 'every button is the same size').toBe(1);
   });
 
-  test('15.2 — below 901px the label is hidden in place, never removed', async ({ page }) => {
-    for (const w of [900, 768, 400]) {
+  test('15.2 — the circles are identical at every width (no breakpoint regime left)', async ({ page }) => {
+    // One shape, one token: 48px in the 62px desktop pill, and only the phone
+    // drops to 44px — because its pill is 56px and the ratio (0.775) is what
+    // must survive, not a pixel count. Both stay above the 44px touch floor.
+    for (const w of [1440, 900, 768, 400]) {
+      const expected = w > 480 ? 48 : 44;
       await page.setViewportSize({ width: w, height: 900 });
       await gotoDesktop(page, adminTokens);
       for (const id of TOPBAR_IDS) {
         const btn = topbarBtn(page, id);
-        const label = btn.locator('.hv-topbar-btn-label');
-        // Present AND hidden: one markup branch at every width (the same
-        // pattern `.hv-user-pill-name` uses), so the rule has to stay
-        // `display:none` — a conditional render would fail the count.
-        await expect(label, `${id} label @${w}px`).toHaveCount(1);
-        await expect(label, `${id} label hidden @${w}px`).toBeHidden();
-        await expect(btn.locator('svg').first(), `${id} icon @${w}px`).toBeVisible();
         const box = (await btn.boundingBox())!;
-        expect(Math.round(box.width), `${id} width @${w}px`).toBe(44);
-        expect(Math.round(box.height), `${id} height @${w}px`).toBe(44);
+        const radius = await btn.evaluate((el) => getComputedStyle(el).borderRadius);
+        expect(radius, `${id} radius @${w}px`).toBe('50%');
+        expect(Math.round(box.width), `${id} width @${w}px`).toBe(expected);
+        expect(Math.round(box.height), `${id} height @${w}px`).toBe(expected);
+        await expect(btn.locator('svg').first(), `${id} glyph @${w}px`).toBeVisible();
       }
     }
   });
 
-  test('15.3 — the chips are in mockup order and Power is still last', async ({ page }) => {
+  test('15.3 — the buttons keep their order and Power is still last', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await gotoDesktop(page, adminTokens);
     const order = await page
@@ -2109,22 +2275,23 @@ test.describe('15 — Topbar icon + label chips', () => {
     expect(lastTestId).toBe('topbar-power');
   });
 
-  test('15.4 — the notification badge is a 16px corner marker that clears the label', async ({ page }) => {
+  test('15.4 — the notification badge is a 16px corner marker on the circular button', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await gotoDesktop(page, adminTokens);
 
     const m = await page.evaluate(() => {
       const btn = document.querySelector('[data-testid="topbar-notifications"]');
-      const label = btn?.querySelector('.hv-topbar-btn-label');
+      const glyph = btn?.querySelector('.hv-notif-bell-icon');
       const pill = document.querySelector('.hv-menubar');
-      if (!btn || !label || !pill) return null;
+      if (!btn || !glyph || !pill) return null;
 
       // The probe must be a CLONE of a template element: Svelte scopes this
       // component's CSS with a hash class that `document.createElement` would
       // miss, so an injected span would render unstyled and measure nothing.
-      const hash = [...label.classList].filter((c) => c.startsWith('svelte-')).join(' ');
-      const probe = label.cloneNode(true) as HTMLElement;
-      probe.textContent = '2';
+      // The bell span replaces the (now removed) label span as the template —
+      // any element of this component carries the same hash.
+      const hash = [...glyph.classList].filter((c) => c.startsWith('svelte-')).join(' ');
+      const probe = glyph.cloneNode(false) as HTMLElement;
       btn.appendChild(probe);
 
       // The badge classes carry `animation: hvChromePop … backwards`, and that
@@ -2141,7 +2308,14 @@ test.describe('15 — Topbar icon + label chips', () => {
 
       const rect = (el: Element) => {
         const r = el.getBoundingClientRect();
-        return { top: r.top, right: r.right, bottom: r.bottom, left: r.left, width: r.width };
+        return {
+          top: r.top,
+          right: r.right,
+          bottom: r.bottom,
+          left: r.left,
+          width: r.width,
+          height: r.height,
+        };
       };
       probe.className = `${hash} hv-notification-badge`;
       const badge = { ...rect(probe), height: getComputedStyle(probe).height };
@@ -2151,40 +2325,51 @@ test.describe('15 — Topbar icon + label chips', () => {
       const dockHeight = getComputedStyle(probe).height;
       const dockWidth = rect(probe).width;
 
-      const out = { badge, dockHeight, dockWidth, label: rect(label), pill: rect(pill) };
+      const out = { badge, dockHeight, dockWidth, pill: rect(pill), btn: rect(btn) };
       probe.remove();
       return out;
     });
 
-    expect(m, 'the notifications button, its label and the pill all resolve').not.toBeNull();
+    expect(m, 'the notifications button, its glyph and the pill all resolve').not.toBeNull();
     const p = m!;
-    // The rescale — 16px is both the mockup's value and what a chip can carry.
+    // 16px is the mockup's value and what a 44px circle can carry.
     // `min-width: 16px` is what squares a single-digit count off; the rect
     // agrees because the probe's entry animation is disabled (see above).
     expect(p.badge.height, 'notification badge height').toBe('16px');
     expect(Math.round(p.badge.width), 'a single-digit badge is 16px wide').toBe(16);
-    // The dock badge is deliberately untouched at 26px (its anchor is a 48px tile).
+    // The dock badge is deliberately untouched at 26px (its anchor is the 64px
+    // dock tile — the 2026-10-18 proportions pass grew the tiles, not the badge).
     expect(p.dockHeight, 'dock badge keeps its 26px').toBe('26px');
     // Both badges measured square, so no scale transform survived on the probe —
     // without this, a future 0.4-scaled rect would sail through the height check
     // (computed style) and only the width assertion below would catch it.
     expect(Math.round(p.dockWidth), 'the probe measures untransformed').toBe(26);
 
-    // Anchored to the BUTTON's corner: past the label, still on the pill.
-    expect(p.badge.right, 'badge sits at/after the label right edge').toBeGreaterThanOrEqual(
-      p.label.right - 1,
-    );
+    // Anchored to the BUTTON's top-right corner (3px out), still on the pill:
+    // the button is a 48px circle now, so "the corner" is the corner of its
+    // square box — the badge pokes just past the arc, as in the mockup.
+    expect(p.badge.right, 'badge hangs off the button corner').toBeCloseTo(p.btn.right + 3, 0);
+    expect(p.badge.top, 'badge hangs off the button corner').toBeCloseTo(p.btn.top - 3, 0);
     expect(p.badge.right, 'badge stays on the pill').toBeLessThanOrEqual(p.pill.right);
     expect(p.badge.top, 'badge stays under the pill top').toBeGreaterThanOrEqual(p.pill.top);
-    // The real invariant: the badge lives in the band ABOVE the label's line
-    // box, so a "99+" badge widens into empty space and never covers a glyph.
-    expect(p.badge.bottom, 'badge clears the label band').toBeLessThanOrEqual(p.label.top);
+    // A corner marker: wholly inside the button's TOP-RIGHT QUADRANT. On the
+    // old icon + label chip the badge sat above the label's line box; a 26px
+    // glyph centred in a circle leaves no such band (their boxes overlap,
+    // exactly as in the mockup), so the invariant is stated on the quadrants —
+    // a badge that drifted onto the bell's centre, or back over the pill's
+    // text, fails here.
+    expect(p.badge.bottom, 'badge stays in the top half').toBeLessThanOrEqual(
+      p.btn.top + p.btn.height / 2,
+    );
+    expect(p.badge.left, 'badge stays in the right half').toBeGreaterThanOrEqual(
+      p.btn.left + p.btn.width / 2,
+    );
 
-    // …and it hangs off the button, never off the 22px bell inside it.
+    // …and it hangs off the button, never off the 24px bell inside it.
     await expect(page.locator('.hv-notif-bell-icon .hv-notification-badge')).toHaveCount(0);
   });
 
-  test('15.5 — the accessible name never leaks a key and contains the visible label', async ({ page }) => {
+  test('15.5 — the accessible name never leaks a key and the tooltip carries it', async ({ page }) => {
     for (const w of [1440, 900]) {
       await page.setViewportSize({ width: w, height: 900 });
       await gotoDesktop(page, adminTokens);
@@ -2194,43 +2379,63 @@ test.describe('15 — Topbar icon + label chips', () => {
         expect(aria, `${id} has an aria-label @${w}px`).not.toBe('');
         // A raw key means the translation is missing and t() fell through.
         expect(aria, `${id} aria-label is translated @${w}px`).not.toMatch(/\bdesktop\.[a-z_]+/i);
-        expect(await btn.getAttribute('title'), `${id} title mirrors aria-label`).toBe(aria);
+        // Icon-only control: `title` would stack a second, native tooltip on
+        // top of the CSS one — the dock made the same call, so it is asserted
+        // rather than left to drift back in.
+        expect(await btn.getAttribute('title'), `${id} has no duplicate title`).toBeNull();
       }
     }
 
-    // WCAG 2.5.3 "Label in Name" — only checkable where the label renders.
-    // This is what validates the Power pair: the visible label is the short
-    // `desktop.power` while the accessible name stays `desktop.power_options`.
+    // The visible label is gone, so WCAG 2.5.3 has no pair left to validate;
+    // what replaces it is the dock's pattern — the name the pointer reads on
+    // hover/focus is literally `attr(aria-label)` (see `.hv-topbar-btn::before`).
     await page.setViewportSize({ width: 1440, height: 900 });
     await gotoDesktop(page, adminTokens);
-    for (const id of TOPBAR_IDS) {
-      const btn = topbarBtn(page, id);
-      const visible = (await btn.locator('.hv-topbar-btn-label').innerText()).trim();
-      const aria = ((await btn.getAttribute('aria-label')) || '').toLowerCase();
-      expect(visible, `${id} has a visible label`).not.toBe('');
-      expect(aria, `${id}: "${aria}" must contain "${visible}"`).toContain(visible.toLowerCase());
-    }
+    const btn = topbarBtn(page, 'power');
+    await btn.hover();
+    // The label chip waits out --hv-chrome-tooltip-delay (120ms) before it
+    // fades in, so a synchronous read right after `hover()` still sees the
+    // `opacity: 0` start state — poll instead of guessing a timeout.
+    await expect
+      .poll(
+        () => btn.evaluate((el) => getComputedStyle(el, '::before').opacity),
+        { message: 'the tooltip fades in on hover', timeout: 2_000 },
+      )
+      .toBe('1');
+    const tooltip = await btn.evaluate((el) => {
+      const s = getComputedStyle(el, '::before');
+      return {
+        content: s.content.replace(/^"|"$/g, ''),
+        background: s.backgroundColor,
+      };
+    });
+    const aria = (await btn.getAttribute('aria-label')) || '';
+    expect(tooltip.content, 'the tooltip reads the aria-label').toBe(aria);
+    // Same dark inverted label chip as the dock's, not a bare pill-coloured one.
+    const tooltipBg = await page.evaluate(() =>
+      getComputedStyle(document.documentElement).getPropertyValue('--hv-tooltip-bg').trim(),
+    );
+    expect(tooltipBg).not.toBe('');
+    expect(tooltip.background).not.toBe('rgba(0, 0, 0, 0)');
   });
 
-  test('15.6 — the widened pill still fits at the 901px breakpoint', async ({ page }) => {
-    // 8.2 only samples 360/768/1920, so 901 — the first width where the labels
-    // appear, i.e. the widest the pill ever gets relative to its viewport —
-    // was a blind spot.
+  test('15.6 — the pill still fits at the 901px breakpoint', async ({ page }) => {
+    // 8.2 only samples 360/768/1920, so 901 — the width that used to open the
+    // label regime and is still the shell's "full desktop chrome" threshold —
+    // stays covered. The pill no longer widens with the language, so this is
+    // now a pure fit check.
     for (const w of [901, 1440]) {
       await page.setViewportSize({ width: w, height: 900 });
       await gotoDesktop(page, adminTokens);
       const m = await page.evaluate(() => {
         const pill = document.querySelector('.hv-menubar')!.getBoundingClientRect();
         const doc = document.documentElement;
-        const labels = [...document.querySelectorAll('.hv-topbar-btn-label')];
         return {
           pillLeft: Math.round(pill.left),
           pillRight: Math.round(pill.right),
-          labelled: labels.filter((l) => getComputedStyle(l).display !== 'none').length,
           scroll: doc.scrollWidth - doc.clientWidth,
         };
       });
-      expect(m.labelled, `labels render @${w}px`).toBe(3);
       // The pill is anchored to the RIGHT edge, so an overflow reads as a
       // negative `left`, never as an over-large `right`.
       expect(m.pillLeft, `pill left @${w}px`).toBeGreaterThanOrEqual(0);
@@ -2239,34 +2444,34 @@ test.describe('15 — Topbar icon + label chips', () => {
     }
   });
 
-  test('15.7 — every locale renders its labels, and German fits at 901px', async ({ page }) => {
+  test('15.7 — every locale translates the names, and the German pill fits at 901px', async ({ page }) => {
     for (const lang of ['en', 'fr', 'de', 'es']) {
       await page.setViewportSize({ width: 1440, height: 900 });
       await gotoDesktop(page, adminTokens, lang);
-      const labels = await page
-        .locator('.hv-topbar-btn-label')
-        .evaluateAll((els) => els.map((e) => (e.textContent || '').trim()));
-      expect(labels, `${lang}: three labels`).toHaveLength(3);
-      for (const l of labels) {
-        expect(l, `${lang}: a label is untranslated`).not.toBe('');
-        expect(/\bdesktop\.[a-z_]+/i.test(l), `${lang}: "${l}" is a raw key`).toBe(false);
+      const names = await page
+        .locator('.hv-topbar-btn')
+        .evaluateAll((els) => els.map((e) => (e.getAttribute('aria-label') || '').trim()));
+      expect(names, `${lang}: three names`).toHaveLength(3);
+      for (const n of names) {
+        expect(n, `${lang}: a name is missing`).not.toBe('');
+        expect(/\bdesktop\.[a-z_]+/i.test(n), `${lang}: "${n}" is a raw key`).toBe(false);
       }
     }
 
-    // German is the longest of the three, so it is the worst case for the
-    // pill's width — measured right at the breakpoint, not at 1440.
+    // German is the longest of the four, so it stays the worst case — measured
+    // right at the breakpoint, not at 1440.
     await page.setViewportSize({ width: 901, height: 900 });
     await gotoDesktop(page, adminTokens, 'de');
     const de = await page.evaluate(() => {
       const pill = document.querySelector('.hv-menubar')!.getBoundingClientRect();
       return {
         left: Math.round(pill.left),
-        labels: [...document.querySelectorAll('.hv-topbar-btn-label')].map((e) =>
-          (e.textContent || '').trim(),
+        names: [...document.querySelectorAll('.hv-topbar-btn')].map((e) =>
+          (e.getAttribute('aria-label') || '').trim(),
         ),
       };
     });
-    expect(de.labels, 'de really did apply').toContain('Benachrichtigungen');
+    expect(de.names, 'de really did apply').toContain('Benachrichtigungen');
     expect(de.left, 'the German pill still starts on-screen @901px').toBeGreaterThanOrEqual(0);
   });
 });

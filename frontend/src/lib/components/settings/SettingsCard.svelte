@@ -86,8 +86,8 @@
       <!-- The `!` flags are load-bearing — `styles/theme/base.css` sets an
            unlayered `h2 { font-size: … }`, which outranks every layered
            Tailwind utility. See the same note in `routes/Settings.svelte`.
-           `text-md` is the design's 16px/700 card title (`text-base` is
-           14px). -->
+           `text-md` is the native title-3 step (15px/700) — the card title;
+           `text-base` is the body step (13px). -->
       <h2 data-testid="settings-card-title" class="settings-card-title m-0 text-md! font-bold! leading-6! text-[var(--hv-settings-title)]!">{title}</h2>
       {#if subtitle}
         <p class="settings-card-subtitle m-0 mt-0.5 text-xs leading-4 text-[var(--hv-settings-label)]">{subtitle}</p>

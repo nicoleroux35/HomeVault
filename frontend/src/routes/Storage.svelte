@@ -969,7 +969,7 @@
         {:else}
           <div data-testid="storage-disk-grid" class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(260px,1fr))]">
             {#each disks as disk}
-              <button data-testid="storage-disk-card" class="flex flex-col gap-4 px-4 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] text-left cursor-pointer transition-colors hover:border-[var(--hv-shell-border-strong)]" onclick={() => openDiskDetail(disk)}>
+              <button data-testid="storage-disk-card" class="flex flex-col gap-4 px-4 py-4 rounded-lg bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] text-left cursor-pointer transition-colors hover:border-[var(--hv-shell-border-strong)]" onclick={() => openDiskDetail(disk)}>
                 <div class="flex items-center gap-3">
                   <span class={cn('w-2.5 h-2.5 rounded-full flex-none', disk.smart_status === 'Healthy' ? 'bg-[var(--hv-success)]' : disk.smart_status === 'Failed' ? 'bg-[var(--hv-error)]' : 'bg-[var(--hv-warning)]')}></span>
                   <div class="flex-1 min-w-0">
@@ -1177,7 +1177,7 @@
           <div data-testid="storage-cache-card" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
             <div class="flex items-center gap-2 mb-3"><IconBolt size={18} class="text-[var(--hv-primary)]" /><h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('cache.config_title')}</h3></div>
             <div class="flex flex-col gap-3">
-              <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]">
+              <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]">
                 <span>{$t('cache.cache_pool_label')}</span>
                 <select class={inpSel} bind:value={cacheSettings.cache_pool}>
                   <option value={null}>{$t('cache.cache_pool_none')}</option>
@@ -1188,12 +1188,12 @@
               </label>
               <Toggle bind:checked={cacheSettings.mover_enabled} label={$t('cache.mover_enabled')} />
               <div class="grid grid-cols-2 gap-3">
-                <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]"><span>{$t('cache.mover_schedule_label')}</span><input class={inpSel} type="text" bind:value={cacheSettings.mover_cron} placeholder="0 3 * * *" /></label>
-                <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]"><span>{$t('cache.min_free_label')}</span><input class={inpSel} type="number" min="1" max="95" bind:value={cacheSettings.min_free_percent} /></label>
-                <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]"><span>{$t('cache.mover_age_label')}</span><input class={inpSel} type="number" min="0" max="3650" bind:value={cacheSettings.mover_age_days} /></label>
-                <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]"><span>{$t('cache.mover_bwlimit_label')}</span><input class={inpSel} type="number" min="0" max="10000000" bind:value={cacheSettings.mover_bwlimit} /></label>
+                <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]"><span>{$t('cache.mover_schedule_label')}</span><input class={inpSel} type="text" bind:value={cacheSettings.mover_cron} placeholder="0 3 * * *" /></label>
+                <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]"><span>{$t('cache.min_free_label')}</span><input class={inpSel} type="number" min="1" max="95" bind:value={cacheSettings.min_free_percent} /></label>
+                <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]"><span>{$t('cache.mover_age_label')}</span><input class={inpSel} type="number" min="0" max="3650" bind:value={cacheSettings.mover_age_days} /></label>
+                <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]"><span>{$t('cache.mover_bwlimit_label')}</span><input class={inpSel} type="number" min="0" max="10000000" bind:value={cacheSettings.mover_bwlimit} /></label>
               </div>
-              <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]"><span>{$t('cache.mover_excludes_label')}</span><input class={inpSel} type="text" bind:value={cacheSettings.mover_excludes} placeholder="*.partial, .fuse_hidden*" /></label>
+              <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]"><span>{$t('cache.mover_excludes_label')}</span><input class={inpSel} type="text" bind:value={cacheSettings.mover_excludes} placeholder="*.partial, .fuse_hidden*" /></label>
             </div>
             <div class="mt-3">
               <Button variant="primary" onclick={saveCacheSettings} disabled={cacheBusy}>{$t('cache.save_config')}</Button>
@@ -1330,7 +1330,7 @@
                   {#each snapViewRows as snap (snap.name)}
                     <li class="flex items-center justify-between gap-2 text-xs">
                       <span class="font-mono truncate">{snap.name}</span>
-                      {#if snap.auto}<span class="text-[var(--hv-primary)] text-[10px] uppercase">{$t('storage.snapshots.snapshots_auto')}</span>{/if}
+                      {#if snap.auto}<span class="text-[var(--hv-primary)] text-t-caption uppercase">{$t('storage.snapshots.snapshots_auto')}</span>{/if}
                     </li>
                   {/each}
                 </ul>
@@ -1368,25 +1368,25 @@
     {#if snapFormError}
       <p data-testid="snapshots-form-error" role="alert" class="m-0 text-c-label text-[var(--hv-danger)]">{snapFormError}</p>
     {/if}
-    <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]">
+    <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]">
       <span>{$t('storage.snapshots.col_pool')}</span>
       <input class={inpSel} type="text" bind:value={snapForm.pool} placeholder="tank/data" />
     </label>
-    <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]">
+    <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]">
       <span>{$t('storage.snapshots.col_cron')}</span>
       <input class={inpSel} type="text" bind:value={snapForm.cron} placeholder="0 3 * * *" />
     </label>
-    <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]">
+    <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]">
       <span>{$t('storage.snapshots.prefix')}</span>
       <input class={inpSel} type="text" bind:value={snapForm.prefix} placeholder="hv-auto" />
     </label>
     <Toggle bind:checked={snapForm.recursive} label={$t('storage.snapshots.recursive')} />
     <div class="grid grid-cols-2 gap-3" data-testid="snapshots-gfs-fields">
-      <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]"><span>H</span><input class={inpSel} type="number" min="0" max="1024" bind:value={snapForm.gfs_hourly} /></label>
-      <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]"><span>D</span><input class={inpSel} type="number" min="0" max="1024" bind:value={snapForm.gfs_daily} /></label>
-      <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]"><span>W</span><input class={inpSel} type="number" min="0" max="1024" bind:value={snapForm.gfs_weekly} /></label>
-      <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]"><span>M</span><input class={inpSel} type="number" min="0" max="1024" bind:value={snapForm.gfs_monthly} /></label>
-      <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]"><span>Y</span><input class={inpSel} type="number" min="0" max="1024" bind:value={snapForm.gfs_yearly} /></label>
+      <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]"><span>H</span><input class={inpSel} type="number" min="0" max="1024" bind:value={snapForm.gfs_hourly} /></label>
+      <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]"><span>D</span><input class={inpSel} type="number" min="0" max="1024" bind:value={snapForm.gfs_daily} /></label>
+      <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]"><span>W</span><input class={inpSel} type="number" min="0" max="1024" bind:value={snapForm.gfs_weekly} /></label>
+      <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]"><span>M</span><input class={inpSel} type="number" min="0" max="1024" bind:value={snapForm.gfs_monthly} /></label>
+      <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]"><span>Y</span><input class={inpSel} type="number" min="0" max="1024" bind:value={snapForm.gfs_yearly} /></label>
     </div>
     <p class="m-0 text-xs text-[var(--hv-shell-text-2)]">{$t('storage.snapshots.gfs_help', { h: String(snapForm.gfs_hourly), d: String(snapForm.gfs_daily), w: String(snapForm.gfs_weekly), m: String(snapForm.gfs_monthly), y: String(snapForm.gfs_yearly) })}</p>
     <Toggle bind:checked={snapForm.enabled} label={$t('storage.snapshots.enabled')} />
@@ -1402,9 +1402,9 @@
 <!-- CACHE SHARE MODAL -->
 <Modal open={showCacheShareModal} title={$t('cache.add_share')} size="md" onclose={() => showCacheShareModal = false}>
   <div class="flex flex-col gap-3">
-    <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]"><span>{$t('cache.share_name')}</span><input class={inpSel} type="text" bind:value={newShareName} placeholder="photos" /></label>
-    <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]"><span>{$t('cache.mode')}</span><select class={inpSel} bind:value={newShareMode}>{#each CACHE_MODES as m}<option value={m}>{$t(`cache.mode_${m}`)}</option>{/each}</select></label>
-    <label class="flex flex-col gap-1.5 text-xs text-[var(--hv-shell-text-2)]"><span>{$t('cache.target_pool')}</span><select class={inpSel} bind:value={newShareTarget}>{#each cachePools as p}{#if p.name !== cacheSettings.cache_pool}<option value={p.name}>{p.name}</option>{/if}{/each}</select></label>
+    <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]"><span>{$t('cache.share_name')}</span><input class={inpSel} type="text" bind:value={newShareName} placeholder="photos" /></label>
+    <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]"><span>{$t('cache.mode')}</span><select class={inpSel} bind:value={newShareMode}>{#each CACHE_MODES as m}<option value={m}>{$t(`cache.mode_${m}`)}</option>{/each}</select></label>
+    <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]"><span>{$t('cache.target_pool')}</span><select class={inpSel} bind:value={newShareTarget}>{#each cachePools as p}{#if p.name !== cacheSettings.cache_pool}<option value={p.name}>{p.name}</option>{/if}{/each}</select></label>
     {#if !cacheSettings.cache_pool}
       <Alert variant="error">{$t('cache.no_cache_pool')}</Alert>
     {/if}

@@ -856,7 +856,7 @@
   const textInputClass =
     'min-w-0 flex-1 p-0! border-none! bg-transparent! text-[var(--hv-wizard-text-title)] caret-[var(--hv-login-accent)] outline-none placeholder:text-[var(--hv-login-muted)]! focus:shadow-none! disabled:bg-transparent!';
   const fieldWrapperClass =
-    'flex h-11 items-center gap-2 rounded-md border border-[var(--hv-login-field-border)] bg-white px-3 text-sm shadow-[var(--hv-wizard-field-shadow)] focus-within:border-[var(--hv-login-accent)] focus-within:shadow-[0_0_0_3px_var(--hv-login-accent-ring)]';
+    'flex h-11 items-center gap-2 rounded-md border border-[var(--hv-login-field-border)] bg-white px-3 text-c-base shadow-[var(--hv-wizard-field-shadow)] focus-within:border-[var(--hv-login-accent)] focus-within:shadow-[0_0_0_3px_var(--hv-login-accent-ring)]';
   const ctaClass =
     'bg-[image:var(--hv-login-btn-grad)]! rounded-md! shadow-[var(--hv-login-btn-shadow)] hover:brightness-105 active:scale-[0.98] disabled:opacity-60 disabled:shadow-none';
   const createClass =
@@ -877,7 +877,7 @@
   <!-- Live clock, sticky top. It owns the first grid row, whose `auto`
        minimum is exactly the clock's height — no magic band value. -->
   <div class="pointer-events-none sticky top-0 z-[1] flex w-full flex-col items-center pb-4 pt-8">
-    <div class="text-[3.5rem] leading-none font-light tracking-[-0.02em] text-[var(--hv-login-clock)] tabular-nums">{clock}</div>
+    <div class="text-t-clock-wizard leading-none font-light tracking-[-0.02em] text-[var(--hv-login-clock)] tabular-nums">{clock}</div>
     <div class="mt-1 text-xs uppercase tracking-[0.12em] text-[var(--hv-login-muted)]">{dateLabel}</div>
   </div>
 
@@ -1023,7 +1023,7 @@
               </div>
 
               <div class="mt-6">
-                <label for="username" class="mb-1.5 block text-sm font-medium text-[var(--hv-wizard-text-label)]">{t('setup.username.label')} <span class="text-[var(--hv-wizard-error)]">*</span></label>
+                <label for="username" class="mb-1.5 block text-c-label font-medium text-[var(--hv-wizard-text-label)]">{t('setup.username.label')} <span class="text-[var(--hv-wizard-error)]">*</span></label>
                 <div class={cn(fieldWrapperClass, username && !usernameFormatValid ? 'border-[var(--hv-wizard-error)]!' : usernameFormatValid ? 'border-[var(--hv-login-accent)]!' : '')}>
                   <IconUser size={19} stroke={1.7} class="shrink-0 text-[var(--hv-login-muted)]" />
                   <input id="username" type="text" class={textInputClass} bind:value={username} oninput={() => { usernameAvailable = null; }} onblur={() => { validateUsername(); suggestAvatarFromUsername(); if (usernameFormatValid) checkUsernameAvailability(); }} placeholder={t('setup.username.placeholder')} autocomplete="username" />
@@ -1050,7 +1050,7 @@
               </div>
 
               <div class="mt-4">
-                <label for="fullname" class="mb-1.5 block text-sm font-medium text-[var(--hv-wizard-text-label)]">{t('setup.fullname.label')} <span class="font-normal text-[var(--hv-login-muted)]">({t('setup.optional')})</span></label>
+                <label for="fullname" class="mb-1.5 block text-c-label font-medium text-[var(--hv-wizard-text-label)]">{t('setup.fullname.label')} <span class="font-normal text-[var(--hv-login-muted)]">({t('setup.optional')})</span></label>
                 <div class={fieldWrapperClass}>
                   <IconUserCheck size={19} stroke={1.7} class="shrink-0 text-[var(--hv-login-muted)]" />
                   <input id="fullname" type="text" class={textInputClass} bind:value={fullname} placeholder={t('setup.fullname.placeholder')} autocomplete="name" />
@@ -1067,7 +1067,7 @@
               <p data-testid="setup-step-desc" class="m-0 mt-2 text-sm text-[var(--hv-wizard-text-body)]">{t('setup.step2.description')}</p>
 
               <div class="mt-6">
-                <label for="password" class="mb-1.5 block text-sm font-medium text-[var(--hv-wizard-text-label)]">{t('setup.password.label')} <span class="text-[var(--hv-wizard-error)]">*</span></label>
+                <label for="password" class="mb-1.5 block text-c-label font-medium text-[var(--hv-wizard-text-label)]">{t('setup.password.label')} <span class="text-[var(--hv-wizard-error)]">*</span></label>
                 <div class={cn(fieldWrapperClass, passwordError && 'border-[var(--hv-wizard-error)]!')}>
                   <IconLock size={19} stroke={1.7} class="shrink-0 text-[var(--hv-login-muted)]" />
                   <input id="password" type={showPassword ? 'text' : 'password'} class={textInputClass} bind:value={password} onblur={validatePassword} placeholder={t('setup.password.placeholder')} autocomplete="new-password" />
@@ -1102,7 +1102,7 @@
               </div>
 
               <div class="mt-4">
-                <label for="confirm-password" class="mb-1.5 block text-sm font-medium text-[var(--hv-wizard-text-label)]">{t('setup.confirm_password.label')} <span class="text-[var(--hv-wizard-error)]">*</span></label>
+                <label for="confirm-password" class="mb-1.5 block text-c-label font-medium text-[var(--hv-wizard-text-label)]">{t('setup.confirm_password.label')} <span class="text-[var(--hv-wizard-error)]">*</span></label>
                 <div class={cn(fieldWrapperClass, confirmPassword && confirmPassword !== password ? 'border-[var(--hv-wizard-error)]!' : confirmPassword && confirmPassword === password ? 'border-[var(--hv-wizard-success)]!' : '')}>
                   <IconLock size={19} stroke={1.7} class="shrink-0 text-[var(--hv-login-muted)]" />
                   <input id="confirm-password" type={showConfirmPassword ? 'text' : 'password'} class={textInputClass} bind:value={confirmPassword} onblur={validateConfirmPassword} placeholder={t('setup.confirm_password.placeholder')} autocomplete="new-password" />
@@ -1140,7 +1140,7 @@
                       <p class="m-0 mt-3 text-xs leading-relaxed text-[var(--hv-wizard-text-body)]">{t('setup.2fa.scan_instruction')}</p>
 
                       <div class="mt-3">
-                        <label for="setup-totp-code" class="mb-1.5 block text-xs font-semibold text-[var(--hv-wizard-text-label)]">{t('setup.2fa.code')}</label>
+                        <label for="setup-totp-code" class="mb-1.5 block text-c-label font-semibold text-[var(--hv-wizard-text-label)]">{t('setup.2fa.code')}</label>
                         <div class={cn(fieldWrapperClass, totpError && 'border-[var(--hv-wizard-error)]!')}>
                           <IconShieldCheckered size={19} stroke={1.7} class="shrink-0 text-[var(--hv-login-muted)]" />
                           <input id="setup-totp-code" data-testid="setup-totp-code" type="text" inputmode="numeric" maxlength="6" class={textInputClass} bind:value={totpCode} oninput={() => { totpVerified = false; totpError = ''; }} placeholder="000000" autocomplete="one-time-code" disabled={totpVerifying} />
@@ -1253,7 +1253,7 @@
                         {recoveryCode}
                       </div>
                       <p class="m-0 mt-2 text-xs leading-relaxed text-[var(--hv-wizard-recovery-desc)]">{t('setup.recovery_warning')}</p>
-                      <label class="mt-3 flex cursor-pointer items-center gap-2.5 text-xs font-medium text-[var(--hv-wizard-recovery-title)]">
+                      <label class="mt-3 flex cursor-pointer items-center gap-2.5 text-c-label font-medium text-[var(--hv-wizard-recovery-title)]">
                         <input type="checkbox" class="h-4 w-4 accent-[var(--hv-warning)]" bind:checked={recoveryAcknowledged} />
                         <span>{t('setup.recovery_ack')}</span>
                       </label>

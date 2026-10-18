@@ -400,7 +400,7 @@
             data-testid="groups-row"
             class:selected={selectedGroup?.name === g.name && !creating}
             class={cn(
-              'flex items-center gap-3 w-full p-3 rounded-xl bg-[var(--hv-shell-card)] border text-left cursor-pointer transition-all',
+              'flex items-center gap-3 w-full p-3 rounded-lg bg-[var(--hv-shell-card)] border text-left cursor-pointer transition-all',
               selectedGroup?.name === g.name && !creating
                 ? 'border-[var(--hv-primary)] bg-[var(--hv-primary-selected-bg)]'
                 : 'border-[var(--hv-shell-border)] hover:border-[var(--hv-primary)] hover:bg-[var(--hv-primary-selected-bg-hover)]',

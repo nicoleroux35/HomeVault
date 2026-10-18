@@ -490,7 +490,10 @@
   // components/app controlClasses.ts. The dead `vm-btn*` hook prefixes were
   // removed with them — no CSS rule ever referenced them.
   const vmPill = 'vm-pill inline-flex items-center px-2 py-0.5 rounded-full text-c-xs font-bold uppercase';
-  const vmCard = 'vm-card flex items-center gap-3 px-4 py-3 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] cursor-pointer hover:border-[var(--hv-shell-border-strong)]';
+  // The card IS the row's button (`role="button"` + Enter/Space handler), so it
+  // takes the one control corner — a surface corner here would be the exact
+  // drift E2E 14.12 exists to catch.
+  const vmCard = 'vm-card flex items-center gap-3 px-4 py-3 rounded-lg bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] cursor-pointer hover:border-[var(--hv-shell-border-strong)]';
   const vmEmpty = 'vm-empty flex flex-col items-center gap-3 py-16 text-center text-[var(--hv-shell-text)]';
   const vmField = 'vm-field flex flex-col gap-1.5';
   const vmFieldLabel = 'vm-field-label text-xs font-semibold text-[var(--hv-shell-text-strong)]';
@@ -667,8 +670,8 @@
           <details class="vm-resize mt-2">
             <summary class="cursor-pointer text-xs font-semibold text-[var(--hv-primary)]">{$t('vm.resize_title')}</summary>
             <div class="mt-2 flex flex-col gap-2">
-              <label class="flex items-center gap-2 text-xs text-[var(--hv-shell-text-2)]">{$t('vm.vcpu')}<input type="number" class={textInput} min="1" max="64" bind:value={detail.cpu_cores} /></label>
-              <label class="flex items-center gap-2 text-xs text-[var(--hv-shell-text-2)]">{$t('vm.memory')} ({$t('vm.unit_mb')})<input type="number" class={textInput} min="256" max="131072" step="256" bind:value={detail.memory_mb} /></label>
+              <label class="flex items-center gap-2 text-c-label text-[var(--hv-shell-text-2)]">{$t('vm.vcpu')}<input type="number" class={textInput} min="1" max="64" bind:value={detail.cpu_cores} /></label>
+              <label class="flex items-center gap-2 text-c-label text-[var(--hv-shell-text-2)]">{$t('vm.memory')} ({$t('vm.unit_mb')})<input type="number" class={textInput} min="256" max="131072" step="256" bind:value={detail.memory_mb} /></label>
               <Button variant="primary" onclick={() => saveResize(detail!.cpu_cores ?? 1, detail!.memory_mb ?? 512)}>{$t('common.save')}</Button>
               <p class="vm-muted m-0 text-c-xs text-[var(--hv-shell-text-2)]">{$t('vm.resize_hint')}</p>
             </div>
@@ -714,12 +717,12 @@
     {#snippet children()}
     <div class="flex flex-col gap-3">
       <div class="vm-mode grid grid-cols-2 @max-[360px]:grid-cols-1 gap-2.5" role="group" aria-label={$t('vm.wizard_title')}>
-        <button type="button" data-testid="vm-mode-btn" class:sel={wMode === 'catalogue'} class={cn('flex flex-col items-start gap-1 p-3 rounded-xl border border-[var(--hv-shell-border)] bg-[var(--hv-shell-card)] text-left cursor-pointer', wMode === 'catalogue' && 'border-[var(--hv-primary)] bg-[var(--hv-primary-light)]')} onclick={() => setMode('catalogue')}>
+        <button type="button" data-testid="vm-mode-btn" class:sel={wMode === 'catalogue'} class={cn('flex flex-col items-start gap-1 p-3 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-card)] text-left cursor-pointer', wMode === 'catalogue' && 'border-[var(--hv-primary)] bg-[var(--hv-primary-light)]')} onclick={() => setMode('catalogue')}>
           <IconPackages size={20} stroke={1.7} />
           <span class="vm-mode-t text-sm font-bold text-[var(--hv-shell-text-strong)]">{$t('vm.mode_catalogue')}</span>
           <span class="vm-mode-h text-c-xs text-[var(--hv-shell-text-2)]">{$t('vm.mode_catalogue_hint')}</span>
         </button>
-        <button type="button" data-testid="vm-mode-btn" class:sel={wMode === 'iso'} class={cn('flex flex-col items-start gap-1 p-3 rounded-xl border border-[var(--hv-shell-border)] bg-[var(--hv-shell-card)] text-left cursor-pointer', wMode === 'iso' && 'border-[var(--hv-primary)] bg-[var(--hv-primary-light)]')} onclick={() => setMode('iso')}>
+        <button type="button" data-testid="vm-mode-btn" class:sel={wMode === 'iso'} class={cn('flex flex-col items-start gap-1 p-3 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-card)] text-left cursor-pointer', wMode === 'iso' && 'border-[var(--hv-primary)] bg-[var(--hv-primary-light)]')} onclick={() => setMode('iso')}>
           <IconDeviceDesktop size={20} stroke={1.7} />
           <span class="vm-mode-t text-sm font-bold text-[var(--hv-shell-text-strong)]">{$t('vm.mode_iso')}</span>
           <span class="vm-mode-h text-c-xs text-[var(--hv-shell-text-2)]">{$t('vm.mode_iso_hint')}</span>
@@ -732,7 +735,7 @@
           <div class="grid grid-cols-2 @max-[360px]:grid-cols-1 gap-2">
             {#each osOptions as o (o.id)}
               {@const bk = `vm.os_${o.id.replace(/[.\-]/g, '_')}`}
-              <button type="button" data-testid="vm-os" class:sel={wOs === o.id} class={cn('flex flex-col items-start gap-0.5 p-3 rounded-xl border border-[var(--hv-shell-border)] bg-[var(--hv-shell-card)] text-left cursor-pointer', wOs === o.id && 'border-[var(--hv-primary)] bg-[var(--hv-primary-light)]')} onclick={() => pickOs(o.id)}>
+              <button type="button" data-testid="vm-os" class:sel={wOs === o.id} class={cn('flex flex-col items-start gap-0.5 p-3 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-card)] text-left cursor-pointer', wOs === o.id && 'border-[var(--hv-primary)] bg-[var(--hv-primary-light)]')} onclick={() => pickOs(o.id)}>
                 <span class="vm-os-label text-c-base font-semibold text-[var(--hv-shell-text-strong)]">{o.label}{#if o.recommended}<span data-testid="vm-os-reco" class="ml-1 px-1.5 py-0.5 rounded bg-[var(--hv-success-bg)] text-[var(--hv-success)] text-micro font-bold uppercase">{$t('vm.w_recommended')}</span>{/if}{#if o.iso_only}<span data-testid="vm-os-iso" class="ml-1 px-1.5 py-0.5 rounded bg-[var(--hv-primary-light)] text-[var(--hv-primary)] text-micro font-bold uppercase">{$t('vm.w_iso_badge')}</span>{/if}</span>
                 <span class="vm-os-blurb text-c-xs text-[var(--hv-shell-text-2)]">{ $t(bk) === bk ? o.blurb : $t(bk)}</span>
               </button>
@@ -803,7 +806,7 @@
         <legend class="mb-1.5 text-xs font-semibold text-[var(--hv-shell-text-strong)]">{$t('vm.w_size')}</legend>
         <div class="grid grid-cols-3 gap-2">
           {#each ['small', 'medium', 'large'] as s (s)}
-            <button type="button" data-testid="vm-size" class:sel={wSize === s} class={cn('flex flex-col items-start gap-0.5 p-3 rounded-xl border border-[var(--hv-shell-border)] bg-[var(--hv-shell-card)] text-left cursor-pointer', wSize === s && 'border-[var(--hv-primary)] bg-[var(--hv-primary-light)]')} onclick={() => applySize(s as 'small' | 'medium' | 'large')}>
+            <button type="button" data-testid="vm-size" class:sel={wSize === s} class={cn('flex flex-col items-start gap-0.5 p-3 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-card)] text-left cursor-pointer', wSize === s && 'border-[var(--hv-primary)] bg-[var(--hv-primary-light)]')} onclick={() => applySize(s as 'small' | 'medium' | 'large')}>
               <span class="vm-size-name text-c-base font-semibold text-[var(--hv-shell-text-strong)]">{$t(`vm.w_size_${s}`)}</span>
               <span class="vm-size-spec text-micro text-[var(--hv-shell-text-2)]">{SIZE_SPECS[s].cpu} {$t('vm.vcpu')} · {fmtMem(SIZE_SPECS[s].mem)} · {fmtDisk(SIZE_SPECS[s].disk)}</span>
             </button>
@@ -814,7 +817,7 @@
 
       {#if wMode === 'iso' || wKind === 'vm'}
         <div class="flex flex-col gap-1">
-          <label class="vm-check flex items-center gap-1.5 text-xs text-[var(--hv-shell-text-2)] cursor-pointer"><input type="checkbox" class="accent-[var(--hv-primary)]" bind:checked={wAudio} /> {$t('vm.audio')}</label>
+          <label class="vm-check flex items-center gap-1.5 text-c-label text-[var(--hv-shell-text-2)] cursor-pointer"><input type="checkbox" class="accent-[var(--hv-primary)]" bind:checked={wAudio} /> {$t('vm.audio')}</label>
           <span class={vmFieldHint}>{$t('vm.audio_hint')}</span>
         </div>
       {/if}
@@ -824,8 +827,8 @@
           <legend class="mb-1.5 text-xs font-semibold text-[var(--hv-shell-text-strong)]">{$t('vm.w_access')}</legend>
           <p class={vmFieldHint}>{$t('vm.w_access_hint')}</p>
           <div class="grid grid-cols-2 @max-[360px]:grid-cols-1 gap-2">
-            <label class="flex flex-col gap-1 text-xs text-[var(--hv-shell-text-2)]">{$t('vm.w_username')}<input type="text" class={textInput} bind:value={wUser} autocapitalize="off" autocomplete="off" spellcheck="false" /></label>
-            <label class="flex flex-col gap-1 text-xs text-[var(--hv-shell-text-2)]">{$t('vm.w_password')}
+            <label class="flex flex-col gap-1 text-c-label text-[var(--hv-shell-text-2)]">{$t('vm.w_username')}<input type="text" class={textInput} bind:value={wUser} autocapitalize="off" autocomplete="off" spellcheck="false" /></label>
+            <label class="flex flex-col gap-1 text-c-label text-[var(--hv-shell-text-2)]">{$t('vm.w_password')}
               <span data-testid="vm-pass" class="relative">
                 {#if wShowPass}<input type="text" class={textInput} bind:value={wPass} autocomplete="new-password" />{:else}<input type="password" class={textInput} bind:value={wPass} autocomplete="new-password" />{/if}
                 <button type="button" data-testid="vm-btn-icon" class={cn(actionIconBtn, 'absolute right-1 top-1 h-9 w-9 hv-ic-abs')} onclick={() => wShowPass = !wShowPass} aria-label={wShowPass ? $t('vm.w_hide') : $t('vm.w_show')}>{#if wShowPass}<IconEyeOff size={15} stroke={1.9} />{:else}<IconEye size={15} stroke={1.9} />{/if}</button>
@@ -854,13 +857,13 @@
               <span class={vmFieldHint}>{$t('vm.w_kind_hint')}</span>
             </fieldset>
           {:else if wIsoOs !== 'windows'}
-            <label class="vm-check flex items-center gap-1.5 text-xs text-[var(--hv-shell-text-2)] cursor-pointer"><input type="checkbox" class="accent-[var(--hv-primary)]" bind:checked={wSecureBoot} /> {$t('vm.w_secure_boot')}</label>
+            <label class="vm-check flex items-center gap-1.5 text-c-label text-[var(--hv-shell-text-2)] cursor-pointer"><input type="checkbox" class="accent-[var(--hv-primary)]" bind:checked={wSecureBoot} /> {$t('vm.w_secure_boot')}</label>
             <span class={vmFieldHint}>{$t('vm.w_secure_boot_hint')}</span>
           {/if}
           <div class="grid grid-cols-3 gap-2">
-            <label class="flex flex-col gap-1 text-xs text-[var(--hv-shell-text-2)]">{$t('vm.vcpu')}<input type="number" class={textInput} min="1" max="64" bind:value={wCpu} /></label>
-            <label class="flex flex-col gap-1 text-xs text-[var(--hv-shell-text-2)]">{$t('vm.memory')} ({$t('vm.unit_mb')})<input type="number" class={textInput} min="256" max="131072" step="256" bind:value={wMem} /></label>
-            <label class="flex flex-col gap-1 text-xs text-[var(--hv-shell-text-2)]">{$t('vm.disk')} ({$t('vm.unit_gb')})<input type="number" class={textInput} min="5" max="4096" bind:value={wDisk} /></label>
+            <label class="flex flex-col gap-1 text-c-label text-[var(--hv-shell-text-2)]">{$t('vm.vcpu')}<input type="number" class={textInput} min="1" max="64" bind:value={wCpu} /></label>
+            <label class="flex flex-col gap-1 text-c-label text-[var(--hv-shell-text-2)]">{$t('vm.memory')} ({$t('vm.unit_mb')})<input type="number" class={textInput} min="256" max="131072" step="256" bind:value={wMem} /></label>
+            <label class="flex flex-col gap-1 text-c-label text-[var(--hv-shell-text-2)]">{$t('vm.disk')} ({$t('vm.unit_gb')})<input type="number" class={textInput} min="5" max="4096" bind:value={wDisk} /></label>
           </div>
         </div>
       {/if}

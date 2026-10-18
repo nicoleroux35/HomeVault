@@ -105,7 +105,7 @@
   const textInputClass =
     'min-w-0 flex-1 p-0! border-none! bg-transparent! text-[var(--hv-shell-text-strong)] caret-[var(--hv-login-accent)] outline-none placeholder:text-[var(--hv-login-muted)]! focus:shadow-none! disabled:bg-transparent!';
   const fieldWrapperClass =
-    'flex h-11 items-center gap-2 rounded-md border border-[var(--hv-login-field-border)] bg-[var(--hv-login-field-bg)] px-3 text-sm focus-within:border-[var(--hv-login-accent)] focus-within:shadow-[0_0_0_3px_var(--hv-login-accent-ring)]';
+    'flex h-11 items-center gap-2 rounded-md border border-[var(--hv-login-field-border)] bg-[var(--hv-login-field-bg)] px-3 text-c-base focus-within:border-[var(--hv-login-accent)] focus-within:shadow-[0_0_0_3px_var(--hv-login-accent-ring)]';
   const ctaClass =
     'bg-[image:var(--hv-login-btn-grad)]! rounded-md! shadow-[var(--hv-login-btn-shadow)] hover:brightness-105 active:scale-[0.98] disabled:opacity-60 disabled:shadow-none';
 
@@ -462,7 +462,7 @@
 
     {#if !connectionError}
       <div class="pointer-events-none fixed top-10 left-1/2 z-[1] -translate-x-1/2 text-center max-[480px]:top-6">
-        <div class="text-[4.5rem] leading-none font-light tracking-[-0.02em] text-[var(--hv-login-clock)] tabular-nums max-[480px]:text-[3rem]">{clock}</div>
+        <div class="text-t-clock leading-none font-light tracking-[-0.02em] text-[var(--hv-login-clock)] tabular-nums max-[480px]:text-t-clock-sm">{clock}</div>
         <div class="mt-1 text-sm uppercase tracking-[0.12em] text-[var(--hv-login-muted)]">{dateLabel}</div>
       </div>
 
@@ -480,7 +480,7 @@
               <div class="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-[image:var(--hv-login-logo-grad)] shadow-[var(--hv-login-logo-shadow)]" data-testid="login-icon-box">
                 <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="white" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><circle cx="12" cy="14" r="2.4"/><path d="M12 16.4V19"/></svg>
               </div>
-              <h1 class="m-0! text-base! font-semibold tracking-wide text-[var(--hv-shell-text-strong)]" data-testid="login-brand-title">HomeVault</h1>
+              <h1 class="m-0! text-t-title-3! font-semibold tracking-wide text-[var(--hv-shell-text-strong)]" data-testid="login-brand-title">HomeVault</h1>
               <div class="mt-0.5 text-xs uppercase tracking-wider text-[var(--hv-login-muted)]" data-testid="login-secure-signin">{stepLabel}</div>
             </div>
 
@@ -492,7 +492,7 @@
                   <span>{t('login.sign_in')}</span>
                 </Button>
               {:else}
-                <p class="m-0 text-[13px] leading-relaxed text-[var(--hv-shell-text-2)]">{t('login.recovery_description')}</p>
+                <p class="m-0 text-t-body leading-relaxed text-[var(--hv-shell-text-2)]">{t('login.recovery_description')}</p>
                 <form onsubmit={(e)=>{e.preventDefault();handleRecoveryVerify();}}>
                   <div class="flex flex-col gap-1.5">
                     <label for="recovery-username" class="text-xs font-medium uppercase tracking-[0.1em] text-[var(--hv-login-muted)]">{t('login.username_label')}</label>
@@ -508,7 +508,7 @@
                       <input id="recovery-code" type="text" class={textInputClass} value={recoveryCodeInput} oninput={handleRecoveryCodeInput} placeholder={t('login.recovery_code_placeholder')} disabled={isVerifyingRecovery} inputmode="numeric" maxlength="39" autocomplete="off" required />
                     </div>
                   </div>
-                  {#if recoveryVerifyError}<p class="m-0 mt-2 text-[13px] text-[var(--hv-login-error)]" role="alert" data-testid="login-reset-error">{recoveryVerifyError}</p>{/if}
+                  {#if recoveryVerifyError}<p class="m-0 mt-2 text-t-body text-[var(--hv-login-error)]" role="alert" data-testid="login-reset-error">{recoveryVerifyError}</p>{/if}
                   <Button variant="primary" class={ctaClass} size="lg" fullWidth type="submit" disabled={isVerifyingRecovery} data-testid="login-recovery-submit">
                     {#if isVerifyingRecovery}<div class="hv-spinner"></div><span>{t('login.signing_in')}</span>{:else}<span>{t('login.recovery_submit')}</span>{/if}
                   </Button>
@@ -523,7 +523,7 @@
               <div class="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-[image:var(--hv-login-logo-grad)] shadow-[var(--hv-login-logo-shadow)]" data-testid="login-icon-box">
                 <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="white" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><circle cx="12" cy="14" r="2.4"/><path d="M12 16.4V19"/></svg>
               </div>
-              <h1 class="m-0! text-base! font-semibold tracking-wide text-[var(--hv-shell-text-strong)]" data-testid="login-brand-title">HomeVault</h1>
+              <h1 class="m-0! text-t-title-3! font-semibold tracking-wide text-[var(--hv-shell-text-strong)]" data-testid="login-brand-title">HomeVault</h1>
               <div class="mt-0.5 text-xs uppercase tracking-wider text-[var(--hv-login-muted)]" data-testid="login-secure-signin">{stepLabel}</div>
             </div>
 
@@ -532,13 +532,13 @@
                 {#if insecureConnection}
                   <div class="flex items-start gap-2 rounded-md border border-[var(--hv-login-timer-warn)] bg-[var(--hv-login-accent-soft)] px-3 py-2.5" role="status" data-testid="login-insecure-banner">
                     <IconAlertTriangle size={18} stroke={2} class="mt-0.5 shrink-0 text-[var(--hv-login-timer-warn)]" />
-                    <p class="m-0 text-[13px] leading-relaxed text-[var(--hv-shell-text-2)]">{t('login.insecure_notice')}</p>
+                    <p class="m-0 text-t-body leading-relaxed text-[var(--hv-shell-text-2)]">{t('login.insecure_notice')}</p>
                   </div>
                 {/if}
                 {#if recoveryMode}
                   <div class="flex items-start gap-2 rounded-md border border-[var(--hv-login-timer-warn)] bg-[var(--hv-login-accent-soft)] px-3 py-2.5" role="status" data-testid="login-hardware-recovery">
                     <IconAlertTriangle size={18} stroke={2} class="mt-0.5 shrink-0 text-[var(--hv-login-timer-warn)]" />
-                    <p class="m-0 text-[13px] leading-relaxed text-[var(--hv-shell-text-2)]">{t('login.hardware_recovery.notice')}</p>
+                    <p class="m-0 text-t-body leading-relaxed text-[var(--hv-shell-text-2)]">{t('login.hardware_recovery.notice')}</p>
                   </div>
                 {/if}
                 <div class="flex flex-col gap-1.5">
@@ -569,7 +569,7 @@
                     <Switch bind:checked={rememberMe} disabled={isLoading} aria-label={t('login.remember_me')} />
                     <span class="text-sm text-[var(--hv-shell-text-2)]">{t('login.remember_me')}</span>
                   </div>
-                  <button type="button" data-testid="login-forgot-link" class="cursor-pointer border-none bg-transparent p-0 text-[13px] font-medium text-[var(--hv-login-accent-deep)] hover:underline disabled:opacity-60" onclick={openForgotPassword} disabled={isLoading}>
+                  <button type="button" data-testid="login-forgot-link" class="cursor-pointer border-none bg-transparent p-0 text-t-body font-medium text-[var(--hv-login-accent-deep)] hover:underline disabled:opacity-60" onclick={openForgotPassword} disabled={isLoading}>
                     {t('login.forgot_password_link')}
                   </button>
                 </div>
@@ -583,7 +583,7 @@
               <div class="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-[image:var(--hv-login-logo-grad)] shadow-[var(--hv-login-logo-shadow)]" data-testid="login-icon-box">
                 <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="white" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><circle cx="12" cy="14" r="2.4"/><path d="M12 16.4V19"/></svg>
               </div>
-              <h1 class="m-0! text-base! font-semibold tracking-wide text-[var(--hv-shell-text-strong)]" data-testid="login-brand-title">HomeVault</h1>
+              <h1 class="m-0! text-t-title-3! font-semibold tracking-wide text-[var(--hv-shell-text-strong)]" data-testid="login-brand-title">HomeVault</h1>
               <div class="mt-0.5 text-xs uppercase tracking-wider text-[var(--hv-login-muted)]" data-testid="login-secure-signin">{stepLabel}</div>
             </div>
 
@@ -598,7 +598,7 @@
                 </div>
 
                 <h2 class="m-0 text-center text-sm! font-medium text-[var(--hv-login-clock)]!" data-testid="login-step-title">{t('login.totp_prompt')}</h2>
-                <p class="m-0 mt-1 text-center text-[13px] text-[var(--hv-login-muted)]" data-testid="login-step-description">{t('login.totp_prompt_hint')}</p>
+                <p class="m-0 mt-1 text-center text-t-body text-[var(--hv-login-muted)]" data-testid="login-step-description">{t('login.totp_prompt_hint')}</p>
 
                 <div class="flex items-center justify-center gap-2.5 max-[480px]:gap-2">
                   {#each codeDigits as digit, index}
@@ -640,7 +640,7 @@
                     <circle cx="16" cy="16" r={TOTP_R} class="fill-none stroke-[var(--hv-login-timer-track)] stroke-[2.5]"></circle>
                     <circle cx="16" cy="16" r={TOTP_R} class={cn('fill-none stroke-[2.5] stroke-linecap-round transition-[stroke-dashoffset] duration-[900ms] ease-linear', timerColorClass)} stroke-dasharray={TOTP_CIRC} stroke-dashoffset={TOTP_CIRC * (1 - totpProgress)}></circle>
                   </svg>
-                  <span class={cn('text-[13px] tabular-nums', timerColorClass)}>{String(totpRemaining).padStart(2, '0')}s</span>
+                  <span class={cn('text-t-body tabular-nums', timerColorClass)}>{String(totpRemaining).padStart(2, '0')}s</span>
                 </div>
 
                 <Button variant="primary" class={ctaClass} size="lg" fullWidth type="submit" disabled={isLoading}>

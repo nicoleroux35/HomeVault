@@ -169,7 +169,7 @@ const links = $state<ShareLink[]>([]);
     <p class="m-0 mb-3 text-sm text-[var(--hv-shell-text-2)] break-all">{initialPath}</p>
     <div class="grid gap-3 @min-[420px]:grid-cols-2">
       <div>
-        <label class="block text-xs font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="share-mode">
+        <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="share-mode">
           {$t('explorer.share_link_mode')}
         </label>
         <select id="share-mode" class={selectClass} bind:value={mode}>
@@ -178,7 +178,7 @@ const links = $state<ShareLink[]>([]);
         </select>
       </div>
       <div>
-        <label class="block text-xs font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="share-expiry">
+        <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="share-expiry">
           {$t('explorer.share_link_expiry')}
         </label>
         <select id="share-expiry" class={selectClass} bind:value={expiresDays}>
