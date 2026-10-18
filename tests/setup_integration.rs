@@ -320,6 +320,39 @@ async fn test_check_username_invalid_chars() {
     assert!(!body["data"]["available"].as_bool().unwrap());
 }
 
+#[tokio::test]
+async fn test_check_username_is_disabled_once_setup_complete() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let mut app = test_router(state);
+
+    // Complete setup first — the wizard's oracle must close with it.
+    let (status1, _) = post_json(
+        &mut app,
+        "/api/auth/setup",
+        json!({"username": "firstadmin", "password": "SecurePass123"}),
+    )
+    .await;
+    assert_eq!(status1, StatusCode::OK);
+
+    let (status, body) = get_json(
+        &mut app,
+        "/api/auth/check-username?username=someoneelse",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "post-setup the endpoint must not answer availability at all: {:?}",
+        body
+    );
+    let msg = body["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("already"),
+        "expected already-complete rejection, got: {}",
+        msg
+    );
+}
+
 // ========================================================================
 // 3. POST /api/auth/setup — validation errors
 // ========================================================================
@@ -613,46 +646,6 @@ async fn test_setup_with_avatar_seed() {
 // 5. POST /api/auth/setup — check-username after setup
 // ========================================================================
 
-#[tokio::test]
-async fn test_check_username_taken_after_setup() {
-    let (state, _tmp, _lock) = setup_state().await;
-    let mut app = test_router(state);
-
-    // Setup creates "firstadmin"
-    post_json(
-        &mut app,
-        "/api/auth/setup",
-        json!({"username": "firstadmin", "password": "SecurePass123"}),
-    )
-    .await;
-
-    // Check if "firstadmin" is now taken
-    let (_, body) = get_json(&mut app, "/api/auth/check-username?username=firstadmin").await;
-    assert!(!body["data"]["available"].as_bool().unwrap());
-    let reason = body["data"]["reason"].as_str().unwrap_or("");
-    assert!(
-        reason.contains("already") || reason.contains("exists"),
-        "Expected taken/exists reason, got: {}",
-        reason
-    );
-}
-
-#[tokio::test]
-async fn test_check_username_different_one_still_available() {
-    let (state, _tmp, _lock) = setup_state().await;
-    let mut app = test_router(state);
-
-    post_json(
-        &mut app,
-        "/api/auth/setup",
-        json!({"username": "firstadmin", "password": "SecurePass123"}),
-    )
-    .await;
-
-    let (_, body) = get_json(&mut app, "/api/auth/check-username?username=newuser").await;
-    assert!(body["data"]["available"].as_bool().unwrap());
-}
-
 // ========================================================================
 // 6. Full flow: status → setup → check → login ready
 // ========================================================================
@@ -685,9 +678,16 @@ async fn test_full_setup_flow() {
     let token = setup_body["data"]["token"].as_str().unwrap();
     assert!(!token.is_empty());
 
-    // Step 4: Verify username is now taken
-    let (_, taken_body) = get_json(&mut app, "/api/auth/check-username?username=firstadmin").await;
-    assert!(!taken_body["data"]["available"].as_bool().unwrap());
+    // Step 4: the username oracle is closed once setup completed —
+    // check-username answers 403 instead of reporting availability.
+    let (taken_status, taken_body) =
+        get_json(&mut app, "/api/auth/check-username?username=firstadmin").await;
+    assert_eq!(
+        taken_status,
+        StatusCode::FORBIDDEN,
+        "post-setup check-username must refuse: {:?}",
+        taken_body
+    );
 
     // Step 5: Verify setup status is no longer first run
     let (_, final_status) = get_json(&mut app, "/api/auth/setup-status").await;
@@ -1006,15 +1006,32 @@ async fn test_setup_with_valid_totp_enables_2fa_and_returns_backup_codes() {
         backup_count
     );
 
-    // The exact secret the admin scanned is stored, enabled, with 8 codes.
+    // The exact secret the admin scanned is stored **encrypted at rest**
+    // (AES-256-GCM `hv1:` blob — never the raw base32 in the column),
+    // enabled, with 8 codes; the plaintext only ever exists in memory, and
+    // reads back identically through the repository.
     let (stored_secret, enabled): (String, bool) =
         sqlx::query_as("SELECT totp_secret_encrypted, enabled FROM user_2fa WHERE username = ?")
             .bind("firstadmin")
             .fetch_one(&*state.db.pool())
             .await
             .unwrap();
-    assert_eq!(stored_secret, TEST_TOTP_SECRET.to_string());
+    assert_ne!(
+        stored_secret,
+        TEST_TOTP_SECRET.to_string(),
+        "the TOTP secret must never hit the database in plaintext"
+    );
+    assert!(stored_secret.starts_with("hv1:"), "got: {stored_secret}");
     assert!(enabled);
+
+    let repo = homevault::storage::User2faRepository::new(state.db.pool());
+    let row = repo
+        .get_by_username("firstadmin")
+        .await
+        .expect("2FA row")
+        .expect("2FA row present");
+    assert_eq!(row.totp_secret, TEST_TOTP_SECRET);
+    assert!(row.enabled);
 }
 
 #[tokio::test]
@@ -1599,6 +1616,59 @@ async fn test_setup_bootstrap_endpoints_are_rate_limited() {
         }
     }
     assert!(saw_429, "the bootstrap routes must rate-limit per peer");
+}
+
+#[tokio::test]
+async fn test_setup_progress_does_not_consume_the_bootstrap_budget() {
+    // Regression: the wizard PUTs `/auth/setup/progress` on every step
+    // navigation. While that route shared the 20/min bootstrap limiter, a
+    // handful of step round-trips exhausted it and the next `check-username`
+    // came back 429 — which the UI then read as "username already taken" and
+    // refused to leave the account step (the E2E suite hit this reliably).
+    let (state, _tmp, _lock) = setup_state().await;
+    let app = create_app(state);
+    // A LAN peer: the bootstrap routes must be reachable from a private
+    // address for the budget question to even arise.
+    let peer_ip = "192.168.1.50";
+
+    // Well past the 20/min budget, all through the exempt route.
+    for step in 0..30 {
+        let body = json!({ "step": step % 3, "data": {} });
+        let mut req = Request::builder()
+            .method(Method::PUT)
+            .uri("/api/auth/setup/progress")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(peer(peer_ip)));
+        let mut app_clone = app.clone();
+        let resp = ServiceExt::<Req>::ready(&mut app_clone)
+            .await
+            .unwrap()
+            .call(req)
+            .await
+            .unwrap();
+        assert_ne!(
+            resp.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "setup progress must never be rate-limited by the bootstrap budget"
+        );
+    }
+
+    // The metered route still answers normally right after.
+    let (status, body) = get_as_peer(
+        &app,
+        peer_ip,
+        "/api/auth/check-username?username=freshadmin",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "check-username must still work after the wizard's progress writes: {:?}",
+        body
+    );
+    assert!(body["data"]["available"].as_bool().unwrap_or(false));
 }
 
 #[tokio::test]
