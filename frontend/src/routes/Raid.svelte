@@ -198,15 +198,19 @@
   }
 
   // Shared shapes (appliance tokens only — the per-app CSS vocabulary is gone).
+  // Every one of these is a <button>, so it takes the ONE control corner
+  // (`rounded-lg` → --hv-radius-lg → 6px), whatever its size: a selectable card
+  // is still a control, and a 12px corner here made the wizard's choices read
+  // as surfaces next to the 6px buttons that submit them.
   const typeCard =
-    'relative text-left bg-[var(--hv-surface-container-lowest)] border-2 border-[var(--hv-border)] rounded-2xl p-4 ' +
+    'relative text-left bg-[var(--hv-surface-container-lowest)] border-2 border-[var(--hv-border)] rounded-lg p-4 ' +
     'cursor-pointer flex flex-col gap-2 min-h-[140px] transition-colors hover:border-[var(--hv-border-hover)] ' +
     'focus-visible:outline-none focus-visible:border-[var(--hv-primary)] focus-visible:shadow-[var(--hv-shadow-focus)]';
   const diskRow =
-    'relative flex items-center gap-3 px-4 py-3 border-2 border-[var(--hv-border)] rounded-xl ' +
+    'relative flex items-center gap-3 px-4 py-3 border-2 border-[var(--hv-border)] rounded-lg ' +
     'bg-[var(--hv-surface-container-lowest)] cursor-pointer min-h-[60px] transition-colors hover:border-[var(--hv-border-hover)]';
   const fsCard =
-    'text-left bg-[var(--hv-surface-container-lowest)] border-2 border-[var(--hv-border)] rounded-xl p-3 ' +
+    'text-left bg-[var(--hv-surface-container-lowest)] border-2 border-[var(--hv-border)] rounded-lg p-3 ' +
     'cursor-pointer flex flex-col gap-1 min-h-[62px] transition-colors hover:border-[var(--hv-border-hover)] ' +
     'focus-visible:outline-none focus-visible:border-[var(--hv-primary)] focus-visible:shadow-[var(--hv-shadow-focus)]';
   const raidInput =

@@ -157,8 +157,8 @@
           aria-pressed={range === r}
           onclick={() => selectRange(r)}
           class={range === r
-            ? 'inline-flex items-center h-9 px-4 border-none rounded-xl bg-[var(--hv-primary-selected-bg)] text-[var(--hv-primary)] text-c-base font-semibold cursor-pointer'
-            : 'inline-flex items-center h-9 px-4 border-none rounded-xl bg-transparent text-[var(--hv-shell-text-2)] text-c-base font-medium cursor-pointer hover:bg-[var(--hv-shell-border-soft)]'}
+            ? 'inline-flex items-center h-9 px-4 border-none rounded-lg bg-[var(--hv-primary-selected-bg)] text-[var(--hv-primary)] text-c-base font-semibold cursor-pointer'
+            : 'inline-flex items-center h-9 px-4 border-none rounded-lg bg-transparent text-[var(--hv-shell-text-2)] text-c-base font-medium cursor-pointer hover:bg-[var(--hv-shell-border-soft)]'}
         >
           {$t(`metrics.range_${r}`)}
         </button>

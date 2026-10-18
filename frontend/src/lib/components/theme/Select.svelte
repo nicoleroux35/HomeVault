@@ -214,7 +214,7 @@
     justify-content: center;
     width: 20px;
     height: 20px;
-    border-radius: var(--hv-radius-sm);
+    border-radius: var(--hv-radius-control);
     color: var(--hv-text-tertiary);
     cursor: pointer;
     flex-shrink: 0;

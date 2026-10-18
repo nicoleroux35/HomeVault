@@ -101,11 +101,11 @@ export const settingsRowLast =
   'flex flex-col items-start gap-2 @min-[480px]:flex-row @min-[480px]:items-center @min-[480px]:justify-between @min-[480px]:gap-4 py-3';
 
 /** Row copy. */
-export const settingsRowLabel = 'text-sm font-medium leading-5 text-[var(--hv-settings-title)]';
+export const settingsRowLabel = 'text-c-label font-medium leading-5 text-[var(--hv-settings-title)]';
 export const settingsRowHint = 'settings-hint mt-0.5 text-xs leading-4 text-[var(--hv-settings-label)]';
 
 /** Standalone label used where a row shows a value rather than a control. */
-export const settingsLabel = 'text-sm font-medium leading-5 text-[var(--hv-settings-title)]';
+export const settingsLabel = 'text-c-label font-medium leading-5 text-[var(--hv-settings-title)]';
 export const settingsHint = 'settings-hint text-xs leading-4 text-[var(--hv-settings-label)]';
 
 /* Every interactive control is exactly `--hv-touch-target-min` (44px) tall —
@@ -114,12 +114,12 @@ export const settingsHint = 'settings-hint text-xs leading-4 text-[var(--hv-sett
 const controlHeight = 'h-[var(--hv-touch-target-min)]';
 
 export const settingsInput =
-  `settings-input w-full ${controlHeight} px-3 border-[1.45px] border-[var(--hv-settings-border)] rounded-lg bg-[var(--hv-settings-tile)] text-sm text-[var(--hv-settings-row)] outline-none focus:border-[var(--hv-primary)]`;
+  `settings-input w-full ${controlHeight} px-3 border-[1.45px] border-[var(--hv-settings-border)] rounded-lg bg-[var(--hv-settings-tile)] text-c-label text-[var(--hv-settings-row)] outline-none focus:border-[var(--hv-primary)]`;
 
 /** The control geometry, without a width — the two selects below differ only
  *  in how they take their horizontal space, so they share one declaration. */
 const selectBase =
-  `settings-select ${controlHeight} px-3 border-[1.45px] border-[var(--hv-settings-border)] rounded-lg bg-[var(--hv-settings-tile)] text-sm text-[var(--hv-settings-row)] outline-none focus:border-[var(--hv-primary)]`;
+  `settings-select ${controlHeight} px-3 border-[1.45px] border-[var(--hv-settings-border)] rounded-lg bg-[var(--hv-settings-tile)] text-c-label text-[var(--hv-settings-row)] outline-none focus:border-[var(--hv-primary)]`;
 
 export const settingsSelect = `w-full ${selectBase}`;
 
@@ -129,7 +129,7 @@ export const settingsSelect = `w-full ${selectBase}`;
  *  would be resolved by stylesheet order, not by intent. */
 export const settingsSelectCompact = `w-auto ${selectBase}`;
 export const settingsTextarea =
-  'w-full min-h-[120px] p-3 border-[1.45px] border-[var(--hv-settings-border)] rounded-lg bg-[var(--hv-settings-tile)] text-sm font-[family-name:var(--hv-font-mono)] outline-none focus:border-[var(--hv-primary)]';
+  'w-full min-h-[120px] p-3 border-[1.45px] border-[var(--hv-settings-border)] rounded-lg bg-[var(--hv-settings-tile)] text-c-label font-[family-name:var(--hv-font-mono)] outline-none focus:border-[var(--hv-primary)]';
 
 /** Footer strip under a card's rows (test-email, check-for-updates). */
 export const settingsCardFooter =
@@ -137,7 +137,7 @@ export const settingsCardFooter =
 
 /** Buttons — appliance geometry, one step down from the old 44px rows. */
 export const settingsBtn =
-  `settings-btn inline-flex items-center justify-center gap-2 ${controlHeight} px-4 rounded-lg text-sm font-medium cursor-pointer transition-colors whitespace-nowrap disabled:opacity-50 disabled:cursor-default`;
+  `settings-btn inline-flex items-center justify-center gap-2 ${controlHeight} px-4 rounded-lg text-c-label font-medium cursor-pointer transition-colors whitespace-nowrap disabled:opacity-50 disabled:cursor-default`;
 export const settingsBtnGhost =
   'settings-btn-ghost border-[1.45px] border-[var(--hv-settings-border)] bg-[var(--hv-settings-tile)] text-[var(--hv-settings-title)] hover:bg-[var(--hv-settings-hairline)]';
 export const settingsBtnPrimary =

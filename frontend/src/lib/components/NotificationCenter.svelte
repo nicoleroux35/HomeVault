@@ -428,7 +428,7 @@
     justify-content: center;
     background: transparent;
     border: none;
-    border-radius: var(--hv-radius-sm);
+    border-radius: var(--hv-radius-control);
     color: var(--hv-shell-text-2);
     cursor: pointer;
     transition:

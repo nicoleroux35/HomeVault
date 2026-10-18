@@ -344,8 +344,40 @@ another framework's design language (Fluent, Material, …) as an authority.
   `--hv-success` #1E7E34 / `--hv-warning` #B45309 / `--hv-error` #C22B21 /
   `--hv-info` = primary. Surfaces are **opaque paper** (`--hv-shell-*`:
   glass #FFFFFF / card #F7F8FA / fill #EFF1F4 / hairlines #DCE1E7) — no blur,
-  a dark photo wallpaper must never wash out ink text. Radius stops are
-  appliance-tight (controls 6–8px, cards 10–12px, windows 16px).
+  a dark photo wallpaper must never wash out ink text. Radius stops follow
+  `design-tokens.md` §4 — badges 8px, controls 12px, every container 18px,
+  tags pill — see the next rule.
+- **Non-colour craft comes from `design-tokens.md`; colour does not.**
+  Spacing rhythm (`--hv-section-gap-*`, `--hv-component-gap-*`,
+  `--hv-card-padding-*`, `--hv-content-max-width*`), elevation
+  (multi-layer contact + ambient shadows), weights (400–900), leading
+  (1.1 title / 1.53 body), tracking (-0.015em title) and the layout
+  breakpoints (734 / 1068 / 1440) are ported from `design-tokens.md` at the
+  repo root. Its **palette is not adopted** (one accent `#1E62AE` stays), nor
+  are its other-hue display gradients or its pill *form* buttons — see
+  `docs/guides/design-system.md` §2.2 and §3.2 for the reasoning and the one
+  documented deviation.
+- **One surface corner, one control corner, one badge corner** (2026-10-19):
+  every container — app window, monitor widget, modal, drawer, popover, power
+  dialog, activity panel, card — takes **18px** through `--hv-radius-2xl` (the
+  `xl`/`3xl`/`4xl` aliases and `--hv-window-radius`/`--hv-radius-card` resolve
+  to it too); every control — button, input, select, chip, row — takes
+  **12px** through `--hv-radius-default` (the `md`/`lg` aliases and
+  `--hv-radius-control` resolve to it, so the vendored shadcn `rounded-md` and
+  every hand-written rule land on one corner whatever the button size); every
+  inline badge takes **8px** through `--hv-radius-badge` (`--hv-radius-sm` is
+  its alias). Tags (filter / severity / category chips) take
+  `--hv-radius-pill` (980px). This is **enforced on every button of every
+  screen**: E2E `14.12` walks the app registry and only accepts the control
+  corner, a circle, a capsule, a hairline-separated row or a
+  segmented-control child. Never put a `rounded-xl`/`rounded-2xl` utility on a
+  `<button>` — that is how disk cards, wizard option cards and Settings' nav
+  rows drifted to a surface corner while the buttons beside them were at the
+  control corner. Never give a container, a control or a badge its own number:
+  the retired 16px window, 24px chrome-panel, 8px and 10px control stops are
+  exactly how a window and a popover — and a button and the input it submits —
+  ended up not matching. E2E `desktop.spec.ts` `7.4`/`14.5`/`14.12`,
+  `widgets.spec.ts` `2.2` and `login.spec.ts` `13.7` pin it.
 - **No hardcoded values** anywhere: a color, radius, shadow, spacing or
   z-index in a page/component is a `var(--hv-*)` or a Tailwind token
   (`bg-primary`, `text-muted-foreground`, …) that resolves to one. **No
@@ -359,9 +391,22 @@ another framework's design language (Fluent, Material, …) as an authority.
   Nothing may be interactive on hover only — anything hover-revealed must be
   reachable by tap and keyboard focus. A screen is done only when it works
   with a mouse *and* a finger.
-- **Two type scales, deliberately split**: `--hv-font-size-*` (content,
-  default) and `--hv-text-*` (compact chrome, one step smaller). Don't merge —
-  it would resize ~16 files. Typeface is Inter (self-hosted).
+- **One text ladder — the native desktop text styles (2026-10-18).** Every
+  text size resolves to a platform desktop step: **11 / 12 / 13 / 15 / 17 / 20 /
+  22 / 26 / 34** (caption & footnote & subheadline 11, callout 12, body &
+  headline 13, title-3 15, title-2 17, metric 20, title-1 22, large-title 26,
+  display 34), plus the documented decorative numerals (gauge 62, gateway clock
+  72/48/56). **11px is a hard floor** — nothing readable renders smaller.
+  `--hv-font-size-*` (content) and `--hv-text-*` (compact chrome) stay separate
+  *names* but now resolve to the **same** steps, so a role renders at one size
+  whichever name a call site uses. New code picks the role utility
+  (`text-t-body`, `text-t-title-3`, …). `h1`–`h6` map 1:1 onto
+  large-title/title-1/title-2/title-3/headline/subheadline in `base.css`.
+  Guard: `tests/e2e/design/typography.spec.ts` (ladder conformance over the
+  login screen + five apps, role table, 11px floor). Never add a raw
+  `text-[Npx]`, and never point the iOS anti-zoom rule at
+  `--hv-font-size-md` — it is the 15px title-3 step now, and that rule needs a
+  literal 16px. Typeface is Inter (self-hosted).
 - **Component library is canonical for every screen**: the theme primitives
   (`theme/` → `Button`, `Input`, `Select`, `Toggle`, `Checkbox`, `Radio`,
   `Alert`, `Badge`, `Spinner`, `Modal`, `Icon`, `UserAvatar`, `PathField`,
@@ -406,6 +451,34 @@ another framework's design language (Fluent, Material, …) as an authority.
   wash out the ink) plus the chrome material pair
   `--hv-chrome-surface-border` / `--hv-chrome-surface-shadow`, which
   `.hv-topbar-panel` shares so a popover can't mismatch the pill it hangs off.
+- **Both pills are capsules and their controls are circles** (2026-10-18):
+  `border-radius: var(--hv-radius-full)` on `.hv-menubar` / `.hv-dock` (the
+  browser clamps it to half the height, so both ends are exact semicircles —
+  no new token), `border-radius: 50%` on `.hv-dock-icon` and on
+  `.hv-topbar-btn` (icon-only at every width; the name is `aria-label` plus the
+  shared CSS tooltip, never a `title`). The topbar's horizontal padding and the
+  glyph size are both **derived** from `--hv-chrome-topbar-btn-size` so the end
+  controls stay concentric with the pill's arcs and the glyph keeps the dock's
+  half-the-tile ratio. E2E `8.5` (both pills) / `8.7` (dock icons) / `15.1`
+  (topbar buttons) pin the shape; do not re-introduce a px radius.
+- **Chrome controls are a ratio of their bar, not a pixel count** (2026-10-18):
+  the dock tile is `--hv-dock-item-size` = **64px** (0.775 × the 84px bar — the
+  ratio measured on the approved reference dock, 158px circles in a 204px bar)
+  and the topbar buttons are `--hv-chrome-topbar-btn-size` = **48px** (0.775 ×
+  the 62px pill; 44px in the phone's 56px pill). Glyphs are half their control
+  (32px / 24px). Never hardcode either diameter: a control sized in px instead
+  of in proportion is what made the two pills read as different families. Padding is `(bar − tile) / 2` = 10px on every side, the pitch is
+  `--hv-chrome-dock-gap` (10px, 0.152 × tile), and the tile glyph is 0.5 ×
+  tile (32px). Retune all four together: a tile shrunk under a fixed 84px bar
+  re-opens the dead space the ratio exists to remove, and a pitch below
+  ~11.5px lets two neighbours touch at the hover peak (`scale(1.18)`).
+- **The circle language carries into the window chrome** (2026-10-18): the
+  app-icon tile of `WindowHeader` and of `WidgetHeader` is
+  `border-radius: 50%` through `--hv-winhdr-icon-radius`, and the min/max/close
+  trio is `border-radius: 50%` through `--hv-winctrl-radius` (never a px stop,
+  so both stay round if their size tokens move). A **labelled** button inside
+  the chrome keeps `--hv-radius-control` (12px).
+  E2E `desktop.spec.ts` `14.6`/`14.7` and `widgets.spec.ts` `2.2` pin it.
 - **Each pill owns its height** — `--hv-chrome-topbar-h` (62px) /
   `--hv-chrome-dock-h` (84px), and the dock is deliberately the taller one.
   Both are `box-sizing: border-box`, so each token is the rendered height and

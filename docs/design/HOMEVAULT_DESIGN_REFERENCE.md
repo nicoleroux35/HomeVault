@@ -198,12 +198,19 @@
   --hv-font-xl: 20px;
 
   /* ============================================
-     BORDER RADIUS LEGACY
+     BORDER RADIUS
+     --------------------------------------------
+     Live values are in frontend/src/lib/styles/theme/tokens.css — a badge
+     stop (8px), a control stop (12px) and a surface stop (18px), with the
+     intermediate names kept as aliases and a pill stop (980px) for tags
+     (design-tokens.md §4, adopted 2026-10-19). This reference block is
+     historical and must not be copied.
      ============================================ */
-  --hv-radius-sm: 6px;
-  --hv-radius-md: 8px;
+  --hv-radius-sm: 8px;    /* badge stop */
+  --hv-radius-md: 12px;   /* control stop */
   --hv-radius-lg: 12px;
-  --hv-radius-xl: 16px;
+  --hv-radius-xl: 18px;   /* surface stop */
+  --hv-radius-pill: 980px;
 
   /* ============================================
      COMPONENT HEIGHTS
