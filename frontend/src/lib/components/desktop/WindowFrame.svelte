@@ -2,15 +2,17 @@
      File          : WindowFrame.svelte
      Author        : Nicolas Le Roux
      Created       : 28/09/2026
-     Last modified : 28/09/2026 by Nicolas Le Roux
-     Version       : 1.0.0
+     Last modified : 18/10/2026 by Nicolas Le Roux
+     Version       : 1.1.0
 
      Description:
        The draggable/resizable/maximizable window shell of the desktop:
        owns position, size and z-order through the window manager, drag and
        resize with edge snapping, content-fit auto-grow until the user
        resizes manually, a Svelte error boundary per window (with the
-       test-only RenderErrorProbe), and app-accent context for the chrome.
+       test-only RenderErrorProbe), app-accent context for the chrome, and
+       the shared frame footer (in-product help far left, resize grip far
+       right).
 
      Dependencies:
        - svelte (>= 5), stores/windowManager, utils/snapUtils
@@ -39,6 +41,9 @@
   export let onFocus: () => void;
   export let onUpdatePosition: (x: number, y: number) => void;
   export let onUpdateSize: (width: number, height: number) => void;
+  /** Frame-footer help action — the desktop wires it to the in-product
+   *  assistant (the RAG knowledge base is HomeVault's help channel). */
+  export let onHelp: () => void = () => {};
 
   let isDragging = false;
   let isResizing = false;
@@ -137,7 +142,7 @@
     if (win.isMaximized) return;
 
     const target = e.currentTarget as HTMLElement;
-    if (!target.classList.contains('hv-resize-handle')) return;
+    if (!target.hasAttribute('data-hv-resize')) return;
 
     e.preventDefault();
     e.stopPropagation();
@@ -222,6 +227,44 @@
     document.removeEventListener('pointermove', handleResizeMove);
     document.removeEventListener('pointerup', handleResizeEnd);
     document.removeEventListener('pointercancel', handleResizeEnd);
+  }
+
+  /* Keyboard resize — the footer grip is a real <button>, so it has to be
+     operable without a pointer (WCAG 2.1.1): the arrow keys move the same SE
+     corner the drag moves, 16px a press (64px with Shift), clamped to the
+     window's minimum and to the room left to the right of / below its origin. */
+  function handleResizeGripKeydown(e: KeyboardEvent) {
+    if (win.isMaximized) return;
+
+    const step = e.shiftKey ? 64 : 16;
+    let deltaWidth = 0;
+    let deltaHeight = 0;
+    if (e.key === 'ArrowRight') deltaWidth = step;
+    else if (e.key === 'ArrowLeft') deltaWidth = -step;
+    else if (e.key === 'ArrowDown') deltaHeight = step;
+    else if (e.key === 'ArrowUp') deltaHeight = -step;
+    else return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    const vw = typeof window !== 'undefined' ? window.innerWidth : win.width;
+    const vh = typeof window !== 'undefined' ? window.innerHeight : win.height;
+    const margin = DEFAULT_SNAP_CONFIG.edgeMargin;
+
+    // A keyboard resize is as deliberate as a drag: it opts the window out of
+    // the content-fit auto-grow for good.
+    windowManager.markUserResized(win.id);
+    onUpdateSize(
+      clampSize(win.width + deltaWidth, MIN_WIDTH, vw - (win.x ?? 0) - margin),
+      clampSize(win.height + deltaHeight, MIN_HEIGHT, vh - (win.y ?? 0) - margin)
+    );
+  }
+
+  /* Clamps a size to [min, max], keeping `min` authoritative when the viewport
+     leaves less than `min` of room — a window must stay usable. */
+  function clampSize(value: number, min: number, max: number) {
+    return Math.max(min, Math.min(value, Math.max(min, max)));
   }
 
   /* Double-clicking the title bar toggles maximized / restored. */
@@ -330,7 +373,9 @@
      with touch), so a maximized window is inset below the topbar and above
      the dock instead, or its header/footer would render behind them. */
   /* Every window uses the same paper chrome: solid surface, the min / max /
-     close trio inline in the header bar, no separate title/footer bars. Every
+     close trio inline in the header bar, no separate title bar — the one
+     footer is the frame's own chrome strip (help + resize grip), never a
+     second title bar. Every
      app ships its own in-content header — the single standardized
      <WindowHeader> component (icon tile + title, optional tab row /
      action button / extra cluster, [data-hv-drag]). WindowFrame must NOT also
@@ -435,18 +480,58 @@
       </svelte:boundary>
     </div>
 
-    {#if !win.isMaximized}
-      <!-- Invisible SE corner handle (no visible footer grip in the paper
-           design); the 7 edge/corner strips below keep the window resizable. -->
-      <div class="hv-resize-handle hv-resize-se-corner" role="presentation" onpointerdown={(e) => handleResizeStart(e, 'se')}></div>
+    <!-- Frame footer — the one strip every window shares, whatever its own
+         page anatomy: in-product help on the far left, the resize grip on the
+         far right (the SE corner the window has always resized from, now a
+         visible, labelled control). The grip is dropped on a maximized window
+         — there is nothing to resize there — while help stays reachable. -->
+    <div class="hv-winframe-footer">
+      <button
+        type="button"
+        class="hv-winframe-fbtn hv-ic"
+        data-testid="win-help"
+        aria-label={$t('desktop.window_help')}
+        title={$t('desktop.window_help')}
+        onclick={onHelp}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="9.25" />
+          <path d="M9.15 9.2a2.9 2.9 0 1 1 4.05 2.68c-.78.35-1.2 1.06-1.2 1.9v.5" />
+          <circle cx="12" cy="17.55" r="1.05" fill="currentColor" stroke="none" />
+        </svg>
+      </button>
 
-      <div class="hv-resize-handle hv-resize-n" role="presentation" onpointerdown={(e) => handleResizeStart(e, 'n')}></div>
-      <div class="hv-resize-handle hv-resize-s" role="presentation" onpointerdown={(e) => handleResizeStart(e, 's')}></div>
-      <div class="hv-resize-handle hv-resize-e" role="presentation" onpointerdown={(e) => handleResizeStart(e, 'e')}></div>
-      <div class="hv-resize-handle hv-resize-w" role="presentation" onpointerdown={(e) => handleResizeStart(e, 'w')}></div>
-      <div class="hv-resize-handle hv-resize-ne" role="presentation" onpointerdown={(e) => handleResizeStart(e, 'ne')}></div>
-      <div class="hv-resize-handle hv-resize-nw" role="presentation" onpointerdown={(e) => handleResizeStart(e, 'nw')}></div>
-      <div class="hv-resize-handle hv-resize-sw" role="presentation" onpointerdown={(e) => handleResizeStart(e, 'sw')}></div>
+      {#if !win.isMaximized}
+        <button
+          type="button"
+          class="hv-winframe-fbtn hv-winframe-grip hv-ic"
+          data-testid="win-resize-grip"
+          data-hv-resize
+          aria-label={$t('desktop.window_resize')}
+          title={$t('desktop.window_resize')}
+          onpointerdown={(e) => handleResizeStart(e, 'se')}
+          onkeydown={handleResizeGripKeydown}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9.25" />
+            <path d="M7.4 12h9.2" />
+            <path d="M9.4 9.9 7.3 12l2.1 2.1" />
+            <path d="M14.6 9.9 16.7 12l-2.1 2.1" />
+          </svg>
+        </button>
+      {/if}
+    </div>
+
+    {#if !win.isMaximized}
+      <!-- The 7 edge/corner strips keep every edge resizable; the SE corner
+           itself is the footer grip above, not an invisible hotspot. -->
+      <div class="hv-resize-handle hv-resize-n" data-hv-resize role="presentation" onpointerdown={(e) => handleResizeStart(e, 'n')}></div>
+      <div class="hv-resize-handle hv-resize-s" data-hv-resize role="presentation" onpointerdown={(e) => handleResizeStart(e, 's')}></div>
+      <div class="hv-resize-handle hv-resize-e" data-hv-resize role="presentation" onpointerdown={(e) => handleResizeStart(e, 'e')}></div>
+      <div class="hv-resize-handle hv-resize-w" data-hv-resize role="presentation" onpointerdown={(e) => handleResizeStart(e, 'w')}></div>
+      <div class="hv-resize-handle hv-resize-ne" data-hv-resize role="presentation" onpointerdown={(e) => handleResizeStart(e, 'ne')}></div>
+      <div class="hv-resize-handle hv-resize-nw" data-hv-resize role="presentation" onpointerdown={(e) => handleResizeStart(e, 'nw')}></div>
+      <div class="hv-resize-handle hv-resize-sw" data-hv-resize role="presentation" onpointerdown={(e) => handleResizeStart(e, 'sw')}></div>
     {/if}
   </div>
 {/if}
@@ -465,7 +550,8 @@
        shadow — the AppWindow mock's exact frame. The frame owns the surface
        itself now (it used to stay transparent and let the header + the app's
        own content paint it), so a window is legible even where an app page
-       leaves a gap. Radius is the --hv-window-radius window stop (16px). */
+       leaves a gap. Radius is the single surface stop (--hv-window-radius,
+       the same corner every container in the product uses). */
     background: var(--hv-window-bg);
     border: 1px solid var(--hv-window-border);
     box-sizing: border-box;
@@ -548,8 +634,9 @@
   }
 
   .hv-cl-btn {
-    /* The button IS the mock's 28px rounded square — no inner ::before and
-       no shadow, exactly as drawn. */
+    /* The button IS the 28px control — a PERFECT CIRCLE since 2026-10-18
+       (--hv-winctrl-radius: 50%), the dock tiles' / topbar buttons' shape
+       language. No inner ::before and no shadow, exactly as drawn. */
     position: relative;
     display: grid;
     place-items: center;
@@ -565,12 +652,14 @@
 
   /* Transparent 34px hit pad — 3px a side is the most the 6px gap allows
      before two neighbours' targets would overlap. Keeps a usable touch
-     target without changing the 28px square the mock specifies. */
+     target without changing the 28px circle the design specifies. Its own
+     `50%` (not `calc(radius + 3px)`): the pad must stay round whatever the
+     control's radius token holds. */
   .hv-cl-btn::after {
     content: '';
     position: absolute;
     inset: -3px;
-    border-radius: calc(var(--hv-winctrl-radius) + 3px);
+    border-radius: 50%;
   }
 
   .hv-cl-btn:active {
@@ -598,16 +687,68 @@
     background: var(--hv-winctrl-close-hover);
   }
 
-  .hv-resize-se-corner {
-    position: absolute;
-    right: 0;
-    bottom: 0;
-    width: 18px;
-    height: 18px;
-    cursor: nwse-resize;
+  /* Frame footer — the shared bottom strip of every window: help far left,
+     resize grip far right. It is deliberately thinner than the in-content
+     `WindowFooter` (56px actions / 32px status): it is chrome, not content,
+     so it takes the status strip's 32px floor plus 4px of vertical padding
+     (36px box) and never competes with the app's own footer above it. */
+  .hv-winframe-footer {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--hv-space-2);
+    min-height: 36px;
+    padding: 4px var(--hv-space-3);
+    background: var(--hv-shell-fill);
+    border-top: 1px solid var(--hv-shell-border-soft);
   }
 
-  /* Phone: the trio keeps the same 28px square — three of them plus gaps and
+  /* 28px icon button (the trio's size) with the shared `.hv-ic` 44px hit pad,
+     the one control corner and the standard focus ring — a compact control in
+     the footer is a compact control everywhere else. */
+  .hv-winframe-fbtn {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: none;
+    border-radius: var(--hv-radius-control);
+    background: transparent;
+    color: var(--hv-shell-text-2);
+    cursor: pointer;
+    transition: background 150ms ease, color 150ms ease, transform 150ms ease;
+  }
+
+  .hv-winframe-fbtn:hover {
+    background: var(--hv-subtle-hover);
+    color: var(--hv-shell-text-strong);
+  }
+
+  .hv-winframe-fbtn:active {
+    transform: scale(0.94);
+  }
+
+  .hv-winframe-fbtn:focus-visible {
+    outline: none;
+    box-shadow: var(--hv-focus-ring);
+  }
+
+  /* Resize grip: the two-arrow circle glyph, turned 45° clockwise so its
+     arrows read as the bottom-right diagonal — the direction this grip
+     actually resizes. `touch-action: none` keeps a touch/pen drag from
+     scrolling the page instead of resizing. */
+  .hv-winframe-grip {
+    cursor: nwse-resize;
+    touch-action: none;
+  }
+
+  .hv-winframe-grip svg {
+    transform: rotate(45deg);
+  }
+
+  /* Phone: the trio keeps the same 28px circle — three of them plus gaps and
      the 12px inset are 108px, which fits a 360px viewport with room for the
      title. Only the reserve shrinks (--hv-winhdr-btn-clear-sm). */
 
