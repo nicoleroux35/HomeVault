@@ -684,10 +684,13 @@
   const switchTrack =
     'w-14 h-8 flex-none p-1 border-none rounded-full flex items-center transition-colors disabled:opacity-45 disabled:cursor-default';
   const switchKnob = 'w-6 h-6 rounded-full bg-white shadow-[0_2px_6px_rgba(6,9,30,0.4)]';
-  // 46px tile variant of the shared `tileBtn` (rail header actions).
+  // 46px tile variant of the shared `tileBtn` (rail header actions). It is a
+  // BUTTON, so the size override must not carry a corner: `tileBtn` already
+  // owns the one control corner, and `rounded-xl` here was silently putting a
+  // 12px surface corner on an icon button.
   const iconBtn = cn(
     tileBtn,
-    'w-[46px] h-[46px] rounded-xl bg-[var(--hv-shell-fill)] disabled:opacity-40 disabled:cursor-default'
+    'w-[46px] h-[46px] bg-[var(--hv-shell-fill)] disabled:opacity-40 disabled:cursor-default'
   );
   const chip =
     'inline-flex items-center gap-2 min-h-11 px-4 border border-[var(--hv-shell-border)] rounded-lg ' +
@@ -697,6 +700,7 @@
   const hint = 'text-c-label text-[var(--hv-shell-text)]';
   const errTxt = 'text-xs text-[var(--hv-error-text)]';
   const okTxt = 'text-xs text-[var(--hv-success)]';
+  // Decorative tile beside a setting (not interactive): a 12px surface corner.
   const settingIco =
     'flex-none w-[46px] h-[46px] rounded-xl grid place-items-center bg-[var(--hv-shell-fill)] text-[var(--hv-shell-text-2)]';
   const settingIcoPrimary = cn(settingIco, 'bg-[var(--hv-primary-light)] text-[var(--hv-primary)]');
@@ -714,8 +718,10 @@
   // see docs/guides/design-system.md §4.3.
   // One rail row (master list). Selection / lock tinting is layered on top by
   // the row itself so the base shape stays identical for every state.
+  // A rail row is a <button>: it takes the control corner like every other
+  // control on the screen (rounded-lg → 6px), not a surface corner.
   const railRow =
-    'flex w-full items-center gap-2.5 px-2.5 py-2.5 border border-transparent rounded-xl bg-[var(--hv-shell-card)] ' +
+    'flex w-full items-center gap-2.5 px-2.5 py-2.5 border border-transparent rounded-lg bg-[var(--hv-shell-card)] ' +
     'cursor-pointer text-left transition-colors';
   const filterBtn =
     'inline-flex items-center gap-1.5 h-8 px-2.5 border-none rounded-lg bg-transparent text-[var(--hv-shell-text-2)] ' +
@@ -909,11 +915,11 @@
               <fieldset class="m-0 min-w-0 border-0 p-0">
                 <legend class="sr-only">{$t('users.role_label')}</legend>
                 <div class="grid grid-cols-1 @min-[640px]:grid-cols-2 gap-3">
-                  <button type="button" data-testid="users-role" class:active={createForm.role === 'user'} aria-pressed={createForm.role === 'user'} onclick={() => (createForm.role = 'user')} class={cn('flex flex-col items-start gap-1.5 px-4 py-4 border rounded-xl bg-[var(--hv-shell-fill)] text-left cursor-pointer transition-colors hover:bg-[var(--hv-shell-border-soft)]', createForm.role === 'user' ? 'border-[var(--hv-primary)]/55 bg-[var(--hv-primary-light)]' : 'border-[var(--hv-shell-border)]')}>
+                  <button type="button" data-testid="users-role" class:active={createForm.role === 'user'} aria-pressed={createForm.role === 'user'} onclick={() => (createForm.role = 'user')} class={cn('flex flex-col items-start gap-1.5 px-4 py-4 border rounded-lg bg-[var(--hv-shell-fill)] text-left cursor-pointer transition-colors hover:bg-[var(--hv-shell-border-soft)]', createForm.role === 'user' ? 'border-[var(--hv-primary)]/55 bg-[var(--hv-primary-light)]' : 'border-[var(--hv-shell-border)]')}>
                     <span class="inline-flex items-center gap-2 text-sm font-semibold text-[var(--hv-shell-text-strong)]"><IconUsers size={15} stroke={2} aria-hidden="true" /> {$t('users.role_user2')}</span>
                     <span class="text-c-xs text-[var(--hv-shell-text-2)] leading-relaxed">{$t('users.role_user_desc')}</span>
                   </button>
-                  <button type="button" data-testid="users-role" class:active={createForm.role === 'admin'} aria-pressed={createForm.role === 'admin'} onclick={() => (createForm.role = 'admin')} class={cn('flex flex-col items-start gap-1.5 px-4 py-4 border rounded-xl bg-[var(--hv-shell-fill)] text-left cursor-pointer transition-colors hover:bg-[var(--hv-shell-border-soft)]', createForm.role === 'admin' ? 'border-[var(--hv-primary)]/55 bg-[var(--hv-primary-light)]' : 'border-[var(--hv-shell-border)]')}>
+                  <button type="button" data-testid="users-role" class:active={createForm.role === 'admin'} aria-pressed={createForm.role === 'admin'} onclick={() => (createForm.role = 'admin')} class={cn('flex flex-col items-start gap-1.5 px-4 py-4 border rounded-lg bg-[var(--hv-shell-fill)] text-left cursor-pointer transition-colors hover:bg-[var(--hv-shell-border-soft)]', createForm.role === 'admin' ? 'border-[var(--hv-primary)]/55 bg-[var(--hv-primary-light)]' : 'border-[var(--hv-shell-border)]')}>
                     <span class="inline-flex items-center gap-2 text-sm font-semibold text-[var(--hv-shell-text-strong)]"><IconShield size={15} stroke={2} aria-hidden="true" /> {$t('users.role_admin2')}</span>
                     <span class="text-c-xs text-[var(--hv-shell-text-2)] leading-relaxed">{$t('users.role_admin_desc')}</span>
                   </button>
@@ -993,7 +999,7 @@
                         class:active={!createForm.home_path && createForm.home_disk === d.mount_point}
                         aria-pressed={!createForm.home_path && createForm.home_disk === d.mount_point}
                         onclick={() => pickCreateDisk(d.mount_point)}
-                        class={cn('flex-1 min-w-[150px] flex flex-col items-start gap-0.5 px-3 py-3 border rounded-xl bg-[var(--hv-shell-fill)] text-left cursor-pointer transition-colors hover:bg-[var(--hv-shell-border-soft)]', !createForm.home_path && createForm.home_disk === d.mount_point ? 'border-[var(--hv-primary)]/55 bg-[var(--hv-primary-light)]' : 'border-[var(--hv-shell-border)]')}
+                        class={cn('flex-1 min-w-[150px] flex flex-col items-start gap-0.5 px-3 py-3 border rounded-lg bg-[var(--hv-shell-fill)] text-left cursor-pointer transition-colors hover:bg-[var(--hv-shell-border-soft)]', !createForm.home_path && createForm.home_disk === d.mount_point ? 'border-[var(--hv-primary)]/55 bg-[var(--hv-primary-light)]' : 'border-[var(--hv-shell-border)]')}
                       >
                         <span class="text-c-base font-semibold text-[var(--hv-shell-text-strong)]">{d.mount_point}</span>
                         <span class="text-c-xs text-[var(--hv-shell-text-2)] font-[family-name:var(--hv-font-mono)]">{$t('users.disk_free', { size: formatBytes(d.available_bytes) })} · {d.filesystem}</span>
@@ -1202,7 +1208,7 @@
                       class:active={!homeForm.home_path && homeForm.home_disk === d.mount_point}
                       aria-pressed={!homeForm.home_path && homeForm.home_disk === d.mount_point}
                       onclick={() => pickHomeDisk(d.mount_point)}
-                      class={cn('flex-1 min-w-[150px] flex flex-col items-start gap-0.5 px-3 py-3 border rounded-xl bg-[var(--hv-shell-fill)] text-left cursor-pointer transition-colors hover:bg-[var(--hv-shell-border-soft)]', !homeForm.home_path && homeForm.home_disk === d.mount_point ? 'border-[var(--hv-primary)]/55 bg-[var(--hv-primary-light)]' : 'border-[var(--hv-shell-border)]')}
+                      class={cn('flex-1 min-w-[150px] flex flex-col items-start gap-0.5 px-3 py-3 border rounded-lg bg-[var(--hv-shell-fill)] text-left cursor-pointer transition-colors hover:bg-[var(--hv-shell-border-soft)]', !homeForm.home_path && homeForm.home_disk === d.mount_point ? 'border-[var(--hv-primary)]/55 bg-[var(--hv-primary-light)]' : 'border-[var(--hv-shell-border)]')}
                     >
                       <span class="text-c-base font-semibold text-[var(--hv-shell-text-strong)]">{d.mount_point}</span>
                       <span class="text-c-xs text-[var(--hv-shell-text-2)] font-[family-name:var(--hv-font-mono)]">{$t('users.disk_free', { size: formatBytes(d.available_bytes) })}</span>

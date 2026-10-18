@@ -94,42 +94,68 @@ body {
   --radius-xl: var(--hv-radius-xl);
   --radius-2xl: var(--hv-radius-2xl);
   --radius-3xl: var(--hv-radius-3xl);
+  /* Badge / tag stops (design-tokens.md §4) — `rounded-badge` (8px) and
+     `rounded-pill` (980px) are the named utilities for non-control chips. */
+  --radius-badge: var(--hv-radius-badge);
+  --radius-pill: var(--hv-radius-pill);
 
   /* Type scales — the ONE bridge onto Tailwind's `text-*` namespace
-     (UI audit W1, 2026-09-23). Two vocabularies, clearly named:
-       `text-*`   = content scale   (--hv-font-size-*, default: body,
-                                     headings, form labels)
-       `text-c-*` = compact chrome  (--hv-text-*, dense table cells,
-                                     chips, meta rows, role tokens)
+     (UI audit W1, 2026-09-23). Three vocabularies:
+       `text-t-*` = NATIVE ROLES  (--hv-type-*: pick by function — the
+                    recommended entry point for new code)
+       `text-*`   = content scale (--hv-font-size-*)
+       `text-c-*` = compact chrome (--hv-text-*)
+     Since 2026-10-18 the content and compact vocabularies both resolve to the
+     same native ladder (11/12/13/15/17/20/22/26/34), so a given role renders at
+     one size no matter which name a call site uses. See
+     docs/guides/design-system.md §2.1 for the role→size table.
      Sizes are applied ONLY through these utilities — never through
      `text-[length:var(--hv-…)]` (banned — docs/guides/design-system.md
      §2.1; the D1 style gate from the UI audit will enforce it once built,
      see docs/design/ui-audit-tasklist.md). `@theme inline` inlines the
      var() into the utility, so the values can't drift from tokens.css.
   */
-  --text-micro: var(--hv-font-size-micro); /* 11px */
-  --text-xs: var(--hv-font-size-xs);       /* 11px */
-  --text-sm: var(--hv-font-size-sm);       /* 12px */
-  --text-base: var(--hv-font-size-base);   /* 14px */
-  --text-md: var(--hv-font-size-md);       /* 16px */
-  --text-lg: var(--hv-font-size-lg);       /* 18px */
-  --text-xl: var(--hv-font-size-xl);       /* 20px */
-  --text-2xl: var(--hv-font-size-2xl);     /* 24px */
-  --text-3xl: var(--hv-font-size-3xl);     /* 28px */
-  --text-4xl: var(--hv-font-size-4xl);     /* 30px */
-  --text-5xl: var(--hv-font-size-5xl);     /* 62px — gauge/hero */
+  --text-micro: var(--hv-font-size-micro); /* 11px — caption */
+  --text-xs: var(--hv-font-size-xs);       /* 11px — footnote */
+  --text-sm: var(--hv-font-size-sm);       /* 12px — callout */
+  --text-base: var(--hv-font-size-base);   /* 13px — body */
+  --text-md: var(--hv-font-size-md);       /* 15px — title 3 */
+  --text-lg: var(--hv-font-size-lg);       /* 17px — title 2 */
+  --text-xl: var(--hv-font-size-xl);       /* 20px — metric */
+  --text-2xl: var(--hv-font-size-2xl);     /* 22px — title 1 */
+  --text-3xl: var(--hv-font-size-3xl);     /* 26px — large title */
+  --text-4xl: var(--hv-font-size-4xl);     /* 34px — display */
+  --text-5xl: var(--hv-font-size-5xl);     /* 62px — gauge display */
 
-  --text-c-xs: var(--hv-text-xs);                  /* 11px */
-  --text-c-sm: var(--hv-text-sm);                  /* 12px */
-  --text-c-base: var(--hv-text-base);              /* 13px */
-  --text-c-md: var(--hv-text-md);                  /* 14px */
-  --text-c-lg: var(--hv-text-lg);                  /* 16px */
-  --text-c-xl: var(--hv-text-xl);                  /* 18px */
-  --text-c-2xl: var(--hv-text-2xl);                /* 20px */
-  --text-c-3xl: var(--hv-text-3xl);                /* 28px */
+  --text-c-xs: var(--hv-text-xs);                  /* 11px — caption */
+  --text-c-sm: var(--hv-text-sm);                  /* 12px — callout */
+  --text-c-base: var(--hv-text-base);              /* 13px — body */
+  --text-c-md: var(--hv-text-md);                  /* 15px — title 3 */
+  --text-c-lg: var(--hv-text-lg);                  /* 17px — title 2 */
+  --text-c-xl: var(--hv-text-xl);                  /* 20px — metric */
+  --text-c-2xl: var(--hv-text-2xl);                /* 22px — title 1 */
+  --text-c-3xl: var(--hv-text-3xl);                /* 26px — large title */
   --text-c-stat: var(--hv-text-stat);              /* 20px — big metric numbers */
-  --text-c-card-title: var(--hv-text-card-title);  /* 16px — card/section titles */
+  --text-c-card-title: var(--hv-text-card-title);  /* 15px — card/section titles */
   --text-c-label: var(--hv-text-label);            /* 13px — form field labels */
+
+  /* NATIVE ROLES — pick by function, not by number. */
+  --text-t-caption: var(--hv-type-caption);            /* 11px */
+  --text-t-footnote: var(--hv-type-footnote);          /* 11px */
+  --text-t-subheadline: var(--hv-type-subheadline);    /* 11px */
+  --text-t-callout: var(--hv-type-callout);            /* 12px */
+  --text-t-body: var(--hv-type-body);                  /* 13px */
+  --text-t-headline: var(--hv-type-headline);          /* 13px */
+  --text-t-title-3: var(--hv-type-title-3);            /* 15px */
+  --text-t-title-2: var(--hv-type-title-2);            /* 17px */
+  --text-t-title-1: var(--hv-type-title-1);            /* 22px */
+  --text-t-large-title: var(--hv-type-large-title);    /* 26px */
+  --text-t-display: var(--hv-type-display);            /* 34px */
+  --text-t-metric: var(--hv-type-metric);              /* 20px */
+  --text-t-gauge: var(--hv-type-gauge);                /* 62px */
+  --text-t-clock: var(--hv-type-clock);                /* 72px — decorative */
+  --text-t-clock-sm: var(--hv-type-clock-sm);          /* 48px — decorative */
+  --text-t-clock-wizard: var(--hv-type-clock-wizard);  /* 56px — decorative */
 }
 
 :root {
@@ -178,7 +204,9 @@ body {
   --sidebar-border: var(--hv-shell-border);
   --sidebar-ring: var(--hv-primary);
 
-  /* Radius: HomeVault stop map (4/6/8/10/12/16). shadcn's `rounded-md` →
-     --radius-md → 8px, matching the appliance control radius. */
+  /* Radius: HomeVault stop map (8/12/18 + badge/pill). shadcn's `rounded-md`
+     and `rounded-lg` → --radius-md/--radius-lg → the 12px control corner;
+     `rounded-xl` / `rounded-2xl` → the 18px surface corner. Retune a family in
+     tokens.css, never here. */
   --radius: var(--hv-radius-default);
 }

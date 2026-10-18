@@ -36,7 +36,7 @@ body {
   font-family: var(--hv-font-family);
   font-size: var(--hv-font-size-base);
   font-weight: var(--hv-font-weight-regular);
-  line-height: var(--hv-line-height-normal);
+  line-height: var(--hv-line-height-body);
   color: var(--hv-text-primary);
   background-color: var(--hv-background);
   overflow-x: hidden;
@@ -53,33 +53,47 @@ body {
    ============================================ */
 h1, h2, h3, h4, h5, h6 {
   font-weight: var(--hv-font-weight-semibold);
-  line-height: var(--hv-line-height-tight);
+  line-height: var(--hv-line-height-title);
   color: var(--hv-text-primary);
 }
 
+/* Headings map 1:1 onto the native text styles, so an `<h1>` in any screen
+   renders at the size a desktop application uses for a screen title — never at
+   a web-CSS default. Anything that needs a different step must say so with an
+   explicit `text-t-*` / `text-c-*` utility.
+
+   Typography follows design-tokens.md §3/§7/§8: headings are semibold (600)
+   with the tight title leading (1.1) and the reference's -0.015em title
+   tracking; body copy is regular (400) at the 1.53 body leading. Hierarchy is
+   carried by weight + size together, never by size alone. */
 h1 {
-  font-size: var(--hv-font-size-4xl);
-  letter-spacing: var(--hv-letter-spacing-tight);
+  font-size: var(--hv-type-large-title);
+  letter-spacing: var(--hv-letter-spacing-title);
 }
 
 h2 {
-  font-size: var(--hv-font-size-3xl);
+  font-size: var(--hv-type-title-1);
+  letter-spacing: var(--hv-letter-spacing-title);
 }
 
 h3 {
-  font-size: var(--hv-font-size-2xl);
+  font-size: var(--hv-type-title-2);
+  letter-spacing: var(--hv-letter-spacing-title);
 }
 
 h4 {
-  font-size: var(--hv-font-size-xl);
+  font-size: var(--hv-type-title-3);
+  letter-spacing: var(--hv-letter-spacing-normal);
 }
 
 h5 {
-  font-size: var(--hv-font-size-lg);
+  font-size: var(--hv-type-headline);
+  letter-spacing: var(--hv-letter-spacing-normal);
 }
 
 h6 {
-  font-size: var(--hv-font-size-md);
+  font-size: var(--hv-type-subheadline);
+  letter-spacing: var(--hv-letter-spacing-normal);
 }
 
 p {
@@ -670,19 +684,20 @@ input.hv-error:focus-visible {
   }
 
   /* iOS Safari auto-zooms into any form control whose font-size is below
-     16px on focus (puter ships 17px for the same reason). The compact
-     chrome scale (`text-sm` 12px / `text-base` 14px via the legacy alias
-     block in tokens.css) is far under the threshold, so on coarse pointers
-     bump form text to the 16px content step. Unlayered beats Tailwind's
-     `@layer utilities`, so this wins over the shadcn input's
-     `text-base md:text-sm`; the extra `input.hv-form-input` arm matches the
-     theme Input (`.hv-form-input` is unlayered too and would otherwise win
-     on specificity with its 14px base). */
+     16px on focus (puter ships 17px for the same reason). The native body
+     step is 13px, far under the threshold, so on coarse pointers bump form
+     text to a literal 16px. Unlayered beats Tailwind's `@layer utilities`, so
+     this wins over the shadcn input's `text-base md:text-sm`; the extra
+     `input.hv-form-input` arm matches the theme Input (`.hv-form-input` is
+     unlayered too and would otherwise win on specificity with its 13px base).
+     Deliberately a LITERAL, not `--hv-font-size-md`: that token used to be
+     16px but is now the native title-3 step (15px), and pointing this rule at
+     it would silently reintroduce the auto-zoom bug. */
   input,
   input.hv-form-input,
   select,
   textarea {
-    font-size: var(--hv-font-size-md);
+    font-size: 16px;
   }
 }
 

@@ -546,8 +546,8 @@
                 <div class="flex items-center justify-between gap-2"><span class={detailLabel}>{$t('vpn.last_handshake_label')}</span><span class={detailValue}>{formatLastHandshake(peer.latest_handshake)}</span></div>
               </div>
               <div class="px-4 pb-4 flex gap-2">
-                <button data-testid="vpn-btn" class="grid place-items-center w-11 h-11 rounded-xl border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-strong)] cursor-pointer hover:bg-[var(--hv-shell-border)]" onclick={() => showPeerConfig(peer)} disabled={configLoading} title={$t('vpn.show_config_title')}><IconDeviceMobile size={14} /></button>
-                <button data-testid="vpn-btn" class="grid place-items-center w-11 h-11 rounded-xl border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-strong)] cursor-pointer hover:bg-[var(--hv-error-bg)] hover:text-[var(--hv-error)]" onclick={() => revokeWireGuardPeer(peer)} disabled={revokingPeerId === peer.id} title={$t('vpn.revoke_device_title')}><IconTrash size={14} /></button>
+                <button data-testid="vpn-btn" class="grid place-items-center w-11 h-11 rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-strong)] cursor-pointer hover:bg-[var(--hv-shell-border)]" onclick={() => showPeerConfig(peer)} disabled={configLoading} title={$t('vpn.show_config_title')}><IconDeviceMobile size={14} /></button>
+                <button data-testid="vpn-btn" class="grid place-items-center w-11 h-11 rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-strong)] cursor-pointer hover:bg-[var(--hv-error-bg)] hover:text-[var(--hv-error)]" onclick={() => revokeWireGuardPeer(peer)} disabled={revokingPeerId === peer.id} title={$t('vpn.revoke_device_title')}><IconTrash size={14} /></button>
               </div>
             </div>
           {/each}
@@ -583,11 +583,11 @@
               </div>
               <div class="px-4 pb-4 flex gap-2">
                 {#if conn.status === 'connected'}
-                  <button data-testid="vpn-btn" class="grid place-items-center w-11 h-11 rounded-xl border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-strong)] cursor-pointer hover:bg-[var(--hv-shell-border)]" onclick={() => stopOpenVPN(conn.name)} title={$t('vpn.stop_connection_title')}><IconPower size={14} /></button>
+                  <button data-testid="vpn-btn" class="grid place-items-center w-11 h-11 rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-strong)] cursor-pointer hover:bg-[var(--hv-shell-border)]" onclick={() => stopOpenVPN(conn.name)} title={$t('vpn.stop_connection_title')}><IconPower size={14} /></button>
                 {:else}
-                  <button data-testid="vpn-btn" class="grid place-items-center w-11 h-11 rounded-xl border-none bg-[var(--hv-success)] text-white cursor-pointer hover:brightness-110" onclick={() => startOpenVPN(conn.name)} title={$t('vpn.start_connection_title')}><IconPower size={14} /></button>
+                  <button data-testid="vpn-btn" class="grid place-items-center w-11 h-11 rounded-lg border-none bg-[var(--hv-success)] text-white cursor-pointer hover:brightness-110" onclick={() => startOpenVPN(conn.name)} title={$t('vpn.start_connection_title')}><IconPower size={14} /></button>
                 {/if}
-                <button data-testid="vpn-btn" class="grid place-items-center w-11 h-11 rounded-xl border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-strong)] cursor-pointer hover:bg-[var(--hv-error-bg)] hover:text-[var(--hv-error)]" onclick={() => deleteOpenVPN(conn.name)} title={$t('vpn.delete_connection_title')}><IconTrash size={14} /></button>
+                <button data-testid="vpn-btn" class="grid place-items-center w-11 h-11 rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-strong)] cursor-pointer hover:bg-[var(--hv-error-bg)] hover:text-[var(--hv-error)]" onclick={() => deleteOpenVPN(conn.name)} title={$t('vpn.delete_connection_title')}><IconTrash size={14} /></button>
               </div>
             </div>
           {/each}
@@ -605,7 +605,7 @@
 <!-- Add WireGuard Device Modal -->
 <Modal open={showWireGuardModal} title={$t('vpn.create_wg_title')} size="sm" onclose={() => { showWireGuardModal = false; wgPeerName = ''; }}>
   <div class="flex flex-col gap-1.5">
-    <label for="wg-peer-name" class="text-xs font-semibold text-[var(--hv-shell-text-strong)]">{$t('vpn.device_name')} <span class="text-[var(--hv-error)]">*</span></label>
+    <label for="wg-peer-name" class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('vpn.device_name')} <span class="text-[var(--hv-error)]">*</span></label>
     <input id="wg-peer-name" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={wgPeerName} placeholder={$t('vpn.device_name_placeholder')} onkeydown={(e) => { if (e.key === 'Enter' && wgPeerName.trim()) createWireGuardPeer(); }} />
     <span class="text-c-xs text-[var(--hv-shell-text-2)]">{$t('vpn.device_name_hint')}</span>
   </div>
@@ -622,7 +622,7 @@
   <div class="mb-3">
     <div class="text-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-3)] mb-2">{$t('vpn.connection_details')}</div>
     <div class="flex flex-col gap-1.5">
-      <label for="ovpn-name" class="text-xs font-semibold text-[var(--hv-shell-text-strong)]">{$t('vpn.connection_name')} <span class="text-[var(--hv-error)]">*</span></label>
+      <label for="ovpn-name" class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('vpn.connection_name')} <span class="text-[var(--hv-error)]">*</span></label>
       <input id="ovpn-name" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={ovpnName} placeholder="my-openvpn" />
     </div>
   </div>
@@ -630,7 +630,7 @@
     <div class="text-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-3)] mb-2">{$t('vpn.configuration_file')}</div>
     <div class="flex flex-col gap-1.5">
       <input type="file" accept=".ovpn,.conf" onchange={handleFileUpload} id="ovpn-file" class="sr-only" />
-      <label for="ovpn-file" class="flex items-center gap-2 h-11 px-4 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-fill)] text-sm font-semibold text-[var(--hv-shell-text-strong)] cursor-pointer hover:bg-[var(--hv-shell-border)]"><IconUpload size={18} /> {ovpnFile ? ovpnFile.name : $t('vpn.choose_file')}</label>
+      <label for="ovpn-file" class="flex items-center gap-2 h-11 px-4 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-fill)] text-c-label font-semibold text-[var(--hv-shell-text-strong)] cursor-pointer hover:bg-[var(--hv-shell-border)]"><IconUpload size={18} /> {ovpnFile ? ovpnFile.name : $t('vpn.choose_file')}</label>
     </div>
     {#if ovpnConfigContent}
       <div data-testid="vpn-file-preview" class="flex items-center gap-1.5 mt-2 text-xs text-[var(--hv-success)]"><IconCheck size={14} /> {translate('vpn.config_loaded', { bytes: String(ovpnConfigContent.length) })}</div>
@@ -639,8 +639,8 @@
   <div>
     <div class="text-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-3)] mb-2">{$t('vpn.auth_optional')}</div>
     <div class="grid grid-cols-2 @max-[360px]:grid-cols-1 gap-3">
-      <div class="flex flex-col gap-1.5"><label for="ovpn-user" class="text-xs font-semibold text-[var(--hv-shell-text-strong)]">{$t('vpn.username_label')}</label><input id="ovpn-user" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={ovpnUsername} placeholder="username" /></div>
-      <div class="flex flex-col gap-1.5"><label for="ovpn-pass" class="text-xs font-semibold text-[var(--hv-shell-text-strong)]">{$t('vpn.password_label')}</label><input id="ovpn-pass" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="password" bind:value={ovpnPassword} placeholder="password" /></div>
+      <div class="flex flex-col gap-1.5"><label for="ovpn-user" class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('vpn.username_label')}</label><input id="ovpn-user" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={ovpnUsername} placeholder="username" /></div>
+      <div class="flex flex-col gap-1.5"><label for="ovpn-pass" class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('vpn.password_label')}</label><input id="ovpn-pass" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="password" bind:value={ovpnPassword} placeholder="password" /></div>
     </div>
   </div>
   {#snippet footer()}
@@ -654,8 +654,8 @@
 <!-- OpenVPN Auth Credentials Modal -->
 <Modal open={showVpnCredsModal} title={$t('vpn.auth_optional')} size="sm" onclose={() => showVpnCredsModal = false}>
   <div class="grid grid-cols-2 @max-[320px]:grid-cols-1 gap-3">
-    <div class="flex flex-col gap-1.5"><label for="vpn-creds-user" class="text-xs font-semibold text-[var(--hv-shell-text-strong)]">{$t('vpn.username_label')}</label><input id="vpn-creds-user" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={vpnCredsUsername} placeholder="username" /></div>
-    <div class="flex flex-col gap-1.5"><label for="vpn-creds-pass" class="text-xs font-semibold text-[var(--hv-shell-text-strong)]">{$t('vpn.password_label')}</label><input id="vpn-creds-pass" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="password" bind:value={vpnCredsPassword} placeholder="password" /></div>
+    <div class="flex flex-col gap-1.5"><label for="vpn-creds-user" class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('vpn.username_label')}</label><input id="vpn-creds-user" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={vpnCredsUsername} placeholder="username" /></div>
+    <div class="flex flex-col gap-1.5"><label for="vpn-creds-pass" class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('vpn.password_label')}</label><input id="vpn-creds-pass" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="password" bind:value={vpnCredsPassword} placeholder="password" /></div>
   </div>
   {#snippet footer()}
     <div class="flex gap-2.5 justify-end">

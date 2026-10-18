@@ -197,24 +197,24 @@
 
       <div class="flex flex-col gap-2.5">
         <span class="text-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-3)]">{$t('mcp.permissions')}</span>
-        <label class="flex flex-col gap-1 text-xs font-semibold text-[var(--hv-shell-text-2)]">{$t('mcp.perm_apps')}
+        <label class="flex flex-col gap-1 text-c-label font-semibold text-[var(--hv-shell-text-2)]">{$t('mcp.perm_apps')}
           <Input bind:value={apps} placeholder="all" disabled={saving} />
           <span class="font-normal">{$t('mcp.perm_apps_hint')}</span>
         </label>
-        <label class="flex items-center gap-2 text-sm text-[var(--hv-shell-text-strong)] cursor-pointer">
+        <label class="flex items-center gap-2 text-c-label text-[var(--hv-shell-text-strong)] cursor-pointer">
           <Switch checked={appStore} disabled={saving} onchange={(v) => (appStore = v)} ariaLabel={$t('mcp.perm_app_store')} /> {$t('mcp.perm_app_store')}
         </label>
-        <label class="flex flex-col gap-1 text-xs font-semibold text-[var(--hv-shell-text-2)]">{$t('mcp.perm_files')}
+        <label class="flex flex-col gap-1 text-c-label font-semibold text-[var(--hv-shell-text-2)]">{$t('mcp.perm_files')}
           <Input bind:value={files} placeholder="/data/photos" disabled={saving} />
           <span class="font-normal">{$t('mcp.perm_files_hint')}</span>
         </label>
-        <label class="flex flex-col gap-1 text-xs font-semibold text-[var(--hv-shell-text-2)]">{$t('mcp.perm_vms')}
+        <label class="flex flex-col gap-1 text-c-label font-semibold text-[var(--hv-shell-text-2)]">{$t('mcp.perm_vms')}
           <Input bind:value={vms} placeholder="all" disabled={saving} />
         </label>
-        <label class="flex items-center gap-2 text-sm text-[var(--hv-shell-text-strong)] cursor-pointer">
+        <label class="flex items-center gap-2 text-c-label text-[var(--hv-shell-text-strong)] cursor-pointer">
           <Switch checked={rag} disabled={saving} onchange={(v) => (rag = v)} ariaLabel={$t('mcp.perm_rag')} /> {$t('mcp.perm_rag')}
         </label>
-        <label class="flex items-center gap-2 text-sm text-[var(--hv-shell-text-strong)] cursor-pointer">
+        <label class="flex items-center gap-2 text-c-label text-[var(--hv-shell-text-strong)] cursor-pointer">
           <Switch checked={manageSystem} disabled={saving} onchange={(v) => (manageSystem = v)} ariaLabel={$t('mcp.perm_reboot')} /> {$t('mcp.perm_reboot')}
         </label>
         {#if manageSystem}
@@ -233,10 +233,10 @@
           </div>
         {/if}
         <form class="flex gap-2" onsubmit={(e) => { e.preventDefault(); createToken(); }}>
-          <label class="flex-1 min-w-0 flex flex-col gap-1 text-xs font-semibold text-[var(--hv-shell-text-2)]">{$t('mcp.token_name')}
+          <label class="flex-1 min-w-0 flex flex-col gap-1 text-c-label font-semibold text-[var(--hv-shell-text-2)]">{$t('mcp.token_name')}
             <Input bind:value={newTokenName} placeholder={$t('mcp.token_name')} disabled={creating} />
           </label>
-          <button type="submit" class="hv-ic self-end grid place-items-center w-11 h-11 flex-none rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)] text-[var(--hv-shell-text-strong)] cursor-pointer disabled:opacity-40" disabled={creating || !newTokenName.trim()} aria-label={$t('mcp.token_create')}><IconPlus size={20} stroke={2} /></button>
+          <button type="submit" class="hv-ic self-end grid place-items-center w-11 h-11 flex-none rounded-lg bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)] text-[var(--hv-shell-text-strong)] cursor-pointer disabled:opacity-40" disabled={creating || !newTokenName.trim()} aria-label={$t('mcp.token_create')}><IconPlus size={20} stroke={2} /></button>
         </form>
         {#if tokens.length === 0}
           <p class="m-0 text-xs text-[var(--hv-shell-text-2)]">{$t('mcp.tokens_empty')}</p>

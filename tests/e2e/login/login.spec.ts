@@ -1276,7 +1276,7 @@ test.describe('13 — Accessibility', () => {
     }
   });
 
-  test('13.7 — the gateway corners use the standard stops (card 16px, fields 8px)', async ({ page }) => {
+  test('13.7 — the gateway corners use the standard stops (surface 12px, controls 6px)', async ({ page }) => {
     await gotoLogin(page);
     const state = await detectState(page);
     if (state === 'error') return; // no gateway card is rendered in the error state
@@ -1287,18 +1287,19 @@ test.describe('13 — Accessibility', () => {
       const cardRadius = await setupCard.evaluate((el) =>
         parseFloat(getComputedStyle(el).borderRadius),
       );
-      expect(cardRadius, 'setup card corner (--hv-radius-2xl)').toBe(16);
+      expect(cardRadius, 'setup card corner (--hv-radius-2xl, the surface stop)').toBe(18);
       return;
     }
 
     // Login state: the username field wrapper is the control stop
-    // (--hv-radius-control), matching the shared Input/Button.
+    // (--hv-radius-control, 12px), the same corner as the shared Input/Button —
+    // a field and the button beside it must line up.
     const username = page.locator('#username');
     await expect(username).toBeVisible();
     const fieldRadius = await username.evaluate((el) =>
       parseFloat(getComputedStyle(el.parentElement as HTMLElement).borderRadius),
     );
-    expect(fieldRadius, 'login field corner (--hv-radius-control)').toBe(8);
+    expect(fieldRadius, 'login field corner (--hv-radius-control)').toBe(12);
   });
 });
 

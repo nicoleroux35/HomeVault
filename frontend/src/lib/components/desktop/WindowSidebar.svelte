@@ -276,7 +276,10 @@
     min-height: 0;
     padding: calc(var(--spacing) * 2.5) calc(var(--spacing) * 3);
     gap: calc(var(--spacing) * 3);
-    border-radius: var(--hv-radius-xl, 12px);
+    /* A nav row is a button: the ONE control corner, like every other button
+       (it carried 12px, i.e. a surface corner, on Settings' category rail
+       while the very same class measured 6px in the other apps). */
+    border-radius: var(--hv-radius-control);
     font-size: var(--hv-text-sm, 12px);
     font-weight: var(--hv-font-weight-semibold);
     line-height: 16px;

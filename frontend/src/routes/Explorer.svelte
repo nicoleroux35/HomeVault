@@ -1753,9 +1753,9 @@
       {#if view === 'list'}
         <div data-testid="explorer-file-table" class="px-4">
           <div data-testid="explorer-file-header" class="grid grid-cols-[minmax(0,1fr)_auto_auto_auto_auto] items-center gap-3 px-3 py-2 border-b border-[var(--hv-shell-border)]">
-            <button class="sort-btn border-none bg-transparent text-c-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-2)] cursor-pointer" onclick={() => { sortBy = 'name'; sortDir = sortDir === 'asc' ? 'desc' : 'asc'; }}>{$t('explorer.col_name')} {sortBy === 'name' ? (sortDir === 'asc' ? '\u25B2' : '\u25BC') : ''}</button>
-            <button class="sort-btn border-none bg-transparent text-c-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-2)] cursor-pointer" onclick={() => { sortBy = 'size'; sortDir = sortDir === 'asc' ? 'desc' : 'asc'; }}>{$t('explorer.col_size')} {sortBy === 'size' ? (sortDir === 'asc' ? '\u25B2' : '\u25BC') : ''}</button>
-            <button class="sort-btn border-none bg-transparent text-c-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-2)] cursor-pointer" onclick={() => { sortBy = 'modified'; sortDir = sortDir === 'asc' ? 'desc' : 'asc'; }}>{$t('explorer.modified')} {sortBy === 'modified' ? (sortDir === 'asc' ? '\u25B2' : '\u25BC') : ''}</button>
+            <button class="sort-btn border-none bg-transparent rounded-lg text-c-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-2)] cursor-pointer" onclick={() => { sortBy = 'name'; sortDir = sortDir === 'asc' ? 'desc' : 'asc'; }}>{$t('explorer.col_name')} {sortBy === 'name' ? (sortDir === 'asc' ? '\u25B2' : '\u25BC') : ''}</button>
+            <button class="sort-btn border-none bg-transparent rounded-lg text-c-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-2)] cursor-pointer" onclick={() => { sortBy = 'size'; sortDir = sortDir === 'asc' ? 'desc' : 'asc'; }}>{$t('explorer.col_size')} {sortBy === 'size' ? (sortDir === 'asc' ? '\u25B2' : '\u25BC') : ''}</button>
+            <button class="sort-btn border-none bg-transparent rounded-lg text-c-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-2)] cursor-pointer" onclick={() => { sortBy = 'modified'; sortDir = sortDir === 'asc' ? 'desc' : 'asc'; }}>{$t('explorer.modified')} {sortBy === 'modified' ? (sortDir === 'asc' ? '\u25B2' : '\u25BC') : ''}</button>
             <span class="text-c-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-2)]">{$t('explorer.permissions')}</span>
             <span class="text-c-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-2)]">{$t('explorer.col_actions')}</span>
           </div>
@@ -1802,7 +1802,7 @@
       {:else}
         <div data-testid="explorer-file-grid" class="grid gap-2 p-4 [grid-template-columns:repeat(auto-fill,minmax(110px,1fr))]">
           {#each visibleEntries as entry, vi (entry.path)}
-            <button data-testid="explorer-grid-item" data-path={entry.path} draggable="true" ondragstart={(e) => onRowDragStart(e, entry)} ondragend={endInternalDrag} ondragover={entry.is_directory ? onFolderDragOver : undefined} ondrop={entry.is_directory ? (e) => onFolderDrop(e, entry.path) : undefined} class:selected={selected.has(entry.path)} class="flex flex-col items-center gap-1.5 p-3 rounded-xl border border-transparent bg-transparent cursor-pointer hover:bg-[var(--hv-subtle-hover)] text-center" onclick={(e) => handleRowClick(entry, sortedEntries.indexOf(entry), e)}>
+            <button data-testid="explorer-grid-item" data-path={entry.path} draggable="true" ondragstart={(e) => onRowDragStart(e, entry)} ondragend={endInternalDrag} ondragover={entry.is_directory ? onFolderDragOver : undefined} ondrop={entry.is_directory ? (e) => onFolderDrop(e, entry.path) : undefined} class:selected={selected.has(entry.path)} class="flex flex-col items-center gap-1.5 p-3 rounded-lg border border-transparent bg-transparent cursor-pointer hover:bg-[var(--hv-subtle-hover)] text-center" onclick={(e) => handleRowClick(entry, sortedEntries.indexOf(entry), e)}>
               {#if !entry.is_directory && isImage(entry.name)}
                 <img class="w-12 h-12 object-cover rounded-lg" src={api.getThumbnailUrl(entry.path, thumbnailTicket)} alt={entry.name} loading="lazy" onerror={(e) => { (e.target as HTMLImageElement).style.display = 'none'; (e.target as HTMLImageElement).nextElementSibling?.classList.remove('explorer-grid-icon--hidden'); }} />
                 <span class="explorer-grid-icon explorer-grid-icon--hidden"><Icon name="image" size={48} /></span>
@@ -1858,9 +1858,9 @@
 
 <!-- Compress modal -->
 <Modal open={showCompress} title={$t('explorer.compress_selection')} size="sm" onclose={() => showCompress = false}>
-  <label class="block text-xs font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="compressName">{$t('explorer.archive_name')}</label>
+  <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="compressName">{$t('explorer.archive_name')}</label>
   <input id="compressName" type="text" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" bind:value={compressName} onkeydown={(e) => { if (e.key === 'Enter') handleCompress(); }} />
-  <label class="block text-xs font-semibold text-[var(--hv-shell-text-strong)] mt-3 mb-1" for="compressFormat">{$t('explorer.archive_format')}</label>
+  <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)] mt-3 mb-1" for="compressFormat">{$t('explorer.archive_format')}</label>
   <select id="compressFormat" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" bind:value={compressFormat}>
     <option value="tar.gz">tar.gz</option>
     <option value="zip">zip</option>
@@ -2016,14 +2016,14 @@
 
 <!-- Drive formatting (admin only, destructive) -->
 <Modal open={showFormat} title={$t('explorer.format_drive')} size="sm" onclose={() => showFormat = false}>
-  <label class="mb-1.5 block text-sm font-medium text-[var(--hv-shell-text-strong)]" for="formatDevice">/dev/…</label>
+  <label class="mb-1.5 block text-c-label font-medium text-[var(--hv-shell-text-strong)]" for="formatDevice">/dev/…</label>
   <input id="formatDevice" type="text" class="h-11 w-full rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] px-3 text-sm outline-none focus:border-[var(--hv-primary)]" bind:value={formatDevice} placeholder="/dev/sdb1" autocomplete="off" />
-  <label class="mb-1.5 mt-4 block text-sm font-medium text-[var(--hv-shell-text-strong)]" for="formatFstype">ext4 / exFAT</label>
+  <label class="mb-1.5 mt-4 block text-c-label font-medium text-[var(--hv-shell-text-strong)]" for="formatFstype">ext4 / exFAT</label>
   <select id="formatFstype" class="h-11 w-full rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] px-3 text-sm outline-none focus:border-[var(--hv-primary)]" bind:value={formatFstype}>
     <option value="ext4">ext4</option>
     <option value="exfat">exFAT</option>
   </select>
-  <label class="mb-1.5 mt-4 block text-sm font-medium text-[var(--hv-shell-text-strong)]" for="formatLabel">{$t('explorer.format_label')}</label>
+  <label class="mb-1.5 mt-4 block text-c-label font-medium text-[var(--hv-shell-text-strong)]" for="formatLabel">{$t('explorer.format_label')}</label>
   <input id="formatLabel" type="text" class="h-11 w-full rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] px-3 text-sm outline-none focus:border-[var(--hv-primary)]" bind:value={formatLabel} maxlength="16" autocomplete="off" />
   {#if formatDevice.trim()}
     <p class="m-0 mt-3 text-xs font-medium text-[var(--hv-error)]">{$t('explorer.format_warning', { device: formatDevice.trim() })}</p>

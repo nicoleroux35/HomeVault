@@ -630,36 +630,36 @@
   <div data-testid="network-form-field" class="flex flex-col gap-1.5 mb-3">
     <span class="text-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-3)]">{$t('network.ipv4_config')}</span>
     <div class="flex gap-4">
-      <label class="flex items-center gap-2 text-sm text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="radio" name="ip-method" value="dhcp" class="accent-[var(--hv-primary)]" bind:group={configMethod} /> <span>{$t('network.dhcp_auto')}</span></label>
-      <label class="flex items-center gap-2 text-sm text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="radio" name="ip-method" value="static" class="accent-[var(--hv-primary)]" bind:group={configMethod} /> <span>{$t('network.static_ip')}</span></label>
+      <label class="flex items-center gap-2 text-c-label text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="radio" name="ip-method" value="dhcp" class="accent-[var(--hv-primary)]" bind:group={configMethod} /> <span>{$t('network.dhcp_auto')}</span></label>
+      <label class="flex items-center gap-2 text-c-label text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="radio" name="ip-method" value="static" class="accent-[var(--hv-primary)]" bind:group={configMethod} /> <span>{$t('network.static_ip')}</span></label>
     </div>
   </div>
 
   {#if configMethod === 'static'}
     <div class="grid grid-cols-2 gap-3 mb-3">
-      <div data-testid="network-form-field" class="flex flex-col gap-1.5"><label for="cfg-ip" class="text-xs font-semibold text-[var(--hv-shell-text-strong)]">{$t('network.ip_address')}</label><input id="cfg-ip" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={configIp} placeholder="192.168.1.100" /></div>
-      <div data-testid="network-form-field" class="flex flex-col gap-1.5"><label for="cfg-netmask" class="text-xs font-semibold text-[var(--hv-shell-text-strong)]">{$t('network.subnet_mask')}</label><input id="cfg-netmask" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={configNetmask} placeholder="255.255.255.0" /></div>
-      <div data-testid="network-form-field" class="flex flex-col gap-1.5"><label for="cfg-gw" class="text-xs font-semibold text-[var(--hv-shell-text-strong)]">{$t('network.gateway_label')}</label><input id="cfg-gw" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={configGateway} placeholder="192.168.1.1" /></div>
-      <div data-testid="network-form-field" class="flex flex-col gap-1.5"><label for="cfg-dns" class="text-xs font-semibold text-[var(--hv-shell-text-strong)]">{$t('network.dns_server')}</label><input id="cfg-dns" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={configDns} placeholder="8.8.8.8, 1.1.1.1" /><span class="text-c-xs text-[var(--hv-shell-text-2)]">{$t('network.comma_separated')}</span></div>
+      <div data-testid="network-form-field" class="flex flex-col gap-1.5"><label for="cfg-ip" class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('network.ip_address')}</label><input id="cfg-ip" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={configIp} placeholder="192.168.1.100" /></div>
+      <div data-testid="network-form-field" class="flex flex-col gap-1.5"><label for="cfg-netmask" class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('network.subnet_mask')}</label><input id="cfg-netmask" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={configNetmask} placeholder="255.255.255.0" /></div>
+      <div data-testid="network-form-field" class="flex flex-col gap-1.5"><label for="cfg-gw" class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('network.gateway_label')}</label><input id="cfg-gw" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={configGateway} placeholder="192.168.1.1" /></div>
+      <div data-testid="network-form-field" class="flex flex-col gap-1.5"><label for="cfg-dns" class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('network.dns_server')}</label><input id="cfg-dns" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={configDns} placeholder="8.8.8.8, 1.1.1.1" /><span class="text-c-xs text-[var(--hv-shell-text-2)]">{$t('network.comma_separated')}</span></div>
     </div>
   {/if}
 
   <div data-testid="network-form-field" class="flex flex-col gap-1.5 mb-3">
     <span class="text-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-3)]">{$t('network.ipv6_config')}</span>
     <div class="flex flex-wrap gap-4">
-      <label class="flex items-center gap-2 text-sm text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="radio" name="ipv6-method" value="auto" class="accent-[var(--hv-primary)]" bind:group={configIpv6Method} /> <span>{$t('network.auto_slaac')}</span></label>
-      <label class="flex items-center gap-2 text-sm text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="radio" name="ipv6-method" value="dhcp" class="accent-[var(--hv-primary)]" bind:group={configIpv6Method} /> <span>{$t('network.dhcpv6')}</span></label>
-      <label class="flex items-center gap-2 text-sm text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="radio" name="ipv6-method" value="static" class="accent-[var(--hv-primary)]" bind:group={configIpv6Method} /> <span>{$t('network.static')}</span></label>
-      <label class="flex items-center gap-2 text-sm text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="radio" name="ipv6-method" value="disabled" class="accent-[var(--hv-primary)]" bind:group={configIpv6Method} /> <span>{$t('network.disabled')}</span></label>
+      <label class="flex items-center gap-2 text-c-label text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="radio" name="ipv6-method" value="auto" class="accent-[var(--hv-primary)]" bind:group={configIpv6Method} /> <span>{$t('network.auto_slaac')}</span></label>
+      <label class="flex items-center gap-2 text-c-label text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="radio" name="ipv6-method" value="dhcp" class="accent-[var(--hv-primary)]" bind:group={configIpv6Method} /> <span>{$t('network.dhcpv6')}</span></label>
+      <label class="flex items-center gap-2 text-c-label text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="radio" name="ipv6-method" value="static" class="accent-[var(--hv-primary)]" bind:group={configIpv6Method} /> <span>{$t('network.static')}</span></label>
+      <label class="flex items-center gap-2 text-c-label text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="radio" name="ipv6-method" value="disabled" class="accent-[var(--hv-primary)]" bind:group={configIpv6Method} /> <span>{$t('network.disabled')}</span></label>
     </div>
   </div>
 
   {#if configIpv6Method === 'static'}
     <div class="grid grid-cols-2 gap-3 mb-3">
-      <div data-testid="network-form-field" class="flex flex-col gap-1.5"><label for="cfg-ipv6" class="text-xs font-semibold text-[var(--hv-shell-text-strong)]">{$t('network.ipv6_address')}</label><input id="cfg-ipv6" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={configIpv6} placeholder="2001:db8::1" /></div>
-      <div data-testid="network-form-field" class="flex flex-col gap-1.5"><label for="cfg-ipv6-prefix" class="text-xs font-semibold text-[var(--hv-shell-text-strong)]">{$t('network.prefix_length')}</label><input id="cfg-ipv6-prefix" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="number" bind:value={configIpv6Prefix} placeholder="64" /><span class="text-c-xs text-[var(--hv-shell-text-2)]">{$t('network.typical_64')}</span></div>
-      <div data-testid="network-form-field" class="flex flex-col gap-1.5"><label for="cfg-ipv6-gw" class="text-xs font-semibold text-[var(--hv-shell-text-strong)]">{$t('network.ipv6_gateway')}</label><input id="cfg-ipv6-gw" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={configIpv6Gateway} placeholder="fe80::1" /></div>
-      <div data-testid="network-form-field" class="flex flex-col gap-1.5"><label for="cfg-ipv6-dns" class="text-xs font-semibold text-[var(--hv-shell-text-strong)]">{$t('network.ipv6_dns')}</label><input id="cfg-ipv6-dns" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={configIpv6Dns} placeholder="2001:4860:4860::8888" /><span class="text-c-xs text-[var(--hv-shell-text-2)]">{$t('network.comma_separated')}</span></div>
+      <div data-testid="network-form-field" class="flex flex-col gap-1.5"><label for="cfg-ipv6" class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('network.ipv6_address')}</label><input id="cfg-ipv6" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={configIpv6} placeholder="2001:db8::1" /></div>
+      <div data-testid="network-form-field" class="flex flex-col gap-1.5"><label for="cfg-ipv6-prefix" class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('network.prefix_length')}</label><input id="cfg-ipv6-prefix" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="number" bind:value={configIpv6Prefix} placeholder="64" /><span class="text-c-xs text-[var(--hv-shell-text-2)]">{$t('network.typical_64')}</span></div>
+      <div data-testid="network-form-field" class="flex flex-col gap-1.5"><label for="cfg-ipv6-gw" class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('network.ipv6_gateway')}</label><input id="cfg-ipv6-gw" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={configIpv6Gateway} placeholder="fe80::1" /></div>
+      <div data-testid="network-form-field" class="flex flex-col gap-1.5"><label for="cfg-ipv6-dns" class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('network.ipv6_dns')}</label><input id="cfg-ipv6-dns" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={configIpv6Dns} placeholder="2001:4860:4860::8888" /><span class="text-c-xs text-[var(--hv-shell-text-2)]">{$t('network.comma_separated')}</span></div>
     </div>
   {/if}
 
@@ -675,7 +675,7 @@
 <Modal open={showWifiConnectModal && !!selectedWifi} title={wifiModalMode === 'disconnect' ? translate('network.modal_disconnect', { ssid: selectedWifi?.ssid || '' }) : translate('network.modal_connect', { ssid: selectedWifi?.ssid || '' })} size="sm" onclose={() => showWifiConnectModal = false}>
   {#if wifiModalMode === 'connect'}
     <div class="flex flex-col gap-1.5 mb-3">
-      <label for="wifi-security" class="text-xs font-semibold text-[var(--hv-shell-text-strong)]">{$t('network.security')}</label>
+      <label for="wifi-security" class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('network.security')}</label>
       <select id="wifi-security" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" bind:value={wifiSecurity}>
         <option value="wpa3">{$t('network.wpa3_personal')}</option>
         <option value="wpa2">{$t('network.wpa2_personal')}</option>
@@ -686,7 +686,7 @@
     </div>
     {#if wifiSecurity !== 'none'}
       <div class="flex flex-col gap-1.5 mb-3">
-        <label for="wifi-password" class="text-xs font-semibold text-[var(--hv-shell-text-strong)]">{$t('network.password')}</label>
+        <label for="wifi-password" class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('network.password')}</label>
         <input id="wifi-password" type="password" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" bind:value={wifiPassword} placeholder={$t('network.password_hint')} />
       </div>
     {/if}
