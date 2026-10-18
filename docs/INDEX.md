@@ -85,6 +85,7 @@ methods, and notable invariants.
 | Metrics (historical CPU/memory/load/network/temperature charts) | [guides/metrics.md](./guides/metrics.md) |
 | Power (host power management, CPU governor, disk spindown) | [guides/power.md](./guides/power.md) |
 | Design system (single UI identity — tokens, components, page anatomy) | [guides/design-system.md](./guides/design-system.md) |
+| Design token spec — non-colour craft reference (spacing rhythm, 8/12/18 corner ladder, elevation, type metrics, breakpoints). **Colour is not adopted from it** | [../design-tokens.md](../design-tokens.md) |
 | Development workflow (multi-instance `.local`, real-VM tests, client contract) | [guides/development.md](./guides/development.md) |
 
 ## Build & distribution

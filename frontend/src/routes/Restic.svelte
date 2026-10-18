@@ -827,7 +827,7 @@
       {:else}
         <div class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
           {#each repos as repo}
-            <div data-testid="restic-repo-card" class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] overflow-hidden cursor-pointer hover:border-[var(--hv-shell-border-strong)]" onclick={() => selectRepo(repo)} onkeydown={(e) => activateOnEnterOrSpace(e, () => selectRepo(repo))} tabindex="0" role="button">
+            <div data-testid="restic-repo-card" class="rounded-lg bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] overflow-hidden cursor-pointer hover:border-[var(--hv-shell-border-strong)]" onclick={() => selectRepo(repo)} onkeydown={(e) => activateOnEnterOrSpace(e, () => selectRepo(repo))} tabindex="0" role="button">
               <div class="flex items-center gap-3 px-4 pt-4">
                 <span class="grid place-items-center w-11 h-11 rounded-xl flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><IconServer size={20} /></span>
                 <div class="flex-1 min-w-0">
@@ -1016,7 +1016,7 @@
             {/if}
           </div>
           <div class="mt-1">
-            <button type="button" data-testid="restic-btn-primary" class="inline-flex items-center gap-2 h-10 px-4 border border-[var(--hv-shell-border-strong)] rounded-xl bg-[var(--hv-shell-fill)] text-[var(--hv-shell-text-strong)] text-c-base font-semibold cursor-pointer hover:bg-[var(--hv-shell-border)]" onclick={() => (pickerOpen = true)}><IconFolderOpen size={14} /> {$t('restic.add_path')}</button>
+            <button type="button" data-testid="restic-btn-primary" class="inline-flex items-center gap-2 h-10 px-4 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-fill)] text-[var(--hv-shell-text-strong)] text-c-base font-semibold cursor-pointer hover:bg-[var(--hv-shell-border)]" onclick={() => (pickerOpen = true)}><IconFolderOpen size={14} /> {$t('restic.add_path')}</button>
           </div>
           <span class={hint}>{$t('restic.source_paths_hint')}</span>
         </div>
@@ -1113,7 +1113,7 @@
           {/if}
         </div>
         <div class="mt-1">
-          <button type="button" class="inline-flex items-center gap-2 h-10 px-4 border border-[var(--hv-shell-border-strong)] rounded-xl bg-[var(--hv-shell-fill)] text-[var(--hv-shell-text-strong)] text-c-base font-semibold cursor-pointer hover:bg-[var(--hv-shell-border)]" onclick={() => (restorePickerOpen = true)}><IconFolderOpen size={14} /> {$t('restic.add_include_path')}</button>
+          <button type="button" class="inline-flex items-center gap-2 h-10 px-4 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-fill)] text-[var(--hv-shell-text-strong)] text-c-base font-semibold cursor-pointer hover:bg-[var(--hv-shell-border)]" onclick={() => (restorePickerOpen = true)}><IconFolderOpen size={14} /> {$t('restic.add_include_path')}</button>
         </div>
         <span class={hint}>{$t('restic.restore_include_hint')}</span>
       </div>

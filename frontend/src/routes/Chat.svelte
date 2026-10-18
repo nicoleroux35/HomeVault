@@ -497,7 +497,7 @@
             {/if}
             <div class="grid gap-2 w-full max-w-[420px] mt-2">
               {#each suggestions as suggestion}
-                <button data-testid="chat-suggestion" class="flex items-start gap-3 px-4 py-3 rounded-xl border border-[var(--hv-shell-border)] bg-[var(--hv-shell-card)] text-left cursor-pointer hover:border-[var(--hv-primary)]/50 transition-colors" onclick={() => useSuggestion(suggestion)}>
+                <button data-testid="chat-suggestion" class="flex items-start gap-3 px-4 py-3 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-card)] text-left cursor-pointer hover:border-[var(--hv-primary)]/50 transition-colors" onclick={() => useSuggestion(suggestion)}>
                   <span class="text-[var(--hv-primary)] flex-none"><IconSparkles size={24} stroke={1.8} /></span>
                   <span data-testid="chat-suggestion-text" class="text-sm text-[var(--hv-shell-text-strong)]">{suggestion}</span>
                 </button>
@@ -556,14 +556,14 @@
           </div>
         {/if}
         <div class="flex items-center gap-2">
-          <button data-testid="chat-history-btn" class={cn('grid place-items-center w-12 h-12 flex-none rounded-xl border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-fill)] text-[var(--hv-shell-text-strong)] cursor-pointer', showHistory && 'bg-[var(--hv-primary-light)] text-[var(--hv-primary)]')} class:active={showHistory} onclick={toggleHistory} title={$t('chat.history_title')} aria-label={$t('chat.history_title')}><IconHistory size={26} stroke={1.9} /></button>
+          <button data-testid="chat-history-btn" class={cn('grid place-items-center w-12 h-12 flex-none rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-fill)] text-[var(--hv-shell-text-strong)] cursor-pointer', showHistory && 'bg-[var(--hv-primary-light)] text-[var(--hv-primary)]')} class:active={showHistory} onclick={toggleHistory} title={$t('chat.history_title')} aria-label={$t('chat.history_title')}><IconHistory size={26} stroke={1.9} /></button>
           <div class="flex-1 min-w-0">
-            <textarea data-testid="chat-input" class="w-full resize-none border border-[var(--hv-shell-border-strong)] rounded-xl bg-[var(--hv-shell-border-soft)] px-4 py-3 text-sm text-[var(--hv-shell-text-strong)] outline-none focus:border-[var(--hv-primary)]" bind:value={input} onkeydown={handleKeydown} placeholder={$t('chat.input_placeholder')} rows="1" disabled={sending}></textarea>
+            <textarea data-testid="chat-input" class="w-full resize-none border border-[var(--hv-shell-border-strong)] rounded-md bg-[var(--hv-shell-border-soft)] px-4 py-3 text-sm text-[var(--hv-shell-text-strong)] outline-none focus:border-[var(--hv-primary)]" bind:value={input} onkeydown={handleKeydown} placeholder={$t('chat.input_placeholder')} rows="1" disabled={sending}></textarea>
           </div>
           {#if sending}
-            <button data-testid="chat-send" class="grid place-items-center w-12 h-12 flex-none rounded-xl border-none bg-[var(--hv-error)] text-white cursor-pointer hover:brightness-110" onclick={stopGenerating} title={$t('chat.stop_generating')} aria-label={$t('chat.stop_generating')}><IconSquare size={22} stroke={2} fill="currentColor" /></button>
+            <button data-testid="chat-send" class="grid place-items-center w-12 h-12 flex-none rounded-lg border-none bg-[var(--hv-error)] text-white cursor-pointer hover:brightness-110" onclick={stopGenerating} title={$t('chat.stop_generating')} aria-label={$t('chat.stop_generating')}><IconSquare size={22} stroke={2} fill="currentColor" /></button>
           {:else}
-            <button data-testid="chat-send" class="grid place-items-center w-12 h-12 flex-none rounded-xl border-none bg-[var(--hv-app-chat-grad)] text-white cursor-pointer disabled:opacity-40 disabled:cursor-default" onclick={sendMessage} disabled={!input.trim()} title={$t('chat.send')} aria-label={$t('chat.send')}><IconSend size={26} stroke={1.9} /></button>
+            <button data-testid="chat-send" class="grid place-items-center w-12 h-12 flex-none rounded-lg border-none bg-[var(--hv-app-chat-grad)] text-white cursor-pointer disabled:opacity-40 disabled:cursor-default" onclick={sendMessage} disabled={!input.trim()} title={$t('chat.send')} aria-label={$t('chat.send')}><IconSend size={26} stroke={1.9} /></button>
           {/if}
         </div>
         <div class="mt-1.5 text-center text-c-xs text-[var(--hv-shell-text-3)]">{$t('chat.local_note')}</div>

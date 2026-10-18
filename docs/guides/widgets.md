@@ -120,14 +120,32 @@ the keyboard path.
 ## Invariants
 
 - **Shared panel geometry** — the 11 panels share one visual vocabulary from
-  `tokens.css`: corner `--hv-radius-card` (12px, a floating-card corner — not
-  the 6px control radius), header `--hv-widget-header-h` (44px, the app-header
-  bar: a 28px accent icon tile + 14px semibold title, **no close/action
+  `tokens.css`: corner `--hv-radius-card` (18px, a floating-card corner — not
+  the 12px control radius), header `--hv-widget-header-h` (44px, the app-header
+  bar: a 28px accent icon tile (a **perfect circle** — `--hv-winhdr-icon-radius:
+  50%`, same shape as the dock tiles / topbar buttons / app header) + 14px
+  semibold title, **no close/action
   button** — monitor visibility is managed from Settings > Widgets), and the
   width stops `--hv-monitor-w-compact` (280px: Resources/VPN/Downloader/
   Syncthing), `--hv-monitor-w` (300px: Security/Calendar/Docker/Weather/
   Sessions/Health), `--hv-monitor-w-wide` (320px: RAID). Keep the three-tier
-  width set — widening any compact panel by hand breaks the shared stops. The
+  width set — widening any compact panel by hand breaks the shared stops.
+
+  The header's icon tile follows the **same contract as the in-window
+  `WindowHeader`** (2026-10-18), because the two bars are the same object seen
+  from two places: 28px tile (= `--hv-winctrl-size`), `border-radius: 50%`,
+  white glyph **clamped to 16px by `.hv-widget-tile :global(svg)`** — so a
+  monitor's icon snippet must **not** pass `size` (a stylesheet beats the SVG
+  attribute; the 11 snippets carried `size={16}` until 2026-10-18 and had it
+  removed) while `stroke` stays explicit at **1.8**, the app-header weight, so
+  the two families read at one weight. The one deliberate difference is the
+  tile *material*: apps are gradients (`--hv-app-<id>-grad`, the
+  one-colour-per-app rule), monitors are **flat accents** from
+  `MONITOR_COLOR` in `Desktop.svelte` — a monitor is not an app, so it has no
+  gradient token and must not borrow one. E2E `widgets.spec.ts` `2.2` pins the
+  bar height, the 28×28 tile and its `50%` radius.
+
+  The
   geometry is locked by `tests/e2e/widgets/widgets.spec.ts` test 2.2.
 - There is no second place to keep monitors in sync — see the three-file
   list above. Missing one leaves either a dead store field, a panel that

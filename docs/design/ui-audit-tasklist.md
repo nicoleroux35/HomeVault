@@ -101,9 +101,11 @@ Largest family: raw values and per-screen reimplementations.
   Adoption: `StatCard` **0 uses**, `EmptyState` 2/27, `DataTable` 1, `FormRow` 1,
   `SectionCard` 6 — while Dashboard/Shares/Storage/CloudSync define their own
   `statCard` / `sectionCard` constants. `components/docker/*` uses
-  `var(--hv-radius-md, 6px)` (wrong fallback: md = 8px).
+  `var(--hv-radius-md)` with no fallback (it carried a stale `8px` one; the
+  token is the control stop and has been 12px since 2026-10-19).
 - **Fix:** swap each local stat/section card for `<StatCard>` / `<SectionCard>`;
-  map 18/20px to `var(--hv-radius-card)` (12px) or `var(--hv-radius-2xl)` (16px);
+  map 18/20px to `var(--hv-radius-card)` / `var(--hv-radius-2xl)` (both 18px —
+  the single surface stop since 2026-10-19);
   correct the Docker fallback to `8px`; replace hand-rolled empty blocks in the
   ~19 routes with `<EmptyState>`.
 - **Done when:** `grep -rn "rounded-\[1[789]px\]\|rounded-\[2[0-9]px\]" frontend/src`

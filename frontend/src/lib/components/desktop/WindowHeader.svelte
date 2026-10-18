@@ -131,7 +131,10 @@
      status badge/version pill: a description belongs in the page body, and a
      badge there would push the title off the row's centre line. The icon tile
      is --hv-winhdr-icon-size, i.e. exactly --hv-winctrl-size, so it matches the
-     min/max/close trio WindowFrame pins to this same bar. -->
+     min/max/close trio WindowFrame pins to this same bar. The tile itself is a
+     PERFECT CIRCLE (--hv-winhdr-icon-radius: 50%), the same shape as the dock
+     tiles and topbar buttons; only the identity glyph is round — the trio keeps
+     the mock's 8px squares. -->
 <div class="hv-winhdr-wrap">
   <div class="hv-winhdr" data-hv-drag>
     <div class="hv-winhdr-icon" style="background: {tileBg};">
@@ -240,6 +243,8 @@
     place-items: center;
     width: var(--hv-winhdr-icon-size);
     height: var(--hv-winhdr-icon-size);
+    /* `50%` (not a px stop) — the tile is a circle at any --hv-winhdr-icon-size,
+       echoing .hv-dock-icon and .hv-topbar-btn. */
     border-radius: var(--hv-winhdr-icon-radius);
     color: var(--hv-on-primary);
     flex: none;
@@ -256,9 +261,10 @@
   }
 
   .hv-winhdr-title {
-    /* 14px semibold on the mock's 20px line — the bar is only 44px, so the
-       title stays on the compact chrome step (--hv-text-md). It is the bar's
-       only text, so it sits dead centre of the 28px control row. */
+    /* 15px semibold — the native title-3 step (--hv-text-md resolves to it)
+       on the mock's 20px line. The bar is only 44px, so the title stays on
+       that step; it is the bar's only text, so it sits dead centre of the
+       28px control row. */
     font-size: var(--hv-text-md);
     font-weight: var(--hv-font-weight-semibold);
     color: var(--hv-winhdr-title);
@@ -301,7 +307,10 @@
        44px bar edge to edge. */
     min-height: var(--hv-winctrl-size);
     padding: 0 12px;
-    border-radius: var(--hv-winctrl-radius);
+    /* A labelled button, so it takes the control corner (8px) — NOT
+       --hv-winctrl-radius, which is 50% since 2026-10-18 and would turn this
+       text button into a pill. Only the trio is round. */
+    border-radius: var(--hv-radius-control);
     font-size: var(--hv-text-base);
     font-weight: var(--hv-font-weight-semibold);
     font-family: inherit;
@@ -373,6 +382,10 @@
     background: transparent;
     cursor: pointer;
     border-bottom: 2px solid transparent;
+    /* A tab IS a button, so it takes the one control corner even though it
+       currently paints no background — the corner is what makes a future
+       hover/active wash (and the focus ring) match every other control. */
+    border-radius: var(--hv-radius-control) var(--hv-radius-control) 0 0;
     white-space: nowrap;
     transition: color var(--hv-transition-fast, 150ms ease), border-color var(--hv-transition-fast, 150ms ease);
   }
@@ -380,7 +393,7 @@
   .hv-winhdr-tab:focus-visible {
     outline: 2px solid var(--hv-primary);
     outline-offset: -2px;
-    border-radius: var(--hv-radius-sm, 4px);
+    border-radius: var(--hv-radius-control);
   }
 
   .hv-winhdr-tab:hover {

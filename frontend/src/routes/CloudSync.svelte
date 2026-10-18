@@ -685,8 +685,8 @@
         <div class="flex flex-col gap-1.5">
           <span class={fieldLabel}>{$t('rclone.type_label')}</span>
           <div class="flex gap-3">
-            <label class="flex items-center gap-1.5 text-sm text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="radio" id="source-type-local" name="source-type" value="local" class="accent-[var(--hv-primary)]" bind:group={syncSourceType} /><IconServer size={14} /> <span>{$t('rclone.type.local')}</span></label>
-            <label class="flex items-center gap-1.5 text-sm text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="radio" id="source-type-cloud" name="source-type" value="cloud" class="accent-[var(--hv-primary)]" bind:group={syncSourceType} /><IconCloud size={14} /> <span>{$t('rclone.type.cloud')}</span></label>
+            <label class="flex items-center gap-1.5 text-c-label text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="radio" id="source-type-local" name="source-type" value="local" class="accent-[var(--hv-primary)]" bind:group={syncSourceType} /><IconServer size={14} /> <span>{$t('rclone.type.local')}</span></label>
+            <label class="flex items-center gap-1.5 text-c-label text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="radio" id="source-type-cloud" name="source-type" value="cloud" class="accent-[var(--hv-primary)]" bind:group={syncSourceType} /><IconCloud size={14} /> <span>{$t('rclone.type.cloud')}</span></label>
           </div>
         </div>
         {#if syncSourceType === 'local'}
@@ -716,8 +716,8 @@
         <div class="flex flex-col gap-1.5">
           <span class={fieldLabel}>{$t('rclone.type_label')}</span>
           <div class="flex gap-3">
-            <label class="flex items-center gap-1.5 text-sm text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="radio" id="dest-type-cloud" name="dest-type" value="cloud" class="accent-[var(--hv-primary)]" bind:group={syncDestType} /><IconCloud size={14} /> <span>{$t('rclone.type.cloud')}</span></label>
-            <label class="flex items-center gap-1.5 text-sm text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="radio" id="dest-type-local" name="dest-type" value="local" class="accent-[var(--hv-primary)]" bind:group={syncDestType} /><IconServer size={14} /> <span>{$t('rclone.type.local')}</span></label>
+            <label class="flex items-center gap-1.5 text-c-label text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="radio" id="dest-type-cloud" name="dest-type" value="cloud" class="accent-[var(--hv-primary)]" bind:group={syncDestType} /><IconCloud size={14} /> <span>{$t('rclone.type.cloud')}</span></label>
+            <label class="flex items-center gap-1.5 text-c-label text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="radio" id="dest-type-local" name="dest-type" value="local" class="accent-[var(--hv-primary)]" bind:group={syncDestType} /><IconServer size={14} /> <span>{$t('rclone.type.local')}</span></label>
           </div>
         </div>
         {#if syncDestType === 'local'}
@@ -744,8 +744,8 @@
   <div class="mt-4 pt-3 border-t border-[var(--hv-shell-border-soft)]">
     <h4 class="m-0 mb-2 text-sm font-semibold text-[var(--hv-shell-text-strong)]">{$t('rclone.sync_options')}</h4>
     <div class="flex gap-4">
-      <label class="flex items-center gap-1.5 text-sm text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="checkbox" class="accent-[var(--hv-primary)]" bind:checked={syncDelete} /> <span>{$t('rclone.sync.delete_extra')}</span></label>
-      <label class="flex items-center gap-1.5 text-sm text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="checkbox" class="accent-[var(--hv-primary)]" bind:checked={syncDryRun} /> <span>{$t('rclone.dry_run_hint')}</span></label>
+      <label class="flex items-center gap-1.5 text-c-label text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="checkbox" class="accent-[var(--hv-primary)]" bind:checked={syncDelete} /> <span>{$t('rclone.sync.delete_extra')}</span></label>
+      <label class="flex items-center gap-1.5 text-c-label text-[var(--hv-shell-text-strong)] cursor-pointer"><input type="checkbox" class="accent-[var(--hv-primary)]" bind:checked={syncDryRun} /> <span>{$t('rclone.dry_run_hint')}</span></label>
     </div>
   </div>
   {#snippet footer()}

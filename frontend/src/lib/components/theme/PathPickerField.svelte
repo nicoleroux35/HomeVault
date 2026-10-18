@@ -104,7 +104,7 @@
     height: var(--hv-touch-target-min, 44px);
     padding: 0 12px;
     border: 1px solid var(--hv-border);
-    border-radius: var(--hv-radius-md, 8px);
+    border-radius: var(--hv-radius-md);
     background: var(--hv-surface-container-low);
     color: var(--hv-text-primary);
     font-size: var(--hv-text-md, 14px);
@@ -123,7 +123,7 @@
     height: var(--hv-touch-target-min, 44px);
     padding: 0 var(--hv-space-3);
     border: 1px solid var(--hv-border);
-    border-radius: var(--hv-radius-md, 8px);
+    border-radius: var(--hv-radius-md);
     background: var(--hv-surface-container-lowest);
     color: var(--hv-text-secondary);
     font-size: var(--hv-text-sm);

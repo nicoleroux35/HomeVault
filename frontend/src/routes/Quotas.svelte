@@ -167,7 +167,7 @@
     <button
       type="button"
       data-testid="quotas-edit-btn"
-      class="inline-flex items-center gap-2 h-11 px-4 border border-[var(--hv-shell-border-strong)] rounded-xl bg-[var(--hv-shell-fill)] text-[var(--hv-shell-text-strong)] text-c-base font-semibold cursor-pointer transition-colors hover:bg-[var(--hv-shell-border)]"
+      class="inline-flex items-center gap-2 h-11 px-4 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-fill)] text-[var(--hv-shell-text-strong)] text-c-base font-semibold cursor-pointer transition-colors hover:bg-[var(--hv-shell-border)]"
       onclick={editInUsers}
     >
       {$t('quotas.manage_in_users')} <IconArrowRight size={16} stroke={2} aria-hidden="true" />
@@ -189,7 +189,7 @@
           aria-pressed={filter === f.id}
           onclick={() => (filter = f.id)}
           class={cn(
-            'inline-flex items-center gap-2 h-9 px-4 border-none rounded-xl bg-transparent text-[var(--hv-shell-text-2)] text-c-base font-medium cursor-pointer transition-colors hover:bg-[var(--hv-shell-border-soft)]',
+            'inline-flex items-center gap-2 h-9 px-4 border-none rounded-lg bg-transparent text-[var(--hv-shell-text-2)] text-c-base font-medium cursor-pointer transition-colors hover:bg-[var(--hv-shell-border-soft)]',
             filter === f.id && 'bg-[var(--hv-primary-selected-bg)] text-[var(--hv-primary)] font-semibold',
           )}
         >
