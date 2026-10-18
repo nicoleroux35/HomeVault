@@ -428,7 +428,7 @@ pub async fn handle_2fa_setup(
                     )
                 }
             };
-            let secret = pending.totp_secret_encrypted;
+            let secret = pending.totp_secret;
 
             let code_valid = state
                 .auth
@@ -616,10 +616,23 @@ pub async fn handle_setup_status(State(state): State<Arc<AppState>>) -> Response
 /// Reports whether a candidate administrator username is available for the
 /// first-run setup. Validates the format, reserved/system names and existing
 /// database or system accounts.
+///
+/// First-run-only, like the other bootstrap endpoints (403 once an admin
+/// exists, mirroring `/auth/setup/verify-totp` and `/auth/setup/progress`):
+/// after setup the wizard is gone and this endpoint would be a free username
+/// oracle — an unauthenticated client could enumerate HomeVault accounts and
+/// host system accounts, distinguishing "exists" from "does not exist". The
+/// local-network + same-origin guard already limits who can ask; the
+/// `has_admin()` gate removes the reason to ask at all.
 pub async fn handle_check_username(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<CheckUsernameQuery>,
 ) -> Response {
+    let setup_repo = SetupStateRepository::new(state.db.pool());
+    if setup_repo.has_admin().await.unwrap_or(true) {
+        return ResponseHelper::json_forbidden("Setup already complete".to_string());
+    }
+
     let username = params.username.trim();
 
     if let Err(e) = SetupService::validate_username(username) {

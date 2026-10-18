@@ -37,7 +37,7 @@ SPA's `ApiClient` (`frontend/src/lib/services/api.ts`) prefixes every call with
 | POST | `/auth/verify-recovery-code` | public | `handle_verify_recovery_code` — `{ username, code }` |
 | POST | `/auth/reset-password-recovery` | public | `handle_reset_password_recovery` — code is not consumed |
 | GET | `/auth/setup-status` | public | `handle_setup_status` — `is_first_run` (DB-derived), `is_setup_valid`, `hardware_changed`, `needs_recovery`, `server_machine_id`, `sudo_available`, `system_language` (host POSIX locale → `en`/`fr`/`de`/`es`) |
-| GET | `/auth/check-username` | public (local network only) | `handle_check_username` |
+| GET | `/auth/check-username` | public (local network only, first-run only) | `handle_check_username` — 403 once an admin exists (post-setup it would be a free username oracle) |
 | POST | `/auth/setup` | public (local network only) | `handle_setup` — accepts optional `totp_secret` + `totp_code` (enrolled at the wizard's password step); response may include `totp_enabled` + `backup_codes`. Refused once an admin exists |
 | POST | `/auth/setup/verify-totp` | public (local network only, first-run only) | `handle_setup_verify_totp` — stateless pre-creation check of a client-generated TOTP secret: `{ secret, code }` → `{ valid }` |
 | POST | `/auth/setup/rebaseline` | admin | `handle_setup_rebaseline` — re-baseline the hardware fingerprint after a confirmed hardware change |
@@ -48,7 +48,15 @@ private / link-local peers (`middleware::setup_guard`), **only same-origin
 browser contexts** (a foreign `Origin` or `Sec-Fetch-Site: cross-site` → `403`),
 and are **rate-limited to 20 requests/min per peer** (`429`).
 `HOMEVAULT_SETUP_ALLOW_REMOTE=1` lifts only the network check.
-`/auth/setup-status` is exempt.
+All three are also **first-run-only at the handler level**: once an admin
+exists `/auth/setup` refuses ("Setup already complete"), and
+`/auth/setup/verify-totp` + `/auth/check-username` answer `403`.
+`/auth/setup/progress` sits behind the same network + same-origin guard but is
+**exempt from the 20/min budget** — it is the wizard's own step bookkeeping
+(one PUT per navigation), and metering it made the wizard exhaust its budget
+and starve its own `check-username` calls.
+`/auth/setup-status` is exempt from all of it (public by design, read by the
+login screen).
 
 Login returns a session token (stored as `session-token` in localStorage) and
 sets an `hv_session` cookie read only by the per-app reverse proxy.
