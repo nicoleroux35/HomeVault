@@ -6,7 +6,11 @@ replaces every earlier skin ("Fluent Paper", "Frosted Glass Modernism", "Clean
 Paper & Slate"). Nothing in the codebase may reference another framework's
 design language (Fluent, Material, …) as an authority: tokens, components and
 pages all read from the `--hv-*` tokens declared in
-`frontend/src/lib/styles/theme/tokens.css`, which this document describes.
+`frontend/src/lib/styles/theme/tokens.css`, which this document describes. The
+one reference it does follow is `design-tokens.md` at the repo root — a
+checked-in spec, not a framework — and only for its **non-colour** rules
+(spacing, corners, elevation, type metrics, breakpoints; see §2.2). Its colour
+palette is not adopted.
 
 > Superseded specs: `DESIGN stich.md` at the repo root described the earlier
 > "Frosted Glass Modernism" direction (`#2E72C9`, translucent blur surfaces). It
@@ -36,8 +40,15 @@ console** (reference mood: the approved appliance-console mocks). It is:
 - **Dense but legible** — this is an information-dense admin product (tables,
   forms, live metrics). Compact type, tight rows, generous touch targets
   (≥44px).
-- **Precise** — small radii (controls 6–8px, cards 12–16px, windows 16px),
-  restrained motion, no decorative effects.
+- **Precise** — three corner families (badges 8px, controls 12px, containers
+  18px) plus the capsule/pill for tags, never a decorative 20–28px hero
+  curve, restrained motion, no decorative effects.
+- **Apple-derived, appliance-owned** — the *non-colour* half of the language
+  (spacing rhythm, corner ladder, elevation, weights, leading, tracking,
+  layout breakpoints) is ported from `design-tokens.md` at the repo root
+  (§2.2 below). Its colour palette is deliberately **not** adopted: one
+  accent (`#1E62AE`) and the cool blue-grey ink ramp stay the only colour
+  authority in the product.
 
 ## 2. Tokens — the single source of truth
 
@@ -50,40 +61,81 @@ categories:
 | Neutral ramp | `--hv-neutral-50…900`, `--hv-text-primary/secondary/tertiary` | cool blue-greys |
 | Semantic | `--hv-success`, `--hv-warning`, `--hv-error`, `--hv-info` | status hues + light bg/border/text variants |
 | Surfaces | `--hv-surface*`, `--hv-shell-glass/card/fill/border*` | two aligned vocabularies (legacy `surface*` + shell) |
-| Typography | `--hv-font-size-*` (content), `--hv-text-*` (compact chrome), `--hv-font-weight-*`, `--hv-line-height-*` | two deliberate scales, see below |
-| Spacing | `--hv-space-0-5 … 24` | 4px base grid |
-| Radius | `--hv-radius-sm … full`, `--hv-radius-card`, `--hv-radius-control` | appliance stops, see below |
-| Shadows | `--hv-shadow-sm … 2xl`, `--hv-shell-shadow-card` | layered low-alpha black |
+| Typography | `--hv-font-size-*` (content), `--hv-text-*` (compact chrome), `--hv-font-weight-*` (400–900), `--hv-line-height-*`, `--hv-letter-spacing-*` | two deliberate scales, see below; weights/leading/tracking per `design-tokens.md` §3/§7/§8 |
+| Spacing | `--hv-space-0-5 … 24` (4px grid) + `--hv-section-gap-*`, `--hv-component-gap-*`, `--hv-card-padding-*`, `--hv-content-max-width*` | 4px base grid + the reference's layout rhythm, see §2.2 |
+| Radius | `--hv-radius-badge … full`, `--hv-radius-card`, `--hv-radius-control`, `--hv-radius-pill` | 8 / 12 / 18 + pill, see §3.2 |
+| Shadows | `--hv-shadow-xs … 2xl`, `--hv-shell-shadow-card` | multi-layer low-alpha black (contact + ambient), see §2.2 |
 | Elevation/z-index | `--hv-z-*` | 1000-point increments |
 | Motion | `--hv-transition*`, `--hv-ease-*`, `--hv-chrome-*` | transform/opacity only |
 | Desktop chrome | `--hv-chrome-*`, `--hv-window-*`, `--hv-winhdr-*`, `--hv-dock-*` | shell geometry |
+| Layout breakpoints | `--hv-breakpoint-sm/md/lg` | 734 / 1068 / 1440, see §2.2 |
 | Login + wizard gateway | `--hv-login-*` (canvas, orbs, accent, field, timer) + `--hv-wizard-*` (recovery box, create CTA) | **aliases of the Appliance palette** — same accent, ink ramp and canvas as the desktop — see §6.1/§6.2 |
 | Settings screen | `--hv-settings-*` (slate ramp, tile/canvas/hairline/border, cat tints + 8 `--hv-settings-cat-*` accents, toggle geometry) | scoped to `routes/Settings.svelte` + `components/settings/` only — see §6.3 |
 
-### 2.1 The two type scales (do not merge)
+### 2.1 One text ladder — the native text styles
 
-- `--hv-font-size-*` — content scale (body, headings, form labels).
-- `--hv-text-*` — compact chrome scale (table cells, chips, meta rows), one
-  step smaller.
+Every text size in the product resolves to one of these steps. The ladder is
+the platform's own desktop text-style set, so a label, a body line, a card
+title and a screen title land on the sizes a desktop application uses for
+those same functions — not on an ad-hoc web scale.
 
-Pick by role, never by name similarity. Merging them resizes ~16 files.
+| Role token | Size | Weight | Used for |
+|---|---|---|---|
+| `--hv-type-caption` | 11 | 400/700 | badges, chips, uppercase section eyebrows |
+| `--hv-type-footnote` | 11 | 400 | helper text under a field, table meta |
+| `--hv-type-subheadline` | 11 | 500/600 | column headers, small labels |
+| `--hv-type-callout` | 12 | 400 | secondary prose, hints |
+| `--hv-type-body` | 13 | 400 | **default** reading and UI text |
+| `--hv-type-headline` | 13 | 600 | emphasised body, button labels |
+| `--hv-type-title-3` | 15 | 600/700 | card, panel and window titles |
+| `--hv-type-title-2` | 17 | 600 | section titles (`h3`) |
+| `--hv-type-title-1` | 22 | 600/700 | page titles (`h2`) |
+| `--hv-type-large-title` | 26 | 600 | screen titles (`h1`) |
+| `--hv-type-display` | 34 | 600 | empty-state / hero headings |
+| `--hv-type-metric` | 20 | 400/700 | stat-card numbers, KPI readouts |
 
-**Role tokens** (`--hv-text-stat`, `--hv-text-card-title`, `--hv-text-label`)
-cover three recurring sizes that used to drift as raw literals (stat-card
-numbers, card/section titles, form-field labels); they map onto the scales
-above. `--hv-font-size-5xl` (62px) is the gauge/hero display step.
+Two documented deviations, both deliberate:
+
+- **11px floor.** The platform's caption step is 10px; nothing readable renders
+  below 11px here (WCAG 1.4.4 resizing, and 10px is illegible on the high-DPI
+  panels this appliance is administered from).
+- **Decorative display numerals** — `--hv-type-gauge` (62px, the dashboard
+  gauge) and `--hv-type-clock` / `-clock-sm` / `-clock-wizard` (72 / 48 / 56px,
+  the gateway clock). These are visual elements, not body text.
+
+**The two vocabularies share this ladder.** `--hv-font-size-*` (content) and
+`--hv-text-*` (compact chrome) stay separate *names* because ~380 call sites
+read `text-c-*` and the intent (dense chrome vs reading) is still different —
+but since 2026-10-18 both resolve to the same steps, so a role renders at one
+size no matter which name a call site uses. Merging the names is optional
+churn; the values are what bind. `h1`–`h6` map 1:1 onto
+`large-title` / `title-1` / `title-2` / `title-3` / `headline` /
+`subheadline` in `base.css`, so a bare heading never falls back to a browser
+default.
+
+**The guard is executable, not prose.** `tests/e2e/design/typography.spec.ts`
+walks the live DOM of the login screen and five apps and fails on any element
+rendering its own text at a size outside the ladder, plus a role table (field
+label 13, helper 11, card/panel/window title 15, metric 20, uppercase eyebrow
+11) and the 11px floor. Verified by mutation: setting `--hv-type-body` to 14px
+turns it red and names the offending elements.
 
 **Applying a size/family token in markup (UI audit W1, 2026-09-23).** Sizes go
 through the **one** Tailwind bridge declared in `app.css` → `@theme inline`:
 
+- `text-t-*` — **native roles** (`--hv-type-*`), the recommended entry point:
+  `text-t-caption`, `text-t-footnote`, `text-t-subheadline`, `text-t-callout`,
+  `text-t-body`, `text-t-headline`, `text-t-title-3`, `text-t-title-2`,
+  `text-t-title-1`, `text-t-large-title`, `text-t-display`, `text-t-metric`,
+  `text-t-gauge`, `text-t-clock` / `-sm` / `-wizard`.
 - `text-*` — **content scale** (`--hv-font-size-*`: `text-micro` 11,
-  `text-xs` 11, `text-sm` 12, `text-base` 14, `text-md` 16, `text-lg` 18,
-  `text-xl` 20, `text-2xl` 24, `text-3xl` 28, `text-4xl` 30, `text-5xl` 62) —
+  `text-xs` 11, `text-sm` 12, `text-base` 13, `text-md` 15, `text-lg` 17,
+  `text-xl` 20, `text-2xl` 22, `text-3xl` 26, `text-4xl` 34, `text-5xl` 62) —
   body copy, headings, form labels.
 - `text-c-*` — **compact chrome scale** (`--hv-text-*`: `text-c-xs` 11,
-  `text-c-sm` 12, `text-c-base` 13, `text-c-md` 14, `text-c-lg` 16,
-  `text-c-xl` 18, `text-c-2xl` 20, `text-c-3xl` 28) plus the role steps
-  `text-c-stat` 20, `text-c-card-title` 16, `text-c-label` 13 — table cells,
+  `text-c-sm` 12, `text-c-base` 13, `text-c-md` 15, `text-c-lg` 17,
+  `text-c-xl` 20, `text-c-2xl` 22, `text-c-3xl` 26) plus the role steps
+  `text-c-stat` 20, `text-c-card-title` 15, `text-c-label` 13 — table cells,
   chips, meta rows.
 
 **Never write `text-[length:var(--hv-…)]`** — that spelling (and the whole
@@ -118,6 +170,59 @@ grep -o '\.text-\\\[length[^{]*' static/dist/assets/*.css                    # �
 The legacy `--text-*` aliases that used to sit in tokens.css's unlayered
 `:root` block (they beat Tailwind's `@layer theme` by cascade accident) were
 removed in the same change — the bridge above is the only declaration site.
+
+### 2.2 Layout rhythm, elevation, type metrics, breakpoints (design-tokens.md)
+
+Since 2026-10-19 the *non-colour* rules of the visual language are the ones in
+`design-tokens.md` at the repo root, translated onto `--hv-*` names in
+`tokens.css`. The Appliance identity is unchanged: opaque paper, one accent,
+hairlines, dense-but-legible. What the reference tightened is the *craft*
+around it — how much air a page gets, how deep a card sits, how a title is
+tracked and led.
+
+**Colours are explicitly out of scope.** `design-tokens.md` §1 (Apple's
+white / `#1D1D1F` / `#F5F5F7` / `#0066CC` set) is **not** adopted: the
+Appliance palette (§3) stays the only colour authority. The same goes for the
+reference's purple/pink and blue/cyan display gradients — the two gradient
+tokens that do exist are sweeps of the HomeVault Blue ramp.
+
+| Reference | HomeVault token(s) | Value | Used for |
+|---|---|---|---|
+| §2 section gap | `--hv-section-gap` / `-sm` / `-lg` | 100 / 80 / 120px | between major page blocks (settings pages, gateway sections) |
+| §2 component gap | `--hv-component-gap-sm/md/lg` | 16 / 32 / 48px | heading → paragraph → control inside one block |
+| §2 card padding | `--hv-card-padding` / `-sm` / `-lg` | 32 / 24 / 40px | internal padding of cards and tiles (`.hv-card` takes the 32px default; in-window app bodies keep the 24px compact step) |
+| §2 content width | `--hv-content-max-width` / `-lg` | 980 / 1200px | centred reading / gateway column; app windows stay full-bleed |
+| §3 title weight | `--hv-font-weight-semibold` / `-bold` | 600 / 700 | headings (600), display/hero headings (700) |
+| §3 body weight | `--hv-font-weight-regular` / `-medium` | 400 / 500 | paragraphs, captions/labels |
+| §3 CJK steps | `--hv-font-weight-extrabold` / `-black` | 800 / 900 | available for display headings; unused — HomeVault ships en/fr/es/de |
+| §5 elevation | `--hv-shadow-xs … 2xl` | contact + ambient pairs | `md` = resting card, `lg` = hover lift / floating window, `2xl` = modal |
+| §7 tracking | `--hv-letter-spacing-title` / `-body` | -0.015em / 0 | `h1`–`h3` tracked in, body untracked |
+| §8 leading | `--hv-line-height-title` / `-body` | 1.1 / 1.53 | headings (`h1`–`h6`) / prose and `.hv-card-body` |
+| §9 breakpoints | `--hv-breakpoint-sm/md/lg` | 734 / 1068 / 1440px | page-level layout bands (phone / tablet / desktop / large desktop) |
+| §6 display gradients | `--hv-gradient-text-accent` / `-accent-soft`, `--hv-gradient-bg-light`, `.hv-text-gradient` | accent ramp | one hero/display heading per screen at most; never body copy |
+
+Notes that bind the table:
+
+- **Elevation is two layers, never one hard drop.** Each stop is a tight
+  contact shadow plus a wide ambient one, so a card reads crisp on paper
+  without a visible "border" of shadow. Depth still comes from shadow alone —
+  no `backdrop-filter` anywhere (a dark photo wallpaper must never wash out
+  ink).
+- **The shadow ladder is retuned in one place.** `--hv-shell-shadow-card`,
+  `--hv-window-shadow` and `--hv-modal-shadow` are aliases of `md`, `lg` and
+  `2xl`; never give a surface its own shadow value.
+- **Section/component gaps are page-level, not window-level.** An in-window
+  app body keeps `--hv-window-content-padding` (24px = the compact card
+  padding). A NAS console shows tables and forms, not a landing page — the
+  reference's 80–120px rhythm belongs to page composition (gateway, settings
+  sections, empty states), where it is used.
+- **Breakpoints are a contract, not a runtime API.** CSS custom properties
+  cannot be read inside `@media`, so the tokens document the bands and the
+  media queries spell the literal px. Component-level tweaks may still use
+  Tailwind's own utilities (`sm:` 640 / `md:` 768 / `lg:` 1024 / `xl:` 1280).
+- **`.hv-text-gradient` degrades safely.** Under `forced-colors: active` or
+  `prefers-contrast: high` the clip is dropped and the heading renders as
+  plain ink — a clipped gradient is invisible text to those users.
 
 ## 3. The Appliance palette
 
@@ -156,21 +261,78 @@ The four interaction states are tokens, never ad-hoc fills:
 
 ### 3.2 Radius stops (appliance)
 
+**Three families, one value each (2026-10-19).** The corner ladder follows
+`design-tokens.md` §4 at the repo root, keeping the appliance's
+one-number-per-role discipline: a corner either belongs to a *badge* (an
+inline, non-interactive marker: **8px**), to a *control* (something you
+click: **12px**), or to a *container* (a surface that holds things:
+**18px**) — or it is a capsule/pill. This is enforced on **every button of
+every screen**: `desktop.spec.ts` `14.12` walks the whole app registry and
+fails any `<button>` / `[role="button"]` whose computed corner is not the
+control stop, a circle or a capsule (see the four exceptions below).
+
+The scale used to carry three container stops (16px windows, 24px chrome
+panels, 12px cards) and three control stops (6 / 8 / 10px), and the result
+was that the same class of object read differently depending on which
+component it came from: a window next to a popover looked like two different
+products, and a button next to the input it submits did not line up. Both
+families are now a single number — every button, input, select, chip and row
+takes **12px** (the reference's `--apple-radius-card-sm`), every container
+**18px** (`--apple-radius-card`), every non-control badge **8px**
+(`--apple-radius-badge`) — so the vendored shadcn `rounded-md`,
+`rounded-lg`, `rounded-xl`/`rounded-2xl` and every hand-written
+`var(--hv-radius-control)` all resolve to one of them, whatever the button's
+size.
+
 | Stop | Value | Usage |
 |---|---|---|
-| `--hv-radius-sm` | 4px | inline badges, tiny chips |
-| `--hv-radius-default` | 6px | inputs, buttons, selects |
-| `--hv-radius-md` | 8px | small cards, list items |
-| `--hv-radius-lg` | 10px | default card corners |
-| `--hv-radius-xl` | 12px | large cards, sections |
-| `--hv-radius-2xl` | 16px | window corners, large surfaces |
-| `--hv-radius-3xl` | 16px | compat alias of `--hv-radius-2xl` — prefer 2xl in new code |
-| `--hv-radius-4xl` | 24px | large floating chrome panels (topbar popovers, power dialog, activity panel) |
-| `--hv-radius-full` | 9999px | pills, circular icon buttons |
-| `--hv-radius-card` | 12px | semantic card corner |
-| `--hv-radius-control` | 8px | interactive control corner |
+| `--hv-radius-badge` | 8px | **THE badge stop** — inline badges, micro chips, key caps (not controls) |
+| `--hv-radius-sm` | 8px | alias of the badge stop (keeps `rounded-sm` resolving) |
+| `--hv-radius-default` | 12px | **THE control stop** — inputs, buttons, selects, chips, rows |
+| `--hv-radius-md` | 12px | alias of the control stop (keeps `rounded-md` resolving) |
+| `--hv-radius-lg` | 12px | alias of the control stop (keeps `rounded-lg` resolving) |
+| `--hv-radius-xl` | 18px | **the surface stop** (alias) |
+| `--hv-radius-2xl` | 18px | **THE surface stop** — windows, widgets, modals, drawers, popovers, cards |
+| `--hv-radius-3xl` | 18px | compat alias of `--hv-radius-2xl` |
+| `--hv-radius-4xl` | 18px | compat alias of `--hv-radius-2xl` (chrome panels) |
+| `--hv-radius-pill` | 980px | **the tag stop** — filter/severity/category chips (`--apple-radius-button`) |
+| `--hv-radius-full` | 9999px | true capsules and circular icon buttons |
+| `--hv-radius-card` | 18px | semantic card corner (aliases the surface stop) |
+| `--hv-radius-control` | 12px | interactive control corner (aliases `--hv-radius-default`) |
 
-**Corner audit (2026-10-17).** Every visible corner reads one of the stops
+Retune the surface stop on `--hv-radius-2xl`, the control stop on
+`--hv-radius-default` and the badge stop on `--hv-radius-badge` — the aliases
+exist only so the ~40 container, ~76 control and ~20 badge call sites, plus
+the Tailwind `rounded-*` bridge in `app.css`, keep resolving. Never give a
+container, a control or a badge its own number: that is exactly how the
+three-stop drift happened on both sides.
+
+**Buttons — the four exceptions `14.12` allows** (a button that is none of
+these takes 12px):
+
+| Case | Corner | Why |
+|---|---|---|
+| Circular controls (dock tiles, topbar buttons, window trio, avatars) | `50%` | a *shape*, not a corner |
+| Capsule chips / pills (launcher categories, filter + severity chips, the user pill) | `9999px` | same — `.hv-pill` / `rounded-pill` names the tag stop |
+| Table / list rows with hairline separators (Explorer file list, Journal log) | `0` | the separators define the row; rounding it would notch every hairline |
+| Children of a segmented control | `0` | the group clips them (`overflow: hidden`) |
+
+Everything else — including buttons that happen to be large (a selectable
+card, a launcher tile, a settings nav row) — takes the control corner. A
+`rounded-xl` / `rounded-2xl` utility on a `<button>` is a bug: it silently
+puts a surface corner on a control, which is how Storage's disk cards, the
+RAID wizard's option cards and Settings' category rows ended up at a surface
+corner while the buttons next to them were at the control corner.
+
+**One deliberate deviation from `design-tokens.md`:** the reference gives
+*all* buttons and tags its 980px pill (`--apple-radius-button`). HomeVault
+adopts that for **tags** (`--hv-radius-pill`, `.hv-pill`, the chip classes)
+but keeps **form buttons on the control corner**. A 44px pill sitting next to
+the 12px field it submits breaks the row it lives in, and this is a dense
+admin console, not a marketing page. If that ever changes, it is one token
+(`--hv-radius-control`) plus `14.12` — not a per-component decision.
+
+**Corner audit (2026-10-19).** Every visible corner reads one of the stops
 above — no literal `border-radius` outside the scale. The only literals left
 are the 2px micro-radius on the 8–10px legend swatches (`Raid`, `Storage`)
 and the tooltip arrow: a data-encoding dot, not a UI corner. The element →
@@ -178,18 +340,23 @@ stop mapping the shell and the gateway share:
 
 | Element | Stop |
 |---|---|
-| App window, tablet-maximized window | `--hv-window-radius` (16px, aliased by `--hv-window-border-radius`) |
+| App window, tablet-maximized window | `--hv-window-radius` (18px, aliased by `--hv-window-border-radius`) |
 | Maximized window on desktop / edge-to-edge phone | `0` (intentional) |
-| Dock pill, topbar pill, dock + launchpad icon tiles | `--hv-radius-2xl` (16px) |
-| Topbar popovers, power dialog, activity panel | `--hv-radius-4xl` (24px) |
-| Desktop widget/monitor panels, in-window cards, modals, drawers, folder pickers | `--hv-radius-card`/`--hv-radius-xl` (12px) |
-| Inputs, buttons, selects, list rows, chips (non-pill) | `--hv-radius-control`/`--hv-radius-md` (8px) |
-| Window header icon tile + control trio | `--hv-winctrl-radius`/`--hv-winhdr-icon-radius` (8px) |
+| Launchpad icon tiles | `50%` (circle, like the dock tile) |
+| Topbar pill **and** dock pill — capsules, ends are exact semicircles (the full radius clamps to half the pill height); topbar buttons + dock icon tiles — perfect uniform circles | `--hv-radius-full` / `50%` |
+| Topbar popovers, power dialog, activity panel | `--hv-radius-4xl` (18px — the surface stop) |
+| Desktop widget/monitor panels, in-window cards, modals, drawers, folder pickers | `--hv-radius-card`/`--hv-radius-2xl` (18px) |
+| Inputs, buttons, selects, list rows, chips (non-pill) | `--hv-radius-control`/`--hv-radius-md` (12px) |
+| Status badges, key caps, non-control micro surfaces (`.hv-badge`) | `--hv-radius-badge`/`--hv-radius-sm` (8px) |
+| Filter / severity / category chips, user pill | `--hv-radius-pill` / `--hv-radius-full` |
+| Window header icon tile — **perfect circle**, like the dock tiles / topbar buttons | `--hv-winhdr-icon-radius` (`50%`) |
+| Window control trio (min / max / close) — **perfect circles**, like the dock tiles / topbar buttons | `--hv-winctrl-radius` (`50%`) |
 | Pills, dots, status chips, avatars, spinners | `--hv-radius-full` / `50%` |
 
-Login and SetupWizard are Tailwind-on-tokens: card `rounded-2xl` (16px),
-fields/buttons `rounded-md` (8px, matching the shared `Input`/`Button`),
-inner cards `rounded-xl` (12px). They use no radius outside this map.
+Login and SetupWizard are Tailwind-on-tokens: card `rounded-2xl` (18px — the
+surface stop), fields/buttons `rounded-md` (12px — the control stop, so the
+field and the button under it line up), inner cards `rounded-xl` (18px). They
+use no radius outside this map.
 
 ## 4. Component architecture — one library, three layers
 
@@ -224,6 +391,13 @@ It composes `WindowHeader` (flush, flex-shrink:0) + an optional
 overflow-y:auto` body that carries the page padding
 (`--hv-window-content-padding`).
 
+Below all of that, **`WindowFrame` adds one 36px frame footer to every
+window** (2026-10-18): help on the far left, the SE resize grip on the far
+right, both 28px `.hv-ic` icon buttons on the shared focus ring. It is chrome
+— apps never render it and never pass content into it; an app's own
+`WindowFooter` stays inside the page, above it. See
+[desktop.md](./desktop.md#frame-footer--help--resize-grip-2026-10-18).
+
 The header bar is **[APP ICON] [WINDOW TITLE] and nothing else** (2026-09-17;
 the 2026-09-14 pass had already removed the `subtitle` prop). The bar itself —
 `.hv-winhdr`, the element carrying `[data-hv-drag]` — holds exactly two things:
@@ -257,7 +431,11 @@ hand-rolls a control into the bar. A page-level action belongs under the header,
 where it can't push the title off the bar's centre line or collide with the
 control trio's reserve. The icon tile and the trio are both
 `--hv-winctrl-size` (28px) on one shared vertical axis, so the bar renders at
-exactly `--hv-winhdr-h` (44px). `tabsLabel` / `sidebarLabel` (accessible
+exactly `--hv-winhdr-h` (44px). Both are **perfect circles**
+(`--hv-winhdr-icon-radius` and `--hv-winctrl-radius` are `50%`, the
+dock/topbar shape language) — the whole window chrome speaks one shape, and a
+labelled button inside the chrome still takes `--hv-radius-control` (8px).
+`tabsLabel` / `sidebarLabel` (accessible
 names) are not subtitles and stay.
 
 `SectionCard` — the standard titled card:
@@ -513,7 +691,8 @@ above. Whichever source you use, the accessible name lives on the *control*
   what makes `--hv-chrome-topbar-keepout` / `--hv-chrome-dock-keepout` exact.
   Everything anchored to the dock (`.hv-activity-panel`, the ≤900px maximized
   inset) derives from the **dock's** band.
-- Window corners: `--hv-window-radius` (16px). Maximized windows hide the
+- Window corners: `--hv-window-radius` (18px, the surface stop). Maximized
+  windows hide the
   topbar; on ≤900px they inset above the dock.
 - **The app window is the "AppWindow" mock (2026-09-14, Figma "Sans titre"
   node `3:76`)** — the exact spec lives in `desktop.md` → *In-window anatomy*.
@@ -521,7 +700,9 @@ above. Whichever source you use, the accessible name lives on the *control*
   (`--hv-window-border` `#CBD5E1`, deliberately darker than the `--hv-shell-*`
   card hairline) under the mock's own two-layer shadow, a constant **44px**
   header bar, and the amber / blue / red control trio **inline in that bar** at
-  28px — no longer 48px circles floating over the content.
+  28px — no longer 48px circles floating over the content (they are 28px
+  **circles** again since 2026-10-18: `--hv-winctrl-radius: 50%`, like the dock
+  tiles and topbar buttons).
 - **Chrome is Figma-inspired (approved gateway mocks) (2026-09-13, deepened 2026-09-14):** window
   controls are traffic lights (`--hv-winctrl-*`: amber minimize, blue
   maximize, red close) instead of neutral circles, on the mock's own stops
@@ -529,12 +710,19 @@ above. Whichever source you use, the accessible name lives on the *control*
   `--hv-warning`/`--hv-primary`/`--hv-error`); the dock running indicator
   is a full-width bar in the app's solid hue (`--hv-app-<id>-c`,
   `.hv-dock-dot` + `--dock-c`), which must stay the dark stop of that app's
-  `--hv-app-<id>-grad` (E2E `14.2`); topbar buttons are flat 44px chips on the
-  pill — icon + label
-  from 901px up, icon-only below (no tile / border / shadow, hover
-  `--hv-subtle-hover`, `--hv-radius-xl`) — and
-  the profile avatar is a 32px circle. Dock tiles are 48px /
-  `--hv-radius-2xl` with a spring hover lift + `brightness(1.05)` and a
+  `--hv-app-<id>-grad` (E2E `14.2`); topbar buttons are flat **circles**
+  (`--hv-chrome-topbar-btn-size`: 48px, 0.775 × the pill)
+  on the pill — icon-only at every width, no tile / border / shadow, hover
+  `--hv-subtle-hover`, `border-radius: 50%` — and
+  the profile avatar is a 32px circle. Dock tiles are 64px **perfect
+  circles** (`border-radius: 50%`, uniform across apps; 44px on phone) — the
+  diameter is 0.775 × the 84px dock bar, the proportion measured on the
+  approved reference dock — inside
+  the dock's **capsule**, and the topbar's three buttons are **perfect
+  circles** too (48px — 0.775 × the pill, the dock tile's own ratio; 44px on
+  the phone; icon-only, name on `aria-label` + the shared CSS tooltip)
+  inside the topbar's **capsule** — both pills use `--hv-radius-full`, so their
+  ends are exact semicircles. Spring hover lift + `brightness(1.05)` and a
   CSS tooltip on `--hv-tooltip-bg` (suppressed under `@media (hover: none)`).
   Palette stays the HomeVault appliance stop set, with the chrome border/shadow
   as the one dedicated exception (see `desktop.md`).
@@ -566,14 +754,18 @@ above. Whichever source you use, the accessible name lives on the *control*
 ### 5.1 Form controls stay readable on touch — no iOS auto-zoom
 
 iOS Safari auto-zooms into any `input`/`select`/`textarea` whose font-size is
-**below 16px** on focus. The compact chrome scale (`--hv-text-*`) and the
-legacy `--text-sm`/`--text-base` aliases (`12px`/`14px`) are far under that
-threshold, so `base.css`'s `@media (pointer: coarse)` block forces form text
-to `var(--hv-font-size-md)` (16px) on touch pointers. Desktop/mouse keeps the
-compact sizes. This rule must not be removed or lowered — a tap into a login
-or settings field must never zoom the page (the reference shells ship 17px;
-HomeVault uses the exact 16px threshold). E2E: `login.spec.ts` §12 asserts the
-computed font-size stays ≥16px on a coarse pointer.
+**below 16px** on focus. The native body step is 13px — far under that
+threshold — so `base.css`'s `@media (any-pointer: coarse)` block forces form
+text to a **literal 16px** on touch pointers. Desktop/mouse keeps the 13px
+body step. This rule must not be removed or lowered — a tap into a login or
+settings field must never zoom the page (the reference shells ship 17px;
+HomeVault uses the exact 16px threshold).
+
+That 16px is deliberately a literal and **not** `--hv-font-size-md`: the token
+used to be 16px but is now the native title-3 step (15px), so pointing the
+rule at it would silently reintroduce the auto-zoom bug (2026-10-18).
+E2E: `login.spec.ts` §12 asserts the computed font-size stays ≥16px on a
+coarse pointer.
 
 ## 6. App icon gradients
 
@@ -813,6 +1005,13 @@ Appliance palette with it. Everything it declares lives under
    shared sprite `<Icon>` (tabler-first), `@lucide/svelte` stays inside
    `components/ui/**`, inline `<svg>` is artwork only, and `✓`/`✕`/`★`
    typed as text is never an icon.
+9. **Non-colour craft follows `design-tokens.md` (§2.2); colour does not.**
+   Spacing rhythm, the 8/12/18 corner ladder, elevation, weights, leading,
+   tracking and the 734/1068/1440 breakpoints come from that spec. Its
+   palette, its other-hue display gradients and its pill form buttons are
+   deliberately not adopted — see §2.2 and §3.2 for the reasoning. A new
+   visual value is declared in `tokens.css` as an `--hv-*` token first, never
+   written as a literal in a component.
 
 ### 7.1 Accessibility invariants — WCAG 2.2 AA / EN 301 549 / ISO 9241
 
