@@ -605,6 +605,52 @@ async fn test_me_after_logout_fails() {
 // 6. POST /api/auth/2fa/verify
 // ========================================================================
 
+/// RFC 4648 base32 decode (same alphabet as `AuthService::decode_base32`) so
+/// tests can compute TOTP codes the server actually accepts.
+fn b32_decode(input: &str) -> Vec<u8> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let mut bits = 0u64;
+    let mut bit_count = 0u32;
+    let mut out = Vec::new();
+    for c in input.trim_end_matches('=').to_uppercase().bytes() {
+        let Some(idx) = ALPHABET.iter().position(|&a| a == c) else {
+            continue;
+        };
+        bits = (bits << 5) | idx as u64;
+        bit_count += 5;
+        while bit_count >= 8 {
+            bit_count -= 8;
+            out.push(((bits >> bit_count) & 0xFF) as u8);
+        }
+    }
+    out
+}
+
+/// 6-digit TOTP for a base32 secret at the given UTC second — mirrors
+/// `AuthService::generate_totp` exactly (RFC 6238, HMAC-SHA1, dynamic
+/// truncation).
+fn totp_at(secret: &str, at_secs: u64) -> String {
+    use hmac::{Hmac, KeyInit, Mac};
+    use sha1::Sha1;
+    let key = b32_decode(secret);
+    let mut mac = Hmac::<Sha1>::new_from_slice(&key).unwrap();
+    mac.update(&(at_secs / 30).to_be_bytes());
+    let digest = mac.finalize().into_bytes();
+    let offset = (digest[digest.len() - 1] & 0x0F) as usize;
+    let bin = ((u32::from(digest[offset]) & 0x7F) << 24)
+        | (u32::from(digest[offset + 1]) << 16)
+        | (u32::from(digest[offset + 2]) << 8)
+        | u32::from(digest[offset + 3]);
+    format!("{:06}", bin % 1_000_000)
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
 #[tokio::test]
 async fn test_2fa_verify_no_session() {
     let (state, _tmp, _lock) = setup_state().await;
@@ -868,6 +914,79 @@ async fn test_2fa_verify_with_invalid_code_fails() {
         "expected 2FA code error, got: {}",
         msg
     );
+}
+
+#[tokio::test]
+async fn test_2fa_verify_accepts_a_previous_window_code() {
+    let (state, _tmp, _lock) = setup_state().await;
+    create_test_user(&state, "twofa_prev", "TestPassw0rd123").await;
+    state
+        .auth
+        .enable_2fa("twofa_prev", "JBSWY3DPEHPK3PXP")
+        .await
+        .expect("enable 2fa");
+    let mut app = login_router(state);
+
+    // RFC 6238 ±1 tolerance: a code displayed by the authenticator in the
+    // previous 30 s window must still verify (before 2026-10-18 the login
+    // check only looked forward and rejected it — a code typed at the edge
+    // of a period failed the moment the window rolled).
+    let code = totp_at("JBSWY3DPEHPK3PXP", now_secs().saturating_sub(30));
+    let (status, body) = post_json(
+        &mut app,
+        "/api/auth/2fa/verify",
+        json!({"username": "twofa_prev", "password": "TestPassw0rd123", "totp_code": code}),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the previous window's code must complete login: {:?}",
+        body
+    );
+    assert!(body["success"].as_bool().unwrap_or(false));
+    assert!(body["data"]["token"].as_str().unwrap_or("").len() > 0);
+}
+
+#[tokio::test]
+async fn test_2fa_secret_is_encrypted_at_rest() {
+    let (state, _tmp, _lock) = setup_state().await;
+    create_test_user(&state, "twofa_store", "TestPassw0rd123").await;
+    state
+        .auth
+        .enable_2fa("twofa_store", "JBSWY3DPEHPK3PXP")
+        .await
+        .expect("enable 2fa");
+
+    // What a database leak would see: never the plaintext secret.
+    let (stored,): (String,) =
+        sqlx::query_as("SELECT totp_secret_encrypted FROM user_2fa WHERE username = ?")
+            .bind("twofa_store")
+            .fetch_one(&*state.db.pool())
+            .await
+            .unwrap();
+    assert_ne!(stored, "JBSWY3DPEHPK3PXP");
+    assert!(stored.starts_with("hv1:"), "got: {stored}");
+
+    // …and the plaintext still round-trips for verification.
+    let repo = homevault::storage::User2faRepository::new(state.db.pool());
+    let row = repo
+        .get_by_username("twofa_store")
+        .await
+        .expect("2FA row")
+        .expect("2FA row present");
+    assert_eq!(row.totp_secret, "JBSWY3DPEHPK3PXP");
+
+    // End to end: a code computed from the plaintext verifies through the API.
+    let mut app = login_router(state);
+    let (status, body) = post_json(
+        &mut app,
+        "/api/auth/2fa/verify",
+        json!({"username": "twofa_store", "password": "TestPassw0rd123", "totp_code": totp_at("JBSWY3DPEHPK3PXP", now_secs())}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{:?}", body);
 }
 
 #[tokio::test]

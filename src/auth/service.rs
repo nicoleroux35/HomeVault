@@ -416,6 +416,17 @@ impl AuthService {
         Ok((secret_b32, otpauth_url))
     }
 
+    /// Verify a 6-digit TOTP code against the user's stored secret.
+    ///
+    /// Accepts a window of −1..=1 time step around `now` — RFC 6238's
+    /// recommended tolerance, and the same window the first-run setup check
+    /// ([`verify_totp_code_with_secret`]) has always used. Before 2026-10-18
+    /// this only looked forward (0..=1), so a code displayed by the
+    /// authenticator in the last seconds of a period was rejected the moment
+    /// the window rolled — for a slow typist, a race with every keystroke
+    /// after "generate code". The extra past window widens the accepted set
+    /// by one code out of a million and matches every mainstream
+    /// implementation's behaviour.
     pub async fn verify_totp_code(&self, username: &str, code: &str) -> Result<bool, AuthError> {
         let user_2fa_repo = User2faRepository::new(Arc::clone(&self.pool));
         let user_2fa = user_2fa_repo
@@ -423,7 +434,7 @@ impl AuthService {
             .await?
             .ok_or(AuthError::UserNotFound)?;
 
-        let secret = &user_2fa.totp_secret_encrypted;
+        let secret = &user_2fa.totp_secret;
         let code_u64 = match code.parse::<u64>() {
             Ok(c) => c,
             Err(_) => return Ok(false),
@@ -434,8 +445,9 @@ impl AuthService {
             .unwrap()
             .as_secs();
 
-        for offset in 0..=1 {
-            let check_time = (current_time / 30) + offset;
+        let current_step = (current_time / 30) as i64;
+        for offset in -1..=1 {
+            let check_time = (current_step + offset).max(0) as u64;
             let expected = Self::generate_totp(secret, check_time);
             if expected == code_u64 {
                 return Ok(true);
@@ -463,11 +475,11 @@ impl AuthService {
     /// exists (the secret is generated client-side at the password step; the
     /// final, authoritative check runs again inside `handle_setup`).
     ///
-    /// Accepts a window of −1..=1 time step around `now` (unlike
-    /// [`verify_totp_code`], which only looks forward): the wizard generates
-    /// the secret and collects the code up to a full period before the account
-    /// is created, so a code produced by the authenticator right at the edge of
-    /// a period must not be rejected a moment later.
+    /// Accepts a window of −1..=1 time step around `now`, mirroring
+    /// [`verify_totp_code`]: the wizard generates the secret and collects the
+    /// code up to a full period before the account is created, so a code
+    /// produced by the authenticator right at the edge of a period must not be
+    /// rejected a moment later.
     pub fn verify_totp_code_with_secret(secret: &str, code: &str) -> bool {
         let code_u64 = match code.parse::<u64>() {
             Ok(c) => c,

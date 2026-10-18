@@ -72,6 +72,25 @@ function totpNow(base32Secret: string, atMs = Date.now()): string {
   return (bin % 1_000_000).toString().padStart(6, '0');
 }
 
+/**
+ * Window-rollover-safe [`totpNow`]. Since 2026-10-18 the backend's login check
+ * accepts the −1..=1 RFC 6238 window, so a code computed at the very end of a
+ * period is no longer rejected a moment after the boundary — the race that
+ * intermittently broke the §9 `afterAll` cleanup (its `/auth/2fa/verify` got
+ * no token, the `disable` was skipped, and the seeded admin kept 2FA enabled,
+ * poisoning every later password-login test and reruns). The helper stays as
+ * clock-skew robustness: it never computes in the last ~5 s of a window, so
+ * even a server a few seconds behind accepts the code.
+ */
+async function totpNowSafe(base32Secret: string): Promise<string> {
+  const step = 30_000;
+  const msInWindow = Date.now() % step;
+  if (msInWindow > step - 5_000) {
+    await new Promise((r) => setTimeout(r, step - msInWindow + 150));
+  }
+  return totpNow(base32Secret);
+}
+
 async function detectState(page: Page): Promise<PageState> {
   if (await page.locator('#username').isVisible().catch(() => false)) return 'login';
   if (await page.locator('[data-testid="setup-container"]').isVisible().catch(() => false)) return 'wizard';
@@ -762,7 +781,7 @@ test.describe.serial('9 — 2FA', () => {
 
       const verify = await request.post('/api/auth/2fa/setup', {
         headers,
-        data: { action: 'verify', password: ADMIN_PASS, totp_code: totpNow(secret) },
+        data: { action: 'verify', password: ADMIN_PASS, totp_code: await totpNowSafe(secret) },
       });
       enrolled = (await verify.json())?.data?.enabled === true;
     } finally {
@@ -778,7 +797,7 @@ test.describe.serial('9 — 2FA', () => {
     try {
       // Logging in now requires the second factor.
       const res = await request.post('/api/auth/2fa/verify', {
-        data: { username: ADMIN_USER, password: ADMIN_PASS, totp_code: totpNow(secret) },
+        data: { username: ADMIN_USER, password: ADMIN_PASS, totp_code: await totpNowSafe(secret) },
       });
       const body = await res.json().catch(() => ({}));
       const token = body?.data?.token;
@@ -857,13 +876,14 @@ test.describe.serial('9 — 2FA', () => {
 
     const boxes = page.locator('[data-testid="login-code-input"]');
     const enterCode = async () => {
-      const code = totpNow(secret);
+      const code = await totpNowSafe(secret);
       for (let i = 0; i < 6; i++) await boxes.nth(i).fill(code[i]);
     };
 
-    // The 30 s TOTP window can roll over between computing the code and the
-    // server verifying it (the backend only checks current + next window).
-    // Try once; if it didn't take, wait for a fresh window and retry.
+    // Clock skew between this machine and the server can still invalidate a
+    // freshly computed code (the backend checks the −1..=1 window; a server
+    // several seconds off could reject even `totpNowSafe`). Try once; if it
+    // didn't take, wait for a fresh window and retry.
     await enterCode();
     try {
       await page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 8_000 });
@@ -1833,8 +1853,15 @@ test.describe('22 — Successful login', () => {
 
     // The seeded admin normally has no 2FA. If a previous run left 2FA on,
     // this lands on the code screen instead — treat that as out of scope here.
+    // `isVisible` returns immediately (its `timeout` option is ignored), so it
+    // never saw the 2FA step that renders a moment after the submit — a real
+    // wait is required for the skip to fire.
     const twoFa = page.locator('[data-testid="login-code-input"]').first();
-    if (await twoFa.isVisible({ timeout: 3_000 }).catch(() => false)) {
+    const twoFaShown = await twoFa
+      .waitFor({ state: 'visible', timeout: 3_000 })
+      .then(() => true)
+      .catch(() => false);
+    if (twoFaShown) {
       test.skip(true, 'seeded admin currently has 2FA enabled');
     }
 
