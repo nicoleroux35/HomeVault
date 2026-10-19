@@ -1,7 +1,7 @@
 # E2E — real browsers (Playwright). Official image with browsers preinstalled.
 # Runs only on main pushes, PRs and manually: it is the most expensive stage
-# (frontend build + Rust build + full spec run) and is gated after
-# unit/component/integration in full-pipeline.yml.
+# (frontend build + Rust build + full spec run); unit/component/integration
+# run in parallel on every push via their own workflow files.
 # HomeVault specifics:
 # - `PORT` sets the HTTP listen port (default 8080, see src/config/settings.rs),
 #   `DATA_DIRECTORY` isolates server data on a scratch dir (never real data).

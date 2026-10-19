@@ -303,11 +303,6 @@ fn asset_response(
     res
 }
 
-/// Serve the sprite.svg for Lucide icons
-pub async fn serve_sprite(headers: HeaderMap) -> Response {
-    serve("dist/sprite.svg", &headers, Some(CACHE_REVALIDATE))
-}
-
 /// Serve the unified sprite with all icon libraries (Lucide + Phosphor + Tabler)
 pub async fn serve_sprite_unified(headers: HeaderMap) -> Response {
     serve("dist/sprite-unified.svg", &headers, Some(CACHE_REVALIDATE))
