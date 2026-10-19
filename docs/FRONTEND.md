@@ -16,19 +16,25 @@ frontend/src/
 
 ## Routes (`frontend/src/routes/`)
 
-Each app is a `.svelte` file imported lazily by the desktop shell
-(`Desktop.svelte`). The app registry is the `apps` array in
-`frontend/src/routes/Desktop.svelte` (id, name, icon, category, component) — this
-is the **single source of truth** for both the desktop icon grid and the
-launcher (`components/desktop/HvLaunchpad.svelte`), which renders directly from
-that array and cannot show an app that isn't really there. Apps opened from the
-launcher become draggable windows (`components/desktop/WindowFrame.svelte`).
+Screens come from two registries (2026-10-19 audit — do not call the window
+registry "routes"; the SPA has no per-screen URLs):
 
-Routes (27): `Dashboard, Storage, Raid, Explorer, Docker, Network, Restic (Backup),
-Users, Quotas, Groups, Shares, CloudSync, Syncthing, Health, Chat (AI Assistant),
-Downloader, Rescue, Terminal, Journal, Settings, Account, Login, SetupWizard,
-Desktop, VPN, Widgets, VirtualMachines`.
-
+- **Gate routes** (`App.svelte`, driven by `$appGate.route`): `setup`, `login`
+  (+ `recovery` and `error` as `<Login />` variants), `app` → `/desktop`.
+  Everything else is a window on the desktop.
+- **Window registry**: the `apps` array in `frontend/src/routes/Desktop.svelte`
+  (24 entries: dashboard, storage, raid, explorer, docker, network, vpn,
+  backup/restic, users, groups, quotas, shares, rclone/cloud-sync, syncthing,
+  health, chat, downloader, rescue, widgets, edit-widgets, journal,
+  virtual-machines, tasks, metrics) — this is the **single source of truth** for
+  both the desktop icon grid and the launcher
+  (`components/desktop/HvLaunchpad.svelte`), which renders directly from that
+  array and cannot show an app that isn't really there. Three more windows are
+  special-cased outside the array: `terminal` and `settings` (built inline in
+  `Desktop.svelte`) and `account` (opened from the user menu). Apps opened from
+  the launcher become draggable windows
+  (`components/desktop/WindowFrame.svelte`). Each registered app is a `.svelte`
+  file in `routes/` imported lazily by the desktop shell.
 > `Quotas` (2026-09-14) is the read-only transfer-quota overview — not to be
 > confused with the filesystem disk quotas on the Users home-folder card. See
 > [transfer-quotas.md](./guides/transfer-quotas.md) and
@@ -50,12 +56,15 @@ knowledge) and a **design-system governance** rule: any design change to an
 audited screen must keep its tests green (Rust integration + Playwright E2E)
 and re-capture a reference screenshot.
 
-25 of 27 routes have **zero scoped `<style>`** (converted to Tailwind-on-tokens
-+ `data-testid` hooks; specs updated). The two exceptions are `Desktop.svelte`
-(the shell): its scoped `<style>` is the shared desktop-chrome CSS (dock,
-topbar, launcher, windows, monitor widgets) — `hv-*` classes, 100%
-token-driven, deliberately not converted (see `docs/guides/design-system.md` §8) —
-and `Settings.svelte`, which keeps one small token-driven loader block
+Three screens keep scoped `<style>` blocks (everything else is converted to
+Tailwind-on-tokens
++ `data-testid` hooks; specs updated): `Desktop.svelte` (the shell — its scoped
+`<style>` is the shared desktop-chrome CSS (dock, topbar, launcher, windows,
+monitor widgets) — `hv-*` classes, 100%
+token-driven, deliberately not converted (see `docs/guides/design-system.md` §8)),
+`Metrics.svelte` (SVG chart strokes with `vector-effect: non-scaling-stroke`,
+all token-driven — SVG paint properties can't be Tailwind classes), and
+`Settings.svelte`, which keeps one small token-driven loader block
 (`.set-spinner`; the save-button skin lives in `SettingsSaveButton`).
 ## Design system
 
