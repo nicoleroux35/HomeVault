@@ -2,9 +2,9 @@
 name = "homevault"
 version = "1.0.0"
 edition = "2021"
-authors = ["HomeVault Team"]
+authors = ["Nicolas Le Roux"]
 description = "Home server management application in Rust"
-license = "MIT"
+license-file = "LICENSE"
 repository = "https://github.com/nicoleroux35/HomeVault"
 homepage = "https://github.com/nicoleroux35/HomeVault"
 readme = "README.md"
