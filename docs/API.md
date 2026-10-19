@@ -258,6 +258,10 @@ the passphrase through this API. See [guides/encryption.md](./guides/encryption.
 | POST/GET/DELETE | `/explorer/trash` | auth | `?path=` (POST) — move to trash / list trash / empty trash |
 | POST | `/explorer/trash/restore` | auth | `?id=` (cross-device EXDEV fallback) |
 | DELETE | `/explorer/trash/{id}` | auth | permanently delete one trashed item |
+| POST | `/explorer/format` | admin | `{ device, fstype, label? }` — format a block device as `ext4` or `exfat` (`mkfs.*` under `sudo`); `fstype` allow-list and the device validated against the available-disk list **before** any `mkfs` runs |
+| GET | `/explorer/history` | auth | `?path=` — **Rewind**: the ZFS snapshot timeline covering that file/folder, oldest→newest, each with a read-only `snapshot_path` under `.zfs/snapshot/`; empty outside ZFS |
+| POST | `/explorer/watch/ticket` | auth | `?path=` — mint a single-use ticket for the filesystem-watcher SSE connection (EventSource cannot set custom headers) |
+| GET | `/explorer/watch` | auth \| ticket | `?ticket=&path=` — SSE stream (`change` events filtered to the watched directory + `heartbeat` every 30 s) |
 | GET | `/explorer/snapshots` | auth | `?path=` — lists ZFS snapshots covering that path with a `browse_path` under `.zfs/snapshot/…` (read-only browsing) |
 | POST | `/explorer/eject` | admin | `?path=<mount>` — safe-eject a removable drive (guarded to removable block devices only) |
 | GET | `/explorer/shares` | auth | list the caller's "share by link" links |
@@ -304,7 +308,10 @@ and `handle_share_get` accepted any non-empty `X-Session-Token`; they now use
 | PUT | `/shares/{name}/{share_type}` | admin | `handle_share_update` |
 | PUT | `/shares/{name}/{share_type}/toggle/{enabled}` | admin | `handle_share_toggle` |
 | DELETE | `/shares/{name}/{share_type}` | admin | `handle_share_delete` |
-| GET/PUT | `/shares/smb\|nfs\|ftp\|webdav/config` | admin | service config |
+| GET/PUT | `/shares/smb\|nfs\|ftp\|webdav\|sftp/config` | admin | service config |
+| GET | `/shares/sftp/users` | admin | users with SFTP access + key status (separate `homevault-sftp.service`, see [Shares guide](./guides/shares.md)) |
+| PUT | `/shares/sftp/users/key` | admin | set a user's SFTP public key `{ username, public_key }` |
+| POST | `/shares/sftp/rebuild` | admin | reconcile SFTP jails against current ACL grants |
 | POST | `/shares/{share_type}/start\|stop\|restart` | admin | service control |
 | GET/POST/DELETE | `/shares/{name}/{share_type}/permissions` | admin | per-user/group ACL |
 | POST | `/shares/{name}/{share_type}/permissions/sync` | admin | re-apply ACLs |
@@ -354,6 +361,7 @@ Read endpoints `auth`; config/state/WiFi mutations `admin`.
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
 | POST | `/chat/send` | auth | chat with local Ollama model |
+| POST | `/chat/send/stream` | auth | streaming chat — SSE (RAG-enriched prompt, see [Chat guide](./guides/chat.md)) |
 | GET | `/chat/models` | auth | list installed models |
 | POST | `/chat/models/pull` | admin | pull a model |
 | GET | `/chat/models/recommend` | auth | recommendations — the 2026-07-19 docs audit found this handler took no session check; it now takes `HeaderMap` like the rest of the file and answers 200 + `{"success":false}` when unauthenticated (the `/chat/send` convention). |
@@ -407,6 +415,8 @@ catalog, files, VMs, knowledge search, reboot). See
 | POST | `/restic/repos/{id}/unlock` | admin | |
 | POST | `/restic/repos/{id}/prune` | admin | |
 | POST | `/restic/backup` | admin | run backup (SSE progress) |
+| GET | `/restic/reminders` | auth | backup reminders — per repo: `last_backup_at` + `days_since` + `stale`, so the UI can nag when a repository hasn't been backed up recently |
+| GET | `/restic/restore-plan` | auth | `?repo_id=&snapshot=` — pre-flight space check `{ size_bytes, available_bytes, fits }` (snapshot restore size vs free space on the destination); the restore dialog debounces this before committing |
 | POST | `/restic/restore` | admin | |
 | POST | `/restic/check` | auth | |
 | POST | `/restic/forget` | admin | apply retention |
@@ -460,6 +470,9 @@ Representative endpoints:
 | GET | `/docker/catalog/updates` · POST `/docker/catalog/{id}/update` | admin | registry-digest update detection (read-only) / `compose pull` + re-render + `up -d` |
 | POST | `/docker/catalog/update-all` | admin | sequential update queue over every pending update → `{updated[], failed[]}` |
 | GET/POST/DELETE | `/docker/stores` (+ `/{id}/sync`) | admin | community catalog git repos |
+| POST | `/docker/daemon/start` | admin | start the Docker daemon via systemd (**also enables it for boot persistence**) |
+| GET | `/docker/daemon/logs` | admin | last 100 lines of the daemon's journal, for diagnosing why it is down |
+| GET | `/docker/port-check` | admin | `?port=N` — is a host port free to publish a container on (host `ss` + other containers + HomeVault's web port); re-checked server-side on create/install |
 
 **App catalog (2026-09-03 overhaul):** `src/docker_catalog.rs::CATALOG` is gone.
 Apps are packages — a `homevault-app.toml` manifest + a `docker-compose.yml`
@@ -517,17 +530,40 @@ the config-injection fix, and what was verified live.
 
 ## Syncthing — `syncthing/*` (all `admin`)
 
-Every handler in `src/handlers/syncthing.rs` calls a local `require_admin` —
-`status`, `config`, `devices`, `folders`, `connections`, `errors` (GET);
-`restart`, `pause`, `resume`, `scan` (POST). This closes a previously-real gap
+Each handler calls a local `require_admin` — this closes a previously-real gap
 where none of these handlers validated a session at all; see
 [Syncthing](./guides/syncthing.md) for what was found and fixed.
 
+| Method | Path | Notes |
+|--------|------|-------|
+| GET | `/syncthing/status` | instance status |
+| GET | `/syncthing/config` | fetched config |
+| GET | `/syncthing/devices` | devices |
+| GET | `/syncthing/folders` | folders |
+| GET | `/syncthing/connections` | live connections |
+| GET | `/syncthing/errors` | sync errors |
+| POST | `/syncthing/restart` | restart the local instance |
+| POST | `/syncthing/pause` | pause one device |
+| POST | `/syncthing/resume` | resume one device |
+| POST | `/syncthing/scan` | rescan one folder |
+
 ## Downloader — `downloader/*` (`aria2`, all `admin`)
 
-Every Downloader endpoint calls `require_admin_request`, so **all** are admin-only
-(`status`, `global-stat`, `tasks`, `task/{gid}`, `start`, `stop`, `add`, `pause`,
-`unpause`, `remove`). There are no read-only `auth` endpoints here.
+Every Downloader endpoint calls `require_admin_request`, so **all** are
+admin-only. There are no read-only `auth` endpoints here.
+
+| Method | Path | Notes |
+|--------|------|-------|
+| GET | `/downloader/status` | daemon status + globals |
+| GET | `/downloader/global-stat` | aria2 global stats |
+| GET | `/downloader/tasks` | active/waiting/done tasks |
+| GET | `/downloader/task/{gid}` | one task |
+| POST | `/downloader/add` | enqueue a download |
+| POST | `/downloader/start` | start the daemon |
+| POST | `/downloader/stop` | stop the daemon |
+| POST | `/downloader/pause` | pause a task |
+| POST | `/downloader/unpause` | unpause a task |
+| POST | `/downloader/remove` | remove a task |
 
 ## Snapshots
 
