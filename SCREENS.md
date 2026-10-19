@@ -106,9 +106,10 @@ visible from 901px, icon only below that — the touch target stays
 | 25 | Scheduled Tasks | System | Generic cron engine — commands, pool snapshots, SMART self-tests, power actions, run history |
 | 26 | Metrics | Monitoring | Historical performance charts (CPU, memory, load, network, temperature) over 1 h / 24 h / 7 d |
 
-> That is 23 entries in `appDefs` + Terminal + Settings + My account. Storage gained a 7th tab
-> ("Snapshots" — scheduled snapshots with GFS retention) and Settings gained the Power card.
-> The 27 Svelte routes = these 24 apps + Login + Setup Wizard + Desktop.
+> That is 24 entries in `appDefs` (23 app tiles + the Widgets editor) + Terminal + Settings +
+> My account. Storage gained a 7th tab ("Snapshots" — scheduled snapshots with GFS retention)
+> and Settings gained the Power card (Monitoring) and the MCP gateway card (AI Assistant).
+> The 30 Svelte routes = these 26 apps + the Widgets editor + Login + Setup Wizard + Desktop.
 
 ### Floating monitoring widgets (11 panels)
 
@@ -362,7 +363,7 @@ and in the Groups screen.
 - List: name, path, type (SMB/NFS/FTP/WebDAV/SFTP), enabled status, comment
 - Share creation: name, path, type, comment
 
-### Configuration tabs (6 protocols)
+### Configuration tabs (6: the share list + 5 protocols)
 - **Shares** — CRUD, service start/stop, status badges
 - **SMB** — workgroup, security mode, protocol version, guest access, advanced options
 - **NFS** — networks, default access, version, root squash, custom options
@@ -585,12 +586,45 @@ and in the Groups screen.
 3. **Appearance** — Wallpaper (15 presets)
 4. **Widgets** — Active monitors (the 11 real monitors, driven by `monitorStore` → `/api/monitor-layout`) + refresh interval (2/5/10/30/60 s, stored in the same blob) + Weather widget (Open-Meteo location, display fields) — Weather was moved out of Appearance on 2026-09-09
 5. **Notifications** — Email/SMTP server (server, port, credentials, TLS, send test) + alerts (threshold, channels) + webhook
-6. **AI Assistant** — Ollama models, current model, recommendations based on RAM/GPU, quick install
-7. **Monitoring** (2 cards):
+6. **AI Assistant** — Ollama models, current model, recommendations based on RAM/GPU, quick install + **external-agent gateway (MCP)**: endpoint, kill-switch, tool permissions and API tokens
+7. **Monitoring** (3 cards):
    - **UPS Monitoring** — UPS list: battery/runtime/voltage/load/status
    - **SNMP** — Community, version, system info, interfaces, storage queries
+   - **Power** — CPU scaling governor, host reboot/shutdown/suspend and per-disk spindown (hdparm APM + idle timer)
    - _(the per-group "File quotas" card was removed on 2026-09-09 — quotas are managed from Users/Groups)_
 8. **System** — Software updates (frequency, current/latest version) + system information (IP/port, platform, version) + data management (settings export/import/reset) + privacy (local processing, cookies, offline)
+
+---
+
+## 28. Scheduled Tasks
+
+**Features:**
+- List of recurring jobs with type, cron expression, enabled state, last run
+  and next run
+- Create/edit dialog: task type, cron expression (5 fields), payload fields
+  per type
+- Four task types: `command` (single executable, no shell), `snapshot`
+  (pool snapshot, optional recursive), `smart_test` (S.M.A.R.T. self-test)
+  and `power` (reboot / shutdown / suspend)
+- Run now, enable/disable, delete (history included) and per-task run history
+  (50 newest runs, output tail)
+
+**Invariants:** admin-only on every endpoint; the payload is validated at
+creation, not at run time.
+
+---
+
+## 29. Metrics
+
+**Features:**
+- Five chart cards: CPU, memory, load average, network throughput and max
+  temperature
+- Range toggle group: 1 h / 24 h / 7 d
+- Empty state when the collector has not stored a sample yet
+
+**Invariants:** read-only (`require_auth`, same class as Dashboard); samples
+come from the one-minute collector only; empty buckets render a gap, never a
+flat line at zero.
 
 ---
 
@@ -600,11 +634,11 @@ and in the Groups screen.
 |---|---|
 | Authentication / Setup | 2 (Login, Setup Wizard) |
 | Desktop | 1 (Desktop + 11 floating widgets + search + notifications) |
-| System | 7 (Dashboard, Users, Quotas, Groups, My account, Terminal, Virtual Machines) |
+| System | 9 (Dashboard, Users, Quotas, Groups, My account, Terminal, Virtual Machines, Scheduled Tasks, Widgets) |
 | Storage | 4 (Storage, RAID, Explorer, Backup — Shares ∈ Storage on the desktop registry side, can be opened via Explorer) |
 | Network | 4 (Network, VPN, Cloud Sync, Syncthing) + 1 (Shares) |
-| Monitoring | 2 (Health, System journal) |
+| Monitoring | 3 (Health, System journal, Metrics) |
 | Productivity | 2 (AI Assistant, Downloader) |
 | Infrastructure | 2 (Docker, Rescue) |
 | Configuration | 1 (Settings — 8 categories) |
-| **Total** | **27 main screens** (= the 24 desktop apps + Login + Setup Wizard + Desktop) |
+| **Total** | **29 main screens** (= the 26 desktop apps + Login + Setup Wizard + Desktop) |

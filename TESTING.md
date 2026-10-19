@@ -1,6 +1,6 @@
 # HomeVault — Test tracking
 
-Cross-references the 27 screens listed in `SCREENS.md` with three distinct
+Cross-references the 29 screens listed in `SCREENS.md` with three distinct
 levels of testing, to answer "what is really tested, what remains to be
 tested":
 
@@ -276,7 +276,7 @@ direction; "Manage in Users" emits `hv-open-app`
 (`detail.id = 'users'`), opens the Users window **without leaving**
 `/desktop` or closing Quotas; console without errors. Detail in the 2026-10-07
 addendum of `CLAUDE.md` (invariant "Explorer / transfers"). Consequence:
-none of the 27 screens is now without a live audit **or** without an E2E spec.
+none of the 29 screens is now without a live audit **or** without an E2E spec.
 
 **2026-10-12 — deleting a user left its share permissions behind (fixed).**
 Found while auditing what was *actually* still open (the docs claimed several
@@ -433,12 +433,12 @@ files (the 3 remaining `manual_contains` warnings are pre-existing in
 
 | Level | Coverage |
 |---|---|
-| Manual live audit (CLAUDE.md, invariants) | **27 / 27** screens (Quotas audited live on 2026-10-07) — **+2 screens on 2026-10-13 (c)**: Scheduled Tasks and Metrics ship with their suites; the Power card lives inside Settings (26) |
-| At least one relevant Rust unit test | **27 / 27** (Widgets and Quotas: not applicable — Quotas has no code of its own, it reads an existing endpoint; Desktop/shell covered since 2026-09-09 by `src/sse/progress.rs` + `src/handlers/activity.rs` — taskbar) |
-| Rust integration test (`tests/*.rs`) | **42 files** `*_integration.rs`; one per screen except Quotas — Login, Setup Wizard, Account, Docker (+ `compose_integration.rs` — editing the compose of a container), Users, Groups, Rescue, Network, VPN, Shares/Protocols, Settings (security cards **+ core** — `settings_core_integration.rs` **+ built-in HTTPS/TLS — `tls_integration.rs`**), Downloader, Storage, RAID, Backup, Cloud Sync, Syncthing, Terminal, Chat (+ `mcp_integration.rs` — external-agent server + catalog phase-B endpoints), Explorer, Dashboard, System journal, Widgets, Desktop/shell (+ `activity_integration.rs` — taskbar), Health, **VirtualMachines**; **Quotas: no file of its own** — its only endpoint (`GET /transfer-quotas/{type}`) is covered by `transfer_quota.rs` + `explorer_integration.rs`. The remaining files are cross-cutting (`mdns`, `notifications`, `progress`, `snmp`, `ups`, `weather_location`, `app_catalog`, `app_proxy`, `compose`, `security`, `tls`, `share_links`, `spa_assets`, …) |
-| Playwright E2E test (`tests/e2e/`) | **29 screen specs out of 31 files** — Login, Setup Wizard, Account, Users, Groups, Terminal, Settings, RAID, Docker, Rescue, Network, VPN, Shares/Protocols, Downloader, Storage, Backup, Cloud Sync, Syncthing, Chat, Explorer, Dashboard, System journal, Widgets, Desktop/shell, Health, **VirtualMachines**, **Quotas**, plus `security/` (sub-feature, not a section of `SCREENS.md`), plus **`design/typography.spec.ts`** (cross-cutting: native text-ladder conformance + role table + the 11px floor, walked over the login screen and five apps); the Quotas spec (`tests/e2e/quotas/quotas.spec.ts`, written on 2026-09-22) has been **green end to end since 2026-10-07** — **38/38** (Firefox, scratch server) — see the per-screen detail line 6 |
+| Manual live audit (CLAUDE.md, invariants) | **29 / 29** screens (Quotas audited live on 2026-10-07; Scheduled Tasks and Metrics live-audited on 2026-10-13) — the Power and MCP cards live inside Settings (26) |
+| At least one relevant Rust unit test | **29 / 29** (Widgets and Quotas: not applicable — Quotas has no code of its own, it reads an existing endpoint; Desktop/shell covered since 2026-09-09 by `src/sse/progress.rs` + `src/handlers/activity.rs` — taskbar) |
+| Rust integration test (`tests/*.rs`) | **51 files** `*_integration.rs`; one per screen except Quotas — Login, Setup Wizard, Account, Docker (+ `compose_integration.rs` — editing the compose of a container), Users, Groups, Rescue, Network, VPN, Shares/Protocols, Settings (security cards **+ core** — `settings_core_integration.rs` **+ built-in HTTPS/TLS — `tls_integration.rs`**), Downloader, Storage, RAID, Backup, Cloud Sync, Syncthing, Terminal, Chat (+ `mcp_integration.rs` — external-agent server + catalog phase-B endpoints), Explorer, Dashboard, System journal, Widgets, Desktop/shell (+ `activity_integration.rs` — taskbar), Health, **VirtualMachines**, **Scheduled Tasks**, **Metrics**, Power; **Quotas: no file of its own** — its only endpoint (`GET /transfer-quotas/{type}`) is covered by `transfer_quota.rs` + `explorer_integration.rs`. The remaining files are cross-cutting (`mdns`, `notifications`, `progress`, `snmp`, `ups`, `weather_location`, `app_catalog`, `app_proxy`, `compose`, `security`, `tls`, `share_links`, `spa_assets`, …) |
+| Playwright E2E test (`tests/e2e/`) | **31 screen specs out of 36 files** — Login, Setup Wizard, Account, Users, Groups, Terminal, Settings (+ `settings/mcp.spec.ts`, `settings/power.spec.ts`), RAID, Docker, Rescue, Network, VPN, Shares/Protocols, Downloader, Storage (+ `storage/snapshot-schedules.spec.ts`), Backup, Cloud Sync, Syncthing, Chat, Explorer, Dashboard, System journal, Widgets, Edit widgets, Desktop/shell (+ `shortcuts.spec.ts`), Health, **VirtualMachines**, **Quotas**, **Scheduled Tasks**, **Metrics**, plus `security/` (sub-feature, not a section of `SCREENS.md`), plus **`design/typography.spec.ts`** (cross-cutting: native text-ladder conformance + role table + the 11px floor, walked over the login screen and five apps); the Quotas spec (`tests/e2e/quotas/quotas.spec.ts`, written on 2026-09-22) has been **green end to end since 2026-10-07** — **38/38** (Firefox, scratch server) — see the per-screen detail line 6 |
 
-All 27 screens have been verified by hand **and** have at least one
+All 29 screens have been verified by hand **and** have at least one
 automated test (Rust or Playwright) — none is without a non-regression
 net (VirtualMachines: verified live against a real Incus —
 containers, Linux ISO VM + noVNC screen, concurrent creation, ISO
@@ -804,9 +804,9 @@ elements of the bar **apart from** the icon tile must be exactly
 inline `<svg>` of Dashboard is **one** root (three `<path>` as children),
 and Terminal passes `<TerminalIcon>` as `{#snippet icon()}` **child of
 `WindowHeader`** — it does not use `PageLayout`, unlike the 23 others.
-**Counts (2026-09-24)**: `npx playwright test --list --project=firefox` = **1436 tests /
-28 `.spec.ts` files** — that is the reference ; the
-`grep -cE '^\s*test\('` documented below gives **1367**, the difference (69)
+**Counts (2026-10-19)**: `npx playwright test --list --project=firefox` = **1539 tests /
+36 `.spec.ts` files** — that is the reference ; the
+`grep -cE '^\s*test\('` documented below gives **1466**, the difference (73)
 being the tests **generated by loop**, which that grep does not count. Per suite
 (`--list`, recounted 2026-10-18): desktop **84** (`grep -cE '^\s*test\('` agrees — the 74 quoted in the row above is an older recount), users **88**, explorer **64**, vm **45**,
 journal **29**.
@@ -1686,8 +1686,8 @@ Four areas, each with its own tests and docs:
   Playwright expands it into N tests at collection (e.g. the responsive
   loop 360/768/1920 of `storage.spec.ts`: 1 line, 3 tests). The grep
   is therefore a **lower bound** ; the difference measures the tests generated by
-  loop. Observed on 2026-09-24: **1367** at the grep against **1436** at
-  `--list --project=firefox` (69 generated tests) on the 28 `.spec.ts` files.
+  loop. Observed on 2026-10-19: **1466** at the grep against **1539** at
+  `--list --project=firefox` (73 generated tests) on the 36 `.spec.ts` files.
 - Unit tests per module: `grep -cE '^\s+fn test_'` in the source
   file, modules found via `grep -rl '#\[cfg(test)\]' src/`.
 - The per-area statuses come from `CLAUDE.md` and from `docs/guides/` (not
