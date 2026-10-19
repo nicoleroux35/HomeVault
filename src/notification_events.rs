@@ -76,6 +76,11 @@ pub const EVENT_CATALOG: &[NotificationEvent] = &[
         label_key: "notifications.events.health_disk_smart",
     },
     NotificationEvent {
+        id: "health.raid_arrays",
+        group: "health",
+        label_key: "notifications.events.health_raid_arrays",
+    },
+    NotificationEvent {
         id: "health.network_interfaces",
         group: "health",
         label_key: "notifications.events.health_network_interfaces",
@@ -175,16 +180,17 @@ mod tests {
             assert!(event.id.starts_with("health.") || event.id.contains('.'));
             assert!(event.label_key.starts_with("notifications.events."));
         }
-        // The eight health checks of HealthService::run_all_checks must all
+        // The nine health checks of HealthService::run_all_checks must all
         // have a catalog entry (check names: authentication, storage, memory,
-        // disk_space, disk_smart, network_interfaces, systemd_services,
-        // temperatures — see src/health.rs).
+        // disk_space, disk_smart, raid_arrays, network_interfaces,
+        // systemd_services, temperatures — see src/health.rs).
         for check in [
             "authentication",
             "storage",
             "memory",
             "disk_space",
             "disk_smart",
+            "raid_arrays",
             "network_interfaces",
             "systemd_services",
             "temperatures",

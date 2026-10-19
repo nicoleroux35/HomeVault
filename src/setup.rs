@@ -682,6 +682,17 @@ impl SetupService {
         // actually persisted and would not have survived a reboot.
         let tee = Self::resolve_bin("tee", "/usr/bin/tee");
 
+        // RAID boot persistence (DiskService::mount_and_persist_raid):
+        // after appending an fstab entry for a new array, `findmnt --verify`
+        // parses /etc/fstab exactly like mount would (read-only check — a
+        // malformed line breaks the next boot); `update-initramfs` /
+        // `dracut` regenerate the boot image so the freshly written
+        // /etc/mdadm/mdadm.conf entry is picked up when the array must be
+        // assembled early in boot. Scoped to those exact subcommand shapes.
+        let findmnt = Self::resolve_bin("findmnt", "/usr/bin/findmnt");
+        let update_initramfs = Self::resolve_bin("update-initramfs", "/usr/sbin/update-initramfs");
+        let dracut = Self::resolve_bin("dracut", "/usr/bin/dracut");
+
         // WireGuard server config (`/etc/wireguard/wg0.conf`) — deliberately
         // `0600` since it holds the server's own private key, unlike the
         // other root-owned configs above (fstab, smb.conf, ...) which stay
@@ -833,6 +844,12 @@ homevault ALL=(root) NOPASSWD: {smartctl}
 # memberships.
 homevault ALL=(root) NOPASSWD: {zpool}, {zfs}, {mkfs_btrfs}, {mkfs_ext4}, {mkfs_xfs}, {mount_bin}, {umount_bin}, {wipefs}, {btrfs}, {cryptsetup}, {blkid}, {mkdir}, {rmdir}, {tee}
 
+# RAID boot persistence — see the comment above where findmnt/update-initramfs
+# are resolved: fstab validation (read-only) + initramfs regeneration so the
+# new mdadm.conf entry actually assembles at boot. Scoped to exactly the
+# subcommand shapes DiskService::mount_and_persist_raid runs.
+homevault ALL=(root) NOPASSWD: {findmnt} --verify --fstab, {update_initramfs} -u, {dracut} -f
+
 # System Journal viewer — read-only access to journald and a whitelisted set
 # of /var/log text files (see src/handlers/journal.rs for the whitelist).
 homevault ALL=(root) NOPASSWD: {journalctl}, {tail}
@@ -929,6 +946,9 @@ homevault ALL=(root) NOPASSWD: {systemctl} enable homevault, {systemctl} disable
             mkdir = mkdir,
             rmdir = rmdir,
             tee = tee,
+            findmnt = findmnt,
+            update_initramfs = update_initramfs,
+            dracut = dracut,
             cat = cat,
             test_bin = test_bin,
             journalctl = journalctl,

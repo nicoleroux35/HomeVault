@@ -30,11 +30,15 @@
  * **This suite never creates a real virtual disk against the seeded
  * dev/CI backend.** Every wizard-driven test stops before "Confirm
  * creation". The backend's own validation (level / device-count / name /
- * filesystem / device existence) is exercised directly via `fetch` on
- * `POST /api/storage/raid`, which 400s before ever touching
- * `mdadm`/`zpool`/`mkfs`. The one real-hardware test is opt-in
- * (`RAID_E2E_DEVICES=/dev/loop0,/dev/loop1`) and creates → checks it shows
- * up in Storage's virtual-disks list → destroys it there.
+ * filesystem / device existence / device-is-free gate) is exercised
+ * directly via `fetch` on `POST /api/storage/raid`, which 400s before
+ * ever touching `mdadm`/`zpool`/`mkfs`. The real-hardware tests are
+ * opt-in (`RAID_E2E_DEVICES=/dev/loop0,/dev/loop1`): the lifecycle test
+ * creates → checks it shows up in Storage's virtual-disks list →
+ * destroys it there, and the wizard tests then FAIL instead of skipping
+ * when the provided devices don't render as selectable rows on step 2
+ * (free disks mis-reported as "in use" used to be invisible because of
+ * silent skips).
  *
  * Run (all, safe):   npx playwright test tests/e2e/raid/raid.spec.ts --project=firefox
  * Run (single):      npx playwright test tests/e2e/raid/raid.spec.ts -g "4.1"
@@ -151,6 +155,31 @@ async function toStep2(page: Page, type = 'RAID 1') {
 /** How many real, selectable disks the host actually offers. */
 async function selectableDiskCount(page: Page): Promise<number> {
   return win(page).locator('[data-testid="raid-disk-row"].selectable').count();
+}
+
+/**
+ * Free-disk gate. On a plain host with too few free disks, tests that need
+ * to walk steps 2–3 skip. On an opt-in `RAID_E2E_DEVICES` run the provided
+ * devices MUST turn up as selectable rows — skip is replaced by a hard
+ * `expect` failure, so a backend that mis-reports free disks as "in use"
+ * (found 2026-10-19: every disk came back `inUse: true`, step 2 was
+ * permanently empty and the tests silently skipped) can never be green.
+ */
+async function requireFreeDisks(page: Page, min: number) {
+  const n = await selectableDiskCount(page);
+  if (REAL_DEVICES.length > 0) {
+    expect(
+      n,
+      `opt-in hardware run: ${REAL_DEVICES.length} devices were provided (` +
+        `${REAL_DEVICES.join(', ')}) but only ${n} step-2 row(s) show as ` +
+        `selectable (need ≥ ${min}). Free disks are probably mis-reported ` +
+        `as "in use".`,
+    ).toBeGreaterThanOrEqual(min);
+    return;
+  }
+  if (n < min) {
+    test.skip(true, `host has fewer than ${min} free disks — set RAID_E2E_DEVICES to verify steps 2-3`);
+  }
 }
 
 // --- CSRF-aware in-page fetch on the create endpoint --------------------
@@ -272,10 +301,8 @@ test.describe('2 — Form fields', () => {
 
   test('2.3 — step 3 offers exactly 4 filesystems incl. ZFS and Btrfs', async ({ page }) => {
     await gotoRaid(page, adminTokens);
-    if ((await selectableDiskCount(page)) < 2) {
-      test.skip(true, 'host has fewer than 2 free disks — cannot reach step 3 in the UI');
-    }
     await toStep2(page);
+    await requireFreeDisks(page, 2);
     const rows = win(page).locator('[data-testid="raid-disk-row"].selectable input[type="checkbox"]');
     await rows.nth(0).check();
     await rows.nth(1).check();
@@ -288,8 +315,8 @@ test.describe('2 — Form fields', () => {
 
   test('2.4 — the name field (step 3) is a text input with a placeholder', async ({ page }) => {
     await gotoRaid(page, adminTokens);
-    if ((await selectableDiskCount(page)) < 2) test.skip(true, 'no free disks to reach step 3');
     await toStep2(page);
+    await requireFreeDisks(page, 2);
     const rows = win(page).locator('[data-testid="raid-disk-row"].selectable input[type="checkbox"]');
     await rows.nth(0).check();
     await rows.nth(1).check();
@@ -314,12 +341,9 @@ test.describe('3 — Validation', () => {
 
   test('3.2 — step 2 "Continue" requires the level\'s minimum disk count', async ({ page }) => {
     await gotoRaid(page, adminTokens);
-    const n = await (async () => {
-      await raidTypeCard(page, 'RAID 5').click();
-      await btn(page, /continue|continuer/i).click();
-      return win(page).locator('[data-testid="raid-disk-row"].selectable').count();
-    })();
-    if (n < 1) test.skip(true, 'no free disks on the host');
+    await raidTypeCard(page, 'RAID 5').click();
+    await btn(page, /continue|continuer/i).click();
+    await requireFreeDisks(page, 1);
     // RAID 5 needs 3 — one disk selected must not be enough.
     await win(page).locator('[data-testid="raid-disk-row"].selectable input[type="checkbox"]').first().check();
     await expect(btn(page, /continue|continuer/i)).toBeDisabled();
@@ -394,9 +418,8 @@ test.describe('4 — Interactions', () => {
 
   test('4.2 — checking / unchecking a disk toggles its row', async ({ page }) => {
     await gotoRaid(page, adminTokens);
-    await raidTypeCard(page, 'RAID 1').click();
-    await btn(page, /continue|continuer/i).click();
-    if ((await selectableDiskCount(page)) < 1) test.skip(true, 'no free disks on the host');
+    await toStep2(page);
+    await requireFreeDisks(page, 1);
     const row = win(page).locator('[data-testid="raid-disk-row"].selectable').first();
     await row.locator('input[type="checkbox"]').check();
     await expect(row).toHaveClass(/selected/);
@@ -422,8 +445,8 @@ test.describe('4 — Interactions', () => {
 test.describe('5 — Submission flows', () => {
   test('5.1 — with a valid name + disks, "Confirm creation" is enabled (not submitted here)', async ({ page }) => {
     await gotoRaid(page, adminTokens);
-    if ((await selectableDiskCount(page)) < 2) test.skip(true, 'no free disks to reach step 3');
     await toStep2(page);
+    await requireFreeDisks(page, 2);
     const rows = win(page).locator('[data-testid="raid-disk-row"].selectable input[type="checkbox"]');
     await rows.nth(0).check();
     await rows.nth(1).check();
@@ -435,8 +458,8 @@ test.describe('5 — Submission flows', () => {
 
   test('5.2 — step 3 with a blank name keeps "Confirm creation" disabled', async ({ page }) => {
     await gotoRaid(page, adminTokens);
-    if ((await selectableDiskCount(page)) < 2) test.skip(true, 'no free disks to reach step 3');
     await toStep2(page);
+    await requireFreeDisks(page, 2);
     const rows = win(page).locator('[data-testid="raid-disk-row"].selectable input[type="checkbox"]');
     await rows.nth(0).check();
     await rows.nth(1).check();
@@ -491,8 +514,8 @@ test.describe('7 — Responsive', () => {
 test.describe('8 — Accessibility', () => {
   test('8.1 — the name input has an associated label', async ({ page }) => {
     await gotoRaid(page, adminTokens);
-    if ((await selectableDiskCount(page)) < 2) test.skip(true, 'no free disks to reach step 3');
     await toStep2(page);
+    await requireFreeDisks(page, 2);
     const rows = win(page).locator('[data-testid="raid-disk-row"].selectable input[type="checkbox"]');
     await rows.nth(0).check();
     await rows.nth(1).check();
@@ -623,8 +646,31 @@ test.describe('12 — Console & network', () => {
 // ===========================================================================
 
 test.describe('13 — Real lifecycle (opt-in)', () => {
-  test('13.1 — create a mirror, see it in Storage, destroy it there', async ({ page }) => {
-    test.skip(
+  /**
+   * Since creation moved to a tracked background job, POST /storage/raid
+   * returns only `{job_id}` (202-style acceptance) and the array appears in
+   * `/api/storage/virtual-disks` a few seconds later, once the job has
+   * created, formatted and mounted it. Await that, instead of racing the
+   * first list read against mdadm.
+   */
+  async function waitForArrayListed(page: Page, token: string, name: string): Promise<boolean> {
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      const listed = await page.evaluate(
+        async ({ token }) => {
+          const r = await fetch('/api/storage/virtual-disks', { headers: { 'x-session-token': token } });
+          const j = await r.json().catch(() => ({}));
+          return (j?.data as any[]) || [];
+        },
+        { token },
+      );
+      if (listed.some((v) => v.name === name)) return true;
+      await page.waitForTimeout(1_000);
+    }
+    return false;
+  }
+
+  test('13.1 — create a mirror, see it in Storage, destroy it there', async ({ page }) => {    test.skip(
       REAL_DEVICES.length < 2,
       'set RAID_E2E_DEVICES=/dev/loopX,/dev/loopY (disposable) to run this',
     );
@@ -632,25 +678,94 @@ test.describe('13 — Real lifecycle (opt-in)', () => {
     await page.goto(BASE);
     const name = `e2emd${Date.now().toString(36)}`.slice(0, 20);
 
-    // Create via the RAID endpoint (mdadm mirror).
+    // Create via the RAID endpoint (mdadm mirror) — accepted as a job.
     const c = await apiCreate(page, adminTokens, {
       name, level: 'raid1', devices: REAL_DEVICES.slice(0, 2), filesystem: 'ext4',
     });
     expect(c.success, `create failed: ${c.message}`).toBe(true);
 
     try {
-      // It must now show up in Storage's unified virtual-disks list.
-      const list = await page.evaluate(
+      // It must now show up in Storage's unified virtual-disks list (the
+      // background job finished creating + mounting it).
+      expect(
+        await waitForArrayListed(page, adminTokens.token, name),
+        `${name} never appeared in /api/storage/virtual-disks within 30 s`,
+      ).toBe(true);
+    } finally {
+      // Destroy it through Storage's dispatch endpoint.
+      await page.evaluate(
+        async ({ token, csrf, name }) => {
+          await fetch(`/api/storage/virtual-disks/${encodeURIComponent(name)}`, {
+            method: 'DELETE',
+            headers: { 'x-session-token': token, 'x-csrf-token': csrf },
+          });
+        },
+        { token: adminTokens.token, csrf: adminTokens.csrf, name },
+      );
+    }
+  });
+
+  test('13.2 — the opt-in devices are offered as selectable rows on step 2 (UI)', async ({ page }) => {
+    test.skip(
+      REAL_DEVICES.length < 2,
+      'set RAID_E2E_DEVICES=/dev/loopX,/dev/loopY (disposable) to run this',
+    );
+    await gotoRaid(page, adminTokens);
+    await raidTypeCard(page, 'RAID 1').click();
+    await btn(page, /continue|continuer/i).click();
+    await expect(win(page).locator('[data-testid="raid-disk-head"]')).toBeVisible();
+    const rows = win(page).locator('[data-testid="raid-disk-row"].selectable');
+    await expect(rows.first()).toBeVisible({ timeout: 10_000 });
+    const texts = (await rows.allInnerTexts()).join('\n');
+    for (const dev of REAL_DEVICES.slice(0, 2)) {
+      // The row displays the backend's device path verbatim ("/dev/loopN").
+      expect(texts, `${dev} must be offered as a free (selectable) step-2 row`).toContain(dev);
+    }
+  });
+
+  test('13.3 — a fresh loop device stops being offered once it is in an array', async ({ page }) => {
+    test.skip(
+      REAL_DEVICES.length < 2,
+      'set RAID_E2E_DEVICES=/dev/loopX,/dev/loopY (disposable) to run this',
+    );
+    await page.goto(BASE);
+    const name = `e2emd${Date.now().toString(36)}`.slice(0, 20);
+    const devices = REAL_DEVICES.slice(0, 2);
+
+    const c = await apiCreate(page, adminTokens, {
+      name, level: 'raid1', devices, filesystem: 'ext4',
+    });
+    expect(c.success, `create failed: ${c.message}`).toBe(true);
+
+    try {
+      // Wait for the background creation job to actually assemble the array.
+      expect(
+        await waitForArrayListed(page, adminTokens.token, name),
+        `${name} never appeared in /api/storage/virtual-disks within 30 s`,
+      ).toBe(true);
+
+      // With the array live, the same devices must be reported as in use —
+      // by the device list AND refused by the server-side gate.
+      const listed = await page.evaluate(
         async ({ token }) => {
-          const r = await fetch('/api/storage/virtual-disks', { headers: { 'x-session-token': token } });
+          const r = await fetch('/api/storage/raid/devices', { headers: { 'x-session-token': token } });
           const j = await r.json().catch(() => ({}));
-          return (j?.data as any[]) || [];
+          return (j?.data as Array<{ name: string; inUse: boolean }>) || [];
         },
         { token: adminTokens.token },
       );
-      expect(list.some((v) => v.name === name)).toBe(true);
+      for (const dev of devices) {
+        const row = listed.find((d) => d.name === dev);
+        expect(row, `${dev} must still be listed`).toBeTruthy();
+        expect(row!.inUse, `${dev} must be flagged inUse while the array exists`).toBe(true);
+      }
+
+      const blocked = await apiCreate(page, adminTokens, {
+        name: `${name}b`, level: 'raid1', devices, filesystem: 'ext4',
+      });
+      expect(blocked.http).toBe(400);
+      expect(blocked.success).toBe(false);
     } finally {
-      // Destroy it through Storage's dispatch endpoint.
       await page.evaluate(
         async ({ token, csrf, name }) => {
           await fetch(`/api/storage/virtual-disks/${encodeURIComponent(name)}`, {

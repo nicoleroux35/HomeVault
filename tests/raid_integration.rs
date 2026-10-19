@@ -27,6 +27,7 @@
 //!   POST   /api/storage/raid            (create a virtual disk — admin)
 //!   DELETE /api/storage/raid/{name}     (tear down an array — admin)
 //!   POST   /api/storage/raid/{name}/rebuild  (rebuild after a disk swap — admin)
+//!   POST   /api/storage/virtual-disks/{name}/grow  (grow the array — admin)
 //!
 //! Fresh in-memory SQLite + all migrations per test, a minimal Axum router,
 //! `tower::ServiceExt` for HTTP-level testing — no real server.
@@ -63,7 +64,7 @@ use homevault::handlers::{
     auth::handle_login,
     storage::{
         handle_raid_arrays_list, handle_raid_available_devices, handle_raid_create,
-        handle_raid_delete, handle_raid_rebuild,
+        handle_raid_delete, handle_raid_rebuild, handle_virtual_disk_grow,
     },
     AppState,
 };
@@ -125,6 +126,12 @@ fn raid_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/storage/raid/{name}/rebuild",
             post(handle_raid_rebuild),
+        )
+        // Storage's grow endpoint (mdadm --add + --grow) shares this file's
+        // admin-gate test matrix.
+        .route(
+            "/api/storage/virtual-disks/{name}/grow",
+            post(handle_virtual_disk_grow),
         )
         .with_state(state)
 }
@@ -225,6 +232,11 @@ fn write_endpoints() -> Vec<(Method, &'static str, Option<Value>)> {
             Method::POST,
             "/api/storage/raid/hvtest/rebuild",
             Some(json!({})),
+        ),
+        (
+            Method::POST,
+            "/api/storage/virtual-disks/hvtest/grow",
+            Some(json!({"device": "/dev/hv-nonexistent-a"})),
         ),
     ]
 }

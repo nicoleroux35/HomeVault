@@ -16,7 +16,7 @@
      Opened as a desktop window app (admin only).
      ======================================================================== -->
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { api } from '$lib/services/api';
   import { Spinner, Button } from '$lib/components/theme';
   import { PageLayout, ConfirmDialog } from '$lib/components/app';
@@ -30,8 +30,10 @@
     IconChevronLeft,
     IconChevronRight,
     IconDatabase,
+    IconLock,
     IconServer,
-    IconShieldCheck
+    IconShieldCheck,
+    IconX
   } from '@tabler/icons-svelte';
 
   interface AvailableDevice {
@@ -39,10 +41,22 @@
     size: number;
     model: string;
     inUse: boolean;
+    /** Why the device is busy (backend English sentence), when inUse. */
+    reason?: string | null;
+    /** SMART overall health ("Healthy" / "Failed" / "Unknown"). */
+    smart_status?: string | null;
   }
 
   let availableDevices: AvailableDevice[] = [];
-  let creating = false;
+
+  // The creation itself runs server-side as a tracked progress job (array
+  // create, format, fstab + initramfs take minutes on real hardware): the
+  // POST returns a job_id and this page follows it on the progress SSE.
+  let jobId: string | null = null;
+  let jobProgress = 0;
+  let jobMessage = '';
+  let unsubscribe: (() => void) | null = null;
+  onDestroy(() => unsubscribe?.());
 
   // The creation wizard IS the page — RAID only creates "virtual disks";
   // listing / rebuilding / destroying them lives in the Storage app.
@@ -52,6 +66,12 @@
   let selectedDevices: string[] = [];
   let selectedFilesystem = 'ext4';
   let justCreated = '';
+  let createdMountPoint = '';
+  // Advanced create options (mdadm techs only):
+  // - degrade a launch (one "missing" slot filled later with a disk)
+  // - treat the extra checked disks (beyond the level min) as hot spares
+  let allowMissing = false;
+  let useSpares = false;
   const dlg = createConfirmState();
 
   $: raidTypes = [
@@ -70,8 +90,29 @@
   ];
 
   $: selectedRaid = raidTypes.find((r) => r.id === selectedRaidType) || null;
-  $: selectableDevices = availableDevices.filter((d) => !d.inUse);
+  $: busyDevices = availableDevices.filter((d) => d.inUse);
   $: stepName = currentStep === 1 ? $t('raid.manager.step_type') : currentStep === 2 ? $t('raid.manager.step_disks') : $t('raid.manager.step_configure');
+
+  $: minDisks = selectedRaid?.minDisks ?? 2;
+  $: mdTechnologies = selectedFilesystem === 'ext4' || selectedFilesystem === 'xfs';
+  // Spares and degraded creates are mdadm concepts — native ZFS/Btrfs pools
+  // always stripe every disk they get.
+  $: sparesPossible = mdTechnologies && selectedRaid?.protects === true;
+  $: memberCount = useSpares ? Math.min(minDisks, selectedDevices.length) : selectedDevices.length;
+  $: spareCount = Math.max(0, selectedDevices.length - memberCount);
+  $: missingSlots = allowMissing && selectedDevices.length < minDisks
+    ? Math.min(minDisks - selectedDevices.length, maxMissingForLevel(selectedRaidType))
+    : 0;
+  $: maxMissing = maxMissingForLevel(selectedRaidType);
+
+  function maxMissingForLevel(typeId: string | null): number {
+    switch (typeId) {
+      case 'raid6': return 2;
+      case 'raid1':
+      case 'raid5': return 1;
+      default: return 0;
+    }
+  }
 
   $: pickedSizes = selectedDevices
     .map((name) => availableDevices.find((d) => d.name === name)?.size || 0)
@@ -79,16 +120,29 @@
   $: estimatedCapacity = (() => {
     if (!selectedRaidType || pickedSizes.length === 0) return 0;
     const min = Math.min(...pickedSizes);
-    const n = pickedSizes.length;
+    // Positions that will exist once the array is complete (a degraded
+    // create reserves missing slots; the numbers below reflect the array
+    // after the disks are added, matching what mdadm reports at "clean").
+    const positions = memberCount + missingSlots;
     switch (selectedRaidType) {
       case 'raid0': return pickedSizes.reduce((a, b) => a + b, 0);
       case 'raid1': return min;
-      case 'raid5': return min * Math.max(n - 1, 0);
-      case 'raid6': return min * Math.max(n - 2, 0);
-      case 'raid10': return min * Math.floor(n / 2);
+      case 'raid5': return min * Math.max(positions - 1, 0);
+      case 'raid6': return min * Math.max(positions - 2, 0);
+      case 'raid10': return min * Math.floor(positions / 2);
       default: return 0;
     }
   })();
+  // Raw capacity that can't be used because the disks are unequal (e.g. a
+  // mirror of 1 TiB + 4 TiB wastes 3 TiB) — separate from the deliberate
+  // redundancy overhead the bar above already shows.
+  $: diskSizeWaste = (() => {
+    if (pickedSizes.length < 2) return 0;
+    const min = Math.min(...pickedSizes);
+    return pickedSizes.reduce((a, s) => a + (s - min), 0);
+  })();
+  $: smartWarnDevices = (d: AvailableDevice): 'failed' | 'unknown' | null =>
+    d.smart_status === 'Failed' ? 'failed' : d.smart_status === 'Unknown' ? 'unknown' : null;
 
   onMount(async () => {
     await loadAvailableDevices();
@@ -120,7 +174,7 @@
   }
 
   function selectAllDevices() {
-    selectedDevices = selectableDevices.map((d) => d.name);
+    selectedDevices = availableDevices.filter((d) => !d.inUse).map((d) => d.name);
   }
 
   function diskCells(id: string | null): Array<'data' | 'mirror' | 'parity'> {
@@ -152,11 +206,17 @@
   // can't see the reactive reads hidden inside the function body. Deriving it
   // as a `$:` value instead makes every dependency explicit and guarantees the
   // button's disabled state updates when the user picks a type/disks/name.
-  $: canProceed = currentStep === 1
-    ? selectedRaidType !== null
-    : currentStep === 2
-      ? selectedDevices.length >= (raidTypes.find((r) => r.id === selectedRaidType)?.minDisks || 2)
-      : raidName.trim().length > 0;
+  $: canProceed = jobId !== null
+    ? false
+    : currentStep === 1
+      ? selectedRaidType !== null
+      : currentStep === 2
+        ? selectedDevices.length >= minDisks ||
+          (allowMissing &&
+            selectedDevices.length > 0 &&
+            selectedDevices.length < minDisks &&
+            minDisks - selectedDevices.length <= maxMissing)
+        : raidName.trim().length > 0;
 
   async function handleCreate() {
     if (!selectedRaidType || !raidName.trim() || selectedDevices.length === 0) return;
@@ -167,26 +227,77 @@
       name: raidName, type: raidType?.name || '', disks: devicesList
     })))) return;
 
-    creating = true;
-    const response = await api.createRaid({
+    const body: Parameters<typeof api.createRaid>[0] = {
       name: raidName.trim(),
       level: selectedRaidType,
-      devices: selectedDevices,
+      devices: useSpares ? selectedDevices.slice(0, minDisks) : selectedDevices,
       filesystem: selectedFilesystem
-    });
-    creating = false;
+    };
+    if (useSpares && spareCount > 0) body.spares = selectedDevices.slice(minDisks);
+    if (allowMissing && missingSlots > 0) body.allow_missing = true;
 
-    if (response.success) {
+    const response = await api.createRaid(body);
+
+    if (response.success && (response.data as { job_id?: string })?.job_id) {
+      // The tracked job runs the actual mdadm/zpool/mkfs work; the wizard
+      // stays on step 3 showing its milestones until completion or failure.
+      jobId = (response.data as { job_id: string }).job_id;
+      jobProgress = 0;
+      jobMessage = translate('raid.manager.create_started');
+      unsubscribe?.();
+      unsubscribe = api.subscribeToProgress(
+        jobId,
+        (event) => {
+          jobProgress = Math.round(event.progress || 0);
+          jobMessage = event.message || jobMessage;
+          if (event.state === 'failed') {
+            finishCreation(false, event.message || translate('raid.manager.create_failed'));
+          }
+        },
+        async () => {
+          finishCreation(true, jobMessage);
+        },
+        () => {
+          if (jobId !== null) {
+            finishCreation(
+              false,
+              translate('raid.manager.create_failed')
+            );
+          }
+        }
+      );
+    } else {
+      dlg.notify(response.message || response.error || translate('raid.manager.create_failed'));
+    }
+  }
+
+  // Ends the tracked job on this page and either resets the wizard (the
+  // virtual disk exists) or surfaces the server's failure to the operator.
+  function finishCreation(success: boolean, message: string) {
+    unsubscribe?.();
+    unsubscribe = null;
+    jobId = null;
+    if (success) {
       justCreated = raidName.trim();
+      // The completion event reads "Virtual disk 'x' created and mounted at
+      // /mnt/raid/x" — surface that path when it is present.
+      const mount = message.match(/\/mnt\/\S+/);
+      createdMountPoint = mount ? mount[0] : '';
       currentStep = 1;
       selectedRaidType = null;
       raidName = '';
       selectedDevices = [];
       selectedFilesystem = 'ext4';
-      await loadAvailableDevices();
+      allowMissing = false;
+      useSpares = false;
+      jobProgress = 0;
+      jobMessage = '';
     } else {
-      dlg.notify(response.message || response.error || translate('raid.manager.create_failed'));
+      dlg.notify(message);
     }
+    jobProgress = 0;
+    jobMessage = '';
+    void loadAvailableDevices();
   }
 
   function formatBytes(bytes: number): string {
@@ -231,7 +342,19 @@
   {#if justCreated}
     <div role="status" class="flex items-center gap-2 bg-[var(--hv-success-bg)] text-[var(--hv-success-text)] border border-[var(--hv-success)] rounded-xl px-4 py-3 font-semibold text-c-sm max-w-[660px] mx-auto w-full">
       <IconCircleCheck size={20} class="flex-none" />
-      <span>{$t('raid.manager.create_success', { name: justCreated })}</span>
+      <span>
+        {$t('raid.manager.create_success', { name: justCreated })}
+        {#if createdMountPoint}
+          <span class="font-mono">({createdMountPoint})</span>
+        {/if}
+      </span>
+      <button
+        class="ml-auto inline-flex items-center justify-center w-8 h-8 rounded-lg text-[var(--hv-success-text)] hover:bg-black/10 cursor-pointer focus-visible:outline-none focus-visible:shadow-[var(--hv-shadow-focus)]"
+        aria-label={$t('raid.manager.dismiss_banner')}
+        onclick={() => { justCreated = ''; createdMountPoint = ''; }}
+      >
+        <IconX size={16} />
+      </button>
     </div>
   {/if}
 
@@ -344,41 +467,101 @@
             </div>
           </div>
           <div class="flex flex-col gap-2">
-            {#each selectableDevices as device}
-              <label
-                data-testid="raid-disk-row"
-                class:selected={selectedDevices.includes(device.name)}
-                class={cn('selectable', diskRow, selectedDevices.includes(device.name) && 'border-[var(--hv-primary)] bg-[var(--hv-primary-light)]')}
-              >
-                <input
-                  type="checkbox"
-                  class="absolute inset-0 w-full h-full m-0 opacity-0 cursor-pointer appearance-none focus-visible:[&:focus-visible~.raid-check]:outline-2"
-                  checked={selectedDevices.includes(device.name)}
-                  onchange={() => toggleDevice(device.name)}
-                />
-                <span class={cn('raid-check flex-none w-6 h-6 rounded-md border-2 border-[var(--hv-border-hover)] grid place-items-center transition-colors', selectedDevices.includes(device.name) && 'bg-[var(--hv-primary)] border-[var(--hv-primary)] text-white')} aria-hidden="true">
-                  <IconCheck size={16} />
-                </span>
-                <span class="flex-none w-[38px] h-[38px] rounded-lg bg-[var(--hv-surface-container)] text-[var(--hv-text-secondary)] grid place-items-center" aria-hidden="true"><IconServer size={20} /></span>
-                <span class="flex-1 min-w-0 flex flex-col gap-px">
-                  <span class="text-sm font-bold text-[var(--hv-text-primary)]">{device.name}</span>
-                  <span class="flex items-center gap-2 min-w-0">
-                    <span class="text-c-xs text-[var(--hv-text-tertiary)] whitespace-nowrap overflow-hidden text-ellipsis">{device.model || $t('storage.unknown')}</span>
-                    <span class="inline-flex items-center gap-1 text-micro text-[var(--hv-success-text)] whitespace-nowrap">
-                      <span class="w-1.5 h-1.5 rounded-full bg-[var(--hv-success)] flex-none"></span>{$t('raid.manager.available')}
+            {#each availableDevices as device (device.name)}
+              {#if device.inUse}
+                <!-- In use: shown dimmed with the server's reason so an
+                     operator understands why a disk can't be picked
+                     (was invisible before — such disks simply never appeared). -->
+                <div
+                  data-testid="raid-disk-row"
+                  class={cn(
+                    'relative flex items-center gap-3 px-4 py-3 border-2 border-[var(--hv-border)] rounded-lg bg-[var(--hv-surface-container-lowest)] min-h-[60px]',
+                    'cursor-not-allowed opacity-60 select-none'
+                  )}
+                  aria-disabled="true"
+                >
+                  <span class="flex-none w-6 h-6 rounded-md border-2 border-[var(--hv-border)] grid place-items-center text-[var(--hv-text-tertiary)]" aria-hidden="true">
+                    <IconLock size={14} />
+                  </span>
+                  <span class="flex-none w-[38px] h-[38px] rounded-lg bg-[var(--hv-surface-container)] text-[var(--hv-text-secondary)] grid place-items-center" aria-hidden="true"><IconServer size={20} /></span>
+                  <span class="flex-1 min-w-0 flex flex-col gap-px">
+                    <span class="text-sm font-bold text-[var(--hv-text-secondary)]">{device.name}</span>
+                    <span class="flex items-center gap-2 min-w-0 flex-wrap">
+                      <span class="text-c-xs text-[var(--hv-text-tertiary)] whitespace-nowrap overflow-hidden text-ellipsis">{device.model || $t('storage.unknown')}</span>
+                      <span class="inline-flex items-center gap-1 text-micro font-semibold text-[var(--hv-warning-text)] whitespace-nowrap">
+                        <span class="w-1.5 h-1.5 rounded-full bg-[var(--hv-warning)] flex-none"></span>
+                        {$t('raid.manager.in_use', { reason: device.reason || '' })}
+                      </span>
                     </span>
                   </span>
-                </span>
-                <span class="flex-none text-xs font-bold text-[var(--hv-primary)]">{formatBytes(device.size)}</span>
-              </label>
+                  <span class="flex-none text-xs font-bold text-[var(--hv-text-tertiary)]">{formatBytes(device.size)}</span>
+                </div>
+              {:else}
+                <label
+                  data-testid="raid-disk-row"
+                  class:selected={selectedDevices.includes(device.name)}
+                  class={cn('selectable', diskRow, selectedDevices.includes(device.name) && 'border-[var(--hv-primary)] bg-[var(--hv-primary-light)]')}
+                >
+                  <input
+                    type="checkbox"
+                    class="absolute inset-0 w-full h-full m-0 opacity-0 cursor-pointer appearance-none focus-visible:[&:focus-visible~.raid-check]:outline-2"
+                    checked={selectedDevices.includes(device.name)}
+                    onchange={() => toggleDevice(device.name)}
+                  />
+                  <span class={cn('raid-check flex-none w-6 h-6 rounded-md border-2 border-[var(--hv-border-hover)] grid place-items-center transition-colors', selectedDevices.includes(device.name) && 'bg-[var(--hv-primary)] border-[var(--hv-primary)] text-white')} aria-hidden="true">
+                    <IconCheck size={16} />
+                  </span>
+                  <span class="flex-none w-[38px] h-[38px] rounded-lg bg-[var(--hv-surface-container)] text-[var(--hv-text-secondary)] grid place-items-center" aria-hidden="true"><IconServer size={20} /></span>
+                  <span class="flex-1 min-w-0 flex flex-col gap-px">
+                    <span class="text-sm font-bold text-[var(--hv-text-primary)]">{device.name}</span>
+                    <span class="flex items-center gap-2 min-w-0 flex-wrap">
+                      <span class="text-c-xs text-[var(--hv-text-tertiary)] whitespace-nowrap overflow-hidden text-ellipsis">{device.model || $t('storage.unknown')}</span>
+                      <span class="inline-flex items-center gap-1 text-micro text-[var(--hv-success-text)] whitespace-nowrap">
+                        <span class="w-1.5 h-1.5 rounded-full bg-[var(--hv-success)] flex-none"></span>{$t('raid.manager.available')}
+                      </span>
+                      {#if smartWarnDevices(device)}
+                        <span class={cn('inline-flex items-center gap-1 text-micro font-semibold whitespace-nowrap', smartWarnDevices(device) === 'failed' ? 'text-[var(--hv-danger-text)]' : 'text-[var(--hv-warning-text)]')}>
+                          <IconAlertTriangle size={12} class="flex-none" />
+                          {smartWarnDevices(device) === 'failed' ? $t('raid.manager.smart_failed') : $t('raid.manager.smart_unknown')}
+                        </span>
+                      {/if}
+                    </span>
+                  </span>
+                  <span class="flex-none text-xs font-bold text-[var(--hv-primary)]">{formatBytes(device.size)}</span>
+                </label>
+              {/if}
             {/each}
-            {#if selectableDevices.length === 0}
+            {#if availableDevices.length === 0}
               <p data-testid="raid-empty-note" class="text-xs text-[var(--hv-text-tertiary)] m-0 py-4 text-center">{$t('raid.manager.no_disks_available')}</p>
             {/if}
           </div>
 
-          {#if !canProceed && selectedDevices.length > 0 && selectedRaid}
-            <p class="m-0 text-c-xs font-semibold text-[var(--hv-warning-text)]">{$t('raid.manager.select_more', { count: String(selectedRaid.minDisks - selectedDevices.length) })}</p>
+          {#if !canProceed && selectedDevices.length > 0 && selectedRaid && jobId === null}
+            <p class="m-0 text-c-xs font-semibold text-[var(--hv-warning-text)]">
+              {$t('raid.manager.select_more', { count: String(selectedRaid.minDisks - selectedDevices.length) })}
+            </p>
+          {/if}
+
+          {#if selectedDevices.length > minDisks && sparesPossible}
+            <label class="flex items-start gap-2.5 text-c-xs leading-relaxed text-[var(--hv-text-secondary)] cursor-pointer">
+              <input
+                type="checkbox"
+                class="mt-0.5 w-4 h-4 accent-[var(--hv-primary)] cursor-pointer"
+                bind:checked={useSpares}
+              />
+              <span>{$t('raid.manager.use_spares', { count: String(selectedDevices.length - minDisks) })}</span>
+            </label>
+          {/if}
+
+          {#if selectedDevices.length > 0 && selectedDevices.length < minDisks && mdTechnologies && maxMissing > 0 && minDisks - selectedDevices.length <= maxMissing}
+            <label class="flex items-start gap-2.5 text-c-xs leading-relaxed text-[var(--hv-warning-text)] cursor-pointer">
+              <input
+                type="checkbox"
+                class="mt-0.5 w-4 h-4 accent-[var(--hv-warning)] cursor-pointer"
+                bind:checked={allowMissing}
+              />
+              <span>{$t('raid.manager.allow_missing', { count: String(minDisks - selectedDevices.length) })}</span>
+            </label>
           {/if}
 
           {#if estimatedCapacity > 0}
@@ -398,6 +581,12 @@
                 <span class="flex items-center gap-1.5 text-micro text-[var(--hv-text-secondary)]"><span class="w-2 h-2 rounded-[2px] bg-[var(--hv-primary)] flex-none"></span>{$t('raid.manager.usable')}</span>
                 <span class="flex items-center gap-1.5 text-micro text-[var(--hv-text-secondary)]"><span class="w-2 h-2 rounded-[2px] bg-[var(--hv-warning)] opacity-50 flex-none"></span>{$t('raid.manager.protection')}</span>
               </div>
+              {#if diskSizeWaste > 0}
+                <p class="m-0 text-micro font-semibold text-[var(--hv-warning-text)] flex items-start gap-1.5">
+                  <IconAlertTriangle size={14} class="flex-none mt-px" />
+                  {$t('raid.manager.size_mismatch', { size: formatBytes(diskSizeWaste) })}
+                </p>
+              {/if}
             </div>
           {/if}
         {/if}
@@ -434,7 +623,9 @@
             </div>
             <div class="flex flex-col gap-0.5 min-w-0">
               <dt class={tinyLabel}>{$t('raid.disks')}</dt>
-              <dd class="m-0 text-xs font-bold text-[var(--hv-text-primary)]">{selectedDevices.length}</dd>
+              <dd class="m-0 text-xs font-bold text-[var(--hv-text-primary)]">
+                {memberCount}{#if spareCount > 0}&nbsp;+ {spareCount} {$t('raid.manager.spares_short')}{/if}{#if missingSlots > 0}&nbsp;({$t('raid.manager.missing_short', { count: String(missingSlots) })}){/if}
+              </dd>
             </div>
             <div class="flex flex-col gap-0.5 min-w-0">
               <dt class={tinyLabel}>{$t('raid.manager.estimated_capacity')}</dt>
@@ -446,6 +637,13 @@
             </div>
           </dl>
 
+          {#if missingSlots > 0}
+            <p class="m-0 flex items-start gap-2 text-c-xs font-semibold text-[var(--hv-warning-text)]">
+              <IconAlertTriangle size={16} class="flex-none mt-px" />
+              {$t('raid.manager.degraded_notice', { count: String(missingSlots) })}
+            </p>
+          {/if}
+
           <div class="flex items-start gap-2.5 bg-[var(--hv-warning-bg)] text-[var(--hv-warning-text)] rounded-xl px-4 py-3 text-c-xs leading-relaxed">
             <IconAlertTriangle size={20} class="flex-none mt-px text-[var(--hv-warning)]" />
             <span>{$t('raid.warning.desc')}</span>
@@ -454,20 +652,35 @@
       </div>
 
       <div class="flex items-center justify-between gap-3 px-5 py-4 border-t border-[var(--hv-border)] @min-[560px]:flex-row flex-col-reverse">
-        {#if currentStep > 1}
-          <Button variant="ghost" onclick={prevStep}><IconChevronLeft size={18} />{$t('raid.manager.back')}</Button>
+        {#if jobId !== null}
+          <!-- Tracked creation in progress: the wizard is locked until the
+               server-side job finishes (or fails). -->
+          <div class="w-full flex flex-col gap-1.5" data-testid="raid-create-progress">
+            <div class="flex items-center gap-2">
+              <Spinner size="sm" />
+              <span class="text-c-xs font-semibold text-[var(--hv-text-secondary)] min-w-0 flex-1 truncate">{jobMessage}</span>
+              <span class="text-micro font-bold text-[var(--hv-primary)]">{jobProgress}%</span>
+            </div>
+            <div class="h-1.5 w-full bg-[var(--hv-surface-container)] rounded-full overflow-hidden">
+              <span class="block h-full bg-[var(--hv-primary)] rounded-full transition-[width] duration-300" style="width: {jobProgress}%"></span>
+            </div>
+          </div>
         {:else}
-          <span class="text-c-xs uppercase tracking-[0.05em] font-semibold text-[var(--hv-text-tertiary)]">{stepName}</span>
-        {/if}
-        {#if currentStep < 3}
-          <Button variant="primary" disabled={!canProceed} onclick={nextStep}>
-            {$t('raid.manager.continue_btn')}<IconChevronRight size={18} />
-          </Button>
-        {:else}
-          <Button variant="primary" disabled={!raidName.trim() || creating} onclick={handleCreate}>
-            {#if creating}<Spinner size="sm" />{:else}<IconCheck size={18} />{/if}
-            {$t('raid.manager.create_array_button')}
-          </Button>
+          {#if currentStep > 1}
+            <Button variant="ghost" onclick={prevStep}><IconChevronLeft size={18} />{$t('raid.manager.back')}</Button>
+          {:else}
+            <span class="text-c-xs uppercase tracking-[0.05em] font-semibold text-[var(--hv-text-tertiary)]">{stepName}</span>
+          {/if}
+          {#if currentStep < 3}
+            <Button variant="primary" disabled={!canProceed} onclick={nextStep}>
+              {$t('raid.manager.continue_btn')}<IconChevronRight size={18} />
+            </Button>
+          {:else}
+            <Button variant="primary" disabled={!canProceed} onclick={handleCreate}>
+              <IconCheck size={18} />
+              {$t('raid.manager.create_array_button')}
+            </Button>
+          {/if}
         {/if}
       </div>
     </div>

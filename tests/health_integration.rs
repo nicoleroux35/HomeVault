@@ -67,13 +67,14 @@ type Req = Request<axum::body::Body>;
 
 static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-/// The 8 checks `HealthService::run_all_checks` always returns, in order.
-const EXPECTED_CHECKS: [&str; 8] = [
+/// The 9 checks `HealthService::run_all_checks` always returns, in order.
+const EXPECTED_CHECKS: [&str; 9] = [
     "authentication",
     "storage",
     "memory",
     "disk_space",
     "disk_smart",
+    "raid_arrays",
     "network",
     "services",
     "temperatures",
@@ -255,7 +256,7 @@ async fn test_health_allows_any_valid_non_admin_session() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_health_returns_the_eight_named_checks() {
+async fn test_health_returns_the_nine_named_checks() {
     let (state, _tmp, _guard) = setup_state().await;
     create_test_user(&state, "u", "Password123!", 1).await;
     let mut router = health_router(state);
@@ -263,7 +264,7 @@ async fn test_health_returns_the_eight_named_checks() {
 
     let (_, body) = send(&mut router, Method::GET, "/api/health", Some(&token), None).await;
     let checks = body["data"]["checks"].as_array().expect("checks array");
-    assert_eq!(checks.len(), 8, "expected 8 checks: {body}");
+    assert_eq!(checks.len(), 9, "expected 9 checks: {body}");
 
     let names: BTreeSet<&str> = checks.iter().filter_map(|c| c["name"].as_str()).collect();
     let expected: BTreeSet<&str> = EXPECTED_CHECKS.into_iter().collect();

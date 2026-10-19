@@ -39,7 +39,7 @@
   let loading = true;
   let overallStatus: CheckStatus = 'unknown';
 
-  // The 8 checks health.rs always runs, in a fixed, sensible display order —
+  // The 9 checks health.rs always runs, in a fixed, sensible display order —
   // `checks` from the API is already in this order, but this also gives each
   // one a translated display name (the raw `name` is a snake_case identifier
   // like "disk_space", not something to show directly).
@@ -49,6 +49,7 @@
     memory: 'health.check_memory',
     disk_space: 'health.check_disk_space',
     disk_smart: 'health.check_disk_smart',
+    raid_arrays: 'health.check_raid_arrays',
     network: 'health.check_network',
     services: 'health.check_services',
     temperatures: 'health.check_temperatures',

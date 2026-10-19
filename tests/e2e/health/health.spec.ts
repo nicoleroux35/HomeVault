@@ -27,7 +27,7 @@
  * It has exactly one backend call — `api.healthCheck()` → `GET /api/health`
  * (never cached) — and renders one card per built-in check from
  * `src/health.rs` (always 8: authentication, storage, memory, disk_space,
- * disk_smart, network, services, temperatures), plus an overall-status
+ * disk_smart, raid_arrays, network, services, temperatures), plus an overall-status
  * badge in the header.
  *
  * **This suite is entirely read-only.** The screen's only action is the
@@ -50,7 +50,7 @@ const BASE = process.env.BASE_URL || 'http://localhost:8080';
 const ADMIN_USER = process.env.E2E_ADMIN_USER || 'e2eadmin';
 const ADMIN_PASS = process.env.E2E_ADMIN_PASS || 'E2eSecret123';
 
-const EXPECTED_CHECKS = 8;
+const EXPECTED_CHECKS = 9;
 
 interface Tokens {
   username: string;
@@ -124,7 +124,7 @@ async function openHealth(page: Page, tokens: Tokens, lang?: string) {
   await page.waitForSelector('[data-testid="health-page"]', { timeout: 15_000 });
   // The loading state clears once the first `/api/health` call lands (it
   // shells out to df / lsblk+smartctl / systemctl — give it room). The real
-  // endpoint always returns 8 checks, so the grid renders.
+  // endpoint always returns 9 checks, so the grid renders.
   await expect(win(page).locator('[data-testid="health-loading"]')).toHaveCount(0, { timeout: 30_000 });
   await expect(win(page).locator('[data-testid="health-card"]').first()).toBeVisible({ timeout: 5_000 });
 }
@@ -170,7 +170,7 @@ test.describe('1 — Page load', () => {
     await page.locator('.lp-card[title="Health"]').click();
     await page.waitForSelector('[data-testid="health-page"]', { timeout: 15_000 });
     // The loading state (`health-loading`) clears once the first `/api/health`
-    // lands, then the 8 cards render.
+    // lands, then the 9 cards render.
     await expect(win(page).locator('[data-testid="health-loading"]')).toHaveCount(0, { timeout: 25_000 });
     await expect(win(page).locator('[data-testid="health-card"]')).toHaveCount(EXPECTED_CHECKS);
   });
@@ -184,7 +184,7 @@ test.describe('1 — Page load', () => {
     await expect(win(page).locator('.hv-winhdr > *')).toHaveCount(2);
   });
 
-  test('1.4 — exactly 8 check cards render', async ({ page }) => {
+  test('1.4 — exactly 9 check cards render', async ({ page }) => {
     await openHealth(page, adminTokens);
     await expect(win(page).locator('[data-testid="health-card"]')).toHaveCount(EXPECTED_CHECKS);
   });
@@ -231,7 +231,7 @@ test.describe('2 — Check content', () => {
     }
   });
 
-  test('2.2 — card names cover the 8 known checks (no duplicates)', async ({ page }) => {
+  test('2.2 — card names cover the 9 known checks (no duplicates)', async ({ page }) => {
     await openHealth(page, adminTokens);
     const names = await win(page).locator('[data-testid="health-card-name"]').allInnerTexts();
     const trimmed = names.map((s) => s.trim());
