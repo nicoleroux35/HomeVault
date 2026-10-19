@@ -306,7 +306,8 @@ Five steps, in order (`STEP_TOTAL` in the script):
 3. **Application** — downloads the pre-built binary from the project's GitHub
    Releases, as the per-architecture asset `homevault-<arch>.tar.gz`
    (`HV_RELEASE_URL` overrides the URL, `HV_RELEASE_SHA256` optionally pins the
-   checksum, `$1` uses an already-downloaded file), extracts it to
+   checksum, `HV_RELEASE_TOKEN` authenticates a private-repository release,
+   `$1` uses an already-downloaded file), extracts it to
    `/opt/homevault`, writes the systemd unit and the udiskie automount, and
    optionally enables HTTPS.
 4. **Verification** — re-checks the packages, the service, the HTTP endpoint on
