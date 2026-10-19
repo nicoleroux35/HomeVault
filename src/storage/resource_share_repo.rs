@@ -90,7 +90,9 @@ impl ResourcePermission {
     pub fn implies(self, other: ResourcePermission) -> bool {
         match self {
             ResourcePermission::Full => true,
-            ResourcePermission::Write => matches!(other, ResourcePermission::Read | ResourcePermission::Write),
+            ResourcePermission::Write => {
+                matches!(other, ResourcePermission::Read | ResourcePermission::Write)
+            }
             ResourcePermission::Read => matches!(other, ResourcePermission::Read),
         }
     }

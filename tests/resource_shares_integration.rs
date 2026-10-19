@@ -307,13 +307,22 @@ async fn test_grant_is_idempotent_and_updates_permission() {
             Method::POST,
             "/api/shares/access",
             Some(&admin),
-            Some(json!({"member": "bob", "kind": "share", "resource": "photos", "permission": perm})),
+            Some(
+                json!({"member": "bob", "kind": "share", "resource": "photos", "permission": perm}),
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
     }
 
-    let (_, body) = send(&mut r, Method::GET, "/api/shares/access", Some(&admin), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/shares/access",
+        Some(&admin),
+        None,
+    )
+    .await;
     let grants = body["data"].as_array().unwrap();
     assert_eq!(grants.len(), 1, "upsert must not duplicate the row");
     assert_eq!(grants[0]["permission"], json!("full"));
@@ -442,17 +451,38 @@ async fn test_visible_resources_and_can_access_filter_by_member() {
     create_test_user(&state, "erin", "pw12345678", 1).await;
     let repo = ResourceShareRepository::new(state.db.pool());
 
-    repo.upsert("admin", "erin", ResourceKind::App, "jellyfin", ResourcePermission::Read)
-        .await
-        .unwrap();
-    repo.upsert("admin", "erin", ResourceKind::App, "nextcloud", ResourcePermission::Full)
-        .await
-        .unwrap();
-    repo.upsert("admin", "erin", ResourceKind::Share, "photos", ResourcePermission::Write)
-        .await
-        .unwrap();
+    repo.upsert(
+        "admin",
+        "erin",
+        ResourceKind::App,
+        "jellyfin",
+        ResourcePermission::Read,
+    )
+    .await
+    .unwrap();
+    repo.upsert(
+        "admin",
+        "erin",
+        ResourceKind::App,
+        "nextcloud",
+        ResourcePermission::Full,
+    )
+    .await
+    .unwrap();
+    repo.upsert(
+        "admin",
+        "erin",
+        ResourceKind::Share,
+        "photos",
+        ResourcePermission::Write,
+    )
+    .await
+    .unwrap();
 
-    let apps = repo.visible_resources("erin", ResourceKind::App).await.unwrap();
+    let apps = repo
+        .visible_resources("erin", ResourceKind::App)
+        .await
+        .unwrap();
     assert_eq!(
         apps,
         vec![
@@ -463,15 +493,30 @@ async fn test_visible_resources_and_can_access_filter_by_member() {
 
     // can_access honours the level: read does not imply write.
     assert!(repo
-        .can_access("erin", ResourceKind::App, "jellyfin", ResourcePermission::Read)
+        .can_access(
+            "erin",
+            ResourceKind::App,
+            "jellyfin",
+            ResourcePermission::Read
+        )
         .await
         .unwrap());
     assert!(!repo
-        .can_access("erin", ResourceKind::App, "jellyfin", ResourcePermission::Write)
+        .can_access(
+            "erin",
+            ResourceKind::App,
+            "jellyfin",
+            ResourcePermission::Write
+        )
         .await
         .unwrap());
     assert!(repo
-        .can_access("erin", ResourceKind::App, "nextcloud", ResourcePermission::Write)
+        .can_access(
+            "erin",
+            ResourceKind::App,
+            "nextcloud",
+            ResourcePermission::Write
+        )
         .await
         .unwrap());
     // A resource with no row is invisible.
@@ -481,7 +526,12 @@ async fn test_visible_resources_and_can_access_filter_by_member() {
         .unwrap());
     // A different member shares nothing.
     assert!(!repo
-        .can_access("frank", ResourceKind::App, "jellyfin", ResourcePermission::Read)
+        .can_access(
+            "frank",
+            ResourceKind::App,
+            "jellyfin",
+            ResourcePermission::Read
+        )
         .await
         .unwrap());
 }
@@ -493,15 +543,33 @@ async fn test_revoke_all_for_member_clears_every_kind() {
     create_test_user(&state, "gina", "pw12345678", 1).await;
     let repo = ResourceShareRepository::new(state.db.pool());
 
-    repo.upsert("admin", "gina", ResourceKind::App, "a", ResourcePermission::Read)
-        .await
-        .unwrap();
-    repo.upsert("admin", "gina", ResourceKind::Folder, "/srv/x", ResourcePermission::Read)
-        .await
-        .unwrap();
-    repo.upsert("admin", "gina", ResourceKind::Share, "s", ResourcePermission::Read)
-        .await
-        .unwrap();
+    repo.upsert(
+        "admin",
+        "gina",
+        ResourceKind::App,
+        "a",
+        ResourcePermission::Read,
+    )
+    .await
+    .unwrap();
+    repo.upsert(
+        "admin",
+        "gina",
+        ResourceKind::Folder,
+        "/srv/x",
+        ResourcePermission::Read,
+    )
+    .await
+    .unwrap();
+    repo.upsert(
+        "admin",
+        "gina",
+        ResourceKind::Share,
+        "s",
+        ResourcePermission::Read,
+    )
+    .await
+    .unwrap();
 
     let removed = repo.revoke_all_for_member("gina").await.unwrap();
     assert_eq!(removed, 3);

@@ -60,7 +60,10 @@ pub fn server_version() -> &'static str {
 pub fn client_is_compatible(client: Option<&str>) -> bool {
     match client.map(str::trim).filter(|s| !s.is_empty()) {
         None => true,
-        Some(raw) => raw.parse::<u32>().map(|v| v == CONTRACT_VERSION).unwrap_or(true),
+        Some(raw) => raw
+            .parse::<u32>()
+            .map(|v| v == CONTRACT_VERSION)
+            .unwrap_or(true),
     }
 }
 

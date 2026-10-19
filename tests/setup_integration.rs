@@ -49,9 +49,8 @@ use homevault::config::PathGuard;
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{
     auth::{
-        handle_check_username, handle_setup, handle_setup_progress_get,
-        handle_setup_progress_put, handle_setup_rebaseline, handle_setup_status,
-        handle_setup_verify_totp,
+        handle_check_username, handle_setup, handle_setup_progress_get, handle_setup_progress_put,
+        handle_setup_rebaseline, handle_setup_status, handle_setup_verify_totp,
     },
     AppState,
 };
@@ -334,11 +333,7 @@ async fn test_check_username_is_disabled_once_setup_complete() {
     .await;
     assert_eq!(status1, StatusCode::OK);
 
-    let (status, body) = get_json(
-        &mut app,
-        "/api/auth/check-username?username=someoneelse",
-    )
-    .await;
+    let (status, body) = get_json(&mut app, "/api/auth/check-username?username=someoneelse").await;
     assert_eq!(
         status,
         StatusCode::FORBIDDEN,
@@ -1609,7 +1604,12 @@ async fn test_setup_bootstrap_endpoints_are_rate_limited() {
     // `check-username` is the cheapest bootstrap route and hits no DB write.
     let mut saw_429 = false;
     for _ in 0..40 {
-        let (status, _) = get_as_peer(&app, "203.0.113.9", "/api/auth/check-username?username=probe").await;
+        let (status, _) = get_as_peer(
+            &app,
+            "203.0.113.9",
+            "/api/auth/check-username?username=probe",
+        )
+        .await;
         if status == StatusCode::TOO_MANY_REQUESTS {
             saw_429 = true;
             break;

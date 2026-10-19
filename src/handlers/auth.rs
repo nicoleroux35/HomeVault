@@ -36,8 +36,8 @@ use crate::storage::models::{
     LoginRequest, LoginResponse, SetupRequest, SetupStatusResponse, TwoFactorSetupRequest,
     TwoFactorVerifyRequest, ADMIN_ROLE_ID,
 };
-use crate::storage::SetupStateRepository;
 use crate::storage::SetupProgressRepository;
+use crate::storage::SetupStateRepository;
 use crate::utils::ResponseHelper;
 use axum::{extract::State, http::HeaderMap, response::Response};
 use serde::{Deserialize, Serialize};
@@ -144,7 +144,11 @@ fn is_trusted_proxy(ip: &std::net::IpAddr) -> bool {
             list.split(',')
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
-                .any(|s| s.parse::<std::net::IpAddr>().map(|p| p == *ip).unwrap_or(false))
+                .any(|s| {
+                    s.parse::<std::net::IpAddr>()
+                        .map(|p| p == *ip)
+                        .unwrap_or(false)
+                })
         })
         .unwrap_or(false)
 }
@@ -517,12 +521,9 @@ pub async fn handle_logout(State(state): State<Arc<AppState>>, headers: HeaderMa
             // Drop any app-proxy sessions this user holds, then expire both
             // cookies so a proxied app can't be reached after logout.
             crate::app_proxy::app_auth::APP_AUTH.revoke_user(&username);
-            let resp = crate::app_proxy::cookie::clear_app_session(
-                crate::app_proxy::cookie::clear_session(ResponseHelper::json_success(
-                    "Logged out successfully".to_string(),
-                )),
-            );
-            resp
+            crate::app_proxy::cookie::clear_app_session(crate::app_proxy::cookie::clear_session(
+                ResponseHelper::json_success("Logged out successfully".to_string()),
+            ))
         }
         Err(e) => ResponseHelper::json_error(format!("Logout failed: {}", e)),
     }

@@ -177,7 +177,10 @@ mod tests {
             app_session_from_cookie_header("hv_session=api; hv_app_session=app1"),
             Some("app1")
         );
-        assert_eq!(app_session_from_cookie_header("hv_app_session=app1"), Some("app1"));
+        assert_eq!(
+            app_session_from_cookie_header("hv_app_session=app1"),
+            Some("app1")
+        );
         // The API session must never be mistaken for the app session.
         assert_eq!(app_session_from_cookie_header("hv_session=api"), None);
         assert_eq!(app_session_from_cookie_header("not_hv_app_session=x"), None);

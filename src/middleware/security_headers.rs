@@ -45,9 +45,7 @@ pub async fn security_headers_middleware(
     // stamp the inline boot script in `index.html` with the very value the
     // policy below will list — the two must match or the shell never boots.
     let nonce = crate::middleware::csp_nonce::CspNonce::generate();
-    request
-        .extensions_mut()
-        .insert(nonce.clone());
+    request.extensions_mut().insert(nonce.clone());
 
     let mut response = next.run(request).await;
 

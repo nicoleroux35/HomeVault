@@ -1,12 +1,36 @@
 version: 2
 updates:
+  # Backend crate dependencies (Cargo.toml / Cargo.lock).
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+  # Frontend packages (Svelte/Vite/Tailwind stack).
   - package-ecosystem: npm
     directory: /frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  # Root packages (Playwright test runner).
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  # GitHub Actions used by .github/workflows/*.yml — without this entry the
+  # action majors silently drift (checkout/setup-node/upload-artifact).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  # Catalog app images (catalog/<app>/docker-compose.yml). The floating tags
+  # (`:latest`, `:stable`) are left alone; Dependabot only moves the pinned
+  # ones (postgres, redis, uptime-kuma, pgvecto-rs).
+  - package-ecosystem: docker
+    directories:
+      - /catalog/*
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
