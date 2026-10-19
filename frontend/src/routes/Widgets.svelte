@@ -50,8 +50,12 @@
 
   $: totalActive = widgetDefs.filter((w) => w.visible).length;
 
+  // "Reset to Default" restores the shipped defaults — and the shipped
+  // default for every monitor is **off** (see `defaultPositions()` in
+  // `monitorStore.ts`): a fresh install opens on a clean desktop. Positions
+  // are kept; only visibility goes back to the default.
   function resetAll() {
-    for (const d of WIDGET_DEFS) d.setVisible(true);
+    for (const d of WIDGET_DEFS) d.setVisible(false);
   }
 </script>
 

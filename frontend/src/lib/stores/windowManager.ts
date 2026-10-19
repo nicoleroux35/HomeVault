@@ -76,13 +76,23 @@ function computeInitialGeometry(index: number) {
   const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
   const margin = DEFAULT_SNAP_CONFIG.edgeMargin;
 
+  // The cascade start clears the floating menubar (see
+  // DEFAULT_SNAP_CONFIG.topbarHeight) by 52px, and is derived from the token so
+  // a taller pill can never swallow the first window's header (the literal 122
+  // this replaced was pinned to a 70px keep-out).
+  const cascadeGap = 52;
+  const cascadeY = DEFAULT_SNAP_CONFIG.topbarHeight + cascadeGap + (index % 5) * 30;
+
   const width = Math.max(MIN_RESTORED_WIDTH, Math.min(1024, vw - margin * 2));
-  const availableHeight = vh - DEFAULT_SNAP_CONFIG.topbarHeight - DEFAULT_SNAP_CONFIG.dockBottom - DEFAULT_SNAP_CONFIG.dockHeight - margin;
+  // The height budget starts at THIS window's cascade Y, not at the viewport
+  // top: a window is placed at `cascadeY`, so counting the whole band above it
+  // would let a tall window overflow the bottom and open BEHIND the dock (it
+  // used to overlap it by ~50px at a 900px viewport).
+  const availableHeight =
+    vh - cascadeY - DEFAULT_SNAP_CONFIG.dockBottom - DEFAULT_SNAP_CONFIG.dockHeight - margin;
   const height = Math.max(MIN_RESTORED_HEIGHT, Math.min(720, availableHeight));
 
-  // Cascade start clears the floating menubar (see DEFAULT_SNAP_CONFIG.topbarHeight);
-  // applySnap re-clamps anyway, this just keeps the first few windows from stacking.
-  const { x, y } = applySnap(100 + (index % 5) * 30, 122 + (index % 5) * 30, width, height);
+  const { x, y } = applySnap(100 + (index % 5) * 30, cascadeY, width, height);
 
   return { x, y, width, height, isMaximized: vw <= AUTO_MAXIMIZE_BREAKPOINT };
 }

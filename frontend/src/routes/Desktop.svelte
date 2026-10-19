@@ -2,7 +2,7 @@
      File          : Desktop.svelte
      Author        : Nicolas Le Roux
      Created       : 28/09/2026
-     Last modified : 18/10/2026 by Nicolas Le Roux
+     Last modified : 19/10/2026 by Nicolas Le Roux
      Version       : 1.0.0
 
      Description:
@@ -43,6 +43,8 @@
   import { contractMismatch } from '$lib/stores/contract';
   import LazyLoad from '$lib/components/LazyLoad.svelte';
   import DesktopShortcuts from '$lib/components/desktop/DesktopShortcuts.svelte';
+  import ShortcutAddDialog from '$lib/components/desktop/ShortcutAddDialog.svelte';
+  import { shortcutsStore, MAX_SHORTCUTS } from '$lib/stores/shortcuts';
   import { IconServer, IconSettings as SettingsIcon, IconMoon, IconUser, IconActivity, IconCpu, IconThermometer, IconArrowUp, IconArrowDown, IconDatabase, IconPackage, IconTerminal as TerminalIcon, IconPower, IconShieldCheckered, IconLock, IconHome, IconLayoutGrid, IconMenu, IconSearch, IconPlus, IconDownload, IconUpload, IconTrash, IconPencil, IconCheck, IconAlertCircle, IconInfoCircle, IconAlertTriangle, IconBug, IconShield, IconRefresh, IconCalendar, IconChevronLeft, IconChevronRight, IconChevronsLeft, IconChevronsRight, IconPlayerPlay, IconSquare, IconContainer as ContainerIcon, IconSun, IconSun as Sun, IconCloud, IconCloudRain, IconSnowflake, IconCloudStorm, IconMapPin, IconUsers, IconHeartbeat, IconLogout, IconRobot, IconGlobe, IconSignal3g, IconCopy, IconCloudFog } from '@tabler/icons-svelte';
   import { subscribeWidget, type WidgetLoadResult } from '$lib/components/desktop/widgetData';
   import { launchpadIcons } from '$lib/assets/launchpadIcons';
@@ -90,6 +92,9 @@
   let now = Date.now();
   let showUserMenu = false;
   let showAppsCenter = false;
+  /** The "add a web shortcut" dialog. Its trigger is the launcher's last
+   *  tile (`HvLaunchpad`), not a control on the desktop itself. */
+  let showShortcutAdd = false;
   let showActivityPanel = false;
   let dockWidth = 0;
   let showNotifications = false;
@@ -1829,7 +1834,7 @@
         <div class="hv-user-dropdown hv-topbar-panel" onclick={(e) => e.stopPropagation()}>
           <div class="hv-user-info">
             <div class="hv-user-avatar">
-              <UserAvatar username={$authStore.user?.username ?? ''} seed={$authStore.user?.avatar_seed ?? null} size={76} />
+              <UserAvatar username={$authStore.user?.username ?? ''} seed={$authStore.user?.avatar_seed ?? null} size={72} />
             </div>
             <div class="hv-user-details">
               <div class="hv-user-details-name">{($authStore.user?.fullname || $authStore.user?.username) ?? ''}</div>
@@ -1838,12 +1843,12 @@
           </div>
           <div class="hv-user-menu-divider"></div>
           <button class="hv-user-menu-item" onclick={openAccount}>
-            <IconUser size={26} stroke={1.7} />
+            <IconUser size={18} stroke={1.7} />
             <span>{$t('account.heading')}</span>
           </button>
           <div class="hv-user-menu-divider"></div>
           <button class="hv-user-menu-item hv-logout" onclick={handleLogout}>
-            <IconLogout size={26} stroke={1.8} />
+            <IconLogout size={18} stroke={1.8} />
             <span>{$t('desktop.logout')}</span>
           </button>
         </div>
@@ -2631,32 +2636,41 @@
              role="dialog" overlay already carries an accessible name. -->
 
         <div class="hv-power-content">
+          <!-- Three circular tiles with their label underneath — the dock's
+               own shape language (`.hv-dock-icon`), so the action sheet opened
+               from the topbar reads as part of the same chrome. -->
           <div class="hv-power-options">
             <!-- Shut Down -->
-            <button class="hv-power-option hv-power-option-shutdown" onclick={handleShutdown}>
-              <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 3v10"/>
-                <path d="M8.5 5.5a6 6 0 1 0 7 0"/>
-              </svg>
+            <button class="hv-power-option" onclick={handleShutdown}>
+              <span class="hv-power-tile hv-power-tile-shutdown">
+                <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 3v10"/>
+                  <path d="M8.5 5.5a6 6 0 1 0 7 0"/>
+                </svg>
+              </span>
               <span class="hv-power-label">{$t('desktop.shut_down')}</span>
             </button>
 
             <!-- Restart -->
             <button class="hv-power-option" onclick={handleRestart}>
-              <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M20 12a8 8 0 1 1-3-6.2"/>
-                <path d="M20 4v4h-4"/>
-              </svg>
+              <span class="hv-power-tile hv-power-tile-restart">
+                <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M20 12a8 8 0 1 1-3-6.2"/>
+                  <path d="M20 4v4h-4"/>
+                </svg>
+              </span>
               <span class="hv-power-label">{$t('desktop.restart')}</span>
             </button>
 
             <!-- Log Out -->
             <button class="hv-power-option" onclick={requestLogout}>
-              <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M15 5H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h8"/>
-                <path d="M14 12h7"/>
-                <path d="M18 9l3 3-3 3"/>
-              </svg>
+              <span class="hv-power-tile hv-power-tile-logout">
+                <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M15 5H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h8"/>
+                  <path d="M14 12h7"/>
+                  <path d="M18 9l3 3-3 3"/>
+                </svg>
+              </span>
               <span class="hv-power-label">{$t('desktop.log_out')}</span>
             </button>
           </div>
@@ -2686,7 +2700,7 @@
       >
         <div class="hv-power-header">
           <div class="hv-power-title">
-            <svg xmlns="http://www.w3.org/2000/svg" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
               <path d="M12 3v10"/><path d="M8.5 5.5a6 6 0 1 0 7 0"/>
             </svg>
             <span id="confirm-modal-title">
@@ -2700,7 +2714,7 @@
             </span>
           </div>
           <button class="hv-power-close" onclick={cancelLogoutAction} aria-label={$t('common.close')}>
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M6 6l12 12M18 6L6 18"/>
             </svg>
           </button>
@@ -2972,9 +2986,14 @@
       apps={allApps}
       onAppClick={(appId) => openApp(allApps.find(a => a.id === appId)!)}
       onOpenExternal={openExternalUrl}
+      onAddShortcut={() => (showShortcutAdd = true)}
+      canAddShortcut={$shortcutsStore.length < MAX_SHORTCUTS}
       onClose={() => showAppsCenter = false}
     />
   {/if}
+
+  <!-- Add-a-web-shortcut dialog, opened from the launcher's last tile. -->
+  <ShortcutAddDialog open={showShortcutAdd} onclose={() => (showShortcutAdd = false)} />
 
   <!-- Persistent backup/restore progress island (module-level store, so it
        survives app switches while a long run continues in the background). -->
@@ -3087,7 +3106,7 @@
      `--hv-chrome-surface-*`, shared with the dock AND with the popovers that
      hang off this pill, so the pill and its own panels never mismatch.
      Same silhouette language as the dock: `--hv-radius-full` clamps to half
-     the --hv-chrome-topbar-h box (31px at 62px, 28px on the phone's 56px), so
+     the --hv-chrome-topbar-h box (36px at 72px, 28px on the phone's 56px), so
      both ends are EXACT semicircles and no corner is visible anywhere. */
   .hv-menubar {
     position: fixed;
@@ -3103,8 +3122,8 @@
     /* Vertical padding is a no-op at a fixed height + align-items:center —
        only the horizontal value actually does anything. It is derived from the
        two tokens so the END CONTROLS sit concentric with the capsule's own
-       arcs: (62 − 48) / 2 = 7px, i.e. the 48px circle's centre lands on the
-       31px arc's centre. A fixed padding would drift the moment either token
+       arcs: (72 − 56) / 2 = 8px, i.e. the 56px circle's centre lands on the
+       36px arc's centre. A fixed padding would drift the moment either token
        changes (the phone pair is 56 / 44). */
     padding: 0 calc((var(--hv-chrome-topbar-h) - var(--hv-chrome-topbar-btn-size)) / 2);
     border-radius: var(--hv-radius-full);
@@ -3121,8 +3140,8 @@
     height: 100%;
   }
 
-  /* User pill — avatar + name. The avatar is small (32px): at pill height the
-     name carries the identity, the picture is only a marker. */
+  /* User pill — avatar + name. The avatar is half the pill (36px, a step down
+     on the phone): the name carries the identity, the picture is a marker. */
   .hv-user-pill {
     display: flex;
     align-items: center;
@@ -3170,7 +3189,9 @@
 
   .hv-menubar-divider {
     width: 1px;
-    height: var(--hv-space-6);
+    /* Half the pill's control row (28px at 72px), so it stays a separator
+       between full-height controls rather than a stub. */
+    height: calc(var(--hv-chrome-topbar-btn-size) / 2);
     /* Chrome hairline — the pill uses --hv-chrome-surface-border so its divider
        matches its own outline, not the (lighter) in-window hairline. */
     background: var(--hv-chrome-surface-border);
@@ -3212,7 +3233,7 @@
   /* Topbar buttons (network, notifications, power) — PERFECT CIRCLES, one
      uniform size, icon-only at every width: the same shape language as the
      dock's circular app tiles, inside the capsule. The diameter is
-     --hv-chrome-topbar-btn-size (48px, i.e. 0.775 × the 62px pill — the dock
+     --hv-chrome-topbar-btn-size (56px, i.e. 0.775 × the 72px pill — the dock
      tile's own proportion; 44px on the phone). No tile, no border, no shadow —
      just a subtle hover wash so the pill still reads as one surface. The
      accessible name lives on `aria-label` (never on a glyph), and the CSS
@@ -3226,7 +3247,7 @@
     gap: 0;
     padding: 0;
     /* 0.775 × the pill height — the dock tile's own proportion, so the two
-       pills carry the same icon-to-bar weight (48px desktop, 44px phone). */
+       pills carry the same icon-to-bar weight (56px desktop, 44px phone). */
     width: var(--hv-chrome-topbar-btn-size);
     height: var(--hv-chrome-topbar-btn-size);
     border: none;
@@ -3244,11 +3265,17 @@
   }
 
   .hv-topbar-btn:focus-visible {
-    outline: 2px solid var(--hv-primary);
-    outline-offset: -2px;
+    /* The shared ring — the same 2px + 4px halo every other control on the
+       desktop wears (user-menu rows, power options, Settings, the dock).
+       The buttons used to paint an inset `outline`, so the three topbar
+       circles were the only controls with a focus indicator of their own
+       shape. The 4px halo still clears the capsule: the button sits 8px
+       inside it. */
+    outline: none;
+    box-shadow: var(--hv-focus-ring);
   }
 
-  /* Glyph = half the control, the same ratio as the dock tile (24px in a 48px
+  /* Glyph = half the control, the same ratio as the dock tile (28px in a 56px
      circle, 22px in the phone's 44px one). The SVG `size` prop on the three
      glyphs is therefore inert — a stylesheet beats a presentation attribute —
      which is why the markup no longer passes one (same rule as the in-window
@@ -3310,21 +3337,27 @@
     --hv-topbar-panel-w: 440px;
   }
 
-  /* Body — the two IP rows are all this popover shows */
+  /* Body — the two IP rows are all this popover shows. On the theme's own
+     spacing ladder (2026-10-19): it used one-off literals (20px padding,
+     12px gaps, 84px rows, a 52px icon tile, a 48px copy button) and a **22px**
+     IP value — the page-title step — for what is a row value. */
   .hv-net-body {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    padding: 20px;
+    gap: var(--hv-space-3);
+    padding: var(--hv-space-5);
   }
 
+  /* Content-driven height: a 40px tile plus 10px of breathing room either
+     side lands at ~60px, instead of the fixed 84px that made a two-line row
+     taller than the header of the panel it sits in. */
   .hv-net-ip-row {
     display: flex;
     align-items: center;
     gap: var(--hv-space-3);
-    height: 84px;
-    padding: 0 var(--hv-space-3) 0 0;
-    border-radius: var(--hv-radius-3xl);
+    min-height: var(--hv-touch-target-min);
+    padding: var(--hv-space-2-5) var(--hv-space-3) var(--hv-space-2-5) 0;
+    border-radius: var(--hv-radius-default);
     border: 1px solid transparent;
   }
 
@@ -3341,10 +3374,12 @@
   .hv-net-ip-icon-tile {
     display: grid;
     place-items: center;
-    width: 52px;
-    height: 52px;
+    /* The settings-card tile step (40px, the same as the account menu's
+       avatar), not the 52px one-off. */
+    width: 40px;
+    height: 40px;
     margin-left: var(--hv-space-3);
-    border-radius: var(--hv-radius-2xl);
+    border-radius: var(--hv-radius-default);
     background: var(--hv-primary-selected-bg);
     color: var(--hv-primary);
     flex-shrink: 0;
@@ -3359,10 +3394,6 @@
   .hv-net-loc-row {
     background: var(--hv-success-bg);
     border-color: color-mix(in srgb, var(--hv-success) 25%, transparent);
-    height: auto;
-    min-height: 84px;
-    padding-top: 12px;
-    padding-bottom: 12px;
   }
 
   .hv-net-ip-icon-loc {
@@ -3371,7 +3402,7 @@
   }
 
   .hv-net-loc-value {
-    font-size: var(--hv-text-lg);
+    font-size: var(--hv-text-md);
     font-family: var(--hv-font-family);
     white-space: normal;
     overflow: visible;
@@ -3397,8 +3428,11 @@
     color: var(--hv-shell-text-2);
   }
 
+  /* The row's value: the panel-title step (15px), not `--hv-text-2xl` (22px,
+     the page-title step) — an IP is a value in a row, and at 22px it
+     out-weighed the popover's own heading. Mono keeps the octets aligned. */
   .hv-net-ip-value {
-    font-size: var(--hv-text-2xl);
+    font-size: var(--hv-text-md);
     font-weight: var(--hv-font-weight-medium);
     font-family: var(--hv-font-mono, 'JetBrains Mono', monospace);
     color: var(--hv-shell-text-strong);
@@ -3411,8 +3445,9 @@
   .hv-net-copy {
     display: grid;
     place-items: center;
-    width: 48px;
-    height: 48px;
+    /* The shared touch floor, not a 48px one-off. */
+    width: var(--hv-touch-target-min);
+    height: var(--hv-touch-target-min);
     border: none;
     /* A button, so the one control corner — not a surface corner. */
     border-radius: var(--hv-radius-control);
@@ -3424,6 +3459,11 @@
   }
 
   .hv-net-copy:hover { background: var(--hv-subtle-hover); color: var(--hv-shell-text-strong); }
+
+  .hv-net-copy:focus-visible {
+    outline: none;
+    box-shadow: var(--hv-focus-ring);
+  }
 
   /* Below 480px the floating pill topbar overflows — shrink to essentials */
   /* NOTE: the phone chrome overrides (topbar / dock / widget-hide) live at
@@ -4488,30 +4528,53 @@
   /* User Dropdown — light account menu. All the card chrome
      (background, border, blur, shadow, radius, entrance animation, width
      clamp) comes from the shared `.hv-topbar-panel` class
-     (theme/components.css). Full-bleed rows are clipped by the panel's own
-     rounded corners (`overflow: hidden` there), so no inner padding here. */
+     (theme/components.css). This only owns the body.
+
+     Sized on the theme's own ladder (2026-10-19): the menu used to run on a
+     one-off scale — 22px name (the page-title step), 17px rows 73px tall,
+     25px glyphs, a 76px avatar — so it read as a settings sheet bolted under
+     a 52px pill. It now uses the panel/body/caption steps every other
+     topbar popover uses (15 / 13 / 12px), 44px rows (the shared touch floor),
+     18px glyphs and a 40px avatar, and is narrower than the data panels
+     because it holds two rows, not a list. */
+  .hv-user-dropdown {
+    /* A menu, not a data panel — 320px instead of the shared 420px default so
+       two rows don't float in a half-empty 400px card. */
+    --hv-topbar-panel-w: 320px;
+  }
 
   .hv-user-info {
     display: flex;
     align-items: center;
-    gap: var(--hv-space-4);
-    padding: 24px;
+    gap: var(--hv-space-3);
+    padding: var(--hv-space-4);
     background: var(--hv-shell-fill);
   }
 
   .hv-user-avatar {
-    width: 76px;
-    height: 76px;
+    width: 40px;
+    height: 40px;
     border-radius: var(--hv-radius-full);
     background: var(--hv-app-accent-grad);
     display: flex;
     align-items: center;
     justify-content: center;
     color: var(--hv-on-primary);
-    font-size: var(--hv-font-size-3xl);
+    font-size: var(--hv-text-md);
     font-weight: var(--hv-font-weight-semibold);
     flex-shrink: 0;
-    box-shadow: 0 8px 22px color-mix(in srgb, var(--hv-primary) 28%, transparent);
+    overflow: hidden;
+  }
+
+  /* The component renders the <img> at `size` (72 = 1.8× the 40px box, so it
+     stays crisp on a HiDPI screen); the box owns the geometry, exactly like
+     `.hv-user-pill-avatar` above. */
+  .hv-user-avatar :global(img) {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+    border-radius: var(--hv-radius-full);
   }
 
   .hv-user-details {
@@ -4519,20 +4582,24 @@
     min-width: 0;
   }
 
+  /* Panel-title step (15px) — the name is this card's title, not a page
+     heading. */
   .hv-user-details-name {
-    font-size: var(--hv-text-2xl);
+    font-size: var(--hv-text-md);
     font-weight: var(--hv-font-weight-semibold);
-    letter-spacing: -0.01em;
+    line-height: var(--hv-line-height-tight);
     color: var(--hv-shell-text-strong);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
+  /* Caption step (12px) — a role is meta, one rung under the name. */
   .hv-user-details-role {
-    font-size: var(--hv-text-md);
+    font-size: var(--hv-text-sm);
+    line-height: var(--hv-line-height-normal);
     color: var(--hv-shell-text-2);
-    margin-top: 5px;
+    margin-top: var(--hv-space-0-5);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -4543,21 +4610,31 @@
     background: var(--hv-shell-border-soft);
   }
 
+  /* Rows are inset by 8px so their hover wash is a rounded control *inside*
+     the card (the one control corner) instead of a full-bleed band touching
+     the panel's own radius. 44px = the shared touch floor, the same height as
+     every other control on the desktop. */
   .hv-user-menu-item {
     display: flex;
     align-items: center;
-    gap: var(--hv-space-4);
-    width: 100%;
-    height: 76px;
-    padding: 0 24px;
+    gap: var(--hv-space-3);
+    /* Inset by 8px on each side (the margins below) while still filling the
+       card: a button's `width: auto` is shrink-to-fit, so the row has to
+       subtract its own margins explicitly. */
+    width: calc(100% - 2 * var(--hv-space-2));
+    min-height: var(--hv-touch-target-min);
+    margin: var(--hv-space-1) var(--hv-space-2);
+    padding: 0 var(--hv-space-3);
     background: transparent;
     border: none;
     /* Menu row buttons: the one control corner, so their hover wash has the
        same silhouette as every other control. */
     border-radius: var(--hv-radius-control);
     color: var(--hv-shell-text-strong);
-    font-size: var(--hv-font-size-lg);
+    font-family: var(--hv-font-family);
+    font-size: var(--hv-text-base);
     font-weight: var(--hv-font-weight-medium);
+    line-height: var(--hv-line-height-normal);
     text-align: left;
     cursor: pointer;
     transition: background 150ms;
@@ -4567,9 +4644,16 @@
     background: var(--hv-shell-border-soft);
   }
 
+  /* Keyboard parity — the rows had no focus style at all, so tabbing into the
+     menu was invisible (WCAG 2.4.7). Same shared ring as every control. */
+  .hv-user-menu-item:focus-visible {
+    outline: none;
+    box-shadow: var(--hv-focus-ring);
+  }
+
   .hv-user-menu-item :global(svg) {
-    width: 26px;
-    height: 26px;
+    width: 18px;
+    height: 18px;
     color: var(--hv-shell-text-2);
     flex-shrink: 0;
   }
@@ -4580,6 +4664,11 @@
 
   .hv-logout:hover {
     background: var(--hv-error-bg);
+  }
+
+  .hv-logout:focus-visible {
+    outline: none;
+    box-shadow: var(--hv-focus-ring-error);
   }
 
   .hv-logout :global(svg) {
@@ -4615,16 +4704,17 @@
     color: var(--hv-text-tertiary);
   }
 
-  /* Dock — solid white CAPSULE, taller than the topbar pill on purpose: it is
-     the primary target and its tiles need the room (64px circles in an 84px
-     bar, the reference dock's own proportion). --hv-radius-full (9999px)
+  /* Dock — solid white CAPSULE, the same 72px height as the topbar pill since
+     the 2026-10-18 height pass (its tiles need the room: 56px circles in a
+     72px bar, the reference dock's own proportion). --hv-radius-full (9999px)
      is clamped by the browser to half the --hv-chrome-dock-h box, so both
      ends render as EXACT semicircles: a wide, compact silhouette with no
      visible corner anywhere. Same `--hv-chrome-surface-*` material as the
      topbar pill — see the topbar comment above for why the surface stays
      opaque whatever the wallpaper. Its height token is its OWN
-     (--hv-chrome-dock-h): the two pills were once locked to one height and
-     must never be again. */
+     (--hv-chrome-dock-h): the two pills were once locked to one height, and
+     they keep separate tokens precisely so a later pass can move one without
+     dragging the other (they have been 84/62, 64/62, and 72/72). */
   .hv-dock {
     position: fixed;
     bottom: var(--hv-chrome-dock-offset);
@@ -4633,10 +4723,13 @@
     display: flex;
     align-items: center;
     gap: var(--hv-space-1);
-    /* 10px: (--hv-chrome-dock-h − --hv-dock-item-size) / 2, i.e. the tile fills
-       the bar's height with the reference dock's breathing room on both sides
-       — the same value horizontally (0.146 × the tile). */
-    padding: var(--hv-space-2-5);
+    /* Vertical padding is DERIVED — (--hv-chrome-dock-h − --hv-dock-item-size)
+       / 2 = 8px — so the tile fills the bar's height whatever the two tokens
+       hold, and a height change can never leave dead space around the icons.
+       Horizontal stays at 10px: it is free space, not a height constraint, and
+       it keeps the end tiles clear of the capsule's arcs. */
+    padding: calc((var(--hv-chrome-dock-h) - var(--hv-dock-item-size)) / 2)
+             var(--hv-space-2-5);
     /* box-sizing so the padding lives inside the fixed height, which is what
        makes --hv-chrome-dock-keepout exact. Do not remove it. */
     box-sizing: border-box;
@@ -4688,7 +4781,7 @@
      The base rule is the fallback; the per-app classes below override it.
      Shape: PERFECT CIRCLES — `50%` on a square tile, one uniform size for
      every app, echoing the capsule's circular ends. Size comes from
-     --hv-dock-item-size (64px = 0.775 × the 84px bar, the reference dock's
+     --hv-dock-item-size (56px = 0.775 × the 72px bar, the reference dock's
      proportion), so the tile fills the capsule's height instead of floating
      small inside it. */
   .hv-dock-icon {
@@ -4713,11 +4806,12 @@
     filter: brightness(1.05);
   }
 
-  /* Glyph = 0.5 × the tile (the dock's own ratio, unchanged by the 2026-10-18
-     proportions pass: 24px on the old 48px tile, 32px on the 64px one). */
+  /* Glyph = 0.5 × the tile (the dock's own ratio: 24px on the old 48px tile,
+     32px on the 64px one, 28px on today's 56px). Derived, so it keeps that
+     ratio if the tile moves. */
   .hv-dock-icon :global(svg) {
-    width: 32px;
-    height: 32px;
+    width: calc(var(--hv-dock-item-size) / 2);
+    height: calc(var(--hv-dock-item-size) / 2);
     stroke: currentColor;
     transition:
       stroke var(--hv-chrome-dur-fast) var(--hv-chrome-ease-out),
@@ -4770,7 +4864,9 @@
 
   .hv-dock-divider {
     width: 1px;
-    height: 40px;
+    /* Half the bar — 36px at today's 72px dock — so it stays a separator
+       between full-height tiles and can never outgrow them. */
+    height: calc(var(--hv-chrome-dock-h) / 2);
     /* Chrome hairline — see `.hv-menubar-divider`'s comment. */
     background: var(--hv-chrome-surface-border);
     margin: 0 var(--hv-space-1-5);
@@ -4800,8 +4896,8 @@
   .hv-dock-item::before {
     content: attr(aria-label);
     position: absolute;
-    /* 12px, not 8px: the tile now fills the bar's height (10px of padding), so
-       the label has to clear the capsule's top arc to stay readable. */
+    /* 12px, not 8px: the tile fills the bar's height (7px of padding), so the
+       label has to clear the capsule's top arc to stay readable. */
     bottom: calc(100% + var(--hv-space-3));
     left: 50%;
     transform: translateX(-50%) translateY(var(--hv-space-1));
@@ -4926,12 +5022,15 @@
      can carry a 26px badge, a 44px chip with a label cannot. Phone override
      near the end shrinks + re-tucks it so the dock's `overflow-y:hidden`
      scroll row can't clip it. */
+  /* Running count / issue badge. 22px = 40% of the 56px tile, the proportion
+     the 26px badge held on the 64px tile (and the phone's own value), so the
+     pill still clears the glyph instead of swallowing the tile. */
   .hv-dock-badge {
     position: absolute;
     top: -6px;
     right: -6px;
-    min-width: 26px;
-    height: 26px;
+    min-width: 22px;
+    height: 22px;
     padding: 0 var(--hv-space-1-5);
     box-sizing: border-box;
     display: grid;
@@ -4939,7 +5038,7 @@
     border-radius: var(--hv-radius-full);
     background: var(--hv-success);
     color: var(--hv-chrome-badge-fg);
-    font-size: var(--hv-text-base);
+    font-size: var(--hv-text-xs);
     font-weight: var(--hv-font-weight-bold);
     line-height: 1;
     font-variant-numeric: tabular-nums;
@@ -5304,7 +5403,7 @@
   .hv-power-header {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: var(--hv-space-3);
     margin: calc(var(--hv-space-4) * -1) calc(var(--hv-space-4) * -1) var(--hv-space-3);
     padding: var(--hv-space-2) var(--hv-space-3) var(--hv-space-2) var(--hv-space-4);
     background: var(--hv-shell-fill);
@@ -5324,15 +5423,17 @@
     color: var(--hv-shell-text-strong);
   }
 
+  /* Control glyph step (18px), like every other control glyph on the
+     desktop — was a 19px one-off. */
   .hv-power-title svg {
-    width: 19px;
-    height: 19px;
+    width: 18px;
+    height: 18px;
     stroke: currentColor;
   }
 
   .hv-power-close {
-    width: 44px;
-    height: 44px;
+    width: var(--hv-touch-target-min);
+    height: var(--hv-touch-target-min);
     flex: none;
     border: none;
     background: var(--hv-shell-fill);
@@ -5353,9 +5454,16 @@
     color: var(--hv-shell-text-strong);
   }
 
+  /* The shared ring — this close button had no focus style at all, so tabbing
+     to it in the confirmation dialog was invisible (WCAG 2.4.7). */
+  .hv-power-close:focus-visible {
+    outline: none;
+    box-shadow: var(--hv-focus-ring);
+  }
+
   .hv-power-close svg {
-    width: 20px;
-    height: 20px;
+    width: 18px;
+    height: 18px;
   }
 
   /* Content — the card's own 18px padding frames it, no extra inset */
@@ -5363,55 +5471,96 @@
     padding: 0;
   }
 
-  /* Power Options — 3 compact buttons (the one control corner, like every
-     other button in the product) */
+  /* Power Options — the dock's shape language: three circular gradient
+     tiles with the label underneath, exactly like `.hv-dock-icon` (same
+     `--hv-dock-item-size`, same circle, same glyph/tile ratio, same hover
+     lift). The button itself paints nothing but keeps the one control
+     corner (E2E 14.12) and carries the shared focus ring. */
   .hv-power-options {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: var(--hv-space-2-5);
+    gap: var(--hv-space-2);
+    justify-items: center;
+    align-items: start;
   }
 
   .hv-power-option {
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
     gap: var(--hv-space-2);
-    padding: 16px 8px;
-    border: 1px solid var(--hv-shell-border);
+    min-height: var(--hv-touch-target-min);
+    padding: var(--hv-space-1) var(--hv-space-1) 0;
+    border: none;
     border-radius: var(--hv-radius-control);
-    background: var(--hv-shell-card);
+    background: transparent;
     color: var(--hv-shell-text-strong);
     cursor: pointer;
-    transition:
-      color var(--hv-transition-base) var(--hv-ease-default),
-      background-color var(--hv-transition-base) var(--hv-ease-default),
-      border-color var(--hv-transition-base) var(--hv-ease-default),
-      box-shadow var(--hv-transition-base) var(--hv-ease-default);
     width: 100%;
     text-align: center;
     font: inherit;
+    transition: box-shadow var(--hv-transition-base) var(--hv-ease-default);
   }
 
-  .hv-power-option:hover {
-    background: var(--hv-shell-border-soft);
+  /* Focus ring — the shared ring, on the button (never `outline: none` alone). */
+  .hv-power-option:focus-visible {
+    outline: none;
+    box-shadow: var(--hv-focus-ring);
   }
 
-  .hv-power-option svg {
-    width: 26px;
-    height: 26px;
+  /* Tile — the dock tile itself: 56px perfect circle (--hv-dock-item-size),
+     per-action gradient, white glyph, card shadow. */
+  .hv-power-tile {
+    width: var(--hv-dock-item-size);
+    height: var(--hv-dock-item-size);
+    flex: none;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: var(--hv-power-tile-grad);
+    color: var(--hv-on-primary);
+    box-shadow: var(--hv-shadow-md);
+    transition:
+      box-shadow var(--hv-transition-base) var(--hv-ease-default),
+      filter var(--hv-transition-base) var(--hv-ease-default),
+      transform var(--hv-chrome-dur-fast) var(--hv-chrome-ease-spring);
+  }
+
+  /* Hover / focus: the tile lifts out of the sheet and brightens slightly,
+     like a dock tile (`translateY(-10px) scale(1.18)` there — a smaller
+     travel here so the lift stays inside the dialog's own padding). */
+  .hv-power-option:hover .hv-power-tile,
+  .hv-power-option:focus-visible .hv-power-tile {
+    box-shadow: var(--hv-shadow-xl);
+    filter: brightness(1.05);
+    transform: translateY(-4px) scale(1.08);
+  }
+
+  @media (hover: none) {
+    .hv-power-option:hover .hv-power-tile {
+      transform: none;
+    }
+  }
+
+  .hv-power-tile-shutdown {
+    --hv-power-tile-grad: linear-gradient(145deg, var(--hv-error), var(--hv-error-hover));
+  }
+
+  .hv-power-tile-restart {
+    --hv-power-tile-grad: linear-gradient(145deg, var(--hv-primary), var(--hv-primary-hover));
+  }
+
+  .hv-power-tile-logout {
+    --hv-power-tile-grad: linear-gradient(145deg, var(--hv-neutral-700), var(--hv-neutral-900));
+  }
+
+  /* Glyph = half the tile, the dock's own ratio (28px on a 56px tile).
+     CSS owns the box, so it beats the SVG's width/height attributes. */
+  .hv-power-tile :global(svg) {
+    width: calc(var(--hv-dock-item-size) / 2);
+    height: calc(var(--hv-dock-item-size) / 2);
     stroke: currentColor;
     flex-shrink: 0;
-  }
-
-  .hv-power-option-shutdown {
-    background: var(--hv-error);
-    color: var(--hv-on-error);
-    border-color: transparent;
-  }
-
-  .hv-power-option-shutdown:hover {
-    background: var(--hv-error-hover);
   }
 
   .hv-power-label {
@@ -5419,6 +5568,7 @@
     font-weight: var(--hv-font-weight-semibold);
     color: inherit;
     margin: 0;
+    line-height: var(--hv-line-height-tight);
   }
 
   /* Footer — flush to the card edges (confirmation dialog) */
@@ -5432,10 +5582,14 @@
   }
 
   .hv-power-btn {
-    padding: var(--hv-space-2) 20px;
+    /* Control geometry from the theme: the 44px touch floor and the 13px body
+       step, instead of a 20px horizontal literal. */
+    min-height: var(--hv-touch-target-min);
+    padding: 0 var(--hv-space-5);
     border: none;
-    border-radius: var(--hv-radius-md);
-    font-size: var(--hv-font-size-base);
+    border-radius: var(--hv-radius-control);
+    font-family: var(--hv-font-family);
+    font-size: var(--hv-text-base);
     font-weight: var(--hv-font-weight-medium);
     cursor: pointer;
     transition:
@@ -5443,6 +5597,11 @@
       background-color var(--hv-transition-base) var(--hv-ease-default);
     background: var(--hv-primary, var(--hv-primary));
     color: white;
+  }
+
+  .hv-power-btn:focus-visible {
+    outline: none;
+    box-shadow: var(--hv-focus-ring);
   }
 
   .hv-power-btn:hover {
@@ -5484,9 +5643,26 @@
     line-height: var(--hv-line-height-normal);
   }
 
+  /* Phone: the sheet keeps its 3 columns (a stacked column of circles would
+     stop reading as an action sheet); the tiles just step down to 48px, still
+     above the 44px touch target. */
   @media (max-width: 480px) {
     .hv-power-options {
-      grid-template-columns: 1fr;
+      gap: var(--hv-space-1);
+    }
+
+    .hv-power-tile {
+      width: 48px;
+      height: 48px;
+    }
+
+    .hv-power-tile :global(svg) {
+      width: 24px;
+      height: 24px;
+    }
+
+    .hv-power-label {
+      font-size: var(--hv-text-xs);
     }
   }
 
@@ -5754,11 +5930,10 @@
        dock tile (the row fits by dropping the username and slimming the
        clock). */
 
-    /* The dock keeps its own height token; only the gutter tightens, so the
-       same row fits a 768px viewport. */
-    .hv-dock {
-      padding: var(--hv-space-2-5) var(--hv-space-3);
-    }
+    /* The dock needs no tablet override: its height and both paddings are
+       derived from --hv-chrome-dock-h / --hv-dock-item-size, so it scales
+       with the tokens. (It used to restate `padding` here, which silently
+       overrode the derived vertical padding with a fixed 10px.) */
   }
 
   /* ============================================================
@@ -5855,7 +6030,7 @@
        override, or the two tokens would drift apart again. */
 
     .hv-dock {
-      /* Height comes from --hv-chrome-dock-h (56px on phone); the 44px icons
+      /* Height comes from --hv-chrome-dock-h (52px on phone); the 44px icons
          are centred in it by align-items, so the vertical padding drops to
          zero — the desktop value would make the content taller than the box.
          The capsule survives: the full radius still clamps to height/2, so

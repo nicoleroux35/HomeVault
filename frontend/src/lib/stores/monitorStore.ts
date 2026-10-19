@@ -2,7 +2,7 @@
  * File          : monitorStore.ts
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Last modified : 19/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
@@ -90,10 +90,19 @@ function normalizeRefreshMs(value: unknown): number {
 
 function defaultPositions(): MonitorPositions {
   const rightEdge = Math.max(20, (typeof window !== 'undefined' ? window.innerWidth : 1920) - 300)
-  // The topbar is now a floating pill anchored top-right
-  // (top: 24px, height: 90px -> occupies y in [24, 114]). Right-column
-  // widgets must start below it, so the right column's first slot is
-  // y: 132 (114 + a small gap) rather than the old full-width-bar y: 84.
+  // Positions are always supplied so a widget switched on lands where the
+  // layout expects it; **visibility defaults to off for every monitor** — a
+  // fresh install opens on a clean desktop, and the operator picks the
+  // widgets they want from the Widgets app / Settings → Widgets. An existing
+  // account is unaffected: `loadFromStorage` reads its own saved
+  // `*Visible` flags first (`parsed.xVisible ?? d.xVisible`).
+  //
+  // The topbar is a floating pill anchored top-right
+  // (top: 8px, height: 72px -> occupies y in [8, 80] since the 2026-10-18
+  // height pass; it was 24/90 when this layout was drawn). Right-column
+  // widgets sit under it, so the right column's first slot is y: 132 — a
+  // 52px clearance below the pill's bottom edge, which is why this value did
+  // not have to move with the pill.
   return {
     resourceMonitor: { x: rightEdge, y: 132 },
     raidMonitor: { x: 20, y: 84 },
@@ -106,17 +115,17 @@ function defaultPositions(): MonitorPositions {
     weatherMonitor: { x: 660, y: 420 },
     sessionsMonitor: { x: 340, y: 660 },
     healthMonitor: { x: 660, y: 660 },
-    resourceMonitorVisible: true,
-    raidMonitorVisible: true,
-    securityMonitorVisible: true,
-    vpnMonitorVisible: true,
-    downloaderMonitorVisible: true,
-    syncthingMonitorVisible: true,
-    calendarMonitorVisible: true,
-    dockerMonitorVisible: true,
-    weatherMonitorVisible: true,
-    sessionsMonitorVisible: true,
-    healthMonitorVisible: true,
+    resourceMonitorVisible: false,
+    raidMonitorVisible: false,
+    securityMonitorVisible: false,
+    vpnMonitorVisible: false,
+    downloaderMonitorVisible: false,
+    syncthingMonitorVisible: false,
+    calendarMonitorVisible: false,
+    dockerMonitorVisible: false,
+    weatherMonitorVisible: false,
+    sessionsMonitorVisible: false,
+    healthMonitorVisible: false,
     refreshMs: DEFAULT_REFRESH_MS,
   }
 }

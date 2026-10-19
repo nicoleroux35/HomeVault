@@ -313,7 +313,7 @@ these takes 12px):
 
 | Case | Corner | Why |
 |---|---|---|
-| Circular controls (dock tiles, topbar buttons, window trio, avatars) | `50%` | a *shape*, not a corner |
+| Circular controls (dock tiles, power-sheet tiles, topbar buttons, window trio, avatars) | `50%` | a *shape*, not a corner |
 | Capsule chips / pills (launcher categories, filter + severity chips, the user pill) | `9999px` | same — `.hv-pill` / `rounded-pill` names the tag stop |
 | Table / list rows with hairline separators (Explorer file list, Journal log) | `0` | the separators define the row; rounding it would notch every hairline |
 | Children of a segmented control | `0` | the group clips them (`overflow: hidden`) |
@@ -344,6 +344,7 @@ stop mapping the shell and the gateway share:
 | App window, tablet-maximized window | `--hv-window-radius` (18px, aliased by `--hv-window-border-radius`) |
 | Maximized window on desktop / edge-to-edge phone | `0` (intentional) |
 | Launchpad icon tiles | `50%` (circle, like the dock tile) |
+| Power action sheet (Shut Down / Restart / Log Out) — circular tiles with the label underneath, `--hv-dock-item-size` diameter | `50%` (the tile) / `--hv-radius-control` (the button) |
 | Topbar pill **and** dock pill — capsules, ends are exact semicircles (the full radius clamps to half the pill height); topbar buttons + dock icon tiles — perfect uniform circles | `--hv-radius-full` / `50%` |
 | Topbar popovers, power dialog, activity panel | `--hv-radius-4xl` (18px — the surface stop) |
 | Desktop widget/monitor panels, in-window cards, modals, drawers, folder pickers | `--hv-radius-card`/`--hv-radius-2xl` (18px) |
@@ -394,7 +395,10 @@ overflow-y:auto` body that carries the page padding
 
 Below all of that, **`WindowFrame` adds one 36px frame footer to every
 window** (2026-10-18): help on the far left, the SE resize grip on the far
-right, both 28px `.hv-ic` icon buttons on the shared focus ring. It is chrome
+right, both 28px `.hv-ic` icon buttons on the shared focus ring, both with a
+**14px glyph** (`--hv-winctrl-glyph` — the min/max/close trio's step, so the
+header row and the footer strip are one icon size; the strip shipped at 16px
+and read a size larger than the bar). It is chrome
 — apps never render it and never pass content into it; an app's own
 `WindowFooter` stays inside the page, above it. See
 [desktop.md](./desktop.md#frame-footer--help--resize-grip-2026-10-18).
@@ -686,8 +690,9 @@ above. Whichever source you use, the accessible name lives on the *control*
   material pair — `--hv-chrome-surface-border` (slate-300) + 
   `--hv-chrome-surface-shadow`. No backdrop blur, ever: a dark photo wallpaper
   must not wash the ink out of the chrome (E2E `14.3`).
-- **Each pill owns its height** and the dock is deliberately the taller one
-  (62px vs 84px): `--hv-chrome-topbar-h` / `--hv-chrome-dock-h`. Both are
+- **Each pill owns its height** — and since the 2026-10-18 height pass both
+  are **72px** on desktop/tablet (**52px** dock on phone, below the topbar's
+  56px): `--hv-chrome-topbar-h` / `--hv-chrome-dock-h`. Both are
   `box-sizing: border-box`, so the tokens are the rendered heights — which is
   what makes `--hv-chrome-topbar-keepout` / `--hv-chrome-dock-keepout` exact.
   Everything anchored to the dock (`.hv-activity-panel`, the ≤900px maximized
@@ -712,32 +717,48 @@ above. Whichever source you use, the accessible name lives on the *control*
   is a full-width bar in the app's solid hue (`--hv-app-<id>-c`,
   `.hv-dock-dot` + `--dock-c`), which must stay the dark stop of that app's
   `--hv-app-<id>-grad` (E2E `14.2`); topbar buttons are flat **circles**
-  (`--hv-chrome-topbar-btn-size`: 48px, 0.775 × the pill)
+  (`--hv-chrome-topbar-btn-size`: 56px, 0.775 × the pill)
   on the pill — icon-only at every width, no tile / border / shadow, hover
   `--hv-subtle-hover`, `border-radius: 50%` — and
-  the profile avatar is a 32px circle. Dock tiles are 64px **perfect
-  circles** (`border-radius: 50%`, uniform across apps; 44px on phone) — the
-  diameter is 0.775 × the 84px dock bar, the proportion measured on the
+  the profile avatar is a 36px circle (32px on the phone). Dock tiles are
+  56px **perfect circles** (`border-radius: 50%`, uniform across apps; 44px on
+  phone) — the
+  diameter is 0.775 × the 72px dock bar, the proportion measured on the
   approved reference dock — inside
   the dock's **capsule**, and the topbar's three buttons are **perfect
-  circles** too (48px — 0.775 × the pill, the dock tile's own ratio; 44px on
+  circles** too (56px — 0.775 × the pill, the dock tile's own ratio; 44px on
   the phone; icon-only, name on `aria-label` + the shared CSS tooltip)
   inside the topbar's **capsule** — both pills use `--hv-radius-full`, so their
   ends are exact semicircles. Spring hover lift + `brightness(1.05)` and a
   CSS tooltip on `--hv-tooltip-bg` (suppressed under `@media (hover: none)`).
   Palette stays the HomeVault appliance stop set, with the chrome border/shadow
   as the one dedicated exception (see `desktop.md`).
+- **Power action sheet = the dock's tiles (2026-10-19).** The sheet opened by
+  the topbar Power button (Shut Down / Restart / Log Out) is not a row of
+  cards: each action is a **circular gradient tile** the size of a dock tile
+  (`--hv-dock-item-size`, so 56px desktop / 48px phone), same circle, same
+  glyph/tile ratio (half the tile), same card shadow and the same hover lift +
+  `brightness(1.05)` as `.hv-dock-icon`, with the label underneath. One hue
+  per action — red `--hv-error`, blue `--hv-primary`, slate
+  `--hv-neutral-700`→`900` — so the three never collapse into one flat tile;
+  every glyph is white on its own gradient (≥ 4.9:1, 3:1 required). The button
+  around the tile paints nothing, keeps the one control corner and carries the
+  shared focus ring, so the shape language stays the dock's while E2E `14.12`
+  still sees a control corner. E2E `desktop.spec.ts` `7.5` pins it.
 - **Page-scoped palette `--hv-launcher-*`** (Launchpad, 2026-09-16, Figma
   "Sans titre" node `23:6646`). Like `--hv-settings-*` / `--hv-login-*` /
   `--hv-wizard-*`, it is read by exactly one component
   (`HvLaunchpad.svelte`). It exists because the launcher is the one surface
   that sits on a **dark translucent scrim** rather than opaque paper, so the
   `--hv-shell-text-*` ink set does not apply. Two mock values were contrast-
-  corrected on the way in (scrim `0.55` → **`0.72`**, inactive chip text
-  85% white → **opaque white**), both documented on the token block; the
+  corrected on the way in (scrim `0.55` → **`0.72`** → **`0.86`** since
+  2026-10-22, inactive chip text 85% white → **opaque white**), both documented
+  on the token block; the
   visible 32px chip keeps a 44px transparent `::after` pad and the search
   input is a full `--hv-touch-target-min` inside the mock's 56px bar. Its
-  scrim is the one blurred surface in the shell, and it declares the standard
+  scrim is the one blurred surface in the shell (`blur(6px)`, up from the
+  mock's 2px for the same reason as the alpha bump: the desktop stayed
+  recognisable behind it), and it declares the standard
   `backdrop-filter` **alone** — pairing it with `-webkit-backdrop-filter` made
   the minifier keep only the prefixed form, which Firefox ignores (see
   `desktop.md`). Its chip row grows to fill the content column
@@ -952,15 +973,17 @@ Appliance palette with it. Everything it declares lives under
   (2026-09-14). No `h-[34px]`-style literals — the token is the only height.
 - **Icons take one of the scale's steps — 16 / 20 / 24** and this screen
   uses only the first two: **16** for glyphs inline with copy, rail entries
-  and plain icon buttons, **20** for glyphs in a `w-9 h-9` tile (card
-  header, active category, privacy rows) or a dedicated icon button. 24 is
+  and plain icon buttons, **20** for glyphs in a `w-9 h-9` tile (active
+  category, privacy rows — the card headers lost their tile 2026-10-19, see
+  [Settings](./settings.md)) or a dedicated icon button. 24 is
   the next step for larger contexts (`w-10` tiles, empty states) and never
   appears here. 2026-09-26: the stray `14`, `15` and `18` values were
   removed from `Settings.svelte` and `components/settings/*` — `size={15}`
   was never on the grid, and five different sizes for one screen's icons
   is not a scale.
 - **Layout contract**: 208px rail (`--hv-settings-sidebar-w`), a non-scrolling
-  content header, then `[data-testid="settings-content"]` = the scrolling
+  two-line content header (title over subtitle, no icon tile since
+  2026-10-19), then `[data-testid="settings-content"]` = the scrolling
   column flexbox whose cards are direct children and keep `shrink-0`. Section
   labels are **siblings** before their card. `components/settings/
   vocabulary.ts` is the one place those class strings are written; both
@@ -994,6 +1017,12 @@ Appliance palette with it. Everything it declares lives under
    Write `text-md! font-bold! leading-6!` — the trailing modifier is the
    house escape hatch (`p-0!` / `overflow-hidden!` are the same tool). Only
    headings are affected; a `<div>`/`<span>` styled the same way is not.
+   **The trap is not heading-only:** `base.css` also declares an unlayered
+   `p { margin-bottom: var(--hv-space-4) }`, so `class="m-0"` on a `<p>`
+   loses too and the element keeps a 16px bottom margin. That is invisible in
+   the markup and in `svelte-check`; it was found on 2026-10-19 by measuring
+   the Settings headers (73px where the classes said 57px). Write `mb-0!`
+   (or `m-0!`) on any `<p>` whose box must be tight.
 7. **Touchscreen and mouse are both first-class (WCAG 2.5.5 / Apple HIG /
    Material).** Every interactive target — button, input, select, textarea,
    switch, slider, icon-button, picker row — is ≥ `--hv-touch-target-min`
@@ -1034,6 +1063,14 @@ These are correctness rules, enforced by review and by the E2E
   `outline: none` in a `:focus-visible` rule without also keeping the ring
   (`box-shadow: var(--hv-focus-ring)`). Inputs show border-primary + ring.
   A component whose only focus cue is a colour change fails 2.4.7.
+  Two surfaces are sanctioned exceptions, both because the brand ring cannot
+  be *read* there: the launcher's chips and tiles (white 2px ring + dark halo
+  on the dark scrim) and, since 2026-10-19, the launcher's **search bar**
+  (`inset 0 0 0 2px rgba(15,23,42,0.72)` — the bar is auto-focused on open, so
+  the brand ring was a permanent blue halo; the rim measures 7.1:1 on the
+  capsule and adds no second hue). Any other "the ring looks bad here"
+  request is answered by picking a *different visible* indicator, never by
+  deleting the last one. See [desktop.md](./desktop.md#launcher-launchpad-figma-sans-titre-node-236646-2026-09-16).
 - **Contrast floor.** Any token used for *text* must be ≥4.5:1 on every
   surface it renders on; any status dot / focus / boundary colour ≥3:1.
   The audited text tokens already sit above the floor (`--hv-shell-text-3`

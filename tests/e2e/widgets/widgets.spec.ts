@@ -223,6 +223,11 @@ test.describe('2 — Tile / desktop consistency', () => {
 
   test('2.2 — the 11 desktop panels share one coherent card geometry', async ({ page }) => {
     // Panels must be visible on the desktop (this suite does not hide them).
+    // A fresh install ships every monitor **off**, so switch the Resource one
+    // on first — the geometry check needs a panel to measure.
+    await openWidgets(page, adminTokens);
+    const resource = tile(page, /Resource/i);
+    if (!(await resource.evaluate((el) => el.classList.contains('active')))) await resource.click();
     await gotoDesktop(page, adminTokens);
     await page.waitForSelector('.hv-resource-monitor', { timeout: 15_000 });
     const geo = await page.evaluate(() => {
@@ -314,15 +319,15 @@ test.describe('3 — Toggling a widget', () => {
     await expect.poll(() => posted, { timeout: 5000 }).toBe(true);
   });
 
-  test('3.5 — Reset to Default turns every monitor on', async ({ page }) => {
+  test('3.5 — Reset to Default turns every monitor off (the shipped default)', async ({ page }) => {
     await openWidgets(page, adminTokens);
-    // Turn a couple off first.
+    // Turn a couple on first, so the reset has something to clear.
     for (const name of [/VPN/i, /Weather/i]) {
       const t = tile(page, name);
-      if (await t.evaluate((el) => el.classList.contains('active'))) await t.click();
+      if (!(await t.evaluate((el) => el.classList.contains('active')))) await t.click();
     }
     await win(page).locator('[data-testid="widgets-reset"]').click();
-    await expect(win(page).locator('[data-testid="widgets-tile"].active')).toHaveCount(11);
+    await expect(win(page).locator('[data-testid="widgets-tile"].active')).toHaveCount(0);
   });
 });
 
