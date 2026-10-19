@@ -125,7 +125,11 @@ talks [OI]-compatible JSON, not Ollama-specific structs beyond the pull stream.
 `ollama` unit and polls `http://127.0.0.1:11434/` until the API answers; the
 final verification step re-checks all three (binary + active unit + API on
 `:11434`), because a present binary with a dead daemon still leaves Chat
-offline. **No model is pulled at install time** — models are the user's
+offline. **`zstd` is installed first**: Ollama publishes
+`ollama-linux-<arch>.tar.zst`, and its installer aborts with "This version
+requires zstd for extraction" when the tool is missing — `zstd` is Priority:
+optional, so a fresh Debian/Ubuntu does not have it and the whole step used
+to degrade silently to "AI offline". **No model is pulled at install time** — models are the user's
 choice, downloaded from Settings → AI (`POST /chat/models/pull`), which
 recommends ones fitting the host's RAM/GPU. Everything is best-effort:
 without Ollama the app shows the "AI offline" state instead of failing the

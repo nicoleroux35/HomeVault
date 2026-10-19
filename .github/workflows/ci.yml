@@ -31,7 +31,7 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Toolchains this job never uses (Android SDK, .NET, GHC, ghcup,
       # CodeQL) share the disk with target/. Linking failed with
       # "No space left on device"/SIGBUS until they were removed
@@ -72,7 +72,7 @@ jobs:
     name: Rust — cargo audit (advisory scan)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install cargo-audit
         run: rustup toolchain install stable --profile minimal && cargo install cargo-audit --locked
       - name: Audit dependencies (RUSTSEC)
@@ -90,10 +90,10 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Install
@@ -110,10 +110,10 @@ jobs:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # The scan still runs and still fails on a real leak (exit 2); we

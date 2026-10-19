@@ -22,7 +22,7 @@ services:
           memory: 3G
           cpus: '2.0'
   immich-redis:
-    image: redis:6.2-alpine
+    image: redis:8-alpine
     container_name: immich-redis
     restart: unless-stopped
     deploy:
@@ -31,7 +31,7 @@ services:
           memory: 256M
           cpus: '0.5'
   immich-postgres:
-    image: tensorchord/pgvecto-rs:pg14-v0.2.0
+    image: tensorchord/pgvecto-rs:pg16-v0.3.0
     container_name: immich-postgres
     restart: unless-stopped
     environment:
