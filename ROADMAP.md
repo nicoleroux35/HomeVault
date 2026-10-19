@@ -1,6 +1,6 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-12 — current version: 1.0.0
+Last updated: 2026-10-19 — current version: 1.0.0
 
 ## Current state
 
@@ -11,15 +11,18 @@ encryption/SMART health), RAID (mdadm/ZFS/Btrfs creation), shares
 (rclone), network, security
 (antivirus/anti-ransomware/firewall), web terminal, VPN (WireGuard/
 OpenVPN), downloader (aria2), Syncthing, Docker + application catalog,
-virtual machines (Incus), AI assistant (Ollama + RAG), health, system
-journal, transfer quotas, and a suite of desktop widgets.
+virtual machines (Incus), AI assistant (Ollama + RAG, plus an MCP gateway
+for external agents), health, system journal, transfer quotas, historical
+metrics (1 h / 24 h / 7 d), a generic scheduled-task engine (commands,
+snapshots, SMART tests, power actions), host power management with per-disk
+spindown, snapshot schedules with GFS retention, a notification center with
+per-event toggles and webhook sinks, and a suite of desktop widgets.
 
 Every screen listed above has undergone a "real conditions" audit (real
 backend, real session, real browser when possible) documented in
-`TESTING.md` and `docs/guides/`. Since 2026-09-12 there are no more
-frozen areas (`CLAUDE.md` → "Design system governance"): every page
-remains editable, as long as its tests stay green (Rust + Playwright
-E2E).
+`TESTING.md` and `docs/guides/`. There are no frozen areas
+(`CLAUDE.md` → "Design system governance"): every page remains editable,
+as long as its tests stay green (Rust + Playwright E2E).
 
 > **Note on this file's reliability:** the first version of this roadmap
 > (2026-07-21, before the verification pass below) had been compiled by
@@ -46,7 +49,7 @@ fixed and listed under "Fixed on 2026-10-12" below.
   (same session + CSRF headers, checked 2026-10-12 — see
   `docs/guides/docker.md`), so this is maintainability, not a bug. Deliberately
   deferred: it means ~50 new wrapper methods and ~100 rewritten call sites,
-  with `docker.spec.ts` (51 tests) as the only net. If taken up, do it one tab
+  with `docker.spec.ts` (58 tests) as the only net. If taken up, do it one tab
   at a time, E2E green between each.
 - Keep auditing "under real conditions" (real backend, no mocks) every
   new page, following the methodology already applied to each guide in

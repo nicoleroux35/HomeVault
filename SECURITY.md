@@ -2,13 +2,13 @@
 
 ## Supported versions
 
-HomeVault is pre-1.0 in active development. Security fixes land on the
-default branch (`main`) and are tagged as patch releases.
+Security fixes land on the default branch (`main`). Only the latest release
+is supported — there are no backports to older versions.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 1.0.x   | :white_check_mark: |
-| < 1.0   | :x:                |
+| latest (`main`) | :white_check_mark: |
+| older releases  | :x:                |
 
 ## Reporting a vulnerability
 
@@ -39,5 +39,5 @@ engineering, physical access, and third-party services documented in
 
 ## Hardening baseline
 
-CI enforces `cargo audit`, `npm audit`, and `gitleaks` on every push to
-`main`. See `.github/workflows/ci.yml`.
+CI enforces `cargo audit`, `npm audit`, `clippy` and `gitleaks` on every
+push and pull request. See `.github/workflows/ci.yml`.
