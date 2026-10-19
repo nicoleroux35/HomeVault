@@ -1,5 +1,6 @@
 {
   "private": true,
+  "description": "Turn any small computer into a private NAS: a simple, reliable, robust home cloud, managed from a browser",
   "author": "Nicolas Le Roux",
   "license": "MIT",
   "repository": {

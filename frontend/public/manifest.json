@@ -1,7 +1,7 @@
 {
   "name": "HomeVault",
   "short_name": "HomeVault",
-  "description": "Dashboard de gestion pour serveur domestique",
+  "description": "Turn any small computer into a private NAS: your own home cloud, reachable from any browser.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
