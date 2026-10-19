@@ -8,6 +8,14 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`HV_RELEASE_TOKEN`, and a clear message when the release is private.** The
+  installer downloads `homevault-<arch>.tar.gz` from the GitHub release, but a
+  **private** repository answers `404` (not `401`) to an anonymous request, so
+  the failure looked like a typo in the URL. The download now sends
+  `Authorization: Bearer` when `HV_RELEASE_TOKEN` is set, and on a `github.com`
+  URL the error explains the private-repository case and prints the token form.
+  README and `docs/ARCHITECTURE.md` document it.
+
 - **The AI model card now proposes five models, ranked for the machine it
   runs on.** `GET /chat/models/recommend` returned the best three of an
   eight-entry catalog with a scoring that could put a model too large for the
