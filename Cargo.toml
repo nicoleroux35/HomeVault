@@ -44,7 +44,7 @@ tokio = { version = "1.52", features = ["full"] }
 # Raw WebSocket client for the VM console relay (browser xterm <-> HomeVault
 # <-> Incus operation WebSocket over the Incus Unix socket). Version pinned to
 # whatever axum 0.8 already pulls in transitively so there is a single copy.
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 futures-util = "0.3"
 open = "5"
 tower-http = { version = "0.7", features = ["trace", "cors", "compression-br", "compression-gzip", "limit"] }
