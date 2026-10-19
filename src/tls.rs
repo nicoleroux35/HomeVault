@@ -600,7 +600,10 @@ mod tests {
     fn test_legacy_settings_without_redirect_default_to_redirect_on() {
         let legacy = r#"{"enabled":true,"https_port":8443,"mode":"self-signed","cert_path":null,"key_path":null}"#;
         let parsed: TlsSettings = serde_json::from_str(legacy).expect("legacy settings parse");
-        assert!(parsed.redirect, "a legacy file must pick up the safe default");
+        assert!(
+            parsed.redirect,
+            "a legacy file must pick up the safe default"
+        );
         assert!(parsed.enabled);
     }
 

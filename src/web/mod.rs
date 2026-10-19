@@ -54,8 +54,8 @@ use crate::handlers::{
         handle_2fa_setup, handle_2fa_verify, handle_check_username, handle_generate_recovery_code,
         handle_get_current_user, handle_login, handle_logout, handle_reset_password_recovery,
         handle_setup, handle_setup_progress_get, handle_setup_progress_put,
-        handle_setup_rebaseline, handle_setup_status,
-        handle_setup_verify_totp, handle_verify_recovery_code,
+        handle_setup_rebaseline, handle_setup_status, handle_setup_verify_totp,
+        handle_verify_recovery_code,
     },
     avatars::{handle_avatar_preview, handle_update_my_avatar, handle_user_avatar},
     cache::{
@@ -1733,7 +1733,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             )
             .await
             {
-                Ok(path) => tracing::info!(path = %path.display(), "Pre-migration snapshot written"),
+                Ok(path) => {
+                    tracing::info!(path = %path.display(), "Pre-migration snapshot written")
+                }
                 Err(e) => tracing::warn!(error = %e, "Pre-migration snapshot failed"),
             }
         }

@@ -17,10 +17,10 @@
      ======================================================================== -->
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
-  import { Terminal } from 'xterm';
-  import { FitAddon } from 'xterm-addon-fit';
-  import { WebLinksAddon } from 'xterm-addon-web-links';
-  import 'xterm/css/xterm.css';
+  import { Terminal } from '@xterm/xterm';
+  import { FitAddon } from '@xterm/addon-fit';
+  import { WebLinksAddon } from '@xterm/addon-web-links';
+  import '@xterm/xterm/css/xterm.css';
   import { IconTerminal as TerminalIcon, IconDeviceDesktop, IconPlus, IconX } from '@tabler/icons-svelte';
   import { cn } from '$lib/utils.js';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';

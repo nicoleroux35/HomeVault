@@ -84,11 +84,7 @@ static LAST_READY: once_cell::sync::Lazy<parking_lot::Mutex<Option<(Instant, boo
 /// Intentionally trivial: it proves the listener works, nothing more. A
 /// supervisor that restarts on a failed liveness check wants exactly this.
 pub async fn handle_health_live() -> Response {
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({ "status": "ok" })),
-    )
-        .into_response()
+    (StatusCode::OK, Json(serde_json::json!({ "status": "ok" }))).into_response()
 }
 
 /// `GET /api/health/ready` — the appliance can actually serve requests.

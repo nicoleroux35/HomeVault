@@ -269,7 +269,9 @@ async fn dist_files_get_a_validator_but_no_pinning_cache_control() {
 
 mod csp_nonce {
     use super::*;
-    use homevault::middleware::{security_headers_middleware, stamp_nonce, CspNonce, NONCE_PLACEHOLDER};
+    use homevault::middleware::{
+        security_headers_middleware, stamp_nonce, CspNonce, NONCE_PLACEHOLDER,
+    };
 
     /// The SPA route behind the real security-headers layer, i.e. the shape
     /// `create_app` builds.
@@ -322,7 +324,10 @@ mod csp_nonce {
             script_src.contains("'nonce-"),
             "script-src must carry a nonce: {script_src:?}"
         );
-        assert!(script_src.contains("'self'"), "bundles still load: {script_src:?}");
+        assert!(
+            script_src.contains("'self'"),
+            "bundles still load: {script_src:?}"
+        );
     }
 
     #[tokio::test]

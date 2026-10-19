@@ -129,7 +129,10 @@ async fn test_app_proxy_end_to_end() {
         .to_str()
         .unwrap()
         .to_string();
-    assert!(location.contains("/app-auth?app=test%3Aecho"), "got: {location}");
+    assert!(
+        location.contains("/app-auth?app=test%3Aecho"),
+        "got: {location}"
+    );
 
     // 3. The full API session cookie must NOT satisfy the gate any more.
     let resp = client
@@ -165,9 +168,18 @@ async fn test_app_proxy_end_to_end() {
         .text()
         .await
         .unwrap();
-    assert!(!echoed.contains("hv_session"), "leaked API session: {echoed}");
-    assert!(!echoed.contains("hv_app_session"), "leaked app session: {echoed}");
-    assert!(echoed.contains("app_theme=dark"), "dropped app cookie: {echoed}");
+    assert!(
+        !echoed.contains("hv_session"),
+        "leaked API session: {echoed}"
+    );
+    assert!(
+        !echoed.contains("hv_app_session"),
+        "leaked app session: {echoed}"
+    );
+    assert!(
+        echoed.contains("app_theme=dark"),
+        "dropped app cookie: {echoed}"
+    );
 
     // 6. A bogus app session is still rejected.
     let resp = client

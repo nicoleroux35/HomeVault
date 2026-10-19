@@ -40,10 +40,7 @@ use std::sync::Arc;
 
 /// Returns the running version's release highlights plus whether the caller
 /// has already acknowledged them.
-pub async fn handle_whats_new(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn handle_whats_new(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let username = match require_auth(&state, &headers).await {
         Ok(u) => u,
         Err(response) => return response,

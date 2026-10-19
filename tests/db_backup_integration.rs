@@ -45,10 +45,7 @@ use tower::{Service, ServiceExt};
 use homevault::auth::AuthService;
 use homevault::config::PathGuard;
 use homevault::handlers::terminal_pty::PtyManager;
-use homevault::handlers::{
-    auth::handle_login, db_backup::*, health_probe::*,
-    AppState,
-};
+use homevault::handlers::{auth::handle_login, db_backup::*, health_probe::*, AppState};
 use homevault::middleware::rate_limit::RateLimitState;
 use homevault::storage::{Database, WidgetRepository};
 
@@ -270,10 +267,16 @@ async fn test_backup_now_writes_a_restorable_snapshot() {
     let name = body["data"]["backup"]["name"]
         .as_str()
         .expect("snapshot name");
-    assert!(name.starts_with("homevault-") && name.ends_with(".db"), "{name}");
+    assert!(
+        name.starts_with("homevault-") && name.ends_with(".db"),
+        "{name}"
+    );
 
     let path = body["data"]["backup"]["path"].as_str().expect("path");
-    assert!(std::path::Path::new(path).exists(), "the file must be on disk");
+    assert!(
+        std::path::Path::new(path).exists(),
+        "the file must be on disk"
+    );
 
     // The list now contains it, newest first.
     let (_, list) = send(
@@ -317,7 +320,10 @@ async fn test_backup_settings_reject_an_out_of_range_retention() {
     let mut app = router(Arc::clone(&state));
     let (admin, _viewer) = sessions(&mut app, &state).await;
 
-    for bad in [json!({"interval_hours": 24, "retain": 0}), json!({"interval_hours": 24, "retain": 101})] {
+    for bad in [
+        json!({"interval_hours": 24, "retain": 0}),
+        json!({"interval_hours": 24, "retain": 101}),
+    ] {
         let (status, body) = send(
             &mut app,
             Method::PUT,

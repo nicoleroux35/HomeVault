@@ -24,9 +24,9 @@
    * are raw bytes, a JSON `{cols,rows}` text frame is a resize.
    */
   import { onMount, onDestroy } from 'svelte';
-  import { Terminal } from 'xterm';
-  import { FitAddon } from 'xterm-addon-fit';
-  import 'xterm/css/xterm.css';
+  import { Terminal } from '@xterm/xterm';
+  import { FitAddon } from '@xterm/addon-fit';
+  import '@xterm/xterm/css/xterm.css';
   import { IconX, IconRefresh } from '@tabler/icons-svelte';
   import { t, translate } from '$lib/stores/i18n';
 

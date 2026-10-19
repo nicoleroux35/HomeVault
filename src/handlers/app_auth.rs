@@ -130,8 +130,14 @@ mod tests {
 
     #[test]
     fn test_app_auth_reads_only_the_api_session_cookie() {
-        assert_eq!(session_from_cookie_header("hv_session=abc; x=1"), Some("abc"));
-        assert_eq!(session_from_cookie_header("x=1; hv_session=abc"), Some("abc"));
+        assert_eq!(
+            session_from_cookie_header("hv_session=abc; x=1"),
+            Some("abc")
+        );
+        assert_eq!(
+            session_from_cookie_header("x=1; hv_session=abc"),
+            Some("abc")
+        );
         assert_eq!(session_from_cookie_header("hv_app_session=abc"), None);
         assert_eq!(session_from_cookie_header("not_hv_session=abc"), None);
     }

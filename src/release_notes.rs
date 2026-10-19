@@ -93,7 +93,11 @@ mod tests {
     fn test_release_notes_are_unique_and_newest_first() {
         let mut seen = std::collections::HashSet::new();
         for note in RELEASE_NOTES {
-            assert!(seen.insert(note.version), "duplicate version {}", note.version);
+            assert!(
+                seen.insert(note.version),
+                "duplicate version {}",
+                note.version
+            );
             assert!(!note.highlights.is_empty());
         }
     }

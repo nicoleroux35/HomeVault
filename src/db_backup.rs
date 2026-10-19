@@ -131,7 +131,9 @@ impl DbBackupService {
 
     fn settings_storage() -> crate::storage::json::JsonStorage {
         crate::storage::json::JsonStorage::new(
-            crate::config::paths::base_dir().to_string_lossy().to_string(),
+            crate::config::paths::base_dir()
+                .to_string_lossy()
+                .to_string(),
         )
     }
 
@@ -353,10 +355,7 @@ pub fn is_snapshot_name(name: &str) -> bool {
 
 /// Snapshot a database into `dir` — the primitive the migration path uses
 /// before applying anything, without needing a running `DbBackupService`.
-pub async fn snapshot_before_migration(
-    db: &Database,
-    dir: &Path,
-) -> Result<PathBuf, DbError> {
+pub async fn snapshot_before_migration(db: &Database, dir: &Path) -> Result<PathBuf, DbError> {
     std::fs::create_dir_all(dir)?;
     let name = format!(
         "{SNAPSHOT_PREFIX}{}.pre-migration.{SNAPSHOT_EXT}",
@@ -412,7 +411,7 @@ mod tests {
 
     #[test]
     fn test_snapshot_names_sort_newest_first() {
-        let mut names = vec![
+        let mut names = [
             "homevault-20261015-083000.db".to_string(),
             "homevault-20261017-083000.db".to_string(),
             "homevault-20261016-083000.db".to_string(),

@@ -80,9 +80,7 @@ impl SetupProgressRepository {
             )));
         }
         if data_json.len() > 32 * 1024 {
-            return Err(DbError::InvalidInput(
-                "progress data too large".to_string(),
-            ));
+            return Err(DbError::InvalidInput("progress data too large".to_string()));
         }
         match serde_json::from_str::<serde_json::Value>(data_json) {
             Ok(serde_json::Value::Object(_)) => Ok(()),
@@ -112,11 +110,7 @@ mod tests {
     #[test]
     fn test_validate_step_data_accepts_object() {
         assert!(SetupProgressRepository::validate_step_data(0, "{}").is_ok());
-        assert!(SetupProgressRepository::validate_step_data(
-            3,
-            r#"{"language":"fr"}"#
-        )
-        .is_ok());
+        assert!(SetupProgressRepository::validate_step_data(3, r#"{"language":"fr"}"#).is_ok());
     }
 
     #[test]

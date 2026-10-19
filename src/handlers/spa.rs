@@ -364,9 +364,7 @@ pub async fn serve_static_file(Path(path): Path<String>, headers: HeaderMap) -> 
 /// The inline boot script (service-worker registration) is stamped with the
 /// per-request CSP nonce: the policy lists that exact value and no longer
 /// allows `'unsafe-inline'`, so an unstamped copy would simply not run.
-pub async fn serve_spa(
-    nonce: Option<axum::Extension<crate::middleware::CspNonce>>,
-) -> Response {
+pub async fn serve_spa(nonce: Option<axum::Extension<crate::middleware::CspNonce>>) -> Response {
     let Some(content) = STATIC_DIR
         .get_file("dist/index.html")
         .and_then(|f| f.contents_utf8())
