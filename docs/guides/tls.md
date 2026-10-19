@@ -140,3 +140,9 @@ is active.
 - Hot rebind without a restart.
 - HTTP/2 is left in the ALPN set (`axum-server` default) — WebSockets
   (Terminal, app-proxy) still negotiate HTTP/1.1; verified to work.
+
+## Related docs
+
+- [Architecture](../ARCHITECTURE.md), [API Contract](../API.md),
+  [Network](./network.md), [Server control](./server-control.md),
+  [Settings](./settings.md).

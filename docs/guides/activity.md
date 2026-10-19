@@ -113,3 +113,9 @@ jobs, plus live testing against real hardware, so they are a separate change.
   `#[cfg(test)]`.
 - Integration: `tests/activity_integration.rs`.
 - E2E: `tests/e2e/desktop/desktop.spec.ts` section 13.
+
+## Related docs
+
+- [Architecture](../ARCHITECTURE.md) (SSE dispatch), [API Contract](../API.md),
+  [Notifications](./notifications.md), [Scheduled Tasks](./scheduled-tasks.md),
+  [Backup / Restic](./backup-restic.md).

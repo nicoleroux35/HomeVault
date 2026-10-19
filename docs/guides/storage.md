@@ -25,6 +25,7 @@ standalone `/snapshots/*` HTTP endpoints were removed, see
 | `GET /storage/virtual-disks` | auth | **all** virtual disks — mdadm + ZFS + Btrfs (`PoolService::scan_pools`, mdadm `/dev/md/x` normalised to `x`) |
 | `DELETE /storage/virtual-disks/{name}` | admin | destroy — dispatches: mdadm → `DiskService::delete_raid`, ZFS/Btrfs → `PoolService::delete_pool` |
 | `POST /storage/virtual-disks/{name}/scrub` | admin | verify — ZFS/Btrfs → `PoolService::start_scrub`; mdadm → `echo check > /sys/block/mdX/md/sync_action` |
+| `POST /storage/virtual-disks/{name}/grow` | admin | mdadm only: `{ device }` (a free whole disk) → `DiskService::grow_raid` (`mdadm --add` then `--grow --raid-devices N+1`); raid0/raid10 and ZFS/Btrfs refused; the reshape runs in the background. UI: the "Add disk" modal in Storage's Virtual-disks tab (see [RAID](./raid.md)) |
 | `GET /storage/virtual-disks/{name}/scrub` | auth | current scrub / consistency-check status (ZFS `scan:` line, Btrfs `Status:` line, mdadm `sync_action`) + `in_progress` |
 | `GET /storage/importable-pools` | auth | "foreign" pools present on attached disks but not imported (ZFS `zpool import`, Btrfs `btrfs filesystem show` minus mounted UUIDs) |
 | `POST /storage/import-pool` | admin | import a foreign pool — ZFS `zpool import [-N] <name>` (optional rename), Btrfs mount + `/etc/fstab` persistence |

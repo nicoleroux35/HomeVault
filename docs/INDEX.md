@@ -28,8 +28,8 @@ one-line description. All docs are in English (the product UI defaults to French
   model (auth vs. admin) and request/response conventions.
 - [Backend Structure](./BACKEND.md) — handlers, storage layer, services, middleware,
   app state, server startup.
-- [Frontend Structure](./FRONTEND.md) — routes, API client, stores, shared
-  components, desktop windowing.
+- [Frontend Structure](./FRONTEND.md) — gate routes and the desktop window
+  registry, API client, stores, shared components, windowing.
 - [Internationalization (i18n)](./I18N.md) — locales, translation keys, the
   `api.getTranslations` endpoint, how to add a string.
 
@@ -46,10 +46,10 @@ methods, and notable invariants.
 | Groups management | [guides/groups.md](./guides/groups.md) |
 | "My Account" (self-service profile) | [guides/account.md](./guides/account.md) |
 | Dashboard & widgets | [guides/dashboard.md](./guides/dashboard.md) |
-| Storage (disks, partitions, virtual disks, snapshots) — **manages** all mdadm/ZFS/Btrfs virtual disks | [guides/storage.md](./guides/storage.md) |
+| Storage (disks, partitions, virtual disks, snapshots) — **manages** all mdadm/ZFS/Btrfs virtual disks (scrub, rebuild, grow, destroy) | [guides/storage.md](./guides/storage.md) |
 | Disk Cache Tier (cache pool, mover, shares) | [guides/cache.md](./guides/cache.md) |
 | Disk Encryption (LUKS2) | [guides/encryption.md](./guides/encryption.md) |
-| RAID — **creation-only** wizard (physical disks → one virtual disk) | [guides/raid.md](./guides/raid.md) |
+| RAID — **creation-only** wizard (physical disks → one tracked async job → one virtual disk; spares, degraded slots) | [guides/raid.md](./guides/raid.md) |
 | File Explorer | [guides/explorer.md](./guides/explorer.md) |
 | Shares (SMB/NFS/FTP/WebDAV + ACLs) | [guides/shares.md](./guides/shares.md) |
 | Network (interfaces, WiFi, diagnostics) | [guides/network.md](./guides/network.md) |
@@ -93,16 +93,32 @@ methods, and notable invariants.
 | Design system (single UI identity — tokens, components, page anatomy) | [guides/design-system.md](./guides/design-system.md) |
 | Development workflow (multi-instance `.local`, real-VM tests, client contract) | [guides/development.md](./guides/development.md) |
 
-## Build & distribution
+## Design & audit material (`docs/design/`)
 
-| Topic | Guide |
-|-------|-------|
+Not authoritative (see [CLAUDE.md](../CLAUDE.md)): `docs/FRONTEND.md` +
+`frontend/src/lib/styles/theme/tokens.css` win. Kept for history and follow-up:
+
+- [legacy-design-reference.md](./design/legacy-design-reference.md) — the
+  superseded "Cove"/MD3-era design specification, banner-marked LEGACY. Read only
+  to trace a historical decision.
+- [ui-audit-tasklist.md](./design/ui-audit-tasklist.md) — the 2026-09-23
+  full-app design-audit backlog (17 open tasks, worked top to bottom, one
+  commit-sized change each); referenced by the
+  [design-system guide](./guides/design-system.md).
 
 ## Doc conventions
 
-- Files use `kebab-case.md`.
+- Top-level docs use `UPPERCASE.md` (`ARCHITECTURE.md`, `API.md`, …); everything
+  under `guides/` and `design/` uses `kebab-case.md`. All docs are English-only.
 - Each doc: one-line purpose, overview, relevant endpoints/components with
   `path:line` references, request/response shapes, edge cases/invariants, and
   links to related docs.
 - Endpoint paths are relative to the SPA base `/api` (e.g. `/api/auth/login` is
   written as `auth/login`).
+- Counts and file lists in `docs/` are produced by actually grepping the tree,
+  not from memory.
+- Every guide listed above has a matching RAG `FeatureDoc` in
+  `src/rag_indexers.rs` (except `design-system.md` and `development.md`, which
+  document tokens/tooling rather than user-facing features and are excluded in
+  `DEVELOPER_ONLY_GUIDES`) — when you add a guide, add its `FeatureDoc` in the
+  same change.

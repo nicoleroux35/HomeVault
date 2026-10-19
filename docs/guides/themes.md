@@ -19,7 +19,7 @@ desktop UI.
 - Window/desktop CSS: `frontend/src/lib/styles/app-layout.css`
   (window chrome, sizing tokens).
 - Design reference (LEGACY, historical only — current tokens live in
-  `frontend/src/lib/styles/theme/tokens.css`): `docs/design/HOMEVAULT_DESIGN_REFERENCE.md`.
+  `frontend/src/lib/styles/theme/tokens.css`): `docs/design/legacy-design-reference.md`.
 
 ## Invariants
 

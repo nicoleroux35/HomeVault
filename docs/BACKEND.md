@@ -34,7 +34,8 @@ src/
   rescue/               ddrescue / TestDisk / PhotoRec / mdadm-repair service +
                         SecurityValidator (protected-device blocklist)
   groups.rs             GroupService (incl. is_admin_group)
-  disk.rs               DiskService (disks, partitions, mdadm RAID create/delete)
+  disk.rs               DiskService (disks, partitions, virtual-disk
+                        creation via tracked jobs, mdadm grow, smart status)
   pools.rs              PoolService (ZFS / Btrfs pools, scrub, scan_pools)
   cache.rs              Disk cache tier (mode, mover, cached shares)
   encryption.rs         LUKS2 encrypt/unlock/lock for standalone devices
@@ -109,7 +110,9 @@ Notable handlers (see `API.md` for the full map):
 - `handlers/auth.rs` — login, 2FA verify/setup, password reset, setup, current user.
 - `handlers/users.rs`, `handlers/groups.rs` — account & group management.
 - `handlers/dashboard.rs` — system metrics + widget CRUD.
-- `handlers/storage.rs` — disks/partitions/RAID/virtual-disks/SMART (also serves RAID handlers).
+- `handlers/storage.rs` — disks/partitions/virtual-disks/SMART, the async
+  RAID-create job (`handle_raid_create`, `crate::disk::CREATE_LOCK`) and the
+  mdadm grow endpoint (also serves RAID handlers).
 - `handlers/shares.rs`, `handlers/permissions.rs` — file shares + ACLs.
 - `handlers/network.rs` (`create_network_router`), `handlers/vpn.rs`
   (`create_vpn_router`), `handlers/rescue.rs` (`create_rescue_router`),
