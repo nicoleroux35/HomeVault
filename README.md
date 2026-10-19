@@ -33,6 +33,11 @@ of a backend written in Rust and a modern frontend in Svelte.
 - **AI assistant**: local chat via Ollama, RAG knowledge base.
 - **Health, journal and quotas**: system monitoring, event journal
   and transfer quotas.
+- **Metrics and scheduled tasks**: historical performance charts (1 h /
+  24 h / 7 d) and a generic cron engine (snapshots, SMART tests, power
+  actions, commands).
+- **Power management**: CPU governor, host reboot/shutdown/suspend and
+  per-disk spindown.
 - **Terminal**: access a secure terminal directly in the browser.
 - **Settings**: customize the appearance, notifications, updates and
   more.
@@ -93,8 +98,8 @@ Releases (`homevault-x86_64.tar.gz` / `-aarch64` / `-armv7l`). Redirect it or
 pin its checksum without editing the script:
 
 ```bash
-sudo HV_RELEASE_URL=https://mirror/homevault.tar.gz bash -c "$(curl -fsSL https://raw.githubusercontent.com/nicleroux35/HomeVault/main/installer/install.sh)"
-sudo HV_RELEASE_SHA256=<hex> bash -c "$(curl -fsSL https://raw.githubusercontent.com/nicleroux35/HomeVault/main/installer/install.sh)"
+sudo HV_RELEASE_URL=https://mirror/homevault.tar.gz bash -c "$(curl -fsSL https://raw.githubusercontent.com/nicoleroux35/HomeVault/main/installer/install.sh)"
+sudo HV_RELEASE_SHA256=<hex> bash -c "$(curl -fsSL https://raw.githubusercontent.com/nicoleroux35/HomeVault/main/installer/install.sh)"
 ```
 
 Alternative method (from a local copy of the repository, with an archive
@@ -137,12 +142,12 @@ snapshots and app data survive so a reinstall picks up where it left off.
 | `src/`       | Rust backend code (Axum server, handlers, services)  |
 | `frontend/`  | Svelte + Vite web interface                          |
 | `sqlx/`      | SQLite database migrations                           |
-| `installer/` | Installation script and systemd files                |
+| `installer/` | Self-contained installation script                   |
 | `static/`    | Static assets served by the backend                  |
-| `docs/`      | Additional documentation                             |
+| `docs/`      | Developer reference (`INDEX.md` → architecture, API) |
 | `tests/`     | Rust integration tests + Playwright E2E suites       |
 | `catalog/`   | Docker application catalog                           |
-| `scripts/`   | Utility scripts                                      |
+| `scripts/`   | Developer helper scripts (isolated dev instances)    |
 
 ## Development
 
