@@ -88,8 +88,9 @@ translate function as an argument instead of importing the i18n store.
 Three pieces, each with one job:
 
 - **Rail item** — `WindowSidebarItem.svelte` with `variant="rich"`, `subtitle`
-  and `accent`. The 28px icon tile is the category colour mixed to
-  `--hv-settings-cat-tint` (9%) behind a glyph in the full colour; when the item
+  and `accent`. The 28px **circular** icon tile (`--hv-settings-icon-tile`) is
+  the category colour mixed to
+  `--hv-settings-cat-tint` (9%) behind a 16px glyph in the full colour; when the item
   is active the tile goes **solid** with a **white** glyph and the row gains a
   trailing 4x20 pill (`::after` in `WindowSidebar.svelte:281`, coloured by
   `--hv-row-accent`). Both tile states are contrast-governed (≥3:1, WCAG
@@ -115,6 +116,15 @@ Three pieces, each with one job:
   props: a card's identity is its title, and the per-card tint only ever
   coloured the glyph it no longer renders. `py-4` → `py-2.5`: **measured
   83.5px → 57px**.
+- **One icon tile for the whole screen (2026-10-19)** — every decorative tile
+  is a circle at `--hv-settings-icon-tile` (28px) with a 16px glyph, through
+  `settingsIconTile` (`vocabulary.ts`) or the rail's rich CSS. The screen used
+  to mix 28px tiles with a 12px corner and 36px tiles with an 18px corner and a
+  20px glyph, so the Widgets rows, the Privacy rows and the rail read as three
+  components. Card *headers* carry no tile at all any more (see above); the
+  only other tile is the window-header icon, which is already a 28px circle.
+  E2E 23.12 pins the size, the shape and the 16/20 glyph ladder across all
+  eight categories.
 - **The subtitle's `mb-0!` is as load-bearing as the `!` on the heading** —
   `styles/theme/base.css` declares an unlayered
   `p { margin-bottom: var(--hv-space-4) }`, so the plain `m-0` the header
