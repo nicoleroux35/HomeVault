@@ -98,3 +98,9 @@ ses_*
 # recorded in frontend/src/lib/styles/theme/tokens.css and
 # docs/guides/design-system.md §2.2; the document itself is not published.
 /design-tokens.md
+
+# AI-agent instruction files — kept local only, never published with the
+# project (decision 2026-10-19). The engineering rules they carry are still
+# enforced on the author's machine; the docs/ tree is the public reference.
+/AGENTS.md
+/CLAUDE.md
