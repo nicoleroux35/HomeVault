@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_USER: test
           POSTGRES_PASSWORD: test
@@ -33,7 +33,7 @@ jobs:
           --health-cmd "pg_isready -U test"
           --health-interval 5s --health-timeout 3s --health-retries 10
       redis:
-        image: redis:7-alpine
+        image: redis:8-alpine
         ports:
           - 6379:6379
         options: >-
@@ -43,7 +43,7 @@ jobs:
       DATABASE_URL: postgres://test:test@localhost:5432/testdb
       REDIS_URL: redis://localhost:6379
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # See ci.yml: the full `cargo test` build (every test binary, with
       # debuginfo) plus the preinstalled toolchains overflowed the runner
       # disk — "No space left on device (os error 28)" mid-compile.

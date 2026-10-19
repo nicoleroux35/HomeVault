@@ -24,7 +24,7 @@ services:
           memory: 1.5G
           cpus: '1.5'
   paperless-broker:
-    image: redis:7-alpine
+    image: redis:8-alpine
     container_name: paperless-broker
     restart: unless-stopped
     deploy:
@@ -33,7 +33,7 @@ services:
           memory: 256M
           cpus: '0.5'
   paperless-db:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     container_name: paperless-db
     restart: unless-stopped
     environment:

@@ -60,7 +60,7 @@ sha1 = "0.11"
 # stores an `hv1:` blob; key in {DATA_DIRECTORY}/data/2fa.key, outside the DB
 # so a leaked database snapshot carries no secrets). Pure Rust, no new heavy
 # transitive deps (aes/ghash/polyval/subtle/zeroize only).
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 libc = "0.2"
 dirs = "7"
 uuid = { version = "1.0", features = ["serde", "v4"] }

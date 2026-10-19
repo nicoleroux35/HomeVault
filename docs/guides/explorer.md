@@ -264,10 +264,17 @@ a misleading half-populated tree.
   Avahi/mDNS (`_smb._tcp`). Both parsers are pure functions unit-tested in
   `src/handlers/explorer.rs`; a host without the tools gets an empty list, not an
   error. The toolbar "Network" modal renders them as browsable entries.
+  Package note: `smbtree` comes from `samba-common-bin` and `avahi-browse` from
+  `avahi-utils` (not `avahi-daemon`, which only publishes HomeVault) — both are
+  installed by `installer/install.sh` and verified in its Step 4.
 - **Format a drive** — `POST /explorer/format` (admin) formats a block device as
   **ext4** or **exfat**. The `fstype` is checked against a two-value allow-list
   and the device against the available-disk list *before* `mkfs` runs (never a
   free-form command), then `mkfs.ext4` / `mkfs.exfat` is invoked under `sudo`.
+  Package note: `mkfs.exfat` is **not** part of `exfat-fuse` — it comes from
+  `exfatprogs` (Debian 12+/Ubuntu 23.04+) or `exfat-utils` (older releases);
+  `installer/install.sh` installs whichever the host's repositories carry and
+  verifies it in Step 4.
 
 ## Frontend
 
