@@ -1,8 +1,14 @@
 # HomeVault Developer Documentation
 
-HomeVault is a self-hosted NAS / home-server management platform: a Rust + Axum
-backend with an embedded SQLite database, and a Svelte 5 + TypeScript single-page
-frontend that renders a desktop-like windowing UI.
+HomeVault turns any small computer into a private NAS: a self-hosted home cloud
+for any kind of data, reachable from any device with a browser, on a minimal
+hardware footprint (1 core, 1 GB of RAM, 8 GB of system disk). The product goal
+is to stay **simple, reliable and robust** — that is what the invariants in this
+documentation protect.
+
+Technically it is a Rust + Axum backend with an embedded SQLite database, and a
+Svelte 5 + TypeScript single-page frontend that renders a desktop-like windowing
+UI.
 
 This index is the single entry point. Every canonical doc is listed below with a
 one-line description. All docs are in English (the product UI defaults to French).
