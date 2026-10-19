@@ -208,18 +208,20 @@
   let recommendations: {
     name: string; description: string; min_ram_gb: number;
     min_vram_gb: number | null; requires_gpu: boolean;
-    speed: string; size_gb: number;
+    speed: string; size_gb: number; fits: boolean;
   }[] = [];
   let systemSpecs: { total_ram_gb: number; has_gpu: boolean; gpu_name: string | null; gpu_vram_gb: number | null } | null = null;
   let recommending = false;
 
+  // Real names from the public Ollama library — a typo here fails at pull
+  // time, in front of the operator, so this list stays short and boring.
   const quickModels = [
+    'qwen3:0.6b',
     'gemma3:1b',
-    'gemma3:4b',
-    'qwen3.5:0.8b',
-    'qwen3.5:2b',
-    'llama3.2:1b',
+    'qwen3:1.7b',
     'llama3.2:3b',
+    'qwen3:4b',
+    'gemma3:4b',
   ];
 
   async function loadAiModels() {
@@ -1000,11 +1002,11 @@
                 {#each BUNDLED_WALLPAPERS as w, i (w.id)}
                   <button type="button" class="settings-wallpaper-tile relative block w-full p-0 border-0 bg-transparent cursor-pointer" class:is-selected={w.url === selectedWpUrl} role="radio" aria-checked={w.url === selectedWpUrl} aria-label={`${$t('settings.wallpaper')} ${i + 1}`} onclick={() => wallpaperStore.setWallpaper({ type: 'image', value: w.url })}>
                     <!-- `aspect-[8/5]` is the equaliser: the bundled thumbs are
-                         not all the same shape (hv-09 and hv-13 ship 640x480,
-                         the rest 640x427), so a height derived from the file
-                         let those two render taller than their neighbours.
-                         A fixed ratio + `cover` gives all 15 tiles one
-                         identical box. `h-auto` is required, not cosmetic:
+                         not all the same shape (3:2, 4:3 and 16:9 all occur,
+                         they follow the source photo), so a height derived
+                         from the file let the taller ones render above their
+                         neighbours. A fixed ratio + `cover` gives all 44 tiles
+                         one identical box. `h-auto` is required, not cosmetic:
                          the `height="200"` attribute is a presentational
                          hint mapped to `height:200px`, and with both width
                          and height definite `aspect-ratio` is ignored.
@@ -1181,8 +1183,8 @@
               {#if recommendations.length > 0}
                 <div class="grid gap-2.5">
                   {#each recommendations as rec, i}
-                    <div class:settings-ai-rec-card-top={i === 0} class={cn('p-3 rounded-xl bg-[var(--hv-settings-canvas)] border-[1.45px] border-[var(--hv-settings-border)]', i === 0 && 'border-[var(--hv-primary)]/40')}>
-                      {#if i === 0}<div class="inline-block px-2 py-0.5 mb-2 rounded bg-[var(--hv-primary)] text-[var(--hv-on-primary)] text-micro font-bold uppercase">{$t('settings.ai_best_choice')}</div>{/if}
+                    <div data-testid="settings-ai-recommendation" data-fits={rec.fits} class:settings-ai-rec-card-top={i === 0 && rec.fits} class={cn('p-3 rounded-xl bg-[var(--hv-settings-canvas)] border-[1.45px] border-[var(--hv-settings-border)]', i === 0 && rec.fits && 'border-[var(--hv-primary)]/40')}>
+                      {#if i === 0 && rec.fits}<div class="inline-block px-2 py-0.5 mb-2 rounded bg-[var(--hv-primary)] text-[var(--hv-on-primary)] text-micro font-bold uppercase">{$t('settings.ai_best_choice')}</div>{/if}
                       <div class="flex items-center justify-between gap-2">
                         <span class="text-sm font-bold text-[var(--hv-settings-title-strong)]">{rec.name}</span>
                         <span class="text-xs text-[var(--hv-settings-label)]">{rec.speed}</span>
@@ -1192,6 +1194,7 @@
                         <span class="px-1.5 py-0.5 rounded bg-[var(--hv-settings-hairline)] text-micro font-bold uppercase text-[var(--hv-settings-chip-text)]">RAM &ge; {rec.min_ram_gb} GB</span>
                         {#if rec.min_vram_gb}<span class="px-1.5 py-0.5 rounded bg-[var(--hv-settings-hairline)] text-micro font-bold uppercase text-[var(--hv-settings-chip-text)]">VRAM &ge; {rec.min_vram_gb} GB</span>{/if}
                         <span class="px-1.5 py-0.5 rounded bg-[var(--hv-settings-hairline)] text-micro font-bold uppercase text-[var(--hv-settings-chip-text)]">{rec.size_gb.toFixed(1)} GB</span>
+                        {#if !rec.fits}<span class="px-1.5 py-0.5 rounded bg-[var(--hv-warning-bg)] text-micro font-bold uppercase text-[var(--hv-warning)]">{$t('settings.ai_needs_ram', { ram: String(rec.min_ram_gb) })}</span>{/if}
                       </div>
                       <div class="mt-2">
                         {#if aiModels.some(m => m.name === rec.name)}

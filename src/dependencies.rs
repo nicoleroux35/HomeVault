@@ -898,6 +898,13 @@ mod tests {
             !text.contains("ollama pull"),
             "install.sh must not auto-download a model — the user picks it from Settings > AI"
         );
+        // Ollama ships no 32-bit ARM build. Installing it anyway on armv7l
+        // would leave a dead daemon that reads as an app bug; the installer
+        // must skip it and say why.
+        assert!(
+            text.contains("armv7l|armv6l"),
+            "install.sh must skip Ollama on 32-bit ARM (no upstream build)"
+        );
     }
 
     #[test]
