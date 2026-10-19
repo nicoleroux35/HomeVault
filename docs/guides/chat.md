@@ -34,10 +34,11 @@ See [RAG Knowledge Base](./rag.md) for the RAG endpoints (`/api/rag/*`).
 - `frontend/src/routes/Desktop.svelte`: `chat` entry in the `apps` list.
 - `frontend/src/lib/services/api.ts`: `chatSend`, `chatSendStream`, `chatListModels`,
   `chatPullModel`, `chatGetModel`, `chatSetModel`, `chatRecommendModels`.
-- External-agent (MCP) management lives here too (admin-only "External
-  agents" panel, `frontend/src/lib/components/chat/McpPanel.svelte`): the
-  toggle button probes `GET /mcp/status` (admin-only, so the probe doubles
-  as the admin check — non-admins never see the panel). Full contract in
+- The external-agent (MCP) gateway is **not** configured here: its card lives
+  in Settings → AI Assistant (`frontend/src/lib/components/settings/McpCard.svelte`).
+  It used to be a side panel of this screen (`components/chat/McpPanel.svelte`,
+  deleted 2026-10-19) — the gateway is server-wide, admin-only configuration,
+  so it belongs next to the model card. Full contract in
   [External Agents](./mcp.md).
 
 ## Invariants

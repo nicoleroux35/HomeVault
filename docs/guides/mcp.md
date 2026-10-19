@@ -53,13 +53,24 @@ Every mutation is event-logged with the calling token id
 
 ## Frontend
 
-External-agent management lives in the Chat screen (`frontend/src/routes/Chat.svelte`,
-admin-only "External agents" section): enable switch, permission editors
-(app allow-list, App Store toggle, file grants, VM allow-list, knowledge-base
-and reboot toggles), token list (prefix only) with create (full value shown
-once with a copy button) and revoke. API client: `frontend/src/lib/services/api.ts`
-(`mcpStatus`, `mcpSetEnabled`, `mcpSetPermissions`, `mcpCreateToken`,
-`mcpRevokeToken`).
+External-agent management lives in **Settings → AI Assistant**, as the
+`McpCard` (`frontend/src/lib/components/settings/McpCard.svelte`, mounted by
+`frontend/src/routes/Settings.svelte` in its `ai` category): enable switch,
+agent endpoint, permission editors (app allow-list, App Store toggle, file
+grants, VM allow-list, knowledge-base and reboot toggles), token list (prefix
+only) with create (full value shown once with a copy button) and revoke.
+
+The card is admin-only and self-gating: it probes `GET /api/mcp/status`, the
+endpoint that rejects a non-admin session, and renders nothing when that probe
+fails — there is no separate client-side "is admin" flag to drift. Its writes
+are **immediate** (kill-switch, permissions, tokens), deliberately not staged
+in the Settings draft: a deferred Save would leave the gateway open after the
+operator switched it off. Until 2026-10-19 the same controls were a side panel
+inside the Chat app; they were moved here because the gateway is a server-wide
+admin setting, not part of the conversation view.
+
+API client: `frontend/src/lib/services/api.ts` (`mcpStatus`, `mcpSetEnabled`,
+`mcpSetPermissions`, `mcpCreateToken`, `mcpRevokeToken`).
 
 ## Invariants
 

@@ -2,7 +2,8 @@
 
 **Purpose:** Pin web pages as icons on the desktop. Each shortcut stores the
 page's title, description, favicon and origin, fetched once when it is added.
-The metadata fetch is server-side and SSRF-guarded.
+The metadata fetch is server-side and SSRF-guarded. Shortcuts are **added from
+the launcher** (its last tile) and only *shown* on the desktop.
 
 ## Backend
 
@@ -39,15 +40,27 @@ unit-tested.
   (`hv-shortcuts:<username>` in localStorage, namespaced like `monitorStore`).
   `MAX_SHORTCUTS` caps the set at 12; `add()` deduplicates by URL.
 - `frontend/src/lib/components/desktop/DesktopShortcuts.svelte` — the desktop
-  column of tiles plus the add dialog. Each tile opens the URL in a new tab
+  column of tiles. Each tile opens the URL in a new tab
   (`noopener,noreferrer`); the remove button is visible on hover **and**
-  `focus-within`, with an `aria-label`, so removal is not hover-only.
+  `focus-within`, with an `aria-label`, so removal is not hover-only. With no
+  shortcut pinned the column is not rendered at all.
+- `frontend/src/lib/components/desktop/HvLaunchpad.svelte` — the **add**
+  control. Adding a shortcut is a launcher action, not a desktop one: the add
+  tile is the launcher grid's **last cell**, after every app tile, and it
+  opens `ShortcutAddDialog.svelte`. It is withheld while a search query or a
+  category chip narrows the grid (a filtered grid is an answer to "where is
+  X?", not a menu) and once `MAX_SHORTCUTS` is reached.
+- `frontend/src/lib/components/desktop/ShortcutAddDialog.svelte` — the URL
+  dialog, mounted by `Desktop.svelte` (`theme/Modal`, so focus trap + focus
+  restore come from the design system).
 
 ## Invariants
 
 - The metadata fetch must never bypass `is_public_ip` — a shortcut is a
   convenience, an SSRF is a compromise. Adding a redirect-following mode
   without re-validating each hop reopens the hole.
+- The add control belongs to the launcher, not to the desktop: the desktop
+  renders the pinned set and nothing else (no empty column, no "add" tile).
 - The store is per-account: two accounts on one browser never share shortcuts.
 - A fetched title is rendered as text, never as markup (E2E 3.2 asserts a
   `<img onerror>` title stays literal text).

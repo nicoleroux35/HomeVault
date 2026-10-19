@@ -369,10 +369,12 @@
      The mock's own scrim is rgba(15,23,42,0.55). That value cannot ship:
      over a light wallpaper the tile fill resolves to ~(136,139,150) and the
      white tile labels land at 3.4:1, under the WCAG 2.2 AA 4.5:1 text floor.
-     0.72 puts every label at ~5.4:1 in the same worst case while still
-     reading as a dimmed desktop. Same reasoning drives the chip text: the
-     mock's 85%-alpha white over the 15% chip fill measures ~4.3:1, so the
-     inactive chip text is opaque white.
+     0.72 puts every label at ~5.5:1 in the same worst case while still
+     reading as a dimmed desktop; 0.86 (2026-10-22, user feedback: the
+     desktop stayed too legible behind the launcher) takes the same worst case
+     to ~8.7:1 — the scrim now reads as a veil, not as a window. Same
+     reasoning drives the chip text: the mock's 85%-alpha white over the 15%
+     chip fill measures ~4.3:1, so the inactive chip text is opaque white.
 
      The two muted values needed the same treatment. The mock's placeholder
      (#90A1B9) is 2.6:1 on the white search bar and its 72%-alpha white
@@ -387,8 +389,13 @@
      they must never drift apart. It stays a maximum: `min(100%, ...)` lets
      the column shrink on smaller screens, where the grid's auto-fill drops to
      5, 4, ... columns, and the component's `<=640px` block pins 3. */
-  --hv-launcher-scrim: rgba(15, 23, 42, 0.72);
-  --hv-launcher-blur: 2px;
+  --hv-launcher-scrim: rgba(15, 23, 42, 0.86);
+  /* 6px, not the mock's 2px: with the desktop still readable through a 2px
+     blur the launcher looked like a translucent panel over the wallpaper
+     rather than an app screen. The blur is what makes the veil opaque to
+     shapes while keeping it a gradient, so it carries the same intent as the
+     alpha bump above. E2E 5.7 only requires a non-zero blur. */
+  --hv-launcher-blur: 6px;
   --hv-launcher-content-w: 828px;
   --hv-launcher-surface: #FFFFFF;
   --hv-launcher-placeholder: #64748B;
@@ -584,6 +591,15 @@
   --hv-settings-title-strong: #0F172B;   /* slate-900 — active nav title */
   --hv-settings-toggle-off: #E2E8F0;
   --hv-settings-knob-shadow: 0 1px 2px -1px rgba(0, 0, 0, 0.1), 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+  /* The ONE icon-tile diameter of this screen, and the one glyph step that
+     goes in it. Every decorative icon tile — the rail category tile, the
+     Widgets rows, the Privacy rows — is this circle at this size; the tiles
+     used to come in two shapes (12px and 18px corners) and two sizes (28 and
+     36px), so a screen built from one vocabulary still read as three
+     different components. The shape is `--hv-radius-full`, the same circle as
+     the dock tiles / topbar buttons / window-header icon. Do not add a second
+     tile size: a bigger tile is a different element, not a bigger glyph. */
+  --hv-settings-icon-tile: 28px;
 
   /* The eight category accents. A row/nav tile tint is DERIVED from the
      solid via `--hv-settings-cat-tint`, so the two can never drift:
@@ -966,12 +982,14 @@
   /* Dock
      Tile diameter. Set from the approved reference dock's PROPORTIONS, not
      from a pixel count: its circular tiles measure 158px in a 204px bar, i.e.
-     0.775 × the bar height, so the 84px dock gets 64px tiles. Everything else
-     in the dock follows that ratio — 10px of padding above/below and to the
-     sides (0.146 × tile), 10px of pitch (0.152 × tile). Do not shrink the tile
-     without retuning the dock height, or the capsule stops reading as a
-     container for its icons. */
-  --hv-dock-item-size: 64px;
+     0.775 × the bar height, so the 72px dock gets 56px tiles. Everything else
+     in the dock follows that ratio — the vertical padding is
+     (bar − tile) / 2 = 8px, and the glyph is 0.5 × the tile (28px). Do not
+     shrink the tile without retuning the dock height, or the capsule stops
+     reading as a container for its icons. (The horizontal padding stays at
+     10px and the pitch at 10px: the hover lift — 56 × 0.18 / 2 = 5.04px a side
+     — is what floors the gap, not the reference's 0.152 × tile ratio.) */
+  --hv-dock-item-size: 56px;
   --hv-dock-power-bg: #454F5B;
 
   /* Inputs */
@@ -1201,43 +1219,47 @@
      keep-out below is EXACTLY the rendered band — no border/padding slack. */
   --hv-chrome-topbar-offset-y: var(--hv-space-2);   /* 8px  — pill's top edge */
   --hv-chrome-topbar-offset-x: var(--hv-space-3);   /* 12px — pill's right edge */
-  --hv-chrome-topbar-h: 62px;                       /* authored height (DSM) */
+  --hv-chrome-topbar-h: 72px;                       /* = the dock's height */
   /* Diameter of every circular control in the topbar pill (the three icon
      buttons). Same rule as the dock tile: the control is **0.775 × its bar**
-     — 48px in the 62px pill, 44px in the phone's 56px one — so both pills
+     — 56px in the 72px pill, 44px in the phone's 56px one — so both pills
      read as one family of chrome instead of "big icons in the dock, small ones
      in the topbar". The pill's horizontal padding and the glyph size are both
      DERIVED from this token (see .hv-menubar / .hv-topbar-btn), so changing it
      keeps the controls concentric with the capsule's arcs and the glyph at
-     half the control. 48px stays above the 44px touch floor; so does the
+     half the control. 56px stays above the 44px touch floor; so does the
      phone's 44px. */
-  --hv-chrome-topbar-btn-size: 48px;
+  --hv-chrome-topbar-btn-size: 56px;
   --hv-chrome-dock-offset: var(--hv-space-4);       /* 16px — dock's bottom edge */
-  /* 84px is the mockup's authored pill height, measured off its live DOM. Since
-     the 2026-10-18 proportions pass it decomposes exactly as
-     padding 10 + icon 64 + padding 10 (see --hv-dock-item-size): the dock tile
-     is 0.775 × the bar height, the ratio measured on the approved reference
+  /* 72px since the 2026-10-18 height pass, and it decomposes exactly as
+     padding 8 + icon 56 + padding 8 (see --hv-dock-item-size): the dock tile
+     stays 0.775 × the bar height, the ratio measured on the approved reference
      dock. DSM's own dock item is a COLUMN (icon + a label line) whose line box
      is reserved even while it only paints on hover; HomeVault has no dock
-     labels (the tooltip carries the name), so the surplus now goes into the
-     tiles themselves instead of dead space around them.
-     Phone overrides it to 56px (see the media query at the end of this file). */
-  --hv-chrome-dock-h: 84px;
+     labels (the tooltip carries the name), so the surplus goes into the tiles
+     instead of dead space around them. The dock and the topbar pill are the
+     SAME height again (72px) — they had been 84/62, then 64/62; the two keep
+     separate tokens so one can move without dragging the other.
+     Phone overrides it to 52px (see the media query at the end of this file). */
+  --hv-chrome-dock-h: 72px;
   /* Horizontal pitch between two dock tiles — and around a divider, since the
      dividers are flex children of the same row. A hovered tile grows by
-     64 × (1.18 − 1) / 2 ≈ 5.8px on EACH side, so a gap below ~11.5px would let
-     two neighbours touch mid-hover. 10px keeps ~4.2px of real clearance at the
-     hover peak — the reference dock's own pitch ratio (0.152 × the tile), which
-     is the point of the value, not a leftover. Narrowed on the phone, where the
-     lift is disabled (see the media query at the end of Desktop.svelte). */
+     56 × (1.18 − 1) / 2 = 5.04px on EACH side, so a gap below ~10.1px would let
+     two neighbours touch mid-hover; 10px keeps 4.96px of real clearance at the
+     hover peak. That floor, not the reference dock's 0.152 × tile ratio
+     (which would ask for ~8.5px at a 56px tile), is what sets the value —
+     a pitch under the lift is a collision, a slightly looser one is not.
+     Narrowed on the phone, where the lift is disabled (see the media query at
+     the end of Desktop.svelte). */
   --hv-chrome-dock-gap: var(--hv-space-2-5);        /* 10px */
   /* The clock block is the only variable-width item in the pill, and its two
      lines are centred on each other. Reserving a floor keeps the whole pill
      from twitching as the minute digit changes width. */
   --hv-chrome-clock-min-w: 112px;
-  /* Identity chip in the topbar pill. Small on purpose — at pill height the
-     username carries the identity and the picture is only a marker. */
-  --hv-chrome-avatar-size: 32px;
+  /* Identity chip in the topbar pill. Half the pill (36px at 72px) — the
+     username carries the identity, the picture is only a marker, but at a
+     72px pill a 32px face read as an afterthought. */
+  --hv-chrome-avatar-size: 36px;
 
   /* Vertical band the floating topbar occupies from the top edge — where a
      NON-maximized new window opens below. Read in CSS by
@@ -1329,6 +1351,13 @@
   --hv-winctrl-size: 28px;
   --hv-winctrl-radius: 50%;
   --hv-winctrl-gap: 6px;
+  /* The ONE glyph step of the window chrome: the trio's mock paths are drawn
+     for it and WindowFrame's frame footer (help / resize grip) clamps to it
+     too, so the header row and the footer strip can never drift apart — they
+     did (14px vs 16px) and the footer read a size larger than the header.
+     Both are 24/14-viewBox glyphs on a 28px control, so the box is the only
+     thing that sets their weight. */
+  --hv-winctrl-glyph: 14px;
   --hv-winctrl-min: #FFB900;           /* amber — minimize */
   --hv-winctrl-min-hover: #E0A200;     /* amber pressed */
   --hv-winctrl-max: #2B7FFF;           /* blue — maximize / restore */
@@ -1512,12 +1541,16 @@
     --hv-chrome-topbar-offset-x: var(--hv-space-3);
     --hv-chrome-topbar-h: 56px;
     /* 0.786 × the phone pill — the same proportion as the dock tile in its
-       56px bar, and still the 44px touch floor. */
+       52px bar, and still the 44px touch floor. */
     --hv-chrome-topbar-btn-size: 44px;
-    /* The dock stays compact: the DSM mockup is desktop-only, and an 84px
-       dock would eat too much of a phone viewport. 56px preserves the
-       pre-restyle phone dock exactly. */
+    /* The dock stays compact: the DSM mockup is desktop-only, and a 72px
+       dock would eat too much of a phone viewport. 52px = the 44px touch
+       floor (the phone tile size, unchanged) + 4px of breathing room on each
+       side, so the phone dock tracks the 72px desktop one down a step while
+       no tile ever drops below a finger. */
     --hv-chrome-dock-offset: var(--hv-space-3);
-    --hv-chrome-dock-h: 56px;
+    --hv-chrome-dock-h: 52px;
+    /* Identity chip a step down with the pill. */
+    --hv-chrome-avatar-size: 32px;
   }
 }

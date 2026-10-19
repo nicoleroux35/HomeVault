@@ -441,16 +441,18 @@
          mock's 8px / 12px insets — not floating over it. Each app's own
          <WindowHeader> reserves the matching --hv-winhdr-btn-clear on its
          right edge. Amber = minimize, blue = maximize/restore, red = close;
-         the three 14px glyphs are the mock's own paths (Figma "AppWindow"). -->
+         the three glyphs are the mock's own paths (Figma "AppWindow") and
+         take their box from --hv-winctrl-glyph, the same step the frame
+         footer's icons use. -->
     <div class="hv-window-controls">
       <button class="hv-cl-btn hv-cl-btn-min" data-testid="win-minimize" onclick={handleMinimize} title={$t('desktop.window_minimize')} aria-label={$t('desktop.window_minimize')}>
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M2.9165 6.99994H11.0831" stroke="currentColor" stroke-width="1.45832" stroke-linecap="round"/></svg>
+        <svg viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M2.9165 6.99994H11.0831" stroke="currentColor" stroke-width="1.45832" stroke-linecap="round"/></svg>
       </button>
       <button class="hv-cl-btn hv-cl-btn-max" data-testid="win-maximize" onclick={onMaximize} title={win.isMaximized ? $t('desktop.window_restore') : $t('desktop.window_maximize')} aria-label={win.isMaximized ? $t('desktop.window_restore') : $t('desktop.window_maximize')}>
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M4.66665 1.75H2.91666C2.60724 1.75 2.3105 1.87292 2.09171 2.09171C1.87292 2.3105 1.75 2.60724 1.75 2.91666V4.66665M12.2499 4.66665V2.91666C12.2499 2.60724 12.127 2.3105 11.9082 2.09171C11.6894 1.87292 11.3927 1.75 11.0833 1.75H9.33328M1.75 9.33328V11.0833C1.75 11.3927 1.87292 11.6894 2.09171 11.9082C2.3105 12.127 2.60724 12.2499 2.91666 12.2499H4.66665M9.33328 12.2499H11.0833C11.3927 12.2499 11.6894 12.127 11.9082 11.9082C12.127 11.6894 12.2499 11.3927 12.2499 11.0833V9.33328" stroke="currentColor" stroke-width="1.16666" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <svg viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M4.66665 1.75H2.91666C2.60724 1.75 2.3105 1.87292 2.09171 2.09171C1.87292 2.3105 1.75 2.60724 1.75 2.91666V4.66665M12.2499 4.66665V2.91666C12.2499 2.60724 12.127 2.3105 11.9082 2.09171C11.6894 1.87292 11.3927 1.75 11.0833 1.75H9.33328M1.75 9.33328V11.0833C1.75 11.3927 1.87292 11.6894 2.09171 11.9082C2.3105 12.127 2.60724 12.2499 2.91666 12.2499H4.66665M9.33328 12.2499H11.0833C11.3927 12.2499 11.6894 12.127 11.9082 11.9082C12.127 11.6894 12.2499 11.3927 12.2499 11.0833V9.33328" stroke="currentColor" stroke-width="1.16666" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
       <button class="hv-cl-btn hv-cl-btn-close" data-testid="win-close" onclick={onClose} title={$t('common.close')} aria-label={$t('common.close')}>
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M10.4999 3.5L3.5 10.4999M3.5 3.5L10.4999 10.4999" stroke="currentColor" stroke-width="1.45832" stroke-linecap="round"/></svg>
+        <svg viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M10.4999 3.5L3.5 10.4999M3.5 3.5L10.4999 10.4999" stroke="currentColor" stroke-width="1.45832" stroke-linecap="round"/></svg>
       </button>
     </div>
 
@@ -494,7 +496,7 @@
         title={$t('desktop.window_help')}
         onclick={onHelp}
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="12" cy="12" r="9.25" />
           <path d="M9.15 9.2a2.9 2.9 0 1 1 4.05 2.68c-.78.35-1.2 1.06-1.2 1.9v.5" />
           <circle cx="12" cy="17.55" r="1.05" fill="currentColor" stroke="none" />
@@ -512,7 +514,7 @@
           onpointerdown={(e) => handleResizeStart(e, 'se')}
           onkeydown={handleResizeGripKeydown}
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="12" cy="12" r="9.25" />
             <path d="M7.4 12h9.2" />
             <path d="M9.4 9.9 7.3 12l2.1 2.1" />
@@ -666,6 +668,18 @@
     transform: scale(0.94);
   }
 
+  /* ONE glyph step for every window-chrome icon button — the trio above and
+     the frame footer's help / resize grip below. The markup deliberately
+     carries no width/height attribute on these SVGs: the box is owned here
+     (--hv-winctrl-glyph, 14px), exactly like the header tile's glyph clamp, so
+     a 16px footer glyph can never read a size larger than the header's 14px
+     one again. */
+  .hv-cl-btn svg,
+  .hv-winframe-fbtn svg {
+    width: var(--hv-winctrl-glyph);
+    height: var(--hv-winctrl-glyph);
+  }
+
   /* Control colours — amber (minimize) / blue (maximize) / red (close). */
   .hv-cl-btn-min {
     background: var(--hv-winctrl-min);
@@ -706,7 +720,9 @@
 
   /* 28px icon button (the trio's size) with the shared `.hv-ic` 44px hit pad,
      the one control corner and the standard focus ring — a compact control in
-     the footer is a compact control everywhere else. */
+     the footer is a compact control everywhere else. Its glyph is clamped to
+     --hv-winctrl-glyph (14px, the header trio's step) by the shared rule
+     above, so the header row and this strip read as one icon size. */
   .hv-winframe-fbtn {
     display: grid;
     place-items: center;

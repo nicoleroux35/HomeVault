@@ -22,7 +22,6 @@
   import { api } from '$lib/services/api';
   import { draft, registerGroup, onGroupSaved } from '$lib/stores/settingsDraft.svelte';
   import { t } from '$lib/stores/i18n';
-  import { IconActivity } from '@tabler/icons-svelte';
   import SettingsCard from './SettingsCard.svelte';
   import { cn } from '$lib/utils.js';
   import {
@@ -95,7 +94,7 @@
   (2026-09-15): the fields bind to the shared `draft.snmp` group and the
   per-card Save button is gone; live data re-reads after a successful save.
 -->
-<SettingsCard icon={IconActivity} iconVariant="purple" title={$t('settings.snmp_monitoring')} subtitle={$t('settings.snmp_description')} class={klass}>
+<SettingsCard title={$t('settings.snmp_monitoring')} subtitle={$t('settings.snmp_description')} class={klass}>
   {#if loading}
     <p class={settingsHint}>{$t('settings.loading')}</p>
   {:else}

@@ -35,14 +35,14 @@ export interface SnapConfig {
    and because the dock auto-hides above 900px, so this is the <=900px case.
    Every value below has to be re-derived whenever those tokens move; the
    desktop E2E suite has a lockstep test that fails if they drift apart.
-   The menubar is a floating pill at top:8px with height:62px (see
-   .hv-menubar in Desktop.svelte) — its bottom edge sits at y=70, so window and
-   monitor-widget content must start below that. The dock is an 84px pill at
-   bottom:16px — the two pills are deliberately different heights. */
+   The menubar is a floating pill at top:8px with height:72px (see
+   .hv-menubar in Desktop.svelte) — its bottom edge sits at y=80, so window and
+   monitor-widget content must start below that. The dock is a 72px pill at
+   bottom:16px — the same height, on its own token. */
 export const DEFAULT_SNAP_CONFIG: SnapConfig = {
-  topbarHeight: 70,
+  topbarHeight: 80,
   dockBottom: 16,
-  dockHeight: 84,
+  dockHeight: 72,
   snapThreshold: 20,
   edgeMargin: 8,
 }

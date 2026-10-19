@@ -671,24 +671,39 @@ test.describe('4 — Appearance', () => {
     expect(JSON.parse(req.postData() || '{}').wallpaper).toMatch(/\/wallpapers\/hv-\d\d\.webp/);
   });
 
-  test('4.7 — thumbnails keep a 16:10 ratio, even gaps (no drop-shadow bleed), 2 columns when narrow', async ({ page }) => {
+  test('4.7 — every thumbnail has the same size (16:10), even gaps, 2 columns when narrow', async ({ page }) => {
     // Regressions: (a) the <img height="200"> attribute pinned every thumbnail
     // to 200px tall (no `height:auto`) → distorted vertical strips on the
     // 3-column grid; (b) the card drop-shadow bled ~24px past each tile and,
-    // with a 12px gap, made the rows look cramped / overlapping.
+    // with a 12px gap, made the rows look cramped / overlapping; (c) two
+    // bundled thumbs ship 640x480 while the rest are 640x427, so `h-auto`
+    // rendered those two taller — every tile must now share one box.
     await page.setViewportSize({ width: 460, height: 820 });
     await openSettings(page, admin);
     await openCategory(page, 'appearance');
     const grid = set(page).locator('.settings-wallpaper-grid');
     const m = await grid.evaluate((el) => {
       const cs = getComputedStyle(el);
-      const t = [...el.querySelectorAll('.settings-wallpaper-tile')].slice(0, 3).map((n) => n.getBoundingClientRect());
+      const boxes = [...el.querySelectorAll('.settings-wallpaper-tile')].map((n) =>
+        n.getBoundingClientRect(),
+      );
+      const t = boxes.slice(0, 3);
       const img = (el.querySelector('img') as HTMLImageElement).getBoundingClientRect();
+      const w = Math.round(boxes[0].width);
+      const h = Math.round(boxes[0].height);
       return {
         cols: cs.gridTemplateColumns.split(' ').length,
         ratio: img.width / img.height,
         colGap: Math.round(t[1].x - t[0].right),
         rowGap: Math.round(t[2].y - t[0].bottom),
+        tileCount: boxes.length,
+        w,
+        h,
+        // every tile is exactly the first tile's box
+        uniform: boxes.every(
+          (b) => Math.abs(b.width - boxes[0].width) < 1 && Math.abs(b.height - boxes[0].height) < 1,
+        ),
+        sizes: [...new Set(boxes.map((b) => `${Math.round(b.width)}x${Math.round(b.height)}`))],
         // the only box-shadow allowed is the inset selection ring
         outsetShadow: [...el.querySelectorAll('.settings-wallpaper-thumb')].some((n) => {
           const bs = getComputedStyle(n).boxShadow;
@@ -699,6 +714,8 @@ test.describe('4 — Appearance', () => {
     expect(m.cols, '2 columns below 560px').toBe(2);
     expect(m.ratio, `thumbnail aspect ratio ${m.ratio.toFixed(2)} should be ~1.6`).toBeGreaterThan(1.45);
     expect(m.ratio).toBeLessThan(1.75);
+    expect(m.tileCount, 'all 15 wallpapers are in the grid').toBe(15);
+    expect(m.uniform, `every tile is ${m.w}x${m.h}, got ${m.sizes.join(', ')}`).toBe(true);
     expect(m.colGap, 'column gap == row gap').toBe(m.rowGap);
     expect(m.outsetShadow, 'no bleeding outset drop-shadow on thumbnails').toBe(false);
   });
@@ -1845,24 +1862,30 @@ test.describe('23 — Redesigned shell', () => {
     await expect(header).toBeVisible();
     await expect(header).toHaveText(GROUP_LABEL.general);
 
-    // The header block is the title's grandparent: title's wrapper → header.
+    // The header block is the title's parent: title over subtitle, nothing
+    // else — the 36px tinted icon tile was removed 2026-10-19 (the rail
+    // already carries the category glyph).
     const headerBlock = () =>
       header.evaluate((h) => {
-        const block = h.parentElement!.parentElement as HTMLElement;
-        const tile = block.querySelector('span[style*="background"]') as HTMLElement;
-        const sub = block.querySelector('p') as HTMLElement;
-        const tr = tile.getBoundingClientRect();
+        const block = h.parentElement as HTMLElement;
+        const sub = block.querySelector(
+          '[data-testid="settings-header-subtitle"]',
+        ) as HTMLElement | null;
         return {
-          tileBg: getComputedStyle(tile).backgroundColor,
-          tileW: Math.round(tr.width),
-          tileH: Math.round(tr.height),
-          subtitle: (sub.textContent || '').trim(),
+          childCount: block.children.length,
+          icons: block.querySelectorAll('svg, span[style*="background"]').length,
+          height: Math.round(block.getBoundingClientRect().height),
+          subtitle: (sub?.textContent || '').trim(),
         };
       });
 
     const before = await headerBlock();
-    expect(before.tileW, 'header icon tile is 36px').toBe(36);
-    expect(before.tileH, 'header icon tile is 36px').toBe(36);
+    expect(before.childCount, 'header is title + subtitle only').toBe(2);
+    expect(before.icons, 'header carries no icon tile').toBe(0);
+    // Two text lines: 20px title + 16px description + 2x10px padding = 56px.
+    // The old icon-tile header was 76px; anything above 64 means the tile or
+    // its padding came back.
+    expect(before.height, 'header stays compact').toBeLessThanOrEqual(64);
     expect(before.subtitle.length, 'header carries the category subtitle').toBeGreaterThan(0);
     // The rail item and the header show the same subtitle.
     const railSubtitle = await set(page)
@@ -1873,7 +1896,6 @@ test.describe('23 — Redesigned shell', () => {
     await openCategory(page, 'security');
     await expect(header).toHaveText(GROUP_LABEL.security);
     const after = await headerBlock();
-    expect(after.tileBg, 'header tile follows the category').not.toBe(before.tileBg);
     expect(after.subtitle, 'header subtitle follows the category').not.toBe(before.subtitle);
 
     // The header is a sibling of the scroll container, so scrolling the panel

@@ -7,12 +7,13 @@
 
      Description:
        The full-screen app launcher: searchable/filterable app grid with
-       keyboard navigation, focus-trapped while open, and drag-out support
-       that seeds the desktop drag state.
+       keyboard navigation, focus-trapped while open, drag-out support that
+       seeds the desktop drag state, and the "add a web shortcut" tile as the
+       grid's LAST cell.
 
      Dependencies:
        - svelte (>= 5), theme/Icon, stores/dragState, stores/i18n,
-         utils/focusTrap
+         utils/focusTrap, @tabler/icons-svelte
 
      Usage:
        Opened from the desktop dock / menubar.
@@ -21,13 +22,16 @@
   import { onMount } from 'svelte';
   import Icon from '$lib/components/theme/Icon.svelte';
   import { startDrag } from '$lib/stores/dragState';
-  import { t } from '$lib/stores/i18n';
+  import { languageStore, t } from '$lib/stores/i18n';
   import { focusTrap } from '$lib/utils/focusTrap';
+  import { IconPlus } from '@tabler/icons-svelte';
 
   let {
     apps = [],
     onAppClick = (_appId: string) => {},
     onOpenExternal = (_url: string, _mode: 'tab' | 'window') => {},
+    onAddShortcut = () => {},
+    canAddShortcut = true,
     onClose = () => {},
   }: {
     apps: Array<{
@@ -53,6 +57,13 @@
     onAppClick: (appId: string) => void;
     /** Open a Docker app's web UI externally. */
     onOpenExternal: (url: string, mode: 'tab' | 'window') => void;
+    /** Open the shell's "add a web shortcut" dialog. The add tile is the
+     *  LAST cell of the grid, after every app — the desktop no longer carries
+     *  that action, so this is its only entry point. */
+    onAddShortcut?: () => void;
+    /** False once the shortcut cap (`MAX_SHORTCUTS`) is reached: the add tile
+     *  is then not rendered at all, rather than rendered disabled. */
+    canAddShortcut?: boolean;
     onClose: () => void;
   } = $props();
 
@@ -116,25 +127,25 @@
     return v === key ? category : v;
   }
 
-  // Natural category order for the flat grid (apps are grouped by category,
-  // then alphabetical inside each — the chip row drives the filter, the order
-  // is what keeps a category's tiles contiguous once one is selected).
-  const CAT_ORDER = [
-    'System', 'Storage', 'Network', 'Monitoring', 'Productivity', 'Media',
-    'Security', 'Dev Tools', 'Documents', 'Home Automation', 'Cloud', 'Docker Apps',
-  ];
-  function catRank(c: string | undefined): number {
-    const i = CAT_ORDER.indexOf(c ?? '');
-    return i === -1 ? CAT_ORDER.length : i;
-  }
+  /** The one collation rule for everything the launcher sorts. Locale-aware,
+   *  keyed on the UI language (so French files "Écrans" under E) rather than
+   *  the runtime's default; `sensitivity: 'base'` folds case and accents so
+   *  "camera" / "Camera" do not split into two runs; `numeric` compares digit
+   *  runs as numbers ("App 2" before "App 10"). */
+  const collator = $derived(
+    new Intl.Collator($languageStore, { sensitivity: 'base', numeric: true })
+  );
 
-  /** Categories present in the current app list, in display order. These are
-   *  the launcher's filter chips. */
+  /** Categories present in the current app list, alphabetical by their
+   *  LOCALISED label — the chips must read in the same A→Z order as the tiles
+   *  below them, so the order follows the label the user actually sees, not
+   *  the English key the app definitions carry. These are the launcher's
+   *  filter chips ("All apps" is rendered first, outside this list). */
   let activeCategories = $derived(
     (() => {
       const set = new Set<string>();
       for (const a of apps) { if (a.category) set.add(a.category); }
-      return CAT_ORDER.filter(c => set.has(c));
+      return [...set].sort((a, b) => collator.compare(catLabel(a), catLabel(b)));
     })()
   );
 
@@ -148,13 +159,15 @@
     )
   );
 
+  // ONE alphabetical order, no category grouping: the grid reads A→Z whatever
+  // the query / chip filter is (the chip row is the only grouping affordance,
+  // and grouping the tiles by category on top of it left the grid's order
+  // unrelated to what the user was scanning for). `filteredApps` is already a
+  // fresh array, so the in-place sort is safe.
   let visibleApps = $derived(
-    [...(searchQuery.trim() ? filteredApps : apps)]
+    filteredApps
       .filter(app => !selectedCategory || app.category === selectedCategory)
-      .sort((a, b) => {
-        const r = catRank(a.category) - catRank(b.category);
-        return r !== 0 ? r : a.name.localeCompare(b.name);
-      })
+      .sort((a, b) => collator.compare(a.name, b.name))
   );
 
   function handleDragStart(event: DragEvent, app: typeof apps[0]) {
@@ -281,6 +294,9 @@
     </div>
 
     <div class="lp-content">
+      {#if searchQuery.trim() && visibleApps.length > 0}
+        <p class="lp-count">{$t('desktop.launcher_results')} · {visibleApps.length}</p>
+      {/if}
       {#if visibleApps.length === 0}
         <div class="lp-empty">
           <span class="lp-empty-icon" aria-hidden="true">
@@ -293,75 +309,96 @@
           <p>{$t('desktop.launcher_no_apps_desc')}</p>
           <button class="lp-reset" onclick={() => { searchQuery = ''; selectedCategory = null; }}>{$t('desktop.launcher_reset')}</button>
         </div>
-      {:else}
-        {#if searchQuery.trim()}
-          <p class="lp-count">{$t('desktop.launcher_results')} · {visibleApps.length}</p>
-        {/if}
-        <div class="lp-grid">
-          {#each visibleApps as app (app.id)}
-            {@const info = app.isDockerApp ? '' : infoFor(app)}
-            {#if app.isDockerApp}
-              <!-- Docker catalog app: opens its web UI in a new tab / window
-                   (the user picks), never an in-app window. -->
-              <button
-                type="button"
-                class="lp-card"
-                class:lp-card-open={externalMenuFor === app.id}
-                disabled={!dockerCardReady(app)}
-                aria-haspopup={dockerCardReady(app) ? 'menu' : undefined}
-                aria-expanded={dockerCardReady(app) ? externalMenuFor === app.id : undefined}
-                aria-describedby={`lp-state-${app.id}`}
-                onclick={(e) => toggleExternalMenu(e, app)}
-                title={app.name}
-              >
-                <span class="lp-card-icon" style="--lp-ic: {app.iconBg ?? app.color ?? 'var(--hv-primary)'};">
-                  {#if app.customIcon}
-                    {@html app.customIcon}
-                  {:else}
-                    <Icon name={app.icon} size={28} stroke={1.8} />
-                  {/if}
-                  <!-- Running marker. Presence, not colour, carries the
-                       meaning — exactly how the dock's running indicator
-                       works. A grey "stopped" dot cannot be drawn here: the
-                       tile ground resolves to mid-grey (~rgb(100,105,117))
-                       over the scrim, so a neutral dot lands at ~1:1 against
-                       it and a green one at ~1.1:1. The tile's accessible
-                       description already states the stopped case. -->
-                  {#if app.running}
-                    <span class="lp-card-state" aria-hidden="true"></span>
-                  {/if}
-                </span>
-                <span class="lp-card-name">{app.name}</span>
-                <span class="lp-card-sub" id={`lp-state-${app.id}`}>{dockerCardDesc(app)}</span>
-              </button>
-            {:else}
-              <button
-                type="button"
-                class="lp-card"
-                class:dragging={draggingAppId === app.id}
-                draggable="true"
-                aria-describedby={info ? `lp-info-${app.id}` : undefined}
-                onclick={() => { onAppClick(app.id); onClose(); }}
-                ondragstart={(e) => handleDragStart(e, app)}
-                ondragend={handleDragEnd}
-                title={app.name}
-              >
-                <span class="lp-card-icon" style="--lp-ic: {app.iconBg ?? app.color ?? 'var(--hv-primary)'};">
-                  {#if app.customIcon}
-                    {@html app.customIcon}
-                  {:else}
-                    <Icon name={app.icon} size={28} stroke={1.8} />
-                  {/if}
-                </span>
-                <span class="lp-card-name">{app.name}</span>
-                {#if info}
-                  <span class="lp-sr" id={`lp-info-${app.id}`}>{info}</span>
-                {/if}
-              </button>
-            {/if}
-          {/each}
-        </div>
       {/if}
+      <!-- The grid always renders: its last cell is the "add a web shortcut"
+           tile, which must sit after every app (the desktop no longer carries
+           that action). It is not part of the filtered result set, so it is
+           withheld while a query or a category chip narrows the grid — a
+           filtered grid is an answer to "where is X?", not a menu. -->
+      <div class="lp-grid">
+        {#each visibleApps as app (app.id)}
+          {@const info = app.isDockerApp ? '' : infoFor(app)}
+          {#if app.isDockerApp}
+            <!-- Docker catalog app: opens its web UI in a new tab / window
+                 (the user picks), never an in-app window. -->
+            <button
+              type="button"
+              class="lp-card"
+              class:lp-card-open={externalMenuFor === app.id}
+              disabled={!dockerCardReady(app)}
+              aria-haspopup={dockerCardReady(app) ? 'menu' : undefined}
+              aria-expanded={dockerCardReady(app) ? externalMenuFor === app.id : undefined}
+              aria-describedby={`lp-state-${app.id}`}
+              onclick={(e) => toggleExternalMenu(e, app)}
+              title={app.name}
+            >
+              <span class="lp-card-icon" style="--lp-ic: {app.iconBg ?? app.color ?? 'var(--hv-primary)'};">
+                {#if app.customIcon}
+                  {@html app.customIcon}
+                {:else}
+                  <Icon name={app.icon} size={28} stroke={1.8} />
+                {/if}
+                <!-- Running marker. Presence, not colour, carries the
+                     meaning — exactly how the dock's running indicator
+                     works. A grey "stopped" dot cannot be drawn here: the
+                     tile ground resolves to mid-grey (~rgb(100,105,117))
+                     over the scrim, so a neutral dot lands at ~1:1 against
+                     it and a green one at ~1.1:1. The tile's accessible
+                     description already states the stopped case. -->
+                {#if app.running}
+                  <span class="lp-card-state" aria-hidden="true"></span>
+                {/if}
+              </span>
+              <span class="lp-card-name">{app.name}</span>
+              <span class="lp-card-sub" id={`lp-state-${app.id}`}>{dockerCardDesc(app)}</span>
+            </button>
+          {:else}
+            <button
+              type="button"
+              class="lp-card"
+              class:dragging={draggingAppId === app.id}
+              draggable="true"
+              aria-describedby={info ? `lp-info-${app.id}` : undefined}
+              onclick={() => { onAppClick(app.id); onClose(); }}
+              ondragstart={(e) => handleDragStart(e, app)}
+              ondragend={handleDragEnd}
+              title={app.name}
+            >
+              <span class="lp-card-icon" style="--lp-ic: {app.iconBg ?? app.color ?? 'var(--hv-primary)'};">
+                {#if app.customIcon}
+                  {@html app.customIcon}
+                {:else}
+                  <Icon name={app.icon} size={28} stroke={1.8} />
+                {/if}
+              </span>
+              <span class="lp-card-name">{app.name}</span>
+              {#if info}
+                <span class="lp-sr" id={`lp-info-${app.id}`}>{info}</span>
+              {/if}
+            </button>
+          {/if}
+        {/each}
+
+        {#if canAddShortcut && !searchQuery.trim() && !selectedCategory}
+          <!-- The last cell: "add a web shortcut". Same tile geometry as an
+               app tile so the grid stays one rhythm; only the icon ground
+               differs (a dashed ring = "empty slot", not an app's colour).
+               `aria-label` is the dialog's full title; the visible label is
+               the short one, exactly as the desktop's old tile did. -->
+          <button
+            type="button"
+            class="lp-card lp-card-add"
+            data-testid="launcher-shortcut-add"
+            aria-label={$t('shortcuts.add')}
+            onclick={() => { onAddShortcut(); onClose(); }}
+          >
+            <span class="lp-card-icon lp-card-icon-add" aria-hidden="true">
+              <IconPlus size={28} stroke={1.8} />
+            </span>
+            <span class="lp-card-name">{$t('shortcuts.add_short')}</span>
+          </button>
+        {/if}
+      </div>
     </div>
   </div>
 
@@ -404,9 +441,11 @@
     /* 64px top matches the mock's own content inset. */
     padding: 64px 16px 24px;
     background: var(--hv-launcher-scrim);
-    /* The mock's own `blur(2px)` on this frame. Write the STANDARD property
-       only — never the `-webkit-` pair: the CSS minifier collapses the two
-       into a lone `-webkit-backdrop-filter`, and Firefox (which reports
+    /* The mock's own `blur(2px)` on this frame, raised to 6px in
+       `--hv-launcher-blur` (see tokens.css) once the desktop behind it turned
+       out to stay legible. Write the STANDARD property only — never the
+       `-webkit-` pair: the CSS minifier collapses the two into a lone
+       `-webkit-backdrop-filter`, and Firefox (which reports
        `CSS.supports('-webkit-backdrop-filter', …) === false`) then drops the
        blur entirely. E2E 5.7 asserts the resolved value, so the pair cannot
        come back unnoticed.
@@ -524,9 +563,38 @@
 
   .lp-search-field::placeholder { color: var(--hv-launcher-placeholder); }
 
-  /* The bar is one white surface, so the ring goes on the wrapper. */
+  /* Focus indicator — the launcher's OWN neutral ring, never the brand blue.
+     Two reasons the brand ring had to go: (1) the dialog's focus trap lands on
+     this field when the launcher opens, so a brand ring here was a permanent
+     blue halo around the capsule, not a "you just tabbed here" affordance;
+     (2) it was painted TWICE — once by this rule and once by the global
+     `input:focus` rule in base.css, on the field inside the capsule.
+     The replacement is a 2px slate rim drawn INSIDE the capsule (`inset`, so
+     the bar keeps its exact silhouette): the rim composites to
+     ≈`rgb(82,88,101)`, i.e. **7.1:1** against the white surface it marks (the
+     3:1 floor of a focus indicator, 1.4.11 / 2.4.7, with a wide margin), and it
+     introduces no second hue on a screen whose only accent is the app tiles'
+     own gradients. An OUTSIDE ring was tried first and is invisible here: on a
+     white capsule it merges with the bar, and on the dark scrim a dark halo is
+     only ~10/255 darker than the veil. The chips / tiles keep their white +
+     slate halo because they sit ON the scrim; this bar is a white surface,
+     where an inset rim is the one reading that survives. */
   .lp-search:focus-within {
-    box-shadow: var(--hv-focus-ring), var(--hv-launcher-search-shadow);
+    box-shadow:
+      inset 0 0 0 2px rgba(15, 23, 42, 0.72),
+      var(--hv-launcher-search-shadow);
+  }
+
+  /* The field never paints a ring of its own: base.css's `input:focus`
+     (specificity 0,1,1) outranks the plain class above and would stamp the
+     brand ring back INSIDE the capsule. The wrapper owns the indicator — one
+     surface, one ring. Kept as a two-class selector on purpose, so it still
+     wins if that global rule ever gains weight. */
+  .lp-search .lp-search-field:focus,
+  .lp-search .lp-search-field:focus-visible {
+    outline: none;
+    border-color: transparent;
+    box-shadow: none;
   }
 
   .lp-search-clear {
@@ -730,6 +798,17 @@
   .lp-card-icon :global(img) {
     width: var(--hv-launcher-icon-glyph);
     height: var(--hv-launcher-icon-glyph);
+  }
+
+  /* The "add a web shortcut" tile (last cell of the grid). It keeps the app
+     tile's box and label so the grid stays one rhythm; only the icon ground
+     differs — a DASHED ring, the universal "empty slot" reading, instead of
+     an app's identity gradient. Declared AFTER `.lp-card-icon` on purpose:
+     same specificity, so source order is what drops that gradient. */
+  .lp-card-icon-add {
+    background: transparent;
+    border: 1.5px dashed var(--hv-launcher-tile-muted-fg);
+    box-shadow: none;
   }
 
   /* Docker-app state marker in the tile's top-right corner (the mock's own

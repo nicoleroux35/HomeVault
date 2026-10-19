@@ -22,7 +22,6 @@
   import type { AvSettings, AvScan, AvThreat } from '$lib/services/api';
   import { draft, registerGroup } from '$lib/stores/settingsDraft.svelte';
   import { t } from '$lib/stores/i18n';
-  import { IconShieldCheckered } from '@tabler/icons-svelte';
   import SettingsCard from './SettingsCard.svelte';
   import PathPickerField from '$lib/components/theme/PathPickerField.svelte';
   import Switch from '$lib/components/theme/Switch.svelte';
@@ -157,7 +156,7 @@
   the editable fields bind to the shared `draft.antivirus` group and the
   per-card Save button is gone. Scan/threat actions remain immediate.
 -->
-<SettingsCard icon={IconShieldCheckered} iconVariant="green" title={$t('antivirus.title')} subtitle={$t('antivirus.subtitle')} class={klass}>
+<SettingsCard title={$t('antivirus.title')} subtitle={$t('antivirus.subtitle')} class={klass}>
   {#if loading}
     <p class={settingsHint}>{$t('antivirus.loading')}</p>
   {:else}

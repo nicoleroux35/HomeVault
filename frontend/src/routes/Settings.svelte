@@ -2,14 +2,14 @@
      File          : Settings.svelte
      Author        : Nicolas Le Roux
      Created       : 28/09/2026
-     Last modified : 13/10/2026 by Nicolas Le Roux
+     Last modified : 19/10/2026 by Nicolas Le Roux
      Version       : 1.0.0
 
      Description:
      The Settings app: the 8 rail groups (general, security, network,
      appearance, widgets, notifications, AI, monitoring/system) rendered
      from the settings catalog, with the embedded TLS/Antivirus/
-     Anti-Ransomware/SNMP sub-cards, wallpaper picker and the shared draft
+     Anti-Ransomware/SNMP/MCP sub-cards, wallpaper picker and the shared draft
      + explicit Save All flow.
 
      Dependencies:
@@ -72,7 +72,8 @@
     settingsBtn,
     settingsBtnGhost,
     settingsBtnPrimary,
-    settingsBtnDanger
+    settingsBtnDanger,
+    settingsIconTile
   } from '$lib/components/settings/vocabulary';
   import AntivirusCard from '$lib/components/settings/AntivirusCard.svelte';
   import AntiRansomwareCard from '$lib/components/settings/AntiRansomwareCard.svelte';
@@ -80,6 +81,7 @@
   import TlsCard from '$lib/components/settings/TlsCard.svelte';
   import UpsCard from '$lib/components/settings/UpsCard.svelte';
   import SnmpCard from '$lib/components/settings/SnmpCard.svelte';
+  import McpCard from '$lib/components/settings/McpCard.svelte';
   import { IconAlertTriangle, IconCookie, IconShield, IconCheck, IconSettings, IconWifiOff, IconRefresh, IconMapPin, IconPencil } from '@tabler/icons-svelte';
 
   // Sidebar categories — 8 grouped entries instead of a 12-item flat list.
@@ -97,7 +99,7 @@
   //   appearance→ Wallpaper
   //   widgets   → Active monitors + Refresh + Weather widget
   //   notifications → E-mail / SMTP + Alerts + Webhook
-  //   ai        → AI Assistant
+  //   ai        → AI Assistant + External agents (MCP gateway)
   //   monitoring→ UPS + SNMP
   //   system    → Software update + System information + Data management +
   //               Privacy
@@ -904,26 +906,25 @@
     <SettingsSaveButton />
   {/snippet}
 
-  <!-- Content header — the active category's identity: tinted icon tile,
-       title, and the same subtitle the rail item shows. Sits flush above the
-       scrolling panel and does not scroll with it. -->
-  <div class="flex-none flex items-center gap-3 px-6 pt-5 pb-4 bg-[var(--hv-settings-tile)] border-b-[1.45px] border-[var(--hv-settings-border)]">
-    <span
-      class="grid place-items-center w-9 h-9 rounded-xl flex-none"
-      style="background: color-mix(in srgb, {activeCat.accent} var(--hv-settings-cat-tint), transparent); color: {activeCat.accent}"
-    >
-      <svelte:component this={activeCat.icon} size={20} />
-    </span>
-    <div class="min-w-0">
-      <!-- The type utilities are `!` on purpose: `styles/theme/base.css`
-           declares a bare `h2 { font-size: … }` OUTSIDE any `@layer`, and an
-           unlayered rule outranks every layered Tailwind utility no matter how
-           specific the utility's class is. Without the flag this heading
-           renders at the 28px base size instead of the design's 16px/700
-           (`text-md`, the 16px content-scale step — `text-base` is 14px). -->
-      <h2 data-testid="settings-header-title" class="m-0 text-md! font-bold! leading-6! text-[var(--hv-settings-title)]!">{$t(activeCat.labelKey)}</h2>
-      <p class="m-0 mt-0.5 text-xs leading-4 text-[var(--hv-settings-label)]">{$t(activeCat.subtitleKey)}</p>
-    </div>
+  <!-- Content header — the active category's identity: title over the same
+       subtitle the rail item shows, on two lines, and nothing else. The 36px
+       tinted icon tile was removed 2026-10-19: the active rail item already
+       carries the category glyph, and the tile cost the panel 36px of height.
+       Sits flush above the scrolling panel and does not scroll with it. -->
+  <div class="flex-none px-6 py-2.5 bg-[var(--hv-settings-tile)] border-b-[1.45px] border-[var(--hv-settings-border)]">
+    <!-- The type utilities are `!` on purpose: `styles/theme/base.css`
+         declares a bare `h2 { font-size: … }` OUTSIDE any `@layer`, and an
+         unlayered rule outranks every layered Tailwind utility no matter how
+         specific the utility's class is. Without the flag this heading
+         renders at the 28px base size instead of the design's 16px/700
+         (`text-md`, the 16px content-scale step — `text-base` is 14px). -->
+    <h2 data-testid="settings-header-title" class="m-0 text-md! font-bold! leading-5! text-[var(--hv-settings-title)]!">{$t(activeCat.labelKey)}</h2>
+    <!-- `mb-0!` is load-bearing for the same reason as the `!` above, one
+         rule further down: `base.css` declares an unlayered
+         `p { margin-bottom: var(--hv-space-4) }`, so a plain `m-0` loses and
+         the header silently keeps 16px of dead height under the subtitle
+         (measured 73px instead of 57). -->
+    <p data-testid="settings-header-subtitle" class="m-0! text-xs leading-4 text-[var(--hv-settings-label)]">{$t(activeCat.subtitleKey)}</p>
   </div>
 
   {#if loading}
@@ -975,11 +976,11 @@
         </div>
       {/if}
       {#if activeCategory === 'security'}
-        <!-- The four security sub-cards carry their own header (icon tile +
-             title + subtitle) via the shared SettingsCard shell, so they need
-             no section label above them — their `settings-card-title` IS the
-             card heading (E2E 12.1 reads those). They stay *direct* children
-             of the panel so E2E 2.5's clip check still covers them. -->
+        <!-- The four security sub-cards carry their own header (title +
+             subtitle, two lines) via the shared SettingsCard shell, so they
+             need no section label above them — their `settings-card-title` IS
+             the card heading (E2E 12.1 reads those). They stay *direct*
+             children of the panel so E2E 2.5's clip check still covers them. -->
         <TlsCard class="mt-6" />
         <AntivirusCard class="mt-3" />
         <AntiRansomwareCard class="mt-3" />
@@ -997,8 +998,19 @@
             <div class="@container">
               <div class="settings-wallpaper-grid grid grid-cols-3 @max-[380px]:grid-cols-2 gap-3 mt-1" role="radiogroup" aria-labelledby="wallpaperLabel">
                 {#each BUNDLED_WALLPAPERS as w, i (w.id)}
-                  <button type="button" class="settings-wallpaper-tile relative p-0 border-0 bg-transparent cursor-pointer" class:is-selected={w.url === selectedWpUrl} role="radio" aria-checked={w.url === selectedWpUrl} aria-label={`${$t('settings.wallpaper')} ${i + 1}`} onclick={() => wallpaperStore.setWallpaper({ type: 'image', value: w.url })}>
-                    <img class="settings-wallpaper-thumb w-full h-auto rounded-lg object-cover border-[1.45px] border-[var(--hv-settings-border)]" src={w.thumb} alt="" decoding="async" width="320" height="200" />
+                  <button type="button" class="settings-wallpaper-tile relative block w-full p-0 border-0 bg-transparent cursor-pointer" class:is-selected={w.url === selectedWpUrl} role="radio" aria-checked={w.url === selectedWpUrl} aria-label={`${$t('settings.wallpaper')} ${i + 1}`} onclick={() => wallpaperStore.setWallpaper({ type: 'image', value: w.url })}>
+                    <!-- `aspect-[8/5]` is the equaliser: the bundled thumbs are
+                         not all the same shape (hv-09 and hv-13 ship 640x480,
+                         the rest 640x427), so a height derived from the file
+                         let those two render taller than their neighbours.
+                         A fixed ratio + `cover` gives all 15 tiles one
+                         identical box. `h-auto` is required, not cosmetic:
+                         the `height="200"` attribute is a presentational
+                         hint mapped to `height:200px`, and with both width
+                         and height definite `aspect-ratio` is ignored.
+                         `block` kills the inline baseline gap under the
+                         image, which otherwise pads the tile by ~4px. -->
+                    <img class="settings-wallpaper-thumb block w-full h-auto aspect-[8/5] rounded-lg object-cover border-[1.45px] border-[var(--hv-settings-border)]" src={w.thumb} alt="" decoding="async" width="320" height="200" />
                     {#if w.url === selectedWpUrl}<span class="settings-wallpaper-check absolute top-1.5 right-1.5 grid place-items-center w-6 h-6 rounded-full bg-[var(--hv-primary)] text-[var(--hv-on-primary)]"><IconCheck size={16} stroke={3} /></span>{/if}
                   </button>
                 {/each}
@@ -1212,10 +1224,16 @@
             <div class="settings-ai-status flex items-center gap-2 py-3 text-sm text-[var(--hv-settings-label)]">
               <span class="settings-ai-status-dot {cn('w-2 h-2 rounded-full', ollamaRunning ? 'bg-[var(--hv-success)]' : 'bg-[var(--hv-error)]')}"></span>
               <span>{ollamaRunning ? $t('settings.ai_ollama_running') : $t('settings.ai_ollama_down')}</span>
-              <button class="settings-ai-refresh-btn ml-auto grid place-items-center w-[var(--hv-touch-target-min)] h-[var(--hv-touch-target-min)] rounded-lg border-none bg-transparent text-[var(--hv-settings-label)] cursor-pointer hover:text-[var(--hv-settings-title)]" onclick={() => { loadAiModels(); loadRecommendations(); }} aria-label={$t('settings.ai_refresh')} title={$t('settings.ai_refresh')}><IconRefresh size={20} /></button>
+              <button class="settings-ai-refresh-btn ml-auto grid place-items-center w-[var(--hv-touch-target-min)] h-[var(--hv-touch-target-min)] rounded-full border-none bg-transparent text-[var(--hv-settings-label)] cursor-pointer hover:text-[var(--hv-settings-title)]" onclick={() => { loadAiModels(); loadRecommendations(); }} aria-label={$t('settings.ai_refresh')} title={$t('settings.ai_refresh')}><IconRefresh size={20} /></button>
             </div>
           {/if}
         </div>
+        <!-- External agents (MCP gateway). Lives here, not in the Chat app:
+             it is a server-wide admin configuration (kill-switch, global
+             permissions, revocable tokens) sitting next to the model choice.
+             The card probes `/api/mcp/status` and renders nothing for a
+             non-admin session. -->
+        <McpCard class="mt-3" />
       {/if}
       {#if activeCategory === 'monitoring'}
         <UpsCard class="mt-6" />
@@ -1228,7 +1246,7 @@
             <div class={cn(settingsRow, 'settings-widget-row')} data-widget={def.id}>
               <div class="flex items-center gap-3 min-w-0">
                 <span
-                  class="grid place-items-center w-7 h-7 rounded-lg flex-none"
+                  class={settingsIconTile}
                   style="background: color-mix(in srgb, {def.color} var(--hv-settings-cat-tint), transparent); color: {def.color}"
                 >
                   <svelte:component this={def.icon} size={16} />
@@ -1514,15 +1532,15 @@
         <div data-testid="settings-card-title" class={secLabel}></div>
         <div data-testid="settings-card" class={settingsCard}>
           <div class="settings-privacy-feature flex items-start gap-3 py-3 border-b-[1.45px] border-[var(--hv-settings-hairline)]">
-            <span class="grid place-items-center w-9 h-9 rounded-xl flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><IconShield size={20} /></span>
+            <span class={cn(settingsIconTile, 'bg-[var(--hv-primary-light)] text-[var(--hv-primary)]')}><IconShield size={16} /></span>
             <div><strong class="block text-sm text-[var(--hv-settings-title-strong)]">{$t('settings.privacy_local')}</strong><p class="m-0 text-xs text-[var(--hv-settings-label)]">{$t('settings.privacy_local_desc')}</p></div>
           </div>
           <div class="settings-privacy-feature flex items-start gap-3 py-3 border-b-[1.45px] border-[var(--hv-settings-hairline)]">
-            <span class="grid place-items-center w-9 h-9 rounded-xl flex-none bg-[var(--hv-warning-bg)] text-[var(--hv-warning)]"><IconCookie size={20} /></span>
+            <span class={cn(settingsIconTile, 'bg-[var(--hv-warning-bg)] text-[var(--hv-warning)]')}><IconCookie size={16} /></span>
             <div><strong class="block text-sm text-[var(--hv-settings-title-strong)]">{$t('settings.privacy_cookies')}</strong><p class="m-0 text-xs text-[var(--hv-settings-label)]">{$t('settings.privacy_cookies_desc')}</p></div>
           </div>
           <div class="settings-privacy-feature flex items-start gap-3 py-3">
-            <span class="grid place-items-center w-9 h-9 rounded-xl flex-none bg-[var(--hv-success-bg)] text-[var(--hv-success)]"><IconWifiOff size={20} /></span>
+            <span class={cn(settingsIconTile, 'bg-[var(--hv-success-bg)] text-[var(--hv-success)]')}><IconWifiOff size={16} /></span>
             <div><strong class="block text-sm text-[var(--hv-settings-title-strong)]">{$t('settings.privacy_offline')}</strong><p class="m-0 text-xs text-[var(--hv-settings-label)]">{$t('settings.privacy_offline_desc')}</p></div>
           </div>
         </div>

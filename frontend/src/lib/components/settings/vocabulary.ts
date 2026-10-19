@@ -152,9 +152,15 @@ export const settingsBtnDanger =
 export const settingsBtnSuccess =
   'settings-btn-success border-none bg-[var(--hv-success)] text-[var(--hv-on-primary)] hover:bg-[var(--hv-success-hover)]';
 
-/** The 36px icon tile of a sub-card header: category colour at 9% behind a
- *  20px glyph in the full colour. Pass the colour as a custom property. */
-export const settingsCardIcon = 'grid place-items-center w-9 h-9 rounded-xl flex-none';
+/** The one icon tile of this screen: a circle at `--hv-settings-icon-tile`
+ *  (28px) holding a 16px glyph. Used by the Widgets rows and the Privacy rows;
+ *  the rail tile renders the same shape from `WindowSidebarItem`'s rich CSS and
+ *  takes its diameter from the same token. Pass the colour as a custom
+ *  property (`background`/`color`). Replaced the old 36px / 18px-corner
+ *  `settingsCardIcon` on 2026-10-19, which also no longer had a caller once the
+ *  sub-card headers lost their tile. */
+export const settingsIconTile =
+  'grid place-items-center w-[var(--hv-settings-icon-tile)] h-[var(--hv-settings-icon-tile)] rounded-full flex-none';
 
 /* The category accents, for the sub-cards. A sub-card is rendered from inside
    a category branch of Settings.svelte, so it cannot read `activeCat.accent`

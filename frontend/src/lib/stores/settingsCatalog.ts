@@ -2,7 +2,7 @@
  * File          : settingsCatalog.ts
  * Author        : Nicolas Le Roux
  * Created       : 13/10/2026
- * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Last modified : 19/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
@@ -130,7 +130,7 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
     subtitleKey: 'settings.nav_subtitle_ai',
     icon: IconBrain,
     accent: 'var(--hv-settings-cat-ai)',
-    keywords: ['ai', 'assistant', 'ollama', 'model', 'llm', 'chat']
+    keywords: ['ai', 'assistant', 'ollama', 'model', 'llm', 'chat', 'mcp', 'agent', 'external agents', 'token']
   },
   {
     key: 'monitoring',
