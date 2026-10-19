@@ -133,6 +133,7 @@ pin its checksum without editing the script:
 ```bash
 sudo HV_RELEASE_URL=https://mirror/homevault.tar.gz bash -c "$(curl -fsSL https://raw.githubusercontent.com/nicoleroux35/HomeVault/main/installer/install.sh)"
 sudo HV_RELEASE_SHA256=<hex> bash -c "$(curl -fsSL https://raw.githubusercontent.com/nicoleroux35/HomeVault/main/installer/install.sh)"
+sudo HV_RELEASE_TOKEN=<github-token> bash -c "$(curl -fsSL https://raw.githubusercontent.com/nicoleroux35/HomeVault/main/installer/install.sh)"
 ```
 
 Alternative method (from a local copy of the repository, with an archive
@@ -141,6 +142,21 @@ already downloaded):
 ```bash
 sudo bash installer/install.sh /path/to/homevault.tar.gz
 ```
+
+> **Private project.** The repository is private, so the `curl`/`wget` commands
+> in *Installation* only work from a machine that is authenticated against
+> GitHub — an anonymous request gets a 404, not a 401. Either pass a token with
+> read access to the releases:
+>
+> ```bash
+> sudo HV_RELEASE_TOKEN=<github-token> bash -c "$(curl -fsSL https://raw.githubusercontent.com/nicoleroux35/HomeVault/main/installer/install.sh)"
+> ```
+>
+> or copy the archive to the target machine and install from it:
+>
+> ```bash
+> sudo bash installer/install.sh /path/to/homevault-x86_64.tar.gz
+> ```
 
 After installation, open your browser at the address displayed at the end
 of execution. On first launch, a setup wizard will guide you through
