@@ -345,15 +345,17 @@ another framework's design language (Fluent, Material, …) as an authority.
   `--hv-info` = primary. Surfaces are **opaque paper** (`--hv-shell-*`:
   glass #FFFFFF / card #F7F8FA / fill #EFF1F4 / hairlines #DCE1E7) — no blur,
   a dark photo wallpaper must never wash out ink text. Radius stops follow
-  `design-tokens.md` §4 — badges 8px, controls 12px, every container 18px,
-  tags pill — see the next rule.
-- **Non-colour craft comes from `design-tokens.md`; colour does not.**
+  the Apple-derived reference §4 — badges 8px, controls 12px, every container
+  18px, tags pill — see the next rule.
+- **Non-colour craft comes from the Apple-derived reference; colour does
+  not.**
   Spacing rhythm (`--hv-section-gap-*`, `--hv-component-gap-*`,
   `--hv-card-padding-*`, `--hv-content-max-width*`), elevation
   (multi-layer contact + ambient shadows), weights (400–900), leading
   (1.1 title / 1.53 body), tracking (-0.015em title) and the layout
-  breakpoints (734 / 1068 / 1440) are ported from `design-tokens.md` at the
-  repo root. Its **palette is not adopted** (one accent `#1E62AE` stays), nor
+  breakpoints (734 / 1068 / 1440) are ported from that reference (adopted
+  2026-10-19; the source document is not part of the repository, the values
+  live in `tokens.css`). Its **palette is not adopted** (one accent `#1E62AE` stays), nor
   are its other-hue display gradients or its pill *form* buttons — see
   `docs/guides/design-system.md` §2.2 and §3.2 for the reasoning and the one
   documented deviation.
