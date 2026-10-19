@@ -106,7 +106,7 @@ follows [Semantic Versioning](https://semver.org/).
   logs, and a sequential `update-all` queue. Install/uninstall share their core
   with the MCP `apps.*` tools. See `docs/guides/docker.md`.
 
-- GitHub community health files: `LICENSE` (MIT), `SECURITY.md`,
+- GitHub community health files: `LICENSE` (source-available), `SECURITY.md`,
   `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, issue/PR templates, Dependabot,
   `CODEOWNERS`, `.editorconfig`, `.gitattributes`.
 - SPDX metadata (`license`, `repository`, `homepage`) in `Cargo.toml`,

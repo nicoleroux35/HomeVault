@@ -8,7 +8,7 @@ disagree on a rule, `CLAUDE.md` wins.
 
 ## Workflow
 
-1. Fork the repo and create a feature branch from `main`.
+1. Create a feature branch from `main` (fork the repo first if you have access).
 2. Keep changes focused; one feature or fix per pull request.
 3. Follow the checklist below, then open a PR against `main` using the
    PR template. Link any related issue.
@@ -24,6 +24,7 @@ disagree on a rule, `CLAUDE.md` wins.
       (see `CLAUDE.md` → "Keep the repository clean").
 - [ ] Accessibility invariants hold (44px targets, visible focus,
       contrast, focus-trapped modals, keyboard paths, labelled controls).
+- [ ] CLA accepted in the PR description (see `CLA.md`).
 - [ ] Security: `require_auth` on reads, `require_admin` on mutations;
       no secrets in logs, errors, URLs, or client storage; inputs validated
       server-side; parameterised SQL only.
@@ -41,6 +42,12 @@ Use the issue templates (`.github/ISSUE_TEMPLATE/`). Include the HomeVault
 version or commit SHA, reproduction steps, expected vs actual behaviour,
 and redacted logs. Security issues follow `SECURITY.md` — never a public
 issue.
+
+## Contributor License Agreement
+
+HomeVault is source-available. Contributions are welcome and are accepted
+under the [Contributor License Agreement](CLA.md). Add the acceptance line to
+your PR description; a PR without it cannot be merged.
 
 ## Code of conduct
 

@@ -2,7 +2,8 @@
   "name": "homevault-frontend",
   "private": true,
   "version": "1.0.0",
-  "license": "MIT",
+  "author": "Nicolas Le Roux",
+  "license": "SEE LICENSE IN LICENSE",
   "repository": {
     "type": "git",
     "url": "https://github.com/nicoleroux35/HomeVault.git",
@@ -35,9 +36,7 @@
     "vite": "^8.3.3"
   },
   "dependencies": {
-    "@internationalized/date": "^3.12.4",
     "@lucide/svelte": "^1.45.0",
-    "@melt-ui/svelte": "^0.86.6",
     "@novnc/novnc": "^1.7.0",
     "@phosphor-icons/web": "^2.1.2",
     "@tabler/icons-svelte": "^3.49.0",

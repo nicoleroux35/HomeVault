@@ -310,8 +310,9 @@ None at the moment.
 
 ## 📄 License
 
-Proprietary - HomeVault Project
+Source-available — see the repository [`LICENSE`](../../../../../LICENSE).
+Copyright (c) 2026 Nicolas Le Roux. All rights reserved.
 
 ## 👥 Contributors
 
-- HomeVault Team
+- Nicolas Le Roux
