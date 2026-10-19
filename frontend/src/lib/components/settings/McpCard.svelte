@@ -366,7 +366,7 @@
             disabled={creating || !newTokenName.trim()}
             aria-label={$t('mcp.token_create')}
           >
-            <IconPlus size={18} stroke={2} />
+            <IconPlus size={16} stroke={2} />
             {$t('mcp.token_create')}
           </button>
         </form>
