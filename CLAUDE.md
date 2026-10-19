@@ -172,7 +172,7 @@ the Chat AI with relevant context. It must stay healthy and documented:
   add a new indexer function in `src/rag_indexers.rs`, register it in
   `index_all()`, add an endpoint if needed, and update the guide.
 - **Migration 033** creates the RAG tables. Any schema change needs a new
-  migration (latest is 036 — see `sqlx/migrations/`) and the migration count
+  migration (latest is 048 — see `sqlx/migrations/`) and the migration count
   must be updated in `docs/BACKEND.md`.
 - `docs/guides/rag.md` is **not frozen** — update it in the same change that
   modifies RAG behavior.

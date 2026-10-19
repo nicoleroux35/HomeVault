@@ -162,7 +162,7 @@ Notable handlers (see `API.md` for the full map):
 ## Storage / repository layer
 
 `src/storage/` holds SQLx repositories. Each repo wraps a pool and provides typed
-async CRUD. Migrations are in `sqlx/migrations/` (**001–038**), embedded in the
+async CRUD. Migrations are in `sqlx/migrations/` (**001–048**), embedded in the
 binary via `include_dir!` and applied at startup. `storage/database.rs::Database::run_migrations`
 runs each pending file once (tracked in `_hv_migrations`); the hand-rolled SQL
 statement splitter tracks `--` line comments explicitly, so a semicolon inside a
@@ -176,6 +176,17 @@ default roles. Recent migrations: `027_app_stores.sql`,
 `035_login_attempts_success_user_agent.sql` (user-agent on successful logins),
 `036_sync_jobs.sql` (background sync job tracking),
 `037_setup_state.sql` (durable first-run setup state — see below).
+Recent additions: `038_mcp_server.sql` (external AI-agent access, MCP),
+`039_explorer_recents.sql` (recently opened paths, bounded to 50 per user),
+`040_setup_progress.sql` (reboot-safe Setup Wizard progress),
+`041_resource_shares.sql` (fine-grained per-member access to apps,
+folders and SMB/NFS shares), `042_whats_new.sql` (per-user "What's New"
+acknowledgement), `043_scheduled_tasks.sql` (generic scheduled-task engine),
+`044_metrics_history.sql` (historical performance metrics),
+`045_disk_power.sql` (per-disk hdparm APM/spindown timers),
+`046_snapshot_schedules.sql` (pool snapshots with GFS retention),
+`047_user_lockout_expiry.sql` (temporary vs. permanent account locks),
+`048_app_meta.sql` (schema/bookkeeping metadata).
 
 All repositories share a common `Repository` trait (`src/storage/repository.rs`)
 exposing standard CRUD (`find_by_id`, `find_all`, `create`, `update`, `delete`,
