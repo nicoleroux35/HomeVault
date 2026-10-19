@@ -40,7 +40,7 @@ keyboard**. The concrete invariants (full detail in `CLAUDE.md` →
   `tower::ServiceExt::oneshot`), Playwright E2E (`tests/e2e/<screen>/`).
   Keep `TESTING.md` counts in sync in the same change.
 - Keep `docs/` current and English-only in the same change that touches
-  code; `docs/guides/design-system.md` is not frozen.
+  code. No page is frozen.
 - English-only code comments. No scratch/reference files committed.
 - Secrets never leak; OWASP/ASVS review on every endpoint; least privilege
   (`require_auth` reads, `require_admin` mutations).
