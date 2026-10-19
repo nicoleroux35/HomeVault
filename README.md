@@ -131,7 +131,7 @@ Releases (`homevault-x86_64.tar.gz` / `-aarch64` / `-armv7l`). Redirect it or
 pin its checksum without editing the script:
 
 ```bash
-sudo HV_RELEASE_URL=https://mirror/homevault.tar.gz bash -c "$(curl -fsSL https://raw.githubusercontent.com/nicoleroux35/HomeVault/main/installer/install.sh)"
+sudo HV_RELEASE_URL=https://example.com/homevault-x86_64.tar.gz bash -c "$(curl -fsSL https://raw.githubusercontent.com/nicoleroux35/HomeVault/main/installer/install.sh)"
 sudo HV_RELEASE_SHA256=<hex> bash -c "$(curl -fsSL https://raw.githubusercontent.com/nicoleroux35/HomeVault/main/installer/install.sh)"
 sudo HV_RELEASE_TOKEN=<github-token> bash -c "$(curl -fsSL https://raw.githubusercontent.com/nicoleroux35/HomeVault/main/installer/install.sh)"
 ```
@@ -180,16 +180,9 @@ In TUI mode the detailed output (every package, every warning) goes to
 outcome. `--yes` also works for automation: it takes the documented default of
 every question, HTTPS included.
 
-> **Private project.** The repository is private, so the `curl`/`wget` commands
-> in *Installation* only work from a machine that is authenticated against
-> GitHub — an anonymous request gets a 404, not a 401. Either pass a token with
-> read access to the releases:
->
-> ```bash
-> sudo HV_RELEASE_TOKEN=<github-token> bash -c "$(curl -fsSL https://raw.githubusercontent.com/nicoleroux35/HomeVault/main/installer/install.sh)"
-> ```
->
-> or copy the archive to the target machine and install from it:
+> **No GitHub account needed.** The repository and its release assets are
+> public, so the commands above work as-is on a fresh machine. If you prefer to
+> install from a local copy of the repository and a pre-downloaded archive:
 >
 > ```bash
 > sudo bash installer/install.sh /path/to/homevault-x86_64.tar.gz
