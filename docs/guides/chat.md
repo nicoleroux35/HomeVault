@@ -1,7 +1,10 @@
 # AI Assistant (Chat)
 
-**Purpose:** Ollama-backed chat and model management (plus the AI model config card
-on Settings). Integrated with the RAG knowledge base.
+**Purpose:** the local AI assistant — an Ollama-backed chat that answers questions
+about HomeVault itself (RAG) and manages models from Settings. Nothing leaves the
+machine: no provider, no API key, no cloud account. The assistant is also how an
+operator asks "how does this feature work?" without leaving the appliance, while
+an external agent drives the appliance through the [MCP server](./mcp.md).
 
 ## Backend
 
@@ -16,7 +19,7 @@ Router entries in `src/web/mod.rs` under `/api/chat`.
 | `POST /chat/send/stream` | auth | streaming chat (SSE, RAG-enriched prompt) |
 | `GET /chat/models` | auth | list installed models |
 | `POST /chat/models/pull` | admin | pull a model |
-| `GET /chat/models/recommend` | ⚠️ **none** | recommendations — `handle_chat_models_recommend()` takes no `HeaderMap`/session parameter at all, unlike every other handler here. Real, unfixed gap; see Invariants below. |
+| `GET /chat/models/recommend` | auth | five models ranked for this host's RAM/GPU (`recommend_models`) |
 | `GET /chat/model` | auth | current model |
 | `PUT /chat/model` | admin | set current model |
 
@@ -69,6 +72,51 @@ See [RAG Knowledge Base](./rag.md) for the RAG endpoints (`/api/rag/*`).
   methods and `src/handlers/chat.rs` are open to edits. The invariants above
   stay binding: a change keeps the Rust integration + Playwright E2E suites
   green.
+
+## Model selection (five models, ranked for the host)
+
+`GET /chat/models/recommend` returns exactly **five** entries from
+`MODEL_CATALOG` (`src/handlers/chat.rs`), ranked by `fit_for()`:
+
+| Rank | Rule |
+|------|------|
+| 1 | GPU fit first — the whole model fits in VRAM (Ollama keeps it resident) |
+| 2 | then the largest model that fits in system RAM, then progressively smaller/faster |
+| 3 | when fewer than five fit, the list is completed with the next smallest models, flagged `fits: false` and shown with a "needs N GB" chip — never labelled "best choice" |
+
+The catalog only contains names that exist in the public Ollama library: a name
+that does not resolve fails at `ollama pull`, in front of the operator. Current
+entries span 0.4 GB (`qwen3:0.6b`, 1 GB RAM floor) to 5.2 GB (`qwen3:8b`,
+12 GB) so every supported machine gets a meaningful ladder. Locked by
+`handlers::chat::tests` (`…_returns_five_real_catalog_entries`,
+`…_never_puts_a_model_that_does_not_fit_first`,
+`…_always_returns_five_even_on_a_tiny_host`, `…_prefers_vram_fit`,
+`catalog_names_are_unique_and_sized`).
+
+The embedding model used by the knowledge base is separate
+(`nomic-embed-text`, see [RAG](./rag.md)) — it is not part of the five, and the
+UI never offers it as a chat model.
+
+## Why Ollama (runtime evaluation)
+
+HomeVault needs a runtime that fits an appliance: one binary, no Python, model
+download by name, streaming, and CPU inference on 1 GB. Evaluated 2026-10-19:
+
+| Runtime | Verdict |
+|---------|---------|
+| **Ollama** | **chosen** — static Go binary (amd64/arm64), official installer + systemd unit, model registry with `pull`, streaming NDJSON, `/v1` compatibility, automatic CUDA/ROCm/Metal split, keeps the model resident |
+| llama.cpp `llama-server` | single C++ binary and the only option on **armv7l**, but no registry: the operator must fetch a GGUF + tokenizer by hand, so the Settings card could not offer a list |
+| LocalAI | Go, [OI]-compatible and multi-backend, but pulls a much heavier stack and more moving parts than an appliance warrants |
+| vLLM | GPU-only, Python, large — incompatible with the 1 GB floor |
+| llamafile / LM Studio / Jan | single-file or desktop GUI, no server-side model management |
+
+Consequence in the installer: Ollama is provisioned on `x86_64` and `aarch64`
+only. Ollama publishes **no 32-bit ARM build**, so on `armv7l` the install is
+skipped with an explicit message instead of leaving a dead daemon that reads as
+an app bug (`install_ollama()`'s arch guard, asserted by
+`dependencies.rs::tests::test_install_sh_installs_ollama_for_the_chat_app`).
+A future runtime swap stays possible without touching the handlers: the client
+talks [OI]-compatible JSON, not Ollama-specific structs beyond the pull stream.
 
 ## Deployment (Ollama provisioning)
 

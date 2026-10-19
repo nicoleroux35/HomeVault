@@ -29,7 +29,7 @@ Handlers in `src/handlers/settings.rs`. Persistence via
 | `GET/PUT /settings/email` | auth / admin | SMTP |
 | `POST /settings/email/test` | admin | sends a real test email via `EmailService::send_test_email` to `NOTIFICATION_SETTINGS.email` (previously a stub that only logged and always reported success) |
 | `GET/PUT /settings/notifications` | auth / admin | alert email, threshold, `webhook_url`/`webhook_enabled` (new) |
-| `GET/PUT /settings/appearance` | auth / admin | theme, wallpaper (one of the 15 bundled — no upload), accent, density (accent/density fields still round-trip but have no UI) |
+| `GET/PUT /settings/appearance` | auth / admin | theme, wallpaper (one of the 44 bundled — no upload), accent, density (accent/density fields still round-trip but have no UI) |
 | `GET/PUT /settings/update` | auth / admin | update-check frequency — **default `Manual`** since 2026-09-07 (G2: no automatic outbound call to GitHub) |
 | `GET /settings/version` | auth | current version |
 | `GET /settings/export` | admin | JSON dump |
@@ -171,7 +171,8 @@ wording already exists there — no duplicated string.
   `getUpdateSettings`/..., `checkForUpdates`, `exportSettings`/`importSettings`/
   `resetSettings`, `getSnmpSettings`/..., `getUpsList`/`getUpsStatus`/
   `getUpsAvailability`.
-- AI model card on Settings: see [AI Assistant](./chat.md). The same `ai`
+- AI model card on Settings (five hardware-ranked models + the MCP gateway card): see
+  [AI Assistant](./chat.md) and [MCP server](./mcp.md). The same `ai`
   category also mounts `McpCard.svelte` (external agents / MCP gateway,
   admin-only, self-gating on `GET /api/mcp/status`) — see
   [External Agents](./mcp.md). Its kill-switch, permissions and tokens are
