@@ -1,6 +1,6 @@
 # Wallpapers
 
-**Purpose:** Pick the desktop wallpaper from the 15 images bundled into the
+**Purpose:** Pick the desktop wallpaper from the 44 images bundled into the
 binary. **There is no upload feature** — it was removed 2026-09-04 (explicit
 request: only a choice of pre-bundled wallpapers).
 
@@ -8,7 +8,7 @@ request: only a choice of pre-bundled wallpapers).
 
 There is no wallpaper API. The images are static assets:
 
-- `frontend/public/wallpapers/hv-01.webp … hv-15.webp` (+ `hv-NN-thumb.webp`).
+- `frontend/public/wallpapers/hv-01.webp … hv-44.webp` (+ `hv-NN-thumb.webp`).
   `vite build` copies `frontend/public/*` into `static/dist/`, and
   `include_dir!` (`spa::STATIC_DIR`) bakes them into the binary.
 - Served by `spa::serve_wallpapers_file` on `GET /wallpapers/{*path}` — this
@@ -25,7 +25,7 @@ wallpaper_thumbnails_dir}`, the `user_wallpapers` table (migration `030`), and
 
 - `frontend/src/lib/stores/wallpaper.ts` — `WallpaperConfig` is
   `{type:'default'} | {type:'image'; value:string}` only; `normalizeWallpaper()`
-  coerces any legacy value to `default`; `BUNDLED_WALLPAPERS` lists the 15. The
+  coerces any legacy value to `default`; `BUNDLED_WALLPAPERS` lists the 44. The
   store only accepts a `/wallpapers/`-prefixed URL.
 - Picker: the **Appearance** section of `Settings.svelte` is a `settingsRowStacked`
   row inside the one appearance card (`Settings.svelte:940-961`) holding a
@@ -46,7 +46,7 @@ wallpaper_thumbnails_dir}`, the `user_wallpapers` table (migration `030`), and
   decodes. `h-auto` stays: the `height="200"` attribute is a presentational
   hint (`height:200px`), and with *both* width and height definite
   `aspect-ratio` would be ignored. Any future asset of any shape lands in the
-  same box — E2E 4.7 asserts all 15 tiles share one width and height.
+  same box — E2E 4.7 asserts all 44 tiles share one width and height.
   The thumb carries **no**
   `box-shadow` at all — an outset shadow bled past each tile and made the rows
   look overlapping (2026-09-09). Selection is shown by the `aria-checked` /
