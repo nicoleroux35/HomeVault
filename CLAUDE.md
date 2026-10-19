@@ -25,9 +25,9 @@ section here and a guide disagree on a *rule*, this file wins.
   guide) or, if one touches an engineering invariant, into a report to the
   user — never a standalone root `.md`.
 - New AI-tool cache/scratch dirs go in `.gitignore` (`.cursor/`, `.devin/`,
-  `.kombai/`, `.playwright-mcp/`, `.opencode/`, `.ds-sync/`, … are already
-  there). Ad-hoc screenshots at the repo root are gitignored via `/*.png`;
-  delete them, don't commit them.
+  `.kombai/`, `.playwright-mcp/`, `.opencode/`, `.agents/`, `.ds-sync/`, … are
+  already there). Ad-hoc screenshots at the repo root are gitignored via
+  `/*.png`; delete them, don't commit them.
 
 ## Every feature ships with its tests
 

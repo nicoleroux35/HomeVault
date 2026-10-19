@@ -310,8 +310,8 @@ None at the moment.
 
 ## 📄 License
 
-Source-available — see the repository [`LICENSE`](../../../../../LICENSE).
-Copyright (c) 2026 Nicolas Le Roux. All rights reserved.
+MIT — see the repository [`LICENSE`](../../../../../LICENSE).
+Copyright (c) 2026 Nicolas Le Roux.
 
 ## 👥 Contributors
 
