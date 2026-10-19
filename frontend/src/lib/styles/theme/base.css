@@ -62,7 +62,7 @@ h1, h2, h3, h4, h5, h6 {
    a web-CSS default. Anything that needs a different step must say so with an
    explicit `text-t-*` / `text-c-*` utility.
 
-   Typography follows design-tokens.md §3/§7/§8: headings are semibold (600)
+   Typography follows Apple ref §3/§7/§8: headings are semibold (600)
    with the tight title leading (1.1) and the reference's -0.015em title
    tracking; body copy is regular (400) at the 1.53 body leading. Hierarchy is
    carried by weight + size together, never by size alone. */

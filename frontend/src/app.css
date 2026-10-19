@@ -94,7 +94,7 @@ body {
   --radius-xl: var(--hv-radius-xl);
   --radius-2xl: var(--hv-radius-2xl);
   --radius-3xl: var(--hv-radius-3xl);
-  /* Badge / tag stops (design-tokens.md §4) — `rounded-badge` (8px) and
+  /* Badge / tag stops (Apple ref §4) — `rounded-badge` (8px) and
      `rounded-pill` (980px) are the named utilities for non-control chips. */
   --radius-badge: var(--hv-radius-badge);
   --radius-pill: var(--hv-radius-pill);
