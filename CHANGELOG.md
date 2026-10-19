@@ -30,6 +30,13 @@ follows [Semantic Versioning](https://semver.org/).
   32-bit ARM build, so `install_ollama()` now skips `armv7l`/`armv6l` with an
   explicit message instead of leaving a daemon that never answers (asserted
   in `dependencies.rs`).
+- **29 new bundled wallpapers (15 → 44).** `hv-16.webp` … `hv-44.webp` plus
+  their `-thumb` previews, encoded from the Unsplash originals (full image long
+  edge capped at 2560 px, WebP q82; thumb 640 px wide), and listed in
+  `BUNDLED_WALLPAPERS`. Nothing else changes: still a pick-only grid in
+  Settings → Appearance, no upload, no API. Thumbnails now span 3:2, 4:3 and
+  16:9, which the existing `aspect-[8/5]` + `object-cover` tile already
+  normalises. See `docs/guides/wallpapers.md`.
 
 ### Fixed
 

@@ -135,7 +135,7 @@ Notable handlers (see `API.md` for the full map):
    `handlers/security.rs`,
   `handlers/settings.rs`, `handlers/avatars.rs`, `handlers/ups.rs`,
   `handlers/snmp.rs`. (`handlers/wallpapers.rs` was removed 2026-09-04 — the
-  15 bundled wallpapers are static assets, not an API.)
+  44 bundled wallpapers are static assets, not an API.)
 - `handlers/user_homes.rs` — per-user home folder: create/enable/disable/delete,
   disk choice, and the **home-directory size limit** (`setquota -u`, best-effort,
   see [guides/users.md](./guides/users.md) and [guides/quotas.md](./guides/quotas.md)).

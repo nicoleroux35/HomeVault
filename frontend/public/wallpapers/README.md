@@ -9,7 +9,7 @@ by `vite build` and embedded into the release binary (`include_dir!` in
 - `hv-NN.webp` — full image, long edge capped at 2560 px, WebP q82.
 - `hv-NN-thumb.webp` — 640 px preview used by the Settings → Appearance grid.
 
-Numbering is contiguous from `hv-01`. The frontend list lives in
+Numbering is contiguous from `hv-01` (44 images today). The frontend list lives in
 `frontend/src/lib/stores/wallpaper.ts` (`BUNDLED_WALLPAPERS`) — add the new
 `hv-NN` pair there when adding an image.
 
