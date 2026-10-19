@@ -606,7 +606,11 @@ test.describe('5 — Applications launcher', () => {
     const bar = await page.locator('.lp-search').evaluate(
       (el) => el.getBoundingClientRect().height,
     );
-    expect(bar).toBe(56);
+    // Close-to, not exact: the panel animates in (`lpPop`, a composited
+    // translate), and Chromium sometimes reports the composited box as
+    // 55.999996 — a 4e-6px float artefact, not a layout change. Half a pixel
+    // still fails if the bar really moves (it is 6px + the 44px field + 6px).
+    expect(bar).toBeCloseTo(56, 0);
 
     // The tiles are the primary target — larger than the floor by design.
     const card = await page.locator('.lp-card').first().evaluate(
@@ -808,6 +812,137 @@ test.describe('5 — Applications launcher', () => {
     expect(stuck.scrollTop).toBeGreaterThan(0);
     expect(stuck.delta).toBe(0);
   });
+
+  test('5.13 — the launcher search bar has a neutral focus ring, never the brand blue', async ({
+    page,
+  }) => {
+    // The launcher's focus trap lands on the query field the moment it opens,
+    // so whatever ring that state paints is on screen permanently — a brand
+    // ring there read as a blue halo around the capsule instead of a "you just
+    // tabbed here" affordance. It also DOUBLED: `.lp-search:focus-within`
+    // painted one and base.css's global `input:focus` painted a second, on the
+    // field inside the capsule. The bar now takes a 2px slate rim drawn
+    // INSIDE the capsule (an outside ring merges into the white bar, and a
+    // dark halo is invisible on the dark scrim), and the field paints nothing.
+    await gotoDesktop(page, adminTokens);
+    await dockApp(page, 'launchpad').click();
+    await expect(page.locator('.lp-panel')).toBeVisible();
+
+    const read = () =>
+      page.evaluate(() => {
+        const bar = document.querySelector('.lp-search') as HTMLElement;
+        const field = document.querySelector('.lp-search-field') as HTMLElement;
+        const lum = (c: number[]) => {
+          const f = c.slice(0, 3).map((v) => {
+            const s = v / 255;
+            return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+          });
+          return 0.2126 * f[0] + 0.7152 * f[1] + 0.0722 * f[2];
+        };
+        // Composite the first (ring) layer over the bar's own surface and
+        // measure it against that surface — the change a focus ring must make.
+        const first = getComputedStyle(bar).boxShadow.split(/,(?![^(]*\))/)[0];
+        const m = first.match(/rgba?\(([^)]+)\)/);
+        const parts = m ? m[1].split(',').map((v) => parseFloat(v)) : [];
+        const alpha = parts.length === 4 ? parts[3] : 1;
+        const surface = [255, 255, 255];
+        const rim = surface.map((v, i) => Math.round(parts[i] * alpha + v * (1 - alpha)));
+        const lr = lum(rim);
+        const ls = lum(surface);
+        return {
+          active: document.activeElement?.className ?? '',
+          barShadow: getComputedStyle(bar).boxShadow,
+          fieldShadow: getComputedStyle(field).boxShadow,
+          inset: /inset/.test(first),
+          rim,
+          contrast: (Math.max(lr, ls) + 0.05) / (Math.min(lr, ls) + 0.05),
+        };
+      });
+
+    const focused = await read();
+    // The field is the focused element on open — that is why the ring shows.
+    expect(focused.active, 'the query field holds focus on open').toContain(
+      'lp-search-field',
+    );
+
+    // No brand blue anywhere in the indicator (the old value was
+    // `rgba(30, 98, 174, 0.9)` / `0.35`), and no ring on the field itself —
+    // the wrapper owns it, so the capsule carries exactly one contour.
+    expect(focused.barShadow, 'no brand-blue ring on the bar').not.toContain(
+      '30, 98, 174',
+    );
+    expect(focused.fieldShadow, 'the field paints no ring of its own').toBe('none');
+
+    // It is still a real indicator: a slate rim, drawn inside the capsule so
+    // the bar keeps its silhouette, clearing the 3:1 floor (1.4.11 / 2.4.7)
+    // against the white surface it marks.
+    expect(focused.inset, 'the rim is drawn inside the capsule').toBe(true);
+    expect(focused.contrast, 'rim contrast vs the bar surface').toBeGreaterThanOrEqual(3);
+
+    // And it is a focus state, not a decoration: tabbing to a chip drops it.
+    await page.keyboard.press('Tab');
+    await expect(page.locator('.lp-cat-active')).toBeFocused();
+    const blurred = await read();
+    expect(blurred.barShadow, 'no rim once focus leaves the bar').not.toContain('inset');
+  });
+
+  test('5.14 — the tiles and the chips read alphabetically', async ({ page }) => {
+    await gotoDesktop(page, adminTokens);
+    await dockApp(page, 'launchpad').click();
+    await expect(page.locator('.lp-card-name').first()).toBeVisible();
+
+    // The grid is ONE A→Z list, not category groups (2026-10-22): the order is
+    // the user's entry point into ~25 apps, so it has to be the visible label
+    // order and it has to survive a filter. Compare against the browser's own
+    // collation so the assertion tracks the locale the UI is rendered in.
+    //
+    // The "add a web shortcut" tile is excluded on purpose: it is the grid's
+    // last cell by contract (`launcher-shortcut-add`, after every app — see
+    // shortcuts.spec.ts 1.2), not a member of the A→Z run.
+    const appNames = () =>
+      page.evaluate(() =>
+        [
+          ...document.querySelectorAll(
+            '.lp-grid > .lp-card:not(.lp-card-add) .lp-card-name',
+          ),
+        ].map((el) => el.textContent?.trim() ?? ''),
+      );
+    const order = await page.evaluate(() => {
+      const names = [
+        ...document.querySelectorAll('.lp-grid > .lp-card:not(.lp-card-add) .lp-card-name'),
+      ].map((el) => el.textContent?.trim() ?? '');
+      const chips = [...document.querySelectorAll('.lp-cat')]
+        .slice(1) // "All apps" is pinned first, outside the alphabetical run
+        .map((el) => el.textContent?.trim() ?? '');
+      const collator = new Intl.Collator(document.documentElement.lang, {
+        sensitivity: 'base',
+        numeric: true,
+      });
+      return {
+        names,
+        chips,
+        sortedNames: [...names].sort((a, b) => collator.compare(a, b)),
+        sortedChips: [...chips].sort((a, b) => collator.compare(a, b)),
+      };
+    });
+
+    expect(order.names.length).toBeGreaterThan(5);
+    expect(order.names, 'tiles are A→Z').toEqual(order.sortedNames);
+    expect(order.chips.length).toBeGreaterThan(1);
+    expect(order.chips, 'category chips are A→Z').toEqual(order.sortedChips);
+
+    // A filter keeps the same order instead of re-grouping the survivors.
+    await page.locator('.lp-cat').nth(1).click();
+    const filteredNames = await appNames();
+    const filtered = await page.evaluate((names) => {
+      const collator = new Intl.Collator(document.documentElement.lang, {
+        sensitivity: 'base',
+        numeric: true,
+      });
+      return { names, sorted: [...names].sort((a, b) => collator.compare(a, b)) };
+    }, filteredNames);
+    expect(filtered.names).toEqual(filtered.sorted);
+  });
 });
 
 // ===========================================================================
@@ -951,6 +1086,68 @@ test.describe('7 — Power menu', () => {
     expect(panelRadius, 'topbar popover surface corner').toBe(18);
     expect(dialogRadius, 'power dialog surface corner').toBe(18);
   });
+
+  test('7.5 — the power sheet wears the dock\'s circular tiles', async ({ page }) => {
+    await gotoDesktop(page, adminTokens);
+    await page.locator('[data-testid="topbar-power"]').click();
+    await expect(page.locator('.hv-power-dialog')).toBeVisible();
+
+    // The tiles are the dock tile itself: same diameter token, same circle.
+    const tileSize = await page.evaluate(() =>
+      parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue('--hv-dock-item-size'),
+      ),
+    );
+    const controlCorner = await page.evaluate(() =>
+      parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue('--hv-radius-control'),
+      ),
+    );
+
+    const tiles = page.locator('.hv-power-tile');
+    await expect(tiles).toHaveCount(3);
+
+    const measured = await tiles.evaluateAll((els) =>
+      els.map((el) => {
+        const style = getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return {
+          radius: style.borderTopLeftRadius,
+          // Computed box, not the rect: the dialog's 200ms `hvPowerAppear`
+          // entrance scales the whole sheet, so a rect read mid-animation is
+          // 0.95× and would report a tile smaller than the token.
+          width: parseFloat(style.width),
+          height: parseFloat(style.height),
+          gradient: style.backgroundImage,
+          top: rect.top,
+          bottom: rect.bottom,
+        };
+      }),
+    );
+
+    for (const tile of measured) {
+      expect(tile.radius, 'power tile is a perfect circle, like a dock tile').toBe('50%');
+      expect(tile.width, 'tile diameter = --hv-dock-item-size').toBeCloseTo(tileSize, 1);
+      expect(tile.height, 'tile box is square').toBeCloseTo(tile.width, 1);
+      expect(tile.gradient, 'each action tile paints its own gradient').toContain('linear-gradient');
+    }
+    // Shutdown / restart / logout must not collapse into one flat tile.
+    expect(new Set(measured.map((t) => t.gradient)).size, 'three distinct gradients').toBe(3);
+
+    // Dock anatomy: the label sits UNDER the tile, not beside it.
+    const labelBox = await page.locator('.hv-power-label').first().boundingBox();
+    expect(labelBox!.y, 'label under the tile').toBeGreaterThanOrEqual(
+      measured[0].bottom - 1,
+    );
+
+    // …and the button is still a ≥44px target on the one control corner.
+    const button = await page.locator('.hv-power-option').first().evaluate((el) => ({
+      height: el.getBoundingClientRect().height,
+      radius: parseFloat(getComputedStyle(el).borderRadius),
+    }));
+    expect(button.height, 'touch target').toBeGreaterThanOrEqual(44);
+    expect(button.radius, 'the button keeps the control corner').toBe(controlCorner);
+  });
 });
 
 // ===========================================================================
@@ -978,17 +1175,18 @@ test.describe('8 — Responsive', () => {
     }
   });
 
-  test('8.3 — each pill renders its own height token, and the dock is the taller one', async ({ page }) => {
-    // The two pills were once locked to ONE height token. They are now
-    // deliberately different (the dock is the primary target and needs the
-    // room), so this test asserts both halves of that decision: each pill
-    // matches ITS OWN token, and — above phone width — the dock is strictly
-    // taller. Asserting only "they differ" would go green if one token stopped
-    // being honoured.
+  test('8.3 — each pill renders its own height token, and both are 72px above phone width', async ({ page }) => {
+    // The two pills were once locked to ONE height token; they now keep
+    // separate tokens so either can move alone (they have shipped 84/62,
+    // 64/62 and — since the 2026-10-18 height pass — 72/72). This test
+    // asserts both halves of that: each pill matches ITS OWN token, and above
+    // phone width the two agree at 72px. Asserting only "they differ" would go
+    // green if one token stopped being honoured.
     //
-    // Phone is the documented exception: there both pills are 56px, because a
-    // dock taller than the topbar buys nothing on a 360px viewport. Asserting
-    // "strictly taller" at 400px would fail on a decision, not a regression.
+    // Phone is the documented exception: there the topbar pill (56px) is the
+    // taller one and the dock drops to 52px (44px tiles + 4px of breathing
+    // room), because a 72px dock would eat a 360px viewport. Asserting
+    // equality at 400px would fail on a decision, not a regression.
     for (const w of [400, 768, 1440]) {
       await page.setViewportSize({ width: w, height: 900 });
       await gotoDesktop(page, adminTokens);
@@ -1012,7 +1210,12 @@ test.describe('8 — Responsive', () => {
       expect(bars.topbar, `topbar vs its token @${w}px`).toBe(bars.topbarToken);
       expect(bars.dock, `dock vs its token @${w}px`).toBe(bars.dockToken);
       if (w > 480) {
-        expect(bars.dock, `dock must be taller than the topbar @${w}px`).toBeGreaterThan(bars.topbar);
+        expect(bars.dock, `both pills are 72px @${w}px`).toBe(72);
+        expect(bars.topbar, `both pills are 72px @${w}px`).toBe(72);
+      } else {
+        // Phone: compact, and the topbar is the taller one.
+        expect(bars.topbar, `phone topbar @${w}px`).toBe(56);
+        expect(bars.dock, `phone dock @${w}px`).toBe(52);
       }
     }
   });
@@ -1939,7 +2142,7 @@ test.describe('14 — Chrome geometry & material', () => {
 
   test('14.10 — the dock gap clears the hover-lift, so neighbours never touch', async ({ page }) => {
     // A hovered tile grows by `.hv-dock-item:hover { scale(1.18) }`, i.e. ~5.8px
-    // on EACH side of the 64px icon (--hv-dock-item-size). With the old 4px gap
+    // on EACH side of the 56px icon (--hv-dock-item-size). With the old 4px gap
     // two neighbours overlapped mid-hover; the gap has to stay above that growth
     // or the tiles visibly collide. Measured from the live boxes at the hover
     // peak, not token-read.
@@ -2188,6 +2391,76 @@ test.describe('14 — Chrome geometry & material', () => {
       await expect(windows(page), `${appId} window closes`).toHaveCount(0);
     }
   });
+
+  test('14.13 — the frame footer glyphs take the header trio’s 14px step', async ({ page }) => {
+    // The two rows of window chrome — the header's min/max/close trio and the
+    // frame footer's help / resize grip — must read as ONE icon size. The
+    // footer shipped with 16px glyphs next to the trio's 14px ones, and since
+    // its help / grip assets are full-bleed circles (18.5/24 of their box)
+    // while the trio's are inset, its 13.75px of ink sat above the trio's
+    // 8–12px: the strip looked a size larger than the bar above it. Both are
+    // now clamped to `--hv-winctrl-glyph` (14px), the same "CSS owns the glyph
+    // box" rule the header's app icon tile already follows (its SVG carries no
+    // size attribute either), so the two rows cannot drift apart again.
+    await gotoDesktop(page, adminTokens);
+    await dockApp(page, 'dashboard').click();
+    const win = windows(page).first();
+    await expect(win.locator('.hv-winframe-footer')).toBeVisible();
+
+    const m = await win.evaluate((el) => {
+      const box = (n: Element) => {
+        const r = n.getBoundingClientRect();
+        return { w: Math.round(r.width), h: Math.round(r.height) };
+      };
+      const css = (n: Element) => {
+        const c = getComputedStyle(n);
+        return { w: c.width, h: c.height };
+      };
+      const trio = Array.from(el.querySelectorAll('.hv-cl-btn svg')).map((s) => css(s));
+      const footer = Array.from(el.querySelectorAll('.hv-winframe-fbtn')).map((b) => {
+        const g = b.querySelector('svg') as Element;
+        return {
+          id: b.getAttribute('data-testid'),
+          btn: box(b),
+          glyph: css(g),
+          rotated: getComputedStyle(g).transform !== 'none',
+        };
+      });
+      return {
+        trio,
+        footer,
+        strip: box(el.querySelector('.hv-winframe-footer') as Element),
+        token: getComputedStyle(el.querySelector('.hv-winframe-fbtn') as Element)
+          .getPropertyValue('--hv-winctrl-glyph')
+          .trim(),
+      };
+    });
+
+    // One token, and it is the trio's own step.
+    expect(m.token, '--hv-winctrl-glyph').toBe('14px');
+    expect(m.trio, 'the header trio still renders three glyphs').toHaveLength(3);
+    for (const [i, g] of m.trio.entries()) {
+      expect(g.w, `trio glyph ${i} width`).toBe('14px');
+      expect(g.h, `trio glyph ${i} height`).toBe('14px');
+    }
+
+    // Same 28px button, same 14px glyph box as the trio — measured, not read
+    // from the tokens the two rules happen to share.
+    expect(m.footer.map((f) => f.id)).toEqual(['win-help', 'win-resize-grip']);
+    for (const f of m.footer) {
+      expect(f.btn.w, `${f.id} button width`).toBe(28);
+      expect(f.btn.h, `${f.id} button height`).toBe(28);
+      expect(f.glyph.w, `${f.id} glyph width matches the trio`).toBe(m.trio[0].w);
+      expect(f.glyph.h, `${f.id} glyph height matches the trio`).toBe(m.trio[0].h);
+    }
+    // Only the grip is turned 45°; its rendered diagonal (14 × √2 ≈ 19.8px)
+    // must stay inside the 28px button, never spill out of the strip.
+    expect(m.footer[0].rotated, 'the help glyph is not rotated').toBe(false);
+    expect(m.footer[1].rotated, 'the grip glyph is the rotated one').toBe(true);
+
+    // The strip itself is unchanged chrome: a thin 36px band.
+    expect(m.strip.h, 'frame footer height').toBeGreaterThanOrEqual(36);
+  });
 });
 
 // ===========================================================================
@@ -2199,14 +2472,14 @@ test.describe('14 — Chrome geometry & material', () => {
 // CIRCLES — the same shape language as the dock's circular app tiles, inside
 // the capsule pill. Since the dock proportions pass of the same day the
 // diameter is `--hv-chrome-topbar-btn-size`: **0.775 × the pill height**, the
-// dock tile's own ratio (48px in the 62px desktop pill, 44px in the phone's
+// dock tile's own ratio (56px in the 72px desktop pill, 44px in the phone's
 // 56px one). There is no label regime left, so this section pins the circle
 // geometry (uniform size, `50%` radius), its stability across widths, the
 // resulting DOM order, the name that replaced the visible label (aria-label +
 // the shared CSS tooltip), and the notification badge that now hangs off a
 // circular button.
 test.describe('15 — Topbar circular icon buttons', () => {
-  test('15.1 — at 1440px each topbar button is a 48px perfect circle, icon-only', async ({ page }) => {
+  test('15.1 — at 1440px each topbar button is a 56px perfect circle, icon-only', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await gotoDesktop(page, adminTokens);
     const sizes: number[] = [];
@@ -2220,10 +2493,10 @@ test.describe('15 — Topbar circular icon buttons', () => {
       // a circle whatever the tile size is (the phone renders the same button
       // at 44px inside a 56px pill).
       expect(radius, `${id} is a circle`).toBe('50%');
-      // 0.775 × the 62px pill — the dock tile's proportion, so both pills carry
+      // 0.775 × the 72px pill — the dock tile's proportion, so both pills carry
       // the same icon-to-bar weight.
-      expect(Math.round(box.height), `${id} height`).toBe(48);
-      expect(Math.round(box.width), `${id} width`).toBe(48);
+      expect(Math.round(box.height), `${id} height`).toBe(56);
+      expect(Math.round(box.width), `${id} width`).toBe(56);
       sizes.push(Math.round(box.width));
 
       // Icon-only: the glyph is there, the label markup is gone for good (it
@@ -2236,11 +2509,11 @@ test.describe('15 — Topbar circular icon buttons', () => {
   });
 
   test('15.2 — the circles are identical at every width (no breakpoint regime left)', async ({ page }) => {
-    // One shape, one token: 48px in the 62px desktop pill, and only the phone
+    // One shape, one token: 56px in the 72px desktop pill, and only the phone
     // drops to 44px — because its pill is 56px and the ratio (0.775) is what
     // must survive, not a pixel count. Both stay above the 44px touch floor.
     for (const w of [1440, 900, 768, 400]) {
-      const expected = w > 480 ? 48 : 44;
+      const expected = w > 480 ? 56 : 44;
       await page.setViewportSize({ width: w, height: 900 });
       await gotoDesktop(page, adminTokens);
       for (const id of TOPBAR_IDS) {
@@ -2337,16 +2610,18 @@ test.describe('15 — Topbar circular icon buttons', () => {
     // agrees because the probe's entry animation is disabled (see above).
     expect(p.badge.height, 'notification badge height').toBe('16px');
     expect(Math.round(p.badge.width), 'a single-digit badge is 16px wide').toBe(16);
-    // The dock badge is deliberately untouched at 26px (its anchor is the 64px
-    // dock tile — the 2026-10-18 proportions pass grew the tiles, not the badge).
-    expect(p.dockHeight, 'dock badge keeps its 26px').toBe('26px');
+    // The dock badge follows its tile: 22px on the 56px dock tile (40% of it,
+    // the proportion the 26px badge held on the 64px tile before the
+    // 2026-10-18 tightening). It is still deliberately NOT the notification
+    // badge's 16px — the two are decoupled, not one rule with one size.
+    expect(p.dockHeight, 'dock badge follows the 56px tile at 22px').toBe('22px');
     // Both badges measured square, so no scale transform survived on the probe —
     // without this, a future 0.4-scaled rect would sail through the height check
     // (computed style) and only the width assertion below would catch it.
-    expect(Math.round(p.dockWidth), 'the probe measures untransformed').toBe(26);
+    expect(Math.round(p.dockWidth), 'the probe measures untransformed').toBe(22);
 
     // Anchored to the BUTTON's top-right corner (3px out), still on the pill:
-    // the button is a 48px circle now, so "the corner" is the corner of its
+    // the button is a 56px circle now, so "the corner" is the corner of its
     // square box — the badge pokes just past the arc, as in the mockup.
     expect(p.badge.right, 'badge hangs off the button corner').toBeCloseTo(p.btn.right + 3, 0);
     expect(p.badge.top, 'badge hangs off the button corner').toBeCloseTo(p.btn.top - 3, 0);
@@ -2547,7 +2822,10 @@ test.describe('16 — Notification center & What\'s New', () => {
     // A bogus contract on an API call must make the shell show the reload
     // banner instead of silently failing. Drive it through the real client.
     await seedBrowser(page, adminTokens);
-    await page.route('**/api/health/**', async (route) => {
+    // `**/api/health*`, not `**/api/health/**`: the desktop calls `/api/health`
+    // with no trailing segment, so the deeper glob never matched and the 426
+    // never fired — the banner assertion could not pass (fixed 2026-10-19).
+    await page.route('**/api/health*', async (route) => {
       const res = await route.fetch();
       if (res.status() === 426) return route.fulfill({ response: res });
       return route.fulfill({

@@ -19,7 +19,7 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';
   import { t } from '$lib/stores/i18n';
-  import { IconBatteryCharging, IconServer, IconPlus, IconTrash } from '@tabler/icons-svelte';
+  import { IconServer, IconPlus, IconTrash } from '@tabler/icons-svelte';
   import SettingsCard from './SettingsCard.svelte';
   import { cn } from '$lib/utils.js';
   import {
@@ -147,7 +147,7 @@
   it is added here as a dedicated `[section]` in `/etc/nut/ups.conf` (driver +
   port/address). The server validates and reloads NUT.
 -->
-<SettingsCard icon={IconBatteryCharging} iconVariant="green" title={$t('settings.ups_monitoring')} subtitle={$t('settings.ups_description')} class={klass}>
+<SettingsCard title={$t('settings.ups_monitoring')} subtitle={$t('settings.ups_description')} class={klass}>
   {#if loading}
     <p class={settingsHint}>{$t('settings.loading')}</p>
   {:else if !available}

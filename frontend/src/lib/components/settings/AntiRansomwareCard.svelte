@@ -23,7 +23,6 @@
   import type { RansomwareSettings, ProtectedPath, RansomwareEvent } from '$lib/services/api';
   import { draft, registerGroup } from '$lib/stores/settingsDraft.svelte';
   import { t } from '$lib/stores/i18n';
-  import { IconShieldExclamation } from '@tabler/icons-svelte';
   import SettingsCard from './SettingsCard.svelte';
   import PathPickerField from '$lib/components/theme/PathPickerField.svelte';
   import Switch from '$lib/components/theme/Switch.svelte';
@@ -109,7 +108,7 @@
   what `handleAddPath` sends as `place_honeypot`, and the honeypot debounce
   lives server-side (`honeypot_debounce`, 10 s per path) — untouched.
 -->
-<SettingsCard icon={IconShieldExclamation} iconVariant="red" title={$t('ransomware.title')} subtitle={$t('ransomware.subtitle')} class={klass}>
+<SettingsCard title={$t('ransomware.title')} subtitle={$t('ransomware.subtitle')} class={klass}>
   {#if loading}
     <p class={settingsHint}>{$t('ransomware.loading')}</p>
   {:else}

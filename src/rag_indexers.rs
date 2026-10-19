@@ -813,7 +813,7 @@ The panels are read-only: they display system state and link to the app that man
             title: "Web Shortcuts".to_string(),
             content: r#"Pin web pages as icons on the desktop so a frequently used site is one click away.
 
-- Add a shortcut by entering a web address; HomeVault reads the page's title, description and icon to build the tile.
+- Add a shortcut from the app launcher: its last tile, after every app, opens the add dialog where you enter a web address; HomeVault reads the page's title, description and icon to build the tile.
 - Each shortcut opens the page in a new browser tab. Shortcuts can be removed individually.
 - Shortcuts are remembered per account, so each person sees their own set.
 - Only regular web addresses (http and https) are accepted; addresses pointing back at the server itself or at a private network are refused."#.to_string(),
@@ -823,7 +823,7 @@ The panels are read-only: they display system state and link to the app that man
             title: "Desktop Shell & Windows".to_string(),
             content: r#"Every app opens inside the desktop — a windowed environment living in the browser tab, arranged like a desktop operating system.
 
-- App launcher: the searchable grid of every available app, opened from the top bar.
+- App launcher: the searchable grid of every available app, opened from the top bar. Its last tile adds a web shortcut to the desktop.
 - Top bar: the floating strip carrying the launcher, the open windows, the network indicator, the widgets toggle, notifications, and the power menu, which also holds the account menu.
 - Dock: the row of app shortcuts along the bottom, with a badge when a background task is running and a label on hover.
 - Windows: each app opens in a window that can be dragged, resized, minimized, maximized and closed. Windows are listed in the top bar and can be brought back to the front.
@@ -838,7 +838,8 @@ The panels are read-only: they display system state and link to the app that man
             title: "Apps Center (app launcher)".to_string(),
             content: r#"The launcher: a searchable grid of every application HomeVault offers, opened from the top bar and also reachable with a keyboard shortcut.
 
-- A row of category chips filters the grid in place; "All apps" restores the whole catalog.
+- A row of category chips filters the grid in place; "All apps" restores the whole catalog. The chips are listed alphabetically.
+- The apps are listed alphabetically, A to Z, whatever filter is active, so you can find one by scrolling to its name instead of looking through groups.
 - Typing in the search field narrows the grid as you go. When nothing matches, the grid is replaced by an empty state with a button that clears the filter and brings the apps back.
 - Each tile carries the app's own icon and colour, with its name underneath.
 - Choosing a tile opens that app as a window on the desktop.

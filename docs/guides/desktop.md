@@ -39,44 +39,51 @@ screenshot when its chrome moves.
   box height, so each end is an exact semicircle and no corner is visible
   anywhere — see *Capsule silhouette* below. Maximizing a window above 900px
   hides both; below 900px it insets instead.
-- **Each pill owns its height.** `--hv-chrome-topbar-h` (62px) and
-  `--hv-chrome-dock-h` (84px) are separate tokens, and the dock is
-  deliberately the taller one — it is the primary target and its 64px tiles
-  need the room. `.hv-menubar` and `.hv-dock` are both
+- **Each pill owns its height.** `--hv-chrome-topbar-h` (**72px**) and
+  `--hv-chrome-dock-h` (**72px** on desktop/tablet, **52px** on phone) are
+  separate tokens. Above phone width the two pills are the same height since
+  the **2026-10-18 height pass** (they shipped 84/62, then 64/62); they keep
+  separate tokens anyway, so either can move without dragging the other.
+  `.hv-menubar` and `.hv-dock` are both
   `box-sizing: border-box`, so each token is the *rendered* height, which is
   what makes `--hv-chrome-topbar-keepout` / `--hv-chrome-dock-keepout` exact.
   Never point one pill at the other's token again: the heights were once
-  locked together, which is what made a taller dock impossible. The dock's
-  84px is the mockup's own authored height. Since the 2026-10-18 proportions
-  pass it decomposes **exactly** as `10 + 64 + 10` — the tile is
-  `--hv-dock-item-size` (64px, i.e. 0.775 × the bar, the ratio measured on the
-  approved reference dock) and the padding is `(84 − 64) / 2` = 10px, the same
-  value used horizontally (0.146 × the tile). DSM's own dock item was a column
+  locked together, which is what made an independent dock impossible. The
+  dock decomposes **exactly** as `8 + 56 + 8` — the tile is
+  `--hv-dock-item-size` (56px, i.e. 0.775 × the bar, the ratio measured on the
+  approved reference dock) and the padding is `(72 − 56) / 2` = 8px, derived in
+  CSS rather than written as a literal, with 10px kept horizontally (free
+  space, and it clears the capsule's arcs). DSM's own dock item was a column
   whose label line was reserved even though it only painted on hover;
-  HomeVault ships no dock labels, so that surplus now goes into the tiles
+  HomeVault ships no dock labels, so that surplus goes into the tiles
   instead of dead space around them. The rationale lives on the tokens.
+  **Phone** (`≤480px`) drops to 52px = the 44px touch floor (the phone tile,
+  unchanged) + 4px a side — the one place the dock is *shorter* than the
+  topbar pill (56px), which is why E2E `8.3` only asserts the two heights
+  above 480px.
 - **Capsule silhouette (2026-10-18).** Both chrome surfaces are stadiums:
   `.hv-menubar` and `.hv-dock` take `border-radius: var(--hv-radius-full)`, and
-  the browser clamps a 9999px radius to **half the box height** — 31px on the
-  62px pill, 42px on the 84px dock, 28px on the phone's 56px pills. That clamp
-  is the whole trick: both ends are exact semicircles at every breakpoint, with
-  no corner anywhere, and no new token to keep in sync. The topbar's horizontal
-  padding is derived from its own height
-  (`calc((var(--hv-chrome-topbar-h) - var(--hv-touch-target-min)) / 2)` = 9px)
-  so the end controls sit **concentric** with the pill's arcs instead of drifting
-  the moment the height token changes — the dock does the same with its 64px
-  circular tiles (10px of padding against a 64px tile inside an 84px bar, so
-  the arcs hug the tiles). E2E `8.5` asserts
+  the browser clamps a 9999px radius to **half the box height** — 36px on both
+  72px pills, 28px on the phone's 56px topbar, 26px on its 52px dock. That
+  clamp is the whole trick: both ends are exact semicircles at every
+  breakpoint, with no corner anywhere, and no new token to keep in sync. The
+  topbar's horizontal padding is derived from its own height
+  (`calc((var(--hv-chrome-topbar-h) - var(--hv-chrome-topbar-btn-size)) / 2)`
+  = 8px) so the end controls sit **concentric** with the pill's arcs instead
+  of drifting the moment the height token changes — the dock does the same
+  with its 56px circular tiles (8px of padding against a 56px tile inside a
+  72px bar, so the arcs hug the tiles). E2E `8.5` asserts
   `computed radius >= height / 2` on both pills at 400/768/1440px.
 - **Dock tile pitch — `--hv-chrome-dock-gap` (10px).** `.hv-dock-container`'s
   `gap` (not `.hv-dock`'s) is what spaces the tiles, because the dividers are
   flex children of that same row. A hovered tile runs
   `.hv-dock-item:hover { translateY(-10px) scale(1.18) }`, i.e.
-  64 × 0.18 / 2 ≈ **5.8px on each side** — so at the old 4px gap two
+  56 × 0.18 / 2 = **5.04px on each side** — so at the old 4px gap two
   neighbours visibly overlapped mid-hover and appeared to touch. 10px keeps
-  ~4.2px of real clearance at the hover peak, and it is also the reference
-  dock's own pitch ratio (0.152 × the tile), which is why it was not raised
-  with the tiles. The ≤480px block keeps a 6px gap:
+  4.96px of real clearance at the hover peak; the reference dock's own pitch
+  ratio (0.152 × the tile) would ask for ~8.5px, but the lift floor (~10.1px)
+  is the binding constraint, so the gap stays at 10px rather than following
+  the tile. The ≤480px block keeps a 6px gap:
   the lift is flattened there (no `:hover` on touch), so tight spacing is
   safe. E2E `14.10` hovers a middle tile, measures the settled clearance to
   both neighbours and requires it to clear the growth the animation actually
@@ -96,20 +103,21 @@ screenshot when its chrome moves.
   for a change requested on two pills.
 - The topbar profile avatar wrapper (`.hv-user-pill-avatar`) forces its inner
   `<img>` to `width/height:100%` + `object-fit:cover` — the `<UserAvatar>`
-  renders at `size=62` while the wrapper is `--hv-chrome-avatar-size` (32px),
-  so without the override the face is centre-cropped. The 32px avatar is
-  smaller than the control circles it sits beside on purpose: at pill height
-  the username carries the identity and the picture is only a marker — and
-  with `padding: 8px` the user pill still totals **48px**, i.e. exactly one
-  control row of the pill (`8 + 32 + 8`).
+  renders at `size=62` while the wrapper is `--hv-chrome-avatar-size` (36px on
+  desktop, 32px on the phone), so without the override the face is
+  centre-cropped. The avatar is half the pill and deliberately still smaller
+  than the control circles it sits beside: the username carries the identity
+  and the picture is only a marker — and with `padding: 8px` the user pill
+  still totals **52px**, one control row of the 72px pill
+  (`8 + 36 + 8`).
 - **Topbar buttons are icon-only CIRCLES (2026-10-18).** This is the third
   shape they have worn: 44×44 squares, then icon + label chips from 901px up
   (2026-09-14), and now circles at every width — the same shape language as
   the dock's circular app tiles, inside the new capsule pill. Their diameter
-  is `--hv-chrome-topbar-btn-size` (**48px**, 0.775 × the 62px pill — the dock
+  is `--hv-chrome-topbar-btn-size` (**56px**, 0.775 × the 72px pill — the dock
   tile's own ratio; 44px on the phone's 56px pill), and both the pill's
   horizontal padding and the glyph size are derived from it
-  (`(h − btn) / 2` = 7px, glyph = btn / 2 = 24px), so the control row stays
+  (`(h − btn) / 2` = 8px, glyph = btn / 2 = 28px), so the control row stays
   concentric with the capsule's arcs and the glyph keeps the dock's
   half-the-tile ratio. The
   visible label is **gone**; the name is carried by `aria-label` and surfaced on
@@ -129,15 +137,16 @@ screenshot when its chrome moves.
     `content` equals the `aria-label`.
   - Both responsive regimes are gone: there is no `width: auto` / `padding` /
     `gap` / `display: none` switch left, so the pill's width no longer depends
-    on the language. `--hv-chrome-topbar-h` stays **62px** and the keep-out is
-    untouched (`14.1`/`8.3` stay green) — only the horizontal content shrank.
+    on the language. The pill's height is `--hv-chrome-topbar-h` (**72px**
+    since the 2026-10-18 height pass, 56px on the phone) and the keep-out
+    follows it (`14.1`/`8.3` stay green) — only the horizontal content shrank.
   - The `desktop.power` key (reused by the old label) is orphaned again and was
     removed from the four locale files in the same change.
   - **Capsule pill.** `.hv-menubar` takes `--hv-radius-full`, which the browser
-    clamps to half the box height (31px at 62px, 28px on the phone) — both ends
+    clamps to half the box height (36px at 72px, 28px on the phone) — both ends
     are exact semicircles. Its horizontal padding is derived from the two
     tokens, `calc((var(--hv-chrome-topbar-h) - var(--hv-chrome-topbar-btn-size)) / 2)`
-    = 7px (6px on the phone), so the end controls sit **concentric** with the
+    = 8px (6px on the phone), so the end controls sit **concentric** with the
     pill's own arcs instead of drifting when either token changes. The dock's capsule (2026-10-18) and
     this one are the same silhouette; E2E `8.5` now requires
     `radius >= height / 2` on **both** pills.
@@ -154,33 +163,74 @@ screenshot when its chrome moves.
   an oversized badge with `overflow: hidden` on `.hv-menubar` — that clips the
   ring and the pop-in. Two badges, two rules: `.hv-dock-badge` and
   `.hv-notification-badge` are deliberately **not** shared.
+- **The three topbar circles and their popovers sit on the theme ladder
+  (2026-10-19).** The network / notifications / power buttons were already one
+  shape (`--hv-chrome-topbar-btn-size`, 56px desktop / 44px phone, glyph at
+  half, `border-radius: 50%`), but three things were off:
+  - their `:focus-visible` painted a bespoke inset `outline` while every other
+    control wears `--hv-focus-ring` — the three circles were the last
+    controls with a focus indicator of their own shape;
+  - the **network popover** used one-off literals (20px padding, 12px gaps,
+    84px rows, 52px icon tiles, a 48px copy button) and a **22px** IP value
+    (`--hv-text-2xl`, the page-title step) for what is a row value;
+  - the **notification panel** titled itself at 17px (`--hv-font-size-lg`, the
+    *section* step — a popover heading louder than the window title it hangs
+    off), used 12px form text in its search field and action links, and its
+    root had **no** `stopPropagation`, so a click on a severity chip, the
+    search field or mark-as-read bubbled to the shell's global click handler
+    and closed the panel it belonged to. The other two popovers
+    (`.hv-net-dropdown`, `.hv-user-dropdown`) already carried that guard.
+
+  Now: rows are content-driven (~60px) with 40px tiles and a 44px copy button,
+  the IP value is `--hv-text-md` (15px, mono), the notification title is
+  `--hv-text-md` (15px) with 13px form text, and all three popovers close only
+  on an outside click. The power dialog's confirm sheet got the same
+  treatment: 18px glyphs, `--hv-radius-control` + 44px buttons, and the shared
+  focus ring on its close button and footer actions (both had **none**).
 - Topbar popovers (network `.hv-net-dropdown`, account `.hv-user-dropdown` in
   `Desktop.svelte`; `.notifications-panel` in `NotificationCenter.svelte`) are
   fully standardized by the shared `.hv-topbar-panel` class
   (`theme/components.css`): it owns placement/stacking **and** the whole
   solid paper-white card look — width clamp (`--hv-topbar-panel-w`, default 420px;
-  net overrides to 440), `--hv-radius-4xl`, `--hv-shell-glass` +
+  net overrides to 440, the account menu to 320 because it holds two rows, not
+  a list), `--hv-radius-4xl`, `--hv-shell-glass` +
   `--hv-chrome-surface-border`/`-shadow` (opaque, no blur), `overflow:hidden`,
   and the 160ms `hvTopbarPanelAppear` scale-in. A panel's own rule only
   carries body content (e.g. `.notifications-panel` keeps just `max-height` +
   flex column). Don't re-add per-panel background/border/radius/animation.
+- **The account menu sits on the theme's type/space ladder (2026-10-19).** It
+  used to run on a one-off scale — 22px name (the page-title step), 17px rows
+  73px tall, 25px glyphs, a 76px avatar, 24px padding — which read as a
+  settings sheet bolted under a 52px pill. It now uses the panel/body/caption
+  steps every other topbar popover uses (name `--hv-text-md` 15px, role
+  `--hv-text-sm` 12px, rows `--hv-text-base` 13px), **44px rows**
+  (`--hv-touch-target-min`, the same floor as every control), 18px glyphs, a
+  40px avatar (the `<img>` is rendered at 72px and scaled down by CSS so it
+  stays crisp on HiDPI) and 16px header padding. Rows are inset by 8px so
+  their hover wash is a rounded control *inside* the card instead of a
+  full-bleed band, and they carry the shared `--hv-focus-ring` on
+  `:focus-visible` (they had **no** focus style at all before — WCAG 2.4.7).
 - **The dock is a capsule** (2026-10-18 redesign): `.hv-dock` uses
   `--hv-radius-full`, which the browser clamps to half the
-  `--hv-chrome-dock-h` box (42px at 84px, 28px at the phone's 56px) — both
+  `--hv-chrome-dock-h` box (32px at 64px, 26px at the phone's 52px) — both
   ends are **exact semicircles**, so the silhouette is a wide, compact
   stadium with **no visible corner anywhere**. The topbar pill deliberately
   keeps its own `--hv-radius-2xl` (**18px**, the surface stop — the capsule's
   `--hv-radius-full` is a shape, not a corner value): the two chrome siblings
   no longer share a radius, and re-locking the old equality (E2E 8.5
   pre-2026-10-18) would flatten the capsule back into a rounded rectangle.
-- Dock tiles are 64px **perfect circles** (`border-radius: 50%` on the square
+- Dock tiles are 56px **perfect circles** (`border-radius: 50%` on the square
   tile — a px radius would silently square it back on resize), one uniform
   size for every app (44px on the phone), echoing the capsule's circular
   ends. The diameter is `--hv-dock-item-size`, set from the approved reference
   dock's own proportions (its tiles are 158px in a 204px bar → **0.775 × the
-  bar height**), and the glyph inside is 0.5 × the tile (32px). Padding and
-  pitch follow the same measurements: 10px of padding (0.146 × tile) and a
-  10px gap (0.152 × tile). one `--hv-app-<id>-grad` gradient per app (see
+  bar height**), and the glyph inside is 0.5 × the tile (28px). The vertical
+  padding is derived, `(bar − tile) / 2` = 8px; the horizontal padding stays
+  10px and the pitch is 10px — the hover-lift floor (56 × 0.18 / 2 = 5.04px a
+  side, so anything under ~10.1px lets neighbours touch), not the reference's
+  0.152 × tile ratio, which is what sets the gap at this tile size. The count
+  badge follows the tile at 22px (40% of it, the 26px-on-64px proportion). one
+  `--hv-app-<id>-grad` gradient per app (see
   [design-system.md](./design-system.md) §6); the Launchpad launcher is not an
   app and keeps its own pale `--hv-app-launchpad-grad` with dark ink. Hover
   lifts the tile (`translateY(-10px) scale(1.18)` on the
@@ -226,7 +276,10 @@ cards; that anatomy is gone. The stack is now:
    two-layer drop shadow, magnifier glyph on the left, a clear button
    (`.hv-ic-abs`) on the right while a query is typed.
 2. **Category chips** — one horizontally-wrapping row. "All apps" first, then
-   each category actually present in the app list, in `CAT_ORDER`. They are
+   each category actually present in the app list, **alphabetical by its
+   localised label** (the order follows what the user reads, not the English
+   key the app definitions carry; collation is `Intl.Collator` on the UI
+   language, accent/case-insensitive and numeric). They are
    radio-like *filter* buttons carrying `aria-pressed` inside a `role="group"`
    — not a `tablist`, because they narrow the one grid in place instead of
    swapping panels. Clicking the active chip clears the filter. The chips
@@ -245,6 +298,27 @@ cards; that anatomy is gone. The stack is now:
    Each tile is the app's icon tile over a centered, two-line-clamped label.
    Empty result → `.lp-empty` with a reset button; a typed query also shows
    the `.lp-count` results line.
+
+   The grid's **last cell is the "add a web shortcut" tile**
+   (`launcher-shortcut-add`), after every app: adding a shortcut is a launcher
+   action, so it no longer sits on the desktop (see
+   [shortcuts](./shortcuts.md)). It keeps the app tile's box and label and
+   swaps only the icon ground for a dashed ring ("empty slot", not an app's
+   identity colour). It is withheld while a query or a category chip narrows
+   the grid — a filtered grid answers "where is X?" — and once
+   `MAX_SHORTCUTS` is reached. `Desktop.svelte` owns the dialog it opens
+   (`ShortcutAddDialog.svelte`), so the launcher only fires a callback and
+   closes.
+
+**The grid is one A→Z list, not category groups.** It used to be ordered by a
+hand-kept `CAT_ORDER`, then alphabetical inside each category, on the reasoning
+that it kept a category's tiles contiguous once a chip was selected. In
+practice it made the launcher read as an arbitrary sequence — the first tile
+was "System", not "Chat" — and the chip row already is the grouping affordance,
+so a user scanning for an app had no alphabetical entry point. The tiles are now
+sorted by name alone (`Intl.Collator` on `$languageStore`, `sensitivity: 'base'`
+so case and accents fold, `numeric` so "App 2" precedes "App 10"), with the
+chip filter applied on top: the order is stable whatever the filter.
 
 The three stacked modules are deliberately **one width**: the search bar, the
 chip row and the grid are children of the same column, so widening
@@ -286,8 +360,8 @@ HomeVault has no such data, so no badge is invented. The only corner marker is
 `.lp-card-state`: a green dot rendered **only while a Docker app's container is
 up** — presence, not colour, carries the meaning (exactly the dock's running
 indicator). A grey "stopped" dot is deliberately absent: the tile ground
-composites to ≈`rgb(100,105,117)` over the scrim, where the muted ink measures
-≈1.01:1 and even `--hv-success` ≈1.07:1, so a neutral dot would be invisible
+composites to ≈`rgb(69,75,90)` over the scrim, where the muted ink measures
+≈1.8:1 and even `--hv-success` ≈1.7:1, so a neutral dot would be invisible
 (1.4.11). The stopped case is stated in text instead, via `dockerCardDesc()` on
 the tile's `aria-describedby`.
 
@@ -296,15 +370,23 @@ surface that sits on a *dark translucent* ground, so it cannot borrow the
 opaque-paper `--hv-shell-text-*` ink set. Two mock values could not ship as
 authored:
 
-- The scrim is `rgba(15,23,42,0.72)`, not the mock's `0.55`. At `0.55` the
+- The scrim is `rgba(15,23,42,0.86)`, not the mock's `0.55`. At `0.55` the
   tile fill resolves to ≈`rgb(136,139,150)` over a light wallpaper and the
   white labels land at **3.39:1**, under the WCAG 2.2 AA 4.5:1 text floor.
-  `0.72` measures ≈**5.4:1** in the same worst case.
+  `0.72` measured ≈**5.5:1** in the same worst case; `0.86` (2026-10-19) takes
+  it to ≈**8.7:1**. The bump is not a contrast fix — it is a usability one:
+  at `0.72` the desktop's icons and wallpaper stayed legible behind the
+  launcher, which read as a translucent panel over the desktop instead of an
+  app screen. The veil now hides the shapes and the `--hv-launcher-blur` bump
+  below hides their contours.
 - Inactive chip text is opaque `#FFFFFF`, not the mock's 85%-alpha white,
   which measures ≈**4.28:1** over the 15% chip fill.
 
-**The scrim's `blur(2px)` is written as the standard property only.** The mock
-carries `backdropFilter: blur(2px)` on the launcher frame, and it is the one
+**The scrim's blur is `blur(6px)`, written as the standard property only.** The
+mock
+carries `backdropFilter: blur(2px)` on the launcher frame; 2px left the
+desktop's own tiles recognisable through the veil, so the token is 6px — the
+scrim has to blur shapes, not just soften them. It is the one
 blurred surface in the shell: the no-`backdrop-filter` rule (`tokens.css`)
 protects *ink* surfaces from a photo wallpaper, whereas the scrim does the
 opposite — it darkens that wallpaper so the white labels read on it. Do **not**
@@ -319,8 +401,27 @@ the regression cannot return unnoticed (it was found exactly this way).
 `::after` hit pad (the `.hv-ic` pattern); the search `input` is a full
 `--hv-touch-target-min` tall inside a 6px-padded row, so the bar still renders
 at the mock's 56px. Because the brand `--hv-focus-ring` disappears into the dark
-scrim, chips and tiles use a **white 2px ring + dark halo** instead — the search
-bar keeps the brand ring, being a white surface.
+scrim, chips and tiles use a **white 2px ring + dark halo** instead.
+
+**The search bar's own focus ring is neutral slate, and it is an `inset` ring**
+(2026-10-19). It used to take the brand ring, on the reasoning that the bar is a
+white surface — two things were wrong with that. The dialog's focus trap lands
+on the query field the moment the launcher opens, so the brand ring was not a
+"you just tabbed here" affordance but a **permanent blue halo** around the
+capsule; and it was painted **twice**, since `base.css`'s global `input:focus`
+rule (specificity 0,1,1) outranks the plain `.lp-search-field` class and stamped
+a second brand ring *inside* the capsule. The bar now draws
+`inset 0 0 0 2px rgba(15,23,42,0.72)` over its search shadow, and the field
+itself paints no ring (`.lp-search .lp-search-field:focus` → `box-shadow: none`,
+two classes so it keeps winning). Why inset: an *outside* ring was tried first
+and is unreadable here — on the white capsule it merges into the bar, and on
+the dark scrim a dark halo measures only ~10/255 below the veil. The inset rim
+composites to ≈`rgb(82,88,101)`, **7.1:1** against the white surface, and it
+introduces no second hue on a screen whose only accent is the app tiles' own
+gradients. Chips and tiles keep the white + slate halo — they sit *on* the
+scrim, where that is the only reading that survives. E2E `5.13` pins all of it:
+no `rgba(30, 98, 174, …)` in either shadow, no shadow on the field, the rim
+inset and ≥3:1, and the rim gone once Tab moves focus to a chip.
 
 **Safety cautions survive as accessible descriptions.** Eight apps carry a
 `desktop.app_<id>_info` advisory (Rescue, RAID, Storage, Network, VPN, Backup,
@@ -473,8 +574,19 @@ above it, and no app renders this strip itself.
 
 Both icons are inline SVG on `currentColor` (`--hv-shell-text-2`, 4.82:1 on
 `--hv-shell-fill`), so they follow the theme and stay ≥3:1 as non-text
-controls. E2E does not pin this strip; the frame's own E2E contract (`14.5`–
-`14.11`) is unchanged.
+controls.
+
+**Glyph size — one step for the whole window chrome.** The strip's help / grip
+glyphs are clamped to `--hv-winctrl-glyph` (**14px**), the same box the
+header's min/max/close trio uses, so the two rows of chrome read as one icon
+size. They shipped at 16px and the mismatch was visible: these assets are
+full-bleed circles (18.5/24 of their box), so 16px of box was 13.75px of ink
+next to the trio's 8–12px, and the footer looked a size larger than the bar
+above it. The buttons stay 28px (the trio's size) — only the glyph box
+shrinks. Their `<svg>` elements therefore carry **no `width`/`height`
+attribute**: the CSS owns the box, exactly like the header's app icon tile
+(`.hv-winhdr-icon :global(svg)`), which a stylesheet wins over an attribute.
+E2E `14.13` pins the parity (footer glyph box === trio glyph box).
 
 ### One header per window — `OWN_HEADER_APPS`
 
@@ -636,9 +748,9 @@ individually):
   touch screens. Both blocks must stay **before** the trailing
   `PHONE CHROME OVERRIDES` block (equal-specificity source-order ties).
 - **Touch targets & chrome labels (2026-09-11):** every desktop-chrome
-  control is a ≥ 44px touch target — 48px topbar buttons (the 62px is the
+  control is a ≥ 44px touch target — 56px topbar buttons (the 72px is the
   *pill's* height, not the target's; the phone drops them to the 44px floor),
-  64px dock icons, 44px widget
+  56px dock icons, 44px widget
   close/action buttons on the 48px
   `WidgetHeader` bar, 44px launchpad sidebar rows (phone chips included).
   Documented exceptions: the calendar widget's nav row uses compact **36px**
@@ -649,6 +761,14 @@ individually):
   34px being the widest a target can be at the mock's 6px gap without
   overlapping its neighbour. Both are compromises on the rule, not its
   removal — don't "fix" either by resizing the visual.
+- **Power action sheet (2026-10-19):** the three actions (Shut Down / Restart /
+  Log Out) are **circular gradient tiles with the label underneath**, the
+  dock's own shape language — `--hv-dock-item-size` diameter (56px desktop,
+  48px phone), glyph at half the tile, one hue per action (red / blue /
+  slate), hover lift + `brightness(1.05)` like `.hv-dock-icon`, the button
+  itself transparent on the one control corner. Not three cards. E2E `7.5`
+  pins the shape, the token-parity with the dock, the three distinct
+  gradients, the label-under-tile anatomy and the ≥44px target.
 - **Chrome labelling (2026-09-11, revised 2026-10-18):** every chrome button
   carries an `aria-label` from a translated key, so screen readers and the CSS
   tooltips (`::before` reads `aria-label`) always agree. Dock buttons use the
@@ -659,7 +779,7 @@ individually):
   `window_restore` + `common.close`. The notifications toggle is a single
   `<button>` (a `div[role=button]` wrapping a `<button>` double-announced and
   swallowed Space).
-  - The topbar buttons are **icon-only since 2026-10-18** (circles, 48px
+  - The topbar buttons are **icon-only since 2026-10-18** (circles, 56px
     desktop / 44px phone), so
     there is no visible label left and no WCAG 2.5.3 pair to keep in sync: the
     short `desktop.power` key went back to being orphaned and was removed from

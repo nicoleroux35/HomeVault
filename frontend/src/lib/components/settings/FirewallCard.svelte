@@ -21,7 +21,7 @@
   import { api } from '$lib/services/api';
   import type { FirewallRule } from '$lib/services/api';
   import { t } from '$lib/stores/i18n';
-  import { IconFlame, IconX } from '@tabler/icons-svelte';
+  import { IconX } from '@tabler/icons-svelte';
   import SettingsCard from './SettingsCard.svelte';
   import Switch from '$lib/components/theme/Switch.svelte';
   import { cn } from '$lib/utils.js';
@@ -142,7 +142,7 @@
   `handleConfirmEnable` with the checkbox ticked (the server also requires
   `{"confirmed":true}`, which `api.enableFirewall()` sends).
 -->
-<SettingsCard icon={IconFlame} iconVariant="orange" title={$t('firewall.title')} subtitle={$t('firewall.subtitle')} class={klass}>
+<SettingsCard title={$t('firewall.title')} subtitle={$t('firewall.subtitle')} class={klass}>
   {#if loading}
     <p class={settingsHint}>{$t('firewall.loading')}</p>
   {:else if !available}
@@ -353,7 +353,10 @@
     width: 32px;
     height: 32px;
     border: none;
-    border-radius: var(--hv-radius-lg);
+    /* A circle, like every other icon-only control on this screen (the AI
+       refresh button is a 44px circle). `.hv-ic` on the same element already
+       gives it the 44px hit area, so the visible box can stay compact. */
+    border-radius: var(--hv-radius-full);
     background: transparent;
     color: var(--hv-settings-label);
     cursor: pointer;

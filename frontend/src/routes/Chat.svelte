@@ -2,16 +2,16 @@
      File          : Chat.svelte
      Author        : Nicolas Le Roux
      Created       : 28/09/2026
-     Last modified : 13/10/2026 by Nicolas Le Roux
+     Last modified : 19/10/2026 by Nicolas Le Roux
      Version       : 1.0.0
 
      Description:
-     The AI Chat app: conversation view with streamed replies, model
-     selection, and the MCP server management panel.
+     The AI Chat app: conversation view with streamed replies and model
+     selection. The external-agent (MCP) gateway configuration lives in
+     Settings → AI Assistant, not here.
 
      Dependencies:
-       - svelte (>= 5), theme + app/ composites, chat/McpPanel,
-         $lib/services/api
+       - svelte (>= 5), theme + app/ composites, $lib/services/api
 
      Usage:
      Opened as a desktop window app.
@@ -20,11 +20,10 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';
   import { languageStore, t, translate } from '$lib/stores/i18n';
-  import { IconBrain, IconSend, IconSparkles, IconTrash, IconHistory, IconPlus, IconCopy, IconCheck, IconRefresh, IconSquare, IconCpu } from '@tabler/icons-svelte';
+  import { IconBrain, IconSend, IconSparkles, IconTrash, IconHistory, IconPlus, IconCopy, IconCheck, IconRefresh, IconSquare } from '@tabler/icons-svelte';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
   import { Button } from '$lib/components/theme';
   import { PageLayout, ConfirmDialog, EmptyState } from '$lib/components/app';
-  import McpPanel from '$lib/components/chat/McpPanel.svelte';
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
   import { cn } from '$lib/utils.js';
 
@@ -62,26 +61,10 @@
     scrollToBottom();
   }
 
-  // External agents (MCP): the management endpoint is admin-only, so a
-  // successful probe doubles as the admin check — non-admins never see the
-  // panel toggle. Probed lazily on mount, independent of Ollama state.
-  let isAdmin = false;
-  let showMcp = false;
-
   onMount(() => {
     loadConversations();
     checkOllama();
-    checkMcpAdmin();
   });
-
-  async function checkMcpAdmin() {
-    try {
-      const res: any = await api.mcpStatus();
-      isAdmin = !!res?.success;
-    } catch {
-      isAdmin = false;
-    }
-  }
 
   async function checkOllama() {
     try {
@@ -443,11 +426,6 @@
       {ollamaStatus === 'checking' ? $t('chat.checking') : ollamaStatus === 'online' ? $t('chat.online') : ollamaStatus === 'nomodel' ? $t('chat.no_model') : $t('chat.offline')}
     </span>
   {/snippet}
-  {#snippet toolbarRight()}
-    {#if isAdmin}
-      <Button variant={showMcp ? 'primary' : 'secondary'} onclick={() => (showMcp = !showMcp)}><IconCpu size={17} stroke={1.9} /> {$t('mcp.title')}</Button>
-    {/if}
-  {/snippet}
 
   <div class="flex flex-1 min-h-0">
     {#if showHistory}
@@ -569,9 +547,6 @@
         <div class="mt-1.5 text-center text-c-xs text-[var(--hv-shell-text-3)]">{$t('chat.local_note')}</div>
       </div>
     </div>
-    {#if showMcp && isAdmin}
-      <McpPanel onclose={() => (showMcp = false)} />
-    {/if}
   </div>
   <ConfirmDialog
     {dlg}

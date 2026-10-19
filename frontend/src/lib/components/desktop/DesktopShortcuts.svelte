@@ -6,12 +6,12 @@
      Version       : 1.0.0
 
      Description:
-       Pinned web-shortcut tiles under the app grid. Adding one asks for a
-       URL whose metadata (title/description/favicon) the server fetches
-       SSRF-guarded; the list is stored per-account by shortcutsStore.
+       Pinned web-shortcut tiles on the desktop. The list is stored
+       per-account by shortcutsStore; the add dialog lives in
+       ShortcutAddDialog.svelte and is opened from the launcher's last tile.
 
      Dependencies:
-       - svelte (>= 5), stores/shortcuts, $lib/services/api
+       - svelte (>= 5), stores/shortcuts
 
      Usage:
        Mounted by the desktop shell.
@@ -20,73 +20,22 @@
   /**
    * Pinned web shortcuts on the desktop.
    *
-   * A compact row of tiles under the app grid. Adding one opens a dialog that
-   * asks for a URL; the server fetches the page's title/description/favicon
-   * (`api.fetchShortcutMetadata` → SSRF-guarded handler) and the result is
-   * stored per-account by `shortcutsStore`.
+   * A compact column of tiles on the desktop. There is deliberately NO "add"
+   * tile here: adding a shortcut is a launcher action (`HvLaunchpad`, last
+   * tile after every app), so the desktop stays a canvas of the things the
+   * user pinned rather than a place to configure them.
    *
    * Accessibility: every tile is a real `<button>` (opens the URL in a new
    * tab) and carries a visible-on-hover/focus-within remove button, so the
    * removal path is not hover-only. The remove button has an `aria-label` from
    * an i18n key.
    */
-  import { t, translate } from '$lib/stores/i18n';
-  import { shortcutsStore, MAX_SHORTCUTS, type Shortcut } from '$lib/stores/shortcuts';
-  import { api } from '$lib/services/api';
-  import { Modal } from '$lib/components/theme';
-  import { IconPlus, IconTrash, IconWorld, IconLoader2 } from '@tabler/icons-svelte';
-  import { cn } from '$lib/utils.js';
-
-  let showAdd = false;
-  let url = '';
-  let busy = false;
-  let error = '';
-
-  async function addShortcut() {
-    const trimmed = url.trim();
-    if (!trimmed || busy) return;
-    busy = true;
-    error = '';
-    try {
-      const res = await api.fetchShortcutMetadata(trimmed);
-      if (!res.success || !res.data) {
-        error = res.message || res.error || translate('shortcuts.fetch_failed');
-        return;
-      }
-      const d = res.data as {
-        url: string;
-        title: string | null;
-        description: string | null;
-        icon_url: string | null;
-        site_name: string | null;
-      };
-      const ok = shortcutsStore.add({
-        url: d.url || trimmed,
-        title: d.title || d.site_name || trimmed,
-        description: d.description || '',
-        iconUrl: d.icon_url,
-        siteName: d.site_name || '',
-      });
-      if (!ok) {
-        error = translate('shortcuts.duplicate_or_full');
-        return;
-      }
-      url = '';
-      showAdd = false;
-    } catch {
-      error = translate('shortcuts.fetch_failed');
-    } finally {
-      busy = false;
-    }
-  }
+  import { t } from '$lib/stores/i18n';
+  import { shortcutsStore, type Shortcut } from '$lib/stores/shortcuts';
+  import { IconTrash } from '@tabler/icons-svelte';
 
   function openShortcut(s: Shortcut) {
     window.open(s.url, '_blank', 'noopener,noreferrer');
-  }
-
-  function closeAdd() {
-    showAdd = false;
-    error = '';
   }
 
   function initial(s: Shortcut): string {
@@ -94,6 +43,7 @@
   }
 </script>
 
+{#if $shortcutsStore.length > 0}
 <div data-testid="desktop-shortcuts" class="hv-shortcuts" aria-label={$t('shortcuts.title')}>
   {#each $shortcutsStore as s (s.id)}
     <div class="hv-shortcut" data-testid="desktop-shortcut">
@@ -130,54 +80,8 @@
       </button>
     </div>
   {/each}
-
-  {#if $shortcutsStore.length < MAX_SHORTCUTS}
-    <button
-      type="button"
-      class="hv-shortcut hv-shortcut-add"
-      data-testid="desktop-shortcut-add"
-      aria-label={$t('shortcuts.add')}
-      onclick={() => (showAdd = true)}
-    >
-      <span class="hv-shortcut-add-icon"><IconPlus size={20} stroke={2} /></span>
-      <span class="hv-shortcut-label">{$t('shortcuts.add_short')}</span>
-    </button>
-  {/if}
 </div>
-
-<Modal open={showAdd} title={$t('shortcuts.add')} size="md" onclose={closeAdd}>
-  {#snippet icon()}<IconWorld size={22} stroke={1.75} />{/snippet}
-  {#snippet children()}
-    <p class="m-0 mb-3 text-sm text-[var(--hv-shell-text)]">{$t('shortcuts.add_hint')}</p>
-    <label class="flex flex-col gap-1 text-c-base text-[var(--hv-shell-text-2)]">
-      {$t('shortcuts.url_label')}
-      <input
-        data-testid="shortcuts-url"
-        class="h-10 px-3 rounded-md border border-[var(--hv-shell-border)] bg-[var(--hv-shell-card)] text-c-base text-[var(--hv-shell-text-strong)]"
-        placeholder="https://example.com"
-        bind:value={url}
-        onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addShortcut(); } }}
-        autocomplete="off"
-      />
-    </label>
-    {#if error}
-      <p data-testid="shortcuts-error" role="alert" class="mt-2 mb-0 text-c-base text-[var(--hv-error-text)]">{error}</p>
-    {/if}
-  {/snippet}
-  {#snippet footer()}
-    <button type="button" class="hv-shortcut-btn hv-shortcut-btn-ghost" onclick={closeAdd}>{$t('common.cancel')}</button>
-    <button
-      type="button"
-      data-testid="shortcuts-submit"
-      class="hv-shortcut-btn hv-shortcut-btn-primary"
-      disabled={busy || !url.trim()}
-      onclick={addShortcut}
-    >
-      {#if busy}<IconLoader2 size={16} stroke={2} class="hv-spin" />{/if}
-      {$t('shortcuts.add')}
-    </button>
-  {/snippet}
-</Modal>
+{/if}
 
 <style>
   .hv-shortcuts {
@@ -274,54 +178,5 @@
   .hv-shortcut-remove:focus-visible {
     outline: none;
     box-shadow: var(--hv-focus-ring);
-  }
-  .hv-shortcut-add {
-    flex-direction: column;
-    align-items: center;
-    gap: 4px;
-    color: rgba(255, 255, 255, 0.85);
-  }
-  .hv-shortcut-add-icon {
-    display: grid;
-    place-items: center;
-    width: 32px;
-    height: 32px;
-    border-radius: var(--hv-radius-md);
-    border: 1.5px dashed rgba(255, 255, 255, 0.6);
-  }
-  .hv-shortcut-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    height: 38px;
-    padding: 0 16px;
-    border: 0;
-    border-radius: var(--hv-radius-md);
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .hv-shortcut-btn-ghost {
-    background: var(--hv-shell-fill);
-    color: var(--hv-shell-text-strong);
-  }
-  .hv-shortcut-btn-primary {
-    background: var(--hv-primary);
-    color: #fff;
-  }
-  .hv-shortcut-btn:focus-visible {
-    outline: none;
-    box-shadow: var(--hv-focus-ring);
-  }
-  .hv-shortcut-btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-  :global(.hv-spin) {
-    animation: hv-spin 1s linear infinite;
-  }
-  @keyframes hv-spin {
-    to {
-      transform: rotate(360deg);
-    }
   }
 </style>

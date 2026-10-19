@@ -6,9 +6,9 @@
      Version       : 1.0.0
 
      Description:
-       The standard settings card shell: icon tile + title + description
-       header over a body, with the shared class vocabulary so every card —
-       rail groups and embedded sub-cards alike — looks identical.
+       The standard settings card shell: a two-line header (title over its
+       description) above a body, with the shared class vocabulary so every
+       card — rail groups and embedded sub-cards alike — looks identical.
 
      Dependencies:
        - svelte (>= 5), ./vocabulary
@@ -22,20 +22,12 @@
   import { settingsCard, settingsCardFooter } from './vocabulary';
 
   let {
-    icon,
-    iconVariant = 'blue',
-    accent,
     title,
     subtitle,
     children,
     footer,
     class: klass = '',
   }: {
-    icon: any;
-    iconVariant?: 'blue' | 'green' | 'red' | 'orange' | 'purple';
-    /** Explicit category colour. Overrides `iconVariant`; pass a
-     *  `--hv-settings-cat-*` token so the card stays on the palette. */
-    accent?: string;
     title: string;
     subtitle?: string;
     children?: Snippet;
@@ -43,30 +35,17 @@
     /** Extra classes merged onto the card root (e.g. `mt-3` spacing). */
     class?: string;
   } = $props();
-
-  // Svelte only treats a template tag as a dynamic component if it's a
-  // capitalized identifier — `icon` (lowercase, from props) rendered as
-  // `<icon>` compiles as a literal, nonexistent HTML element instead.
-  let Icon = $derived(icon);
-
-  const VARIANT_COLOR: Record<string, string> = {
-    blue: 'var(--hv-primary)',
-    green: 'var(--hv-success)',
-    red: 'var(--hv-error)',
-    orange: 'var(--hv-warning)',
-    purple: 'var(--hv-settings-cat-appearance)',
-  };
-
-  const tint = $derived(accent ?? VARIANT_COLOR[iconVariant] ?? VARIANT_COLOR.blue);
 </script>
 
 <!--
-  SettingsCard — the sub-card shell used by the six embedded settings cards
-  (HTTPS/TLS, Antivirus, Anti-Ransomware, Firewall, UPS, SNMP).
+  SettingsCard — the sub-card shell used by the seven embedded settings cards
+  (HTTPS/TLS, Antivirus, Anti-Ransomware, Firewall, AI Assistant, UPS, SNMP).
 
   It renders the same section + row vocabulary as the rest of the Settings
-  screen: the shared `--hv-settings-*` card, a 36px icon tile in the card's
-  own colour at 9%, and a 16px/700 title. `data-testid="settings-card"` /
+  screen: the shared `--hv-settings-*` card and a two-line header — title over
+  its description, no icon tile (removed 2026-10-19: the category identity
+  already lives in the rail, and a 36px tile per card made the panel scroll
+  far more than its content needed). `data-testid="settings-card"` /
   `settings-card-title` are the E2E contract — the security and monitoring
   categories have no hand-rolled section label, so the card's own heading is
   what proves they rendered (tests 2.1, 2.5, 12.1).
@@ -75,24 +54,20 @@
   strings, so a card here and a card in `Settings.svelte` cannot drift.
 -->
 <div class={cn(settingsCard, 'settings-card', klass)} data-testid="settings-card">
-  <div class="settings-card-header flex items-center gap-3 py-4 border-b-[1.45px] border-[var(--hv-settings-hairline)]">
-    <span
-      class="settings-card-icon grid place-items-center w-9 h-9 rounded-xl flex-none"
-      style="background: color-mix(in srgb, {tint} var(--hv-settings-cat-tint), transparent); color: {tint}"
-    >
-      <Icon size={20} />
-    </span>
-    <div class="min-w-0">
-      <!-- The `!` flags are load-bearing — `styles/theme/base.css` sets an
-           unlayered `h2 { font-size: … }`, which outranks every layered
-           Tailwind utility. See the same note in `routes/Settings.svelte`.
-           `text-md` is the native title-3 step (15px/700) — the card title;
-           `text-base` is the body step (13px). -->
-      <h2 data-testid="settings-card-title" class="settings-card-title m-0 text-md! font-bold! leading-6! text-[var(--hv-settings-title)]!">{title}</h2>
-      {#if subtitle}
-        <p class="settings-card-subtitle m-0 mt-0.5 text-xs leading-4 text-[var(--hv-settings-label)]">{subtitle}</p>
-      {/if}
-    </div>
+  <div class="settings-card-header py-2.5 border-b-[1.45px] border-[var(--hv-settings-hairline)]">
+    <!-- The `!` flags are load-bearing — `styles/theme/base.css` sets an
+         unlayered `h2 { font-size: … }`, which outranks every layered
+         Tailwind utility. See the same note in `routes/Settings.svelte`.
+         `text-md` is the native title-3 step (15px/700) — the card title;
+         `text-base` is the body step (13px). -->
+    <h2 data-testid="settings-card-title" class="settings-card-title m-0 text-md! font-bold! leading-5! text-[var(--hv-settings-title)]!">{title}</h2>
+    {#if subtitle}
+      <!-- `mb-0!` matters as much as the `!` flags above: `base.css` sets an
+           unlayered `p { margin-bottom: var(--hv-space-4) }`, which a plain
+           `m-0` cannot override — the card header then carries 16px of dead
+           space under its subtitle. -->
+      <p class="settings-card-subtitle m-0! text-xs leading-4 text-[var(--hv-settings-label)]">{subtitle}</p>
+    {/if}
   </div>
 
   <div class="settings-card-body">

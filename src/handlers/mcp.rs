@@ -304,7 +304,7 @@ fn tool_denied(id: Option<serde_json::Value>, tool: &str) -> Response {
     rpc_error(
         id,
         -32003,
-        format!("{tool} is outside this token's permissions (Settings → AI → External agents)"),
+        format!("{tool} is outside this token's permissions (Settings → AI Assistant → External agents)"),
         None,
     )
 }
