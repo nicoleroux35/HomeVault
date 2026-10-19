@@ -186,8 +186,7 @@ Largest family: raw values and per-screen reimplementations.
   `ComposeModal:76`), `"Refresh logs"` (`LogsModal:76`), `"Remove port"`
   (`ContainerCreateModal:165`), untranslated titles/labels
   (`Container Name`, `Docker Image`, `Restart Policy`, `Memory Limit`,
-  `CPU Limit`); `components/ui/pagination/*`: `Go to next page` /
-  `Go to previous page` ×4.
+  `CPU Limit`).
 - **Fix:** `$t('common.close')`, `$t('common.refresh')`, `$t('docker.*')` keys
   added to both locale files; pagination labels via the shared `ui` i18n hook
   used by the rest of `components/ui`.
@@ -273,7 +272,7 @@ Largest family: raw values and per-screen reimplementations.
 ### [ ] W11 — Skeletons instead of a centred spinner for dense lists (categories 5, 15)
 
 - **Where:** `.hv-skeleton*` (`lib/styles/theme/utilities.css:478-497`,
-  `base.css:499`) and `components/ui/skeleton/` exist with **0 usages**;
+  `base.css:499`) exist with **0 usages**;
   `components/app/DataTable.svelte:97-102` renders a single `<Spinner>` row;
   `animate-spin` appears ×18 (Explorer, Docker, Account…).
 - **Fix:** give `DataTable` a `loadingRows` skeleton (N rows × 44px, matching the

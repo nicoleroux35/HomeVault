@@ -340,7 +340,7 @@ Import pattern: `import { api } from '$lib/services/api';` then
 | `monitorStore.ts` | desktop monitor-tile catalog (Resource/RAID/Security/VPN/Downloader/Syncthing/Calendar/Docker/Weather/Sessions/Health) + per-tile visibility + `refreshMs`, all persisted to the `/api/monitor-layout` blob |
 | `widgetCatalog.ts` | `WIDGET_DEFS` — the 11 monitors (icon, accent, i18n keys, visibility key + setter), shared by `Widgets.svelte` and Settings > Widgets |
 | `weatherLocation.ts` | the Weather monitor's saved city (localStorage) |
-| `datetimeStore.ts`, `search.ts`, `wallpaper.ts`, `dragState.ts`, `explorerShareIntent.ts` | misc UI state |
+| `search.ts`, `wallpaper.ts`, `dragState.ts`, `explorerShareIntent.ts` | misc UI state |
 
 Widget polling infra (`subscribeWidget` / `createWidgetPolling`) lives in
 `components/desktop/widgetData.ts`, not in `stores/`. Toasts go through

@@ -66,8 +66,8 @@ so after a frontend-only rebuild (`npm run build`) or a `.toml` edit, a plain
 `cargo build --release`. This covers the pre-compressed `.br` / `.gz` siblings
 too — they are written by `npm run build` (npm `postbuild`) *after* the last
 `cargo build` may have embedded `static/`, so a non-clean release build can
-silently ship uncompressed assets. `installer/install.sh --package` and
-`compile_backend_release.sh` build from clean, so releases are unaffected.
+silently ship uncompressed assets. `installer/install.sh --package` builds
+from clean, so releases are unaffected.
 
 `npm run build` also runs `prebuild` (`generate-sprite.mjs`, regenerating the
 icon sprite from the sources) — see
@@ -183,7 +183,7 @@ terminates TLS is still supported. Full detail: [guides/tls.md](./guides/tls.md)
 
 ## SPA serving
 
-`create_app` merges a `spa` router that serves `/sprite.svg`, `/manifest.json`,
+`create_app` merges a `spa` router that serves `/sprite-unified.svg`, `/manifest.json`,
 favicon, and a `fallback` to `serve_spa`. Static assets come from the
 `include_dir!`-embedded `static/` tree (`spa::STATIC_DIR`). Wallpapers are
 **bundled** — `frontend/public/wallpapers/hv-NN.webp` are copied into
@@ -213,8 +213,8 @@ derived per file and matter for correctness:
   - `CACHE_IMMUTABLE` (`public, max-age=31536000, immutable`) for
     `/assets/*`, `/fonts/*` (content-hashed by Vite), `/wallpapers/*` and
     `/static/*` (release-scoped, hand-authored).
-  - `CACHE_REVALIDATE` (`public, max-age=86400`) for `/sprite.svg` and
-    `/sprite-unified.svg`: their URL is fixed but their content is regenerated
+  - `CACHE_REVALIDATE` (`public, max-age=86400`) for `/sprite-unified.svg`:
+    its URL is fixed but its content is regenerated
     from the sources on every build, so `immutable` would pin a stale sprite
     (blank new icons) in every browser.
   - none for `serve_dist_file` (`/manifest.json`, `/favicon.svg`, `/sw.js`) and
