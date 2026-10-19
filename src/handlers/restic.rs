@@ -846,8 +846,9 @@ pub async fn handle_restic_restore_plan(
         Err(e) => return ResponseHelper::json_error(format!("Failed to size snapshot: {}", e)),
     };
     let target = params.target.clone();
-    let available =
-        tokio::task::spawn_blocking(move || target_available_bytes(&target)).await.unwrap_or(None);
+    let available = tokio::task::spawn_blocking(move || target_available_bytes(&target))
+        .await
+        .unwrap_or(None);
     let fits = available.map(|a| a >= required).unwrap_or(false);
     ResponseHelper::json_success(serde_json::json!({
         "repo_id": params.repo_id,
@@ -1205,10 +1206,7 @@ mod tests {
         let now = chrono::DateTime::parse_from_rfc3339("2026-01-08T12:00:00Z")
             .unwrap()
             .timestamp();
-        assert_eq!(
-            days_since(Some("2026-01-01T00:00:00Z"), now),
-            Some(7)
-        );
+        assert_eq!(days_since(Some("2026-01-01T00:00:00Z"), now), Some(7));
         assert_eq!(days_since(None, now), None);
         assert_eq!(days_since(Some("not-a-date"), now), None);
     }
@@ -1226,10 +1224,7 @@ mod tests {
 
     #[test]
     fn test_parse_df_available_reads_second_line() {
-        assert_eq!(
-            parse_df_available("Avail\n123456789\n"),
-            Some(123456789)
-        );
+        assert_eq!(parse_df_available("Avail\n123456789\n"), Some(123456789));
         assert_eq!(parse_df_available("Avail\n"), None);
         assert_eq!(parse_df_available(""), None);
         assert_eq!(parse_df_available("Avail\nnot-a-number\n"), None);

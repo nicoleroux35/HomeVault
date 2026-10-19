@@ -1,6 +1,126 @@
 #!/bin/bash
 set -euo pipefail
 
+# ---------------------------------------------------------------------------
+# English only — for the installer's own text *and* for everything it relays.
+#
+# The script's messages are written in English, but three things would still
+# answer in the host's language without this: apt/dpkg warnings, systemctl
+# errors, and the whiptail buttons (newt translates Yes/No/Ok/Cancel from the
+# locale). `C` also makes the parsing below deterministic — `apt-cache policy`
+# prints the canonical `Candidate:` label instead of a localized one (French
+# `Candidat :` used to make every availability probe fail).
+# ---------------------------------------------------------------------------
+export LC_ALL=C
+export LANG=C
+
+# ---------------------------------------------------------------------------
+# Entry bootstrap — one file, three ways in.
+#
+#   sudo ./install.sh                CLI, terminal, already root
+#   curl … | sudo bash               piped: root, but stdin is the *script*
+#   double-click in a file manager   no terminal at all, not root
+#
+# The last two are why this block exists and why it runs before everything
+# else. A file manager executes the script with no controlling terminal and as
+# the logged-in user, so `read`/whiptail would have nowhere to draw and `sudo`
+# nowhere to ask for a password. Both are solved here, once:
+#   1. no terminal -> re-exec inside a terminal emulator;
+#   2. not root    -> re-exec through sudo, inside that terminal so the
+#                     password prompt is actually visible.
+# `HV_INSTALLER_STAGE` breaks the loop between the two re-execs.
+#
+# `--package` (maintainer build) and `--dry-run` (read-only preview) are
+# deliberately excluded: neither needs root and neither may pop a window.
+# ---------------------------------------------------------------------------
+HV_SELF="$(readlink -f -- "${BASH_SOURCE[0]:-}" 2>/dev/null || true)"
+[[ -n "$HV_SELF" && -f "$HV_SELF" ]] || HV_SELF=""
+
+HV_BOOTSTRAP=1
+for _hv_arg in "$@"; do
+    case "$_hv_arg" in
+        --package|-p|--dry-run|--help|-h) HV_BOOTSTRAP=0 ;;
+        # Known flags: accepted here so an unknown one is rejected *before*
+        # any elevation or terminal relaunch happens.
+        --uninstall|--rollback|--purge|--cli|--tui|--yes|-y|--non-interactive) ;;
+        -*)
+            echo "Unknown option: $_hv_arg" >&2
+            echo "Try: --help" >&2
+            exit 1 ;;
+        *) : ;;   # positional: the path to a pre-downloaded archive
+    esac
+done
+unset _hv_arg
+
+# 1. No terminal at all (double-clicked): reopen ourselves inside one. Only
+#    attempted when a graphical session exists — on a headless box there is
+#    nothing to open, and the plain-text path below still works.
+if [[ "$HV_BOOTSTRAP" -eq 1 && "${HV_INSTALLER_STAGE:-}" != terminal ]] \
+        && [[ ! -t 1 && ! -t 2 ]] && [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+    HV_TERM=""
+    for _hv_t in x-terminal-emulator gnome-terminal konsole xfce4-terminal \
+                 mate-terminal lxterminal tilix kitty alacritty xterm; do
+        if command -v "$_hv_t" >/dev/null 2>&1; then HV_TERM="$_hv_t"; break; fi
+    done
+    unset _hv_t
+    if [[ -n "$HV_TERM" && -n "$HV_SELF" ]]; then
+        export HV_INSTALLER_STAGE=terminal
+        case "$HV_TERM" in
+            gnome-terminal|tilix)
+                "$HV_TERM" -- bash "$HV_SELF" "$@" >/dev/null 2>&1 && exit 0 ;;
+            *)
+                # `-e` is the classic form; the `--` fallback covers terminals
+                # that dropped it (newer gnome-terminal). One of the two runs
+                # in the background, so a successful launch returns 0 here.
+                "$HV_TERM" -e bash "$HV_SELF" "$@" >/dev/null 2>&1 && exit 0
+                "$HV_TERM" -- bash "$HV_SELF" "$@" >/dev/null 2>&1 && exit 0 ;;
+        esac
+    fi
+fi
+
+# 2. Not root: elevate. sudo resets the environment, so the documented HV_*
+#    knobs are forwarded explicitly — `sudo -E` is rejected by the default
+#    sudoers policy and is not used.
+if [[ "$HV_BOOTSTRAP" -eq 1 && $EUID -ne 0 ]]; then
+    if [[ -z "$HV_SELF" ]]; then
+        # Piped without sudo: the script body lives only on stdin, so it
+        # cannot re-exec itself. Name the exact command to run instead.
+        echo "This installer needs administrator (root) privileges." >&2
+        echo "" >&2
+        echo "Re-run it with sudo:" >&2
+        echo "  curl -fsSL <install-url> | sudo bash" >&2
+        exit 1
+    fi
+    if ! command -v sudo >/dev/null 2>&1; then
+        echo "This installer needs root, and 'sudo' is not installed." >&2
+        echo "Log in as root and run:  bash $HV_SELF" >&2
+        exit 1
+    fi
+    if [[ "${HV_INSTALLER_STAGE:-}" == reexec ]]; then
+        # sudo ran us and we are still unprivileged: never loop.
+        echo "sudo did not grant root privileges. Check the sudoers policy." >&2
+        exit 1
+    fi
+    _hv_envs=(HV_INSTALLER_STAGE=reexec)
+    for _hv_v in HV_RELEASE_BASE HV_RELEASE_URL HV_RELEASE_SHA256 HV_RELEASE_TOKEN \
+                 HV_MODE HV_YES HV_SKIP_OPTIONAL DATA_DIRECTORY PORT HTTPS_PORT; do
+        if [[ -n "${!_hv_v:-}" ]]; then _hv_envs+=("$_hv_v=${!_hv_v}"); fi
+    done
+    unset _hv_v
+    exec sudo "${_hv_envs[@]}" bash "$HV_SELF" "$@"
+fi
+
+# 3. A real TTY for prompts. Under `curl | sudo bash` stdin is the script
+#    itself, so a bare `read` consumes the *next line of the script* instead of
+#    the keyboard — that is exactly how the old HTTPS prompt aborted installs
+#    with "syntax error near unexpected token 'fi'". Every prompt now reads
+#    fd 3, bound to /dev/tty whenever one exists.
+#    `: </dev/tty` is the probe, not `-r`: /dev/tty is world-readable but
+#    opening it fails with ENXIO when the process has no controlling terminal
+#    (cron, CI, a container, this script's own test harness).
+exec 3<&0
+if { : </dev/tty; } 2>/dev/null; then exec 3</dev/tty; fi
+
 # HomeVault Installation Script — the only installer file: packages, the
 # systemd unit, the udiskie automount config, the download and the final
 # verification all live here (nothing is read from a sibling file).
@@ -13,6 +133,21 @@ set -euo pipefail
 #
 # Usage with an already-downloaded archive (skips the download step):
 #   sudo ./install.sh /path/to/homevault.tar.gz
+#
+# Double-click: mark the file executable and open it from the file manager
+# (Nemo/Thunar/Dolphin run it; GNOME's Nautilus needs the .desktop launcher
+# below). It reopens itself in a terminal and elevates with sudo on its own —
+# no command line needed.
+#
+# Interface selection (automatic by default):
+#   whiptail TUI   when a terminal is available (Debian `important` priority,
+#                  so it is present on every supported base) and stdin is
+#                  interactive;
+#   plain text     otherwise — headless, `--cli`, `--yes`, cron/CI.
+#   --tui / --cli  force one of the two.
+#   --yes, -y, --non-interactive
+#                  never prompt: every question takes its documented default.
+#   --help, -h     print this usage.
 #
 # The pre-built binary is downloaded from the project's GitHub Releases by
 # default, as a per-architecture asset (`homevault-<arch>.tar.gz`). Override
@@ -103,17 +238,65 @@ SERVICE_NAME_DEFAULT="homevault"
 SERVICE_FILE_DEFAULT="/etc/systemd/system/homevault.service"
 ENV_FILE_DEFAULT="/etc/homevault.env"
 
+usage() {
+    cat <<'EOM'
+HomeVault installer — one file, for a terminal or a double-click.
+
+  sudo ./install.sh [archive]        install, or upgrade in place (data kept)
+  curl -fsSL <url> | sudo bash       same, from a single command
+  double-click the file              reopens itself in a terminal, elevates
+                                     with sudo, then uses the whiptail UI
+
+Interface (chosen automatically, overridable):
+  --tui                 force the whiptail text interface
+  --cli                 force plain text output
+  --yes, -y, --non-interactive
+                        never prompt; every question takes its default
+
+Lifecycle:
+  --uninstall           remove the app, KEEP the data
+  --uninstall --purge   also delete /var/lib/homevault and /etc/homevault.env
+  --rollback            swap back to /opt/homevault/homevault.previous
+  --dry-run             print what would happen, change nothing (no root)
+  --package, -p         maintainer: build installer/release/homevault-<arch>.tar.gz
+  --help, -h            this text
+
+Environment:
+  HV_RELEASE_URL        override the download URL (mirror, pinned version)
+  HV_RELEASE_SHA256     pin the archive checksum
+  HV_RELEASE_TOKEN      token for a private-repository release
+  HV_YES=1              same as --yes
+  HV_MODE=cli|tui       same as --cli / --tui
+
+Log: /var/log/homevault-install.log
+EOM
+}
+
 MODE="install"
 PURGE=0
 DRY_RUN=0
+# Interface request. "auto" picks whiptail when a terminal exists (see the
+# IS_TTY block below); `--yes` always wins and forces the silent text path.
+UI_REQUEST="${HV_MODE:-auto}"
+YES=0
+[[ "${HV_YES:-0}" == "1" ]] && YES=1
 for arg in "$@"; do
     case "$arg" in
         --uninstall) MODE="uninstall" ;;
         --rollback)  MODE="rollback" ;;
         --purge)     PURGE=1 ;;
         --dry-run)   DRY_RUN=1 ;;
+        --cli)       UI_REQUEST="cli" ;;
+        --tui)       UI_REQUEST="tui" ;;
+        --yes|-y|--non-interactive) YES=1 ;;
+        --help|-h)
+            usage
+            exit 0 ;;
     esac
 done
+case "$UI_REQUEST" in auto|cli|tui) ;; *)
+    echo "Unknown HV_MODE '$UI_REQUEST' (auto, cli or tui)." >&2; exit 1 ;;
+esac
 
 # Print-or-run: every destructive action goes through this, so --dry-run is a
 # faithful preview rather than an approximation.
@@ -124,6 +307,7 @@ run() {
         "$@"
     fi
 }
+
 
 if [[ "$MODE" == "uninstall" ]]; then
     # A dry run changes nothing, so it does not need root — that is what makes
@@ -136,7 +320,7 @@ if [[ "$MODE" == "uninstall" ]]; then
         echo "This will permanently DELETE all HomeVault data:"
         echo "  $DATA_DIR_DEFAULT  (database, snapshots, app data, VMs)"
         echo "  $ENV_FILE_DEFAULT"
-        read -r -p "Type PURGE to confirm: " CONFIRM || CONFIRM=""
+        read -r -p "Type PURGE to confirm: " -u 3 CONFIRM || CONFIRM=""
         if [[ "$CONFIRM" != "PURGE" ]]; then
             echo "Aborted — nothing was deleted."
             exit 1
@@ -220,13 +404,14 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     exit 0
 fi
 
-# Root gate FIRST, before the log redirection further down: as a non-root
-# user `/var/log` is not writable, so `tee -a` would die, and every later
-# write would hit a broken pipe instead of printing this very message.
+# Root gate — normally already satisfied by the bootstrap above (which
+# re-execs through sudo, or explains why it cannot). Kept as the last line of
+# defence so no code below can ever run unprivileged.
 if [[ $EUID -ne 0 ]]; then
-    echo "This script must be run with administrator (root) privileges."
-    echo ""
-    echo "Re-run it with:  curl -fsSL <install-url> | sudo bash"
+    echo "This script must be run with administrator (root) privileges." >&2
+    echo "" >&2
+    echo "Re-run it with:  sudo bash $0" >&2
+    echo "or:              curl -fsSL <install-url> | sudo bash" >&2
     exit 1
 fi
 
@@ -261,12 +446,50 @@ export NEEDRESTART_MODE=a
 # once that pipe is in place `[ -t 1 ]` would always read false.
 if [ -t 1 ]; then IS_TTY=1; else IS_TTY=0; fi
 
+# ---------------------------------------------------------------------------
+# Interface selection — whiptail TUI or plain text.
+#
+# whiptail ships at Debian/Ubuntu priority `important`, i.e. present on every
+# supported base, so no extra package is needed. It is still optional: an
+# image that trimmed it (or a container) falls back to the text UI, and
+# `--yes` always does, because there is nobody to answer.
+#
+# In TUI mode stdout/stderr go to the log file only: whiptail owns the
+# terminal (drawn on fd 4) and engine chatter would otherwise paint over its
+# screens. The log stays the detailed record, the TUI the summary.
+# ---------------------------------------------------------------------------
+TUI=0
+if [[ "$YES" -eq 0 && "$DRY_RUN" -eq 0 && "$UI_REQUEST" != "cli" ]]; then
+    if command -v whiptail >/dev/null 2>&1; then
+        if [[ "$UI_REQUEST" == "tui" ]] || [[ "$IS_TTY" -eq 1 ]]; then
+            # Probe by *opening* /dev/tty: `[[ -w ]]` succeeds on a process
+            # with no controlling terminal, the open then fails with ENXIO.
+            if { : >/dev/tty; } 2>/dev/null; then
+                TUI=1
+            elif [[ "$UI_REQUEST" == "tui" ]]; then
+                echo "--tui needs a terminal (/dev/tty is not available)." >&2
+                exit 1
+            fi
+        fi
+    elif [[ "$UI_REQUEST" == "tui" ]]; then
+        echo "--tui requires whiptail:  apt-get install -y whiptail" >&2
+        exit 1
+    fi
+fi
+
+LOG_FILE="/var/log/homevault-install.log"
+if [[ "$TUI" -eq 1 ]]; then
+    exec 4>/dev/tty      # whiptail's private channel to the terminal
+    exec >>"$LOG_FILE" 2>&1
+else
+    exec > >(tee -a "$LOG_FILE") 2>&1
+fi
+
 # Everything printed from here on (successes, warnings, raw apt/systemctl
 # output alike) is also kept on disk — a failure a non-technical user can't
 # make sense of on screen is still fully diagnosable by whoever they ask for
-# help, without re-running the installer.
-LOG_FILE="/var/log/homevault-install.log"
-exec > >(tee -a "$LOG_FILE") 2>&1
+# help, without re-running the installer. The redirection itself was chosen
+# above, together with the interface mode.
 
 # ---------------------------------------------------------------------------
 # Small output helpers — a plain terminal (no color codes) falls back
@@ -281,15 +504,83 @@ fi
 
 STEP_TOTAL=5
 STEP_NUM=0
+
+# A 40-column progress bar, drawn as text so it works in whiptail's --infobox
+# and in a plain terminal alike.
+bar() {
+    local pct="$1" width=40 filled i out=""
+    filled=$(( pct * width / 100 ))
+    for (( i = 0; i < width; i++ )); do
+        if [ "$i" -lt "$filled" ]; then out="$out#"; else out="$out-"; fi
+    done
+    printf '[%s] %3d%%' "$out" "$pct"
+}
+
+# ---------------------------------------------------------------------------
+# Interface layer — whiptail TUI with a plain-text fallback.
+#
+# `--output-fd 1` puts whiptail's *answer* on stdout (captured by `$(…)`),
+# while `2>&4` sends its drawing straight to the terminal, so the answer is
+# never mixed with escape sequences and the log stays readable. Input comes
+# from /dev/tty too: under `curl | sudo bash` stdin is the script itself.
+# ---------------------------------------------------------------------------
+ui_msg()   { whiptail --backtitle "HomeVault installer" --title "$1" \
+                --scrolltext --msgbox "$2" 20 78 2>&4 </dev/tty; }
+ui_yesno() { # $1 title, $2 text, $3 default (y|n)
+    if [[ "${3:-y}" == "n" ]]; then
+        whiptail --backtitle "HomeVault installer" --title "$1" --defaultno \
+            --yesno "$2" 14 78 2>&4 </dev/tty
+    else
+        whiptail --backtitle "HomeVault installer" --title "$1" \
+            --yesno "$2" 14 78 2>&4 </dev/tty
+    fi
+}
+ui_input() { whiptail --backtitle "HomeVault installer" --title "$1" \
+                --output-fd 1 --inputbox "$2" 12 78 "${3:-}" 2>&4 </dev/tty; }
+ui_info()  { whiptail --backtitle "HomeVault installer" --title "$1" \
+                --infobox "$2" 10 72 2>&4 </dev/tty; }
+
+# One prompt, three backends. `--yes` and a missing terminal both take the
+# documented default instead of blocking an unattended run.
+ask() {
+    local question="$1" default="${2:-y}"
+    if [[ "$YES" -eq 1 ]]; then REPLY="$default"; return 0; fi
+    if [[ "$TUI" -eq 1 ]]; then
+        if ui_yesno "Confirmation" "$question" "$default"; then REPLY="y"; else REPLY="n"; fi
+        return 0
+    fi
+    if [[ ! -t 3 ]]; then REPLY="$default"; return 0; fi
+    read -r -p "$question " -u 3 REPLY || REPLY="$default"
+}
+
 step() {
     STEP_NUM=$((STEP_NUM + 1))
+    local pct=$(( STEP_NUM * 100 / STEP_TOTAL ))
+    if [[ "$TUI" -eq 1 ]]; then
+        ui_info "Installing HomeVault — step ${STEP_NUM}/${STEP_TOTAL}" \
+            "$(bar "$pct")
+
+$1"
+        echo "▶ Step ${STEP_NUM}/${STEP_TOTAL} — $1"
+        return 0
+    fi
     echo ""
     echo -e "${C_BOLD}${C_CYAN}▶ Step ${STEP_NUM}/${STEP_TOTAL} — $1${C_RESET}"
 }
-ok()   { echo -e "  ${C_GREEN}✓${C_RESET} $1"; }
-warn() { echo -e "  ${C_YELLOW}⚠${C_RESET} $1"; }
-err()  { echo -e "  ${C_RED}✗${C_RESET} $1"; }
-info() { echo -e "  ${C_DIM}$1${C_RESET}"; }
+
+# In TUI mode these lines are the *log* (stdout is already redirected to
+# $LOG_FILE) — never the screen, where whiptail owns the terminal.
+if [[ "$TUI" -eq 1 ]]; then
+    ok()   { echo "  ✓ $1"; }
+    warn() { echo "  ⚠ $1"; }
+    err()  { echo "  ✗ $1"; }
+    info() { echo "    $1"; }
+else
+    ok()   { echo -e "  ${C_GREEN}✓${C_RESET} $1"; }
+    warn() { echo -e "  ${C_YELLOW}⚠${C_RESET} $1"; }
+    err()  { echo -e "  ${C_RED}✗${C_RESET} $1"; }
+    info() { echo -e "  ${C_DIM}$1${C_RESET}"; }
+fi
 
 # Catch-all for anything that fails in a way none of the checks below
 # anticipated (network drop mid-`apt-get`, a corrupt package cache...) — with
@@ -298,6 +589,15 @@ info() { echo -e "  ${C_DIM}$1${C_RESET}"; }
 # think to look for on their own.
 on_unexpected_error() {
     local line="$1"
+    if [[ "$TUI" -eq 1 ]]; then
+        ui_msg "Installation stopped" "Installation stopped unexpectedly (line ${line}).
+
+The affected feature may be incomplete. Re-run the installer once the cause
+is fixed, or read the full log:
+
+  ${LOG_FILE}" || true
+        return 0
+    fi
     echo ""
     err "Installation stopped unexpectedly (line ${line})."
     echo -e "  Full log: ${C_BOLD}${LOG_FILE}${C_RESET}"
@@ -497,8 +797,14 @@ info "Base tools (build toolchain, databases)..."
 # Ubuntu always ships it, but a minimal Debian (netinst without the standard
 # taskset, containers, small VPS images) can genuinely lack it, and every
 # feature that shells out would break at once.
+# `procps` (`ps`/`pgrep`/`kill`), `debianutils` (`which`, used by the runtime
+# dependency probe) and `e2fsprogs` (`mkfs.ext4`, the Explorer's and the RAID
+# app's default filesystem) are all Priority: required, so they are present on
+# any supported base — requested explicitly so a trimmed image fails here,
+# loudly, instead of at the first page that shells out.
 install_packages "Base tools (build toolchain, databases)" required \
-    build-essential pkg-config libsqlite3-dev sqlite3 wget curl ca-certificates git python3 sudo
+    build-essential pkg-config libsqlite3-dev sqlite3 wget curl ca-certificates git python3 sudo \
+    procps debianutils e2fsprogs
 
 info "Storage and monitoring..."
 # `dmidecode` (Dashboard: motherboard/BIOS/RAM details), `ethtool` (Network:
@@ -508,7 +814,12 @@ info "Storage and monitoring..."
 # than left to a runtime surprise.
 install_packages "Storage and monitoring tools" required \
     acl quota smartmontools mdadm rsync gnupg iproute2 util-linux \
-    lsb-release lm-sensors udisks2 udiskie dmidecode ethtool iputils-ping
+    lsb-release lm-sensors udisks2 udiskie dmidecode ethtool iputils-ping hdparm
+
+# `hdparm` above backs the Power app's per-disk spindown (APM level + idle
+# timer, re-applied at boot by `src/power.rs`). Priority: standard and tiny,
+# but NOT part of a minimal install — without it that page reports
+# "hdparm not available" and the setting never applies.
 
 info "Media tools..."
 install_packages "Media player (FFmpeg)" required ffmpeg
@@ -552,6 +863,9 @@ install_optional cryptsetup "cryptsetup (LUKS2 encrypted volumes)"
 
 # Sharing services
 install_optional samba "Samba (SMB/CIFS)"
+# `smbtree` (Explorer → network discovery, SMB half) lives in samba-common-bin;
+# `samba` recommends it, but a host with recommends disabled would miss it.
+install_optional samba-common-bin "Samba client tools (smbtree: SMB discovery)"
 install_optional nfs-kernel-server "NFS server"
 install_optional vsftpd "FTP server (vsftpd)"
 # WebDAV uses a built-in Python server — no external package needed.
@@ -568,6 +882,9 @@ install_optional openssh-server "OpenSSH Server (for SFTP)"
 # `libnss-mdns` additionally lets this machine resolve the other `.local`
 # names on the network.
 install_optional avahi-daemon "Avahi (mDNS: homevault.local + share discovery)"
+# `avahi-utils` provides `avahi-browse`, the mDNS half of the Explorer's
+# network-discovery list — the daemon package does not ship it.
+install_optional avahi-utils "Avahi client tools (avahi-browse: mDNS discovery)"
 install_optional libnss-mdns "libnss-mdns (.local name resolution)"
 
 # VPN app — WireGuard (`wg`/`wg-quick`) and OpenVPN client. Each connection
@@ -588,6 +905,17 @@ install_optional testdisk "TestDisk + PhotoRec (Rescue: repair/recovery)"
 install_optional restic "restic (Backup)"
 install_optional syncthing "Syncthing (P2P synchronization)"
 
+# XFS filesystem. The RAID app formats an array as ext4 **or xfs** and the
+# Storage/encryption paths accept xfs too (`src/disk.rs::format_device` maps
+# `xfs` → `mkfs.xfs`), but xfsprogs is Priority: optional and absent from a
+# minimal base — without it, creating an XFS array fails at the mkfs step.
+install_optional xfsprogs "XFS filesystem (mkfs.xfs)"
+
+# Wi-Fi management (Network app: scan, join, status) drives `wpa_cli`, which
+# ships in wpasupplicant (`src/network.rs`, also granted in the sudoers rules).
+# Ethernet-only hosts are unaffected; Wi-Fi pages degrade without it.
+install_optional wpasupplicant "Wi-Fi management (wpa_cli)"
+
 # ZFS and Btrfs storage-pool support (Storage app). Installed outright as
 # options — an earlier `command -v zpool`/`command -v btrfs` guard was a
 # chicken-and-egg that skipped the package exactly when it was missing, so on
@@ -605,24 +933,71 @@ else
     ok "Docker (already installed)"
 fi
 
-# Docker Compose plugin is required for the Compose tab (`docker compose
-# ...`). Debian/Ubuntu default repos never carry `docker-compose-plugin`
-# (only Docker's own apt repo does), so without this, installing it below
-# would silently fail via install_optional's fallback and `docker compose`
-# would never become available. Add Docker's official repo first, but only if
-# the package isn't already resolvable from what's currently configured.
+# The daemon is what every Docker feature talks to. `docker.io` enables and
+# starts it on install, but a host where it was masked or disabled would leave
+# a working CLI with no engine behind it.
 if command -v docker &> /dev/null; then
-    if ! pkg_available docker-compose-plugin; then
-        info "Adding the official Docker repository (docker-compose-plugin not in the current repositories)..."
-        . /etc/os-release
-        install -m 0755 -d /etc/apt/keyrings
-        curl -fsSL "https://download.docker.com/linux/${ID}/gpg" | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-        chmod a+r /etc/apt/keyrings/docker.gpg
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${ID} ${VERSION_CODENAME} stable" \
-            > /etc/apt/sources.list.d/docker.list
-        apt-get update -qq
+    systemctl enable --now docker &> /dev/null || true
+fi
+
+# Adds Docker's official apt repository. Returns non-zero (and removes the
+# list file again) when the key or the index cannot be fetched: leaving a
+# broken `docker.list` behind would make every later `apt-get update` fail,
+# including the ones run by the operator.
+add_docker_repo() {
+    . /etc/os-release
+    local list=/etc/apt/sources.list.d/docker.list
+    install -m 0755 -d /etc/apt/keyrings
+    if ! curl -fsSL "https://download.docker.com/linux/${ID}/gpg" \
+            | gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>/dev/null; then
+        rm -f /etc/apt/keyrings/docker.gpg
+        warn "Could not fetch the Docker repository key — Compose stays unavailable"
+        return 1
     fi
-    install_optional docker-compose-plugin "Docker Compose"
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${ID} ${VERSION_CODENAME} stable" \
+        > "$list"
+    if ! apt-get update -qq; then
+        rm -f "$list"
+        warn "The Docker repository is unreachable — Compose stays unavailable (Docker itself works)"
+        return 1
+    fi
+    return 0
+}
+
+# Docker Compose (v2) is required for the Compose tab and every catalog app
+# (`docker compose up -d`). Preference order, most local first:
+#   1. whatever already answers `docker compose version` (host installed);
+#   2. `docker-compose-v2` — Ubuntu 24.04+ / Debian 13+ ship it in the base
+#      repositories;
+#   3. `docker-compose-plugin` — Docker's official repo. Debian/Ubuntu base
+#      repositories never carry it, hence the repository added below.
+# The plugin installs `/usr/libexec/docker/cli-plugins/docker-compose`, which
+# the `docker.io` CLI (>= 20.10) does find — no need for Docker's own engine.
+if command -v docker &> /dev/null && ! docker compose version &> /dev/null; then
+    if pkg_available docker-compose-v2; then
+        install_optional docker-compose-v2 "Docker Compose"
+    elif pkg_available docker-compose-plugin; then
+        install_optional docker-compose-plugin "Docker Compose"
+    elif add_docker_repo; then
+        install_optional docker-compose-plugin "Docker Compose"
+    fi
+    if ! docker compose version &> /dev/null; then
+        warn "Docker Compose is not available — the Compose tab and the app catalog stay disabled"
+    fi
+fi
+
+# Buildx: `docker compose build` and `docker build` delegate to it. The bundled
+# catalog only pulls prebuilt images, but a community catalog store may ship a
+# compose file with a `build:` section.
+if command -v docker &> /dev/null; then
+    for buildx_pkg in docker-buildx-plugin docker-buildx; do
+        if pkg_available "$buildx_pkg"; then
+            install_optional "$buildx_pkg" "Docker Buildx (compose build)"
+            break
+        fi
+    done
+    unset buildx_pkg
 fi
 
 # Incus — container + VM hypervisor. Deliberately best-effort like Docker/
@@ -660,7 +1035,14 @@ ensure_incus_repo() {
         echo "deb [signed-by=/etc/apt/keyrings/zabbly.asc] https://pkgs.zabbly.com/incus/stable ${VERSION_CODENAME} main" \
             > /etc/apt/sources.list.d/zabbly-incus-stable.list
     fi
-    apt-get update -qq
+    # Same rule as the Docker repository: a repository that cannot be reached
+    # must not abort the install, and must not be left behind — a broken list
+    # file breaks every later `apt-get update` on the host.
+    if ! apt-get update -qq; then
+        rm -f /etc/apt/sources.list.d/incus-backports.list \
+              /etc/apt/sources.list.d/zabbly-incus-stable.list
+        warn "The Incus repository is unreachable — VMs will stay disabled"
+    fi
 }
 
 # A freshly installed Incus daemon starts EMPTY: no storage pool and a
@@ -671,7 +1053,15 @@ ensure_incus_repo() {
 # its storage pool list and left untouched; failures are non-fatal (the VM
 # app then shows its "Incus unavailable" state until init is run).
 init_incus_daemon() {
-    systemctl is-active --quiet incus || return 0
+    # `enable --now` returns once the unit is started, but a slow host can
+    # still be a moment away from answering — a false "not active" here would
+    # skip the init and leave the VM app on "No storage pool found".
+    local incus_active=0
+    for _ in $(seq 1 10); do
+        if systemctl is-active --quiet incus; then incus_active=1; break; fi
+        sleep 1
+    done
+    [[ "$incus_active" -eq 1 ]] || return 0
     if incus storage list --format csv 2>/dev/null | grep -q .; then
         ok "Incus daemon already initialized"
         return 0
@@ -810,7 +1200,21 @@ install_optional rclone "rclone (cloud synchronization)"
 # cannot coinstall with it on Debian 12. No second FUSE generation here.
 install_optional fuse3 "FUSE3 (rclone mounting + fusermount)"
 install_optional ntfs-3g "NTFS-3G"
-install_optional exfat-fuse "exFAT (USB drives / SD cards)"
+# exFAT comes in two halves and the package split differs by release:
+#   * mounting — `exfat-fuse` (FUSE helper, still useful on kernels older
+#     than 5.7);
+#   * formatting — `mkfs.exfat`, which the Explorer's "format as exfat" runs.
+#     Debian 12+ / Ubuntu 23.04+ ship it in `exfatprogs`; older releases in
+#     `exfat-utils`. Installing only `exfat-fuse` (what this script used to
+#     do) left the format action dead on current releases with no diagnostic.
+install_optional exfat-fuse "exFAT mount helper (USB drives / SD cards)"
+if pkg_available exfatprogs; then
+    install_optional exfatprogs "exFAT formatting (mkfs.exfat)"
+elif pkg_available exfat-utils; then
+    install_optional exfat-utils "exFAT formatting (mkfs.exfat)"
+else
+    warn "No exFAT formatting tool available (exfatprogs / exfat-utils) — Explorer cannot format exFAT drives"
+fi
 
 # ---------------------------------------------------------------------------
 # AI Assistant — Ollama runs the local language model that powers the Chat
@@ -837,6 +1241,13 @@ install_optional exfat-fuse "exFAT (USB drives / SD cards)"
 # bug in the app. The Chat then shows its "AI offline" state.
 # Everything here is best-effort — HomeVault runs fine without Ollama.
 # ---------------------------------------------------------------------------
+# Ollama's official installer downloads `ollama-linux-<arch>.tar.zst` and
+# aborts with "This version requires zstd for extraction" when `zstd` is not
+# installed. `zstd` is Priority: optional, so a fresh Debian/Ubuntu does not
+# have it — without this line the AI assistant silently stayed offline on
+# every new host. Installed as an option because Ollama itself is optional.
+install_optional zstd "zstd (required by the Ollama installer)"
+
 install_ollama() {
     case "$(uname -m)" in
         armv7l|armv6l)
@@ -845,6 +1256,11 @@ install_ollama() {
             return
             ;;
     esac
+
+    if ! command -v zstd &> /dev/null; then
+        warn "zstd is missing — Ollama's installer cannot unpack its release (apt-get install zstd). AI assistant disabled."
+        return
+    fi
 
     if command -v ollama &> /dev/null; then
         ok "Ollama (AI assistant) already installed"
@@ -1095,11 +1511,10 @@ ok "System service unit written to $SERVICE_FILE"
 # only offered on a fresh install; can also be toggled later from
 # Settings > Security > HTTPS/TLS. The plain-HTTP port keeps working.
 if [[ "$UPGRADE" -eq 0 ]]; then
-    REPLY="n"
     # Default YES: the wizard and the login form carry the administrator
     # password, and over plain HTTP it crosses the network in clear. The cost is
     # a one-time browser warning about the self-signed certificate.
-    read -r -p "Enable HTTPS with a self-signed certificate? (browser warning, encrypts the LAN) [Y/n] " REPLY || REPLY="y"
+    ask "Enable HTTPS with a self-signed certificate?\n\nThe browser will warn about the self-signed certificate once, but the\nadministrator password then crosses the LAN encrypted.\n\nEnable HTTPS? [Y/n]" y
     if [[ ! "$REPLY" =~ ^[Nn]$ ]]; then
         touch "$ENV_FILE"
         grep -q '^TLS_ENABLED=' "$ENV_FILE" || echo "TLS_ENABLED=true" >> "$ENV_FILE"
@@ -1166,7 +1581,11 @@ check "FTP share (vsftpd)"             "command -v vsftpd"
 check "SFTP (OpenSSH)"                 "command -v sshd"
 check "Docker containers"              "command -v docker"
 if command -v docker &> /dev/null; then
+    # A CLI without a reachable daemon looks installed but every Docker page
+    # fails — `docker info` is the only check that proves the engine answers.
+    check "Docker daemon"              "docker info >/dev/null 2>&1"
     check "Docker Compose"             "docker compose version"
+    check "Docker Buildx"              "docker buildx version"
 fi
 check "Incus hypervisor"               "command -v incus"
 check "VM virtualizer (QEMU)"          "command -v qemu-system-x86_64"
@@ -1194,6 +1613,10 @@ check "Linux-user login (python3)"     "command -v python3"
 # at runtime (each one degrades in the UI when absent).
 check "ACLs (setfacl)"                 "command -v setfacl"
 check "Disk quotas (repquota)"         "command -v repquota"
+check "Disk spindown (hdparm)"         "command -v hdparm"
+check "XFS formatting (mkfs.xfs)"      "command -v mkfs.xfs"
+check "exFAT formatting (mkfs.exfat)"  "command -v mkfs.exfat"
+check "Wi-Fi management (wpa_cli)"     "command -v wpa_cli"
 check "Disk encryption (LUKS2)"        "command -v cryptsetup"
 check "ZFS storage pools"              "command -v zpool"
 check "Btrfs storage pools"            "command -v btrfs"
@@ -1204,6 +1627,8 @@ check "Cloud sync unmount (fusermount)" "command -v fusermount"
 check "Rescue cloning (ddrescue)"      "command -v ddrescue"
 check "Rescue repair (testdisk + photorec)" "command -v testdisk && command -v photorec"
 check "mDNS discovery (avahi)"         "command -v avahi-daemon"
+check "mDNS browsing (avahi-browse)"   "command -v avahi-browse"
+check "SMB discovery (smbtree)"        "command -v smbtree"
 check "Hardware info (dmidecode)"      "command -v dmidecode"
 check "Network diagnostics (ethtool)"  "command -v ethtool"
 check "VM UEFI firmware (OVMF)"        "test -f /usr/share/OVMF/OVMF_CODE.fd || test -f /usr/share/OVMF/OVMF_CODE_4M.fd"
@@ -1299,8 +1724,42 @@ echo -e "   ${C_DIM}(from any device on the same network — computer,"
 echo -e "    phone, tablet — no need to be on this machine)${C_RESET}"
 echo ""
 
-if [[ -t 0 ]] && [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
-    read -r -p "Open this page in the browser now? [Y/n] " REPLY || REPLY="n"
+# The TUI shows the outcome in a dialog: in that mode the block above only
+# wrote to $LOG_FILE, and the terminal belongs to whiptail.
+if [[ "$TUI" -eq 1 ]]; then
+    if [[ "$HV_READY" -eq 1 ]] && [[ "$VFAIL" -eq 0 ]]; then
+        ui_msg "Installation complete" "HomeVault is installed and running.
+
+Open it from any device on your network:
+
+  http://${LAN_IP:-127.0.0.1}:${PORT}
+
+Next: create the administrator account in the browser.
+
+Full log: ${LOG_FILE}"
+    elif [[ "$HV_READY" -eq 1 ]]; then
+        ui_msg "Installed with warnings" "HomeVault is installed and running, but some optional components are
+missing. The features that depend on them are disabled; everything else
+works.
+
+Open it from any device on your network:
+
+  http://${LAN_IP:-127.0.0.1}:${PORT}
+
+Details: ${LOG_FILE}"
+    else
+        ui_msg "Installed, not responding yet" "HomeVault is installed but the server is not answering yet.
+
+Check the service before opening the page:
+
+  journalctl -u ${SERVICE_NAME} -e
+
+Full log: ${LOG_FILE}"
+    fi
+fi
+
+if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+    ask "Open HomeVault in the browser now?\n\n  http://${LAN_IP:-127.0.0.1}:${PORT}" y
     case "$REPLY" in
         [nN]*) ;;
         *)
@@ -1310,9 +1769,17 @@ if [[ -t 0 ]] && [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
             done
             if [ -n "$OPENER" ]; then
                 # Run as the user who invoked sudo, not root, so the browser
-                # opens in their actual desktop session.
-                sudo -u "${SUDO_USER:-root}" "$OPENER" "http://${LAN_IP:-127.0.0.1}:${PORT}" &> /dev/null &
-                ok "Opening http://${LAN_IP:-127.0.0.1}:${PORT}..."
+                # opens in their actual desktop session. The URL follows the
+                # TLS choice made a few lines above.
+                HV_SCHEME="http"
+                if grep -qs '^TLS_ENABLED=true' "$ENV_FILE" 2>/dev/null; then
+                    HV_SCHEME="https"
+                    HV_URL="${HV_SCHEME}://${LAN_IP:-127.0.0.1}:${HTTPS_PORT}"
+                else
+                    HV_URL="${HV_SCHEME}://${LAN_IP:-127.0.0.1}:${PORT}"
+                fi
+                sudo -u "${SUDO_USER:-root}" "$OPENER" "$HV_URL" &> /dev/null &
+                ok "Opening $HV_URL..."
             else
                 warn "No browser detected automatically — open the address manually."
             fi

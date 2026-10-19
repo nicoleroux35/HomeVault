@@ -1009,8 +1009,7 @@ pub async fn handle_user_delete(
 
                     // Recents are personal data too: a recreated same-name
                     // account must not inherit the deleted user's locations.
-                    let recent_repo =
-                        crate::storage::RecentRepository::new(state.db.pool());
+                    let recent_repo = crate::storage::RecentRepository::new(state.db.pool());
                     let _ = recent_repo.purge_user(&username).await;
 
                     crate::events::log_event_warn(format!(

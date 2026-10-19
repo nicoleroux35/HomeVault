@@ -2031,11 +2031,7 @@ fn os_or_error(id: &str) -> Result<&'static incus::OsOption, Response> {
 /// Attaches the virtual sound card when the wizard's "sound" box is ticked.
 /// VMs only: containers share the host audio stack, so the device would be
 /// rejected there.
-fn apply_audio_device(
-    devices: &mut HashMap<String, serde_json::Value>,
-    audio: bool,
-    is_vm: bool,
-) {
+fn apply_audio_device(devices: &mut HashMap<String, serde_json::Value>, audio: bool, is_vm: bool) {
     if audio && is_vm {
         devices.insert("audio0".to_string(), incus::audio_device());
     }

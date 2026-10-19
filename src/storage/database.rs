@@ -175,7 +175,12 @@ impl Database {
             .unwrap_or_default();
         let mut pending: Vec<String> = MIGRATIONS_DIR
             .files()
-            .filter_map(|f| f.path().file_name().and_then(|n| n.to_str()).map(String::from))
+            .filter_map(|f| {
+                f.path()
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(String::from)
+            })
             .filter(|name| !applied.contains(name))
             .collect();
         pending.sort();
@@ -1144,4 +1149,3 @@ mod tests {
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 }
-

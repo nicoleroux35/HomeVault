@@ -703,11 +703,23 @@ async fn test_os_catalogue_lists_iso_only_windows_entries() {
     let mut r = vm_router(state.clone());
     let token = admin_token(&state, &mut r).await;
 
-    let (status, body) = send(&mut r, Method::GET, "/api/vm/os-options", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/vm/os-options",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let options = body["data"].as_array().expect("options array");
     let ids: Vec<&str> = options.iter().map(|o| o["id"].as_str().unwrap()).collect();
-    for want in ["windows-11", "windows-10", "ubuntu-24.04-minimal", "debian-12-minimal"] {
+    for want in [
+        "windows-11",
+        "windows-10",
+        "ubuntu-24.04-minimal",
+        "debian-12-minimal",
+    ] {
         assert!(ids.contains(&want), "{want} missing from {ids:?}");
     }
     for o in options.iter().filter(|o| o["id"] == "windows-11") {

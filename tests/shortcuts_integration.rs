@@ -232,8 +232,16 @@ async fn test_fetch_metadata_rejects_loopback_and_private_literals() {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{url} must be refused");
         assert!(
-            body["message"].as_str().unwrap_or_default().to_lowercase().contains("private")
-                || body["message"].as_str().unwrap_or_default().to_lowercase().contains("local"),
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .to_lowercase()
+                .contains("private")
+                || body["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .contains("local"),
             "{url}: unexpected error {:?}",
             body["message"]
         );

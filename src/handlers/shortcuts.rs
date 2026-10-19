@@ -166,8 +166,8 @@ async fn resolve_public(host: &str, port: u16) -> Result<IpAddr, String> {
 pub fn parse_html(html: &str, base_url: &str) -> PageMetadata {
     let title = extract_tag_text(html, "title").map(|s| clean_text(&s));
 
-    let description = extract_meta_content(html, &["description", "og:description"])
-        .map(|s| clean_text(&s));
+    let description =
+        extract_meta_content(html, &["description", "og:description"]).map(|s| clean_text(&s));
 
     let icon_raw = extract_icon_href(html);
 
@@ -412,7 +412,12 @@ mod tests {
 
     #[test]
     fn test_is_public_ip_accepts_public() {
-        for s in ["1.1.1.1", "8.8.8.8", "93.184.216.34", "2606:4700:4700::1111"] {
+        for s in [
+            "1.1.1.1",
+            "8.8.8.8",
+            "93.184.216.34",
+            "2606:4700:4700::1111",
+        ] {
             let ip: IpAddr = s.parse().unwrap();
             assert!(is_public_ip(&ip), "{s} must be accepted");
         }
@@ -441,7 +446,10 @@ mod tests {
         let meta = parse_html(html, "https://example.com/some/page");
         assert_eq!(meta.title.as_deref(), Some("My Site & Co"));
         assert_eq!(meta.description.as_deref(), Some("A nice page"));
-        assert_eq!(meta.icon_url.as_deref(), Some("https://example.com/favicon.ico"));
+        assert_eq!(
+            meta.icon_url.as_deref(),
+            Some("https://example.com/favicon.ico")
+        );
         assert_eq!(meta.site_name.as_deref(), Some("example.com"));
     }
 

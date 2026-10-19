@@ -560,7 +560,9 @@ impl ResticService {
                 .chars()
                 .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
         {
-            return Err(ResticError::CommandFailed("Invalid snapshot id".to_string()));
+            return Err(ResticError::CommandFailed(
+                "Invalid snapshot id".to_string(),
+            ));
         }
         let mut cmd = Self::restic_cmd()?;
         Self::set_env(&mut cmd, repo);

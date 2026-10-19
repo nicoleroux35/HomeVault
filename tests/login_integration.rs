@@ -946,7 +946,7 @@ async fn test_2fa_verify_accepts_a_previous_window_code() {
         body
     );
     assert!(body["success"].as_bool().unwrap_or(false));
-    assert!(body["data"]["token"].as_str().unwrap_or("").len() > 0);
+    assert!(!body["data"]["token"].as_str().unwrap_or("").is_empty());
 }
 
 #[tokio::test]
@@ -1874,14 +1874,12 @@ async fn test_expired_temporary_lock_lifts_itself_on_login() {
     create_test_user(&state, "autounlock", "TestPassw0rd123").await;
 
     // Simulate the 5-minute window having elapsed.
-    sqlx::query(
-        "UPDATE users SET locked = 1, locked_until = ? WHERE username = ?",
-    )
-    .bind((chrono::Utc::now() - chrono::Duration::seconds(60)).to_rfc3339())
-    .bind("autounlock")
-    .execute(&*state.db.pool())
-    .await
-    .unwrap();
+    sqlx::query("UPDATE users SET locked = 1, locked_until = ? WHERE username = ?")
+        .bind((chrono::Utc::now() - chrono::Duration::seconds(60)).to_rfc3339())
+        .bind("autounlock")
+        .execute(&*state.db.pool())
+        .await
+        .unwrap();
 
     let mut app = login_router(Arc::clone(&state));
     let (status, body) = post_json(
@@ -1891,7 +1889,11 @@ async fn test_expired_temporary_lock_lifts_itself_on_login() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::OK, "expired lock must not block: {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "expired lock must not block: {body}"
+    );
     assert_eq!(body["success"], json!(true));
 
     let (locked, locked_until): (bool, Option<String>) =

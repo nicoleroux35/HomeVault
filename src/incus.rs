@@ -935,9 +935,15 @@ mod tests {
         for o in os_catalogue().iter().filter(|o| o.iso_only) {
             assert_eq!(o.kinds, &["vm"]);
         }
-        let win11 = os_catalogue().iter().find(|o| o.id == "windows-11").unwrap();
+        let win11 = os_catalogue()
+            .iter()
+            .find(|o| o.id == "windows-11")
+            .unwrap();
         assert!(win11.iso_only);
-        let win10 = os_catalogue().iter().find(|o| o.id == "windows-10").unwrap();
+        let win10 = os_catalogue()
+            .iter()
+            .find(|o| o.id == "windows-10")
+            .unwrap();
         assert!(win10.iso_only);
         assert!(os_catalogue().iter().filter(|o| o.iso_only).count() >= 2);
     }

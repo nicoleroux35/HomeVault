@@ -1319,7 +1319,11 @@ mod tests {
         assert!(recs[0].fits);
         assert_eq!(recs[0].min_ram_gb, 1);
         // The non-fitting ones are ordered from the closest to usable.
-        let too_big: Vec<u64> = recs.iter().filter(|r| !r.fits).map(|r| r.min_ram_gb).collect();
+        let too_big: Vec<u64> = recs
+            .iter()
+            .filter(|r| !r.fits)
+            .map(|r| r.min_ram_gb)
+            .collect();
         let mut sorted = too_big.clone();
         sorted.sort_unstable();
         assert_eq!(too_big, sorted);
@@ -1360,6 +1364,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn test_recommend_models_prefers_bigger_models_on_a_beefy_host() {
         let big = SystemSpecs {
             total_ram_gb: 64,
