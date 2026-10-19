@@ -81,6 +81,20 @@ follows [Semantic Versioning](https://semver.org/).
   73px until it took `mb-0!`. E2E 23.3 now pins the new shape (two children,
   no icon, header ≤ 64px) instead of the 36px tile.
 
+- **One round icon tile on the whole Settings screen.** The screen drew three
+  different tiles for one vocabulary: the rail category tile and the 11 Widgets
+  rows were 28px squares with a 12px corner, while the 3 Privacy rows were 36px
+  tiles with an 18px corner and a 20px glyph. Every decorative tile is now a
+  **circle at `--hv-settings-icon-tile` (28px)** holding a 16px glyph, built
+  from `settingsIconTile` in `vocabulary.ts` (the rail's comes from
+  `WindowSidebarItem`'s rich CSS off the same token) — the same circle as the
+  dock tiles, the topbar buttons and the window-header icon. The two icon-only
+  buttons on the screen (the AI refresh control, the firewall confirmation
+  dialog's close) are circles too, and three glyphs that sat off the icon ladder
+  went back onto it: `14` in `PathPickerField`, `15` and `18` in the MCP card.
+  E2E 23.12 walks all eight categories and fails on a tile of another size or
+  shape, or on any glyph that is not 16 or 20.
+
 - **Every wallpaper thumbnail is the same size.** The grid let each image pick
   its own height, and the bundled thumbs are not all one shape — `hv-09` and
   `hv-13` ship 640×480 while the other thirteen are 640×427 — so those two

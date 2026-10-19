@@ -72,10 +72,13 @@
     onclick={openPicker}
   />
   <button type="button" class="hv-ppf-browse" bind:this={browseBtn} onclick={openPicker}>
+    <!-- 16px: the icon ladder's inline step. It was 14, which is on no step
+         (`design-system.md` §6.3), and read a size smaller than the 16px
+         glyphs of the labelled buttons it sits next to. -->
     {#if mode === 'file'}
-      <FileIcon size={14} />
+      <FileIcon size={16} />
     {:else}
-      <IconFolderOpen size={14} />
+      <IconFolderOpen size={16} />
     {/if}
     <span>{browseLabel}</span>
   </button>
