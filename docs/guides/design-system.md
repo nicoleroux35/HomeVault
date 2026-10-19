@@ -7,10 +7,11 @@ Paper & Slate"). Nothing in the codebase may reference another framework's
 design language (Fluent, Material, …) as an authority: tokens, components and
 pages all read from the `--hv-*` tokens declared in
 `frontend/src/lib/styles/theme/tokens.css`, which this document describes. The
-one reference it does follow is `design-tokens.md` at the repo root — a
-checked-in spec, not a framework — and only for its **non-colour** rules
-(spacing, corners, elevation, type metrics, breakpoints; see §2.2). Its colour
-palette is not adopted.
+one external reference it followed is an Apple-style token spec, and only for
+its **non-colour** rules (spacing, corners, elevation, type metrics,
+breakpoints; see §2.2). That spec is not published with the repository: the
+adopted values live in `tokens.css` and are documented here. Its colour palette
+is not adopted.
 
 > Superseded specs: `DESIGN stich.md` at the repo root described the earlier
 > "Frosted Glass Modernism" direction (`#2E72C9`, translucent blur surfaces). It
@@ -45,8 +46,7 @@ console** (reference mood: the approved appliance-console mocks). It is:
   curve, restrained motion, no decorative effects.
 - **Apple-derived, appliance-owned** — the *non-colour* half of the language
   (spacing rhythm, corner ladder, elevation, weights, leading, tracking,
-  layout breakpoints) is ported from `design-tokens.md` at the repo root
-  (§2.2 below). Its colour palette is deliberately **not** adopted: one
+  layout breakpoints) is ported from an Apple-style reference (§2.2 below). Its colour palette is deliberately **not** adopted: one
   accent (`#1E62AE`) and the cool blue-grey ink ramp stay the only colour
   authority in the product.
 
@@ -61,7 +61,7 @@ categories:
 | Neutral ramp | `--hv-neutral-50…900`, `--hv-text-primary/secondary/tertiary` | cool blue-greys |
 | Semantic | `--hv-success`, `--hv-warning`, `--hv-error`, `--hv-info` | status hues + light bg/border/text variants |
 | Surfaces | `--hv-surface*`, `--hv-shell-glass/card/fill/border*` | two aligned vocabularies (legacy `surface*` + shell) |
-| Typography | `--hv-font-size-*` (content), `--hv-text-*` (compact chrome), `--hv-font-weight-*` (400–900), `--hv-line-height-*`, `--hv-letter-spacing-*` | two deliberate scales, see below; weights/leading/tracking per `design-tokens.md` §3/§7/§8 |
+| Typography | `--hv-font-size-*` (content), `--hv-text-*` (compact chrome), `--hv-font-weight-*` (400–900), `--hv-line-height-*`, `--hv-letter-spacing-*` | two deliberate scales, see below; weights/leading/tracking per Apple ref §3/§7/§8 |
 | Spacing | `--hv-space-0-5 … 24` (4px grid) + `--hv-section-gap-*`, `--hv-component-gap-*`, `--hv-card-padding-*`, `--hv-content-max-width*` | 4px base grid + the reference's layout rhythm, see §2.2 |
 | Radius | `--hv-radius-badge … full`, `--hv-radius-card`, `--hv-radius-control`, `--hv-radius-pill` | 8 / 12 / 18 + pill, see §3.2 |
 | Shadows | `--hv-shadow-xs … 2xl`, `--hv-shell-shadow-card` | multi-layer low-alpha black (contact + ambient), see §2.2 |
@@ -171,16 +171,17 @@ The legacy `--text-*` aliases that used to sit in tokens.css's unlayered
 `:root` block (they beat Tailwind's `@layer theme` by cascade accident) were
 removed in the same change — the bridge above is the only declaration site.
 
-### 2.2 Layout rhythm, elevation, type metrics, breakpoints (design-tokens.md)
+### 2.2 Layout rhythm, elevation, type metrics, breakpoints (Apple reference)
 
-Since 2026-10-19 the *non-colour* rules of the visual language are the ones in
-`design-tokens.md` at the repo root, translated onto `--hv-*` names in
-`tokens.css`. The Appliance identity is unchanged: opaque paper, one accent,
+Since 2026-10-19 the *non-colour* rules of the visual language come from an
+Apple-style token spec (adopted, but not published with this repository),
+translated onto `--hv-*` names in `tokens.css` — that file is the authority,
+the section numbers below only trace where each value came from. The Appliance identity is unchanged: opaque paper, one accent,
 hairlines, dense-but-legible. What the reference tightened is the *craft*
 around it — how much air a page gets, how deep a card sits, how a title is
 tracked and led.
 
-**Colours are explicitly out of scope.** `design-tokens.md` §1 (Apple's
+**Colours are explicitly out of scope.** The reference's §1 (Apple's
 white / `#1D1D1F` / `#F5F5F7` / `#0066CC` set) is **not** adopted: the
 Appliance palette (§3) stays the only colour authority. The same goes for the
 reference's purple/pink and blue/cyan display gradients — the two gradient
@@ -262,7 +263,7 @@ The four interaction states are tokens, never ad-hoc fills:
 ### 3.2 Radius stops (appliance)
 
 **Three families, one value each (2026-10-19).** The corner ladder follows
-`design-tokens.md` §4 at the repo root, keeping the appliance's
+the reference §4, keeping the appliance's
 one-number-per-role discipline: a corner either belongs to a *badge* (an
 inline, non-interactive marker: **8px**), to a *control* (something you
 click: **12px**), or to a *container* (a surface that holds things:
@@ -324,7 +325,7 @@ puts a surface corner on a control, which is how Storage's disk cards, the
 RAID wizard's option cards and Settings' category rows ended up at a surface
 corner while the buttons next to them were at the control corner.
 
-**One deliberate deviation from `design-tokens.md`:** the reference gives
+**One deliberate deviation from the reference:** it gives
 *all* buttons and tags its 980px pill (`--apple-radius-button`). HomeVault
 adopts that for **tags** (`--hv-radius-pill`, `.hv-pill`, the chip classes)
 but keeps **form buttons on the control corner**. A 44px pill sitting next to
@@ -1005,7 +1006,7 @@ Appliance palette with it. Everything it declares lives under
    shared sprite `<Icon>` (tabler-first), `@lucide/svelte` stays inside
    `components/ui/**`, inline `<svg>` is artwork only, and `✓`/`✕`/`★`
    typed as text is never an icon.
-9. **Non-colour craft follows `design-tokens.md` (§2.2); colour does not.**
+9. **Non-colour craft follows the Apple reference (§2.2); colour does not.**
    Spacing rhythm, the 8/12/18 corner ladder, elevation, weights, leading,
    tracking and the 734/1068/1440 breakpoints come from that spec. Its
    palette, its other-hue display gradients and its pill form buttons are

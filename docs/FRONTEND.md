@@ -81,7 +81,7 @@ reference is **`docs/guides/design-system.md`**; the summary:
   **surface** stop (**18px**: windows, monitor widgets, modals, drawers,
   popovers, cards). `--hv-radius-pill` (980px) is the tag corner for filter /
   severity / category chips. The ladder was retuned 4/6/12 → 8/12/18 on
-  2026-10-19 from `design-tokens.md` §4 (see
+  2026-10-19 from the Apple-derived reference §4 (see
   `docs/guides/design-system.md` §2.2/§3.2); the 16px window, 24px chrome-panel,
   8px and 10px control stops stay retired, and the aliases (`md`/`lg`,
   `2xl`/`3xl`/`4xl`, `sm`) resolve to those three values, so retune each family

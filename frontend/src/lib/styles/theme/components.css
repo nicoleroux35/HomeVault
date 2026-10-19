@@ -216,7 +216,7 @@
    BADGES
    --------------------------------------------
    Status badges take the BADGE stop (--hv-radius-badge, 8px) per
-   design-tokens.md §4 — the reference's small non-control corner. A *tag*
+   Apple ref §4 — the reference's small non-control corner. A *tag*
    that reads as a filter/severity pill keeps `--hv-radius-pill`; see the
    chip classes below and docs/guides/design-system.md §3.2.
    ============================================ */
@@ -284,7 +284,7 @@
 /* ============================================
    CARDS
    ============================================ */
-/* Card geometry follows design-tokens.md §2/§4/§5: 18px surface corner
+/* Card geometry follows Apple ref §2/§4/§5: 18px surface corner
    (--hv-radius-xl → the surface stop), 32px internal padding (the reference's
    default card padding; `--hv-card-padding-sm` 24px is the compact step for
    dense in-window lists), and the reference's two-layer card shadow — the
@@ -337,7 +337,7 @@
 }
 
 /* ============================================
-   TAG / PILL CORNER (design-tokens.md §4)
+   TAG / PILL CORNER (Apple ref §4)
    --------------------------------------------
    The reference's `--apple-radius-button` (980px) is the shape of a *tag*,
    not of a 44px form button — see the RADIUS SCALE note in tokens.css. Every
@@ -350,7 +350,7 @@
 }
 
 /* ============================================
-   DISPLAY TEXT GRADIENT (design-tokens.md §6)
+   DISPLAY TEXT GRADIENT (Apple ref §6)
    --------------------------------------------
    The text-clip recipe from the reference, wired to the Appliance accent
    sweep (`--hv-gradient-text-accent`). One display/hero heading per screen at

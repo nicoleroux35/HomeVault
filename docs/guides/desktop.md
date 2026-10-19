@@ -364,7 +364,7 @@ export; E2E `14.5`–`14.8` pin them.
   hairline, `--hv-window-radius` (**18px** — the product's single surface
   corner, shared with the monitor widgets, modals, drawers and popovers; the
   mock's taller 16px stop was retired on 2026-10-18 and the stop moved 12 → 18px
-  with `design-tokens.md` §4 on 2026-10-19, so a window and a widget read as the
+  with the Apple-derived reference §4 on 2026-10-19, so a window and a widget read as the
   same material), and the app's two-layer elevation
   `--hv-window-shadow` (an alias of `--hv-shadow-lg`: contact + ambient).
   Note the hairline is **deliberately darker than `--hv-shell-border`**: the
