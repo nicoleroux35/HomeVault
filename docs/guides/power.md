@@ -11,6 +11,9 @@ idle timer). Inspiration: OMV's `conf.system.powermngmnt` + `hdparm`.
   every cpufreq policy), `PowerAction` (systemctl
   `reboot`/`poweroff`/`suspend`), `DiskSpindownSetting` + hdparm argument
   building (the `-S` minute→code mapping is unit-tested).
+  Requires the **`hdparm`** package (installed by `installer/install.sh`,
+  verified in its Step 4); without it the spindown card reports
+  "hdparm not available" and the setting is not applied.
 - `src/storage/disk_power_repo.rs` — `disk_power_settings` (migration
   `045_disk_power.sql`); a row with both fields `None` is deleted.
 - `src/handlers/power.rs` — endpoints below; startup re-apply of spindown

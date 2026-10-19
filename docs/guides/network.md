@@ -8,6 +8,11 @@ connection summary.
 Router built by `src/handlers/network.rs::create_network_router` and nested at
 `/api/network` (`src/web/mod.rs:1069`).
 
+Wi-Fi operations shell out to `wpa_cli` (sudoers-granted, see
+`src/setup.rs`), which ships in the **`wpasupplicant`** package — installed by
+`installer/install.sh` and re-checked in its Step 4. An Ethernet-only host is
+unaffected: the Wi-Fi endpoints report the tool as unavailable.
+
 | Endpoint | Auth | Notes |
 |----------|------|-------|
 | `GET /network/interfaces` | auth | list interfaces |

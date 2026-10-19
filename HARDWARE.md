@@ -104,7 +104,7 @@ configured. Add its cost to the base configuration.
 | **Docker** (applications) | depends on the containers | +1 GB (engine) + images | Do not install if unused — the app then simply stays inactive |
 | **`restic` backups** | +100 to 500 MB during a job | separate repository | Memory peak proportional to volume |
 | **Syncthing / rclone** | +100 to 300 MB per active service | — | Separate daemons |
-| **Media transcoding (`ffmpeg`)** | temporary, CPU-intensive | — | Installed by default; used on demand |
+| **Media tooling (`ffmpeg`)** | temporary, CPU-intensive | — | Installed by default; **not currently invoked by the backend** (see §6) |
 
 ---
 
@@ -124,6 +124,16 @@ configured. Add its cost to the base configuration.
 - The installer (`installer/install.sh`) pulls a compilation toolchain
   (`build-essential`, `libsqlite3-dev`) and `ffmpeg` **without
   `--install-recommends`** — allow space on the system disk.
+- Beyond the base set, the installer also provisions the small tools each
+  feature shells out to, and Step 4 verifies them: `hdparm` (disk spindown),
+  `xfsprogs` (`mkfs.xfs` for RAID arrays), `exfatprogs`/`exfat-utils`
+  (`mkfs.exfat` for the Explorer's format action), `wpasupplicant`
+  (`wpa_cli`, Wi-Fi) and `avahi-utils` (`avahi-browse`, share discovery).
+  Each is optional at runtime — the page that needs it degrades to a clear
+  message instead of failing.
+- `ffmpeg` is still installed but **no backend module invokes it** today: it
+  was kept from the media-metadata feature and costs ~50–100 MB on the system
+  disk. Remove it from the `install_packages` line if disk space is tight.
 - No **swap** is created automatically: create some on
   configurations with 1 GB of RAM or less.
 - The service sets **no** CPU quota by default (backup throughput benefits

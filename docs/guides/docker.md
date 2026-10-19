@@ -157,6 +157,28 @@ update", never an error.
 - Per-container I/O: `get_container_stats` also parses `{{.NetIO}}`/`{{.BlockIO}}`
   (`net_rx_bytes`/`net_tx_bytes`/`blk_read_bytes`/`blk_write_bytes`).
 
+### Prerequisites — Docker engine and Compose (installer, 2026-10-19)
+
+`installer/install.sh` provisions the engine and the Compose v2 plugin, and
+Step 4 verifies all of it:
+
+| Piece | Package | Why it matters |
+|---|---|---|
+| Engine | `docker.io` (Debian/Ubuntu) | `dockerd` + CLI; the unit is `enable --now`'d, and Step 4 checks `docker info` — a CLI with no daemon would look installed and fail every page |
+| Compose v2 | `docker-compose-v2` (Ubuntu 24.04+/Debian 13+), else `docker-compose-plugin` (Docker's repo) | `docker compose up -d` backs the Compose tab **and every catalog app** |
+| Buildx | `docker-buildx-plugin` / `docker-buildx` | `docker compose build` delegates to it; the bundled catalog pulls prebuilt images, a community store may not |
+
+The Compose plugin installs `/usr/libexec/docker/cli-plugins/docker-compose`,
+which the `docker.io` CLI (>= 20.10) finds on its own — Docker's own engine
+packages are **not** required, and `docker-compose-plugin` has no `Depends:`
+that would displace `docker.io`.
+
+Docker's apt repository is only added when no distribution package provides
+the plugin, and the whole step is best-effort: a failed key fetch or
+`apt-get update` warns, removes the list file again (a broken `docker.list`
+would break every later `apt-get update` on the host) and lets the install
+continue — Docker itself keeps working.
+
 ## Frontend
 
 - `frontend/src/routes/Docker.svelte` — has its own local `authedFetch` helper

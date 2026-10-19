@@ -293,6 +293,57 @@ packaging `Makefile` were folded in). Meant to be piped onto a fresh machine:
 curl -fsSL https://raw.githubusercontent.com/nicoleroux35/HomeVault/main/installer/install.sh | sudo bash
 ```
 
+### Entry bootstrap — CLI or double-click (2026-10-19)
+
+The file is the entry point for three invocation styles, normalised before
+anything else runs:
+
+| Invocation | stdin | Root | Terminal |
+|---|---|---|---|
+| `sudo ./install.sh` | terminal | already | yes |
+| `curl … \| sudo bash` | **the script itself** | already | yes |
+| double-click in a file manager | none | **no** | **no** |
+
+The bootstrap handles the two awkward cases:
+
+1. **No terminal** → re-exec inside a terminal emulator (`x-terminal-emulator`,
+   `gnome-terminal`, `konsole`, `xfce4-terminal`, …; `--` for gnome-terminal,
+   `-e` otherwise), but only when a graphical session exists — on a headless
+   box the plain-text path is used instead.
+2. **Not root** → `exec sudo … bash "$HV_SELF" "$@"`. `sudo` resets the
+   environment, so the documented `HV_RELEASE_*` knobs are forwarded as
+   command-scoped assignments; `sudo -E` is never used (the default sudoers
+   policy rejects it).
+
+`HV_INSTALLER_STAGE` (`terminal` → `reexec`) breaks the loop between the two
+re-execs, and a second elevation attempt fails loudly rather than looping.
+`--package`, `--dry-run` and `--help` are excluded from the whole bootstrap:
+none needs root and none may pop a window.
+
+Prompts read **fd 3**, bound to `/dev/tty` (probed by *opening* it — `[[ -r
+/dev/tty ]]` succeeds on a process with no controlling terminal, the open then
+fails with `ENXIO`). This is a bug fix, not a nicety: with `curl | sudo bash`
+a bare `read -r -p` consumes the **next line of the script**. The HTTPS prompt
+did exactly that, swallowing its own `if …; then` line and aborting the install
+with `syntax error near unexpected token 'fi'` after the binary was extracted
+but before the unit was enabled.
+
+### Interface — whiptail TUI, plain-text fallback
+
+`whiptail` (Debian priority `important`, so present on every supported base)
+drives the interactive UI: a progress bar per step, the HTTPS question, the
+"open the browser now?" question, the success/error dialog. The engine's own
+output would paint over those screens, so in TUI mode stdout/stderr are
+redirected **to the log file only** and whiptail draws on its own channel:
+
+- `exec 4>/dev/tty` — fd 4 is whiptail's screen, bypassing the log;
+- `--output-fd 1` — its *answer* goes to stdout so `$(…)` can capture it
+  without escape sequences mixed in;
+- `--yes` / `--cli` / no terminal → the plain-text path, unchanged.
+
+`ask()` is the single prompt primitive: `--yes` and a missing terminal both take
+the documented default, so an unattended run never blocks.
+
 Five steps, in order (`STEP_TOTAL` in the script):
 
 1. **Pre-flight** — root, supported distro (Debian 10+ / Ubuntu 20.04+), CPU
