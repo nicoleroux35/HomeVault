@@ -12,6 +12,7 @@
 - [ ] No scratch files; comments in English
 - [ ] Accessibility invariants hold (44px, focus, contrast, keyboard, labels)
 - [ ] AuthZ: `require_auth` reads, `require_admin` mutations; no secret leaks
+- [ ] I have read the CLA in `CLA.md` and I agree to its terms
 
 ## Screens
 
