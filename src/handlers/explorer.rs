@@ -3869,7 +3869,10 @@ pub(crate) fn parse_smbtree_line(line: &str) -> Option<(String, Option<String>)>
     if host.is_empty() {
         return None;
     }
-    let share = parts.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let share = parts
+        .next()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     Some((host, share))
 }
 
@@ -3913,8 +3916,7 @@ fn discover_neighbours_sync() -> Vec<NetworkNeighbour> {
     // SMB workgroup tree. `timeout 8` bounds the whole call including
     // NetBIOS elections on a quiet LAN.
     if let Some(text) =
-        run("timeout", &["8", "smbtree", "-N", "-b"])
-            .or_else(|| run("smbtree", &["-N", "-b"]))
+        run("timeout", &["8", "smbtree", "-N", "-b"]).or_else(|| run("smbtree", &["-N", "-b"]))
     {
         let _ = Duration::from_secs(0);
         for line in text.lines() {
@@ -3929,9 +3931,11 @@ fn discover_neighbours_sync() -> Vec<NetworkNeighbour> {
         }
     }
 
-    if let Some(text) =
-        run("timeout", &["8", "avahi-browse", "-a", "-p", "-t", "--resolve"])
-            .or_else(|| run("avahi-browse", &["-a", "-p", "-t", "--resolve"]))
+    if let Some(text) = run(
+        "timeout",
+        &["8", "avahi-browse", "-a", "-p", "-t", "--resolve"],
+    )
+    .or_else(|| run("avahi-browse", &["-a", "-p", "-t", "--resolve"]))
     {
         for line in text.lines() {
             if let Some((host, addr)) = parse_avahi_line(line) {
@@ -3963,8 +3967,9 @@ pub async fn handle_explorer_network_discovery(
     if let Err(r) = require_auth(&state, &headers).await {
         return r;
     }
-    let neighbours =
-        tokio::task::spawn_blocking(discover_neighbours_sync).await.unwrap_or_default();
+    let neighbours = tokio::task::spawn_blocking(discover_neighbours_sync)
+        .await
+        .unwrap_or_default();
     ResponseHelper::json_success(serde_json::json!({
         "count": neighbours.len(),
         "neighbours": neighbours,
@@ -4011,16 +4016,18 @@ pub(crate) fn validate_format_request(
         _ => return Err("fstype must be ext4 or exfat".to_string()),
     }
     if let Some(l) = label {
-        let max = if fstype.eq_ignore_ascii_case("exfat") { 11 } else { 16 };
+        let max = if fstype.eq_ignore_ascii_case("exfat") {
+            11
+        } else {
+            16
+        };
         if l.is_empty()
             || l.len() > max
             || !l
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
         {
-            return Err(format!(
-                "label must be 1–{max} chars [A-Za-z0-9_-]"
-            ));
+            return Err(format!("label must be 1–{max} chars [A-Za-z0-9_-]"));
         }
     }
     Ok(())

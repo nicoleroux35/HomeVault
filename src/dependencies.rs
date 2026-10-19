@@ -126,10 +126,33 @@ fn check_cryptsetup() -> bool {
     binary_present("cryptsetup", "/usr/sbin/cryptsetup")
 }
 fn check_zfs() -> bool {
-    binary_present("zpool", "/usr/sbin/zpool")
+    // The Storage app drives both: `zpool` for pools, `zfs` for datasets.
+    binary_present("zpool", "/usr/sbin/zpool") && binary_present("zfs", "/usr/sbin/zfs")
 }
 fn check_btrfs() -> bool {
+    // `btrfs` for pools/snapshots, `mkfs.btrfs` to create one.
     binary_present("btrfs", "/usr/bin/btrfs")
+        && binary_present("mkfs.btrfs", "/usr/sbin/mkfs.btrfs")
+}
+// Disk spindown (Power app): `src/power.rs` runs `sudo hdparm -B/-S` per disk.
+// Priority: standard, but absent from a minimal install — the page reports
+// "hdparm not available" and the setting never applies without it.
+fn check_hdparm() -> bool {
+    binary_present("hdparm", "/usr/sbin/hdparm")
+}
+// The RAID app formats an array as ext4 or xfs (`src/disk.rs::format_device`).
+// xfsprogs is Priority: optional and not part of a minimal base.
+fn check_mkfs_xfs() -> bool {
+    binary_present("mkfs.xfs", "/usr/sbin/mkfs.xfs")
+}
+// Explorer "format as exfat". The package that ships `mkfs.exfat` changed
+// name: `exfatprogs` on Debian 12+/Ubuntu 23.04+, `exfat-utils` before.
+fn check_mkfs_exfat() -> bool {
+    binary_present("mkfs.exfat", "/usr/sbin/mkfs.exfat")
+}
+// Wi-Fi management (`src/network.rs` drives `wpa_cli` through sudo).
+fn check_wpa_cli() -> bool {
+    binary_present("wpa_cli", "/usr/sbin/wpa_cli")
 }
 fn check_sensors() -> bool {
     binary_present("sensors", "/usr/bin/sensors")
@@ -177,6 +200,17 @@ fn check_ethtool() -> bool {
 }
 fn check_avahi() -> bool {
     binary_present("avahi-daemon", "/usr/sbin/avahi-daemon")
+}
+// Explorer's network-discovery modal browses mDNS with `avahi-browse`, which
+// ships in `avahi-utils` — NOT in `avahi-daemon`. Installing only the daemon
+// (what this script used to do) left that half of the discovery list empty.
+fn check_avahi_browse() -> bool {
+    binary_present("avahi-browse", "/usr/bin/avahi-browse")
+}
+// Explorer's SMB discovery parses `smbtree -N -b` (from samba-common-bin,
+// pulled in by the `samba` package).
+fn check_smbtree() -> bool {
+    binary_present("smbtree", "/usr/bin/smbtree")
 }
 fn check_snmp_client() -> bool {
     binary_present("snmpget", "/usr/bin/snmpget")
@@ -337,6 +371,42 @@ fn specs() -> Vec<DependencySpec> {
             required: false,
             used_by: "Btrfs storage pools + snapshots (Storage app)",
             check_installed: check_btrfs,
+            check_running: None,
+        },
+        DependencySpec {
+            name: "hdparm",
+            package: "hdparm",
+            category: "Storage",
+            required: false,
+            used_by: "Disk spindown - APM level + idle timer (Power app)",
+            check_installed: check_hdparm,
+            check_running: None,
+        },
+        DependencySpec {
+            name: "mkfs.xfs",
+            package: "xfsprogs",
+            category: "Storage",
+            required: false,
+            used_by: "XFS arrays (RAID app) and XFS-formatting paths",
+            check_installed: check_mkfs_xfs,
+            check_running: None,
+        },
+        DependencySpec {
+            name: "mkfs.exfat",
+            package: "exfatprogs, exfat-utils",
+            category: "Storage",
+            required: false,
+            used_by: "Format a disk as exFAT (Explorer)",
+            check_installed: check_mkfs_exfat,
+            check_running: None,
+        },
+        DependencySpec {
+            name: "wpa_cli",
+            package: "wpasupplicant",
+            category: "Network",
+            required: false,
+            used_by: "Wi-Fi scan / join / status (Network app)",
+            check_installed: check_wpa_cli,
             check_running: None,
         },
         DependencySpec {
@@ -616,6 +686,24 @@ fn specs() -> Vec<DependencySpec> {
             check_installed: check_avahi,
             check_running: Some(running_avahi),
         },
+        DependencySpec {
+            name: "avahi-browse",
+            package: "avahi-utils",
+            category: "Network",
+            required: false,
+            used_by: "Explorer — network discovery (mDNS service browsing)",
+            check_installed: check_avahi_browse,
+            check_running: None,
+        },
+        DependencySpec {
+            name: "smbtree",
+            package: "samba",
+            category: "Network",
+            required: false,
+            used_by: "Explorer — network discovery (SMB workgroups/hosts/shares)",
+            check_installed: check_smbtree,
+            check_running: None,
+        },
         // --- Monitoring ---
         DependencySpec {
             name: "snmpd",
@@ -887,6 +975,19 @@ mod tests {
             text.contains("systemctl is-active --quiet ollama"),
             "install.sh should verify the Ollama unit is active, not just that the binary exists"
         );
+        // Ollama ships its Linux release as `ollama-linux-<arch>.tar.zst`, and
+        // its own installer aborts with "This version requires zstd for
+        // extraction" when `zstd` is absent. zstd is Priority: optional, so a
+        // fresh Debian/Ubuntu does not have it: without the explicit install
+        // the AI assistant silently stayed offline on every new host.
+        assert!(
+            text.contains("install_optional zstd"),
+            "install.sh must install zstd — Ollama's installer cannot unpack its .tar.zst without it"
+        );
+        assert!(
+            text.contains("command -v zstd"),
+            "install.sh must check for zstd before running Ollama's installer, with a clear message"
+        );
         assert!(
             text.contains("http://127.0.0.1:11434/"),
             "install.sh should poll Ollama's HTTP API on :11434 — Chat needs the daemon answering, not merely installed"
@@ -904,6 +1005,427 @@ mod tests {
         assert!(
             text.contains("armv7l|armv6l"),
             "install.sh must skip Ollama on 32-bit ARM (no upstream build)"
+        );
+    }
+
+    /// Reads `installer/install.sh` as text for the interface-invariant tests
+    /// below. Those assert the *entry* behaviour (how the script is launched,
+    /// how it prompts) that a piped `curl | sudo bash` install silently
+    /// breaks — no test covers the shell itself, so these are the guard rails.
+    fn install_sh_text() -> String {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/installer/install.sh");
+        std::fs::read_to_string(path).expect("cannot read installer/install.sh")
+    }
+
+    /// The installer is **English only** — its own messages, and (through
+    /// `LC_ALL=C`) everything it relays: apt/dpkg warnings, systemctl errors
+    /// and the whiptail button labels. An accented letter is the fingerprint
+    /// of a localized string, so this test is a cheap drift detector for a
+    /// translated prompt sneaking back in.
+    #[test]
+    fn test_install_sh_is_english_only() {
+        let text = install_sh_text();
+        let accented = "àâäéèêëîïôöùûüçÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ";
+        let offenders: Vec<(usize, &str)> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.chars().any(|c| accented.contains(c)))
+            .map(|(i, l)| (i + 1, l))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "install.sh must stay English only; these lines look localized:\n{}",
+            offenders
+                .iter()
+                .map(|(n, l)| format!("  {n}: {}", l.trim()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    #[test]
+    fn test_install_sh_pins_an_english_locale() {
+        // Writing English messages is not enough: apt, dpkg, systemctl and
+        // whiptail all answer in the host's language. `C` makes the whole run
+        // English and the parsing deterministic (`Candidate:` instead of a
+        // localized `Candidat :`).
+        let text = install_sh_text();
+        assert!(
+            text.contains("export LC_ALL=C") && text.contains("export LANG=C"),
+            "install.sh must pin LC_ALL/LANG to C — otherwise apt and the whiptail buttons are localized"
+        );
+    }
+
+    /// Binaries `Command::new(…)` invokes that are *not* probed with
+    /// `binary_present` above, either because their module has its own
+    /// `is_available()` predicate (clamav, docker, ufw, restic, VPN, UPS,
+    /// SNMP, the email fallbacks) or because they come from a driver
+    /// HomeVault cannot install (GPU vendor tools) — those degrade to
+    /// `lspci` on their own.
+    const BINARIES_WITH_DEDICATED_CHECK: &[&str] = &[
+        "clamscan",
+        "docker",
+        "fusermount",
+        "getfacl",
+        "lsb_release",
+        "msmtp",
+        "mutt",
+        "nvidia-smi",
+        "openvpn",
+        "restic",
+        "rocm-smi",
+        "sendmail",
+        "setquota",
+        "snmpd",
+        "snmpwalk",
+        "testparm",
+        "ufw",
+        "upsc",
+        "wg",
+        "wg-quick",
+    ];
+
+    /// Binaries provided by packages every supported base already ships:
+    /// `Priority: required` / `Essential` (coreutils, util-linux, procps,
+    /// passwd, debianutils, libc-bin, gzip, findutils, systemd, sudo,
+    /// e2fsprogs), or requested by `install.sh`'s *required* group (iproute2,
+    /// iputils-ping).
+    const BASE_BINARIES: &[&str] = &[
+        "blkid",
+        "cat",
+        "chmod",
+        "chown",
+        "chpasswd",
+        "df",
+        "find",
+        "findmnt",
+        "gpasswd",
+        "getent",
+        "groupadd",
+        "groupdel",
+        "groups",
+        "gunzip",
+        "hostnamectl",
+        "id",
+        "ip",
+        "journalctl",
+        "kill",
+        "lsblk",
+        "mkdir",
+        "mkfs.ext4",
+        "mount",
+        "mountpoint",
+        "pgrep",
+        "ping",
+        "pkill",
+        "ps",
+        "rm",
+        "rmdir",
+        "shutdown",
+        "ss",
+        "sudo",
+        "systemctl",
+        "tail",
+        "tar",
+        "tee",
+        "test",
+        "umount",
+        "uname",
+        "useradd",
+        "usermod",
+        "visudo",
+        "which",
+        "wipefs",
+    ];
+
+    /// Walks `src/` and collects every binary name passed as a *literal* to
+    /// `Command::new("…")` (both `std::process` and `tokio::process`) and to
+    /// `SetupService::resolve_bin("…", …)` — the latter is the sudoers
+    /// contract, i.e. every tool HomeVault intends to run as root, which is
+    /// exactly where a missing package hides. Tools launched through a
+    /// one-argument helper (`explorer.rs`'s `run("avahi-browse", …)`) are
+    /// pinned by their own `DependencySpec` instead.
+    fn collect_commanded_binaries(
+        dir: &std::path::Path,
+        out: &mut std::collections::BTreeSet<String>,
+    ) {
+        const NEEDLES: [&str; 2] = ["Command::new(\"", "resolve_bin(\""];
+        let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("cannot read {dir:?}: {e}"));
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_commanded_binaries(&path, out);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("cannot read {path:?}: {e}"));
+            for needle in NEEDLES {
+                let mut rest = text.as_str();
+                while let Some(i) = rest.find(needle) {
+                    let tail = &rest[i + needle.len()..];
+                    let Some(end) = tail.find('"') else { break };
+                    let name = &tail[..end];
+                    if !name.is_empty() {
+                        out.insert(name.to_string());
+                    }
+                    rest = &tail[end + 1..];
+                }
+            }
+        }
+    }
+
+    /// Every binary this file probes with `binary_present("…", …)`.
+    fn probed_binaries() -> std::collections::HashSet<String> {
+        let text = include_str!("dependencies.rs");
+        let needle = "binary_present(\"";
+        let mut out = std::collections::HashSet::new();
+        let mut rest = text;
+        while let Some(i) = rest.find(needle) {
+            let tail = &rest[i + needle.len()..];
+            let Some(end) = tail.find('"') else { break };
+            out.insert(tail[..end].to_string());
+            rest = &tail[end + 1..];
+        }
+        out
+    }
+
+    /// The completeness audit: **anything HomeVault executes must have a
+    /// package that installs it**, and that package must be in the inventory
+    /// above (which `test_every_dependency_package_is_in_install_sh` then
+    /// pins to `install.sh`).
+    ///
+    /// Regression (2026-10-19) — three real gaps this test was written for:
+    /// `hdparm` (Power app: disk spindown) was invoked by `src/power.rs` but
+    /// installed by nothing, so the page reported "hdparm not available" and
+    /// the setting never applied; `mkfs.xfs` (RAID arrays) had no `xfsprogs`;
+    /// and `mkfs.exfat` (Explorer format) was assumed to come with
+    /// `exfat-fuse`, which does not ship it on Debian 12+.
+    #[test]
+    fn test_every_commanded_binary_has_an_install_source() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut commanded = std::collections::BTreeSet::new();
+        collect_commanded_binaries(&root, &mut commanded);
+        assert!(
+            commanded.len() > 50,
+            "the scan found only {} binaries — it is not walking src/",
+            commanded.len()
+        );
+
+        let probed = probed_binaries();
+        let uncovered: Vec<&str> = commanded
+            .iter()
+            .map(String::as_str)
+            .filter(|bin| !probed.contains(*bin))
+            .filter(|bin| !BASE_BINARIES.contains(bin))
+            .filter(|bin| !BINARIES_WITH_DEDICATED_CHECK.contains(bin))
+            .collect();
+
+        assert!(
+            uncovered.is_empty(),
+            "these binaries are executed by HomeVault but have no install source:\n  {}\n\
+             Add a `DependencySpec` for each (package + `binary_present` check) so \
+             install.sh installs it, or list it in BASE_BINARIES / \
+             BINARIES_WITH_DEDICATED_CHECK with a reason.",
+            uncovered.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn test_install_sh_never_reads_prompts_from_stdin() {
+        // Regression (2026-10-19): `curl … | sudo bash` puts the *script* on
+        // stdin, so a bare `read -r -p` consumed the next line of the script
+        // instead of the keyboard. The HTTPS prompt did exactly that: it ate
+        // its own `if [[ ! "$REPLY" =~ ^[Nn]$ ]]; then` line and aborted the
+        // install with "syntax error near unexpected token 'fi'" *after* the
+        // binary had been extracted but before the service was enabled.
+        // Every prompt must read the dedicated fd 3 instead.
+        let text = install_sh_text();
+        let offenders: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("read -r -p") && !l.contains("-u 3"))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "these prompts read stdin, which is the script itself under `curl | sudo bash`:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn test_install_sh_binds_a_terminal_for_prompts() {
+        // fd 3 must point at the controlling terminal when there is one, and
+        // fall back to stdin otherwise (headless/cron), so `ask` can decide
+        // between prompting and taking the default.
+        let text = install_sh_text();
+        assert!(
+            text.contains("exec 3<&0") && text.contains("exec 3</dev/tty"),
+            "install.sh must bind fd 3 to /dev/tty (with a stdin fallback) — prompts rely on it"
+        );
+        // `-r` is not a valid probe: /dev/tty is world-readable but opening it
+        // fails with ENXIO when the process has no controlling terminal.
+        assert!(
+            text.contains(": </dev/tty"),
+            "install.sh must probe /dev/tty by opening it, not with `[[ -r ]]`"
+        );
+    }
+
+    #[test]
+    fn test_install_sh_tui_keeps_answers_off_the_terminal() {
+        // whiptail draws on stderr and returns the answer on stderr too. With
+        // `2>&4` (fd 4 = /dev/tty) the drawing bypasses the log tee, and
+        // `--output-fd 1` puts the answer on stdout where `$(…)` can capture
+        // it without the escape sequences mixed in.
+        let text = install_sh_text();
+        assert!(
+            text.contains("--output-fd 1"),
+            "whiptail answers must go to stdout via --output-fd 1"
+        );
+        assert!(
+            text.contains("exec 4>/dev/tty"),
+            "install.sh must open fd 4 on /dev/tty for whiptail's drawing"
+        );
+        assert!(
+            text.contains("2>&4"),
+            "whiptail must draw on fd 4, never on the log-redirected stdout/stderr"
+        );
+        // The engine's own output would paint over the whiptail screens, so in
+        // TUI mode stdout/stderr go to the log file only.
+        assert!(
+            text.contains("exec >>\"$LOG_FILE\""),
+            "in TUI mode install.sh must redirect its own output to the log file"
+        );
+    }
+
+    #[test]
+    fn test_install_sh_exposes_the_interface_flags() {
+        // CLI, TUI and unattended runs are all supported from the same file.
+        let text = install_sh_text();
+        for flag in [
+            "--cli)",
+            "--tui)",
+            "--yes|-y|--non-interactive)",
+            "--help|-h)",
+        ] {
+            assert!(
+                text.contains(flag),
+                "install.sh no longer parses {flag} — the documented interface would be rejected"
+            );
+        }
+        assert!(
+            text.contains("usage() {"),
+            "--help must print a usage block (usage() is missing)"
+        );
+        // `--yes` has to beat TUI detection, otherwise an unattended run
+        // blocks on a whiptail dialog nobody can answer.
+        assert!(
+            text.contains("\"$YES\" -eq 0 && \"$DRY_RUN\" -eq 0 && \"$UI_REQUEST\" != \"cli\""),
+            "the TUI must be skipped when --yes or --cli is given"
+        );
+    }
+
+    #[test]
+    fn test_install_sh_elevates_through_sudo_and_forwards_release_knobs() {
+        // Double-clicking the file runs it as the logged-in user with no
+        // terminal. The script has to reopen itself in a terminal and then
+        // elevate — and `sudo` resets the environment, so the documented
+        // HV_* knobs must be forwarded explicitly (`sudo -E` is rejected by
+        // the default sudoers policy).
+        let text = install_sh_text();
+        assert!(
+            text.contains("x-terminal-emulator"),
+            "install.sh must relaunch inside a terminal emulator when double-clicked"
+        );
+        assert!(
+            text.contains("exec sudo \"${_hv_envs[@]}\" bash \"$HV_SELF\""),
+            "install.sh must re-exec itself through sudo to obtain root"
+        );
+        for knob in [
+            "HV_RELEASE_URL",
+            "HV_RELEASE_SHA256",
+            "HV_RELEASE_TOKEN",
+            "HV_RELEASE_BASE",
+        ] {
+            assert!(
+                text.contains(knob),
+                "{knob} is no longer forwarded through sudo — the documented override would be dropped"
+            );
+        }
+        // Never `sudo -E`: it is refused by the default sudoers policy.
+        // Comment lines are excluded — the file explains the choice above.
+        let code_uses_sudo_e = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .any(|l| l.contains("sudo -E"));
+        assert!(
+            !code_uses_sudo_e,
+            "install.sh must not rely on `sudo -E` (refused by default sudoers)"
+        );
+        // --package and --dry-run must never elevate or pop a window.
+        assert!(
+            text.contains("--package|-p|--dry-run|--help|-h) HV_BOOTSTRAP=0"),
+            "--package/--dry-run/--help must skip the terminal relaunch and sudo elevation"
+        );
+    }
+
+    #[test]
+    fn test_install_sh_reexec_cannot_loop() {
+        // Two re-execs (terminal, then sudo) would ping-pong forever if either
+        // one came back unprivileged or terminal-less. The stage variable
+        // breaks the loop and the second attempt fails loudly instead.
+        let text = install_sh_text();
+        assert!(
+            text.contains("HV_INSTALLER_STAGE"),
+            "install.sh must carry a re-exec stage marker to break the bootstrap loop"
+        );
+        assert!(
+            text.contains("== reexec"),
+            "install.sh must refuse to elevate twice (sudo came back unprivileged)"
+        );
+        assert!(
+            text.contains("!= terminal"),
+            "install.sh must not reopen a terminal when it is already inside one"
+        );
+    }
+
+    #[test]
+    fn test_install_sh_docker_compose_never_breaks_apt() {
+        // Regression (2026-10-19): the Docker repository was added with an
+        // unguarded `curl … | gpg --dearmor` and an unguarded
+        // `apt-get update -qq`. Under `set -euo pipefail` a transient network
+        // failure aborted the whole installation at Step 2 — and a broken
+        // `docker.list` left on disk breaks every later `apt-get update` on
+        // the host. Both are now best-effort and the list file is removed on
+        // failure.
+        let text = install_sh_text();
+        assert!(
+            text.contains("add_docker_repo() {"),
+            "the Docker repository must live in its own best-effort function"
+        );
+        assert!(
+            text.contains("elif add_docker_repo; then"),
+            "a failing Docker repository must not abort the install"
+        );
+        assert!(
+            text.contains("rm -f \"$list\""),
+            "a Docker list file that cannot be fetched must be removed again"
+        );
+        // The distribution package wins over the third-party repository.
+        assert!(
+            text.contains("pkg_available docker-compose-v2"),
+            "prefer docker-compose-v2 (Ubuntu 24.04+/Debian 13+) over adding a third-party repo"
+        );
+        // A CLI without a reachable daemon must not read as installed.
+        assert!(
+            text.contains("check \"Docker daemon\"") && text.contains("docker info"),
+            "Step 4 must verify the Docker daemon answers, not just that the CLI exists"
+        );
+        // The Incus repository follows the same rule.
+        assert!(
+            text.contains("The Incus repository is unreachable"),
+            "a failing Incus repository must warn and remove its list file instead of aborting"
         );
     }
 

@@ -271,11 +271,7 @@ impl SetupService {
         let path = Self::setup_lock_file();
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut file) => {
-                let body = format!(
-                    "pid={}\ncreated_at={}\n",
-                    std::process::id(),
-                    unix_now()
-                );
+                let body = format!("pid={}\ncreated_at={}\n", std::process::id(), unix_now());
                 file.write_all(body.as_bytes())?;
                 file.flush()?;
                 Ok(())
@@ -293,11 +289,8 @@ impl SetupService {
                 // reclaim, exactly one of the two wins.
                 match OpenOptions::new().write(true).create_new(true).open(&path) {
                     Ok(mut file) => {
-                        let body = format!(
-                            "pid={}\ncreated_at={}\n",
-                            std::process::id(),
-                            unix_now()
-                        );
+                        let body =
+                            format!("pid={}\ncreated_at={}\n", std::process::id(), unix_now());
                         file.write_all(body.as_bytes())?;
                         file.flush()?;
                         Ok(())
@@ -1338,13 +1331,21 @@ mod tests {
     fn test_lock_older_than_the_max_age_is_stale_even_with_a_live_pid() {
         let contents = "pid=4242\ncreated_at=1700000000\n";
         let too_old = SetupService::SETUP_LOCK_MAX_AGE.as_secs() + 1;
-        assert!(!SetupService::lock_contents_is_live(contents, too_old, |_| true));
+        assert!(!SetupService::lock_contents_is_live(
+            contents,
+            too_old,
+            |_| true
+        ));
     }
 
     #[test]
     fn test_legacy_lock_without_pid_is_honoured_only_while_young() {
         // Pre-metadata lock file: plain "in_progress".
-        assert!(SetupService::lock_contents_is_live("in_progress", 10, |_| true));
+        assert!(SetupService::lock_contents_is_live(
+            "in_progress",
+            10,
+            |_| true
+        ));
         let too_old = SetupService::SETUP_LOCK_MAX_AGE.as_secs() + 1;
         assert!(!SetupService::lock_contents_is_live(
             "in_progress",

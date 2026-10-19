@@ -38,13 +38,12 @@ impl WhatsNewRepository {
 
     /// Whether `user_id` has acknowledged `version`.
     pub async fn has_seen(&self, user_id: &str, version: &str) -> Result<bool, sqlx::Error> {
-        let row: Option<(i64,)> = sqlx::query_as(
-            "SELECT 1 FROM whats_new_seen WHERE user_id = ? AND version = ?",
-        )
-        .bind(user_id)
-        .bind(version)
-        .fetch_optional(self.pool.as_ref())
-        .await?;
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT 1 FROM whats_new_seen WHERE user_id = ? AND version = ?")
+                .bind(user_id)
+                .bind(version)
+                .fetch_optional(self.pool.as_ref())
+                .await?;
         Ok(row.is_some())
     }
 

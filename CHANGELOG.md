@@ -6,7 +6,167 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Workspace hygiene audit (2026-10-19).** Small correctness-of-the-tree fixes
+  from a full verification pass (`cargo test` 1 622/0, `svelte-check` 0/0,
+  `npm run build` OK):
+  - **Docs**: `docs/BACKEND.md` now lists migrations **001–048** with their
+    purpose (was 001–038), and `CLAUDE.md` points at the same latest
+    migration — both counts were silently stale since the MCP/others
+    migrations landed.
+  - **Dead theme CSS removed**: `.hv-modal-overlay`, `.hv-modal-dialog`,
+    `.hv-modal-header`, `.hv-modal-close` (+ `:hover`), `.hv-modal-content`
+    and `.hv-modal-footer` matched no element in any of the 132 `.svelte`
+    files of `frontend/src` (the two classes flagged by the 2026-09-17 audit
+    plus four more found by the same DOM-level re-check); the three tokens
+    only they consumed went with them (`--hv-modal-max-width`,
+    `--hv-modal-header-padding`, `--hv-modal-close-size`). Kept:
+    `.hv-modal-title` and the overlay/shadow/backdrop **tokens**
+    (Drawer/SearchBar/FirewallCard consume the tokens, not the class).
+  - **`Explorer.svelte`**: the file-area `div`'s `onmousedown` (marquee
+    selection start) is now annotated `svelte-ignore
+    a11y_no_noninteractive_element_interactions` with the justification —
+    it is a pointer-only enhancement on top of rows/buttons that keep
+    keyboard selection; `svelte-check` reports 0 warnings again.
+  - **`frontend/.gitignore`**: the `.svelte-check/` cache directory is
+    ignored (svelte-check's native-tsgo mode writes it at the repo root).
+
+- **Dependency refresh (2026-10-19).** Every direct and transitive dependency
+  was moved to its latest stable release.
+  - **Rust**: `Cargo.lock` refreshed (hyper 1.12, tokio 1.53.3, serde_json
+    1.0.154, uuid 1.28, toml 1.1.8, libc 0.2.191, rustls 0.23.46, …), and
+    `aes-gcm` 0.10 → 0.11 (the `Aead`/`Nonce` API used by
+    `storage/user_2fa_repo.rs` is unchanged, so no call-site edit was
+    needed). `tokio-tungstenite` stays on 0.29 on purpose: axum 0.8 still
+    requires `^0.29`, and bumping it would link two copies of tungstenite
+    into the appliance binary.
+  - **Frontend**: all packages updated (`svelte` 5.57.2, `vite` 8.3.4,
+    `@lucide/svelte` 1.59, `layerchart` 2.8.1, `tailwindcss` 4.3.3, …).
+    The deprecated `xterm` / `xterm-addon-fit` / `xterm-addon-web-links`
+    packages were replaced by `@xterm/xterm` 6.0.0 / `@xterm/addon-fit`
+    0.11 / `@xterm/addon-web-links` 0.12 (imports and CSS path updated in
+    `routes/Terminal.svelte` and `components/vm/VmConsole.svelte`).
+    TypeScript is now the native 7.0.2 compiler, which `svelte-check` only
+    supports through its `--tsgo-experimental-api` flag and alongside
+    TypeScript 6 — hence the `typescript@~6` + `@typescript/native` alias
+    pair and the updated `npm run check` script.
+  - **Security**: `npm audit` is clean (the `devalue` 5.9.2 advisory chain
+    pulled in by Svelte is fixed by 5.9.4).
+  - **Tooling**: `@playwright/test` 1.64.1 and the matching
+    `mcr.microsoft.com/playwright:v1.64.1-noble` image; GitHub Actions
+    `checkout@v7`, `setup-node@v7`, `upload-artifact@v7` and
+    `gitleaks-action@v3`; CI Node 22 → 24 (current LTS) in all workflows.
+  - **Catalog images**: `postgres:18-alpine`, `redis:8-alpine`,
+    `tensorchord/pgvecto-rs:pg16-v0.3.0`, `louislam/uptime-kuma:2`.
+  - **Dependabot** now also tracks GitHub Actions, the root npm package and
+    the catalog `docker-compose.yml` files.
+
+### Fixed
+
+- **Ollama never installed on a fresh host: `zstd` was missing.** Ollama
+  publishes `ollama-linux-<arch>.tar.zst`, and its official installer aborts
+  with "This version requires zstd for extraction" when `zstd` is absent.
+  `zstd` is Priority: optional, so a fresh Debian/Ubuntu does not have it —
+  the installer's `curl … | sh` failed, the warning was easy to miss, and the
+  AI assistant stayed offline on every new deployment. `install.sh` now
+  installs `zstd` before running Ollama's script and checks it explicitly.
+
+- **Docker Compose could abort the whole installation, or leave apt broken.**
+  The Docker repository was added with an unguarded `curl … | gpg --dearmor`
+  and an unguarded `apt-get update -qq`; under `set -euo pipefail` a
+  transient network failure stopped the installer at Step 2, and a broken
+  `docker.list` left on disk breaks every later `apt-get update` on the host.
+  Both are now best-effort (`add_docker_repo()`), and the list file is
+  removed again on failure. The Incus repository got the same treatment.
+
+- **Docker: `docker-compose-v2` preferred, Buildx installed, daemon
+  verified.** Compose v2 is now taken from the distribution where it exists
+  (Ubuntu 24.04+/Debian 13+) before reaching for Docker's third-party
+  repository; `docker-buildx-plugin`/`docker-buildx` is installed because
+  `docker compose build` delegates to it; `docker.service` is `enable --now`'d
+  and Step 4 checks `docker info`, so a CLI with no engine no longer reads as
+  a healthy install. Verified: `docker-compose-plugin` has no `Depends:` that
+  would displace `docker.io`, and it installs
+  `/usr/libexec/docker/cli-plugins/docker-compose`, which the `docker.io` CLI
+  (>= 20.10) finds.
+
+- **Incus: the daemon init could be skipped on a slow host.**
+  `init_incus_daemon` read `systemctl is-active incus` once, immediately after
+  `enable --now`; a unit still starting made it return early and the first
+  `vm/create` then failed with "No storage pool found". It now waits up to
+  10 s for the unit to become active.
+
+- **The installer is English only, end to end.** Its own messages already
+  were, but apt/dpkg warnings, `systemctl` errors and — visibly — the whiptail
+  buttons (`Oui`/`Non` on a French host) answered in the system language.
+  `install.sh` now pins `LC_ALL=C`/`LANG=C` at the top, which also keeps the
+  `apt-cache policy` probe deterministic (the localized `Candidat :` label used
+  to make every availability check fail). Verified live: with
+  `LANG=fr_FR.UTF-8`, whiptail renders `Yes`/`No`.
+
+- **Five packages HomeVault actually executes were never installed.** Found by
+  auditing every `Command::new("…")` and `resolve_bin("…")` call against the
+  dependency inventory:
+  - **`hdparm`** — the Power app's per-disk spindown (`src/power.rs`). The page
+    reported "hdparm not available" and the setting never applied on a fresh
+    install.
+  - **`wpasupplicant`** (`wpa_cli`) — the Network app's Wi-Fi scan/join/status
+    (`src/network.rs`).
+  - **`xfsprogs`** (`mkfs.xfs`) — the RAID app formats ext4 **or xfs**
+    (`src/disk.rs::format_device`); creating an XFS array failed at the mkfs
+    step.
+  - **`exfatprogs`/`exfat-utils`** (`mkfs.exfat`) — Explorer's "format as
+    exfat". Only `exfat-fuse` was installed, which does **not** ship
+    `mkfs.exfat` on Debian 12+/Ubuntu 23.04+, so the action was dead there.
+  - **`avahi-utils`** (`avahi-browse`) — the mDNS half of Explorer's network
+    discovery; `avahi-daemon` alone only publishes HomeVault.
+  `samba-common-bin` (`smbtree`, the SMB half of the same list) is now
+  requested explicitly instead of relying on Samba's recommends, and the
+  Step 4 verification checks all six tools. `procps`, `debianutils` and
+  `e2fsprogs` joined the required group so a trimmed image fails loudly.
+
+- **`curl … | sudo bash` aborted the installation at the HTTPS question.** With
+  the script on stdin, `read -r -p "Enable HTTPS…"` consumed the *next line of
+  the script* instead of the keyboard, so bash died on
+  `syntax error near unexpected token 'fi'` — after the binary had been
+  extracted to `/opt/homevault` and the unit written, but **before**
+  `daemon-reload`/`enable`/`restart` and the whole verification step. The
+  install looked half-done and no service was running. Every prompt now reads
+  fd 3, bound to `/dev/tty` when one exists, and `--yes` takes the documented
+  default instead. Locked by `test_install_sh_never_reads_prompts_from_stdin`
+  and `test_install_sh_binds_a_terminal_for_prompts` in `src/dependencies.rs`.
+
 ### Added
+
+- **A dependency-completeness audit that runs in CI.**
+  `dependencies.rs::tests::test_every_commanded_binary_has_an_install_source`
+  walks `src/`, collects every binary passed to `Command::new("…")` and
+  `resolve_bin("…")`, and fails on any name that is neither probed by the
+  inventory nor listed in `BASE_BINARIES` (Priority: required packages) or
+  `BINARIES_WITH_DEDICATED_CHECK` (module predicates, external GPU drivers).
+  The inventory then pins every package to `install.sh` through the existing
+  cross-check. Proven to bite: renaming the `hdparm` probe fails the test with
+  `hdparm` in the report. Two more guards cover the English-only rule
+  (`test_install_sh_is_english_only`, `…_pins_an_english_locale`).
+
+- **The installer runs by CLI *or* by double-click, as one file.** Opening
+  `installer/install.sh` from a file manager executes it with no terminal and
+  as the logged-in user; the new entry bootstrap reopens it inside a terminal
+  emulator and then re-execs through `sudo`, forwarding the documented
+  `HV_RELEASE_*` knobs explicitly (never `sudo -E`, which default sudoers
+  rejects). `HV_INSTALLER_STAGE` prevents the two re-execs from looping, and
+  `--package`/`--dry-run`/`--help` are excluded from elevation entirely.
+
+- **`whiptail` interface, with a plain-text fallback.** The interactive runs
+  now use dialog boxes and a progress bar per step (Debian priority
+  `important`, so already present on every supported base — it is never
+  installed by the script). In TUI mode the engine's output goes to
+  `/var/log/homevault-install.log` only and whiptail draws on its own fd, so
+  the screens are not painted over. New flags: `--tui`, `--cli`,
+  `--yes`/`-y`/`--non-interactive`, `--help`; `HV_MODE`/`HV_YES` do the same
+  from the environment. The final "open the browser now?" prompt now follows
+  the HTTPS choice instead of always opening plain HTTP.
 
 - **`HV_RELEASE_TOKEN`, and a clear message when the release is private.** The
   installer downloads `homevault-<arch>.tar.gz` from the GitHub release, but a

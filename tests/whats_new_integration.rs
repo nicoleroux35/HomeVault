@@ -201,7 +201,7 @@ async fn test_whats_new_starts_unseen_with_highlights() {
     assert_eq!(body["data"]["seen"], json!(false));
     assert_eq!(body["data"]["version"], env!("CARGO_PKG_VERSION"));
     assert!(!body["data"]["title"].as_str().unwrap().is_empty());
-    assert!(body["data"]["highlights"].as_array().unwrap().len() >= 1);
+    assert!(!body["data"]["highlights"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]

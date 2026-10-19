@@ -404,8 +404,7 @@ impl FileBrowser {
         let query = query.to_lowercase();
         tokio::task::spawn_blocking(move || {
             let passwd_map = Self::load_passwd_map();
-            let mut scored =
-                Self::search_fuzzy_sync(&path, &query, 0, &passwd_map, &mut 0usize);
+            let mut scored = Self::search_fuzzy_sync(&path, &query, 0, &passwd_map, &mut 0usize);
             scored.sort_by_key(|a| std::cmp::Reverse(a.0));
             scored.truncate(max_results.max(1));
             scored.into_iter().map(|(_, info)| info).collect()

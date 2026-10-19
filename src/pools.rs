@@ -185,8 +185,8 @@ impl PoolService {
     ///  action: The pool can be imported using its name or numeric identifier.
     ///  config:
     ///
-    /// 	tank        ONLINE
-    /// 	  sdb       ONLINE
+    ///     tank        ONLINE
+    ///       sdb       ONLINE
     /// ```
     /// Multiple pools are separated by a blank line. Pure function so it can
     /// be unit-tested without `zpool` installed.
@@ -261,8 +261,8 @@ impl PoolService {
     /// UUID is in `mounted`. Block shape:
     /// ```text
     /// Label: 'mypool'  uuid: 1111-2222
-    /// 	Total devices 2 FS bytes used 1.00GiB
-    /// 	devid    1 size 10.00GiB used 1.00GiB path /dev/sdb
+    ///     Total devices 2 FS bytes used 1.00GiB
+    ///     devid    1 size 10.00GiB used 1.00GiB path /dev/sdb
     /// ```
     fn parse_btrfs_show(
         output: &str,
@@ -300,10 +300,7 @@ impl PoolService {
                     .nth(1)
                     .map(|s| s.trim_matches('\'').to_string())
                     .unwrap_or_default();
-                let uuid = trimmed
-                    .split("uuid:")
-                    .nth(1)
-                    .map(|s| s.trim().to_string());
+                let uuid = trimmed.split("uuid:").nth(1).map(|s| s.trim().to_string());
                 current_uuid = uuid;
                 current = Some(ImportablePool {
                     name: label,

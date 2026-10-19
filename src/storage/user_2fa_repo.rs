@@ -14,7 +14,7 @@
  *
  * Dependencies:
  *   - sqlx (>= 0.9)
- *   - aes-gcm (>= 0.10)
+ *   - aes-gcm (>= 0.11)
  * Usage:
  *   Imported by the services/handlers of its feature area.
  * =============================================================================
@@ -77,8 +77,7 @@ const ENCRYPTED_PREFIX: &str = "hv1:";
 /// whole data directory gets the key too; that is a host compromise, out of
 /// scope for at-rest encryption.
 #[cfg(test)]
-static TEST_KEY_PATH: std::sync::Mutex<Option<std::path::PathBuf>> =
-    std::sync::Mutex::new(None);
+static TEST_KEY_PATH: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
 
 fn totp_key_path() -> std::path::PathBuf {
     // Test seam: the env var is process-global and other test modules
@@ -131,8 +130,7 @@ fn load_or_create_totp_key() -> Result<[u8; 32], String> {
     let key: [u8; 32] = rand::rng().random();
     let encoded = base64::engine::general_purpose::STANDARD.encode(key);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("create {}: {e}", parent.display()))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
@@ -312,7 +310,8 @@ impl User2faRepository {
         totp_secret: &str,
         backup_codes: &str,
     ) -> Result<(), DbError> {
-        let encrypted = encrypt_totp_secret(username, totp_secret).map_err(DbError::InvalidInput)?;
+        let encrypted =
+            encrypt_totp_secret(username, totp_secret).map_err(DbError::InvalidInput)?;
         let now = Utc::now();
         sqlx::query(
             "INSERT OR REPLACE INTO user_2fa (username, totp_secret_encrypted, enabled, backup_codes, created_at) VALUES (?, ?, 1, ?, ?)"
@@ -344,7 +343,8 @@ impl User2faRepository {
     /// `totp_secret` is the plaintext base32; it is encrypted before it
     /// reaches the database.
     pub async fn save_pending(&self, username: &str, totp_secret: &str) -> Result<(), DbError> {
-        let encrypted = encrypt_totp_secret(username, totp_secret).map_err(DbError::InvalidInput)?;
+        let encrypted =
+            encrypt_totp_secret(username, totp_secret).map_err(DbError::InvalidInput)?;
         let now = Utc::now();
         sqlx::query(
             "INSERT OR REPLACE INTO user_2fa (username, totp_secret_encrypted, enabled, backup_codes, created_at) VALUES (?, ?, 0, '', ?)"
@@ -487,6 +487,12 @@ impl User2faRepository {
 
 #[cfg(test)]
 mod tests {
+    // The suite serialises itself on a process-global `ENV_LOCK` that must stay
+    // held across `.await`s: releasing it early would let a sibling test swap
+    // the key path mid-setup. A std Mutex is deliberate (no async runtime in
+    // the lock path), so the lint is expected here.
+    #![allow(clippy::await_holding_lock)]
+
     use super::*;
 
     // The encryption functions read the key path via [`totp_key_path`];
@@ -503,8 +509,7 @@ mod tests {
     async fn repo() -> RepoSetup {
         let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().expect("temp dir");
-        *TEST_KEY_PATH.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(tmp.path().join("2fa.key"));
+        *TEST_KEY_PATH.lock().unwrap_or_else(|e| e.into_inner()) = Some(tmp.path().join("2fa.key"));
         let db = crate::storage::Database::new("sqlite::memory:")
             .await
             .expect("in-memory database");
@@ -529,7 +534,10 @@ mod tests {
         repo.save("alice", "JBSWY3DPEHPK3PXP", "[]").await.unwrap();
 
         let stored = raw_stored_secret(&repo, "alice").await;
-        assert_ne!(stored, "JBSWY3DPEHPK3PXP", "plaintext must never hit the DB");
+        assert_ne!(
+            stored, "JBSWY3DPEHPK3PXP",
+            "plaintext must never hit the DB"
+        );
         assert!(stored.starts_with(ENCRYPTED_PREFIX), "got: {stored}");
 
         // Round-trip: the caller reads the plaintext back.
