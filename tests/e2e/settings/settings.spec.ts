@@ -2187,6 +2187,75 @@ test.describe('23 — Redesigned shell', () => {
     expect(narrow.scrollW, 'no horizontal overflow at phone width').toBeLessThanOrEqual(narrow.clientW + 1);
     expect(narrow.cards).toBeGreaterThan(0);
   });
+
+  test('23.12 — one icon tile on the whole screen: a circle at one size, glyphs on the 16/20 ladder', async ({ page }) => {
+    // Regressions this pins, all real on 2026-10-19: the rail tile and the
+    // Widgets rows were 28px squares with a 12px corner while the Privacy rows
+    // were 36px tiles with an 18px corner and a 20px glyph — three shapes and
+    // two sizes for one screen — and three glyphs sat off the ladder
+    // (`14` in the folder picker, `15` in the MCP card, `18` on its create
+    // button). One tile size, one shape, one glyph step.
+    await openSettings(page, admin);
+    const tiles: { cat: string; w: number; h: number; radius: string; cls: string }[] = [];
+    const glyphs: { cat: string; size: number; cls: string }[] = [];
+    for (const cat of CATEGORIES) {
+      await openCategory(page, cat);
+      const found = await page.evaluate((c) => {
+        const scope = document.querySelector('[data-testid="settings-page"]')!;
+        // The icon-tile hosts: the rail's rich tile (owned by
+        // WindowSidebarItem) and every tile built from `settingsIconTile`.
+        const tileNodes = [
+          ...scope.querySelectorAll('.hv-winsidebar-item-icon'),
+          ...scope.querySelectorAll('.settings-icon-tile'),
+        ] as HTMLElement[];
+        const tiles = tileNodes.map((n) => {
+          const r = n.getBoundingClientRect();
+          return {
+            cat: c,
+            w: Math.round(r.width),
+            h: Math.round(r.height),
+            radius: getComputedStyle(n).borderRadius,
+            cls: (n.className || '').toString().slice(0, 48),
+          };
+        });
+        const glyphs = [...scope.querySelectorAll('svg')]
+          .map((n) => {
+            const r = n.getBoundingClientRect();
+            return { cat: c, size: Math.round(r.width), cls: (n.getAttribute('class') || '').slice(0, 32) };
+          })
+          .filter((g) => g.size > 0);
+        return { tiles, glyphs };
+      }, cat);
+      tiles.push(...found.tiles);
+      glyphs.push(...found.glyphs);
+    }
+
+    // 1 — every decorative tile is the same 28px circle. A `50%` / `9999px`
+    // radius computes to a huge px value in Firefox, so the check is
+    // "radius resolves to at least half the box", not a literal string.
+    const tileSize = await page.evaluate(() =>
+      parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--hv-settings-icon-tile')),
+    );
+    expect(tileSize, '--hv-settings-icon-tile is declared').toBeGreaterThan(0);
+    expect(tiles.length, 'the screen renders icon tiles').toBeGreaterThan(10);
+    for (const t of tiles) {
+      expect(t.w, `${t.cat}: tile width (${t.cls})`).toBe(tileSize);
+      expect(t.h, `${t.cat}: tile height (${t.cls})`).toBe(tileSize);
+      const r = t.radius === '50%' ? Infinity : parseFloat(t.radius);
+      expect(r, `${t.cat}: tile is a circle (${t.radius} on ${t.w}px — ${t.cls})`).toBeGreaterThanOrEqual(
+        tileSize / 2,
+      );
+    }
+    // Exactly one tile size on the whole screen — the point of the test.
+    expect([...new Set(tiles.map((t) => `${t.w}x${t.h}`))], 'one tile size').toEqual([`${tileSize}x${tileSize}`]);
+
+    // 2 — every glyph is on the icon ladder (16 inline / 20 in a dedicated
+    // icon button). 14 / 15 / 18 are not steps and must fail here.
+    expect(glyphs.length, 'the screen renders glyphs').toBeGreaterThan(5);
+    for (const g of glyphs) {
+      expect([16, 20], `${g.cat}: glyph size ${g.size} (${g.cls}) is a ladder step`).toContain(g.size);
+    }
+  });
 });
 
 // ===========================================================================

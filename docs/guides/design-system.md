@@ -972,15 +972,28 @@ Appliance palette with it. Everything it declares lives under
   `FloatingPathPicker` rows and buttons all resolve to the same token
   (2026-09-14). No `h-[34px]`-style literals — the token is the only height.
 - **Icons take one of the scale's steps — 16 / 20 / 24** and this screen
-  uses only the first two: **16** for glyphs inline with copy, rail entries
-  and plain icon buttons, **20** for glyphs in a `w-9 h-9` tile (active
-  category, privacy rows — the card headers lost their tile 2026-10-19, see
-  [Settings](./settings.md)) or a dedicated icon button. 24 is
+  uses only the first two: **16** for glyphs inline with copy, rail entries,
+  icon tiles and plain icon buttons, **20** for a dedicated icon button
+  (the AI refresh control). 24 is
   the next step for larger contexts (`w-10` tiles, empty states) and never
   appears here. 2026-09-26: the stray `14`, `15` and `18` values were
   removed from `Settings.svelte` and `components/settings/*` — `size={15}`
   was never on the grid, and five different sizes for one screen's icons
-  is not a scale.
+  is not a scale. **2026-10-19: the same three values came back through
+  `components/theme/PathPickerField.svelte` (`14`) and the MCP card (`15`,
+  `18`), which this screen embeds — they are 16 now, and E2E 23.12 walks all
+  8 categories and fails on any glyph that is not 16 or 20.**
+- **One icon tile on the whole screen (2026-10-19).** Every decorative tile
+  — the rail category tile, the 11 Widgets rows, the 3 Privacy rows — is a
+  **circle at `--hv-settings-icon-tile` (28px)** holding a 16px glyph, built
+  from `settingsIconTile` in `vocabulary.ts` (the rail's comes from
+  `WindowSidebarItem`'s rich CSS off the same token). It used to be three
+  components: 28px tiles with a 12px corner, and 36px tiles with an 18px
+  corner and a 20px glyph. The circle is the same shape language as the dock
+  tiles / topbar buttons / window-header icon, and the single size is what
+  makes a screen built from one vocabulary read as one screen — E2E 23.12
+  asserts every tile is the token's square box, that all tiles share one
+  size, and that the radius resolves to at least half the box.
 - **Layout contract**: 208px rail (`--hv-settings-sidebar-w`), a non-scrolling
   two-line content header (title over subtitle, no icon tile since
   2026-10-19), then `[data-testid="settings-content"]` = the scrolling

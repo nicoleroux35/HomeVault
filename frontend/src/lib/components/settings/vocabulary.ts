@@ -160,7 +160,7 @@ export const settingsBtnSuccess =
  *  `settingsCardIcon` on 2026-10-19, which also no longer had a caller once the
  *  sub-card headers lost their tile. */
 export const settingsIconTile =
-  'grid place-items-center w-[var(--hv-settings-icon-tile)] h-[var(--hv-settings-icon-tile)] rounded-full flex-none';
+  'settings-icon-tile grid place-items-center w-[var(--hv-settings-icon-tile)] h-[var(--hv-settings-icon-tile)] rounded-full flex-none';
 
 /* The category accents, for the sub-cards. A sub-card is rendered from inside
    a category branch of Settings.svelte, so it cannot read `activeCat.accent`
