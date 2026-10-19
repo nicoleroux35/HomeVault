@@ -375,39 +375,12 @@
 
 /* ============================================
    MODALS
+   Only the title class is rendered (theme/Modal.svelte). The overlay,
+   dialog, header, close, content and footer rules were confirmed dead at
+   DOM level (2026-09-17 audit, re-checked 2026-10-19) and removed —
+   theme/Modal + theme/Drawer (bits-ui Dialog) + Tailwind utilities carry
+   the rest of the modal chrome.
    ============================================ */
-.hv-modal-overlay {
-  position: fixed;
-  inset: 0;
-  background-color: var(--hv-modal-overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: var(--hv-z-modal-backdrop);
-  animation: hv-fade-in var(--hv-transition-base) var(--hv-ease-default);
-}
-
-.hv-modal-dialog {
-  background-color: var(--hv-surface-container-lowest);
-  border-radius: var(--hv-radius-xl);
-  box-shadow: var(--hv-shadow-2xl);
-  max-width: var(--hv-modal-max-width);
-  width: 90%;
-  max-height: 90vh;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  animation: hv-scale-in var(--hv-transition-base) var(--hv-ease-out);
-}
-
-.hv-modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--hv-modal-header-padding);
-  border-bottom: 1px solid var(--hv-border);
-}
-
 .hv-modal-title {
   display: flex;
   align-items: center;
@@ -415,43 +388,6 @@
   font-size: var(--hv-font-size-lg);
   font-weight: var(--hv-font-weight-semibold);
   color: var(--hv-text-primary);
-}
-
-.hv-modal-close {
-  width: var(--hv-modal-close-size);
-  height: var(--hv-modal-close-size);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--hv-radius-md);
-  background-color: transparent;
-  color: var(--hv-text-secondary);
-  cursor: pointer;
-  transition:
-    color var(--hv-transition-base) var(--hv-ease-default),
-    background-color var(--hv-transition-base) var(--hv-ease-default),
-    border-color var(--hv-transition-base) var(--hv-ease-default),
-    box-shadow var(--hv-transition-base) var(--hv-ease-default);
-}
-
-.hv-modal-close:hover {
-  background-color: var(--hv-surface-container);
-  color: var(--hv-text-primary);
-}
-
-.hv-modal-content {
-  flex: 1;
-  padding: var(--hv-space-6);
-  overflow-y: auto;
-}
-
-.hv-modal-footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--hv-space-3);
-  padding: var(--hv-space-6);
-  border-top: 1px solid var(--hv-border);
 }
 
 /* ============================================
