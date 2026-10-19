@@ -1,7 +1,7 @@
 {
   "private": true,
   "author": "Nicolas Le Roux",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/nicoleroux35/HomeVault.git"
