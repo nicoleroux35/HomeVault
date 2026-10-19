@@ -624,6 +624,8 @@
   /* ============================================
       MODAL & OVERLAY
       ============================================ */
+  /* Modal — theme/Modal.svelte styles its own chrome; the overlay/shadow/
+     backdrop tokens remain shared with Drawer, SearchBar, FirewallCard. */
   --hv-modal-overlay: rgba(16, 24, 40, 0.5);
   --hv-modal-shadow: var(--hv-shadow-2xl);   /* Apple ref §5 — modal step */
   --hv-modal-backdrop: rgba(16, 24, 40, 0.5);
@@ -1008,11 +1010,6 @@
   --hv-login-body-padding: 40px;
   --hv-login-icon-size: 64px;
   --hv-login-icon-svg-size: 32px;
-
-  /* Modal */
-  --hv-modal-max-width: 420px;
-  --hv-modal-header-padding: 20px 24px;
-  --hv-modal-close-size: 32px;
 
   /* Resource Monitor */
   --hv-monitor-w-compact: 280px;   /* Resources, VPN, Downloader, Syncthing */

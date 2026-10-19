@@ -1700,6 +1700,12 @@
     </div>
   {/if}
 
+  <!-- The marquee (rubber-band) selection is a pointer-only enhancement on
+       top of the file rows/buttons: onmousedown starts a drag rectangle over
+       empty space and never replaces a keyboard path (rows/grids are
+       buttons, reachable and selectable with Tab + Enter). The region stays
+       announced along with its drag listeners. -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div data-testid="explorer-file-area" class:drag-active={isDraggingOver} class="relative flex-1 min-h-0 overflow-y-auto" bind:this={fileAreaEl} onmousedown={onFileAreaMouseDown} ondragover={handleDragOver} ondragenter={handleDragEnter} ondragleave={handleDragLeave} ondrop={handleDrop} role="region" aria-label={$t('explorer.drop_zone_label')}>
     {#if marquee}
       <div data-testid="explorer-marquee" class="pointer-events-none absolute z-20 border border-[var(--hv-primary)] bg-[var(--hv-primary-light)]/60" style={marqueeStyle()} aria-hidden="true"></div>
