@@ -241,11 +241,15 @@ HTTPS_PORT="8443"
 # Pre-built application archive — one compressed `homevault` binary. Published
 # per architecture on the project's GitHub Releases as `homevault-<arch>.tar.gz`
 # (x86_64 / aarch64 / armv7l), exactly what `install.sh --package` produces.
-# `HV_RELEASE_URL` overrides the whole URL (mirror, pinned version, …) and
-# `HV_RELEASE_SHA256` optionally pins the archive's checksum.
+# `HV_RELEASE_URL` overrides the whole URL (mirror, pinned version, …),
+# `HV_RELEASE_SHA256` optionally pins the archive's checksum, and
+# `HV_RELEASE_TOKEN` authenticates the download when the release lives in a
+# PRIVATE repository — GitHub answers 404 (not 401) to an anonymous request
+# there, so without a token the default URL is indistinguishable from a typo.
 RELEASE_BASE="${HV_RELEASE_BASE:-https://github.com/nicoleroux35/HomeVault/releases/latest/download}"
 RELEASE_URL="${HV_RELEASE_URL:-}"
 RELEASE_SHA256="${HV_RELEASE_SHA256:-}"
+RELEASE_TOKEN="${HV_RELEASE_TOKEN:-}"
 
 # Avoid apt/debconf ever popping an interactive prompt mid-install (a
 # headless box or a `curl | sudo bash` pipe has no one to answer it, so a
@@ -972,8 +976,17 @@ if [[ -z "$PACKAGE" ]]; then
     TMP_ARCHIVE=$(mktemp /tmp/homevault.XXXXXX.tar.gz)
     PACKAGE="$TMP_ARCHIVE"
     info "Downloading HomeVault ($ARCH) from $RELEASE_URL ..."
-    if ! curl -fL --retry 3 --retry-delay 2 -o "$PACKAGE" "$RELEASE_URL"; then
+    CURL_AUTH=()
+    [[ -n "$RELEASE_TOKEN" ]] && CURL_AUTH=(-H "Authorization: Bearer $RELEASE_TOKEN")
+    if ! curl -fL --retry 3 --retry-delay 2 "${CURL_AUTH[@]}" -o "$PACKAGE" "$RELEASE_URL"; then
         err "Failed to download HomeVault from $RELEASE_URL"
+        # A private GitHub repository answers 404 to an anonymous request, so
+        # "not found" here usually means "not authorised", not "wrong URL".
+        if [[ "$RELEASE_URL" == *github.com* ]]; then
+            echo -e "  If the project is private, the release needs a token:"
+            echo -e "    ${C_BOLD}sudo HV_RELEASE_TOKEN=<github-token> bash -c \"\$(curl -fsSL <install-url>)\"${C_RESET}"
+            echo -e "  The token only needs read access to the repository's releases."
+        fi
         echo -e "  Check the URL, or pass a local archive: ${C_BOLD}sudo $0 /path/to/homevault.tar.gz${C_RESET}"
         echo -e "  Or point at another source: ${C_BOLD}HV_RELEASE_URL=<url>${C_RESET}"
         exit 1
