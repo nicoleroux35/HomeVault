@@ -98,8 +98,8 @@ use homevault::handlers::{
         handle_disk_smart_capabilities, handle_disk_smart_test_start,
         handle_disk_smart_test_status, handle_disks_list, handle_import_pool,
         handle_importable_pools_list, handle_partitions_list, handle_removable_disks_list,
-        handle_virtual_disk_delete, handle_virtual_disk_scrub, handle_virtual_disk_scrub_status,
-        handle_virtual_disks_list,
+        handle_virtual_disk_delete, handle_virtual_disk_grow, handle_virtual_disk_scrub,
+        handle_virtual_disk_scrub_status, handle_virtual_disks_list,
     },
     AppState,
 };
@@ -170,6 +170,10 @@ fn storage_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/storage/virtual-disks/{name}/scrub",
             get(handle_virtual_disk_scrub_status),
+        )
+        .route(
+            "/api/storage/virtual-disks/{name}/grow",
+            post(handle_virtual_disk_grow),
         )
         .route(
             "/api/storage/importable-pools",
@@ -353,6 +357,11 @@ fn write_endpoints() -> Vec<(Method, &'static str, Option<Value>)> {
         ),
         (Method::DELETE, "/api/storage/virtual-disks/ghost", None),
         (Method::POST, "/api/storage/virtual-disks/ghost/scrub", None),
+        (
+            Method::POST,
+            "/api/storage/virtual-disks/ghost/grow",
+            Some(json!({"device": "/dev/hv-x"})),
+        ),
         (
             Method::POST,
             "/api/storage/import-pool",

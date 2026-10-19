@@ -236,8 +236,8 @@ use crate::handlers::{
         handle_disk_smart_test_status, handle_disks_list, handle_import_pool,
         handle_importable_pools_list, handle_partitions_list, handle_raid_arrays_list,
         handle_raid_available_devices, handle_raid_create, handle_raid_delete, handle_raid_rebuild,
-        handle_removable_disks_list, handle_virtual_disk_delete, handle_virtual_disk_scrub,
-        handle_virtual_disk_scrub_status, handle_virtual_disks_list,
+        handle_removable_disks_list, handle_virtual_disk_delete, handle_virtual_disk_grow,
+        handle_virtual_disk_scrub, handle_virtual_disk_scrub_status, handle_virtual_disks_list,
     },
     syncthing::{
         handle_syncthing_config, handle_syncthing_connections, handle_syncthing_devices,
@@ -870,6 +870,11 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route(
             "/api/storage/virtual-disks/{name}/scrub",
             get(handle_virtual_disk_scrub_status),
+        )
+        // Grow an mdadm array onto a new disk (mdadm --add + --grow).
+        .route(
+            "/api/storage/virtual-disks/{name}/grow",
+            post(handle_virtual_disk_grow),
         )
         // Foreign (importable) pools discovered on attached disks
         .route(

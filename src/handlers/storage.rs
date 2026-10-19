@@ -34,6 +34,7 @@ use crate::disk::DiskService;
 use crate::handlers::admin_guard::{require_admin, require_auth};
 use crate::handlers::AppState;
 use crate::health::HealthService;
+use crate::sse::progress::{JobType, ProgressEmitter, PROGRESS_MANAGER};
 use crate::utils::ResponseHelper;
 use axum::{extract::State, http::HeaderMap, response::Response};
 use std::sync::Arc;
@@ -152,19 +153,46 @@ pub struct CreateRaidRequest {
     pub level: String,
     pub devices: Vec<String>,
     pub filesystem: String,
+    /// Extra devices attached to the array as hot spares (mdadm techs only).
+    #[serde(default)]
+    pub spares: Option<Vec<String>>,
+    /// Create the array when `devices` is one (raid6: two) short of the level
+    /// minimum, leaving a `missing` slot to fill with a later disk.
+    #[serde(default)]
+    pub allow_missing: bool,
+}
+
+/// Bridges the creation flow's percent/message milestones into the progress
+/// job the request itself created (this struct is the single implementation
+/// of `CreateProgress` for the RAID feature).
+struct CreateJobProgress {
+    job_id: String,
+}
+
+impl crate::disk::CreateProgress for CreateJobProgress {
+    fn report(&self, percent: u8, message: &str) {
+        ProgressEmitter::progress(&self.job_id, percent as f64, message);
+    }
 }
 
 /// Creates a new "virtual disk" (a RAID set) from the chosen physical
 /// disks. This is the RAID app's only job. The `filesystem` picks the
 /// technology:
 ///   - `ext4` / `xfs` → an `mdadm` array formatted with that FS
-///   - `zfs`          → a native ZFS vdev (`DiskService::create_raid`
-///                      already routes this to `create_zfs_pool_from_devices`)
-///   - `btrfs`        → a **native** multi-device Btrfs filesystem
-///                      (`PoolService::create_pool`), not Btrfs-on-mdadm
+///   - `zfs`          → a native ZFS pool (striped mirrors for raid10)
+///   - `btrfs`        → a **native** multi-device Btrfs filesystem, not
+///                      Btrfs-on-mdadm
 ///
-/// `level` is one of `raid0|raid1|raid5|raid6|raid10`; for Btrfs it maps
-/// 1:1 onto the Btrfs data profile of the same name.
+/// Handles all three technologies through `DiskService::create_virtual_disk`
+/// (one dispatcher) and runs the work in a **tracked progress job**: the
+/// request returns `job_id` immediately, the client follows the milestones
+/// on `/api/progress/{job_id}` (SSE) — array creation, formatting, fstab
+/// write and initramfs refresh take minutes on real hardware and the old
+/// synchronous request could hit gateway timeouts.
+///
+/// Fast pre-checks (request shape, device gate, name collision) still
+/// answer synchronously with a 400 so the wizard fails loud *before* the
+/// job starts.
 #[axum_macros::debug_handler]
 pub async fn handle_raid_create(
     State(state): State<Arc<AppState>>,
@@ -176,46 +204,102 @@ pub async fn handle_raid_create(
         Err(response) => return response,
     };
 
-    let result = if payload.filesystem == "btrfs" {
-        // Native Btrfs multi-device — the level string is the Btrfs profile.
-        let name = payload.name.clone();
-        let profile = payload.level.clone();
-        let devices = payload.devices.clone();
-        tokio::task::spawn_blocking(move || {
-            crate::pools::PoolService::create_pool(
-                &name,
-                crate::pools::PoolType::Btrfs,
-                &profile,
-                &devices,
-                None,
-            )
-            .map_err(|e| e.to_string())
-        })
-        .await
-        .unwrap_or_else(|e| Err(e.to_string()))
-    } else {
-        DiskService::create_raid(
-            &payload.name,
-            &payload.level,
-            payload.devices.clone(),
-            &payload.filesystem,
-        )
-        .await
-        .map_err(|e| e.to_string())
+    let mut members = payload.devices.clone();
+    members.sort();
+    members.dedup();
+    let spares = payload.spares.clone().unwrap_or_default();
+    let mut spares = spares;
+    spares.sort();
+    spares.dedup();
+
+    let req = crate::disk::VirtualDiskRequest {
+        name: payload.name.clone(),
+        level: payload.level.clone(),
+        members,
+        spares,
+        allow_missing: payload.allow_missing,
+        filesystem: payload.filesystem.clone(),
     };
 
-    match result {
-        Ok(_) => {
-            crate::events::log_event(format!(
-                "Admin '{}' created virtual disk '{}' ({} / {})",
-                admin_username, payload.name, payload.level, payload.filesystem
-            ));
-            ResponseHelper::json_success(
-                serde_json::json!({ "message": "Virtual disk created successfully" }),
-            )
-        }
-        Err(e) => ResponseHelper::json_error(format!("Failed to create virtual disk: {}", e)),
+    // Pure request-shape validation (level/fs/name/count rules) — 400 before
+    // anything else runs.
+    if let Err(e) = DiskService::validate_virtual_disk_request(&req) {
+        return ResponseHelper::json_error(format!("Failed to create virtual disk: {}", e));
     }
+
+    // Server-side safety gate before touching anything: every candidate
+    // device must exist and be entirely free (not the system disk, no
+    // partitions, no filesystem, not mounted, no md/ZFS/Btrfs superblock).
+    // The wizard's own list can't be trusted as the only guard — a
+    // hand-built admin request used to reach `mdadm --create --run` with
+    // zero device checks.
+    let all_devices = req
+        .members
+        .iter()
+        .chain(req.spares.iter())
+        .cloned()
+        .collect::<Vec<String>>();
+    if let Err(e) = DiskService::validate_pool_devices(&all_devices).await {
+        return ResponseHelper::json_error(format!("Failed to create virtual disk: {}", e));
+    }
+
+    // Duplicate names used to fail only after mdadm ran: catch them upfront.
+    if DiskService::array_name_taken(&req.name).await {
+        return ResponseHelper::json_error(format!(
+            "A virtual disk named '{}' already exists",
+            req.name
+        ));
+    }
+
+    // Tracked job: created now, advanced inside the spawned task below.
+    let job_id = PROGRESS_MANAGER.create_job(
+        JobType::Custom("raid_create".to_string()),
+        &format!("Creating virtual disk '{}'", req.name),
+    );
+    let reporter = CreateJobProgress {
+        job_id: job_id.clone(),
+    };
+
+    let name = req.name.clone();
+    let level = req.level.clone();
+    let filesystem = req.filesystem.clone();
+    let username = admin_username;
+    let job_id_for_task = job_id.clone();
+    tokio::spawn(async move {
+        // Single-flight: serializes destructive creates so two concurrent
+        // requests settling on the same free disk can't both pass the gate.
+        let _guard = crate::disk::CREATE_LOCK.lock().await;
+        match DiskService::create_virtual_disk(&req, &reporter).await {
+            Ok(mount_point) => {
+                crate::events::log_event(format!(
+                    "Admin '{}' created virtual disk '{}' ({} / {}) — devices {:?}, mounted at {}",
+                    username, name, level, filesystem, req.members, mount_point
+                ));
+                ProgressEmitter::complete(
+                    &job_id_for_task,
+                    &format!(
+                        "Virtual disk '{}' created and mounted at {}",
+                        name, mount_point
+                    ),
+                );
+            }
+            Err(e) => {
+                crate::events::log_event_warn(format!(
+                    "Admin '{}' failed to create virtual disk '{}' ({} / {}): {}",
+                    username, name, level, filesystem, e
+                ));
+                ProgressEmitter::fail(
+                    &job_id_for_task,
+                    &format!("Failed to create virtual disk: {}", e),
+                );
+            }
+        }
+    });
+
+    ResponseHelper::json_success(serde_json::json!({
+        "message": "Virtual disk creation started",
+        "job_id": job_id,
+    }))
 }
 
 /// Tears down a RAID array by name.
@@ -281,6 +365,17 @@ pub async fn handle_raid_rebuild(
         Ok(u) => u,
         Err(response) => return response,
     };
+
+    // The replacement disk must pass the same free-device gate as creation —
+    // `mdadm --add` used to accept a partitioned, mounted or system disk
+    // silently.
+    if let Some(replacement) = payload.replacement_device.as_ref() {
+        if let Err(e) =
+            DiskService::validate_pool_devices(std::slice::from_ref(replacement)).await
+        {
+            return ResponseHelper::json_error(format!("Failed to rebuild RAID: {}", e));
+        }
+    }
 
     match DiskService::rebuild_raid(&name, payload.replacement_device.as_deref()).await {
         Ok(_) => {
@@ -618,6 +713,64 @@ fn scrub_in_progress(status: &str) -> bool {
     }
     let trimmed = lower.trim();
     matches!(trimmed, "check" | "resync" | "repair" | "reshape")
+}
+
+#[derive(serde::Deserialize)]
+pub struct GrowVirtualDiskRequest {
+    /// The free block device the array grows onto.
+    pub device: String,
+}
+
+/// Grows an mdadm virtual disk onto an additional device (`mdadm --add`
+/// then `--grow --raid-devices N+1`; the reshape runs in the background).
+/// Admin-only: destructive-storage mutation. ZFS pools and Btrfs
+/// filesystems gain disks natively in their own tooling — mdadm is the only
+/// technology this appliance-level `grow` covers.
+#[axum_macros::debug_handler]
+pub async fn handle_virtual_disk_grow(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    headers: HeaderMap,
+    axum::extract::Json(payload): axum::extract::Json<GrowVirtualDiskRequest>,
+) -> Response {
+    let admin_username = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(response) => return response,
+    };
+
+    // Only mdadm arrays are growable through the appliance.
+    match virtual_disk_type(&name).await {
+        Some(crate::pools::PoolType::Mdadm) => {}
+        _ => {
+            return ResponseHelper::json_error(format!(
+                "Virtual disk '{}' is not a growable mdadm array",
+                name
+            ))
+        }
+    }
+
+    // The new disk must be whole, free and not the system disk — same gate
+    // as creation.
+    if let Err(e) =
+        DiskService::validate_pool_devices(std::slice::from_ref(&payload.device)).await
+    {
+        return ResponseHelper::json_error(format!("Failed to grow virtual disk: {}", e));
+    }
+
+    match DiskService::grow_raid(&name, &payload.device).await {
+        Ok(_) => {
+            crate::events::log_event_warn(format!(
+                "Admin '{}' grew virtual disk '{}' onto device {} (background reshape in progress)",
+                admin_username, name, payload.device
+            ));
+            ResponseHelper::json_success(
+                serde_json::json!({
+                    "message": format!("Disk {} added — the array is reshaping in the background", payload.device),
+                }),
+            )
+        }
+        Err(e) => ResponseHelper::json_error(format!("Failed to grow virtual disk: {}", e)),
+    }
 }
 
 /// Lists pools present on attached disks but not yet imported ("foreign"
