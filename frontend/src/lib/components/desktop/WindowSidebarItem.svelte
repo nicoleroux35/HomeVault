@@ -216,14 +216,19 @@
 
   /* ---- Rich variant (opt-in via `variant="rich"`) --------------------- */
 
-  /* The icon slot becomes a tinted 28x28 tile. `padding: 6px` around a 16px
-     glyph is what the design specifies; `box-sizing: border-box` (base.css)
-     makes 28px the rendered size. */
+  /* The icon slot becomes a tinted circle at `--hv-settings-icon-tile` (28px).
+     `padding: 6px` around a 16px glyph is what the design specifies;
+     `box-sizing: border-box` (base.css) makes the token the rendered size.
+     The shape is the same circle as the dock tiles / topbar buttons / window
+     header icon: this screen used to draw 12px and 18px corners on its tiles,
+     so three different components read as one family (2026-10-19). The rich
+     variant has exactly one consumer — the Settings category rail — which is
+     why the token is the `--hv-settings-*` one and not a generic size. */
   .hv-winsidebar-item.is-rich .hv-winsidebar-item-icon {
-    width: 28px;
-    height: 28px;
+    width: var(--hv-settings-icon-tile, 28px);
+    height: var(--hv-settings-icon-tile, 28px);
     padding: 6px;
-    border-radius: var(--hv-radius-md);
+    border-radius: var(--hv-radius-full);
     background: color-mix(
       in srgb,
       var(--hv-row-accent, transparent) var(--hv-settings-cat-tint, 9%),

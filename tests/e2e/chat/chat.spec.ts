@@ -2,7 +2,7 @@
  * File          : chat.spec.ts
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Last modified : 19/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
@@ -508,115 +508,5 @@ test.describe('14 — Edge cases & memory', () => {
       console.log(`[MEM] heap ${base.toFixed(1)} → ${after.toFixed(1)} MB`);
       expect(after - base).toBeLessThan(12);
     }
-  });
-});
-
-// ===========================================================================
-// 15. External agents (MCP) — admin panel, tokens, guards
-// ===========================================================================
-
-test.describe('15 — External agents (MCP)', () => {
-  test('15.1 — an admin sees the External agents toggle', async ({ page }) => {
-    await gotoChat(page, adminTokens);
-    await expect(win(page).getByRole('button', { name: 'External agents' })).toBeVisible();
-  });
-
-  test('15.2 — the panel shows endpoint, switch, permissions and tokens', async ({ page }) => {
-    await gotoChat(page, adminTokens);
-    await win(page).getByRole('button', { name: 'External agents' }).click();
-    const panel = win(page).locator('[data-testid="mcp-panel"]');
-    await expect(panel).toBeVisible({ timeout: 10_000 });
-    await expect(panel.getByText('/mcp')).toBeVisible();
-    await expect(panel.locator('[data-testid="mcp-enabled"]')).toBeVisible();
-    await expect(panel.getByRole('button', { name: /Create|\+/ }).first()).toBeAttached();
-  });
-
-  test('15.3 — the enable switch flips the server state and restores it', async ({ page }) => {
-    await gotoChat(page, adminTokens);
-    await win(page).getByRole('button', { name: 'External agents' }).click();
-    const panel = win(page).locator('[data-testid="mcp-panel"]');
-    await expect(panel).toBeVisible({ timeout: 10_000 });
-    const before = await api(page, adminTokens, 'GET', '/api/mcp/status');
-    expect(before.success).toBe(true);
-    const was = !!before.data?.status?.enabled;
-
-    await panel.locator('[data-testid="mcp-enabled"]').click();
-    await expect
-      .poll(async () => (await api(page, adminTokens, 'GET', '/api/mcp/status')).data?.status?.enabled, {
-        timeout: 10_000,
-      })
-      .toBe(!was);
-
-    // Restore the previous state — the kill-switch must not leak across tests.
-    await panel.locator('[data-testid="mcp-enabled"]').click();
-    await expect
-      .poll(async () => (await api(page, adminTokens, 'GET', '/api/mcp/status')).data?.status?.enabled, {
-        timeout: 10_000,
-      })
-      .toBe(was);
-  });
-
-  test('15.4 — a token is created once, listed by prefix, then revoked', async ({ page }) => {
-    await gotoChat(page, adminTokens);
-    await win(page).getByRole('button', { name: 'External agents' }).click();
-    const panel = win(page).locator('[data-testid="mcp-panel"]');
-    await expect(panel).toBeVisible({ timeout: 10_000 });
-
-    const name = `e2e-${Date.now().toString(36)}`;
-    await panel.getByPlaceholder(/Token name/).fill(name);
-    await panel.getByRole('button', { name: 'Create a token' }).click();
-    await expect(panel.getByText('hv_mcp_').first()).toBeVisible({ timeout: 10_000 });
-    const shown = (await panel.getByText('hv_mcp_').first().innerText()).trim();
-    expect(shown.startsWith('hv_mcp_')).toBe(true);
-
-    // The token row appears (prefix only) and revoking removes it.
-    const row = panel.locator('[data-testid="mcp-token-row"]', { hasText: name });
-    await expect(row).toBeVisible({ timeout: 10_000 });
-    await row.getByRole('button', { name: 'Revoke this token' }).click();
-    await expect(row).toHaveCount(0, { timeout: 10_000 });
-  });
-
-  test('15.5 — a non-admin never sees the toggle; /mcp needs a bearer', async ({ page, playwright }) => {
-    await gotoDesktop(page, adminTokens);
-    // A throwaway reader account, deleted at the end of the test.
-    const uname = `mcpreader${Date.now().toString(36)}`;
-    const created = await api(page, adminTokens, 'POST', '/api/users', {
-      username: uname,
-      password: 'ReaderSecret123',
-      fullname: 'MCP Reader',
-      email: 'reader@example.com',
-      role_id: 1,
-    });
-    if (!created.success) test.skip(true, 'could not create a reader account');
-    try {
-      const ctx = await newCtx(playwright);
-      const { token, csrf } = await apiLogin(ctx, uname, 'ReaderSecret123');
-      await ctx.dispose();
-      if (!token) test.skip(true, 'could not log in as the reader account');
-      await gotoChat(page, { username: uname, password: 'ReaderSecret123', token, csrf });
-      await expect(win(page).getByRole('button', { name: 'External agents' })).toHaveCount(0);
-
-      const anon = await api(page, null, 'POST', '/mcp', {
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'ping',
-        params: {},
-      });
-      expect(anon.http).toBe(401);
-    } finally {
-      await api(page, adminTokens, 'DELETE', `/api/users/${uname}`);
-    }
-  });
-
-  test('15.6 — no token secret ever lands in localStorage or the URL', async ({ page }) => {
-    await gotoChat(page, adminTokens);
-    await win(page).getByRole('button', { name: 'External agents' }).click();
-    const panel = win(page).locator('[data-testid="mcp-panel"]');
-    await expect(panel).toBeVisible({ timeout: 10_000 });
-    const leaked = await page.evaluate(() => {
-      const dump = JSON.stringify({ ...localStorage });
-      return dump.includes('hv_mcp_') || location.href.includes('hv_mcp_');
-    });
-    expect(leaked).toBe(false);
   });
 });

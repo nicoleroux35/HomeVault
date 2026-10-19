@@ -57,6 +57,16 @@ to the backend (`GET/POST /monitor-layout`, `auth`,
 layout across different origins/ports; a failed sync is non-fatal, since
 `localStorage` already has the latest value locally.
 
+**Every monitor is off by default (2026-10-19).** `defaultPositions()` in
+`monitorStore.ts` seeds all eleven `*Visible` flags to `false`, so a fresh
+install opens on a clean desktop and the operator picks the widgets they want
+from the Widgets app or Settings → Widgets. Positions are still seeded, so a
+widget switched on lands in its intended slot. Only the *default* changed:
+an account with a saved layout keeps its own flags (`loadFromStorage` reads
+`parsed.xVisible ?? d.xVisible`), and **Reset to Default** in the Widgets app
+now restores that shipped default — everything off — instead of turning
+everything on.
+
 ### `refreshMs` — the widget poll interval lives in the same blob (2026-09-14)
 
 `MonitorPositions` also carries `refreshMs: number`, the interval every

@@ -17,7 +17,7 @@
        Opened by the desktop shell's search hotkey.
      ======================================================================== -->
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
   import { searchStore, closeSearch, updateQuery, selectNext, selectPrev, executeSelected, type SearchableItem } from '$lib/stores/search';
   import SearchResults from './SearchResults.svelte';
   import { IconSearch } from '@tabler/icons-svelte';
@@ -27,15 +27,29 @@
 
   let inputRef: HTMLInputElement;
 
-  $: if ($searchStore.isOpen && inputRef) {
-    setTimeout(() => inputRef?.focus(), 50);
+  // Focus the field as soon as the overlay has been rendered. `tick()` (not a
+  // `setTimeout(…, 50)`) is the point: the old delay left a window in which the
+  // overlay was on screen with the focus still on `document.body`, and Escape
+  // pressed during it went nowhere — the keydown only reached the overlay's own
+  // handler when focus was already inside it (E2E `6.4`, deterministic on
+  // Chromium, invisible on Firefox because its round trip outran the timer).
+  $: if ($searchStore.isOpen) {
+    tick().then(() => inputRef?.focus());
   }
 
+  // Escape closes the overlay from anywhere while it is open, not only from
+  // inside it: it is a modal dialog (`aria-modal`), so the key must work even
+  // if focus has not landed yet or was moved to the scrim by a click.
+  function onWindowKeydown(e: KeyboardEvent) {
+    if (e.key !== 'Escape' || !$searchStore.isOpen) return;
+    e.preventDefault();
+    closeSearch();
+  }
+
+  // The field's own handler keeps the list navigation keys; Escape is handled
+  // once, at window level, so the two can never close twice or race.
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      closeSearch();
-    } else if (e.key === 'ArrowDown') {
+    if (e.key === 'ArrowDown') {
       e.preventDefault();
       selectNext();
     } else if (e.key === 'ArrowUp') {
@@ -62,7 +76,18 @@
   });
 </script>
 
+<!-- Window-level Escape: the overlay is a modal dialog, so the key must close
+     it whatever holds focus (see `onWindowKeydown`). It lives outside the
+     `{#if}` because `<svelte:window>` cannot sit inside a block; the handler
+     no-ops while the overlay is closed. -->
+<svelte:window onkeydown={onWindowKeydown} />
+
 {#if $searchStore.isOpen}
+  <!-- `svelte-ignore` is deliberate: the click handler is the scrim's
+       "click outside to dismiss", and the keyboard path is the window-level
+       Escape above — which the linter cannot see from here. Same pattern as
+       the launcher's overlay. -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
     class="search-overlay"
     role="dialog"
@@ -70,7 +95,6 @@
     aria-modal="true"
     aria-label={$t('search.title')}
     onclick={closeSearch}
-    onkeydown={(e) => e.key === 'Escape' && closeSearch()}
   >
     <div class="search-container" role="presentation" onclick={(e)=>{e.stopPropagation();}}>
       <div class="search-input-wrapper">

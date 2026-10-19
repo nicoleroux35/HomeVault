@@ -25,7 +25,6 @@
 
   /* Runes `$derived` tracks reads made inside the getter. */
   const saveStatus = $derived(getSaveStatus());
-  import { IconLock } from '@tabler/icons-svelte';
   import SettingsCard from './SettingsCard.svelte';
   import Switch from '$lib/components/theme/Switch.svelte';
   import PathPickerField from '$lib/components/theme/PathPickerField.svelte';
@@ -134,8 +133,6 @@
     * the HTTPS port vs HTTP port clash keeps its inline error message.
 -->
 <SettingsCard
-  icon={IconLock}
-  iconVariant="green"
   title={$t('settings.tls_title')}
   subtitle={$t('settings.tls_subtitle')}
   class={klass}

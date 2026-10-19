@@ -5,8 +5,10 @@ appearance, widgets, notifications, ai, monitoring, system). Aggregate fetch +
 per-category get/put. The screen was re-skinned on 2026-09-14 to the Figma
 "Settings Screen" design (`Sans titre`, node `16-6187`) — a 208px two-line
 category rail beside a content column with its own header, over one
-section/row/card vocabulary shared by the six embedded sub-cards (TLS,
-Antivirus, Anti-Ransomware, Firewall, UPS, SNMP). A design
+section/row/card vocabulary shared by the seven embedded sub-cards (TLS,
+Antivirus, Anti-Ransomware, Firewall, AI Assistant, UPS, SNMP). Both header
+tiers are two lines of text — title over description, no icon tile — since
+2026-10-19. A design
 change may touch any of it, as long as the tests stay green
 (`CLAUDE.md` → Design system governance). The group Disk-Quota card + its
 `/api/quotas` backend were removed 2026-09-09 — see
@@ -101,10 +103,25 @@ Three pieces, each with one job:
   `WindowSidebar(.svelte)` resolve through the Tailwind spacing scale
   (`calc(var(--spacing) * …)`). Same three tokens drive `secLabel`/
   `secLabelFirst` in `vocabulary.ts`, so rail and section labels read alike.
-- **Content header** — a non-scrolling sibling of the panel: 36px tile in the
-  same 9% tint, the category title (`[data-testid="settings-header-title"]`) and
-  the same subtitle the rail item shows. `PageLayout` has no header slot, so
-  Settings renders its own.
+- **Content header** — a non-scrolling sibling of the panel: the category
+  title (`[data-testid="settings-header-title"]`) over the same subtitle the
+  rail item shows (`[data-testid="settings-header-subtitle"]`), two lines and
+  nothing else. The 36px tinted icon tile was **removed 2026-10-19** (the
+  active rail item already carries the glyph), and the block went
+  `pt-5 pb-4` → `px-6 py-2.5`: **measured 87.5px → 57px**. `PageLayout` has no
+  header slot, so Settings renders its own.
+- **Card headers are the same two lines** — `SettingsCard` lost its own icon
+  tile in the same pass, and with it the `icon` / `iconVariant` / `accent`
+  props: a card's identity is its title, and the per-card tint only ever
+  coloured the glyph it no longer renders. `py-4` → `py-2.5`: **measured
+  83.5px → 57px**.
+- **The subtitle's `mb-0!` is as load-bearing as the `!` on the heading** —
+  `styles/theme/base.css` declares an unlayered
+  `p { margin-bottom: var(--hv-space-4) }`, so the plain `m-0` the header
+  carried never applied and both header tiers silently kept **16px of dead
+  space** under the subtitle (the content header measured 73px instead of 57
+  until this was caught by measuring the rendered box, not by reading the
+  classes — see **Invariants**).
 - **Section + card + row** — `components/settings/vocabulary.ts` is the single
   source of the class strings, imported by both `Settings.svelte` and
   `SettingsCard.svelte`. A section label is a **sibling** immediately before its
@@ -144,7 +161,12 @@ wording already exists there — no duplicated string.
   `getUpdateSettings`/..., `checkForUpdates`, `exportSettings`/`importSettings`/
   `resetSettings`, `getSnmpSettings`/..., `getUpsList`/`getUpsStatus`/
   `getUpsAvailability`.
-- AI model card on Settings: see [AI Assistant](./chat.md).
+- AI model card on Settings: see [AI Assistant](./chat.md). The same `ai`
+  category also mounts `McpCard.svelte` (external agents / MCP gateway,
+  admin-only, self-gating on `GET /api/mcp/status`) — see
+  [External Agents](./mcp.md). Its kill-switch, permissions and tokens are
+  immediate actions, not `draft` fields, so the rail-footer Save never
+  applies to them.
 - Security cards on Settings: `TlsCard.svelte`, `AntivirusCard.svelte`,
   `AntiRansomwareCard.svelte`, `FirewallCard.svelte` — see
   [HTTPS/TLS](./tls.md), [Antivirus](./antivirus.md),
@@ -358,7 +380,7 @@ screen:
   take only the scale's **16 or 20** step (`size={15}` was never on any
   grid — see `design-system.md` §6.3).
 - **The heading type utilities carry a trailing `!`** (`text-md!`,
-  `font-bold!`, `leading-6!`, `text-[var(--hv-settings-title)]!` on the
+  `font-bold!`, `leading-5!`, `text-[var(--hv-settings-title)]!` on the
   content header `<h2>` and every `SettingsCard` title; `text-sm!` +
   `font-semibold!` + `leading-5!` on `SnmpCard`'s `<h3>`s) — this is
   not decoration. `styles/theme/base.css:54-67` declares a bare
@@ -371,6 +393,14 @@ screen:
   2026-09-14, and no E2E assertion covered it (it was caught by measuring the
   computed styles live). Removing a `!` here silently un-styles the heading
   again; the same trap applies to any `<h1>`–`<h6>` given type utilities.
+- **The same unlayered-rule trap applies to `p` margins** (`mb-0!` on the
+  content header's subtitle and on `.settings-card-subtitle`).
+  `base.css` declares `p { margin-bottom: var(--hv-space-4) }` outside any
+  `@layer` too, so the `m-0` both headers used to carry never applied: each
+  header kept **16px of dead height** under its description. Measured
+  2026-10-19 — content header 73px instead of 57px, card header 83.5px instead
+  of 57px — and nothing in the markup showed it; only measuring the rendered
+  box did. Any `m-0` / `mt-0` you add to a `<p>` on this screen needs the `!`.
 - **The form-element defaults are in `@layer base`** — `base.css`'s
   `button { background:none; padding:0 }` and `input/select/textarea`
   (`width:100%`, 1px border, `--hv-input-padding`) were **unlayered**, so they

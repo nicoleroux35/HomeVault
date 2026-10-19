@@ -464,16 +464,20 @@ another framework's design language (Fluent, Material, …) as an authority.
   half-the-tile ratio. E2E `8.5` (both pills) / `8.7` (dock icons) / `15.1`
   (topbar buttons) pin the shape; do not re-introduce a px radius.
 - **Chrome controls are a ratio of their bar, not a pixel count** (2026-10-18):
-  the dock tile is `--hv-dock-item-size` = **64px** (0.775 × the 84px bar — the
+  the dock tile is `--hv-dock-item-size` = **56px** (0.775 × the 72px bar — the
   ratio measured on the approved reference dock, 158px circles in a 204px bar)
-  and the topbar buttons are `--hv-chrome-topbar-btn-size` = **48px** (0.775 ×
-  the 62px pill; 44px in the phone's 56px pill). Glyphs are half their control
-  (32px / 24px). Never hardcode either diameter: a control sized in px instead
-  of in proportion is what made the two pills read as different families. Padding is `(bar − tile) / 2` = 10px on every side, the pitch is
-  `--hv-chrome-dock-gap` (10px, 0.152 × tile), and the tile glyph is 0.5 ×
-  tile (32px). Retune all four together: a tile shrunk under a fixed 84px bar
-  re-opens the dead space the ratio exists to remove, and a pitch below
-  ~11.5px lets two neighbours touch at the hover peak (`scale(1.18)`).
+  and the topbar buttons are `--hv-chrome-topbar-btn-size` = **56px** (0.775 ×
+  the 72px pill; 44px in the phone's 56px pill). Glyphs are half their control
+  (28px / 22px). Never hardcode either diameter: a control sized in px instead
+  of in proportion is what made the two pills read as different families. The
+  dock's vertical padding is `(bar − tile) / 2` = 8px — **derived in CSS** as
+  `calc((var(--hv-chrome-dock-h) - var(--hv-dock-item-size)) / 2)`, never a
+  literal — the horizontal padding stays 10px, the pitch is
+  `--hv-chrome-dock-gap` (10px), and the tile glyph is 0.5 × tile (28px).
+  Retune all of them together: a tile shrunk under a fixed bar re-opens the
+  dead space the ratio exists to remove, and the pitch can never drop below
+  the hover growth (56 × 0.18 / 2 = 5.04px a side, so ~10.1px is the floor —
+  10px keeps 4.96px of real clearance at the peak).
 - **The circle language carries into the window chrome** (2026-10-18): the
   app-icon tile of `WindowHeader` and of `WidgetHeader` is
   `border-radius: 50%` through `--hv-winhdr-icon-radius`, and the min/max/close
@@ -481,8 +485,12 @@ another framework's design language (Fluent, Material, …) as an authority.
   so both stay round if their size tokens move). A **labelled** button inside
   the chrome keeps `--hv-radius-control` (12px).
   E2E `desktop.spec.ts` `14.6`/`14.7` and `widgets.spec.ts` `2.2` pin it.
-- **Each pill owns its height** — `--hv-chrome-topbar-h` (62px) /
-  `--hv-chrome-dock-h` (84px), and the dock is deliberately the taller one.
+- **Each pill owns its height** — `--hv-chrome-topbar-h` (**72px**) /
+  `--hv-chrome-dock-h` (**72px**; 52px on phone, = the 44px touch floor + 4px a
+  side), and both pills are the same height again above phone width since the
+  2026-10-18 height pass (they shipped 84/62, then 64/62). The two keep
+  SEPARATE tokens precisely so one can move without dragging the other —
+  never point one pill at the other's token.
   Both are `box-sizing: border-box`, so each token is the rendered height and
   the keep-out (`--hv-chrome-*-keepout`) stays exact. Anything anchored to the
   dock — `.hv-activity-panel`, the ≤900px maximized inset — derives from the

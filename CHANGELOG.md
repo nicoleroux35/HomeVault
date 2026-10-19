@@ -6,7 +6,194 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The topbar's network, notification and power popovers are on the theme
+  ladder, and clicking inside the notification panel no longer closes it.**
+  The three buttons themselves were already one shape (56px circle, glyph at
+  half), but they painted a bespoke inset focus outline instead of
+  `--hv-focus-ring`, the network popover used one-off literals (84px rows,
+  52px tiles, a 48px copy button) with a **22px** IP value — the page-title
+  step for a row value — and the notification panel titled itself at 17px (the
+  *section* step) with 12px form text. All three now follow the shared scale:
+  ~60px rows with 40px tiles and a 44px copy button, 15px row values and panel
+  titles, 13px form text, and the shared focus ring on every control.
+  Separately, the notification panel's root was the only topbar popover without
+  a `stopPropagation` guard, so a click on a severity chip, the search field or
+  mark-as-read bubbled to the shell's global click handler and dismissed the
+  panel (E2E 16.2 could never pass). The power confirmation sheet got the same
+  pass: 18px glyphs, 44px buttons and a focus ring on its close button and
+  footer actions, which had **none** (WCAG 2.4.7).
+
+- **E2E `desktop.spec.ts` 16.4 mocks the health call it actually makes.** The
+  route glob was `**/api/health/**` while the desktop calls `/api/health` (no
+  trailing segment), so the 426 never fired and the reload-banner assertion
+  could not pass.
+
+- **The account menu now sits on the theme's type and space ladder.** The
+  topbar user popover ran on a one-off scale that belonged to no token step:
+  a 22px name (the *page-title* size), 17px menu rows 73px tall, 25px glyphs,
+  a 76px avatar, 24px padding and a full 420px width — a settings sheet
+  hanging under a 52px pill. It now uses the same steps as every other topbar
+  popover: name `--hv-text-md` (15px), role `--hv-text-sm` (12px), rows
+  `--hv-text-base` (13px) at **44px** (`--hv-touch-target-min`), 18px glyphs,
+  a 40px avatar (rendered at 72px, CSS-scaled so it stays crisp on HiDPI),
+  16px header padding and a 320px panel (a menu, not a data panel). Rows are
+  inset 8px so their hover wash is a rounded control inside the card, and they
+  finally carry the shared `--hv-focus-ring` on `:focus-visible` — keyboard
+  focus in this menu was previously **invisible** (WCAG 2.4.7). E2E 4.1–4.4
+  (shared card chrome across the three popovers) stay green.
+
+- **The window frame footer's icons no longer read a size larger than the
+  header's.** The shared 36px strip shipped with 16px help / resize-grip
+  glyphs next to the min/max/close trio's 14px ones, so the two rows of
+  window chrome disagreed — and because the footer's assets are full-bleed
+  circles while the trio's are inset, its 13.75px of ink outgrew the trio's
+  8–12px. Both now clamp to one new token, `--hv-winctrl-glyph` (14px): the
+  footer buttons stay 28px, only the glyph box shrinks, and their inline SVGs
+  drop the `width`/`height` attributes so the CSS owns the box — the rule the
+  header's app icon tile already followed. E2E `14.13` pins the parity.
+
+- **The launcher's search bar no longer carries a blue ring.** The brand focus
+  ring was on screen permanently — the dialog's focus trap lands on the query
+  field the moment the launcher opens — and it was painted twice, because
+  `base.css`'s global `input:focus` rule outranks the field's own class and
+  stamped a second blue ring inside the capsule. The bar now takes a 2px slate
+  rim drawn *inside* the capsule (`inset`, 7.1:1 on the white surface, no
+  second hue) and the field paints no ring of its own. Keyboard focus stays
+  visible: the rim appears only while the field holds focus. E2E `5.13` pins
+  it (no brand blue, no field shadow, rim inset and ≥3:1, rim gone on Tab).
+
 ### Changed
+
+- **Settings lost both icon-tile header tiers — titles and descriptions only.**
+  The content header (the active category's title) and every `SettingsCard`
+  header (TLS, Antivirus, Anti-Ransomware, Firewall, AI Assistant, UPS, SNMP)
+  carried a 36px tinted icon tile beside the copy. The category glyph already
+  sits on the active rail item, so the tile only repeated it while costing the
+  panel 36px of height per header. Both headers are now two lines — title over
+  description — with `px-6 py-2.5` / `py-2.5` instead of `pt-5 pb-4` / `py-4`,
+  and `SettingsCard` drops its `icon`, `iconVariant` and `accent` props, which
+  only ever coloured that glyph. Measured: content header **87.5px → 57px**,
+  card header **83.5px → 57px**. Getting there also uncovered a silent 16px:
+  `base.css` declares an unlayered `p { margin-bottom: var(--hv-space-4) }`, so
+  the `m-0` both subtitles carried never applied — the new header measured
+  73px until it took `mb-0!`. E2E 23.3 now pins the new shape (two children,
+  no icon, header ≤ 64px) instead of the 36px tile.
+
+- **Every wallpaper thumbnail is the same size.** The grid let each image pick
+  its own height, and the bundled thumbs are not all one shape — `hv-09` and
+  `hv-13` ship 640×480 while the other thirteen are 640×427 — so those two
+  rendered ~13px taller than their neighbours and the rows came out ragged.
+  `.settings-wallpaper-thumb` now takes a fixed `aspect-[8/5]` with
+  `object-cover`, so all 15 tiles share one box whatever the asset's ratio;
+  `object-cover` crops instead of distorting. `h-auto` stays deliberately: the
+  `height="200"` attribute is a presentational hint that would otherwise
+  defeat `aspect-ratio`. E2E 4.7 additionally requires every tile to measure
+  the same width and height.
+
+- **A fresh install opens with every desktop widget turned off.** All eleven
+  monitors in `monitorStore.ts::defaultPositions()` now default to
+  `*Visible: false` — the desktop is clean until the operator picks widgets
+  from the Widgets app or Settings → Widgets. Positions are still seeded, so
+  a widget switched on lands in its intended slot, and an account with a saved
+  layout keeps its own flags (the stored value is read first). **Reset to
+  Default** in the Widgets app now restores that same shipped default
+  (everything off) instead of turning everything on. E2E `widgets.spec.ts`
+  3.5 follows, and 2.2 enables the Resource monitor before measuring the
+  panel geometry.
+
+- **Adding a web shortcut moved off the desktop and into the launcher.** The
+  "add shortcut" control used to sit at the bottom of the desktop's shortcut
+  column, so a desktop that only exists to *show* what the user pinned also
+  carried a configuration action — and the column was rendered even when the
+  set was empty, leaving a lone "Add" tile floating on the wallpaper. The
+  desktop now renders the pinned set and nothing else (no empty column), and
+  the add tile became the launcher grid's **last cell**, after every app:
+  same tile geometry, dashed ring instead of an app's identity gradient,
+  `aria-label` from `shortcuts.add`. It is withheld while a search query or a
+  category chip narrows the grid (a filtered grid answers "where is X?") and
+  once `MAX_SHORTCUTS` is reached. The URL dialog moved to
+  `components/desktop/ShortcutAddDialog.svelte`, owned by `Desktop.svelte`,
+  so the launcher only fires a callback and closes. `shortcuts.open` /
+  `shortcuts.remove` also stop shipping literal `{title}` to screen readers:
+  the placeholder syntax is `%title%`, which is what the translator
+  interpolates. E2E `shortcuts.spec.ts` re-targets the launcher tile (8
+  tests; `1.2` pins "last cell, after every app") and `desktop.spec.ts`
+  `5.14` excludes that tile from its A→Z run.
+
+- **The external-agent (MCP) gateway is configured in Settings, not in the AI
+  app.** The admin panel that used to slide in from the right of the Chat
+  window (enable switch, permission editors, token mint/revoke) is now the
+  `McpCard` of Settings → AI Assistant, next to the model card — the gateway
+  is a server-wide admin configuration, so it no longer lives inside a
+  conversation view. The card is admin-only and self-gating: it probes
+  `GET /api/mcp/status` and renders nothing when that probe is rejected, so
+  non-admins never see it. Its writes stay immediate (kill-switch, global
+  permissions, one-time tokens) rather than joining the Settings draft — a
+  deferred Save would leave the gateway open after the operator switched it
+  off. `components/chat/McpPanel.svelte` is deleted; the Chat toolbar no
+  longer carries the toggle. E2E moved to `tests/e2e/settings/mcp.spec.ts`
+  (§15, 7 tests, incl. one that pins the Chat app free of the panel).
+
+- **The desktop power menu now wears the dock's shape language.** The three
+  actions behind the topbar Power button (Shut Down / Restart / Log Out) were
+  three rounded cards; they are now three **circular gradient tiles with the
+  label underneath**, exactly like a dock tile: `--hv-dock-item-size` diameter
+  (56px desktop, 48px on the phone — still above the 44px target), glyph at
+  half the tile, one hue per action (red / blue / slate), and the dock's own
+  hover lift + `brightness(1.05)`. The button around the tile paints nothing
+  and keeps the one control corner, so the focus ring and E2E `14.12`'s
+  corner contract are unchanged. New E2E `7.5` pins the circle, the
+  token-parity with the dock tile, the three distinct gradients, the
+  label-under-tile anatomy and the touch target.
+
+- **The launcher lists its apps A→Z, and its veil now hides the desktop.**
+  Two pieces of user feedback on the same screen. (a) The tile grid was sorted
+  by a hand-kept `CAT_ORDER` and then alphabetically inside each category, so
+  the first tile was "System" and there was no alphabetical entry point into
+  ~25 apps; the grid is now one A→Z list (`Intl.Collator` on the UI language,
+  accent/case-insensitive, numeric), with the chip filter applied on top, and
+  the category chips are sorted by their *localised* label so the row reads in
+  the same order as the tiles under it. E2E `5.14` pins both, before and after
+  a filter. (b) `--hv-launcher-scrim` `rgba(15,23,42,0.72)` → **`0.86`** and
+  `--hv-launcher-blur` `2px` → **`6px`**: the desktop's icons and wallpaper
+  stayed legible behind the launcher, which read as a translucent panel over
+  the desktop instead of an app screen. Contrast only improves — the
+  worst-case tile label (tile → veil → white paper) goes 5.5:1 → **8.7:1**.
+
+- **Both desktop pills are 72px tall, and their controls grew with them.**
+  `--hv-chrome-dock-h` 64px → **72px** and `--hv-chrome-topbar-h` 62px →
+  **72px**, each on its own token (the dock and the topbar had been 84/62,
+  then 64/62; above phone width they now match). Everything inside follows the
+  reference dock's 0.775 ratio instead of a pixel count: dock tiles
+  `--hv-dock-item-size` 50px → **56px** (glyph 25px → **28px**), topbar
+  buttons `--hv-chrome-topbar-btn-size` 48px → **56px** (glyph 24px →
+  **28px**), identity avatar 32px → **36px** (half the pill), dock count badge
+  20px → **22px** (40% of the tile), dock group divider 32px → 36px, topbar
+  divider now `calc(btn / 2)` = 28px. The dock's vertical padding stays
+  derived — `calc((var(--hv-chrome-dock-h) - var(--hv-dock-item-size)) / 2)`
+  = 8px — so the tile still fills the bar exactly; horizontal padding and the
+  10px pitch are unchanged (the pitch is floored by the hover lift, now 5.04px
+  a side). Phone keeps its compact pair: **56px** topbar with 44px buttons and
+  a **52px** dock with 44px tiles, the only width where the dock is shorter
+  than the topbar. `snapUtils.ts` moves with it (`topbarHeight: 80`,
+  `dockHeight: 72`), and E2E `8.3` now pins 72/72 above 480px.
+
+- **The dock is 64px tall on desktop/tablet (was 84px), 52px on phone.**
+  `--hv-chrome-dock-h` drops from the mockup's authored 84px, and the tile
+  follows the reference dock's 0.775 ratio down with it: `--hv-dock-item-size`
+  64px → **50px**, glyph 32px → **25px** (now `calc(tile / 2)`), count badge
+  26px → **20px** (the same 40%-of-tile proportion, matching the phone's own
+  value), group divider 40px → 32px (`0.64 × tile`). The bar's vertical padding
+  is now **derived** in CSS — `calc((var(--hv-chrome-dock-h) -
+  var(--hv-dock-item-size)) / 2)` = 7px — so a future height change can never
+  leave dead space around the icons; horizontal padding and pitch stay at 10px
+  (the pitch is floored by the hover lift: 4.5px a side, so ~9px minimum).
+  Phone goes 56px → 52px = the 44px touch floor (its tile size, unchanged) +
+  4px a side, which makes the phone the one width where the dock is shorter
+  than the topbar pill. `snapUtils.ts` (`dockHeight: 64`) and the desktop E2E
+  lockstep test moved with it.
 
 - **Every app window now ends in a shared frame footer.** `WindowFrame`
   renders one 36px chrome strip under the page: a help button on the far left

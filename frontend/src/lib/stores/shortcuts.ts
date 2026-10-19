@@ -15,7 +15,8 @@
  *   - svelte (>= 5)
  *
  * Usage:
- *   shortcutsStore in DesktopShortcuts.svelte.
+ *   shortcutsStore in DesktopShortcuts.svelte (the desktop column) and in
+ *   HvLaunchpad.svelte / ShortcutAddDialog.svelte (the add path).
  * =============================================================================
  */
 
@@ -55,7 +56,8 @@ export interface Shortcut {
 }
 
 /** The maximum number of pinned shortcuts — beyond this the desktop row wraps
- *  into the widgets and stops being scannable. */
+ *  into the widgets and stops being scannable. Reaching it also removes the
+ *  launcher's "add" tile (`HvLaunchpad` → `canAddShortcut`). */
 export const MAX_SHORTCUTS = 12;
 
 function storageKeyFor(username: string): string {

@@ -2,7 +2,7 @@
      File          : NotificationCenter.svelte
      Author        : Nicolas Le Roux
      Created       : 28/09/2026
-     Last modified : 28/09/2026 by Nicolas Le Roux
+     Last modified : 19/10/2026 by Nicolas Le Roux
      Version       : 1.0.0
 
      Description:
@@ -115,7 +115,13 @@
 </script>
 
 {#if isOpen}
-  <div class="notifications-panel hv-topbar-panel">
+  <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+  <!-- Same guard as the other two topbar popovers (`.hv-net-dropdown` and
+       `.hv-user-dropdown` in Desktop.svelte): without it every click inside
+       this panel bubbles to the shell's global `svelte:window onclick`, which
+       closes all topbar panels — so a severity chip, the search field or a
+       mark-as-read button dismissed the panel it lives in (E2E 16.2). -->
+  <div class="notifications-panel hv-topbar-panel" onclick={(e) => e.stopPropagation()}>
     <div class="panel-header">
       <h3>{$t('notifications.title')}</h3>
       <div class="header-actions">
@@ -180,7 +186,7 @@
             transition:fade={{ duration: 150 }}
           >
             <div class="notification-icon" style="color: {getTypeColor(notification.type)};">
-              <Icon name={getTypeIcon(notification.type)} size={24} />
+              <Icon name={getTypeIcon(notification.type)} size={20} />
             </div>
             <div class="notification-content">
               <div class="notification-title">{notification.title}</div>
@@ -237,8 +243,11 @@
     gap: var(--hv-space-3);
   }
 
+  /* Panel-title step (15px) — the same as a window title, a settings card and
+     the account menu's name. It was `--hv-font-size-lg` (17px, the *section*
+     step), which made the popover's heading louder than the panel it titles. */
   .panel-header h3 {
-    font-size: var(--hv-font-size-lg);
+    font-size: var(--hv-text-md);
     font-weight: var(--hv-font-weight-semibold);
     color: var(--hv-shell-text-strong);
     margin: 0;
@@ -253,12 +262,13 @@
 
   .action-link {
     min-height: var(--hv-touch-target-min);
-    padding: 0 16px;
+    padding: 0 var(--hv-space-4);
     background: var(--hv-shell-fill);
     border: 1px solid var(--hv-shell-border);
     border-radius: var(--hv-radius-control);
     color: var(--hv-shell-text-strong);
-    font-size: var(--hv-font-size-sm);
+    font-family: var(--hv-font-family);
+    font-size: var(--hv-text-base);
     font-weight: var(--hv-font-weight-semibold);
     cursor: pointer;
     transition: background 150ms;
@@ -266,6 +276,11 @@
 
   .action-link:hover {
     background: var(--hv-shell-border-soft);
+  }
+
+  .action-link:focus-visible {
+    outline: none;
+    box-shadow: var(--hv-focus-ring);
   }
 
   .panel-content {
@@ -346,7 +361,10 @@
     border: 1px solid var(--hv-shell-border);
     border-radius: var(--hv-radius-control);
     color: var(--hv-shell-text-strong);
-    font-size: var(--hv-font-size-sm);
+    /* Form-field text is the body step (13px), like every other input on the
+       theme — this one sat one rung lower at 12px. */
+    font-family: var(--hv-font-family);
+    font-size: var(--hv-text-base);
   }
 
   .center-search:focus-visible {
@@ -360,7 +378,7 @@
     gap: var(--hv-space-1-5);
     min-height: var(--hv-touch-target-min);
     color: var(--hv-shell-text-2);
-    font-size: var(--hv-font-size-sm);
+    font-size: var(--hv-text-base);
     cursor: pointer;
   }
 
@@ -372,7 +390,7 @@
   .notification-item {
     display: flex;
     gap: var(--hv-space-3);
-    padding: 16px;
+    padding: var(--hv-space-4);
     border-radius: var(--hv-radius-2xl);
     border-left: 4px solid transparent;
     transition: background 150ms, border-left-color 150ms;
