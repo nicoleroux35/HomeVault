@@ -685,7 +685,7 @@
 
   // System Health monitor — reuses the Health app's own existing, already-
   // audited `/api/health` endpoint (`api.healthCheck()`) verbatim; no new
-  // backend surface. Just tallies the 8 checks' `status` field into
+  // backend surface. Just tallies the checks' `status` field into
   // counts so an admin can see at a glance whether anything needs
   // attention without opening the full Health page.
   type HealthCheckStatus = 'healthy' | 'warning' | 'unhealthy' | 'unknown';

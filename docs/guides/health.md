@@ -1,7 +1,7 @@
 # Health Monitoring
 
 **Purpose:** System health checks and status overview (memory, disk space,
-S.M.A.R.T., network, services, temperatures).
+S.M.A.R.T., RAID arrays, network, services, temperatures).
 
 ## Probes for monitoring (2026-10-17)
 
@@ -83,9 +83,21 @@ new consumer of this endpoint.
 - `frontend/src/lib/services/api.ts`: `healthCheck`, `getHealthData`.
 - The desktop "System Health" monitor widget (`frontend/src/routes/
   Desktop.svelte`, `.hv-health-monitor`) is a second, independent
-  consumer of `healthCheck()` — a read-only, at-a-glance tally of the 8
+  consumer of `healthCheck()` — a read-only, at-a-glance tally of the
   checks' statuses, owned by the Widgets app rather
   than this one.
+
+## The checks (9 as of 2026-10-19)
+
+`HealthService::run_all_checks` (`src/health.rs`) runs all of these and
+derives `overall_status` from the worst result; adding a check means
+adding a function + the `CHECK_LABEL_KEYS` row in `Health.svelte`, the
+i18n keys in the four locale files, and the `EXPECTED_CHECKS` constant
+in `tests/e2e/health/health.spec.ts`:
+
+`authentication`, `storage`, `memory`, `disk_space`, `disk_smart`,
+`raid_arrays` (degraded/failed mdadm arrays — see
+[RAID](./raid.md)), `network`, `services`, `temperatures`.
 
 ## Invariants
 
