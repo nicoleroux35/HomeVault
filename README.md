@@ -1,7 +1,7 @@
 # HomeVault
 
 [![CI](https://github.com/nicoleroux35/HomeVault/actions/workflows/ci.yml/badge.svg)](https://github.com/nicoleroux35/HomeVault/actions/workflows/ci.yml)
-[![License: Source-Available](https://img.shields.io/badge/License-Source--Available-orange.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 HomeVault is a personal server that lets you administer, store and
 share your data from a simple and accessible web interface. It consists
@@ -167,10 +167,7 @@ The interface is available in **French**, **English**, **German** and
 
 ## License
 
-HomeVault is **source-available software**. Copyright (c) 2026 Nicolas Le Roux.
-All rights reserved. Anyone may read, build, modify, and contribute to the
-code; redistribution, commercial use, and competing offerings require a
-separate written license. See [`LICENSE`](LICENSE).
+Distributed under the [MIT](LICENSE) license.
+Copyright (c) 2026 Nicolas Le Roux.
 
-Contributions are welcome and are accepted under the
-[Contributor License Agreement](CLA.md).
+Contributions are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md).

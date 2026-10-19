@@ -1,70 +1,21 @@
-HomeVault Source-Available License, version 1.0
+MIT License
 
-Copyright (c) 2026 Nicolas Le Roux. All rights reserved.
+Copyright (c) 2026 Nicolas Le Roux
 
-HomeVault ("the Software") is made available as source-available software
-so that anyone can study it, build it, run it, and contribute to its
-development. It is not open-source software: the copyright holder remains
-the sole owner of the Software and of all rights not expressly granted
-below.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-1. PERMISSIONS
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-   Subject to the conditions in section 2, you may:
-
-   a. read, download, and study the source code;
-   b. build and run the Software;
-   c. modify the Software and create derivative works for development,
-      testing, evaluation, and personal non-commercial self-hosting;
-   d. submit your modifications back to the project as contributions
-      (see `CLA.md`).
-
-2. CONDITIONS
-
-   a. No redistribution. You may not distribute, publish, sublicense,
-      sell, lease, rent, or otherwise make the Software or any derivative
-      work available to third parties, in source or binary form, except
-      by contributing changes to this repository.
-   b. No commercial use. You may not use the Software or any derivative
-      work for commercial purposes, including paid hosting, managed
-      services, or inclusion in a product or service offered for a fee,
-      without prior written permission from the copyright holder.
-   c. No competing offering. You may not use the Software to provide a
-      substantially similar product or service to third parties.
-   d. Notices. You may not remove or alter any copyright, license, or
-      attribution notice.
-   e. Contributions. Any contribution you submit is governed by the
-      Contributor License Agreement in `CLA.md`.
-   f. No trademark rights. This license grants no right to use the
-      "HomeVault" name, logo, or other brand assets.
-
-3. OWNERSHIP
-
-   The copyright holder retains all right, title, and interest in and to
-   the Software, including all intellectual-property rights in
-   contributions once accepted. No ownership, partnership, joint
-   venture, or employment relationship is created by this license. All
-   rights not expressly granted are reserved.
-
-4. TERMINATION
-
-   This license terminates automatically if you breach any of its terms.
-   On termination you must stop using the Software and destroy any copies
-   and derivative works in your possession. Sections 2, 3, 4, and 5
-   survive termination.
-
-5. DISCLAIMER OF WARRANTY AND LIMITATION OF LIABILITY
-
-   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-   IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM,
-   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR
-   THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-6. COMMERCIAL AND REDISTRIBUTION LICENSES
-
-   Commercial use, redistribution, or any use beyond the permissions in
-   section 1 requires a separate written license from the copyright
-   holder. Requests: https://github.com/nicoleroux35/HomeVault
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
