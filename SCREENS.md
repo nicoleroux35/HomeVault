@@ -108,7 +108,7 @@ visible from 901px, icon only below that — the touch target stays
 
 > That is 24 entries in `appDefs` (23 app tiles + the Widgets editor) + Terminal + Settings +
 > My account. Storage gained a 7th tab ("Snapshots" — scheduled snapshots with GFS retention)
-> and Settings gained the Power card (Monitoring) and the MCP gateway card (AI Assistant).
+> and Settings gained the Power card (Monitoring).
 > The 30 Svelte routes = these 26 apps + the Widgets editor + Login + Setup Wizard + Desktop.
 
 ### Floating monitoring widgets (11 panels)
@@ -547,6 +547,8 @@ and in the Groups screen.
 - New conversation
 - Markdown rendering in responses
 - Localized system prompt
+- **External agents (MCP)** — endpoint, kill-switch, tool permissions and
+  API tokens
 
 ---
 
@@ -586,7 +588,7 @@ and in the Groups screen.
 3. **Appearance** — Wallpaper (15 presets)
 4. **Widgets** — Active monitors (the 11 real monitors, driven by `monitorStore` → `/api/monitor-layout`) + refresh interval (2/5/10/30/60 s, stored in the same blob) + Weather widget (Open-Meteo location, display fields) — Weather was moved out of Appearance on 2026-09-09
 5. **Notifications** — Email/SMTP server (server, port, credentials, TLS, send test) + alerts (threshold, channels) + webhook
-6. **AI Assistant** — Ollama models, current model, recommendations based on RAM/GPU, quick install + **external-agent gateway (MCP)**: endpoint, kill-switch, tool permissions and API tokens
+6. **AI Assistant** — Ollama models, current model, recommendations based on RAM/GPU, quick install
 7. **Monitoring** (3 cards):
    - **UPS Monitoring** — UPS list: battery/runtime/voltage/load/status
    - **SNMP** — Community, version, system info, interfaces, storage queries

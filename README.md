@@ -30,7 +30,8 @@ of a backend written in Rust and a modern frontend in Svelte.
 - **Virtual machines**: Incus VMs and containers, cloud images, console.
 - **VPN**: WireGuard and OpenVPN, Syncthing sync, aria2
   downloader.
-- **AI assistant**: local chat via Ollama, RAG knowledge base.
+- **AI assistant**: local chat via Ollama, RAG knowledge base, and an MCP
+  gateway for external agents.
 - **Health, journal and quotas**: system monitoring, event journal
   and transfer quotas.
 - **Metrics and scheduled tasks**: historical performance charts (1 h /
