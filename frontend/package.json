@@ -1,6 +1,7 @@
 {
   "name": "homevault-frontend",
   "private": true,
+  "description": "HomeVault web interface — Svelte 5 desktop-style UI, served by the Rust backend",
   "version": "1.0.0",
   "author": "Nicolas Le Roux",
   "license": "MIT",

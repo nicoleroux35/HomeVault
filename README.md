@@ -5,9 +5,33 @@
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M1R82932SP)
 
-HomeVault is a personal server that lets you administer, store and
-share your data from a simple and accessible web interface. It consists
-of a backend written in Rust and a modern frontend in Svelte.
+**Turn any small computer into your own private cloud.**
+
+HomeVault is a self-hosted NAS you run yourself: one binary, one browser tab,
+no cloud account, no subscription and no vendor lock-in. Install it on a small
+PC, an old laptop, a Raspberry Pi or a mini-PC, add a disk, and your data —
+documents, photos, videos, backups — is available from any device with a
+browser, at home or anywhere else.
+
+## Why HomeVault
+
+- **A NAS for everyone.** No RAID controller, no dedicated appliance, no
+  proprietary hardware: the machine you already own is enough.
+- **Built for small configurations.** It runs on **1 CPU core, 1 GB of RAM and
+  an 8 GB system disk**, with a typical resident footprint of 40–120 MB at
+  rest — on `x86_64`, `aarch64` (Raspberry Pi 4/5, ARM mini-PCs) and
+  `armv7l`. Every optional feature (antivirus, ZFS, Docker, AI) is off until
+  you turn it on, so the base install stays light.
+- **Your data, everywhere.** Any browser, any device — desktop, laptop,
+  tablet, phone, work or home — over the local network or the internet.
+  Nothing to install on the client.
+- **Simple, reliable, robust.** One self-contained installer, one binary, an
+  embedded SQLite database, a guided first-run wizard, and automated tests at
+  every layer (Rust unit + integration, Playwright end-to-end against a real
+  server).
+
+Under the hood: a Rust (Axum) backend with an embedded SQLite database and a
+Svelte 5 frontend rendered as a desktop-like windowing UI.
 
 ## Features
 
@@ -47,13 +71,15 @@ of a backend written in Rust and a modern frontend in Svelte.
 
 ## Requirements
 
-- **Debian 10+** or **Ubuntu 20.04+** system
+- **Debian 10+** or **Ubuntu 20.04+** (and derivatives such as
+  Raspberry Pi OS 64-bit)
 - **x86_64**, **aarch64** or **armv7l** architecture
+- **1 CPU core**, **1 GB of RAM**, **8 GB of system disk** — plus the data
+  disk(s) of your choice
 - **root** (sudo) access for installation
 
-Detailed minimum and recommended hardware configuration (RAM, disk,
-cost of the optional ZFS / antivirus / AI features): see
-[`HARDWARE.md`](HARDWARE.md).
+Minimum and recommended hardware, the per-feature cost (ZFS, antivirus,
+Docker, AI) and tested reference machines: see [`HARDWARE.md`](HARDWARE.md).
 
 ## Installation
 
