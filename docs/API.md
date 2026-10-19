@@ -624,7 +624,7 @@ or ISO — `iso_path` (absolute `.iso`, exists, ≥ 10 MB), `iso_os`
 
 ## Wallpapers
 
-**No API.** The upload feature was removed 2026-09-04. The 15 bundled wallpapers
+**No API.** The upload feature was removed 2026-09-04. The 44 bundled wallpapers
 are static assets served at `GET /wallpapers/{*path}` (registered before the SPA
 fallback). See [Wallpapers](./guides/wallpapers.md).
 

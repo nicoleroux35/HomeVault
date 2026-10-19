@@ -51,7 +51,7 @@ export interface BundledWallpaper {
 
 /** The wallpapers embedded in the binary (see frontend/public/wallpapers/). */
 export const BUNDLED_WALLPAPERS: BundledWallpaper[] = Array.from(
-  { length: 15 },
+  { length: 44 },
   (_, i) => {
     const id = `hv-${String(i + 1).padStart(2, '0')}`;
     return { id, url: `/wallpapers/${id}.webp`, thumb: `/wallpapers/${id}-thumb.webp` };
