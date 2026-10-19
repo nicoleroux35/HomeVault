@@ -1978,8 +1978,25 @@ class ApiClient {
     level: string;
     devices: string[];
     filesystem: string;
+    /** Extra disks attached as hot spares (mdadm techs only). */
+    spares?: string[];
+    /** Create raid1/5/6 with `missing` slots filling up to the level min. */
+    allow_missing?: boolean;
   }) {
     return this.post('/storage/raid', data);
+  }
+
+  /**
+   * Grow an mdadm virtual disk onto an additional free device. The reshape
+   * runs in the background — poll the scrub/sync status endpoint for
+   * progress.
+   */
+  async growVirtualDisk(name: string, device: string) {
+    const res = await this.post(`/storage/virtual-disks/${encodeURIComponent(name)}/grow`, {
+      device
+    });
+    this.invalidateCache('/storage/virtual-disks');
+    return res;
   }
 
   async rebuildRaid(name: string, replacementDevice?: string) {

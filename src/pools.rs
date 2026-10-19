@@ -1376,10 +1376,9 @@ impl PoolService {
     }
 
     /// Creates a new advanced-storage pool (ZFS or Btrfs) with the given
-    /// redundancy profile. Deliberately independent of `disk.rs::create_raid`
-    /// (frozen) and `disk.rs::create_zfs_pool_from_devices` (only reachable
-    /// through the frozen RAID-creation entrypoint) — this is a new, parallel
-    /// creation path for the "Advanced storage" flow.
+    /// redundancy profile. Deliberately shares its ZFS dataset policy with
+    /// `disk.rs::create_zfs_pool_from_devices` (the RAID app's own ZFS path)
+    /// so every ZFS volume the appliance creates behaves identically.
     pub fn create_pool(
         name: &str,
         pool_type: PoolType,
@@ -1451,7 +1450,24 @@ impl PoolService {
         // `zpool create [opts] <poolname> [vdev-type] <devices...>` — the
         // pool name must precede the vdev type, or zpool treats the name as
         // a device and fails ("cannot open '<name>': no such device").
-        let mut args: Vec<&str> = vec!["create", "-f", "-m", mount_point, name];
+        let mut args: Vec<&str> = vec!["create", "-f", "-m", mount_point];
+        // One shared root-dataset policy, mirrored from
+        // `disk.rs::create_zfs_pool_from_devices`: lz4 compression, no atime,
+        // POSIX ACLs (the shares' setfacl flow relies on them) and xattr in
+        // the dnode, on every ZFS volume the appliance creates.
+        for kv in [
+            "-O",
+            "compression=lz4",
+            "-O",
+            "atime=off",
+            "-O",
+            "acltype=posixacl",
+            "-O",
+            "xattr=sa",
+        ] {
+            args.push(kv);
+        }
+        args.push(name);
         if raid_profile != "stripe" {
             args.push(raid_profile);
         }

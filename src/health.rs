@@ -108,6 +108,7 @@ impl HealthService {
             Self::check_memory()?,
             Self::check_disk_space()?,
             Self::check_disk_smart()?,
+            Self::check_raid_arrays()?,
             Self::check_network_interfaces()?,
             Self::check_systemd_services()?,
             Self::check_temperatures()?,
@@ -131,6 +132,7 @@ impl HealthService {
             "memory" => Self::check_memory(),
             "disk_space" => Self::check_disk_space(),
             "disk_smart" => Self::check_disk_smart(),
+            "raid_arrays" => Self::check_raid_arrays(),
             "network" => Self::check_network_interfaces(),
             "services" => Self::check_systemd_services(),
             "temperatures" => Self::check_temperatures(),
@@ -286,6 +288,112 @@ impl HealthService {
 
         Ok(HealthCheckResult {
             name: "disk_space".to_string(),
+            status,
+            message,
+            details: None,
+            timestamp: chrono::Utc::now(),
+        })
+    }
+
+    /// RAID array health: every mdadm array's reported state, so a degraded
+    /// array (reduced redundancy, waiting for a replacement disk) surfaces
+    /// as a warning, a failed/invalid array as an error, and a clean one as
+    /// healthy. mdadm itself isn't installed on all builds — that yields
+    /// `Unknown`, never a hard failure.
+    pub fn check_raid_arrays() -> Result<HealthCheckResult, HealthError> {
+        let scan = Command::new("sudo")
+            .arg("mdadm")
+            .args(["--detail", "--scan"])
+            .output();
+
+        let scan = match scan {
+            Ok(s) if s.status.success() => s,
+            // mdadm missing (or the platform has no sudoers grant yet):
+            // report an unknown, non-failing state.
+            Ok(s) => {
+                let stderr = String::from_utf8_lossy(&s.stderr).to_ascii_lowercase();
+                // Only "mdadm missing/killed by permission" cases matter
+                // here; mdadm installed but refusing is a real state too.
+                let _ = stderr;
+                return Ok(HealthCheckResult {
+                    name: "raid_arrays".to_string(),
+                    status: HealthStatus::Unknown,
+                    message: "mdadm is not reporting array state".to_string(),
+                    details: None,
+                    timestamp: chrono::Utc::now(),
+                });
+            }
+            Err(e) => {
+                return Ok(HealthCheckResult {
+                    name: "raid_arrays".to_string(),
+                    status: HealthStatus::Unknown,
+                    message: format!("Could not query mdadm: {}", e),
+                    details: None,
+                    timestamp: chrono::Utc::now(),
+                })
+            }
+        };
+
+        // "ARRAY /dev/md/<name> metadata=… name=… UUID=…"
+        let devices: Vec<String> = String::from_utf8_lossy(&scan.stdout)
+            .lines()
+            .filter(|l| l.starts_with("ARRAY"))
+            .filter_map(|l| l.split_whitespace().nth(1).map(String::from))
+            .collect();
+
+        if devices.is_empty() {
+            return Ok(HealthCheckResult {
+                name: "raid_arrays".to_string(),
+                status: HealthStatus::Healthy,
+                message: "No RAID arrays defined".to_string(),
+                details: None,
+                timestamp: chrono::Utc::now(),
+            });
+        }
+
+        let mut degraded = Vec::new();
+        let mut failed = Vec::new();
+        let mut healthy = 0usize;
+        for device in &devices {
+            let detail = Command::new("sudo").arg("mdadm").args(["--detail", device]).output();
+            let state = detail
+                .ok()
+                .map(|d| {
+                    String::from_utf8_lossy(&d.stdout)
+                        .lines()
+                        .find_map(|l| l.strip_prefix("State :").map(|s| s.trim().to_string()))
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if state.contains("failed") || state.contains("inactive") || state.contains("bad") {
+                failed.push(format!("{} ({})", device, state));
+            } else if state.contains("degraded") || state.contains("rebuil") {
+                degraded.push(format!("{} ({})", device, state));
+            } else {
+                healthy += 1;
+            }
+        }
+
+        let (status, message) = if !failed.is_empty() {
+            (
+                HealthStatus::Unhealthy,
+                format!("Failed arrays: {}", failed.join(", ")),
+            )
+        } else if !degraded.is_empty() {
+            (
+                HealthStatus::Warning,
+                format!("Degraded arrays: {}", degraded.join(", ")),
+            )
+        } else {
+            (
+                HealthStatus::Healthy,
+                format!("All {} RAID array(s) healthy", healthy),
+            )
+        };
+
+        Ok(HealthCheckResult {
+            name: "raid_arrays".to_string(),
             status,
             message,
             details: None,
@@ -686,6 +794,7 @@ mod tests {
             ("memory", "memory"),
             ("disk_space", "disk_space"),
             ("disk_smart", "disk_smart"),
+            ("raid_arrays", "raid_arrays"),
             ("network", "network"),
             ("services", "services"),
             ("temperatures", "temperatures"),

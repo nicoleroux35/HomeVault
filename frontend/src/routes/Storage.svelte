@@ -476,6 +476,34 @@
     else dlg.notify(r.message || r.error || translate('storage.vd_action_failed'));
   }
 
+  // ── Grow an mdadm array onto an extra disk ──
+  let growTarget: VirtualDisk | null = null;
+  let growDevices: AvailableDevice[] = [];
+  let growDevice = '';
+  let growBusy = false;
+
+  async function openGrow(v: VirtualDisk) {
+    const r = await api.getRaidAvailableDevices();
+    const free = r.success && Array.isArray(r.data) ? (r.data as AvailableDevice[]).filter((d) => !d.inUse) : [];
+    if (free.length === 0) {
+      dlg.notify(translate('storage.vd_grow_no_free'));
+      return;
+    }
+    growDevices = free;
+    growDevice = free[0].name;
+    growTarget = v;
+  }
+
+  async function confirmGrow() {
+    if (!growTarget || !growDevice) return;
+    growBusy = true;
+    const r = await api.growVirtualDisk(growTarget.name, growDevice);
+    growBusy = false;
+    growTarget = null;
+    if (r.success) { await loadVirtualDisks(); }
+    else dlg.notify(r.message || r.error || translate('storage.vd_action_failed'));
+  }
+
   async function destroyVirtualDisk(v: VirtualDisk) {
     if (!(await dlg.ask(translate('storage.vd_destroy_confirm', { name: v.name })))) return;
     virtualBusy = v.name;
@@ -1062,6 +1090,7 @@
                 <div class="flex gap-2.5 mt-3">
                   {#if v.pool_type === 'Mdadm'}
                     <Button variant="ghost" disabled={virtualBusy === v.name} onclick={() => rebuildVirtualDisk(v)}><IconTool size={16} /> {$t('storage.vd_rebuild')}</Button>
+                    <Button variant="ghost" disabled={virtualBusy === v.name} onclick={() => openGrow(v)}><IconPlus size={16} /> {$t('storage.vd_grow')}</Button>
                   {:else}
                     <Button variant="ghost" disabled={virtualBusy === v.name} onclick={() => scrubVirtualDisk(v)}><IconShieldCheckered size={16} /> {$t('storage.vd_scrub')}</Button>
                   {/if}
@@ -1547,6 +1576,31 @@
     <div class="flex gap-2.5 justify-end">
       <Button variant="ghost" onclick={() => showImportModal = false}>{$t('common.cancel')}</Button>
       <Button variant="primary" onclick={confirmImport} disabled={!!importBusy}>{$t('storage.import_pool')}</Button>
+    </div>
+  {/snippet}
+</Modal>
+
+<!-- Grow an mdadm array onto an extra whole disk (mdadm --add + --grow). -->
+<Modal open={!!growTarget} title={$t('storage.vd_grow_title')} size="md" onclose={() => (growTarget = null)}>
+  {#if growTarget}
+    <div data-testid="storage-grow-modal">
+      <p class="m-0 mb-3 text-sm text-[var(--hv-shell-text-2)]">{$t('storage.vd_grow_hint', { name: growTarget.name })}</p>
+      <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="growDevice">{$t('storage.vd_grow_device')}</label>
+      <select id="growDevice" class={encInput} bind:value={growDevice}>
+        {#each growDevices as d (d.name)}
+          <option value={d.name}>{d.name} — {d.model} ({formatBytes(d.size)})</option>
+        {/each}
+      </select>
+      <p class="mt-3 m-0 flex items-start gap-2 text-c-xs text-[var(--hv-warning-text)]">
+        <IconAlertTriangle size={16} class="flex-none mt-px" />
+        {$t('storage.vd_grow_warning')}
+      </p>
+    </div>
+  {/if}
+  {#snippet footer()}
+    <div class="flex gap-2.5 justify-end">
+      <Button variant="ghost" onclick={() => (growTarget = null)}>{$t('common.cancel')}</Button>
+      <Button variant="primary" onclick={confirmGrow} disabled={growBusy || !growDevice}>{$t('storage.vd_grow')}</Button>
     </div>
   {/snippet}
 </Modal>

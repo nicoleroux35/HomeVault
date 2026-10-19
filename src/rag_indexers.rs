@@ -277,7 +277,7 @@ PathGuard restricts non-admin users to their home directory and allowed roots."#
 - Create RAID arrays (mdadm) via the RAID wizard
 - Create ZFS pools with various redundancy levels
 - Create Btrfs volumes
-- Virtual disks tab: list, scrub/verify, rebuild degraded arrays, destroy
+- Virtual disks tab: list, scrub/verify, rebuild degraded arrays, grow an mdadm array onto a free disk, destroy
 - Check a virtual disk's scrub / consistency-check status inline
 - Import an existing (foreign) ZFS or Btrfs pool found on attached disks, without recreating it
 - LUKS2 encryption: create encrypted volumes, lock/unlock
@@ -687,10 +687,11 @@ Scoped to standalone devices on purpose: RAID arrays belong to the RAID wizard, 
 
 - Levels offered: RAID 0 (stripe), RAID 1 (mirror), RAID 5 (single parity), RAID 6 (double parity) and RAID 10 (mirror plus stripe).
 - Targets: a Linux mdadm array, a ZFS pool, or a native Btrfs volume.
-- Three steps: choose the disks, choose the level and the target, then confirm. A diagram shows the usable capacity and the redundancy each level buys, and the recap lists exactly what will be created.
-- Only free, unassigned disks are offered, so an in-use device cannot be selected by mistake.
+- Three steps: choose the disks, choose the level and the target, then confirm. A diagram shows the usable capacity and the redundancy each level buys, and the recap lists exactly what will be created; disks of unequal sizes are flagged with the raw capacity their difference wastes.
+- Every candidate disk is listed: free disks can be selected, disks already in use stay visible with a short reason why (partitions, a filesystem, a mount, another array) and their S.M.A.R.T. health. Extra checked disks can be attached as hot spares on redundant mdadm levels, and an mdadm mirror/RAID 5/RAID 6 can be created deliberately degraded (a slot reserved for a disk added later, up to two missing on RAID 6).
+- Creation runs in the background as a tracked job: the wizard shows live milestones (array creation, resync, formatting, mounting) and the result appears in Storage when done.
 
-This screen only creates. Listing the arrays, verifying or scrubbing them, rebuilding a degraded one and destroying them all live in the Storage app's "Virtual disks" tab, which is the single place a virtual disk is managed once it exists."#.to_string(),
+This screen only creates. Listing the arrays, verifying or scrubbing them, rebuilding a degraded one, growing an mdadm array onto an extra disk ("Add disk" in Storage), and destroying them all live in the Storage app's "Virtual disks" tab, which is the single place a virtual disk is managed once it exists. Array health is also surfaced by the dashboard Health screen's RAID check and its notifications."#.to_string(),
         },
         FeatureDoc {
             id: "snapshots".to_string(),
