@@ -143,6 +143,43 @@ already downloaded):
 sudo bash installer/install.sh /path/to/homevault.tar.gz
 ```
 
+### Running it from a desktop (double-click)
+
+The same file works without a command line: mark it executable, then open it
+from the file manager (Nemo, Thunar and Dolphin run it directly; GNOME's
+Nautilus opens scripts in a text editor, so use the terminal form there). The
+installer **reopens itself in a terminal** and **elevates with `sudo`** on its
+own — the password prompt is therefore visible, and nothing has to be typed
+beforehand.
+
+```bash
+chmod +x install.sh      # once, before the first double-click
+```
+
+### Interface: `whiptail` or plain text
+
+One file, three ways to drive it — picked automatically:
+
+| Situation | Interface |
+|---|---|
+| Terminal (CLI, SSH, `curl \| sudo bash`, double-click) | **`whiptail` TUI** — dialog boxes, a progress bar per step |
+| No terminal, no `whiptail`, or `--yes` | plain coloured text |
+
+`whiptail` ships at Debian/Ubuntu priority `important`, so it is already on
+every supported base; it is never installed by the script itself. Force either
+mode, or make the whole run unattended:
+
+```bash
+sudo ./installer/install.sh --tui    # force the dialog UI
+sudo ./installer/install.sh --cli    # force plain text
+sudo ./installer/install.sh --yes    # never prompt; defaults are used
+```
+
+In TUI mode the detailed output (every package, every warning) goes to
+`/var/log/homevault-install.log`; the dialogs show the progress and the
+outcome. `--yes` also works for automation: it takes the documented default of
+every question, HTTPS included.
+
 > **Private project.** The repository is private, so the `curl`/`wget` commands
 > in *Installation* only work from a machine that is authenticated against
 > GitHub — an anonymous request gets a 404, not a 401. Either pass a token with

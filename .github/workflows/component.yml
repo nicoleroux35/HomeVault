@@ -22,18 +22,18 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      # Direct Node tarball, pinned like .github/workflows/ci.yml's node 22:
+      - uses: actions/checkout@v7
+      # Direct Node tarball, pinned like .github/workflows/ci.yml's node 24:
       # always install the pinned build (no version guard) — older node
       # minors are BELOW vite 8's required >=22.12 and yield a broken
       # rolldown native binding.
-      - name: Install Node 22
+      - name: Install Node 24
         run: |
-          curl -fsSL https://nodejs.org/dist/v22.23.3/node-v22.23.3-linux-x64.tar.xz -o /tmp/node.tar.xz
-          sudo rm -rf /opt/node-v22.23.3-linux-x64
+          curl -fsSL https://nodejs.org/dist/v24.22.0/node-v24.22.0-linux-x64.tar.xz -o /tmp/node.tar.xz
+          sudo rm -rf /opt/node-v24.22.0-linux-x64
           sudo tar -xJf /tmp/node.tar.xz -C /opt
           rm -f /tmp/node.tar.xz
-          for b in node npm npx; do sudo ln -sf /opt/node-v22.23.3-linux-x64/bin/$b /usr/local/bin/$b; done
+          for b in node npm npx; do sudo ln -sf /opt/node-v24.22.0-linux-x64/bin/$b /usr/local/bin/$b; done
           node --version && npm --version
       - name: Install
         run: npm ci
