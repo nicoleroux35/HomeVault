@@ -540,15 +540,19 @@ and in the Groups screen.
 **Features:**
 - Conversation interface with message bubbles
 - Streaming responses (SSE) with a cancel button
-- Model selector
+- Answers questions about HomeVault itself: the prompt is enriched with
+  passages from the local knowledge base (docs, app catalog, settings)
+- Model selector over the models installed on the appliance
 - Conversation history (localStorage)
 - Message copying
 - Response regeneration
 - New conversation
 - Markdown rendering in responses
 - Localized system prompt
-- **External agents (MCP)** — endpoint, kill-switch, tool permissions and
-  API tokens
+- Works fully offline: the model runs on the appliance, no provider is
+  contacted
+- **External agents (MCP)** are configured from Settings → AI Assistant
+  (server-wide, admin-only) — see the Settings section below
 
 ---
 
@@ -588,7 +592,7 @@ and in the Groups screen.
 3. **Appearance** — Wallpaper (15 presets)
 4. **Widgets** — Active monitors (the 11 real monitors, driven by `monitorStore` → `/api/monitor-layout`) + refresh interval (2/5/10/30/60 s, stored in the same blob) + Weather widget (Open-Meteo location, display fields) — Weather was moved out of Appearance on 2026-09-09
 5. **Notifications** — Email/SMTP server (server, port, credentials, TLS, send test) + alerts (threshold, channels) + webhook
-6. **AI Assistant** — Ollama models, current model, recommendations based on RAM/GPU, quick install
+6. **AI Assistant** — current model, **five models ranked for this host's RAM/GPU** (each with its RAM/VRAM floor, size and speed; a model that needs more memory than the appliance has is flagged, never marked "best choice"), one-click install & load, manual model install, Ollama status + refresh + **External agents (MCP)**: endpoint, kill-switch, tool permissions and API tokens
 7. **Monitoring** (3 cards):
    - **UPS Monitoring** — UPS list: battery/runtime/voltage/load/status
    - **SNMP** — Community, version, system info, interfaces, storage queries

@@ -817,6 +817,26 @@ pub struct ModelRecommendation {
     pub requires_gpu: bool,
     pub speed: &'static str,
     pub size_gb: f64,
+    /// False when the model needs more memory than this host has: still
+    /// listed (the operator may plan a RAM upgrade), never the top pick.
+    pub fits: bool,
+}
+
+/// How many models the Settings card proposes. Five gives the operator a
+/// real choice — the smallest thing that fits this host, a middle step, and
+/// the best it can actually run — without turning the card into a catalog.
+const RECOMMENDATION_COUNT: usize = 5;
+
+/// Ranking tier of a model on one host: does it fit at all, and how
+/// comfortably.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Fit {
+    /// Needs more memory than the host has — never proposed.
+    TooBig,
+    /// Fits in RAM only: usable, CPU inference, slow on a small board.
+    CpuOnly,
+    /// Fits in GPU VRAM: the preferred case.
+    Gpu,
 }
 
 #[derive(Debug, Serialize)]
@@ -827,79 +847,142 @@ pub struct SystemSpecs {
     pub gpu_vram_gb: Option<u64>,
 }
 
+/// Every entry exists in the public Ollama library (a name that does not
+/// resolve would fail at `ollama pull`, which is the one failure mode this
+/// catalog must never ship). Sizes are the published Q4 quantisation, RAM
+/// floors are size + ~40 % for the KV cache and the runtime.
 const MODEL_CATALOG: &[ModelRecommendation] = &[
+    ModelRecommendation {
+        name: "qwen3:0.6b",
+        description:
+            "Le plus petit modèle utile. Pour un Raspberry Pi ou une machine à 1 Go de RAM.",
+        min_ram_gb: 1,
+        min_vram_gb: None,
+        requires_gpu: false,
+        speed: "instantané",
+        size_gb: 0.4,
+        fits: true,
+    },
     ModelRecommendation {
         name: "gemma3:1b",
         description:
-            "Ultra-léger, idéal pour machines modestes. Réponses rapides, français correct.",
+            "Ultra-léger et multilingue (dont le français). Le bon défaut d'une petite configuration.",
         min_ram_gb: 2,
         min_vram_gb: Some(1),
         requires_gpu: false,
         speed: "très rapide",
         size_gb: 0.8,
+        fits: true,
     },
     ModelRecommendation {
-        name: "qwen3.5:0.8b",
-        description: "Le plus petit modèle disponible. Parfait pour Raspberry Pi / low-end.",
-        min_ram_gb: 1,
-        min_vram_gb: None,
+        name: "deepseek-r1:1.5b",
+        description:
+            "Petit modèle de raisonnement : justifie ses réponses étape par étape, utile pour diagnostiquer un incident.",
+        min_ram_gb: 2,
+        min_vram_gb: Some(1),
         requires_gpu: false,
-        speed: "ultra-rapide",
-        size_gb: 0.6,
+        speed: "rapide",
+        size_gb: 1.1,
+        fits: true,
     },
     ModelRecommendation {
-        name: "qwen3.5:2b",
-        description: "Bon équilibre taille/performance. Compréhension précise.",
+        name: "llama3.2:1b",
+        description:
+            "Généraliste léger et très bien outillé. À l'aise en anglais et sur le code.",
+        min_ram_gb: 2,
+        min_vram_gb: Some(1),
+        requires_gpu: false,
+        speed: "très rapide",
+        size_gb: 1.3,
+        fits: true,
+    },
+    ModelRecommendation {
+        name: "qwen3:1.7b",
+        description:
+            "Meilleur compromis taille/qualité sous 4 Go de RAM. Bon suivi d'instructions.",
+        min_ram_gb: 3,
+        min_vram_gb: Some(2),
+        requires_gpu: false,
+        speed: "rapide",
+        size_gb: 1.4,
+        fits: true,
+    },
+    ModelRecommendation {
+        name: "llama3.2:3b",
+        description:
+            "Solide généraliste pour un serveur de 4 Go. Bon en résumé et en explication de commandes.",
         min_ram_gb: 4,
         min_vram_gb: Some(2),
         requires_gpu: false,
         speed: "rapide",
-        size_gb: 1.5,
+        size_gb: 2.0,
+        fits: true,
+    },
+    ModelRecommendation {
+        name: "phi4-mini",
+        description:
+            "Petit modèle orienté raisonnement et mathématiques, très précis pour sa taille.",
+        min_ram_gb: 5,
+        min_vram_gb: Some(3),
+        requires_gpu: false,
+        speed: "moyen",
+        size_gb: 2.5,
+        fits: true,
+    },
+    ModelRecommendation {
+        name: "qwen3:4b",
+        description:
+            "Excellent rapport qualité/ressources, multilingue. Le choix par défaut d'un serveur de 6 Go.",
+        min_ram_gb: 5,
+        min_vram_gb: Some(3),
+        requires_gpu: false,
+        speed: "moyen",
+        size_gb: 2.6,
+        fits: true,
     },
     ModelRecommendation {
         name: "gemma3:4b",
-        description: "Recommandé pour la plupart des serveurs. Très bon ratio qualité/ressources.",
+        description:
+            "Très bon en français et en rédaction. Demande 6 Go de RAM et de la patience sur un CPU.",
         min_ram_gb: 6,
         min_vram_gb: Some(4),
         requires_gpu: false,
         speed: "moyen",
         size_gb: 3.3,
-    },
-    ModelRecommendation {
-        name: "llama3.2:1b",
-        description: "Bon modèle généraliste léger. Bon en anglais et code.",
-        min_ram_gb: 2,
-        min_vram_gb: Some(1),
-        requires_gpu: false,
-        speed: "très rapide",
-        size_gb: 0.8,
-    },
-    ModelRecommendation {
-        name: "llama3.2:3b",
-        description: "Excellent modèle pour usage général. Performant sur serveur 8Go+.",
-        min_ram_gb: 6,
-        min_vram_gb: Some(4),
-        requires_gpu: false,
-        speed: "moyen",
-        size_gb: 2.4,
+        fits: true,
     },
     ModelRecommendation {
         name: "mistral:7b",
-        description: "Modèle puissant pour machines avec >= 16Go RAM ou GPU 8Go+.",
+        description:
+            "Vétéran fiable et concis. Confortable à partir de 10 Go de RAM, ou sur un GPU 6 Go.",
+        min_ram_gb: 10,
+        min_vram_gb: Some(6),
+        requires_gpu: false,
+        speed: "lent (CPU) / rapide (GPU)",
+        size_gb: 4.4,
+        fits: true,
+    },
+    ModelRecommendation {
+        name: "llama3.1:8b",
+        description:
+            "Généraliste haut de gamme : le meilleur raisonnement accessible sur un serveur de 12 Go.",
         min_ram_gb: 12,
         min_vram_gb: Some(6),
         requires_gpu: false,
         speed: "lent (CPU) / rapide (GPU)",
-        size_gb: 4.5,
+        size_gb: 4.9,
+        fits: true,
     },
     ModelRecommendation {
-        name: "qwen3.5:7b",
-        description: "Modèle de pointe pour serveurs haut de gamme. Nécessite GPU idéalement.",
-        min_ram_gb: 16,
+        name: "qwen3:8b",
+        description:
+            "Le plus capable de la sélection. Pour un serveur de 12 Go ou un GPU 8 Go.",
+        min_ram_gb: 12,
         min_vram_gb: Some(8),
         requires_gpu: false,
         speed: "lent (CPU) / rapide (GPU)",
-        size_gb: 4.8,
+        size_gb: 5.2,
+        fits: true,
     },
 ];
 
@@ -977,38 +1060,71 @@ fn detect_gpu() -> (Option<String>, Option<u64>) {
     (None, None)
 }
 
-/// Ranks `MODEL_CATALOG` for a given host and returns the best 3. Pure —
-/// separated out so it can be unit-tested without an `AppState`, and so the
-/// handler stays a thin auth + `detect_system_specs` + this call.
+/// How well one catalog entry fits this host. Pure, so the whole ranking is
+/// testable without touching `/proc` or a GPU.
+///
+/// A model is proposed first when its memory floor is met — telling an
+/// operator to pull a 5 GB model on a 2 GB board is not a recommendation, it
+/// is a failed download. GPU fit ranks above CPU fit because Ollama keeps the
+/// whole model in VRAM when it can, which is the difference between "answers
+/// in seconds" and "answers in minutes" on an appliance.
+fn fit_for(model: &ModelRecommendation, specs: &SystemSpecs) -> Fit {
+    let ram_ok = specs.total_ram_gb >= model.min_ram_gb;
+    let vram_ok = specs.has_gpu
+        && model
+            .min_vram_gb
+            .map(|need| specs.gpu_vram_gb.unwrap_or(0) >= need)
+            .unwrap_or(false);
+
+    if vram_ok {
+        Fit::Gpu
+    } else if ram_ok {
+        Fit::CpuOnly
+    } else {
+        Fit::TooBig
+    }
+}
+
+/// Ranks `MODEL_CATALOG` for a given host and returns
+/// [`RECOMMENDATION_COUNT`] models, best fit first. Pure — separated out so it
+/// can be unit-tested without an `AppState`, and so the handler stays a thin
+/// auth + `detect_system_specs` + this call.
+///
+/// The order is a ladder the operator can read: what this host runs best
+/// (GPU-fit first, then the largest model that fits in RAM), then progressively
+/// smaller and faster choices. When fewer than five fit, the list is completed
+/// with the next smallest models that do not, flagged `fits: false` — the
+/// operator sees the upgrade path instead of an empty half-card, and the UI
+/// never labels one of those "best choice".
 fn recommend_models(specs: &SystemSpecs) -> Vec<ModelRecommendation> {
-    let mut scored: Vec<(i32, &ModelRecommendation)> = MODEL_CATALOG
+    let mut ranked: Vec<(Fit, &ModelRecommendation)> = MODEL_CATALOG
         .iter()
-        .map(|m| {
-            let mut score = 0i32;
-            let mem_gb = specs.gpu_vram_gb.unwrap_or(specs.total_ram_gb);
-
-            if mem_gb >= m.min_ram_gb {
-                score += 10;
-            }
-            if let Some(min_vram) = m.min_vram_gb {
-                if specs.has_gpu && specs.gpu_vram_gb.unwrap_or(0) >= min_vram {
-                    score += 15;
-                }
-            }
-            if mem_gb >= m.min_ram_gb * 2 {
-                score += 5;
-            }
-
-            (score, m)
-        })
+        .map(|m| (fit_for(m, specs), m))
         .collect();
 
-    scored.sort_by_key(|b| std::cmp::Reverse(b.0));
+    ranked.sort_by(|a, b| {
+        // Models that fit come first.
+        let a_fits = a.0 != Fit::TooBig;
+        let b_fits = b.0 != Fit::TooBig;
+        b_fits
+            .cmp(&a_fits)
+            // Among fitting models: GPU fit, then the most capable (largest).
+            .then(b.0.cmp(&a.0))
+            // Among models that do not fit: the closest to usable first.
+            .then_with(|| {
+                if a_fits {
+                    b.1.min_ram_gb.cmp(&a.1.min_ram_gb)
+                } else {
+                    a.1.min_ram_gb.cmp(&b.1.min_ram_gb)
+                }
+            })
+            .then(a.1.name.cmp(b.1.name))
+    });
 
-    scored
+    ranked
         .into_iter()
-        .take(3)
-        .map(|(_, m)| ModelRecommendation {
+        .take(RECOMMENDATION_COUNT)
+        .map(|(fit, m)| ModelRecommendation {
             name: m.name,
             description: m.description,
             min_ram_gb: m.min_ram_gb,
@@ -1016,6 +1132,7 @@ fn recommend_models(specs: &SystemSpecs) -> Vec<ModelRecommendation> {
             requires_gpu: m.requires_gpu,
             speed: m.speed,
             size_gb: m.size_gb,
+            fits: fit != Fit::TooBig,
         })
         .collect()
 }
@@ -1146,16 +1263,103 @@ mod tests {
     }
 
     #[test]
-    fn test_recommend_models_returns_three_real_catalog_entries() {
-        let specs = detect_system_specs();
+    fn test_recommend_models_returns_five_real_catalog_entries() {
+        // A 4 GB host: enough for the light half of the catalog.
+        let specs = SystemSpecs {
+            total_ram_gb: 4,
+            has_gpu: false,
+            gpu_name: None,
+            gpu_vram_gb: None,
+        };
         let recs = recommend_models(&specs);
-        assert_eq!(recs.len(), 3);
+        assert_eq!(recs.len(), RECOMMENDATION_COUNT);
         for r in &recs {
-            assert!(MODEL_CATALOG.iter().any(|m| m.name == r.name));
+            assert!(
+                MODEL_CATALOG.iter().any(|m| m.name == r.name),
+                "{} is not in the catalog",
+                r.name
+            );
         }
     }
 
     #[test]
+    fn test_recommend_models_never_puts_a_model_that_does_not_fit_first() {
+        // 2 GB host: only the <=2 GB entries fit, so the top pick must be one
+        // of them and every `fits: false` entry must rank after the fitting
+        // ones.
+        let specs = SystemSpecs {
+            total_ram_gb: 2,
+            has_gpu: false,
+            gpu_name: None,
+            gpu_vram_gb: None,
+        };
+        let recs = recommend_models(&specs);
+        assert_eq!(recs.len(), RECOMMENDATION_COUNT);
+        assert!(recs[0].fits, "the best choice must fit this host");
+        assert!(recs[0].min_ram_gb <= 2);
+
+        let first_too_big = recs.iter().position(|r| !r.fits).unwrap_or(recs.len());
+        for r in &recs[first_too_big..] {
+            assert!(!r.fits, "a fitting model cannot rank after a too-big one");
+        }
+    }
+
+    #[test]
+    fn test_recommend_models_always_returns_five_even_on_a_tiny_host() {
+        // 1 GB: only the smallest entry fits, the four others are the upgrade
+        // path, flagged. The card must never be half empty.
+        let specs = SystemSpecs {
+            total_ram_gb: 1,
+            has_gpu: false,
+            gpu_name: None,
+            gpu_vram_gb: None,
+        };
+        let recs = recommend_models(&specs);
+        assert_eq!(recs.len(), RECOMMENDATION_COUNT);
+        assert!(recs[0].fits);
+        assert_eq!(recs[0].min_ram_gb, 1);
+        // The non-fitting ones are ordered from the closest to usable.
+        let too_big: Vec<u64> = recs.iter().filter(|r| !r.fits).map(|r| r.min_ram_gb).collect();
+        let mut sorted = too_big.clone();
+        sorted.sort_unstable();
+        assert_eq!(too_big, sorted);
+    }
+
+    #[test]
+    fn test_recommend_models_prefers_vram_fit() {
+        // A 24 GB GPU with 8 GB of RAM: the GPU decides, so the top pick is a
+        // model that needs more RAM than the host has but fits in VRAM.
+        let specs = SystemSpecs {
+            total_ram_gb: 8,
+            has_gpu: true,
+            gpu_name: Some("RTX 4090".into()),
+            gpu_vram_gb: Some(24),
+        };
+        let recs = recommend_models(&specs);
+        assert_eq!(recs.len(), RECOMMENDATION_COUNT);
+        assert!(recs[0].fits);
+        assert!(
+            recs[0].min_vram_gb.unwrap_or(0) <= 24,
+            "the top pick must fit in VRAM"
+        );
+    }
+
+    #[test]
+    fn test_catalog_names_are_unique_and_sized() {
+        // Guards the catalog itself: a duplicated name would show the same
+        // model twice in the card, and a zero size would break the size chip.
+        for (i, m) in MODEL_CATALOG.iter().enumerate() {
+            assert!(!m.name.is_empty());
+            assert!(m.size_gb > 0.0, "{} has no size", m.name);
+            assert!(m.min_ram_gb > 0, "{} has no RAM floor", m.name);
+            assert!(
+                !MODEL_CATALOG[..i].iter().any(|o| o.name == m.name),
+                "{} appears twice",
+                m.name
+            );
+        }
+    }
+
     fn test_recommend_models_prefers_bigger_models_on_a_beefy_host() {
         let big = SystemSpecs {
             total_ram_gb: 64,

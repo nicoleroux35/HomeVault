@@ -953,6 +953,20 @@ comments). Blocking `ip`/`ethtool`/`ping` calls stay in `spawn_blocking`.
   `{"success":false}` on failure; `model` GET/PUT + `models/pull` use real
   400/401/403. `handle_chat_models_pull` requests `"stream": true` and consumes
   Ollama NDJSON — don't revert to `stream:false`.
+- Chat models: `GET /chat/models/recommend` returns **five** entries
+  (`RECOMMENDATION_COUNT`) ranked by `fit_for()` — GPU fit first, then the
+  largest model that fits in RAM, then progressively smaller; when fewer than
+  five fit, the list is completed with the next smallest ones flagged
+  `fits: false` (shown with a "needs N GB" chip, never labelled "best
+  choice"). Every name in `MODEL_CATALOG` must exist in the public Ollama
+  library — a typo fails at `ollama pull`, in front of the operator. Don't
+  shrink the list back to three, and don't drop the `fits` flag: it is what
+  keeps the card honest on a 1 GB board.
+- Runtime: Ollama is the chosen local runtime (single binary, model registry,
+  streaming, CPU/GPU split — rationale and the rejected alternatives in
+  `docs/guides/chat.md`). It has **no 32-bit ARM build**, so
+  `install_ollama()` skips `armv7l`/`armv6l` with an explicit message; don't
+  remove that guard, a dead daemon reads as an app bug.
 - Cloud Sync: session on every handler; **admin** on every mutation **and** on
   `GET /rclone/config` (rclone's "obscuring" is trivially reversible).
   **The config path comes from `rclone_config_path()` and nowhere else**

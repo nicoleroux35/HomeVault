@@ -6,6 +6,31 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **The AI model card now proposes five models, ranked for the machine it
+  runs on.** `GET /chat/models/recommend` returned the best three of an
+  eight-entry catalog with a scoring that could put a model too large for the
+  host first. It now ranks the whole catalog with `fit_for()` — GPU fit
+  (whole model in VRAM) first, then the largest model that fits in system RAM,
+  then progressively smaller/faster ones — and returns exactly five
+  (`RECOMMENDATION_COUNT`). When fewer than five fit, the list is completed
+  with the next smallest, flagged `fits: false` and shown with a "needs N GB"
+  chip; the "best choice" badge is only ever painted on a model that fits. The
+  catalog was rebuilt on names that actually exist in the public Ollama
+  library (`qwen3:0.6b` … `qwen3:8b`, `gemma3:1b`/`4b`, `llama3.2:1b`/`3b`,
+  `qwen3:1.7b`/`4b`, `phi4-mini`, `mistral:7b`, `llama3.1:8b`,
+  `deepseek-r1:1.5b`) — the old list carried `qwen3.5:*`, which does not
+  resolve and would have failed at `ollama pull` in front of the operator.
+  Locked by five new unit tests and E2E 9.5/9.6.
+- **Ollama re-evaluated as the local runtime, and its one gap handled.** It
+  stays the choice (single Go binary, model registry, streaming,
+  `/v1`-compatible surface, automatic CPU/GPU split) against llama.cpp,
+  LocalAI and vLLM — rationale in `docs/guides/chat.md`. It publishes no
+  32-bit ARM build, so `install_ollama()` now skips `armv7l`/`armv6l` with an
+  explicit message instead of leaving a daemon that never answers (asserted
+  in `dependencies.rs`).
+
 ### Fixed
 
 - **The topbar's network, notification and power popovers are on the theme

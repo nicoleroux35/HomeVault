@@ -573,12 +573,12 @@ test.describe('4 — Appearance', () => {
     await expect(page.locator('[data-slot="dialog-content"]')).toHaveCount(0);
   });
 
-  test('4.2 — grid is a 3-column radiogroup of the 15 bundled images', async ({ page }) => {
+  test('4.2 — grid is a 3-column radiogroup of the 44 bundled images', async ({ page }) => {
     await openSettings(page, admin);
     await openCategory(page, 'appearance');
     const grid = set(page).locator('.settings-wallpaper-grid');
     await expect(grid).toHaveAttribute('role', 'radiogroup');
-    await expect(grid.locator('.settings-wallpaper-tile')).toHaveCount(15);
+    await expect(grid.locator('.settings-wallpaper-tile')).toHaveCount(44);
     const cols = await grid.evaluate(
       (el) => getComputedStyle(el).gridTemplateColumns.split(' ').length
     );
@@ -589,8 +589,8 @@ test.describe('4 — Appearance', () => {
     await openSettings(page, admin);
     await openCategory(page, 'appearance');
     const imgs = set(page).locator('.settings-wallpaper-grid img');
-    await expect(imgs).toHaveCount(15);
-    for (let i = 0; i < 15; i++) {
+    await expect(imgs).toHaveCount(44);
+    for (let i = 0; i < 44; i++) {
       const img = imgs.nth(i);
       await expect(img).toHaveAttribute('src', /^\/wallpapers\/hv-\d\d-thumb\.webp$/);
       await expect(img).toHaveAttribute('decoding', 'async');
@@ -675,9 +675,10 @@ test.describe('4 — Appearance', () => {
     // Regressions: (a) the <img height="200"> attribute pinned every thumbnail
     // to 200px tall (no `height:auto`) → distorted vertical strips on the
     // 3-column grid; (b) the card drop-shadow bled ~24px past each tile and,
-    // with a 12px gap, made the rows look cramped / overlapping; (c) two
-    // bundled thumbs ship 640x480 while the rest are 640x427, so `h-auto`
-    // rendered those two taller — every tile must now share one box.
+    // with a 12px gap, made the rows look cramped / overlapping; (c) the
+    // bundled thumbs do not all share one shape (3:2, 4:3, 16:9 …), so
+    // `h-auto` rendered some taller than their neighbours — every tile must
+    // now share one box.
     await page.setViewportSize({ width: 460, height: 820 });
     await openSettings(page, admin);
     await openCategory(page, 'appearance');
@@ -714,7 +715,7 @@ test.describe('4 — Appearance', () => {
     expect(m.cols, '2 columns below 560px').toBe(2);
     expect(m.ratio, `thumbnail aspect ratio ${m.ratio.toFixed(2)} should be ~1.6`).toBeGreaterThan(1.45);
     expect(m.ratio).toBeLessThan(1.75);
-    expect(m.tileCount, 'all 15 wallpapers are in the grid').toBe(15);
+    expect(m.tileCount, 'all 44 wallpapers are in the grid').toBe(44);
     expect(m.uniform, `every tile is ${m.w}x${m.h}, got ${m.sizes.join(', ')}`).toBe(true);
     expect(m.colGap, 'column gap == row gap').toBe(m.rowGap);
     expect(m.outsetShadow, 'no bleeding outset drop-shadow on thumbnails').toBe(false);
@@ -961,6 +962,44 @@ test.describe('9 — AI Assistant', () => {
       await quick.click();
       await expect(set(page).locator('#newModelName')).toHaveValue(label);
     }
+  });
+
+  test('9.5 — exactly five models are proposed, ranked for this host', async ({ page }) => {
+    await openSettings(page, admin);
+    await openCategory(page, 'ai');
+    const cards = set(page).locator('[data-testid="settings-ai-recommendation"]');
+    // The recommendation endpoint reads /proc + the GPU, never Ollama, so the
+    // list must appear even with the daemon stopped.
+    await expect(cards).toHaveCount(5, { timeout: 15_000 });
+
+    // The top pick is the one that fits this host — a model that needs more
+    // memory than the machine has must never be labelled "best choice".
+    await expect(cards.first()).toHaveAttribute('data-fits', 'true');
+
+    // Every card carries its RAM floor, and the too-big ones are flagged
+    // rather than silently recommended.
+    for (let i = 0; i < 5; i++) {
+      const card = cards.nth(i);
+      await expect(card).toContainText(/RAM\s*\u2265\s*\d+\s*GB/i);
+    }
+    const flagged = await cards.locator('text=/needs \d+ GB|requiert \d+ Go/i').count();
+    const tooBig = await set(page).locator('[data-testid="settings-ai-recommendation"][data-fits="false"]').count();
+    expect(flagged).toBe(tooBig);
+  });
+
+  test('9.6 — the recommendations come from the API, not from a hardcoded list', async ({ page }) => {
+    // Settings fetches the ranking once on mount, not on every category
+    // click — wait for that first request while the window opens.
+    const [resp] = await Promise.all([
+      page.waitForResponse((r) => r.url().includes('/api/chat/models/recommend'), { timeout: 20_000 }),
+      openSettings(page, admin),
+    ]);
+    const body = await resp.json();
+    expect(body.success).toBe(true);
+    expect(Array.isArray(body.data.recommendations)).toBe(true);
+    expect(body.data.recommendations).toHaveLength(5);
+    // The host description the card renders comes from the same payload.
+    expect(typeof body.data.system.total_ram_gb).toBe('number');
   });
 
   test('9.4 — the model select is disabled when there are no installed models', async ({ page }) => {

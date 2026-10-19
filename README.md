@@ -55,8 +55,13 @@ Svelte 5 frontend rendered as a desktop-like windowing UI.
 - **Virtual machines**: Incus VMs and containers, cloud images, console.
 - **VPN**: WireGuard and OpenVPN, Syncthing sync, aria2
   downloader.
-- **AI assistant**: local chat via Ollama, RAG knowledge base, and an MCP
-  gateway for external agents.
+- **AI assistant**: a local chat that runs on the appliance itself — no
+  provider, no API key, nothing leaves the machine. It answers questions about
+  HomeVault's own features from its knowledge base, and Settings proposes five
+  models ranked for the host's RAM/GPU (from 1 GB to 12 GB).
+- **MCP server**: expose HomeVault to an external agent (Claude, an IDE, a
+  script) over the Model Context Protocol — apps, files, VMs and system
+  actions, each behind a permission scope and a revocable token.
 - **Health, journal and quotas**: system monitoring, event journal
   and transfer quotas.
 - **Metrics and scheduled tasks**: historical performance charts (1 h /

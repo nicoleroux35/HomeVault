@@ -814,11 +814,34 @@ install_optional exfat-fuse "exFAT (USB drives / SD cards)"
 # use its official installer, then enable the daemon. We deliberately do
 # NOT download any model here — the model is the user's choice (size vs.
 # quality depends on the host's RAM/GPU) and is picked from Settings > AI,
-# which recommends models that fit this machine and pulls the selected one.
-# Everything here is best-effort — HomeVault runs fine without Ollama, the
-# Chat app just shows an "AI offline" state until Ollama + a model exist.
+# which proposes five models ranked for this machine and pulls the selected
+# one.
+#
+# Why Ollama and not llama.cpp / LocalAI / vLLM:
+#   - one static Go binary per architecture, no Python runtime on the
+#     appliance (LocalAI/vLLM pull a whole Python stack);
+#   - a model registry: `pull` downloads the right quantisation by name, so
+#     the UI can offer a list instead of asking the operator to fetch GGUF
+#     files (llama.cpp server needs the file and the tokenizer by hand);
+#   - streaming + an [OI]-compatible /v1 surface, which is what the SSE
+#     endpoint in src/handlers/chat.rs consumes;
+#   - automatic CPU/GPU split (CUDA, ROCm, Apple Metal) without flags.
+# vLLM is GPU-only and needs far more than the 1 GB floor HomeVault targets.
+#
+# Ollama publishes amd64 and arm64 builds only — no 32-bit ARM. On armv7l
+# the install is skipped on purpose: a half-working daemon would look like a
+# bug in the app. The Chat then shows its "AI offline" state.
+# Everything here is best-effort — HomeVault runs fine without Ollama.
 # ---------------------------------------------------------------------------
 install_ollama() {
+    case "$(uname -m)" in
+        armv7l|armv6l)
+            warn "Ollama has no 32-bit ARM build — the AI assistant stays offline on $(uname -m)."
+            info "Alternative: run an [OI]-compatible server (llama.cpp) elsewhere and point the app at it."
+            return
+            ;;
+    esac
+
     if command -v ollama &> /dev/null; then
         ok "Ollama (AI assistant) already installed"
     elif curl -fsSL https://ollama.com/install.sh 2>/dev/null | sh &> /dev/null \
@@ -851,7 +874,7 @@ install_ollama() {
         warn "Ollama installed but port 11434 does not answer — check: systemctl status ollama"
     fi
 
-    info "No AI model is downloaded automatically — pick one from Settings > AI (recommendations matching this machine's RAM/GPU)."
+    info "No AI model is downloaded automatically — pick one of the five models Settings > AI ranks for this machine."
 }
 install_ollama
 
