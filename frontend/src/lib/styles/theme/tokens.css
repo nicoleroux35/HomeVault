@@ -14,12 +14,13 @@
  *
  * NON-COLOUR DESIGN RULES — since 2026-10-19 the spacing rhythm, radius
  * ladder, elevation, font weights, leading, tracking and layout breakpoints
- * follow `design-tokens.md` at the repo root (the Apple-style reference),
- * translated onto the `--hv-*` vocabulary below. Its **colour palette is
+ * follow the Apple-derived reference adopted on that date, translated onto
+ * the `--hv-*` vocabulary below. Its **colour palette is
  * deliberately NOT adopted**: the Appliance palette above (one accent
  * #1E62AE, the cool blue-grey ink ramp, opaque paper) stays the single
  * source of colour, so this file keeps exactly one colour authority.
- * Everything ported from that reference is marked "design-tokens.md §N".
+ * Everything ported from that reference is marked "Apple ref §N" (the section
+ * numbering of the source spec, which is not part of the repository).
  */
 
 :root {
@@ -608,7 +609,7 @@
       MODAL & OVERLAY
       ============================================ */
   --hv-modal-overlay: rgba(16, 24, 40, 0.5);
-  --hv-modal-shadow: var(--hv-shadow-2xl);   /* design-tokens.md §5 — modal step */
+  --hv-modal-shadow: var(--hv-shadow-2xl);   /* Apple ref §5 — modal step */
   --hv-modal-backdrop: rgba(16, 24, 40, 0.5);
   --hv-tooltip-bg: #1e293b;                /* slate-800 (DSM) — one tooltip vocabulary */
   --hv-tooltip-text: #ffffff;
@@ -697,7 +698,7 @@
   --hv-font-size-4xl: var(--hv-type-display);
   --hv-font-size-5xl: var(--hv-type-gauge);
 
-  /* Font Weights — design-tokens.md §3: a semibold-to-bold title scale against
+  /* Font Weights — Apple ref §3: a semibold-to-bold title scale against
      a regular-to-medium body scale, so hierarchy comes from weight as well as
      size. 600 is the default heading weight, 700 the display/hero weight; 800
      and 900 are the reference's CJK steps, kept available for display headings
@@ -709,7 +710,7 @@
   --hv-font-weight-extrabold: 800;
   --hv-font-weight-black: 900;
 
-  /* Line Heights — design-tokens.md §8. Titles sit tight (1.1) so a multi-line
+  /* Line Heights — Apple ref §8. Titles sit tight (1.1) so a multi-line
      headline stays one block; body copy breathes (1.53) for reading. `relaxed`
      is the reference's loose body step (1.58), not the old web-default 1.75. */
   --hv-line-height-tight: 1.1;
@@ -719,7 +720,7 @@
   --hv-line-height-title: var(--hv-line-height-tight);   /* h1–h3 */
   --hv-line-height-body: var(--hv-line-height-normal);   /* paragraphs, prose */
 
-  /* Letter Spacing — design-tokens.md §7. Display/title text is tracked in
+  /* Letter Spacing — Apple ref §7. Display/title text is tracked in
      (-0.015em) for the polished editorial feel; body text is untracked. `tight`
      (-0.02em) is the reference's tightest title step (large display only) and
      `wide` stays the eyebrow/label tracking the appliance already used. */
@@ -801,7 +802,7 @@
   /* ============================================
      LAYOUT RHYTHM — section / component / card
      --------------------------------------------
-     design-tokens.md §2, translated onto the 4px grid above. The reference
+     Apple ref §2, translated onto the 4px grid above. The reference
      states the same idea the appliance already followed — generous whitespace,
      progressive step-down — but with named roles instead of ad-hoc numbers,
      so a screen no longer has to invent its own page gap.
@@ -830,7 +831,7 @@
   --hv-card-padding-lg: var(--hv-space-10);   /* 40px */
 
   /* Content column — a centred reading measure for the gateway / documentation
-     style screens (design-tokens.md §2). App windows stay full-bleed; nothing
+     style screens (Apple ref §2). App windows stay full-bleed; nothing
      in-window is capped by this. */
   --hv-content-max-width: 980px;
   --hv-content-max-width-lg: 1200px;
@@ -839,13 +840,13 @@
      BORDER RADIUS SCALE — appliance stops
      --------------------------------------------
      Three families, each worth exactly ONE value: the BADGE stop — **8px**,
-     inline badges / micro chips that are not controls (design-tokens.md §4
+     inline badges / micro chips that are not controls (Apple ref §4
      `--apple-radius-badge`); the CONTROL corner — **12px**, every button,
      input, select, chip and row (`--apple-radius-card-sm`); and the SURFACE
      corner — **18px**, every container (`--apple-radius-card`). Plus the
      pill stop (`--hv-radius-pill`, 980px — tags and capsules, the reference's
      `--apple-radius-button`) and `--hv-radius-full` for true circles.
-     2026-10-19 — the ladder moved 4/6/12 → 8/12/18 to adopt design-tokens.md
+     2026-10-19 — the ladder moved 4/6/12 → 8/12/18 to adopt the Apple-derived reference
      §4. The architecture did NOT change: still one number per role, still a
      distinct corner for badge vs control vs container, still retuned in one
      place each. The 8px and 10px *control* stops stay retired — 8px now
@@ -880,7 +881,7 @@
   --hv-radius-3xl: 18px;
   --hv-radius-4xl: 18px;
   --hv-radius-full: 9999px;
-  /* Badge / tag stops (design-tokens.md §4). `--hv-radius-badge` is the small
+  /* Badge / tag stops (Apple ref §4). `--hv-radius-badge` is the small
      non-control stop (inline badges, chips, key caps); `--hv-radius-pill` is
      the reference's `--apple-radius-button` (980px), the shape of every
      *tag* — filter chips, severity chips, the launcher category row. It is a
@@ -1003,7 +1004,7 @@
   /* ============================================
       SHADOWS & ELEVATION
       ============================================ */
-  /* Elevation scale — single source of truth. design-tokens.md §5: Apple's
+  /* Elevation scale — single source of truth. Apple ref §5: Apple's
      multi-layer soft shadows (a tight contact shadow + a wide ambient one),
      low-alpha black, no single hard drop. The reference's four named values
      map 1:1 onto this ladder: sm → --hv-shadow-sm, card → --hv-shadow-md
@@ -1028,7 +1029,7 @@
   --hv-shadow-focus-thin: 0 0 0 2px rgba(30, 98, 174, 0.9);
 
   /* ============================================
-     DISPLAY GRADIENTS (design-tokens.md §6)
+     DISPLAY GRADIENTS (Apple ref §6)
      --------------------------------------------
      The reference uses gradients for hero headlines and hero backdrops. Only
      the two roles HomeVault can actually use are ported, and both are built
@@ -1089,7 +1090,7 @@
   /* ============================================
      RESPONSIVE BREAKPOINTS
      --------------------------------------------
-     design-tokens.md §9 — three layout breakpoints, mobile-first:
+     Apple ref §9 — three layout breakpoints, mobile-first:
        < 734px      phone (single column)
        734–1067px   tablet (multi-column)
        1068–1439px  desktop (centred content column)
@@ -1319,7 +1320,7 @@
   --hv-window-radius: var(--hv-radius-2xl);
   --hv-window-bg: #FFFFFF;
   --hv-window-border: #CBD5E1;
-  --hv-window-shadow: var(--hv-shadow-lg);   /* design-tokens.md §5 — a floating window lifts like a hovered card */
+  --hv-window-shadow: var(--hv-shadow-lg);   /* Apple ref §5 — a floating window lifts like a hovered card */
   /* Window-control trio (WindowFrame.svelte) — the mock's inline amber /
      blue / red controls, 28px PERFECT CIRCLES (2026-10-18: `50%`, the dock
      tiles' / topbar buttons' shape language — they were 8px rounded squares)
@@ -1351,7 +1352,7 @@
      ============================================ */
   --hv-shell-glass: #FFFFFF;                     /* window / panel surface */
   --hv-shell-card: #F7F8FA;                      /* card / tile surface (sits on the window) */
-  --hv-shell-shadow-card: var(--hv-shadow-md);   /* design-tokens.md §5 — the resting card step */
+  --hv-shell-shadow-card: var(--hv-shadow-md);   /* Apple ref §5 — the resting card step */
   --hv-shell-fill: #EFF1F4;                      /* subtle raised fill (toolbars, chips) */
   --hv-shell-border-soft: #EDF0F4;               /* faint divider */
   --hv-shell-border: #DCE1E7;                    /* standard hairline */

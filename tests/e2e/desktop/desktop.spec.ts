@@ -2122,7 +2122,7 @@ test.describe('14 — Chrome geometry & material', () => {
     // overrides, so the same button read differently depending on which screen
     // it lived on — and a button next to the input it submits did not line up.
     // Every `<button>` / `[role="button"]` now resolves to
-    // `--hv-radius-control` (12px since the 2026-10-19 design-tokens.md
+    // `--hv-radius-control` (12px since the 2026-10-19 Apple-reference
     // retune), with four deliberate exceptions this test encodes:
     //   * `50%`   — the circular shape language (window trio, dock tiles,
     //               topbar buttons, avatars).
