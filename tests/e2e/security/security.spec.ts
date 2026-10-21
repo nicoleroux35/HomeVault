@@ -44,6 +44,11 @@
  * 403 are asserted (still without ever enabling) only when a real `ufw` is
  * reachable.
  *
+ * §5b covers the card's newer surface (default policy, removal by live spec,
+ * the disable gate, error feedback) by **intercepting** the firewall
+ * endpoints with `page.route` — the markup and the keyboard contract run on
+ * every host, with no `ufw` and no root involved.
+ *
  * Run (all):     npx playwright test tests/e2e/security/security.spec.ts --project=firefox
  * Run (single):  npx playwright test tests/e2e/security/security.spec.ts -g "3.1"
  * Custom server: BASE_URL=http://localhost:8080 npx playwright test tests/e2e/security/security.spec.ts
@@ -89,6 +94,29 @@ async function apiLogin(ctx: APIRequestContext, u: string, p: string): Promise<T
   });
   const body = await res.json().catch(() => ({}));
   return { token: body?.data?.token || '', csrf: body?.data?.csrf_token || '' };
+}
+
+/**
+ * A non-admin session that can actually use the API.
+ *
+ * `POST /api/users` creates the account with an admin-chosen password, so
+ * `password_change_guard` answers `403 password_change_required` to every
+ * call until the owner picks their own. Log in, change it, log in again —
+ * otherwise §6.3 would assert a 403 that comes from the forced-change gate
+ * instead of the admin gate it is about.
+ */
+async function apiLoginAsViewer(
+  ctx: APIRequestContext,
+  u: string,
+  initialPassword: string,
+  newPassword = 'Viewer67890!',
+): Promise<Tokens> {
+  const first = await apiLogin(ctx, u, initialPassword);
+  await ctx.put(`/api/users/${u}/password`, {
+    headers: { 'x-session-token': first.token, 'x-csrf-token': first.csrf },
+    data: { current_password: initialPassword, new_password: newPassword },
+  });
+  return apiLogin(ctx, u, newPassword);
 }
 
 async function getHeapMB(page: Page): Promise<number> {
@@ -585,6 +613,17 @@ test.describe('5 — Firewall card', () => {
     expect(typeof res.json?.data?.available).toBe('boolean');
     expect(typeof res.json?.data?.enabled).toBe('boolean');
     expect(Array.isArray(res.json?.data?.rules)).toBe(true);
+    // What happens to traffic no rule matches — without it the rule list
+    // cannot be interpreted.
+    expect(typeof res.json?.data?.default_policy?.incoming).toBe('string');
+    expect(typeof res.json?.data?.default_policy?.outgoing).toBe('string');
+  });
+
+  test('5.2b — the card shows the default policy', async ({ page }) => {
+    test.skip(!ufwAvailable, 'ufw not reachable on this host — the card shows the warning instead');
+    await openSecurity(page, adminTokens);
+    const card = set(page).locator('[data-testid="settings-card"]', { hasText: /firewall|pare-feu/i });
+    await expect(card).toContainText(/incoming|entrant|eingehend/i);
   });
 
   test('5.3 — enabling without confirmation never turns the firewall on', async ({ page }) => {
@@ -592,10 +631,22 @@ test.describe('5 — Firewall card', () => {
     const before = await apiFetch(page, 'GET', '/api/firewall/status', adminTokens);
     const res = await apiFetch(page, 'POST', '/api/firewall/enable', adminTokens, { confirmed: false });
     expect(res.status).toBe(400);
-    if (ufwAvailable) {
+    // The confirmation gate runs before the ufw probe, so the reason is
+    // always the missing confirmation.
+    expect(String(res.json?.message).toLowerCase()).toContain('confirm');
+    // State is unchanged.
+    const after = await apiFetch(page, 'GET', '/api/firewall/status', adminTokens);
+    expect(after.json?.data?.enabled).toBe(before.json?.data?.enabled);
+  });
+
+  test('5.3b — disabling without confirmation is refused and changes nothing', async ({ page }) => {
+    await openSecurity(page, adminTokens);
+    const before = await apiFetch(page, 'GET', '/api/firewall/status', adminTokens);
+    for (const body of [undefined, {}, { confirmed: false }]) {
+      const res = await apiFetch(page, 'POST', '/api/firewall/disable', adminTokens, body);
+      expect(res.status).toBe(400);
       expect(String(res.json?.message).toLowerCase()).toContain('confirm');
     }
-    // State is unchanged.
     const after = await apiFetch(page, 'GET', '/api/firewall/status', adminTokens);
     expect(after.json?.data?.enabled).toBe(before.json?.data?.enabled);
   });
@@ -607,9 +658,7 @@ test.describe('5 — Firewall card', () => {
     const mandatory = (status.json?.data?.rules ?? []).find((r: any) => r.is_mandatory);
     test.skip(!mandatory, 'no mandatory rule present (firewall never enabled on this host)');
     const del = await apiFetch(page, 'DELETE', '/api/firewall/rules', adminTokens, {
-      port: mandatory.port,
-      protocol: mandatory.protocol,
-      action: 'allow',
+      spec: mandatory.spec,
     });
     expect(del.status).toBe(403);
   });
@@ -618,6 +667,267 @@ test.describe('5 — Firewall card', () => {
     await openSecurity(page, adminTokens);
     const res = await apiFetch(page, 'POST', '/api/firewall/rules', adminTokens, { port: '   ' });
     expect(res.status).toBe(400);
+  });
+
+  test('5.6 — the rule verb cannot be smuggled through the action field', async ({ page }) => {
+    await openSecurity(page, adminTokens);
+    // `action` used to be the verb of `sudo ufw <action> …`: this payload ran
+    // `sudo ufw delete …` from the "add rule" endpoint.
+    for (const action of ['delete', 'reset', '--force', 'enable']) {
+      const res = await apiFetch(page, 'POST', '/api/firewall/rules', adminTokens, {
+        port: '22',
+        action,
+      });
+      expect(res.status, `action=${action}`).toBe(400);
+      expect(String(res.json?.message).toLowerCase()).toContain('action');
+    }
+  });
+
+  test('5.7 — malformed protocol, port and source are refused before any ufw call', async ({
+    page,
+  }) => {
+    await openSecurity(page, adminTokens);
+    const cases: Array<[any, string]> = [
+      [{ port: '22', protocol: 'icmp' }, 'protocol'],
+      [{ port: '22/tcp' }, 'port'],
+      [{ port: '70000' }, 'port'],
+      [{ port: '2000:1000' }, 'port'],
+      [{ port: '443', source: 'any' }, 'source'],
+      [{ port: '443', source: '1.2.3.4/33' }, 'source'],
+    ];
+    for (const [body, field] of cases) {
+      const res = await apiFetch(page, 'POST', '/api/firewall/rules', adminTokens, body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect(String(res.json?.message).toLowerCase()).toContain(field);
+    }
+  });
+
+  test('5.8 — deleting a rule the firewall does not have is a 404, not a blind delete', async ({
+    page,
+  }) => {
+    test.skip(!ufwAvailable, 'ufw not reachable on this host');
+    await openSecurity(page, adminTokens);
+    const res = await apiFetch(page, 'DELETE', '/api/firewall/rules', adminTokens, {
+      spec: 'allow 6553/tcp',
+    });
+    expect(res.status).toBe(404);
+  });
+
+  test('5.9 — an invalid default policy is rejected', async ({ page }) => {
+    await openSecurity(page, adminTokens);
+    for (const [body, field] of [
+      [{ direction: 'forward', policy: 'deny' }, 'direction'],
+      [{ direction: 'incoming', policy: 'disabled' }, 'policy'],
+    ] as Array<[any, string]>) {
+      const res = await apiFetch(page, 'POST', '/api/firewall/default-policy', adminTokens, body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect(String(res.json?.message).toLowerCase()).toContain(field);
+    }
+  });
+
+  test('5.10 — the change history is readable and well formed', async ({ page }) => {
+    await openSecurity(page, adminTokens);
+    const res = await apiFetch(page, 'GET', '/api/firewall/history?limit=5', adminTokens);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.json?.data?.entries)).toBe(true);
+  });
+});
+
+// ===========================================================================
+// 5b. Firewall card against a mocked ufw
+// ===========================================================================
+
+/**
+ * The card's newer surface — default policy, rule removal by live spec, the
+ * disable gate, error feedback — only renders when `ufw` is reachable, which
+ * a dev/CI host rarely is (`sudo ufw` wants a password). These tests
+ * intercept the firewall endpoints instead, so the markup and the keyboard
+ * contract are exercised **without ever touching the host firewall**. The
+ * mock payloads are exactly the shapes `src/firewall.rs` serializes.
+ */
+const FAKE_FIREWALL_STATUS = {
+  success: true,
+  data: {
+    available: true,
+    enabled: true,
+    default_policy: { incoming: 'deny', outgoing: 'allow', routed: 'disabled' },
+    rules: [
+      {
+        number: 1,
+        port: '22',
+        protocol: 'tcp',
+        action: 'ALLOW',
+        source: null,
+        comment: 'homevault-mandatory-ssh',
+        is_mandatory: true,
+        spec: 'allow 22/tcp',
+      },
+      {
+        number: 2,
+        port: '5900',
+        protocol: 'tcp',
+        action: 'ALLOW',
+        source: '192.168.1.0/24',
+        comment: 'homevault-custom-allow-5900',
+        is_mandatory: false,
+        spec: 'allow from 192.168.1.0/24 to any port 5900 proto tcp',
+      },
+    ],
+  },
+};
+
+async function mockFirewall(
+  page: Page,
+  opts: {
+    onDelete?: (body: any) => void;
+    onDisable?: (body: any) => void;
+    addResponse?: { status: number; body: any };
+  } = {},
+) {
+  await page.route('**/api/firewall/status*', (route) =>
+    route.fulfill({ status: 200, json: FAKE_FIREWALL_STATUS }),
+  );
+  await page.route('**/api/firewall/history*', (route) =>
+    route.fulfill({ status: 200, json: { success: true, data: { entries: [] } } }),
+  );
+  await page.route('**/api/firewall/enable/preview*', (route) =>
+    route.fulfill({
+      status: 200,
+      json: {
+        success: true,
+        data: {
+          ssh_port: 22,
+          ssh_ports: [22],
+          app_port: 8080,
+          default_policy: FAKE_FIREWALL_STATUS.data.default_policy,
+          existing_rules: FAKE_FIREWALL_STATUS.data.rules,
+          warnings: [],
+        },
+      },
+    }),
+  );
+  await page.route('**/api/firewall/rules', (route) => {
+    if (route.request().method() === 'DELETE') {
+      opts.onDelete?.(route.request().postDataJSON());
+      return route.fulfill({ status: 200, json: { success: true, data: { ok: true } } });
+    }
+    const response = opts.addResponse ?? {
+      status: 200,
+      body: { success: true, data: { ok: true, already_exists: false } },
+    };
+    return route.fulfill({ status: response.status, json: response.body });
+  });
+  await page.route('**/api/firewall/disable', (route) => {
+    opts.onDisable?.(route.request().postDataJSON());
+    return route.fulfill({ status: 200, json: { success: true, data: { ok: true, enabled: false } } });
+  });
+}
+
+function firewallCard(page: Page) {
+  return set(page).locator('[data-testid="settings-card"]', { hasText: /firewall|pare-feu/i });
+}
+
+test.describe('5b — Firewall card with a mocked ufw', () => {
+  test('5.11 — rules and the default policy render, mandatory rules are marked', async ({
+    page,
+  }) => {
+    await mockFirewall(page);
+    await openSecurity(page, adminTokens);
+    const card = firewallCard(page);
+    await expect(card).toContainText('deny incoming');
+    await expect(card).toContainText('5900/tcp');
+    await expect(card).toContainText('192.168.1.0/24');
+
+    const rows = card.locator('.fw-list-row');
+    await expect(rows).toHaveCount(2);
+    // The mandatory rule is marked and offers no Remove button; the custom
+    // one is removable.
+    await expect(rows.nth(0)).toContainText(/required/i);
+    await expect(rows.nth(0).getByRole('button', { name: /remove/i })).toHaveCount(0);
+    await expect(rows.nth(1).getByRole('button', { name: /remove/i })).toHaveCount(1);
+  });
+
+  test('5.12 — removing a rule is confirmed, focus-trapped, and deletes by its live spec', async ({
+    page,
+  }) => {
+    const deletes: any[] = [];
+    await mockFirewall(page, { onDelete: (body) => deletes.push(body) });
+    await openSecurity(page, adminTokens);
+    const card = firewallCard(page);
+    const remove = card.locator('.fw-list-row').nth(1).getByRole('button', { name: /remove/i });
+    await remove.click();
+
+    const dialog = page.locator('.settings-modal[role="dialog"]');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toHaveAttribute('aria-modal', 'true');
+    // A modal dialog: focus must move inside it, not stay on the page.
+    expect(
+      await page.evaluate(() => {
+        const dlg = document.querySelector('.settings-modal[role="dialog"]');
+        return !!dlg && dlg.contains(document.activeElement);
+      }),
+    ).toBe(true);
+    // Nothing has been sent yet.
+    expect(deletes).toEqual([]);
+
+    // Escape closes it and returns focus to the trigger (WCAG 2.4.3).
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    const restored = await page.evaluate(
+      () => (document.activeElement as HTMLElement | null)?.textContent?.trim() ?? '',
+    );
+    expect(restored.toLowerCase()).toContain('remove');
+
+    await remove.click();
+    await dialog.locator('.fw-modal-footer').getByRole('button', { name: /remove rule/i }).click();
+    await expect.poll(() => deletes.length).toBe(1);
+    // The request selects the rule by the spec the server itself printed —
+    // the `from <source>` clause included, which the old
+    // `delete <action> <port>/<proto>` form could not express.
+    expect(deletes[0].spec).toBe('allow from 192.168.1.0/24 to any port 5900 proto tcp');
+  });
+
+  test('5.13 — disabling asks for confirmation and names the consequence', async ({ page }) => {
+    let disableBody: any = 'not-called';
+    await mockFirewall(page, { onDisable: (body) => (disableBody = body) });
+    await openSecurity(page, adminTokens);
+    const card = firewallCard(page);
+
+    await card.getByRole('button', { name: /^disable firewall$/i }).click();
+    const dialog = page.locator('.settings-modal[role="dialog"]');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText(/every port/i);
+
+    await dialog.getByRole('button', { name: /cancel/i }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(disableBody).toBe('not-called');
+
+    await card.getByRole('button', { name: /^disable firewall$/i }).click();
+    await dialog
+      .locator('.fw-modal-footer')
+      .getByRole('button', { name: /^disable firewall$/i })
+      .click();
+    // The server requires the same explicit body as enabling.
+    await expect.poll(() => disableBody).toEqual({ confirmed: true });
+  });
+
+  test('5.14 — a refused rule surfaces the server message instead of failing silently', async ({
+    page,
+  }) => {
+    await mockFirewall(page, {
+      addResponse: {
+        status: 400,
+        body: {
+          success: false,
+          message: "Port '22/tcp' is not a number between 1 and 65535",
+        },
+      },
+    });
+    await openSecurity(page, adminTokens);
+    const card = firewallCard(page);
+    await card.locator('#fw-new-port').fill('22/tcp');
+    await card.getByRole('button', { name: /add rule/i }).click();
+    await expect(card.locator('.fw-feedback')).toContainText('not a number between 1 and 65535');
   });
 });
 
@@ -632,6 +942,7 @@ test.describe('6 — Auth guards', () => {
     '/api/antivirus/scans',
     '/api/antivirus/threats',
     '/api/firewall/status',
+    '/api/firewall/history',
     '/api/ransomware/status',
     '/api/ransomware/settings',
     '/api/ransomware/protected-paths',
@@ -678,7 +989,7 @@ test.describe('6 — Auth guards', () => {
       await ctx.dispose();
       test.skip(true, 'could not provision a throwaway non-admin user');
     }
-    const { token: userToken } = await apiLogin(ctx, username, 'NonAdminPass123!');
+    const { token: userToken } = await apiLoginAsViewer(ctx, username, 'NonAdminPass123!');
 
     const muts: Array<[string, string, any?]> = [
       ['PUT', '/api/antivirus/settings', { quarantine_dir: '/tmp/q', scheduled_scan_enabled: false, scheduled_scan_cron: '0 3 * * 0', scheduled_scan_path: null, scan_archives: true }],
@@ -688,6 +999,7 @@ test.describe('6 — Auth guards', () => {
       ['POST', '/api/ransomware/protected-paths', { path: '/home' }],
       ['POST', '/api/firewall/enable', { confirmed: true }],
       ['POST', '/api/firewall/disable'],
+      ['POST', '/api/firewall/default-policy', { direction: 'incoming', policy: 'deny' }],
       ['POST', '/api/firewall/rules', { port: '443' }],
     ];
     for (const [method, url, body] of muts) {

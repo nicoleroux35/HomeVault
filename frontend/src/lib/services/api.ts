@@ -2676,16 +2676,40 @@ class ApiClient {
     return this.post('/firewall/enable', { confirmed: true });
   }
 
+  /**
+   * Disabling a firewall opens every port it was blocking, so the server
+   * requires the same explicit confirmation as enabling.
+   */
   async disableFirewall() {
-    return this.post('/firewall/disable');
+    return this.post('/firewall/disable', { confirmed: true });
   }
 
   async addFirewallRule(data: { port: string; protocol?: string; action?: string; source?: string }) {
     return this.post('/firewall/rules', data);
   }
 
-  async deleteFirewallRule(data: { port: string; protocol?: string; action?: string }) {
+  /**
+   * Delete by the rule's own live `spec` (preferred: it identifies one rule
+   * exactly, including its `from <source>` clause) or by its identity fields.
+   * The server looks the rule up in the live firewall and refuses (404) if it
+   * is gone, so a stale page can never delete the wrong rule.
+   */
+  async deleteFirewallRule(data: {
+    spec?: string;
+    port?: string;
+    protocol?: string;
+    action?: string;
+    source?: string;
+  }) {
     return this.delete('/firewall/rules', data);
+  }
+
+  async setFirewallDefaultPolicy(data: { direction: 'incoming' | 'outgoing' | 'routed'; policy: 'allow' | 'deny' | 'reject' }) {
+    return this.post('/firewall/default-policy', data);
+  }
+
+  async getFirewallHistory(limit = 50) {
+    return this.get(`/firewall/history?limit=${limit}`, { cache: false });
   }
 
   // --- Built-in HTTPS/TLS (admin-only; applies after a restart) ---
@@ -2886,6 +2910,23 @@ export interface FirewallRule {
   source: string | null;
   comment: string | null;
   is_mandatory: boolean;
+  /** The rule exactly as `ufw show added` printed it, comment stripped —
+   *  what the delete endpoint takes to remove this rule and no other. */
+  spec: string;
+}
+
+export interface FirewallDefaultPolicy {
+  incoming: string;
+  outgoing: string;
+  routed: string;
+}
+
+export interface FirewallHistoryEntry {
+  id: string;
+  action: string;
+  rule_description: string | null;
+  performed_by: string;
+  created_at: string;
 }
 
 export interface FileEntry {

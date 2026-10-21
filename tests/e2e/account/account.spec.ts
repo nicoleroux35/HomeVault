@@ -140,8 +140,19 @@ async function createAccount(
   if (!res.ok()) {
     throw new Error(`could not create throwaway account: ${res.status()} ${await res.text()}`);
   }
-  const { token, csrf } = await apiLogin(ctx, username, password);
-  return { username, password, token, csrf };
+  // `POST /api/users` stores an admin-chosen password, so the account is
+  // flagged `must_change_password` and `password_change_guard` refuses every
+  // call but the change flow. The Account window needs a fully usable
+  // session, so clear the flag here and return the owner-chosen password.
+  const ownedPassword = `Owned${password}`;
+  const flagged = await apiLogin(ctx, username, password);
+  await ctx.put(`/api/users/${username}/password`, {
+    headers: { 'x-session-token': flagged.token, 'x-csrf-token': flagged.csrf },
+    data: { current_password: password, new_password: ownedPassword },
+  });
+  // The change revokes every session of the account.
+  const { token, csrf } = await apiLogin(ctx, username, ownedPassword);
+  return { username, password: ownedPassword, token, csrf };
 }
 
 async function deleteAccount(
@@ -192,6 +203,14 @@ async function gotoDesktop(page: Page, tokens: Tokens, lang?: string) {
   await seedBrowser(page, tokens, lang);
   await page.goto('/desktop');
   await page.waitForSelector('.hv-user-pill', { timeout: 20_000 });
+  // Every account this suite creates is brand new, so the once-per-version
+  // "What's New" modal opens on its first desktop load and its overlay
+  // intercepts the user-menu click.
+  const whatsNew = page.locator('[data-testid="whats-new-modal"]');
+  if (await whatsNew.isVisible().catch(() => false)) {
+    await page.locator('[data-testid="whats-new-dismiss"]').click().catch(() => {});
+    await whatsNew.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {});
+  }
 }
 
 /** Land on the desktop and open the "My Account" window. */

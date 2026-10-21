@@ -365,7 +365,19 @@ test.describe('4 — Security', () => {
       test.skip(true, `could not create non-admin user (${created.status()})`);
     }
     try {
-      const { token } = await apiLogin(ctx, uname, 'Viewer12345!');
+      const first = await apiLogin(ctx, uname, 'Viewer12345!');
+      // The account was created with an admin-chosen password, so the session
+      // is gated by `password_change_guard`: every API call answers 403
+      // `password_change_required` until the owner picks their own password
+      // (that gate is what makes 4.3 meaningful — without it the plain read
+      // below would be refused for the wrong reason).
+      const changed = await ctx.put(`/api/users/${uname}/password`, {
+        headers: { 'x-session-token': first.token, 'x-csrf-token': first.csrf },
+        data: { current_password: 'Viewer12345!', new_password: 'Viewer67890!' },
+      });
+      expect(changed.status()).toBe(200);
+
+      const { token } = await apiLogin(ctx, uname, 'Viewer67890!');
       const plain = await ctx.get('/api/restic/repos', { headers: { 'x-session-token': token } });
       expect(plain.status()).toBe(200);
       const leak = await ctx.get('/api/restic/repos?include_password=true', {
@@ -391,7 +403,15 @@ test.describe('4 — Security', () => {
       test.skip(true, `could not create non-admin user (${created.status()})`);
     }
     try {
-      const { token, csrf } = await apiLogin(ctx, uname, 'Viewer12345!');
+      const first = await apiLogin(ctx, uname, 'Viewer12345!');
+      // Clear the forced first-sign-in change first: otherwise the guard
+      // answers 403 for every call and these assertions would pass without
+      // ever exercising the admin gate they are about.
+      await ctx.put(`/api/users/${uname}/password`, {
+        headers: { 'x-session-token': first.token, 'x-csrf-token': first.csrf },
+        data: { current_password: 'Viewer12345!', new_password: 'Viewer67890!' },
+      });
+      const { token, csrf } = await apiLogin(ctx, uname, 'Viewer67890!');
       const h = { 'x-session-token': token, 'x-csrf-token': csrf };
       for (const [method, path, data] of [
         ['post', '/api/restic/retention-policies', { name: 'x' }],
@@ -399,7 +419,11 @@ test.describe('4 — Security', () => {
         ['post', '/api/restic/backup', { repo_id: 'x' }],
       ] as const) {
         const r = await (ctx as any)[method](path, { headers: h, data });
+        // 403 for authorization, never the 403 `password_change_required`
+        // of a still-flagged session.
         expect(r.status(), `${method} ${path}`).toBe(403);
+        const body = await r.json().catch(() => ({}));
+        expect(body?.code, `${method} ${path}`).not.toBe('password_change_required');
       }
     } finally {
       await ctx.delete(`/api/users/${uname}`, { headers: adminHeaders }).catch(() => {});

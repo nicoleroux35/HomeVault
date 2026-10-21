@@ -80,6 +80,29 @@ async function apiLogin(
   return { token: body?.data?.token || '', csrf: body?.data?.csrf_token || '' };
 }
 
+/**
+ * A non-admin session that can actually use the API.
+ *
+ * `POST /api/users` creates the account with an admin-chosen password, so
+ * `password_change_guard` answers `403 password_change_required` to every
+ * call until the owner picks their own. Log in, change it, log in again —
+ * otherwise these authorization tests would assert a 403 that comes from the
+ * forced-change gate instead of the admin gate they are about.
+ */
+async function apiLoginAsViewer(
+  ctx: APIRequestContext,
+  username: string,
+  initialPassword: string,
+  newPassword = 'Viewer67890!',
+): Promise<{ token: string; csrf: string }> {
+  const first = await apiLogin(ctx, username, initialPassword);
+  await ctx.put(`/api/users/${username}/password`, {
+    headers: { 'x-session-token': first.token, 'x-csrf-token': first.csrf },
+    data: { current_password: initialPassword, new_password: newPassword },
+  });
+  return apiLogin(ctx, username, newPassword);
+}
+
 async function getHeapMB(page: Page): Promise<number> {
   return page.evaluate(() =>
     'memory' in performance ? (performance as any).usedJSHeapSize / (1024 * 1024) : 0,
@@ -384,7 +407,7 @@ test.describe('4 — Security', () => {
       test.skip(true, `could not create a non-admin user (status ${created.status()})`);
     }
     try {
-      const { token, csrf } = await apiLogin(ctx, uname, 'Viewer12345!');
+      const { token, csrf } = await apiLoginAsViewer(ctx, uname, 'Viewer12345!');
       const h = { 'x-session-token': token, 'x-csrf-token': csrf };
       for (const [method, path, data] of [
         ['put', '/api/cache/settings', { mover_enabled: true }],
@@ -414,7 +437,7 @@ test.describe('4 — Security', () => {
       test.skip(true, `could not create a non-admin user (status ${created.status()})`);
     }
     try {
-      const { token } = await apiLogin(ctx, uname, 'Viewer12345!');
+      const { token } = await apiLoginAsViewer(ctx, uname, 'Viewer12345!');
       const r = await ctx.get('/api/storage/disks', { headers: { 'x-session-token': token } });
       expect(r.status()).toBe(200);
     } finally {
