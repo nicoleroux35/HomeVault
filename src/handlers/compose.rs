@@ -145,15 +145,18 @@ pub async fn handle_compose_create(
         );
     }
 
-    match ComposeManager::create_project(&req.name, &req.config) {
-        Ok(_) => {
+    let (name, config) = (req.name.clone(), req.config.clone());
+    match tokio::task::spawn_blocking(move || ComposeManager::create_project(&name, &config)).await
+    {
+        Ok(Ok(_)) => {
             crate::events::log_event(format!(
                 "Admin '{}' created Compose project '{}'",
                 admin_username, req.name
             ));
             ResponseHelper::json_success("Project created successfully".to_string())
         }
-        Err(e) => ResponseHelper::json_error(format!("Failed to create project: {}", e)),
+        Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to create project: {}", e)),
+        Err(e) => ResponseHelper::json_error(format!("Task join error: {}", e)),
     }
 }
 
@@ -169,9 +172,12 @@ pub async fn handle_compose_update(
         return response;
     }
 
-    match ComposeManager::update_project(&name, &req.config) {
-        Ok(_) => ResponseHelper::json_success("Project updated successfully".to_string()),
-        Err(e) => ResponseHelper::json_error(format!("Failed to update project: {}", e)),
+    let config = req.config;
+    match tokio::task::spawn_blocking(move || ComposeManager::update_project(&name, &config)).await
+    {
+        Ok(Ok(_)) => ResponseHelper::json_success("Project updated successfully".to_string()),
+        Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to update project: {}", e)),
+        Err(e) => ResponseHelper::json_error(format!("Task join error: {}", e)),
     }
 }
 
@@ -187,15 +193,17 @@ pub async fn handle_compose_delete(
         Err(response) => return response,
     };
 
-    match ComposeManager::delete_project(&name) {
-        Ok(_) => {
+    let target = name.clone();
+    match tokio::task::spawn_blocking(move || ComposeManager::delete_project(&target)).await {
+        Ok(Ok(_)) => {
             crate::events::log_event_warn(format!(
                 "Admin '{}' deleted Compose project '{}'",
                 admin_username, name
             ));
             ResponseHelper::json_success("Project deleted successfully".to_string())
         }
-        Err(e) => ResponseHelper::json_error(format!("Failed to delete project: {}", e)),
+        Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to delete project: {}", e)),
+        Err(e) => ResponseHelper::json_error(format!("Task join error: {}", e)),
     }
 }
 
@@ -211,15 +219,17 @@ pub async fn handle_compose_start(
         Err(response) => return response,
     };
 
-    match ComposeManager::start_project(&name) {
-        Ok(_) => {
+    let target = name.clone();
+    match tokio::task::spawn_blocking(move || ComposeManager::start_project(&target)).await {
+        Ok(Ok(_)) => {
             crate::events::log_event(format!(
                 "Admin '{}' started Compose project '{}'",
                 admin_username, name
             ));
             ResponseHelper::json_success("Project started successfully".to_string())
         }
-        Err(e) => ResponseHelper::json_error(format!("Failed to start project: {}", e)),
+        Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to start project: {}", e)),
+        Err(e) => ResponseHelper::json_error(format!("Task join error: {}", e)),
     }
 }
 
@@ -235,15 +245,17 @@ pub async fn handle_compose_stop(
         Err(response) => return response,
     };
 
-    match ComposeManager::stop_project(&name) {
-        Ok(_) => {
+    let target = name.clone();
+    match tokio::task::spawn_blocking(move || ComposeManager::stop_project(&target)).await {
+        Ok(Ok(_)) => {
             crate::events::log_event(format!(
                 "Admin '{}' stopped Compose project '{}'",
                 admin_username, name
             ));
             ResponseHelper::json_success("Project stopped successfully".to_string())
         }
-        Err(e) => ResponseHelper::json_error(format!("Failed to stop project: {}", e)),
+        Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to stop project: {}", e)),
+        Err(e) => ResponseHelper::json_error(format!("Task join error: {}", e)),
     }
 }
 
@@ -259,15 +271,45 @@ pub async fn handle_compose_restart(
         Err(response) => return response,
     };
 
-    match ComposeManager::restart_project(&name) {
-        Ok(_) => {
+    let target = name.clone();
+    match tokio::task::spawn_blocking(move || ComposeManager::restart_project(&target)).await {
+        Ok(Ok(_)) => {
             crate::events::log_event(format!(
                 "Admin '{}' restarted Compose project '{}'",
                 admin_username, name
             ));
             ResponseHelper::json_success("Project restarted successfully".to_string())
         }
-        Err(e) => ResponseHelper::json_error(format!("Failed to restart project: {}", e)),
+        Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to restart project: {}", e)),
+        Err(e) => ResponseHelper::json_error(format!("Task join error: {}", e)),
+    }
+}
+
+/// Pulls the newest images for a project and redeploys it. `up -d` alone
+/// never re-pulls, so without this a stack running for months stays on its
+/// original image.
+#[axum_macros::debug_handler]
+pub async fn handle_compose_pull(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Response {
+    let admin_username = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(response) => return response,
+    };
+
+    let target = name.clone();
+    match tokio::task::spawn_blocking(move || ComposeManager::pull_project(&target)).await {
+        Ok(Ok(_)) => {
+            crate::events::log_event(format!(
+                "Admin '{}' pulled and redeployed Compose project '{}'",
+                admin_username, name
+            ));
+            ResponseHelper::json_success("Project updated successfully".to_string())
+        }
+        Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to update project: {}", e)),
+        Err(e) => ResponseHelper::json_error(format!("Task join error: {}", e)),
     }
 }
 
@@ -282,9 +324,10 @@ pub async fn handle_compose_services(
         return response;
     }
 
-    match ComposeManager::get_project_services(&name) {
-        Ok(services) => ResponseHelper::json_success(services),
-        Err(e) => ResponseHelper::json_error(format!("Failed to get services: {}", e)),
+    match tokio::task::spawn_blocking(move || ComposeManager::get_project_services(&name)).await {
+        Ok(Ok(services)) => ResponseHelper::json_success(services),
+        Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to get services: {}", e)),
+        Err(e) => ResponseHelper::json_error(format!("Task join error: {}", e)),
     }
 }
 
@@ -298,9 +341,10 @@ pub async fn handle_compose_available(
         return response;
     }
 
-    ResponseHelper::json_success(serde_json::json!({
-        "available": ComposeManager::is_available()
-    }))
+    let available = tokio::task::spawn_blocking(ComposeManager::is_available)
+        .await
+        .unwrap_or(false);
+    ResponseHelper::json_success(serde_json::json!({ "available": available }))
 }
 
 /// Validates a Compose config string without deploying it (the Compose tab's

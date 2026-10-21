@@ -6,6 +6,40 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Docker production-ready pass (2026-10-20).** The Docker module gained the
+  whole engine surface a NAS console needs: **volumes** (list/create/delete
+  with in-use detection), **disk usage** (`docker system df`) and **prune**
+  (images / volumes / builders / system — an unknown target is rejected
+  *before* the daemon is contacted, never defaulted to a destructive action),
+  **container details** (`inspect`), **exec**, **pause/unpause**, **kill**
+  (whitelisted signals), **rename**, **in-place limit updates** (memory, CPU,
+  restart policy, no recreate), **update to the newest image** (pull, rename
+  the live container to `<name>-hv-old-<epoch>`, rebuild from `inspect`, roll
+  the rename back on failure, remove the parked container only on success),
+  **live log streaming** over a single-use 30 s SSE ticket (merged
+  stdout+stderr, tail size 1–5000, timestamps, follow, download), **image
+  builds** from a `PathGuard`-validated host folder, **private registries**
+  (`--password-stdin`; the list endpoint returns `auths` keys only, never a
+  credential), a **`daemon.json` editor** validated as a JSON object before it
+  is written and followed by `systemctl restart docker`, and **Compose update**
+  (`compose pull` + `up -d`, since `up -d` alone never re-pulls).
+  Two systemic defects went with them: no Docker CLI call had a timeout (a
+  wedged daemon parked a Tokio worker forever) and every mutation ran on the
+  async runtime (one slow `docker` call stalled all concurrent requests) —
+  now `run_docker` / `run_command` / `run_command_with_stdin` all funnel into
+  `wait_with_timeout` (`DockerError::Timeout`), and every handler mutation
+  runs through `spawn_blocking`. Frontend: a 7th **Volumes** tab carrying the
+  disk-usage table and the prune buttons, a per-card "more actions" menu, a
+  rebuilt live-logs modal and 8 new modals; ~100 new i18n keys ×4 locales.
+  Tests: `docker.rs` 9 → 17 unit, new `tests/docker_integration.rs` (10).
+  `docker.spec.ts` updated for 7 tabs and extended with a §16 "Production surface"
+  (8 tests); re-run against a live daemon: **123 passed / 9 skipped / 0 failed**
+  across firefox + chromium, which also caught and fixed three real UI defects
+  (both card popover menus clipped by the card's `overflow-hidden`, Escape not
+  closing them from the trigger, and a racy container count in test 5.2).
+
 ### Changed
 
 - **Workspace hygiene audit (2026-10-19).** Small correctness-of-the-tree fixes

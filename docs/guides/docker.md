@@ -24,11 +24,15 @@ everything else below is `admin`.
 |-------|-----------|------|
 | Info/availability | `GET /docker/info` | admin |
 | | `GET /docker/available` | **auth** |
-| Containers | `GET /docker/containers`, `/containers/running`; `PUT /containers/{name}/start\|stop\|restart`; `GET /containers/{name}/logs`; `POST /docker/containers`; `DELETE /docker/containers/{name}` | admin |
-| Images | `GET /docker/images`; `POST /docker/images/pull`; `DELETE /docker/images/{image_id}` | admin |
+| Containers | `GET /docker/containers`, `/containers/running`; `PUT /containers/{name}/start\|stop\|restart\|pause\|unpause\|rename`; `POST /containers/{name}/kill\|update\|recreate\|exec`; `GET /containers/{name}/inspect`; `GET /containers/{name}/logs`; `POST /containers/{name}/logs/ticket`; `GET /containers/{name}/logs/stream`; `POST /docker/containers`; `DELETE /docker/containers/{name}` | admin |
+| Images | `GET /docker/images`; `POST /docker/images/pull`; `POST /docker/images/build`; `DELETE /docker/images/{image_id}` | admin |
 | Hub | `GET /docker/hub/search` | admin |
+| Volumes | `GET/POST /docker/volumes`; `DELETE /docker/volumes/{name}` | admin |
+| Disk usage | `GET /docker/system/df`; `POST /docker/prune` | admin |
+| Registries | `GET /docker/registries`; `POST /docker/registries/login\|logout` | admin |
+| Daemon | `GET/PUT /docker/daemon/config`; `POST /docker/daemon/start`; `GET /docker/daemon/logs` | admin |
 | Networks | `GET /docker/networks`; `POST/DELETE /docker/networks`; `GET/DELETE /docker/networks/{name}`; `POST /docker/networks/prune\|connect\|disconnect` | admin |
-| Compose | `GET/POST /docker/compose/projects`; `GET/PUT/DELETE /docker/compose/projects/{name}`; `GET /{name}/config`; `POST /{name}/start\|stop\|restart`; `GET /{name}/services`; `GET /docker/compose/available` | admin |
+| Compose | `GET/POST /docker/compose/projects`; `GET/PUT/DELETE /docker/compose/projects/{name}`; `GET /{name}/config`; `POST /{name}/start\|stop\|restart\|update`; `GET /{name}/services`; `GET /docker/compose/available` | admin |
 | App catalog | `GET /docker/catalog`; `GET /docker/catalog/{id}/icon\|gallery/{n}` | **auth** |
 | | `POST /docker/catalog/{id}/install\|update\|proxy`; `DELETE /docker/catalog/{id}`; `GET /docker/catalog/updates` | admin |
 | Community stores | `GET/POST/DELETE /docker/stores`; `POST /docker/stores/{id}/sync` | admin |
@@ -147,6 +151,70 @@ package-version check. `GET /docker/catalog/updates` + `POST
 notification engine runs `check_app_updates` every 6h. "Unknown" digest ⇒ "no
 update", never an error.
 
+### Production hardening (2026-10-20)
+
+The module went from "manage containers" to a complete engine console. The
+rules below are invariants, not implementation notes.
+
+**Every CLI call is time-bounded.** No `Command::output()` on the bare
+`docker` binary anywhere in `src/docker.rs` / `src/compose.rs`. Everything
+goes through `run_docker(args, timeout)`, `run_command(cmd, timeout)` or
+`run_command_with_stdin(cmd, payload, timeout)`, all of which funnel into
+`wait_with_timeout` and kill the child on expiry, returning
+`DockerError::Timeout(secs)`. `SHORT_TIMEOUT` = 30 s, `LONG_TIMEOUT` = 900 s
+(builds, pulls, recreates). A wedged daemon now produces an error instead of
+parking a Tokio worker forever.
+
+**Every mutation runs on the blocking pool.** `src/handlers/docker.rs` has a
+local `blocking()` helper wrapping `tokio::task::spawn_blocking`; every
+handler that shells out uses it. A synchronous `docker` call on the async
+runtime stalls *all* concurrent requests, not just its own.
+
+**Live logs use a single-use ticket.** `EventSource` cannot send the
+`X-Session-Token` header, so `POST /containers/{name}/logs/ticket` mints a
+30 s, single-use ticket (`issue_log_ticket` / `consume_log_ticket`,
+`LOG_TICKETS` static) that `GET /containers/{name}/logs/stream?ticket=`
+redeems. The ticket stores container + tail + follow + timestamps, so the
+query string carries no authority, and a ticket minted for `alpha` is
+rejected on `beta`'s stream (401). The stream merges **stdout and stderr**
+(previously stderr was dropped), honours `?tail=` (clamped 1–5000) and
+`?timestamps=`, and tears the reader threads down through a `KillOnDrop`
+guard when the client disconnects.
+
+**Destructive actions validate before acting.** `PruneTarget::parse` accepts
+only `images|volumes|containers|networks|builders|system`; an unknown target
+is rejected *before* the daemon is contacted — never defaulted to a
+destructive action. `ALLOWED_SIGNALS` whitelists the kill endpoint
+(SIGKILL, SIGTERM, SIGINT, SIGHUP, SIGQUIT, SIGUSR1, SIGUSR2, SIGSTOP);
+anything else falls back to SIGKILL rather than being passed through.
+
+**Container updates are reversible.** `recreate_container` pulls first, then
+renames the live container to `<name>-hv-old-<epoch>`, runs the rebuilt
+`docker run` argument list, and **rolls the rename back** if the new
+container fails to start. The parked container is removed only on success, so
+a bad image never leaves the user with nothing. `run_args_from_inspect`
+reconstructs the arguments from `docker inspect`: it drops
+`com.docker.compose.*` labels (the recreated container is no longer compose's
+— otherwise the Compose tab would offer to edit a project that no longer owns
+it), skips the default `bridge` network, and replays `--entrypoint` only when
+it is a single argument (Docker's flag takes one string).
+
+**Build context is path-guarded.** `POST /docker/images/build` validates the
+context with `state.path_guard.validate()` — the same guard as the file
+explorer — so the builder is not a way to read the whole host.
+
+**Secrets never hit a command line or a log.** Registry login uses
+`--password-stdin` (the password is never visible in `/proc/<pid>/cmdline`),
+and `GET /docker/registries` reads only the `auths` **keys** of
+`~/.docker/config.json` — never a credential. `daemon.json` is validated as a
+JSON object *before* it is written, then written via `sudo tee` with the
+payload on stdin (no `echo` of the config into a shell), then
+`sudo systemctl restart docker`.
+
+**Compose "update" re-pulls.** `ComposeManager::pull_project` runs
+`compose pull` then `up -d`; `up -d` alone never re-pulls, so the button
+would have been a no-op.
+
 ### Other Docker fixes
 
 - `DockerService::parse_ports` (`src/docker.rs`): Docker's `{{.Ports}}` is
@@ -181,6 +249,26 @@ continue — Docker itself keeps working.
 
 ## Frontend
 
+Seven tabs since 2026-10-20: **Containers, Images, Volumes, Networks,
+Discover, App Catalog, Compose**. The Volumes tab also carries the
+`docker system df` table and the four prune buttons, because the number and
+the fix belong in the same place. Container secondary actions (details,
+pause/resume, kill, rename, limits, exec, update image) live behind one
+"more actions" menu so the card keeps start/stop/restart/logs as its visible
+path. The logs modal is a live SSE tail with tail-size, timestamps and follow
+controls, a status pill (live / connecting / ended / disconnected), download
+and restart-stream. Everything still renders on `theme/Modal` (bits-ui
+Dialog: focus trap, Escape, focus restore).
+
+Two popover menus live in the container card ("Open app" and "More
+actions"). They are `position: fixed` with a viewport-anchored `top`/`left`
+computed from the trigger's `getBoundingClientRect()` — **not** `absolute`.
+The card is `overflow-hidden` (it rounds its own corners), so an absolutely
+positioned menu is clipped away and becomes invisible and unclickable as soon
+as the menu is taller than the remaining card height. Escape closes them
+through a `window` keydown listener, because focus is still on the trigger
+button when the menu opens.
+
 - `frontend/src/routes/Docker.svelte` — has its own local `authedFetch` helper
   (reads `session-token`/`csrf-token` from `localStorage`) rather than going
   through `frontend/src/lib/services/api.ts` for Docker/Compose/catalog calls;
@@ -195,8 +283,8 @@ continue — Docker itself keeps working.
   `stopContainer`, `restartContainer` — all consumed by the desktop Docker
   monitor), while `Docker.svelte` drives containers, images, networks, volumes,
   Compose files, the catalog and third-party stores. Routing it through
-  `api.ts` means adding roughly 50 wrapper methods and rewriting ~100 call
-  sites, with the 51-test `docker.spec.ts` as the only net — a large,
+  `api.ts` means adding roughly 60 wrapper methods and rewriting ~120 call
+  sites, with the 56-test `docker.spec.ts` as the only net — a large,
   regression-prone change for no user-visible gain while both paths work. If it
   is ever done, do it one tab at a time with the E2E suite green in between,
   and keep the `authedFetch` error shape (`{success:false,error}`) until the
@@ -219,8 +307,18 @@ continue — Docker itself keeps working.
 
 ## Invariants
 
-- `GET`/info endpoints are `auth`; create/start/stop/remove/pull/prune/connect/
-  catalog-install/catalog-uninstall are `admin`.
+- Reads are `admin` too (see above), with exactly two `auth` exceptions:
+  `GET /docker/available` and `GET /docker/catalog`. Every mutation —
+  create/start/stop/restart/pause/kill/rename/exec/recreate/update,
+  remove/pull/build/prune, volume and network changes, registry login,
+  `daemon.json`, catalog install/uninstall — is `admin`.
+- Every Docker CLI call is time-bounded and every mutation runs on the
+  blocking pool (see "Production hardening"): never reintroduce a bare
+  `Command::output()` on `docker`, and never call a `DockerService` method
+  directly from an `async fn` handler.
+- Live logs go through the ticket, never a session token in a URL.
+- Destructive actions validate their input **before** touching the daemon
+  (`PruneTarget`, signals, names, build context, `daemon.json`).
 - `handle_catalog_install` and `handle_catalog_update` register an
   **indeterminate** `PROGRESS_MANAGER` job (`docker_install` / `docker_update`)
   around the `docker compose` work so the desktop activity taskbar shows the

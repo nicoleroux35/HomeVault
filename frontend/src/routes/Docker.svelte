@@ -18,7 +18,7 @@
      Opened as a desktop window app (admin only).
      ======================================================================== -->
 <script lang="ts">
-  import { IconSearch, IconX, IconRefresh, IconTrash, IconPlayerPlay, IconSquare, IconDownload, IconCheck, IconCopy, IconPhoto as ImageIcon, IconAlertTriangle, IconContainer, IconPlus, IconTerminal, IconExternalLink, IconDeviceTv, IconCloud, IconShield, IconLock, IconHome, IconGlobe, IconDatabase, IconActivity, IconPackage, IconPackages, IconServer, IconNetwork, IconKey, IconShieldOff, IconGitBranch, IconRss, IconTextScan2, IconBook, IconLayoutDashboard, IconMusic, IconListCheck, IconPipeline, IconBoxMultiple, IconBox, IconPencil, IconStar } from '@tabler/icons-svelte';
+  import { IconSearch, IconX, IconRefresh, IconTrash, IconPlayerPlay, IconPlayerPause, IconSquare, IconDownload, IconCheck, IconCopy, IconPhoto as ImageIcon, IconAlertTriangle, IconContainer, IconPlus, IconTerminal, IconExternalLink, IconDeviceTv, IconCloud, IconShield, IconLock, IconHome, IconGlobe, IconDatabase, IconActivity, IconPackage, IconPackages, IconServer, IconNetwork, IconKey, IconShieldOff, IconGitBranch, IconRss, IconTextScan2, IconBook, IconLayoutDashboard, IconMusic, IconListCheck, IconPipeline, IconBoxMultiple, IconBox, IconPencil, IconStar, IconInfoCircle, IconTool, IconSettings, IconBolt } from '@tabler/icons-svelte';
   import { t, translate } from '$lib/stores/i18n';
   import { onAppVisible } from '$lib/utils/autoRevalidate';
   import { Button, Toggle, Modal, Alert } from '$lib/components/theme';
@@ -90,6 +90,78 @@
     config_path: string;
     services: string[];
     status: string;
+  }
+  interface DockerVolume {
+    name: string;
+    driver: string;
+    scope: string;
+    mountpoint: string;
+    in_use: boolean;
+    used_by: string[];
+  }
+  interface DiskUsageRow {
+    kind: string;
+    total: number;
+    active: number;
+    size: string;
+    reclaimable: string;
+  }
+  interface DiskUsage {
+    rows: DiskUsageRow[];
+    total_size: string;
+    total_reclaimable: string;
+  }
+  interface PruneReport {
+    target: string;
+    reclaimed: string;
+    message: string;
+  }
+  interface ContainerMount {
+    kind: string;
+    source: string;
+    destination: string;
+    read_only: boolean;
+    name: string | null;
+  }
+  interface ContainerDetail {
+    id: string;
+    name: string;
+    image: string;
+    image_id: string;
+    image_digest: string | null;
+    created: string;
+    state: string;
+    status: string;
+    exit_code: number | null;
+    started_at: string | null;
+    finished_at: string | null;
+    restart_count: number;
+    pid: number | null;
+    command: string[];
+    entrypoint: string[];
+    working_dir: string;
+    hostname: string;
+    user: string;
+    restart_policy: string;
+    privileged: boolean;
+    memory_limit: number | null;
+    nano_cpus: number | null;
+    env: string[];
+    labels: [string, string][];
+    mounts: ContainerMount[];
+    ports: ContainerPort[];
+    networks: string[];
+    ip_address: string | null;
+    health: string | null;
+    log_driver: string | null;
+    log_path: string | null;
+    compose_project: string | null;
+    compose_service: string | null;
+  }
+  interface ExecResult {
+    stdout: string;
+    stderr: string;
+    exit_code: number;
   }
   interface CatalogApp {
     /** Namespaced id, "<store>:<app>" — used in every catalog API path. */
@@ -181,7 +253,7 @@
   }
 
   // ── View / data state ─────────────────────────────────────────────────────
-  type Tab = 'containers' | 'images' | 'networks' | 'discover' | 'catalog' | 'compose';
+  type Tab = 'containers' | 'images' | 'volumes' | 'networks' | 'discover' | 'catalog' | 'compose';
   let tab = $state<Tab>('containers');
   let dockerAvailable = $state<boolean | null>(null);
   let busy = $state(false);
@@ -280,11 +352,60 @@
     await loadCatalog();
   }
 
-  let containerLogs = $state<string>('');
+  // ── Container logs (live) ─────────────────────────────────────────────────
+  let containerLogs = $state<string[]>([]);
   let logContainerName = $state<string | null>(null);
+  let logTail = $state(200);
+  let logTimestamps = $state(false);
+  let logFollow = $state(true);
+  let logStream: EventSource | null = null;
+  let logState = $state<'idle' | 'connecting' | 'live' | 'ended' | 'error'>('idle');
+  let logError = $state('');
+  let logBox = $state<HTMLElement | null>(null);
+  const LOG_TAIL_CHOICES = [100, 200, 500, 1000, 5000];
 
   // Which container's "Open" button has its new-tab / new-window menu open.
   let urlMenuFor = $state<string | null>(null);
+
+  /** Where the open popover menu is drawn (viewport coordinates). */
+  let menuPos = $state<{ top: number; left: number } | null>(null);
+
+  /** Anchors a menu to its trigger, in viewport coordinates.
+   *  The menus are `position: fixed` rather than `absolute` because the
+   *  container card is `overflow-hidden` (it rounds its own corners): an
+   *  absolutely-positioned menu is clipped away by the card — invisible and
+   *  unclickable — as soon as the card is shorter than the menu. */
+  function menuAnchor(el: HTMLElement, width: number, height: number) {
+    const r = el.getBoundingClientRect();
+    const left = Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8));
+    let top = r.bottom + 4;
+    if (top + height > window.innerHeight - 8) top = Math.max(8, r.top - height - 4);
+    return { top, left };
+  }
+
+  /** Escape closes an open popover menu, like every other overlay.
+   *  A window listener (rather than a handler on the menu itself) is what
+   *  makes it work while focus is still on the trigger button. A scroll or a
+   *  resize closes it too: the menu is fixed-positioned, so it would
+   *  otherwise drift away from the button it belongs to. */
+  $effect(() => {
+    if (urlMenuFor === null && ctrMenuFor === null) return;
+    const close = () => {
+      urlMenuFor = null;
+      ctrMenuFor = null;
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close();
+    };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('resize', close);
+    window.addEventListener('scroll', close, true);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('scroll', close, true);
+    };
+  });
 
   /** Open a container's web UI, letting the user pick a new tab or a real
    *  new window (a size+position feature string is what makes the browser
@@ -426,6 +547,7 @@
   const TAB_DEFS: { id: Tab; label: string }[] = [
     { id: 'containers', label: 'docker.tab_containers' },
     { id: 'images', label: 'docker.tab_images' },
+    { id: 'volumes', label: 'docker.tab_volumes' },
     { id: 'networks', label: 'docker.tab_networks' },
     { id: 'discover', label: 'docker.tab_discover' },
     { id: 'catalog', label: 'docker.tab_catalog' },
@@ -435,6 +557,7 @@
     switch (id) {
       case 'containers': return containers.length || null;
       case 'images': return images.length || null;
+      case 'volumes': return volumes.length || null;
       case 'networks': return networks.length || null;
       case 'catalog': return catalogApps.length || null;
       case 'compose': return projects.length || null;
@@ -458,6 +581,7 @@
   function refreshCurrent() {
     if (tab === 'containers') loadContainers();
     else if (tab === 'images') loadImages();
+    else if (tab === 'volumes') { loadVolumes(); loadDiskUsage(); }
     else if (tab === 'networks') loadNetworks();
     else if (tab === 'compose') loadProjects();
     else if (tab === 'catalog') { loadCatalog(); loadStores(); loadCatalogUpdates(); }
@@ -750,6 +874,7 @@
     // always re-fetch when landing here rather than trusting a stale list.
     if (t === 'containers') loadContainers();
     if (t === 'images' && images.length === 0) loadImages();
+    if (t === 'volumes') { loadVolumes(); loadDiskUsage(); }
     if (t === 'networks' && networks.length === 0) loadNetworks();
     if (t === 'compose' && projects.length === 0) loadProjects();
     if (t === 'compose' && composeAvailable === null) loadComposeAvailable();
@@ -776,18 +901,79 @@
     busy = false;
     if (res.success) setBanner('ok', translate('docker.container_deleted', { name }));
     else setBanner('error', res.message || res.error || translate('docker.container_delete_failed'));
-    if (logContainerName === name) { logContainerName = null; containerLogs = ''; }
+    if (logContainerName === name) closeLogs();
     await loadContainers();
   }
 
+  // ── Container logs: live tail over SSE ────────────────────────────────────
+  // `EventSource` cannot send the `X-Session-Token` header, so the session is
+  // exchanged for a single-use ticket first (same pattern as the notifications
+  // watcher and the terminal). The session token never travels in a URL.
   async function openLogs(name: string) {
     logContainerName = name;
-    containerLogs = translate('docker.logs_loading');
-    const res = await authedFetch<{ logs: string }>('GET', `/docker/containers/${encodeURIComponent(name)}/logs`);
-    if (res.success && res.data) containerLogs = res.data.logs || translate('docker.logs_empty');
-    else containerLogs = res.message || res.error || translate('docker.logs_failed');
+    containerLogs = [];
+    await startLogStream();
   }
-  function closeLogs() { logContainerName = null; containerLogs = ''; }
+
+  async function startLogStream() {
+    const name = logContainerName;
+    if (!name) return;
+    stopLogStream();
+    logState = 'connecting';
+    logError = '';
+    const res = await authedFetch<{ ticket: string; url: string }>(
+      'POST',
+      `/docker/containers/${encodeURIComponent(name)}/logs/ticket`,
+      { tail: logTail, follow: logFollow, timestamps: logTimestamps },
+    );
+    if (!res.success || !res.data?.url) {
+      logState = 'error';
+      logError = res.message || res.error || translate('docker.logs_failed');
+      return;
+    }
+    const es = new EventSource(res.data.url);
+    logStream = es;
+    es.addEventListener('log', (ev) => {
+      const msg = ev as MessageEvent<string>;
+      // Cap the buffer: a chatty container left on screen for an hour must not
+      // grow the DOM without bound.
+      containerLogs = [...containerLogs.slice(-4000), msg.data];
+      logState = 'live';
+    });
+    es.addEventListener('end', () => {
+      logState = logFollow ? 'ended' : 'live';
+      stopLogStream();
+    });
+    es.onerror = () => {
+      // A non-follow stream closes itself once the tail is delivered; only a
+      // follow stream treats the close as a real error.
+      logState = logFollow ? 'error' : 'live';
+      if (logFollow) logError = translate('docker.logs_disconnected');
+      stopLogStream();
+    };
+  }
+
+  function stopLogStream() {
+    if (logStream) { logStream.close(); logStream = null; }
+  }
+
+  function closeLogs() {
+    stopLogStream();
+    logContainerName = null;
+    containerLogs = [];
+    logState = 'idle';
+    logError = '';
+  }
+
+  async function downloadLogs() {
+    const blob = new Blob([containerLogs.join('\n')], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${logContainerName ?? 'container'}.log`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   // ── Edit a container's docker-compose.yml (containers tab) ────────────────
   // Only offered for containers that carry a `com.docker.compose.project`
@@ -1061,10 +1247,383 @@
     await loadContainers();
   }
 
+  // ── Volumes ───────────────────────────────────────────────────────────────
+  let volumes = $state<DockerVolume[]>([]);
+  let volumesLoading = $state(false);
+  let volumeModalOpen = $state(false);
+  let vName = $state('');
+  let vDriver = $state('local');
+  let volumeBusy = $state(false);
+
+  async function loadVolumes() {
+    volumesLoading = true;
+    const res = await authedFetch<DockerVolume[]>('GET', '/docker/volumes');
+    volumesLoading = false;
+    if (res.success && res.data) volumes = res.data;
+    else setBanner('error', res.message || res.error || translate('docker.load_volumes_failed'));
+  }
+
+  function openVolumeModal() {
+    vName = '';
+    vDriver = 'local';
+    volumeModalOpen = true;
+  }
+
+  async function createVolume() {
+    if (!vName.trim()) { setBanner('error', translate('docker.volume_name_required')); return; }
+    volumeBusy = true;
+    const res = await authedFetch('POST', '/docker/volumes', {
+      name: vName.trim(),
+      driver: vDriver || null,
+    });
+    volumeBusy = false;
+    if (res.success) {
+      setBanner('ok', translate('docker.volume_created', { name: vName.trim() }));
+      volumeModalOpen = false;
+      await loadVolumes();
+    } else {
+      setBanner('error', res.message || res.error || translate('docker.volume_create_failed'));
+    }
+  }
+
+  async function deleteVolume(v: DockerVolume) {
+    // A volume in use needs the explicit force confirmation: it detaches data
+    // from a running app and cannot be undone.
+    const key = v.in_use ? 'docker.volume_force_delete_confirm' : 'docker.volume_delete_confirm';
+    if (!(await dlg.ask(translate(key, { name: v.name })))) return;
+    volumeBusy = true;
+    const res = await authedFetch('DELETE', `/docker/volumes/${encodeURIComponent(v.name)}?force=${v.in_use}`);
+    volumeBusy = false;
+    if (res.success) setBanner('ok', translate('docker.volume_deleted', { name: v.name }));
+    else setBanner('error', res.message || res.error || translate('docker.volume_delete_failed'));
+    await loadVolumes();
+    await loadDiskUsage();
+  }
+
+  // ── Disk usage / prune ────────────────────────────────────────────────────
+  let diskUsage = $state<DiskUsage | null>(null);
+  let pruneBusy = $state<string | null>(null);
+
+  async function loadDiskUsage() {
+    const res = await authedFetch<DiskUsage>('GET', '/docker/system/df');
+    if (res.success && res.data) diskUsage = res.data;
+  }
+
+  /// Localise a `docker system df` row kind ("Images", "Local Volumes", …).
+  function diskKindLabel(kind: string): string {
+    const map: Record<string, string> = {
+      Images: 'docker.disk_images',
+      Containers: 'docker.disk_containers',
+      'Local Volumes': 'docker.disk_local_volumes',
+      'Build Cache': 'docker.disk_build_cache',
+    };
+    const key = map[kind];
+    return key ? translate(key) : kind;
+  }
+
+  async function prune(target: 'images' | 'volumes' | 'containers' | 'networks' | 'builders' | 'system', all = false) {
+    const key = all ? 'docker.prune_all_confirm' : 'docker.prune_confirm';
+    if (!(await dlg.ask(translate(key, { target: translate(`docker.prune_${target}`) })))) return;
+    pruneBusy = target;
+    const res = await authedFetch<PruneReport>('POST', '/docker/prune', { target, all });
+    pruneBusy = null;
+    if (res.success && res.data) {
+      setBanner('ok', translate('docker.pruned', { target: translate(`docker.prune_${target}`), reclaimed: res.data.reclaimed || '0B' }));
+    } else {
+      setBanner('error', res.message || res.error || translate('docker.prune_failed'));
+    }
+    await loadDiskUsage();
+    await loadImages();
+    await loadVolumes();
+    await loadContainers();
+  }
+
+  // ── Container extras: inspect, pause, kill, rename, limits, exec, update ──
+  let ctrMenuFor = $state<string | null>(null);
+  let detailModal = $state<{ name: string; detail: ContainerDetail | null; loading: boolean; error: string } | null>(null);
+  let execModal = $state<{
+    name: string;
+    command: string;
+    running: boolean;
+    result: ExecResult | null;
+    error: string;
+  } | null>(null);
+  let renameModal = $state<{ name: string; value: string; busy: boolean } | null>(null);
+  let limitsModal = $state<{
+    name: string;
+    memory: string;
+    cpus: string;
+    restart: string;
+    busy: boolean;
+  } | null>(null);
+  let recreateBusy = $state<string | null>(null);
+
+  async function containerExtra(name: string, action: 'pause' | 'unpause') {
+    busy = true;
+    const res = await authedFetch('PUT', `/docker/containers/${encodeURIComponent(name)}/${action}`);
+    busy = false;
+    const key = action === 'pause' ? 'docker.container_paused' : 'docker.container_unpaused';
+    if (res.success) setBanner('ok', translate(key, { name }));
+    else setBanner('error', res.message || res.error || translate('docker.action_failed', { action }));
+    await loadContainers();
+  }
+
+  async function killContainer(name: string) {
+    if (!(await dlg.ask(translate('docker.kill_confirm', { name })))) return;
+    busy = true;
+    const res = await authedFetch('POST', `/docker/containers/${encodeURIComponent(name)}/kill`, { signal: 'SIGKILL' });
+    busy = false;
+    if (res.success) setBanner('ok', translate('docker.container_killed', { name }));
+    else setBanner('error', res.message || res.error || translate('docker.action_failed', { action: 'kill' }));
+    await loadContainers();
+  }
+
+  async function openInspect(name: string) {
+    ctrMenuFor = null;
+    detailModal = { name, detail: null, loading: true, error: '' };
+    const res = await authedFetch<ContainerDetail>('GET', `/docker/containers/${encodeURIComponent(name)}/inspect`);
+    if (!detailModal || detailModal.name !== name) return;
+    if (res.success && res.data) {
+      detailModal = { ...detailModal, detail: res.data, loading: false };
+    } else {
+      detailModal = { ...detailModal, loading: false, error: res.message || res.error || translate('docker.inspect_failed') };
+    }
+  }
+
+  function openRename(name: string) {
+    ctrMenuFor = null;
+    renameModal = { name, value: name, busy: false };
+  }
+
+  async function submitRename() {
+    if (!renameModal) return;
+    const { name, value } = renameModal;
+    if (!value.trim() || value.trim() === name) { renameModal = null; return; }
+    renameModal = { ...renameModal, busy: true };
+    const res = await authedFetch('PUT', `/docker/containers/${encodeURIComponent(name)}/rename`, { name: value.trim() });
+    if (res.success) {
+      setBanner('ok', translate('docker.container_renamed', { name: value.trim() }));
+      renameModal = null;
+      await loadContainers();
+    } else {
+      renameModal = { ...renameModal, busy: false };
+      setBanner('error', res.message || res.error || translate('docker.action_failed', { action: 'rename' }));
+    }
+  }
+
+  async function openLimits(name: string) {
+    ctrMenuFor = null;
+    limitsModal = { name, memory: '', cpus: '', restart: '', busy: false };
+    const res = await authedFetch<ContainerDetail>('GET', `/docker/containers/${encodeURIComponent(name)}/inspect`);
+    if (!limitsModal || limitsModal.name !== name || !res.success || !res.data) return;
+    const d = res.data;
+    limitsModal = {
+      ...limitsModal,
+      memory: d.memory_limit && d.memory_limit > 0 ? `${Math.round(d.memory_limit / 1024 / 1024)}m` : '',
+      cpus: d.nano_cpus && d.nano_cpus > 0 ? (d.nano_cpus / 1e9).toFixed(2) : '',
+      restart: d.restart_policy || '',
+    };
+  }
+
+  async function submitLimits() {
+    if (!limitsModal) return;
+    const { name, memory, cpus, restart } = limitsModal;
+    limitsModal = { ...limitsModal, busy: true };
+    const res = await authedFetch('POST', `/docker/containers/${encodeURIComponent(name)}/update`, {
+      memory_limit: memory.trim() || null,
+      cpu_limit: cpus.trim() || null,
+      restart_policy: restart || null,
+    });
+    if (res.success) {
+      setBanner('ok', translate('docker.container_updated', { name }));
+      limitsModal = null;
+      await loadContainers();
+    } else {
+      limitsModal = { ...limitsModal, busy: false };
+      setBanner('error', res.message || res.error || translate('docker.action_failed', { action: 'update' }));
+    }
+  }
+
+  function openExec(name: string) {
+    ctrMenuFor = null;
+    execModal = { name, command: '', running: false, result: null, error: '' };
+  }
+
+  async function runExec() {
+    if (!execModal) return;
+    const argv = execModal.command.trim().split(/\s+/).filter(Boolean);
+    if (argv.length === 0) return;
+    execModal = { ...execModal, running: true, error: '', result: null };
+    const res = await authedFetch<ExecResult>('POST', `/docker/containers/${encodeURIComponent(execModal.name)}/exec`, {
+      command: argv,
+      timeout_secs: 30,
+    });
+    if (!execModal) return;
+    if (res.success && res.data) {
+      execModal = { ...execModal, running: false, result: res.data };
+    } else {
+      execModal = { ...execModal, running: false, error: res.message || res.error || translate('docker.exec_failed') };
+    }
+  }
+
+  async function updateContainerImage(c: Container) {
+    ctrMenuFor = null;
+    if (!(await dlg.ask(translate('docker.recreate_confirm', { name: c.name })))) return;
+    recreateBusy = c.name;
+    const res = await authedFetch('POST', `/docker/containers/${encodeURIComponent(c.name)}/recreate`);
+    recreateBusy = null;
+    if (res.success) setBanner('ok', translate('docker.container_recreated', { name: c.name }));
+    else setBanner('error', res.message || res.error || translate('docker.recreate_failed'));
+    await loadContainers();
+  }
+
+  // ── Image build ───────────────────────────────────────────────────────────
+  let buildModal = $state<{
+    context: string;
+    dockerfile: string;
+    tag: string;
+    noCache: boolean;
+    pull: boolean;
+    running: boolean;
+    log: string;
+    error: string;
+  } | null>(null);
+
+  function openBuildModal() {
+    buildModal = { context: '', dockerfile: '', tag: '', noCache: false, pull: false, running: false, log: '', error: '' };
+  }
+
+  async function submitBuild() {
+    if (!buildModal) return;
+    if (!buildModal.context.trim() || !buildModal.tag.trim()) return;
+    buildModal = { ...buildModal, running: true, log: '', error: '' };
+    const res = await authedFetch<{ log: string }>('POST', '/docker/images/build', {
+      context: buildModal.context.trim(),
+      dockerfile: buildModal.dockerfile.trim() || null,
+      tag: buildModal.tag.trim(),
+      no_cache: buildModal.noCache,
+      pull: buildModal.pull,
+      build_args: [],
+    });
+    if (!buildModal) return;
+    if (res.success) {
+      buildModal = { ...buildModal, running: false, log: res.data?.log ?? '' };
+      setBanner('ok', translate('docker.build_success', { tag: buildModal.tag.trim() }));
+      await loadImages();
+    } else {
+      buildModal = { ...buildModal, running: false, error: res.message || res.error || translate('docker.build_failed') };
+    }
+  }
+
+  // ── Private registries ────────────────────────────────────────────────────
+  let registryModal = $state<{
+    registries: string[];
+    loading: boolean;
+    host: string;
+    username: string;
+    password: string;
+    busy: boolean;
+  } | null>(null);
+
+  async function openRegistries() {
+    registryModal = { registries: [], loading: true, host: '', username: '', password: '', busy: false };
+    const res = await authedFetch<string[]>('GET', '/docker/registries');
+    if (!registryModal) return;
+    registryModal = { ...registryModal, loading: false, registries: res.success && res.data ? res.data : [] };
+  }
+
+  async function registryLogin() {
+    if (!registryModal) return;
+    registryModal = { ...registryModal, busy: true };
+    const res = await authedFetch('POST', '/docker/registries/login', {
+      registry: registryModal.host.trim(),
+      username: registryModal.username.trim(),
+      password: registryModal.password,
+    });
+    if (!registryModal) return;
+    if (res.success) {
+      setBanner('ok', translate('docker.registry_logged_in'));
+      registryModal = { ...registryModal, busy: false, host: '', username: '', password: '' };
+      await openRegistries();
+    } else {
+      registryModal = { ...registryModal, busy: false };
+      setBanner('error', res.message || res.error || translate('docker.registry_login_failed'));
+    }
+  }
+
+  async function registryLogout(host: string) {
+    if (!registryModal) return;
+    registryModal = { ...registryModal, busy: true };
+    const res = await authedFetch('POST', '/docker/registries/logout', { registry: host });
+    if (!registryModal) return;
+    if (res.success) setBanner('ok', translate('docker.registry_logged_out'));
+    else setBanner('error', res.message || res.error || translate('docker.registry_logout_failed'));
+    await openRegistries();
+  }
+
+  // ── Daemon configuration (daemon.json) ────────────────────────────────────
+  let daemonConfigModal = $state<{ config: string; path: string; loading: boolean; busy: boolean; error: string } | null>(null);
+
+  async function openDaemonConfig() {
+    daemonConfigModal = { config: '', path: '/etc/docker/daemon.json', loading: true, busy: false, error: '' };
+    const res = await authedFetch<{ config: string; path: string }>('GET', '/docker/daemon/config');
+    if (!daemonConfigModal) return;
+    if (res.success && res.data) {
+      daemonConfigModal = {
+        ...daemonConfigModal,
+        loading: false,
+        config: res.data.config || '{\n  \n}\n',
+        path: res.data.path,
+      };
+    } else {
+      daemonConfigModal = { ...daemonConfigModal, loading: false, error: res.message || res.error || '' };
+    }
+  }
+
+  async function saveDaemonConfig() {
+    if (!daemonConfigModal) return;
+    // Validate locally first: a malformed daemon.json stops dockerd from
+    // starting, which would take every container down.
+    try {
+      const parsed = JSON.parse(daemonConfigModal.config);
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        daemonConfigModal = { ...daemonConfigModal, error: translate('docker.daemon_config_invalid') };
+        return;
+      }
+    } catch {
+      daemonConfigModal = { ...daemonConfigModal, error: translate('docker.daemon_config_invalid') };
+      return;
+    }
+    daemonConfigModal = { ...daemonConfigModal, busy: true, error: '' };
+    const res = await authedFetch('PUT', '/docker/daemon/config', { config: daemonConfigModal.config });
+    if (!daemonConfigModal) return;
+    if (res.success) {
+      setBanner('ok', translate('docker.daemon_config_saved'));
+      daemonConfigModal = null;
+    } else {
+      daemonConfigModal = { ...daemonConfigModal, busy: false, error: res.message || res.error || translate('docker.daemon_config_save_failed') };
+    }
+  }
+
+  // ── Compose: pull newest images and redeploy ──────────────────────────────
+  async function updateProject(name: string) {
+    busy = true;
+    const res = await authedFetch('POST', `/docker/compose/projects/${encodeURIComponent(name)}/update`);
+    busy = false;
+    if (res.success) setBanner('ok', translate('docker.stack_updated', { name }));
+    else setBanner('error', res.message || res.error || translate('docker.stack_update_failed'));
+    await loadProjects();
+    await loadContainers();
+  }
+
   $effect(() => { init(); });
   // No manual refresh button — revalidate the current tab on window focus +
   // a slow poll (container/compose state changes out of band).
   $effect(() => onAppVisible(refreshCurrent, { pollMs: 45_000 }));
+  // Keep the newest line in view while following a live log.
+  $effect(() => {
+    if (logBox && containerLogs.length && logFollow) logBox.scrollTop = logBox.scrollHeight;
+  });
   const metric = 'px-3 py-2.5 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]';
   const dkEmpty = 'flex flex-col items-center gap-2 py-14 text-center text-[var(--hv-shell-text-2)]';
   const field = 'flex flex-col gap-1.5';
@@ -1140,9 +1699,14 @@
       {/if}
       <div data-testid="docker-toolbar-actions" class="ml-auto flex gap-2">
         {#if tab === 'containers'}
+          <Button variant="secondary" onclick={openDaemonConfig}><IconSettings size={18} stroke={1.9} /> {$t('docker.daemon_config')}</Button>
           <Button variant="primary" data-testid="docker-top-btn" onclick={() => openCreateModal()}><IconPlus size={18} stroke={2} /> {$t('docker.new_container')}</Button>
         {:else if tab === 'images'}
+          <Button variant="secondary" onclick={openRegistries}><IconLock size={18} stroke={1.9} /> {$t('docker.registries')}</Button>
+          <Button variant="secondary" onclick={openBuildModal}><IconTool size={18} stroke={1.9} /> {$t('docker.build_image')}</Button>
           <Button variant="primary" data-testid="docker-top-btn" onclick={openPullModal}><IconDownload size={18} stroke={2} /> {$t('docker.pull_image2')}</Button>
+        {:else if tab === 'volumes'}
+          <Button variant="primary" data-testid="docker-top-btn" onclick={openVolumeModal}><IconPlus size={18} stroke={2} /> {$t('docker.new_volume')}</Button>
         {:else if tab === 'networks'}
           <Button variant="primary" data-testid="docker-top-btn" onclick={openNetModal}><IconPlus size={18} stroke={2} /> {$t('docker.create_network')}</Button>
         {/if}
@@ -1188,8 +1752,13 @@
                       <span class="inline-flex items-center gap-1 text-c-xs font-bold text-[var(--hv-success)]"><span class="w-1.5 h-1.5 rounded-full bg-[var(--hv-success)]"></span>{$t('docker.state_active')}</span>
                     {:else if c.state === 'Restarting'}
                       <span class="inline-flex items-center gap-1 text-c-xs font-bold text-[var(--hv-warning)]"><span class="w-1.5 h-1.5 rounded-full bg-[var(--hv-warning)]"></span>{$t('docker.state_restarting')}</span>
+                    {:else if c.state === 'Paused'}
+                      <span class="inline-flex items-center gap-1 text-c-xs font-bold text-[var(--hv-warning)]"><span class="w-1.5 h-1.5 rounded-full bg-[var(--hv-warning)]"></span>{$t('docker.state_paused')}</span>
                     {:else}
                       <span class="inline-flex items-center gap-1 text-c-xs font-bold text-[var(--hv-shell-text-2)]"><span class="w-1.5 h-1.5 rounded-full bg-[var(--hv-shell-text-3)]"></span>{$t('docker.state_stopped')}</span>
+                    {/if}
+                    {#if c.update_available}
+                      <span class="inline-flex items-center gap-1 text-c-xs font-bold text-[var(--hv-warning)]"><IconDownload size={12} stroke={2} />{$t('docker.update_available')}</span>
                     {/if}
                   </div>
                   <div class="text-xs text-[var(--hv-shell-text-2)] truncate">{c.image}</div>
@@ -1210,10 +1779,10 @@
                 <IconGlobe size={20} stroke={1.8} class="text-[var(--hv-shell-text-2)]" />
                 <span class="flex-1 text-c-base text-[var(--hv-shell-text-2)] font-[family-name:var(--hv-font-mono)] truncate">{url}</span>
                 <div class="relative">
-                  <button class="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg border-none bg-transparent text-[var(--hv-primary)] text-xs font-semibold cursor-pointer hover:bg-[var(--hv-primary-light)]" aria-haspopup="menu" aria-expanded={urlMenuFor === c.id} onclick={(e) => { e.stopPropagation(); urlMenuFor = urlMenuFor === c.id ? null : c.id; }}><IconExternalLink size={17} stroke={2} /> {$t('docker.open_app')}</button>
-                  {#if urlMenuFor === c.id}
+                  <button class="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg border-none bg-transparent text-[var(--hv-primary)] text-xs font-semibold cursor-pointer hover:bg-[var(--hv-primary-light)]" aria-haspopup="menu" aria-expanded={urlMenuFor === c.id} onclick={(e) => { e.stopPropagation(); if (urlMenuFor === c.id) { urlMenuFor = null; return; } ctrMenuFor = null; urlMenuFor = c.id; menuPos = menuAnchor(e.currentTarget as HTMLElement, 176, 92); }}><IconExternalLink size={17} stroke={2} /> {$t('docker.open_app')}</button>
+                  {#if urlMenuFor === c.id && menuPos}
                     <button type="button" class="fixed inset-0 z-40 cursor-default" aria-label={$t('common.close')} onclick={() => urlMenuFor = null}></button>
-                    <div class="absolute top-full right-0 mt-1 z-50 w-44 rounded-xl bg-[var(--hv-shell-glass)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] p-1" role="menu">
+                    <div style="top: {menuPos.top}px; left: {menuPos.left}px" class="fixed z-50 w-44 rounded-xl bg-[var(--hv-shell-glass)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] p-1" role="menu">
                       <button type="button" role="menuitem" class="w-full px-3 py-2 rounded-lg text-left text-c-base cursor-pointer hover:bg-[var(--hv-subtle-hover)]" onclick={() => openContainerUrl(url, 'tab')}>{$t('docker.open_in_new_tab')}</button>
                       <button type="button" role="menuitem" class="w-full px-3 py-2 rounded-lg text-left text-c-base cursor-pointer hover:bg-[var(--hv-subtle-hover)]" onclick={() => openContainerUrl(url, 'window')}>{$t('docker.open_in_new_window')}</button>
                     </div>
@@ -1238,6 +1807,34 @@
               {#if c.compose_project}
                 <button class={actionBtn} onclick={() => openEditCompose(c)}><IconPencil size={17} /> {$t('common.edit')}</button>
               {/if}
+              <!-- Secondary actions live behind one menu: the card stays scannable
+                   and the common path (start/stop/restart/logs) keeps its place. -->
+              <div class="relative ml-auto">
+                <button
+                  class={actionIconBtn}
+                  aria-haspopup="menu"
+                  aria-expanded={ctrMenuFor === c.id}
+                  aria-label={$t('docker.more_actions')}
+                  title={$t('docker.more_actions')}
+                  onclick={(e) => { if (ctrMenuFor === c.id) { ctrMenuFor = null; return; } urlMenuFor = null; ctrMenuFor = c.id; menuPos = menuAnchor(e.currentTarget as HTMLElement, 224, 316); }}
+                ><IconBolt size={17} /></button>
+                {#if ctrMenuFor === c.id && menuPos}
+                  <button type="button" class="fixed inset-0 z-40 cursor-default" aria-label={$t('common.close')} onclick={() => ctrMenuFor = null}></button>
+                  <div style="top: {menuPos.top}px; left: {menuPos.left}px" class="fixed z-50 w-56 rounded-xl bg-[var(--hv-shell-glass)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] p-1" role="menu">
+                    <button type="button" role="menuitem" class="w-full px-3 py-2 rounded-lg text-left text-c-base cursor-pointer hover:bg-[var(--hv-subtle-hover)]" onclick={() => openInspect(c.name)}>{$t('docker.inspect')}</button>
+                    {#if c.state === 'Paused'}
+                      <button type="button" role="menuitem" class="w-full px-3 py-2 rounded-lg text-left text-c-base cursor-pointer hover:bg-[var(--hv-subtle-hover)]" onclick={() => { ctrMenuFor = null; containerExtra(c.name, 'unpause'); }}>{$t('docker.unpause')}</button>
+                    {:else if c.state === 'Running'}
+                      <button type="button" role="menuitem" class="w-full px-3 py-2 rounded-lg text-left text-c-base cursor-pointer hover:bg-[var(--hv-subtle-hover)]" onclick={() => { ctrMenuFor = null; containerExtra(c.name, 'pause'); }}>{$t('docker.pause')}</button>
+                      <button type="button" role="menuitem" class="w-full px-3 py-2 rounded-lg text-left text-c-base cursor-pointer hover:bg-[var(--hv-subtle-hover)]" onclick={() => { ctrMenuFor = null; openExec(c.name); }}>{$t('docker.exec')}</button>
+                      <button type="button" role="menuitem" class="w-full px-3 py-2 rounded-lg text-left text-c-base cursor-pointer hover:bg-[var(--hv-subtle-hover)]" onclick={() => { ctrMenuFor = null; killContainer(c.name); }}>{$t('docker.kill')}</button>
+                    {/if}
+                    <button type="button" role="menuitem" class="w-full px-3 py-2 rounded-lg text-left text-c-base cursor-pointer hover:bg-[var(--hv-subtle-hover)]" onclick={() => openRename(c.name)}>{$t('docker.rename')}</button>
+                    <button type="button" role="menuitem" class="w-full px-3 py-2 rounded-lg text-left text-c-base cursor-pointer hover:bg-[var(--hv-subtle-hover)]" onclick={() => openLimits(c.name)}>{$t('docker.update_limits')}</button>
+                    <button type="button" role="menuitem" class="w-full px-3 py-2 rounded-lg text-left text-c-base cursor-pointer hover:bg-[var(--hv-subtle-hover)]" disabled={recreateBusy === c.name} onclick={() => updateContainerImage(c)}>{recreateBusy === c.name ? $t('docker.updating_image') : $t('docker.update_image')}</button>
+                  </div>
+                {/if}
+              </div>
               <button class={cn(actionIconBtn, dangerHover)} onclick={() => removeContainer(c.name, c.state === 'Running')} aria-label={$t('common.delete')}><IconTrash size={17} /></button>
             </div>
           </div>
@@ -1265,6 +1862,100 @@
               <span class="text-xs text-[var(--hv-shell-text-2)] flex-none">{img.size}</span>
               <button class={actionBtn} onclick={() => openCreateModal(`${img.repository}:${img.tag}`)}>{$t('docker.deploy_image')}</button>
               <button class={cn(actionIconBtn, dangerHover)} onclick={() => removeImage(img.id)} aria-label={$t('common.delete')}><IconTrash size={17} /></button>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
+
+  {:else if tab === 'volumes'}
+    <!-- Disk usage + reclaim. `docker system df` is the only honest source of
+         "what is taking space"; the prune buttons sit right next to it so the
+         number and the fix are in the same place. -->
+    <div data-testid="docker-panel" class="p-3">
+      <div class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
+        <div class="flex items-center gap-2 px-4 py-3 border-b border-[var(--hv-shell-border-soft)]">
+          <IconDatabase size={20} stroke={1.8} class="text-[var(--hv-shell-text-2)]" />
+          <span class="text-sm font-semibold text-[var(--hv-shell-text-strong)]">{$t('docker.disk_usage')}</span>
+          {#if diskUsage}
+            <span class="ml-auto text-xs text-[var(--hv-shell-text-2)]">
+              {$t('docker.disk_reclaimable_total')}
+              <strong class="text-[var(--hv-warning)]">{diskUsage.total_reclaimable || '0B'}</strong>
+            </span>
+          {/if}
+        </div>
+        {#if diskUsage && diskUsage.rows.length}
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-left text-c-xs uppercase tracking-wide text-[var(--hv-shell-text-3)]">
+                <th scope="col" class="px-4 py-2 font-semibold">{$t('docker.disk_kind')}</th>
+                <th scope="col" class="px-4 py-2 font-semibold">{$t('docker.disk_total')}</th>
+                <th scope="col" class="px-4 py-2 font-semibold">{$t('docker.disk_active')}</th>
+                <th scope="col" class="px-4 py-2 font-semibold">{$t('docker.disk_size')}</th>
+                <th scope="col" class="px-4 py-2 font-semibold">{$t('docker.disk_reclaimable')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each diskUsage.rows as row (row.kind)}
+                <tr class="border-t border-[var(--hv-shell-border-soft)]">
+                  <td class="px-4 py-2 text-[var(--hv-shell-text-strong)]">{diskKindLabel(row.kind)}</td>
+                  <td class="px-4 py-2 text-[var(--hv-shell-text-2)]">{row.total}</td>
+                  <td class="px-4 py-2 text-[var(--hv-shell-text-2)]">{row.active}</td>
+                  <td class="px-4 py-2 text-[var(--hv-shell-text-2)]">{row.size}</td>
+                  <td class="px-4 py-2 text-[var(--hv-shell-text-2)]">{row.reclaimable}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {:else}
+          <p class="m-0 px-4 py-3 text-xs text-[var(--hv-shell-text-2)]" role="status">{$t('docker.disk_loading')}</p>
+        {/if}
+        <div class="flex flex-wrap gap-2 px-4 py-3 border-t border-[var(--hv-shell-border-soft)]">
+          <Button variant="secondary" disabled={pruneBusy !== null} onclick={() => prune('images')}>{$t('docker.prune_images')}</Button>
+          <Button variant="secondary" disabled={pruneBusy !== null} onclick={() => prune('volumes')}>{$t('docker.prune_volumes')}</Button>
+          <Button variant="secondary" disabled={pruneBusy !== null} onclick={() => prune('builders')}>{$t('docker.prune_builders')}</Button>
+          <Button variant="danger" disabled={pruneBusy !== null} onclick={() => prune('system', true)}>{$t('docker.prune_system')}</Button>
+        </div>
+      </div>
+    </div>
+
+    {#if volumesLoading && volumes.length === 0}
+      <div class="grid gap-3 p-3 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]" role="status">
+        <span class="sr-only">{$t('common.loading')}</span>
+        {#each Array(3) as _}
+          <div class="flex flex-col gap-1.5 p-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]" aria-hidden="true">
+            <span class="hv-skeleton-text block w-1/2"></span>
+            <span class="hv-skeleton-text block w-3/4"></span>
+          </div>
+        {/each}
+      </div>
+    {:else if volumes.length === 0}
+      <EmptyState data-testid="docker-empty" title={$t('docker.no_volumes')} description={$t('docker.no_volumes_desc')}>
+        {#snippet iconSnippet()}<IconDatabase size={32} stroke={1.5} />{/snippet}
+        {#snippet action()}<Button variant="primary" onclick={openVolumeModal}><IconPlus size={16} stroke={2} /> {$t('docker.new_volume')}</Button>{/snippet}
+      </EmptyState>
+    {:else}
+      <div class="px-3 pb-3">
+        <div class="flex flex-col gap-1.5">
+          {#each volumes as v (v.name)}
+            <div data-testid="docker-row" class="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+              <IconDatabase size={22} stroke={1.7} class="text-[var(--hv-shell-text-2)] flex-none" />
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2">
+                  <span class="text-c-base font-semibold text-[var(--hv-shell-text-strong)] truncate">{v.name}</span>
+                  {#if v.in_use}
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[var(--hv-primary-light)] text-[var(--hv-primary)] text-c-xs font-bold">{$t('docker.volume_in_use')}</span>
+                  {:else}
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-2)] text-c-xs font-bold">{$t('docker.volume_unused')}</span>
+                  {/if}
+                </div>
+                <div class="text-c-xs text-[var(--hv-shell-text-2)] font-[family-name:var(--hv-font-mono)] truncate">{v.mountpoint}</div>
+                {#if v.used_by.length}
+                  <div class="text-c-xs text-[var(--hv-shell-text-2)] truncate">{$t('docker.volume_used_by', { names: v.used_by.join(', ') })}</div>
+                {/if}
+              </div>
+              <span class="px-2 py-0.5 rounded-md bg-[var(--hv-shell-border-soft)] text-c-xs text-[var(--hv-shell-text-2)] flex-none">{v.driver}</span>
+              <button class={cn(actionIconBtn, dangerHover)} disabled={volumeBusy} onclick={() => deleteVolume(v)} aria-label={$t('docker.volume_delete_aria', { name: v.name })}><IconTrash size={17} /></button>
             </div>
           {/each}
         </div>
@@ -1480,6 +2171,7 @@
                 <button class={actionIconBtn} onclick={() => composeAction(p.name, 'start')} aria-label={$t('docker.btn_start')}><IconPlayerPlay size={16} /></button>
               {/if}
               <button class={actionIconBtn} onclick={() => composeAction(p.name, 'restart')} aria-label={$t('docker.btn_restart')}><IconRefresh size={16} /></button>
+              <button class={actionIconBtn} disabled={busy} onclick={() => updateProject(p.name)} aria-label={$t('docker.stack_update')} title={$t('docker.stack_update')}><IconDownload size={16} /></button>
               <button class={cn(actionIconBtn, dangerHover)} onclick={() => removeProject(p.name)} aria-label={$t('common.delete')}><IconTrash size={16} /></button>
             </div>
           {/each}
@@ -1562,14 +2254,56 @@
   </Modal>
 {/if}
 
-<!-- CONTAINER LOGS MODAL -->
+<!-- CONTAINER LOGS MODAL (live tail over SSE) -->
 {#if logContainerName}
   <Modal open={!!logContainerName} title={$t('docker.title_logs', { name: logContainerName ?? '' })} size="lg" onclose={closeLogs}>
     {#snippet icon()}<IconTerminal size={22} stroke={1.75} />{/snippet}
     {#snippet children()}
-      <p class="m-0 mb-2 text-xs text-[var(--hv-shell-text-2)]">{$t('docker.logs_cmd')}</p>
-      <div class="h-72 overflow-auto p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)] font-[family-name:var(--hv-font-mono)] text-c-sm text-[var(--hv-shell-text-strong)]">
-        {#each containerLogs.split('\n') as line}<div class="whitespace-pre-wrap">{line}</div>{/each}
+      <div class="flex flex-wrap items-end gap-3 mb-2">
+        <div class={cn(field, 'w-32')}>
+          <label class={fieldLabel} for="logTail">{$t('docker.logs_tail')}</label>
+          <select id="logTail" class={textInput} bind:value={logTail} onchange={startLogStream}>
+            {#each LOG_TAIL_CHOICES as n (n)}<option value={n}>{n}</option>{/each}
+          </select>
+        </div>
+        <label class="flex items-center gap-1.5 text-c-sm text-[var(--hv-shell-text-2)] cursor-pointer pb-2">
+          <input type="checkbox" class="accent-[var(--hv-primary)]" bind:checked={logTimestamps} onchange={startLogStream} /> {$t('docker.logs_timestamps')}
+        </label>
+        <label class="flex items-center gap-1.5 text-c-sm text-[var(--hv-shell-text-2)] cursor-pointer pb-2">
+          <input type="checkbox" class="accent-[var(--hv-primary)]" bind:checked={logFollow} onchange={startLogStream} /> {$t('docker.logs_follow')}
+        </label>
+        <span class="ml-auto pb-2 inline-flex items-center gap-1.5 text-c-xs font-semibold" role="status" aria-live="polite">
+          {#if logState === 'live'}
+            <span class="w-1.5 h-1.5 rounded-full bg-[var(--hv-success)]"></span><span class="text-[var(--hv-success)]">{$t('docker.logs_live')}</span>
+          {:else if logState === 'connecting'}
+            <span class="w-1.5 h-1.5 rounded-full bg-[var(--hv-warning)]"></span><span class="text-[var(--hv-shell-text-2)]">{$t('docker.logs_connecting')}</span>
+          {:else if logState === 'ended'}
+            <span class="w-1.5 h-1.5 rounded-full bg-[var(--hv-shell-text-3)]"></span><span class="text-[var(--hv-shell-text-2)]">{$t('docker.logs_ended')}</span>
+          {:else if logState === 'error'}
+            <span class="w-1.5 h-1.5 rounded-full bg-[var(--hv-error)]"></span><span class="text-[var(--hv-error)]">{$t('docker.logs_disconnected')}</span>
+          {/if}
+        </span>
+      </div>
+      <p class="m-0 mb-2 text-xs text-[var(--hv-shell-text-2)] font-[family-name:var(--hv-font-mono)]">{$t('docker.logs_cmd')}</p>
+      <div
+        bind:this={logBox}
+        data-testid="docker-logs"
+        class="h-72 overflow-auto p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)] font-[family-name:var(--hv-font-mono)] text-c-sm text-[var(--hv-shell-text-strong)]"
+        role="log"
+        aria-live="polite"
+      >
+        {#if containerLogs.length === 0}
+          <div class="text-[var(--hv-shell-text-2)]">{logState === 'error' ? logError : $t('docker.logs_empty')}</div>
+        {:else}
+          {#each containerLogs as line, i (i)}<div class="whitespace-pre-wrap">{line}</div>{/each}
+        {/if}
+      </div>
+    {/snippet}
+    {#snippet footer()}
+      <div class="flex gap-2.5 justify-end">
+        <Button variant="secondary" type="button" disabled={containerLogs.length === 0} onclick={downloadLogs}><IconDownload size={15} stroke={2} /> {$t('docker.logs_download')}</Button>
+        <Button variant="secondary" type="button" onclick={startLogStream}>{$t('docker.logs_refresh')}</Button>
+        <Button variant="primary" type="button" onclick={closeLogs}>{$t('common.close')}</Button>
       </div>
     {/snippet}
   </Modal>
@@ -1772,6 +2506,349 @@
       <div class="flex gap-2.5 justify-end">
         <Button variant="secondary" type="button" onclick={() => netModalOpen = false}>{$t('common.cancel')}</Button>
         <Button variant="primary" type="button" onclick={createNetwork}>{$t('common.create')}</Button>
+      </div>
+    {/snippet}
+  </Modal>
+{/if}
+<!-- CREATE VOLUME MODAL -->
+{#if volumeModalOpen}
+  <Modal open={volumeModalOpen} title={$t('docker.new_volume')} size="sm" onclose={() => volumeModalOpen = false}>
+    {#snippet icon()}<IconDatabase size={22} stroke={1.75} />{/snippet}
+    {#snippet children()}
+      <div class="flex flex-col gap-3">
+        <div class={field}>
+          <label class={fieldLabel} for="vName">{$t('docker.volume_name')}</label>
+          <input type="text" id="vName" class={textInput} bind:value={vName} placeholder="my-data" />
+          <span class="text-c-xs text-[var(--hv-shell-text-2)]">{$t('docker.volume_name_hint')}</span>
+        </div>
+        <div class={field}>
+          <label class={fieldLabel} for="vDriver">{$t('docker.volume_driver')}</label>
+          <input type="text" id="vDriver" class={textInput} bind:value={vDriver} placeholder="local" />
+        </div>
+      </div>
+    {/snippet}
+    {#snippet footer()}
+      <div class="flex gap-2.5 justify-end">
+        <Button variant="secondary" type="button" onclick={() => volumeModalOpen = false}>{$t('common.cancel')}</Button>
+        <Button variant="primary" type="button" disabled={volumeBusy || !vName.trim()} onclick={createVolume}>{$t('common.create')}</Button>
+      </div>
+    {/snippet}
+  </Modal>
+{/if}
+
+<!-- CONTAINER DETAIL (INSPECT) MODAL -->
+{#if detailModal}
+  {@const dm = detailModal}
+  <Modal open={!!dm} title={$t('docker.inspect_title', { name: dm.name })} size="lg" onclose={() => detailModal = null}>
+    {#snippet icon()}<IconInfoCircle size={22} stroke={1.75} />{/snippet}
+    {#snippet children()}
+      {#if dm.loading}
+        <p class="m-0 text-sm text-[var(--hv-shell-text-2)]" role="status">{$t('common.loading')}</p>
+      {:else if dm.error}
+        <p class="m-0 text-sm text-[var(--hv-error)]">{dm.error}</p>
+      {:else if dm.detail}
+        {@const d = dm.detail}
+        <div class="flex flex-col gap-3 text-sm">
+          <dl class="grid grid-cols-[minmax(0,140px)_minmax(0,1fr)] gap-x-3 gap-y-1.5 m-0">
+            <dt class="text-[var(--hv-shell-text-2)]">{$t('docker.inspect_image')}</dt>
+            <dd class="m-0 font-[family-name:var(--hv-font-mono)] text-c-sm break-all">{d.image}</dd>
+            <dt class="text-[var(--hv-shell-text-2)]">{$t('docker.inspect_state')}</dt>
+            <dd class="m-0">{d.state}{#if d.health} · {$t('docker.inspect_health')}: {d.health}{/if}</dd>
+            <dt class="text-[var(--hv-shell-text-2)]">{$t('docker.inspect_created')}</dt>
+            <dd class="m-0">{d.created}</dd>
+            <dt class="text-[var(--hv-shell-text-2)]">{$t('docker.inspect_restart_policy')}</dt>
+            <dd class="m-0">{d.restart_policy} · {$t('docker.inspect_restarts', { count: String(d.restart_count) })}</dd>
+            {#if d.exit_code !== null && d.state !== 'running'}
+              <dt class="text-[var(--hv-shell-text-2)]">{$t('docker.inspect_exit_code')}</dt>
+              <dd class="m-0">{d.exit_code}</dd>
+            {/if}
+            <dt class="text-[var(--hv-shell-text-2)]">{$t('docker.inspect_command')}</dt>
+            <dd class="m-0 font-[family-name:var(--hv-font-mono)] text-c-sm break-all">{[...(d.entrypoint ?? []), ...(d.command ?? [])].join(' ') || '—'}</dd>
+            {#if d.working_dir}
+              <dt class="text-[var(--hv-shell-text-2)]">{$t('docker.inspect_working_dir')}</dt>
+              <dd class="m-0 font-[family-name:var(--hv-font-mono)] text-c-sm">{d.working_dir}</dd>
+            {/if}
+            <dt class="text-[var(--hv-shell-text-2)]">{$t('docker.inspect_hostname')}</dt>
+            <dd class="m-0">{d.hostname || '—'}{#if d.user} · {$t('docker.inspect_user')}: {d.user}{/if}</dd>
+            <dt class="text-[var(--hv-shell-text-2)]">{$t('docker.inspect_networks')}</dt>
+            <dd class="m-0">{d.networks.join(', ') || '—'}{#if d.ip_address} · {d.ip_address}{/if}</dd>
+            <dt class="text-[var(--hv-shell-text-2)]">{$t('docker.inspect_limits')}</dt>
+            <dd class="m-0">
+              {#if d.memory_limit && d.memory_limit > 0}{Math.round(d.memory_limit / 1024 / 1024)} MB{:else}{$t('docker.inspect_unlimited')}{/if}
+              {#if d.nano_cpus && d.nano_cpus > 0} · {(d.nano_cpus / 1e9).toFixed(2)} CPU{/if}
+              {#if d.privileged} · {$t('docker.privileged2')}{/if}
+            </dd>
+            {#if d.log_driver}
+              <dt class="text-[var(--hv-shell-text-2)]">{$t('docker.inspect_log_driver')}</dt>
+              <dd class="m-0 font-[family-name:var(--hv-font-mono)] text-c-sm break-all">{d.log_driver}</dd>
+            {/if}
+          </dl>
+
+          {#if d.ports.length}
+            <section>
+              <h3 class="m-0 mb-1 text-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-3)]">{$t('docker.inspect_ports')}</h3>
+              <div class="flex flex-wrap gap-1.5">
+                {#each d.ports as p (p.host_port + '-' + p.container_port + '-' + p.protocol)}
+                  <span class="px-2 py-0.5 rounded-md bg-[var(--hv-shell-border-soft)] text-c-xs font-[family-name:var(--hv-font-mono)]">{p.host_port} → {p.container_port}/{p.protocol}</span>
+                {/each}
+              </div>
+            </section>
+          {/if}
+
+          {#if d.mounts.length}
+            <section>
+              <h3 class="m-0 mb-1 text-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-3)]">{$t('docker.inspect_mounts')}</h3>
+              <ul class="m-0 p-0 list-none flex flex-col gap-1">
+                {#each d.mounts as m (m.destination)}
+                  <li class="font-[family-name:var(--hv-font-mono)] text-c-xs text-[var(--hv-shell-text-2)] break-all">{m.source} → {m.destination}{#if m.read_only} (ro){/if}</li>
+                {/each}
+              </ul>
+            </section>
+          {/if}
+
+          {#if d.env.length}
+            <section>
+              <h3 class="m-0 mb-1 text-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-3)]">{$t('docker.inspect_env')}</h3>
+              <ul class="m-0 p-0 list-none flex flex-col gap-1 max-h-32 overflow-auto">
+                {#each d.env as e (e)}
+                  <li class="font-[family-name:var(--hv-font-mono)] text-c-xs text-[var(--hv-shell-text-2)] break-all">{e}</li>
+                {/each}
+              </ul>
+            </section>
+          {/if}
+
+          {#if d.labels.length}
+            <section>
+              <h3 class="m-0 mb-1 text-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-3)]">{$t('docker.inspect_labels')}</h3>
+              <ul class="m-0 p-0 list-none flex flex-col gap-1 max-h-32 overflow-auto">
+                {#each d.labels as [k, v] (k)}
+                  <li class="font-[family-name:var(--hv-font-mono)] text-c-xs text-[var(--hv-shell-text-2)] break-all">{k}={v}</li>
+                {/each}
+              </ul>
+            </section>
+          {/if}
+        </div>
+      {/if}
+    {/snippet}
+    {#snippet footer()}
+      <div class="flex gap-2.5 justify-end">
+        <Button variant="primary" type="button" onclick={() => detailModal = null}>{$t('common.close')}</Button>
+      </div>
+    {/snippet}
+  </Modal>
+{/if}
+
+<!-- EXEC MODAL -->
+{#if execModal}
+  {@const ex = execModal}
+  <Modal open={!!ex} title={$t('docker.exec_title', { name: ex.name })} size="lg" onclose={() => execModal = null}>
+    {#snippet icon()}<IconTerminal size={22} stroke={1.75} />{/snippet}
+    {#snippet children()}
+      <form class="flex flex-col gap-3" onsubmit={(e) => { e.preventDefault(); runExec(); }}>
+        <div class={field}>
+          <label class={fieldLabel} for="execCommand">{$t('docker.exec_command')}</label>
+          <input type="text" id="execCommand" class={textInput} bind:value={ex.command} placeholder="ls -la /config" autocomplete="off" spellcheck="false" />
+          <span class="text-c-xs text-[var(--hv-shell-text-2)]">{$t('docker.exec_hint')}</span>
+        </div>
+      </form>
+      {#if ex.error}
+        <p class="m-0 mt-3 text-sm text-[var(--hv-error)]">{ex.error}</p>
+      {/if}
+      {#if ex.result}
+        <div class="mt-3">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="text-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-3)]">{$t('docker.exec_output')}</span>
+            <span class={cn('px-2 py-0.5 rounded-md text-c-xs font-bold', ex.result.exit_code === 0 ? 'bg-[var(--hv-success-bg)] text-[var(--hv-success)]' : 'bg-[var(--hv-error-bg)] text-[var(--hv-error)]')}>
+              {$t('docker.exec_exit_code', { code: String(ex.result.exit_code) })}
+            </span>
+          </div>
+          <pre class="m-0 h-56 overflow-auto p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)] font-[family-name:var(--hv-font-mono)] text-c-sm whitespace-pre-wrap break-all">{ex.result.stdout}{#if ex.result.stderr}{'\n'}{ex.result.stderr}{/if}</pre>
+        </div>
+      {/if}
+    {/snippet}
+    {#snippet footer()}
+      <div class="flex gap-2.5 justify-end">
+        <Button variant="secondary" type="button" onclick={() => execModal = null}>{$t('common.close')}</Button>
+        <Button variant="primary" type="button" disabled={ex.running || !ex.command.trim()} onclick={runExec}>
+          {ex.running ? $t('docker.exec_running') : $t('docker.exec_run')}
+        </Button>
+      </div>
+    {/snippet}
+  </Modal>
+{/if}
+
+<!-- RENAME MODAL -->
+{#if renameModal}
+  {@const rn = renameModal}
+  <Modal open={!!rn} title={$t('docker.rename_title', { name: rn.name })} size="sm" onclose={() => renameModal = null}>
+    {#snippet icon()}<IconPencil size={22} stroke={1.75} />{/snippet}
+    {#snippet children()}
+      <div class={field}>
+        <label class={fieldLabel} for="renameValue">{$t('docker.new_name')}</label>
+        <input type="text" id="renameValue" class={textInput} bind:value={rn.value} autocomplete="off" />
+      </div>
+    {/snippet}
+    {#snippet footer()}
+      <div class="flex gap-2.5 justify-end">
+        <Button variant="secondary" type="button" onclick={() => renameModal = null}>{$t('common.cancel')}</Button>
+        <Button variant="primary" type="button" disabled={rn.busy || !rn.value.trim()} onclick={submitRename}>{$t('common.save')}</Button>
+      </div>
+    {/snippet}
+  </Modal>
+{/if}
+
+<!-- LIMITS MODAL (docker update, in place) -->
+{#if limitsModal}
+  {@const lm = limitsModal}
+  <Modal open={!!lm} title={$t('docker.update_limits')} size="md" onclose={() => limitsModal = null}>
+    {#snippet icon()}<IconBolt size={22} stroke={1.75} />{/snippet}
+    {#snippet children()}
+      <p class="m-0 mb-3 text-sm text-[var(--hv-shell-text)]">{$t('docker.update_limits_desc', { name: lm.name })}</p>
+      <div class="flex flex-col gap-3">
+        <div class={field}>
+          <label class={fieldLabel} for="limitMemory">{$t('docker.memory_label')}</label>
+          <input type="text" id="limitMemory" class={textInput} bind:value={lm.memory} placeholder={$t('docker.ph_memory')} />
+        </div>
+        <div class={field}>
+          <label class={fieldLabel} for="limitCpu">{$t('docker.cpu_label')}</label>
+          <input type="text" id="limitCpu" class={textInput} bind:value={lm.cpus} placeholder={$t('docker.ph_cpu')} />
+        </div>
+        <div class={field}>
+          <label class={fieldLabel} for="limitRestart">{$t('docker.restart_policy2')}</label>
+          <select id="limitRestart" class={textInput} bind:value={lm.restart}>
+            <option value="">{$t('docker.restart_unchanged')}</option>
+            <option value="no">{$t('docker.restart_no')}</option>
+            <option value="on-failure">{$t('docker.restart_on_failure')}</option>
+            <option value="always">{$t('docker.restart_always')}</option>
+            <option value="unless-stopped">{$t('docker.restart_unless')}</option>
+          </select>
+        </div>
+      </div>
+    {/snippet}
+    {#snippet footer()}
+      <div class="flex gap-2.5 justify-end">
+        <Button variant="secondary" type="button" onclick={() => limitsModal = null}>{$t('common.cancel')}</Button>
+        <Button variant="primary" type="button" disabled={lm.busy} onclick={submitLimits}>{$t('common.save')}</Button>
+      </div>
+    {/snippet}
+  </Modal>
+{/if}
+
+<!-- BUILD IMAGE MODAL -->
+{#if buildModal}
+  {@const bd = buildModal}
+  <Modal open={!!bd} title={$t('docker.build_image')} size="md" onclose={() => buildModal = null}>
+    {#snippet icon()}<IconTool size={22} stroke={1.75} />{/snippet}
+    {#snippet children()}
+      <div class="flex flex-col gap-3">
+        <div class={field}>
+          <label class={fieldLabel} for="buildContext">{$t('docker.build_context')}</label>
+          <PathField bind:value={bd.context} mode="folder" placeholder="/var/lib/homevault/apps/myapp" />
+          <span class="text-c-xs text-[var(--hv-shell-text-2)]">{$t('docker.build_context_hint')}</span>
+        </div>
+        <div class={field}>
+          <label class={fieldLabel} for="buildDockerfile">{$t('docker.build_dockerfile')}</label>
+          <input type="text" id="buildDockerfile" class={textInput} bind:value={bd.dockerfile} placeholder="Dockerfile" />
+        </div>
+        <div class={field}>
+          <label class={fieldLabel} for="buildTag">{$t('docker.build_tag')}</label>
+          <input type="text" id="buildTag" class={textInput} bind:value={bd.tag} placeholder="myapp:1.0" />
+        </div>
+        <Toggle bind:checked={bd.noCache} label={$t('docker.build_no_cache')} />
+        <Toggle bind:checked={bd.pull} label={$t('docker.build_pull')} />
+        {#if bd.error}
+          <p class="m-0 text-sm text-[var(--hv-error)] whitespace-pre-wrap break-all">{bd.error}</p>
+        {/if}
+        {#if bd.log}
+          <pre class="m-0 h-40 overflow-auto p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)] font-[family-name:var(--hv-font-mono)] text-c-xs whitespace-pre-wrap break-all">{bd.log}</pre>
+        {/if}
+      </div>
+    {/snippet}
+    {#snippet footer()}
+      <div class="flex gap-2.5 justify-end">
+        <Button variant="secondary" type="button" onclick={() => buildModal = null}>{$t('common.close')}</Button>
+        <Button variant="primary" type="button" disabled={bd.running || !bd.context.trim() || !bd.tag.trim()} onclick={submitBuild}>
+          {bd.running ? $t('docker.build_running') : $t('docker.build_run')}
+        </Button>
+      </div>
+    {/snippet}
+  </Modal>
+{/if}
+
+<!-- PRIVATE REGISTRIES MODAL -->
+{#if registryModal}
+  {@const rg = registryModal}
+  <Modal open={!!rg} title={$t('docker.registries')} size="md" onclose={() => registryModal = null}>
+    {#snippet icon()}<IconLock size={22} stroke={1.75} />{/snippet}
+    {#snippet children()}
+      <p class="m-0 mb-3 text-sm text-[var(--hv-shell-text)]">{$t('docker.registries_desc')}</p>
+      {#if rg.loading}
+        <p class="m-0 text-sm text-[var(--hv-shell-text-2)]" role="status">{$t('common.loading')}</p>
+      {:else if rg.registries.length === 0}
+        <p class="m-0 text-sm text-[var(--hv-shell-text-2)]">{$t('docker.registry_none')}</p>
+      {:else}
+        <ul class="m-0 p-0 list-none flex flex-col gap-1.5">
+          {#each rg.registries as host (host)}
+            <li class="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
+              <span class="flex-1 min-w-0 text-c-base font-[family-name:var(--hv-font-mono)] truncate">{host}</span>
+              <button class={cn(actionIconBtn, dangerHover)} disabled={rg.busy} onclick={() => registryLogout(host)} aria-label={$t('docker.registry_logout_aria', { host })}><IconTrash size={16} /></button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      <form class="flex flex-col gap-2.5 mt-4" onsubmit={(e) => { e.preventDefault(); registryLogin(); }}>
+        <span class="text-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-3)]">{$t('docker.registry_add')}</span>
+        <div class={field}>
+          <label class={fieldLabel} for="registryHost">{$t('docker.registry_host')}</label>
+          <input type="text" id="registryHost" class={textInput} bind:value={rg.host} placeholder="ghcr.io" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class={field}>
+          <label class={fieldLabel} for="registryUser">{$t('docker.registry_username')}</label>
+          <input type="text" id="registryUser" class={textInput} bind:value={rg.username} autocomplete="username" />
+        </div>
+        <div class={field}>
+          <label class={fieldLabel} for="registryPassword">{$t('docker.registry_password')}</label>
+          <input type="password" id="registryPassword" class={textInput} bind:value={rg.password} autocomplete="current-password" />
+        </div>
+      </form>
+    {/snippet}
+    {#snippet footer()}
+      <div class="flex gap-2.5 justify-end">
+        <Button variant="secondary" type="button" onclick={() => registryModal = null}>{$t('common.close')}</Button>
+        <Button variant="primary" type="button" disabled={rg.busy || !rg.username.trim() || !rg.password} onclick={registryLogin}>{$t('docker.registry_login')}</Button>
+      </div>
+    {/snippet}
+  </Modal>
+{/if}
+
+<!-- DAEMON CONFIG MODAL -->
+{#if daemonConfigModal}
+  {@const dc = daemonConfigModal}
+  <Modal open={!!dc} title={$t('docker.daemon_config')} size="lg" onclose={() => daemonConfigModal = null}>
+    {#snippet icon()}<IconSettings size={22} stroke={1.75} />{/snippet}
+    {#snippet children()}
+      <p class="m-0 mb-2 text-sm text-[var(--hv-shell-text)]">{$t('docker.daemon_config_desc')}</p>
+      <p class="m-0 mb-2 text-xs text-[var(--hv-warning)] font-semibold">{$t('docker.daemon_config_warning')}</p>
+      {#if dc.loading}
+        <p class="m-0 text-sm text-[var(--hv-shell-text-2)]" role="status">{$t('common.loading')}</p>
+      {:else}
+        <label class={fieldLabel} for="daemonConfig">{$t('docker.daemon_config_file', { path: dc.path })}</label>
+        <textarea
+          id="daemonConfig"
+          class="w-full min-h-[240px] mt-1 p-3 rounded-xl border border-[var(--hv-shell-border)] bg-[var(--hv-shell-border-soft)] text-c-base font-[family-name:var(--hv-font-mono)] outline-none focus:border-[var(--hv-primary)]"
+          bind:value={dc.config}
+          spellcheck="false"
+          disabled={dc.busy}
+        ></textarea>
+        {#if dc.error}
+          <p class="m-0 mt-2 text-sm text-[var(--hv-error)] whitespace-pre-wrap break-all">{dc.error}</p>
+        {/if}
+      {/if}
+    {/snippet}
+    {#snippet footer()}
+      <div class="flex gap-2.5 justify-end">
+        <Button variant="secondary" type="button" onclick={() => daemonConfigModal = null}>{$t('common.cancel')}</Button>
+        <Button variant="primary" type="button" disabled={dc.loading || dc.busy} onclick={saveDaemonConfig}>{$t('common.save')}</Button>
       </div>
     {/snippet}
   </Modal>
