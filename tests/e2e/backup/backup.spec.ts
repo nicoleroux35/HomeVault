@@ -293,15 +293,38 @@ test.describe('3 — Validation', () => {
       name,
       max_count: 5,
       max_age_days: 14,
+      max_size_gb: 250,
     });
     expect(created.http).toBe(200);
     const id = created.data?.id;
     try {
       const list = await api(page, adminTokens, 'GET', '/api/restic/retention-policies');
-      expect((list.data as any[]).some((p) => p.id === id)).toBe(true);
+      const mine = (list.data as any[]).find((p) => p.id === id);
+      expect(mine).toBeTruthy();
+      // The size cap is applied by the scheduler after each run — it must at
+      // least survive the round-trip, otherwise the field is a silent no-op.
+      expect(mine.max_size_gb).toBe(250);
     } finally {
       if (id) await api(page, adminTokens, 'DELETE', `/api/restic/retention-policies/${id}`);
     }
+  });
+
+  test('3.6 — a retention policy with no limit and a zero count is refused', async ({ page }) => {
+    await gotoBackup(page, adminTokens);
+    // No limit at all: it would never prune anything.
+    const none = await api(page, adminTokens, 'POST', '/api/restic/retention-policies', {
+      name: `e2e-pol-none-${Date.now().toString(36)}`,
+    });
+    expect(none.http).toBe(400);
+    expect(none.message.toLowerCase()).toContain('retention limit');
+
+    // `max_count: 0` would mean "forget every snapshot".
+    const zero = await api(page, adminTokens, 'POST', '/api/restic/retention-policies', {
+      name: `e2e-pol-zero-${Date.now().toString(36)}`,
+      max_count: 0,
+    });
+    expect(zero.http).toBe(400);
+    expect(zero.message).toContain('greater than 0');
   });
 });
 
@@ -457,6 +480,24 @@ test.describe('6 — Accessibility & console', () => {
 // ===========================================================================
 
 test.describe('13 — Real backup lifecycle', () => {
+  /**
+   * Poll a repo's job history until its newest job leaves `running`.
+   *
+   * `POST /api/restic/backup` answers immediately (the run is a background
+   * job), so a test that reads the snapshot list straight after the response
+   * would race the backup.
+   */
+  async function waitForBackupJob(page: Page, repoId: string, timeoutMs = 90_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const jobs = await api(page, adminTokens, 'GET', `/api/restic/repos/${repoId}/jobs`);
+      const list = (jobs.data as any[]) ?? [];
+      if (list.length > 0 && list[0].status !== 'running') return list[0];
+      await page.waitForTimeout(500);
+    }
+    throw new Error('the backup job did not finish in time');
+  }
+
   test('13.1 — create repo → run a real backup → see the snapshot → delete', async ({ page }) => {
     await gotoBackup(page, adminTokens);
     if (!(await resticAvailable(page))) test.skip(true, 'restic not installed');
@@ -485,10 +526,19 @@ test.describe('13 — Real backup lifecycle', () => {
     expect(repoId).toBeTruthy();
 
     try {
-      // run a real backup
+      // run a real backup — the endpoint starts it and returns its job id
       const backup = await api(page, adminTokens, 'POST', '/api/restic/backup', { repo_id: repoId });
       expect(backup.http).toBe(200);
       expect(backup.success, `backup: ${backup.message}`).toBe(true);
+      expect(backup.data?.status).toBe('running');
+      expect(backup.data?.job_id).toBeTruthy();
+      // the history row exists *before* the run ends (started_at is the real
+      // start time, and a crash leaves a row the startup reaper closes)
+      expect(backup.data?.backup_job_id).toBeTruthy();
+
+      const job = await waitForBackupJob(page, repoId);
+      expect(job.status, JSON.stringify(job)).toBe('completed');
+      expect(job.snapshot_id).toBeTruthy();
 
       // the snapshot really exists in the repo
       const snaps = await api(page, adminTokens, 'GET', `/api/restic/repos/${repoId}/snapshots`);
@@ -538,6 +588,38 @@ test.describe('13 — Real backup lifecycle', () => {
       // crontab 1 == Monday (getUTCDay(): 1). If the DOW were off by one this
       // would be 0 (Sunday).
       expect(new Date(nextRun).getUTCDay()).toBe(1);
+    } finally {
+      if (repoId) await api(page, adminTokens, 'DELETE', `/api/restic/repos/${repoId}`);
+    }
+  });
+
+  test('13.3 — a freshly written repository checks out as healthy', async ({ page }) => {
+    await gotoBackup(page, adminTokens);
+    if (!(await resticAvailable(page))) test.skip(true, 'restic not installed');
+
+    const stamp = Date.now().toString(36);
+    const created = await api(page, adminTokens, 'POST', '/api/restic/repos', {
+      name: `e2e-chk-${stamp}`,
+      repository: `/tmp/hv-backup-e2e-chk-${stamp}`,
+      password: 'e2e-backup-pass-123',
+      source_paths: ['/etc/hostname'],
+    });
+    if (!created.success) test.skip(true, `repo create failed: ${created.message}`);
+    const repoId = created.data?.repo?.id ?? created.data?.id;
+
+    try {
+      const backup = await api(page, adminTokens, 'POST', '/api/restic/backup', { repo_id: repoId });
+      expect(backup.success, `backup: ${backup.message}`).toBe(true);
+      const job = await waitForBackupJob(page, repoId);
+      expect(job.status, JSON.stringify(job)).toBe('completed');
+
+      const check = await api(page, adminTokens, 'POST', '/api/restic/check', { repo_id: repoId });
+      expect(check.http).toBe(200);
+      // restic prints "no errors were found" on success. A substring match on
+      // "error" used to flag *every* healthy repository as broken, so this
+      // assertion is the regression guard for the check verdict.
+      expect(check.data?.check?.healthy, JSON.stringify(check.data)).toBe(true);
+      expect(check.data?.check?.errors ?? []).toEqual([]);
     } finally {
       if (repoId) await api(page, adminTokens, 'DELETE', `/api/restic/repos/${repoId}`);
     }

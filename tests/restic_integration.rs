@@ -1002,3 +1002,347 @@ async fn test_restore_plan_rejects_unknown_repo_and_bad_target() {
     assert_ne!(status, StatusCode::OK, "{body}");
     assert_eq!(body["success"], json!(false));
 }
+
+// ---------------------------------------------------------------------------
+// 8. Hardening — argument validation, run exclusion, stale-job reaper
+//
+// Every case below is refused *before* the restic CLI is reached: that is the
+// point. A value that would become an argv entry (`--keep-last=0` as a
+// snapshot id, `relative/path` as a backup source) never gets there.
+// ---------------------------------------------------------------------------
+
+/// Insert a restic_repos row with an explicit `source_paths` list.
+async fn insert_repo_with_paths(state: &AppState, id: &str, source_paths: &[&str]) {
+    let paths = serde_json::to_string(source_paths).unwrap();
+    sqlx::query(
+        "INSERT INTO restic_repos (id, name, repository, password, source_paths, snapshot_source, snapshot_create_before_backup, created_at, updated_at)
+         VALUES (?, ?, '/nonexistent/repo', 'pw', ?, 'directory', 0, datetime('now'), datetime('now'))",
+    )
+    .bind(id)
+    .bind(id)
+    .bind(paths)
+    .execute(&*state.db.pool())
+    .await
+    .expect("insert repo row");
+}
+
+#[tokio::test]
+async fn test_repo_create_validates_before_touching_restic() {
+    let (mut router, token, _tmp, _g) = admin_router().await;
+
+    let cases: Vec<(Value, &str)> = vec![
+        (
+            json!({"name":"","repository":"/tmp/r","password":"p","source_paths":["/tmp/s"]}),
+            "name is required",
+        ),
+        (
+            json!({"name":"r","repository":"  ","password":"p","source_paths":["/tmp/s"]}),
+            "repository location is required",
+        ),
+        (
+            json!({"name":"r","repository":"/tmp/r","password":"","source_paths":["/tmp/s"]}),
+            "password is required",
+        ),
+        (
+            json!({"name":"r","repository":"/tmp/r","password":"p","source_paths":["relative/dir"]}),
+            "absolute path",
+        ),
+        (
+            json!({"name":"r","repository":"/tmp/r","password":"p","source_paths":["/tmp/s"],"retention_policy_id":"ghost"}),
+            "retention policy not found",
+        ),
+        (
+            json!({"name":"r","repository":"/tmp/r","password":"p","source_paths":["/tmp/s"],"snapshot_create_before_backup":true}),
+            "snapshot pool is required",
+        ),
+        (
+            json!({"name":"r","repository":"/tmp/r","password":"p","source_paths":["/tmp/s"],"snapshot_create_before_backup":true,"snapshot_pool":"zpool","snapshot_dataset":"tank/data"}),
+            "absolute path",
+        ),
+    ];
+
+    for (body, expected) in cases {
+        let (status, resp) = send(
+            &mut router,
+            Method::POST,
+            "/api/restic/repos",
+            Some(&token),
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {resp}");
+        assert!(
+            msg(&resp).to_lowercase().contains(&expected.to_lowercase()),
+            "{body}: got {:?}",
+            msg(&resp)
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_backup_validates_sources_and_refuses_a_busy_repo() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin8", "Password123!", 2).await;
+    let mut router = restic_router(state.clone());
+    let token = login(&mut router, "admin8", "Password123!").await;
+
+    // A relative source path never reaches restic's argv.
+    insert_repo_with_paths(&state, "rel-repo", &["relative/dir"]).await;
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/restic/backup",
+        Some(&token),
+        Some(json!({"repo_id":"rel-repo"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(msg(&body).contains("absolute path"), "{}", msg(&body));
+
+    // A repository already running a backup/restore is refused up front
+    // instead of failing later with restic's "repository is already locked".
+    insert_repo_with_paths(&state, "busy-repo", &["/tmp/src"]).await;
+    let held = homevault::restic::RepoRunLock::acquire("busy-repo").expect("take the run slot");
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/restic/backup",
+        Some(&token),
+        Some(json!({"repo_id":"busy-repo"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(msg(&body).contains("already running"), "{}", msg(&body));
+    drop(held);
+    assert!(!homevault::restic::RepoRunLock::is_busy("busy-repo"));
+}
+
+#[tokio::test]
+async fn test_forget_requires_a_rule_and_a_valid_keep_within() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin7", "Password123!", 2).await;
+    let mut router = restic_router(state.clone());
+    let token = login(&mut router, "admin7", "Password123!").await;
+    insert_repo(&state, "repo-forget", "repo-forget").await;
+
+    // No rule at all: restic would answer "Fatal: no policy was specified".
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/restic/forget",
+        Some(&token),
+        Some(json!({"repo_id":"repo-forget"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(msg(&body).contains("retention rule"), "{}", msg(&body));
+
+    // A malformed duration is refused here, not by restic.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/restic/forget",
+        Some(&token),
+        Some(json!({"repo_id":"repo-forget","keep_within":"30 days"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        msg(&body).to_lowercase().contains("keep-within"),
+        "{}",
+        msg(&body)
+    );
+}
+
+#[tokio::test]
+async fn test_snapshot_delete_and_restore_reject_option_injection() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin6", "Password123!", 2).await;
+    let mut router = restic_router(state.clone());
+    let token = login(&mut router, "admin6", "Password123!").await;
+    insert_repo(&state, "repo-inject", "repo-inject").await;
+
+    // `restic forget --keep-last=0` would wipe the whole repository.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/restic/snapshots/delete",
+        Some(&token),
+        Some(json!({"repo_id":"repo-inject","snapshot_id":"--keep-last=0"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        msg(&body).contains("cannot start with '-'"),
+        "{}",
+        msg(&body)
+    );
+
+    // A relative restore target would be resolved against the server's cwd.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/restic/restore",
+        Some(&token),
+        Some(json!({"repo_id":"repo-inject","snapshot_id":"abc123","target":"relative/target"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(msg(&body).contains("absolute path"), "{}", msg(&body));
+
+    // A snapshot id that looks like a flag is not a snapshot id.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/restic/restore",
+        Some(&token),
+        Some(json!({"repo_id":"repo-inject","snapshot_id":"--target","target":"/tmp/restore"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        msg(&body).contains("cannot start with '-'"),
+        "{}",
+        msg(&body)
+    );
+}
+
+#[tokio::test]
+async fn test_check_read_data_requires_admin() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "reg3", "Password123!", 1).await;
+    let mut router = restic_router(state.clone());
+    let token = login(&mut router, "reg3", "Password123!").await;
+    insert_repo(&state, "repo-check", "repo-check").await;
+
+    // `--read-data` re-reads every pack: hours of I/O an ordinary session
+    // must not be able to trigger on demand.
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/restic/check",
+        Some(&token),
+        Some(json!({"repo_id":"repo-check","read_data":true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // The metadata-only check stays available to a plain session (it fails
+    // here only because restic is not installed on the test host).
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/restic/check",
+        Some(&token),
+        Some(json!({"repo_id":"repo-check"})),
+    )
+    .await;
+    assert_ne!(status, StatusCode::FORBIDDEN, "{body}");
+}
+
+#[tokio::test]
+async fn test_retention_policy_rejects_zero_and_a_second_default() {
+    let (mut router, token, _tmp, _g) = admin_router().await;
+
+    // `max_count = 0` would mean "forget every snapshot".
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/restic/retention-policies",
+        Some(&token),
+        Some(json!({"name":"zero","max_count":0})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(msg(&body).contains("greater than 0"), "{}", msg(&body));
+
+    // A policy with no limit at all would never prune anything.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/restic/retention-policies",
+        Some(&token),
+        Some(json!({"name":"none"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        msg(&body).contains("At least one retention limit"),
+        "{}",
+        msg(&body)
+    );
+
+    // Only one policy may be the `apply_to_all` default.
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/restic/retention-policies",
+        Some(&token),
+        Some(json!({"name":"default-a","max_count":7,"apply_to_all":true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/restic/retention-policies",
+        Some(&token),
+        Some(json!({"name":"default-b","max_count":3,"apply_to_all":true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(msg(&body).contains("already the default"), "{}", msg(&body));
+}
+
+#[tokio::test]
+async fn test_stale_running_jobs_are_closed_and_snapshot_id_is_recorded() {
+    use homevault::storage::restic_repo::ResticRepository;
+
+    let (state, _tmp, _g) = setup_state().await;
+    insert_repo(&state, "repo-jobs", "repo-jobs").await;
+    let repo = ResticRepository::new(state.db.pool());
+
+    // A job left `running` by a crash, and one that completed normally.
+    let stale = repo
+        .create_backup_job("repo-jobs", None, "/tmp/src", "manual")
+        .await
+        .expect("create stale job");
+    let done = repo
+        .create_backup_job("repo-jobs", None, "/tmp/src", "scheduled")
+        .await
+        .expect("create completed job");
+    repo.update_backup_job(
+        &done,
+        "completed",
+        Some("da0f81d6"),
+        1,
+        0,
+        0,
+        10,
+        1,
+        10,
+        1,
+        None,
+    )
+    .await
+    .expect("close the completed job");
+
+    let closed = repo.fail_stale_running_jobs().await.expect("reap");
+    assert_eq!(closed, 1, "only the running job is closed");
+
+    let jobs = repo.list_backup_jobs("repo-jobs", 10).await.unwrap();
+    let stale_job = jobs.iter().find(|j| j.id == stale).expect("stale row");
+    assert_eq!(stale_job.status, "failed");
+    assert!(stale_job
+        .error_message
+        .as_deref()
+        .unwrap_or("")
+        .contains("Interrupted"));
+    assert!(stale_job.finished_at.is_some());
+
+    let done_job = jobs.iter().find(|j| j.id == done).expect("done row");
+    assert_eq!(done_job.status, "completed");
+    // The job row is created before the run, so the snapshot id is filled in
+    // on completion rather than at creation.
+    assert_eq!(done_job.snapshot_id.as_deref(), Some("da0f81d6"));
+}
