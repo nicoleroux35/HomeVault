@@ -61,8 +61,8 @@ use homevault::handlers::{
     auth::handle_login,
     users::{
         handle_admin_disable_2fa, handle_admin_revoke_user_sessions, handle_admin_user_sessions,
-        handle_user_count, handle_user_create, handle_user_delete, handle_user_set_expiry,
-        handle_user_exists, handle_user_get, handle_user_set_locked, handle_user_update,
+        handle_user_count, handle_user_create, handle_user_delete, handle_user_exists,
+        handle_user_get, handle_user_set_expiry, handle_user_set_locked, handle_user_update,
         handle_user_update_full, handle_user_update_groups, handle_user_update_password,
         handle_user_update_role, handle_users_list,
     },
@@ -1651,7 +1651,12 @@ async fn test_admin_sessions_lists_masked_tokens_only() {
     let (state, _tmp, _g) = setup_state().await;
     create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
     create_test_user(&state, "regular1", "Passw0rd!123", 1).await;
-    seed_sessions(&state, "regular1", &["tok-aaaaaaaa-live", "tok-bbbbbbbb-live"]).await;
+    seed_sessions(
+        &state,
+        "regular1",
+        &["tok-aaaaaaaa-live", "tok-bbbbbbbb-live"],
+    )
+    .await;
     let mut r = users_router(state);
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
 
@@ -1701,7 +1706,12 @@ async fn test_admin_revoke_user_sessions_revokes_everything() {
     let (state, _tmp, _g) = setup_state().await;
     create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
     create_test_user(&state, "regular1", "Passw0rd!123", 1).await;
-    seed_sessions(&state, "regular1", &["tok-cccccccc-live", "tok-dddddddd-live"]).await;
+    seed_sessions(
+        &state,
+        "regular1",
+        &["tok-cccccccc-live", "tok-dddddddd-live"],
+    )
+    .await;
     let mut r = users_router(state);
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
 
@@ -1905,11 +1915,22 @@ async fn test_sweep_deletes_sessions_of_expired_accounts_only() {
     seed_sessions(&state, "gone1", &["tok-gone-aaaaaaa"]).await;
     seed_sessions(&state, "alive1", &["tok-alive-aaaaaaa"]).await;
 
-    let deleted = state.auth.revoke_expired_account_sessions().await.expect("sweep");
+    let deleted = state
+        .auth
+        .revoke_expired_account_sessions()
+        .await
+        .expect("sweep");
     assert_eq!(deleted, 1, "only the expired account's session dies");
 
-    let session_repo =
-        homevault::storage::session_repo::SessionRepository::new(state.db.pool());
-    assert!(session_repo.find_by_token("tok-gone-aaaaaaa").await.unwrap().is_none());
-    assert!(session_repo.find_by_token("tok-alive-aaaaaaa").await.unwrap().is_some());
+    let session_repo = homevault::storage::session_repo::SessionRepository::new(state.db.pool());
+    assert!(session_repo
+        .find_by_token("tok-gone-aaaaaaa")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(session_repo
+        .find_by_token("tok-alive-aaaaaaa")
+        .await
+        .unwrap()
+        .is_some());
 }

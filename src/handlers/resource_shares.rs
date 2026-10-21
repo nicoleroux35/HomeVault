@@ -47,8 +47,7 @@
 use crate::handlers::admin_guard::{require_admin, require_auth};
 use crate::handlers::AppState;
 use crate::storage::resource_share_repo::{
-    ResourceGroupShare, ResourceKind, ResourcePermission, ResourceShare,
-    ResourceShareRepository,
+    ResourceGroupShare, ResourceKind, ResourcePermission, ResourceShare, ResourceShareRepository,
 };
 use crate::utils::ResponseHelper;
 use axum::{extract::State, http::HeaderMap, response::Response, Json as AxumJson};
