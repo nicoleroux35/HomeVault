@@ -650,10 +650,28 @@ stable slug localised client-side. See [guides/activity.md](./guides/activity.md
 ## VPN — `/vpn/*` (all `admin`)
 
 Every VPN endpoint requires an **admin** session — the whole surface is
-privileged (it writes `/etc` and brings up network interfaces as root), so there
-are no read-only `auth` endpoints here. Capabilities, connections, WireGuard
-(`/wireguard`, `/wireguard/keygen`, `/{name}/start|stop`, delete), OpenVPN
-(`/openvpn`, `}/{name}/start|stop`, delete). Router in `src/handlers/vpn.rs`.
+privileged (it writes `/etc`, brings up `wg0` and launches root daemons), so
+there are no read-only `auth` endpoints here. Router in `src/handlers/vpn.rs`,
+engine in `src/vpn.rs`; full semantics in [guides/vpn.md](./guides/vpn.md).
+
+| Method | Path | Notes |
+|--------|------|-------|
+| GET | `/capabilities` | `{capabilities:{wireguard,openvpn}}` — which backends are installed |
+| GET | `/connections` | legacy flat list — `{connections: [...]}` |
+| GET | `/connections/{id}` | `{connection}` |
+| GET | `/wireguard/server` | server status; **provisions `wg0` on first call** (`10.8.0.1/24`, port 51820) |
+| GET | `/wireguard/peers` | provisioned devices + live handshake status (`connected` = handshake < 180 s) |
+| POST | `/wireguard/peers` | add device — `{name}` only; response carries the one `client_config` |
+| GET | `/wireguard/peers/{id}/config` | re-display the device's client config/QR (keys stored per migration 026) |
+| DELETE | `/wireguard/peers/{id}` | revoke device (live + persisted) |
+| POST | `/openvpn` | upload profile — `{name,config_content}`; **content-validated** (no exec directives / `script-security > 1`, else 400 naming the directive), **409** if the same name's profile is currently running |
+| POST | `/openvpn/{name}/start` | start + **verify the tunnel connects within a 10 s grace** (log marker), else the daemon is killed and the API answers `success:false` with the log's error line; body `{username,password}` optional (`--auth-user-pass`) |
+| POST | `/openvpn/{name}/stop` | kill daemon, delete its `.log` and `.auth` files |
+| DELETE | `/openvpn/{name}` | stop, then delete profile |
+
+Payloads use the app's standard `{success, message?, data}` envelope. The
+OpenVPN start request intentionally blocks up to ~10 s (verify-then-rollbac
+k); the frontend shows a per-card connecting spinner meanwhile.
 
 ## Virtual Machines — `/vm/*` (all `admin`)
 

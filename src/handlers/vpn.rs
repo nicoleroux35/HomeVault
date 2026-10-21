@@ -2,7 +2,7 @@
  * File          : vpn.rs
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Last modified : 21/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
@@ -241,7 +241,11 @@ pub async fn handle_vpn_capabilities(
     headers: HeaderMap,
 ) -> HandlerResult {
     let _username = require_admin(&state, &headers).await?;
-    let capabilities = vpn_mod::get_vpn_capabilities();
+    // Capability detection shells out (`wg --version`, `openvpn --version`)
+    // — keep it off the async worker threads like every other engine call.
+    let capabilities = tokio::task::spawn_blocking(vpn_mod::get_vpn_capabilities)
+        .await
+        .unwrap_or_default();
     Ok(Json(ApiSuccess {
         success: true,
         message: None,
@@ -256,7 +260,9 @@ pub async fn handle_vpn_list(
     headers: HeaderMap,
 ) -> HandlerResult {
     let _username = require_admin(&state, &headers).await?;
-    let connections = vpn_mod::list_all_vpn_connections();
+    let connections = tokio::task::spawn_blocking(vpn_mod::list_all_vpn_connections)
+        .await
+        .unwrap_or_default();
     Ok(Json(ApiSuccess {
         success: true,
         message: None,
@@ -276,7 +282,11 @@ pub async fn handle_vpn_get(
     let id =
         sanitize_name(&id).map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e.1 .0.error))?;
 
-    let connection = vpn_mod::get_vpn_connection(&id).ok_or_else(|| {
+    let id_for_lookup = id.clone();
+    let lookup = tokio::task::spawn_blocking(move || vpn_mod::get_vpn_connection(&id_for_lookup))
+        .await
+        .unwrap_or(None);
+    let connection = lookup.ok_or_else(|| {
         err(
             axum::http::StatusCode::NOT_FOUND,
             format!("VPN connection '{}' not found", id),
@@ -324,7 +334,10 @@ pub async fn handle_wg_peers_list(
         .await
         .map_err(|e| err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let live = vpn_mod::list_wireguard_peer_live_status();
+    // `wg show wg0 dump` is a process spawn — keep it off the workers.
+    let live = tokio::task::spawn_blocking(vpn_mod::list_wireguard_peer_live_status)
+        .await
+        .unwrap_or_default();
     let now = chrono::Utc::now().timestamp() as u64;
 
     let views: Vec<WireGuardPeerView> = peers
@@ -354,9 +367,10 @@ pub async fn handle_wg_peers_list(
 }
 
 /// POST /api/vpn/wireguard/peers - Provision a new peer. The only input is
-/// a display name; the response's `client_config`/`qr_payload` is the one
-/// and only time the peer's private key is ever shown — it is never
-/// persisted server-side (see `sqlx/migrations/025_vpn_wireguard_peers.sql`).
+/// a display name; everything else (keys, address) is generated. The keys
+/// are also stored (migration 026) so GET /wireguard/peers/{id}/config can
+/// regenerate the client config later — the peer-list endpoint never
+/// returns them (see `sqlx/migrations/025_vpn_wireguard_peers.sql`).
 pub async fn handle_wg_peer_create(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
@@ -476,7 +490,15 @@ pub async fn handle_wg_peer_revoke(
             )
         })?;
 
-    vpn_mod::revoke_wireguard_peer(&peer.public_key)
+    let public_key = peer.public_key.clone();
+    tokio::task::spawn_blocking(move || vpn_mod::revoke_wireguard_peer(&public_key))
+        .await
+        .map_err(|e| {
+            err(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Task join error: {}", e),
+            )
+        })?
         .map_err(|e| err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
     repo.delete(&id)
         .await
@@ -499,8 +521,53 @@ pub async fn handle_openvpn_create(
     let name = sanitize_name(&request.name)
         .map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e.1 .0.error))?;
 
-    let config_path = vpn_mod::save_openvpn_config(&name, &request.config_content)
-        .map_err(|e| err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    // The daemon started from this file runs as root: a profile carrying
+    // script/exec hooks is a privilege escalation and gets a 400 naming the
+    // offending directive (the engine re-checks at save time).
+    vpn_mod::validate_openvpn_config_content(&request.config_content)
+        .map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e))?;
+
+    // Refuse to overwrite a profile a daemon is currently running from:
+    // replacing it under a live tunnel makes stop semantics ambiguous and
+    // would swap credentials on the fly. Stop the connection first.
+    let running_probe_path = format!("{}/{}.ovpn", vpn_mod::OPENVPN_CONFIG_DIR, name);
+    let exists_and_running = tokio::task::spawn_blocking(move || {
+        std::path::Path::new(&running_probe_path).exists()
+            && vpn_mod::is_openvpn_running_for_config(&running_probe_path)
+    })
+    .await
+    .unwrap_or(false);
+    if exists_and_running {
+        return Err(err(
+            axum::http::StatusCode::CONFLICT,
+            format!(
+                "OpenVPN connection '{}' is currently running — stop it before replacing its configuration",
+                name
+            ),
+        ));
+    }
+
+    let name_for_save = name.clone();
+    let config_path = match tokio::task::spawn_blocking(move || {
+        vpn_mod::save_openvpn_config(&name_for_save, &request.config_content)
+    })
+    .await
+    {
+        Ok(Ok(path)) => path,
+        Ok(Err(e)) => {
+            crate::events::log_event_warn(format!(
+                "Admin '{}' failed to save OpenVPN connection '{}': {}",
+                username, name, e
+            ));
+            return Err(err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e));
+        }
+        Err(e) => {
+            return Err(err(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Task join error: {}", e),
+            ));
+        }
+    };
 
     crate::events::log_event(format!(
         "Admin '{}' created OpenVPN connection '{}'",
@@ -526,7 +593,7 @@ pub async fn handle_openvpn_start(
     let name =
         sanitize_name(&name).map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e.1 .0.error))?;
 
-    let config_file = format!("/etc/openvpn/{}.ovpn", name);
+    let config_file = format!("{}/{}.ovpn", vpn_mod::OPENVPN_CONFIG_DIR, name);
 
     let auth_user_pass = if let (Some(user), Some(pass)) = (
         payload.get("username").and_then(|v| v.as_str()),
@@ -543,14 +610,37 @@ pub async fn handle_openvpn_start(
         auth_user_pass,
     };
 
-    vpn_mod::start_openvpn_connection(&config)
-        .map_err(|e| err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    // `start_openvpn_connection` verifies the tunnel and can block for the
+    // full start grace — it must never run on the async worker threads.
+    let started =
+        tokio::task::spawn_blocking(move || vpn_mod::start_openvpn_connection(&config)).await;
 
-    crate::events::log_event(format!(
-        "Admin '{}' started OpenVPN connection '{}'",
-        username, name
-    ));
-    Ok(ok(format!("OpenVPN connection '{}' started", name)))
+    match started {
+        Ok(Ok(())) => {
+            crate::events::log_event(format!(
+                "Admin '{}' started OpenVPN connection '{}'",
+                username, name
+            ));
+            Ok(ok(format!("OpenVPN connection '{}' started", name)))
+        }
+        Ok(Err(e)) => {
+            crate::events::log_event_warn(format!(
+                "Admin '{}' failed to start OpenVPN connection '{}': {}",
+                username, name, e
+            ));
+            Err(err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))
+        }
+        Err(e) => {
+            crate::events::log_event_warn(format!(
+                "Admin '{}' failed to start OpenVPN connection '{}': task join error {}",
+                username, name, e
+            ));
+            Err(err(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Task join error: {}", e),
+            ))
+        }
+    }
 }
 
 /// POST /api/vpn/openvpn/:name/stop - Stop OpenVPN connection
@@ -563,14 +653,23 @@ pub async fn handle_openvpn_stop(
     let name =
         sanitize_name(&name).map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e.1 .0.error))?;
 
-    vpn_mod::stop_openvpn_connection(&name)
-        .map_err(|e| err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
-
-    crate::events::log_event(format!(
-        "Admin '{}' stopped OpenVPN connection '{}'",
-        username, name
-    ));
-    Ok(ok(format!("OpenVPN connection '{}' stopped", name)))
+    let name_for_stop = name.clone();
+    match tokio::task::spawn_blocking(move || vpn_mod::stop_openvpn_connection(&name_for_stop))
+        .await
+    {
+        Ok(Ok(())) => {
+            crate::events::log_event(format!(
+                "Admin '{}' stopped OpenVPN connection '{}'",
+                username, name
+            ));
+            Ok(ok(format!("OpenVPN connection '{}' stopped", name)))
+        }
+        Ok(Err(e)) => Err(err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e)),
+        Err(e) => Err(err(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Task join error: {}", e),
+        )),
+    }
 }
 
 /// DELETE /api/vpn/openvpn/:name - Delete OpenVPN connection
@@ -583,14 +682,23 @@ pub async fn handle_openvpn_delete(
     let name =
         sanitize_name(&name).map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e.1 .0.error))?;
 
-    vpn_mod::delete_openvpn_connection(&name)
-        .map_err(|e| err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
-
-    crate::events::log_event_warn(format!(
-        "Admin '{}' deleted OpenVPN connection '{}'",
-        username, name
-    ));
-    Ok(ok(format!("OpenVPN connection '{}' deleted", name)))
+    let name_for_delete = name.clone();
+    match tokio::task::spawn_blocking(move || vpn_mod::delete_openvpn_connection(&name_for_delete))
+        .await
+    {
+        Ok(Ok(())) => {
+            crate::events::log_event_warn(format!(
+                "Admin '{}' deleted OpenVPN connection '{}'",
+                username, name
+            ));
+            Ok(ok(format!("OpenVPN connection '{}' deleted", name)))
+        }
+        Ok(Err(e)) => Err(err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e)),
+        Err(e) => Err(err(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Task join error: {}", e),
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------------

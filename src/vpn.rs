@@ -2,7 +2,7 @@
  * File          : vpn.rs
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Last modified : 21/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
@@ -264,6 +264,22 @@ pub async fn ensure_wireguard_server() -> Result<WireGuardServerInfo, String> {
         );
     } else if !is_wireguard_server_running() {
         start_wireguard_server()?;
+    }
+
+    // Verify the interface actually came up before telling the caller
+    // "running": wg-quick has been observed to fail silently (missing
+    // privileges, script errors in PostUp), and the whole provisioning flow
+    // would otherwise report a server that can't accept any peer.
+    if !is_wireguard_server_running() {
+        // Small grace: wg-quick returns after wiring the interface, give
+        // the kernel a beat before declaring failure.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        if !is_wireguard_server_running() {
+            return Err(
+                "The WireGuard interface did not come up (check the sudoers grants and the server config)"
+                    .to_string(),
+            );
+        }
     }
 
     get_wireguard_server_status().await
@@ -566,6 +582,99 @@ pub fn list_wireguard_peer_live_status() -> Vec<WireGuardPeerLiveStatus> {
 // OpenVPN Management
 // ---------------------------------------------------------------------------
 
+pub(crate) const OPENVPN_CONFIG_DIR: &str = "/etc/openvpn";
+
+/// How long `start_openvpn_connection` waits for the client to report an
+/// established tunnel before declaring the start failed and tearing the
+/// daemon back down. A genuine connection completes in 1–3 s; the grace is
+/// intentionally generous so a slow TLS negotiation on a far server still
+/// succeeds.
+const OPENVPN_START_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+/// Poll cadence while waiting for the connect marker in the log.
+const OPENVPN_START_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The log line a client OpenVPN daemon writes exactly once when the tunnel
+/// is up (verified empirically against OpenVPN 2.6: the `--status` file of a
+/// *client* instance only carries statistics counters, never the connection
+/// state, so the log file is the reliable signal).
+const OPENVPN_CONNECTED_MARKER: &str = "Initialization Sequence Completed";
+
+/// Directives that let an uploaded `.ovpn` profile execute external commands
+/// once launched via `openvpn --config`. The daemon runs as root, so a
+/// profile carrying any of these is a privilege escalation — rejected at
+/// save time with an explicit message (`script-security` is checked
+/// separately: level 1, the default, runs no scripts and stays allowed).
+const OPENVPN_EXEC_DIRECTIVES: &[&str] = &[
+    "up",
+    "down",
+    "down-pre",
+    "route-up",
+    "ipchange",
+    "learn-address",
+    "client-connect",
+    "client-disconnect",
+    "auth-user-pass-verify",
+    "tls-verify",
+    "askpass",
+];
+
+/// Rejects a `.ovpn` upload that would execute external commands as root.
+/// Only whole lines starting with the directive count (values such as
+/// `remote vpn.example.com` never match), and matching is case-insensitive.
+pub fn validate_openvpn_config_content(content: &str) -> Result<(), String> {
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        let Some(word) = line.split_whitespace().next() else {
+            continue;
+        };
+        let word = word.to_ascii_lowercase();
+        if word == "script-security" {
+            let level: u32 = line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1);
+            if level > 1 {
+                return Err(format!(
+                    "The OpenVPN configuration enables script-security {level}: the daemon would run external scripts as root. Level 1 (no scripts) is allowed."
+                ));
+            }
+            continue;
+        }
+        if OPENVPN_EXEC_DIRECTIVES.contains(&word.as_str()) {
+            return Err(format!(
+                "The OpenVPN configuration uses the '{}' directive, which opens external commands: on HomeVault the OpenVPN daemon runs as root, so such a profile is a security risk and is refused.",
+                word
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// True when a client-mode log tail shows the tunnel established.
+pub fn openvpn_connected_from_log(text: &str) -> bool {
+    text.lines().any(|l| l.contains(OPENVPN_CONNECTED_MARKER))
+}
+
+/// Pulls the most informative error line out of a failed client log, for
+/// the user-visible "why didn't it connect" answer. Empty text → None.
+pub fn openvpn_fatal_from_log(text: &str) -> Option<String> {
+    let fatal = text
+        .lines()
+        .rev()
+        .find(|l| l.contains("Exiting due to fatal error") || l.contains("Options error"))
+        .map(|l| l.to_string());
+    fatal.or_else(|| {
+        // No fatal exit (the daemon may be retrying forever): surface the
+        // last transport-level error instead, e.g. a network-prefix-free
+        // read failure line.
+        text.lines()
+            .rev()
+            .find(|l| l.contains("Connection refused") || l.contains("Connection timed out"))
+            .map(|l| l.to_string())
+    })
+}
+
 /// Check if OpenVPN is available
 pub fn openvpn_available() -> bool {
     Command::new("openvpn")
@@ -647,23 +756,68 @@ fn saved_config_names(config_dir: &str, extension: &str, active: &[VpnConnection
     names
 }
 
-/// Start an OpenVPN connection
+/// True when an OpenVPN daemon is already running for `config_path` (a
+/// second start would bind-fight the first one).
+pub(crate) fn is_openvpn_running_for_config(config_path: &str) -> bool {
+    Command::new("pgrep")
+        .args(["-f", &format!("--config {config_path}")])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Credential file for a connection's `--auth-user-pass`. Lives in the
+/// homevault-owned config dir (NOT /run — the daemon reads it as root, but
+/// only the service can create files there), kept while the connection runs:
+/// OpenVPN re-reads it on every renegotiation, so deleting it after the
+/// first connect would break later handshakes. Removed on stop/delete.
+fn openvpn_auth_file_path(name: &str) -> String {
+    format!("{OPENVPN_CONFIG_DIR}/openvpn-{name}.auth")
+}
+
+/// Log file for a connection's daemon. The client `--status` file carries
+/// no connection state (verified empirically), so the log is what the start
+/// verification polls for the `Initialization Sequence Completed` marker.
+fn openvpn_log_file_path(name: &str) -> String {
+    format!("{OPENVPN_CONFIG_DIR}/{name}.log")
+}
+
+/// Start an OpenVPN connection — and VERIFY that it actually connected.
+///
+/// `openvpn --daemon` forks and reports success even when the TLS handshake
+/// never completes (wrong credentials, unreachable endpoint, bad profile),
+/// which used to answer "started" for a connection that is silently
+/// retrying forever. The daemon is started with a per-connection log file
+/// and `--cd` (it chdir()s to / when it daemonizes, breaking every relative
+/// path inside the profile), then the log is polled for the connect marker
+/// within [`OPENVPN_START_GRACE`]. On timeout the daemon is killed
+/// (rollback) and the last transport error from the log is surfaced.
 pub fn start_openvpn_connection(config: &OpenVPNConfig) -> Result<(), String> {
     let config_path = &config.config_file;
 
     if !Path::new(config_path).exists() {
         return Err(format!("Config file not found: {}", config_path));
     }
+    if is_openvpn_running_for_config(config_path) {
+        // Idempotent: a running daemon is a fine outcome for "start".
+        tracing::warn!("OpenVPN connection '{}' already running", config.name);
+        return Ok(());
+    }
+    // Fresh log every start, or the success marker of a previous run would
+    // satisfy the verification instantly.
+    let log_path = openvpn_log_file_path(&config.name);
+    let _ = std::fs::remove_file(&log_path);
 
     // `openvpn --daemon` must run as root to create the tunnel.
     // The homevault service runs unprivileged, so it delegates via sudo.
     let mut cmd = Command::new("sudo");
     cmd.arg("openvpn")
-        .args(["--config", config_path, "--daemon"]);
+        .args(["--config", config_path, "--cd", OPENVPN_CONFIG_DIR])
+        .args(["--log", &log_path, "--daemon"]);
 
     // Add auth credentials if provided
     if let Some((user, pass)) = &config.auth_user_pass {
-        let auth_file = format!("/run/openvpn-auth-{}.txt", config.name);
+        let auth_file = openvpn_auth_file_path(&config.name);
         std::fs::write(&auth_file, format!("{}\n{}\n", user, pass))
             .map_err(|e| format!("Failed to write auth file: {}", e))?;
         // Restrict permissions so only root can read the credentials file
@@ -678,21 +832,90 @@ pub fn start_openvpn_connection(config: &OpenVPNConfig) -> Result<(), String> {
         cmd.args(["--auth-user-pass", &auth_file]);
     }
 
-    let output = cmd.output().map_err(|e| e.to_string())?;
+    // Spawn with null stdio: `output()` would hold stdout/stderr pipes open
+    // until every writer closes them — and the forked daemon could keep them
+    // alive, parking this call forever. Everything openvpn has to say lands
+    // in the `--log` file anyway (verified empirically: parse-time
+    // `Options error`s are written there too).
+    let status = cmd
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| e.to_string())?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to start OpenVPN: {}", stderr));
+    if !status.success() {
+        let text = std::fs::read_to_string(&log_path).unwrap_or_default();
+        let detail = openvpn_fatal_from_log(&text)
+            .map(|l| openvpn_log_error_summary(&l))
+            .unwrap_or_else(|| "daemon exited before connecting".to_string());
+        return Err(format!("Failed to start OpenVPN: {}", detail));
     }
 
-    Ok(())
+    // ── Verify the tunnel actually came up ────────────────────────────────
+    let deadline = std::time::Instant::now() + OPENVPN_START_GRACE;
+    loop {
+        let text = std::fs::read_to_string(&log_path).unwrap_or_default();
+        if openvpn_connected_from_log(&text) {
+            return Ok(());
+        }
+        if let Some(fatal) = openvpn_fatal_from_log(&text) {
+            // The daemon already died — no need to wait out the grace. Keep
+            // the summary before stop removes the log file.
+            let detail = openvpn_log_error_summary(&fatal);
+            let _ = stop_openvpn_connection(&config.name);
+            return Err(format!(
+                "OpenVPN connection '{}' failed to start: {}",
+                config.name, detail
+            ));
+        }
+        if std::time::Instant::now() >= deadline {
+            // Rollback: never leave a half-connected daemon retrying
+            // forever behind a "success" the user already saw.
+            let detail = openvpn_fatal_from_log(&text)
+                .map(|l| format!(": {}", openvpn_log_error_summary(&l)))
+                .unwrap_or_default();
+            let _ = stop_openvpn_connection(&config.name);
+            return Err(format!(
+                "OpenVPN connection '{}' did not connect within {} s{} (check the endpoint and credentials in the profile)",
+                config.name,
+                OPENVPN_START_GRACE.as_secs(),
+                detail
+            ));
+        }
+        std::thread::sleep(OPENVPN_START_POLL);
+    }
 }
 
-/// Stop an OpenVPN connection
+/// Trims the log timestamp off an error line so the API message reads as a
+/// sentence, not a syslog fragment. Parse-time errors (e.g.
+/// `Options error: --cert fails …`) carry no timestamp at all and must pass
+/// through unchanged.
+fn openvpn_log_error_summary(line: &str) -> String {
+    let mut parts = line.splitn(3, ' ');
+    let date = parts.next().unwrap_or("");
+    let time = parts.next().unwrap_or("");
+    let rest = parts.next().unwrap_or("");
+    // `%Y-%m-%d %H:%M:%S message` — the date is `YYYY-MM-DD` and the time
+    // contains at least one ':'.
+    if date.len() == 10
+        && date.as_bytes().get(4) == Some(&b'-')
+        && date.as_bytes().get(7) == Some(&b'-')
+        && time.contains(':')
+        && !rest.is_empty()
+    {
+        rest.trim().to_string()
+    } else {
+        line.trim().to_string()
+    }
+}
+
+/// Stop an OpenVPN connection — killing the daemon and removing its log and
+/// credential files.
 pub fn stop_openvpn_connection(name: &str) -> Result<(), String> {
     // Find OpenVPN process with this config
+    let config_path = format!("{}/{}.ovpn", OPENVPN_CONFIG_DIR, name);
     let output = Command::new("pgrep")
-        .args(["-f", &format!("openvpn.*{}", name)])
+        .args(["-f", &format!("--config {config_path}")])
         .output()
         .map_err(|e| e.to_string())?;
 
@@ -710,12 +933,23 @@ pub fn stop_openvpn_connection(name: &str) -> Result<(), String> {
         }
     }
 
+    // Best-effort cleanup of this connection's own files. The .auth file
+    // holds the credentials in clear text; keeping it after stop is a
+    // leftover secret on disk.
+    let _ = std::fs::remove_file(openvpn_auth_file_path(name));
+    let _ = std::fs::remove_file(openvpn_log_file_path(name));
+
     Ok(())
 }
 
-/// Upload and save OpenVPN config
+/// Upload and save OpenVPN config — after content validation. The daemon
+/// launched from this file runs as root, so a profile with script/exec
+/// hooks is a privilege escalation and is refused here, before anything is
+/// written to disk.
 pub fn save_openvpn_config(name: &str, config_content: &str) -> Result<String, String> {
-    let config_dir = "/etc/openvpn";
+    validate_openvpn_config_content(config_content)?;
+
+    let config_dir = OPENVPN_CONFIG_DIR;
     std::fs::create_dir_all(config_dir)
         .map_err(|e| format!("Failed to create config directory: {}", e))?;
 
@@ -732,7 +966,7 @@ pub fn delete_openvpn_connection(name: &str) -> Result<(), String> {
     let _ = stop_openvpn_connection(name);
 
     // Delete config file
-    let config_path = format!("/etc/openvpn/{}.ovpn", name);
+    let config_path = format!("{}/{}.ovpn", OPENVPN_CONFIG_DIR, name);
     if Path::new(&config_path).exists() {
         std::fs::remove_file(&config_path)
             .map_err(|e| format!("Failed to delete config: {}", e))?;
@@ -756,7 +990,7 @@ pub fn list_all_vpn_connections() -> Vec<VpnConnection> {
         connections.extend(list_openvpn_connections());
     }
 
-    for name in saved_config_names("/etc/openvpn", "ovpn", &connections) {
+    for name in saved_config_names(OPENVPN_CONFIG_DIR, "ovpn", &connections) {
         connections.push(VpnConnection {
             id: name.clone(),
             name: name.clone(),
@@ -784,7 +1018,9 @@ pub fn get_vpn_connection(id: &str) -> Option<VpnConnection> {
 }
 
 /// Get system VPN capabilities
-#[derive(Debug, Serialize)]
+/// `Default` (nothing detected) is what a failed background task reports —
+/// honest and safe: it never exposes features that can't be verified.
+#[derive(Debug, Default, Serialize)]
 pub struct VpnCapabilities {
     pub wireguard: bool,
     pub openvpn: bool,
@@ -936,5 +1172,147 @@ mod tests {
     fn test_saved_config_names_missing_directory_returns_empty() {
         let names = saved_config_names("/nonexistent/dir/for/sure", "ovpn", &[]);
         assert!(names.is_empty());
+    }
+
+    // -- validate_openvpn_config_content ------------------------------------
+
+    #[test]
+    fn test_validate_openvpn_content_accepts_benign_profile() {
+        let content = "\
+client\ndev tun\nproto udp\nremote vpn.example.com 1194\n\
+ca ca.pem\ncert client.pem\nkey client.key\nremote-cert-tls server\n\
+cipher AES-256-GCM\nauth-user-pass\nverb 3\n";
+        assert!(validate_openvpn_config_content(content).is_ok());
+    }
+
+    #[test]
+    fn test_validate_openvpn_content_rejects_script_exec_directives() {
+        for directive in [
+            "up",
+            "down",
+            "down-pre",
+            "route-up",
+            "ipchange",
+            "learn-address",
+            "client-connect",
+            "client-disconnect",
+            "auth-user-pass-verify",
+            "tls-verify",
+            "askpass",
+        ] {
+            let content = format!("client\ndev tun\n{directive} /tmp/evil.sh\n");
+            let err = validate_openvpn_config_content(&content)
+                .expect_err("exec directive must be refused");
+            assert!(
+                err.contains(&format!("'{}'", directive)),
+                "wrong message for {directive}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_openvpn_content_accepts_exec_word_as_value_not_directive() {
+        // A remote hostname ending in "up" or a comment must not trip the
+        // deny list — only whole-line directives count.
+        let content = "client\n# route-up example comment\nremote backup-up.example.com 1194\n";
+        assert!(validate_openvpn_config_content(content).is_ok());
+    }
+
+    #[test]
+    fn test_validate_openvpn_content_rejects_leading_whitespace_directive() {
+        // Indented exec hooks still execute — the parser must not care where
+        // the directive starts on the line.
+        let content = "client\n  down /tmp/evil.sh\n";
+        assert!(validate_openvpn_config_content(content).is_err());
+    }
+
+    #[test]
+    fn test_validate_openvpn_content_rejects_script_security_above_one() {
+        assert!(validate_openvpn_config_content("script-security 2\n").is_err());
+        assert!(validate_openvpn_config_content("script-security 5\n").is_err());
+    }
+
+    #[test]
+    fn test_validate_openvpn_content_accepts_script_security_one() {
+        assert!(validate_openvpn_config_content("script-security 1\n").is_ok());
+        // Level-less script-security defaults to 1 in OpenVPN.
+        assert!(validate_openvpn_config_content("script-security\n").is_ok());
+    }
+
+    #[test]
+    fn test_validate_openvpn_content_is_case_insensitive() {
+        assert!(validate_openvpn_config_content("UP /tmp/evil.sh\n").is_err());
+        assert!(validate_openvpn_config_content("Script-Security 3\n").is_err());
+    }
+
+    // -- openvpn_connected_from_log ------------------------------------------
+
+    #[test]
+    fn test_openvpn_connected_marker_found() {
+        assert!(openvpn_connected_from_log(
+            "2026-10-21 10:58:11UDPv4 link remote ok\n2026-10-21 10:58:12 Initialization Sequence Completed\n"
+        ));
+    }
+
+    #[test]
+    fn test_openvpn_connected_marker_absent() {
+        assert!(!openvpn_connected_from_log(
+            "2026-10-21 read UDPv4 [ECONNREFUSED]: Connection refused\n"
+        ));
+        assert!(!openvpn_connected_from_log(""));
+    }
+
+    // -- openvpn_fatal_from_log ----------------------------------------------
+
+    #[test]
+    fn test_openvpn_fatal_prefers_exiting_lines() {
+        let log = "Options error: early problem\n2026-10-21 10:59:52 Exiting due to fatal error\n";
+        assert_eq!(
+            openvpn_fatal_from_log(log),
+            Some("2026-10-21 10:59:52 Exiting due to fatal error".to_string())
+        );
+    }
+
+    #[test]
+    fn test_openvpn_fatal_falls_back_to_transport_error() {
+        let log =
+            "2026-10-21 10:59:08 read UDPv4 [ECONNREFUSED]: Connection refused (fd=3,code=111)\n";
+        assert_eq!(openvpn_fatal_from_log(log), Some(log.trim().to_string()));
+    }
+
+    #[test]
+    fn test_openvpn_fatal_none_on_happy_log() {
+        assert_eq!(
+            openvpn_fatal_from_log("Initialization Sequence Completed\n"),
+            None
+        );
+        assert_eq!(openvpn_fatal_from_log(""), None);
+    }
+
+    // -- openvpn_log_error_summary -------------------------------------------
+
+    #[test]
+    fn test_openvpn_log_error_summary_strips_timestamp() {
+        assert_eq!(
+            openvpn_log_error_summary("2026-10-21 10:59:52 Exiting due to fatal error"),
+            "Exiting due to fatal error"
+        );
+    }
+
+    #[test]
+    fn test_openvpn_log_error_summary_options_error_has_no_timestamp() {
+        // Parse-time errors are echoed without any timestamp prefix.
+        assert_eq!(
+            openvpn_log_error_summary(
+                "Options error: --cert fails with 'cli.pem': No such file or directory (errno=2)"
+            ),
+            "Options error: --cert fails with 'cli.pem': No such file or directory (errno=2)"
+        );
+    }
+
+    #[test]
+    fn test_openvpn_log_error_summary_plain_message() {
+        assert_eq!(openvpn_log_error_summary("bare message"), "bare message");
+        assert_eq!(openvpn_log_error_summary(""), "");
     }
 }

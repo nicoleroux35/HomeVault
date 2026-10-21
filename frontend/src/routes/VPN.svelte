@@ -83,6 +83,11 @@
   let wgServer: WireGuardServerStatus | null = null;
   let wgPeers: WireGuardPeer[] = [];
 
+  // Name of the OpenVPN connection whose start request is in flight — the
+  // backend verifies the tunnel connects before answering (~1–10 s), so the
+  // card's start button becomes a disabled spinner meanwhile.
+  let connectingName: string | null = null;
+
   // Modals
   let showWireGuardModal = false;
   let showOpenVPNModal = false;
@@ -384,12 +389,20 @@
     // (previously this was a separate confirm() + two prompt() dialogs).
     const credentials = username && password ? { username, password } : undefined;
 
-    const response = await api.startOpenVPNConnection(name, credentials);
-    if (response.success) {
-      await loadConnections();
-      notifyVpn(translate('vpn.ovpn_started', { name }));
-    } else {
-      notifyVpn(response.error || translate('vpn.ovpn_start_failed'), 'error');
+    // The backend verifies the tunnel actually connects before answering
+    // (up to ~10 s): surface that as a per-card connecting state instead of
+    // an apparently frozen button.
+    connectingName = name;
+    try {
+      const response = await api.startOpenVPNConnection(name, credentials);
+      if (response.success) {
+        await loadConnections();
+        notifyVpn(translate('vpn.ovpn_started', { name }));
+      } else {
+        notifyVpn(response.error || translate('vpn.ovpn_start_failed'), 'error');
+      }
+    } finally {
+      connectingName = null;
     }
   }
 
@@ -582,7 +595,9 @@
                 {#if conn.local_ip}<div class="flex items-center justify-between gap-2"><span class={detailLabel}>{$t('vpn.local_ip')}</span><span class={detailValue}>{conn.local_ip}</span></div>{/if}
               </div>
               <div class="px-4 pb-4 flex gap-2">
-                {#if conn.status === 'connected'}
+                {#if connectingName === conn.name}
+                  <button data-testid="vpn-btn" class="grid place-items-center w-11 h-11 rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-strong)] cursor-wait opacity-70" disabled aria-disabled="true" title={$t('vpn.connecting')}><span class="animate-spin"><IconLoader size={14} /></span></button>
+                {:else if conn.status === 'connected'}
                   <button data-testid="vpn-btn" class="grid place-items-center w-11 h-11 rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-strong)] cursor-pointer hover:bg-[var(--hv-shell-border)]" onclick={() => stopOpenVPN(conn.name)} title={$t('vpn.stop_connection_title')}><IconPower size={14} /></button>
                 {:else}
                   <button data-testid="vpn-btn" class="grid place-items-center w-11 h-11 rounded-lg border-none bg-[var(--hv-success)] text-white cursor-pointer hover:brightness-110" onclick={() => startOpenVPN(conn.name)} title={$t('vpn.start_connection_title')}><IconPower size={14} /></button>
