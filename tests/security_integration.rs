@@ -27,8 +27,8 @@
 //!                POST threats/{id}/resolve
 //!   Ransomware — GET /api/ransomware/status | settings | protected-paths |
 //!                events, PUT settings, POST/DELETE protected-paths
-//!   Firewall   — GET /api/firewall/status | enable/preview,
-//!                POST enable | disable, POST/DELETE rules
+//!   Firewall   — GET /api/firewall/status | enable/preview | history,
+//!                POST enable | disable | default-policy, POST/DELETE rules
 //!
 //! Fresh in-memory SQLite + all migrations per test, a minimal Axum router,
 //! `tower::ServiceExt` for HTTP-level testing — no real server. `DATA_DIRECTORY`
@@ -45,9 +45,11 @@
 //! On a host where `sudo ufw` needs a password (the common dev/CI case),
 //! `firewall::ufw_available()` is `false` and the firewall endpoints are
 //! only exercised far enough to confirm the graceful "not installed"
-//! response and the auth guards; the confirmed-gate and mandatory-rule
-//! protection are asserted live in `tests/e2e/security/security.spec.ts`
-//! only when a real `ufw` is present.
+//! response, the auth guards, and — because argument validation runs
+//! *before* the availability probe — the input rejections (a bad action, a
+//! malformed port, a malformed source, a missing confirmation). The
+//! confirmed-gate and mandatory-rule protection are asserted live in
+//! `tests/e2e/security/security.spec.ts` only when a real `ufw` is present.
 //!
 //! Run:
 //!   cargo test --test security_integration
@@ -75,8 +77,9 @@ use homevault::handlers::{
     },
     auth::handle_login,
     firewall::{
-        handle_firewall_disable, handle_firewall_enable, handle_firewall_enable_preview,
-        handle_firewall_rule_add, handle_firewall_rule_delete, handle_firewall_status,
+        handle_firewall_default_policy, handle_firewall_disable, handle_firewall_enable,
+        handle_firewall_enable_preview, handle_firewall_history, handle_firewall_rule_add,
+        handle_firewall_rule_delete, handle_firewall_status,
     },
     ransomware::{
         handle_ransomware_events_list, handle_ransomware_protected_path_add,
@@ -176,6 +179,11 @@ fn security_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/firewall/enable", post(handle_firewall_enable))
         .route("/api/firewall/disable", post(handle_firewall_disable))
+        .route(
+            "/api/firewall/default-policy",
+            post(handle_firewall_default_policy),
+        )
+        .route("/api/firewall/history", get(handle_firewall_history))
         .route(
             "/api/firewall/rules",
             post(handle_firewall_rule_add).delete(handle_firewall_rule_delete),
@@ -293,6 +301,7 @@ async fn test_all_reads_reject_missing_token() {
         "/api/antivirus/threats",
         "/api/firewall/status",
         "/api/firewall/enable/preview",
+        "/api/firewall/history",
         "/api/ransomware/status",
         "/api/ransomware/settings",
         "/api/ransomware/protected-paths",
@@ -380,6 +389,11 @@ async fn test_mutations_require_admin_reads_do_not() {
             Some(json!({"confirmed": true})),
         ),
         (Method::POST, "/api/firewall/disable", None),
+        (
+            Method::POST,
+            "/api/firewall/default-policy",
+            Some(json!({"direction": "incoming", "policy": "deny"})),
+        ),
         (
             Method::POST,
             "/api/firewall/rules",
@@ -899,28 +913,193 @@ async fn test_firewall_enable_never_succeeds_without_confirmation_or_ufw() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["success"], json!(false));
+    // The confirmation gate runs before the ufw availability probe, so the
+    // reason is always the missing confirmation — never "not installed".
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("confirm"),
+        "{body}"
+    );
+}
 
-    let ufw_available = homevault::firewall::ufw_available();
-    if ufw_available {
-        // With a real ufw present, the rejection reason must be the missing
-        // confirmation (this test still never sends `confirmed: true`).
+#[tokio::test]
+async fn test_firewall_disable_requires_confirmation() {
+    // Disabling a firewall opens every port it was blocking; it used to be
+    // the only one-click destructive action on the page.
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = security_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    for body in [None, Some(json!({})), Some(json!({"confirmed": false}))] {
+        let (status, response) = send(
+            &mut r,
+            Method::POST,
+            "/api/firewall/disable",
+            Some(&token),
+            body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(response["success"], json!(false));
         assert!(
-            body["message"]
+            response["message"]
                 .as_str()
                 .unwrap_or("")
                 .to_lowercase()
                 .contains("confirm"),
-            "{body}"
-        );
-    } else {
-        assert!(
-            body["message"]
-                .as_str()
-                .unwrap_or("")
-                .contains("not installed"),
-            "{body}"
+            "{response}"
         );
     }
+}
+
+#[tokio::test]
+async fn test_firewall_rule_add_rejects_a_command_verb_as_action() {
+    // `action` is the verb of `sudo ufw <action> …`: `{"action": "delete"}`
+    // used to run `sudo ufw delete …` from the "add rule" endpoint.
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = security_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/firewall/rules",
+        Some(&token),
+        Some(json!({"port": "22", "action": "delete"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let message = body["message"].as_str().unwrap_or("").to_lowercase();
+    assert!(message.contains("action"), "{body}");
+    assert!(message.contains("allow"), "{body}");
+}
+
+#[tokio::test]
+async fn test_firewall_rule_add_rejects_malformed_protocol_port_and_source() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = security_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    for (payload, expected) in [
+        (json!({"port": "22", "protocol": "icmp"}), "protocol"),
+        (json!({"port": "22/tcp"}), "port"),
+        (json!({"port": "0"}), "port"),
+        (json!({"port": "70000"}), "port"),
+        (json!({"port": "2000:1000"}), "port"),
+        (json!({"port": "443", "source": "any"}), "source"),
+        (json!({"port": "443", "source": "1.2.3.4/33"}), "source"),
+    ] {
+        let (status, body) =
+            send(&mut r, Method::POST, "/api/firewall/rules", Some(&token), Some(payload)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        let message = body["message"].as_str().unwrap_or("").to_lowercase();
+        assert!(
+            message.contains(expected),
+            "expected a message about '{expected}', got: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_firewall_rule_delete_reports_a_missing_rule_instead_of_deleting() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = security_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::DELETE,
+        "/api/firewall/rules",
+        Some(&token),
+        Some(json!({"spec": "allow 1234/tcp"})),
+    )
+    .await;
+    if homevault::firewall::ufw_available() {
+        // A rule the live firewall does not contain must never be deleted
+        // blind: the request would otherwise hit whatever matched instead.
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["success"], json!(false));
+    } else {
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("not installed"));
+    }
+}
+
+#[tokio::test]
+async fn test_firewall_default_policy_validates_before_probing_ufw() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = security_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    for (payload, expected) in [
+        (json!({"direction": "forward", "policy": "deny"}), "direction"),
+        (json!({"direction": "incoming", "policy": "disabled"}), "policy"),
+    ] {
+        let (status, body) = send(
+            &mut r,
+            Method::POST,
+            "/api/firewall/default-policy",
+            Some(&token),
+            Some(payload),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        let message = body["message"].as_str().unwrap_or("").to_lowercase();
+        assert!(message.contains(expected), "{body}");
+    }
+}
+
+#[tokio::test]
+async fn test_firewall_default_policy_is_admin_only() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "regular1", "Passw0rd!123", 1).await;
+    let mut r = security_router(state);
+    let token = login(&mut r, "regular1", "Passw0rd!123").await;
+    let (status, _) = send(
+        &mut r,
+        Method::POST,
+        "/api/firewall/default-policy",
+        Some(&token),
+        Some(json!({"direction": "incoming", "policy": "deny"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_firewall_history_requires_a_session_and_returns_an_envelope() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "regular1", "Passw0rd!123", 1).await;
+    let mut r = security_router(state);
+
+    // Auth guard first — the change log is an audit trail.
+    let (status, body) = send(&mut r, Method::GET, "/api/firewall/history", None, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["success"], json!(false));
+
+    // Any signed-in user may read it (it is a read-only audit view).
+    let token = login(&mut r, "regular1", "Passw0rd!123").await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/firewall/history?limit=10",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["success"], json!(true));
+    assert!(body["data"]["entries"].is_array());
 }
 
 #[tokio::test]
@@ -939,7 +1118,16 @@ async fn test_firewall_rule_add_requires_a_port() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["success"], json!(false));
-    // Either "Port is required" (ufw present) or "ufw is not installed".
+    // Validation runs before the availability probe, so the reason is
+    // always the empty port.
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("port"),
+        "{body}"
+    );
 }
 
 #[tokio::test]
@@ -959,7 +1147,13 @@ async fn test_firewall_enable_preview_is_readable_by_any_session() {
     if homevault::firewall::ufw_available() {
         assert_eq!(status, StatusCode::OK);
         assert!(body["data"]["ssh_port"].is_number());
+        assert!(body["data"]["ssh_ports"].is_array());
         assert!(body["data"]["app_port"].is_number());
+        // The preview must explain what the firewall will do with traffic no
+        // rule matches — that is what makes the rule list meaningful.
+        assert!(body["data"]["default_policy"]["incoming"].is_string());
+        assert!(body["data"]["default_policy"]["outgoing"].is_string());
+        assert!(body["data"]["warnings"].is_array());
     } else {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body["message"]

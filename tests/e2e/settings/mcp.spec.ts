@@ -72,6 +72,29 @@ async function apiLogin(
   return { token: body?.data?.token || '', csrf: body?.data?.csrf_token || '' };
 }
 
+/**
+ * A non-admin session that can actually use the API.
+ *
+ * `POST /api/users` creates the account with an admin-chosen password, so
+ * `password_change_guard` answers `403 password_change_required` to every
+ * call until the owner picks their own. Log in, change it, log in again —
+ * otherwise these authorization tests would assert a 403 that comes from the
+ * forced-change gate instead of the admin gate they are about.
+ */
+async function apiLoginAsViewer(
+  ctx: APIRequestContext,
+  username: string,
+  initialPassword: string,
+  newPassword = 'Viewer67890!',
+): Promise<{ token: string; csrf: string }> {
+  const first = await apiLogin(ctx, username, initialPassword);
+  await ctx.put(`/api/users/${username}/password`, {
+    headers: { 'x-session-token': first.token, 'x-csrf-token': first.csrf },
+    data: { current_password: initialPassword, new_password: newPassword },
+  });
+  return apiLogin(ctx, username, newPassword);
+}
+
 async function seedBrowser(page: Page, tokens: Tokens, lang = 'en') {
   await page.addInitScript(
     ({ t, l }) => {
@@ -297,11 +320,13 @@ test.describe('15 — External agents (MCP) in Settings → AI Assistant', () =>
     if (!created.success) test.skip(true, 'could not create a reader account');
     try {
       const ctx = await newCtx(playwright);
-      const { token, csrf } = await apiLogin(ctx, uname, 'ReaderSecret123');
+      const { token, csrf } = await apiLoginAsViewer(ctx, uname, 'ReaderSecret123');
       await ctx.dispose();
       if (!token) test.skip(true, 'could not log in as the reader account');
 
-      const reader: Tokens = { username: uname, password: 'ReaderSecret123', token, csrf };
+      // `apiLoginAsViewer` already replaced the admin-chosen password, so the
+      // session it returns only authenticates with the new one.
+      const reader: Tokens = { username: uname, password: 'Viewer67890!', token, csrf };
       await openSettings(page, reader);
       await openAiCategory(page);
       // The AI card is there for everyone; the gateway card is admin-only.

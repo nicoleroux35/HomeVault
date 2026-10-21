@@ -150,6 +150,109 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Firewall/ufw production-ready pass (2026-10-21) — nothing unvalidated
+  reaches `sudo ufw`, and every destructive action is confirmed and verified.**
+
+  Seven holes, the first three of them reachable from a plain admin session:
+
+  1. **Client input was interpolated straight into the `ufw` argv.** `action`
+     is the *verb* of `sudo ufw <action> …`, so `{"action":"delete"}` on the
+     "add rule" endpoint ran `sudo ufw delete …` (`--force`, `reset` and
+     `enable` were equally reachable). `protocol`, `port` and `source` went
+     through as-is: a port of `22/tcp` was concatenated a second time
+     (`22/tcp/tcp`), and `source: "any"` turned a "restricted" rule into a
+     global one. New `validate_action` / `validate_protocol` / `validate_port`
+     / `validate_source` / `validate_comment` plus the default-policy pair, all
+     pure and unit-tested, run **before** the `ufw_available()` probe — a typo
+     is reported as a typo, and no process is spawned.
+  2. **A source-restricted rule could not be deleted, and the global rule with
+     the same port was deleted instead.** `delete_rule_by_spec` rebuilt
+     `delete <action> <port>/<proto>`, which does not match `allow from <cidr>
+     to any port <n> proto <tcp>`. `FirewallRule` now carries `spec` — the
+     exact argument string `ufw show added` printed, comment stripped — and the
+     handler passes *that* to `ufw delete`. The client only selects a live
+     rule; it never supplies the command.
+  3. **The mandatory-rule protection was bypassable.** The target was looked up
+     ignoring `source`, and when nothing matched the handler deleted anyway — so
+     a raw call could remove the SSH/app-port rule (lockout) or a rule for
+     another port. A miss is now a **404** and the matched rule's own live
+     `is_mandatory` flag a **403**.
+  4. **Enabling trusted an exit code that lies.** `ufw --force enable` exits 0
+     even when iptables failed to load ("ERROR: problem running iptables"), so
+     `enabled = true` was recorded on a firewall filtering nothing.
+     `enable_verified` re-reads the live state and, if a mandatory allow rule is
+     missing, turns the firewall back off and explains why instead of leaving
+     the appliance unreachable.
+  5. **Disabling had no confirmation** — the only one-click destructive action
+     on the page, and it opens every port the firewall blocked. It now requires
+     the same `{"confirmed": true}` body as enabling.
+  6. **A `Port 2222` in `/etc/ssh/sshd_config.d/*.conf` was invisible**, so the
+     mandatory rule protected port 22 while SSH listened on 2222 — a guaranteed
+     lockout on the first enable. `detect_ssh_ports()` reads the main file
+     **and** the drop-ins and keeps every `Port` value.
+  7. **Every `ufw` call was a blocking `std::process::Command` in an async
+     handler, with no timeout.** `ufw` shells out to `iptables`, which takes the
+     xtables lock: a wedged call parked a Tokio worker for the life of the
+     process. All calls now go through `tokio::process::Command` with
+     `kill_on_drop` and a 30 s `UFW_TIMEOUT`.
+
+  Also fixed: the rule list mis-parsed interface-scoped rules (`in on eth0`) and
+  rules with no port (`allow from 1.2.3.4`), and could read a keyword out of a
+  rule's own comment; a duplicate rule was reported and audited as a fresh
+  change although ufw skips it and exits 0; `disable` wrote back a cached
+  `ssh_port` of 0.
+
+  **Added:** `GET /firewall/status` returns `default_policy` (parsed from
+  `ufw status verbose`), new admin `POST /firewall/default-policy`, the enable
+  preview **warns when the incoming default is `allow`** (enabling would then
+  filter nothing), and `GET /firewall/history` exposes the change log the
+  handlers had always recorded and nothing ever read (`list_change_log` was
+  dead code) with a new `default_policy_changed` action. The card gains the
+  default-policy row and dialog, a "Recent changes" list, one focus-trapped
+  confirmation dialog shared by enable/disable/remove/policy (it was a
+  `role="presentation"` div inside a `role="button"` overlay with no focus
+  handling), labelled inputs, an `aria-label` per row's remove button, and a
+  `role="status"` line reporting every outcome — failures used to land in an
+  empty `else {}`.
+
+  Tests: `src/firewall.rs` **9 → 31** unit, `src/handlers/firewall.rs` **0 → 2**,
+  `security_integration.rs` **18 → 25** (both confirmation gates, the pre-ufw
+  rejections, the 404/403 delete paths, the history envelope),
+  `security.spec.ts` **30 → 41** `test(` blocks (39 → 43 runtime tests) — the
+  new §5b intercepts the firewall endpoints with `page.route`, so the card's
+  default policy, focus-trapped remove dialog, `spec` payload, disable gate and
+  error feedback are covered on a host where `sudo ufw` wants a password.
+  Verified: `cargo test --lib firewall` 31/31,
+  `cargo test --test security_integration` 25/25, `security.spec.ts` 35 passed
+  / 8 skipped / 0 failed (Firefox, scratch server `:8102`), `npm run check`
+  0/0, `npm run build` OK. No live `ufw` mutation: `sudo -n true` fails on this
+  machine, so `ufw_available()` is `false` and the live enable/disable cycle
+  stays documented from the 2026-07-16 signed-off audit.
+
+- **The E2E suites never re-checked the first-sign-in password gate they walked
+  into (2026-10-21).** `middleware::password_change_guard` (added with the
+  Users/Groups pass) answers `403 password_change_required` to *every* API call
+  from an account still holding an admin-chosen password. Fourteen E2E specs
+  built a throwaway account with `POST /api/users` and then used the returned
+  session directly, so six specs went red (`chat` 4.3, `cloudsync` 4.3,
+  `downloader` 10.3, `storage` 4.4, `syncthing` 3.3, `mcp` 15.5) and eight more
+  turned vacuous — the "a non-admin is refused" assertions in `vpn`, `network`,
+  `shares`, `rescue`, `explorer`, `raid` and `security` 6.3 got their 403 from
+  the forced-change gate instead of the admin gate, and `login` 24.2/24.3
+  silently skipped because the recovery-code generation was refused, dropping
+  the only end-to-end cover of the recovery-code reset. Every creator helper now
+  clears the flag before the session is used (log in → `PUT
+  /api/users/{u}/password` with the current password → log in again, since the
+  change revokes the flagged session) and returns the owner-chosen password;
+  `login` 23.1 asserts the real ordering (change screen first, not-admin
+  refusal after) and 24.x clears the flag before generating the code. Two
+  spec-level bugs surfaced by the same re-run: `account.spec.ts` dismisses the
+  once-per-version "What's New" modal (its overlay intercepted the user-menu
+  click on every brand-new account), and `login` 25.3 retries until the lock
+  copy appears instead of assuming the fifth submit is the one that locks (the
+  per-IP throttle is shared by the whole suite; the five-attempt threshold stays
+  pinned by the Rust suite). No production code changed.
+
 - **Backup/restic production-ready pass (2026-10-21) — the run is a real
   background job, its progress is real, and no unvalidated value reaches
   restic's argv.**

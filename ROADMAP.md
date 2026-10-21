@@ -14,7 +14,9 @@ encryption/SMART health), RAID (mdadm/ZFS/Btrfs creation), shares
 (rclone), network (interfaces, WiFi, diagnostics, **persisted interface configuration
 applied, verified and rolled back in-session via netplan/ifupdown as of
 2026-10-21**), security
-(antivirus/anti-ransomware/firewall), web terminal, VPN (WireGuard/
+(antivirus/anti-ransomware/firewall — the firewall exposes the live rule set,
+the **default policy** and an audited change log, with argv validation and a
+verified enable/disable as of 2026-10-21), web terminal, VPN (WireGuard/
 OpenVPN), downloader (aria2), Syncthing, Docker + application catalog
 (volumes, disk-usage reporting and prune, container inspect/exec/pause/
 rename/in-place limits, live log streaming, image builds, private
@@ -63,6 +65,76 @@ fixed and listed under "Fixed on 2026-10-12" below.
 - Keep auditing "under real conditions" (real backend, no mocks) every
   new page, following the methodology already applied to each guide in
   `docs/guides/` (results in `TESTING.md`).
+
+**Fixed on 2026-10-21 — Firewall/ufw production-ready:**
+
+The page let an admin reach a state it could not describe and could not
+safely undo. Seven holes:
+
+1. **Client input was interpolated straight into the `ufw` argv.** `action` is
+   the *verb* of `sudo ufw <action> …`, so `{"action":"delete"}` on the "add
+   rule" endpoint ran `sudo ufw delete …` (`--force`, `reset` and `enable` were
+   equally reachable). `protocol`, `port` and `source` went through as-is: a
+   port of `22/tcp` was concatenated a second time (`22/tcp/tcp`), and
+   `source: "any"` silently turned a "restricted" rule into a global one.
+   `validate_action` / `validate_protocol` / `validate_port` /
+   `validate_source` / `validate_comment` (plus the default-policy pair) now
+   run **before** the `ufw_available()` probe.
+2. **A source-restricted rule could not be deleted, and the global rule with
+   the same port was deleted instead.** `delete_rule_by_spec` rebuilt
+   `delete <action> <port>/<proto>`, which does not match `allow from <cidr> to
+   any port <n> proto <tcp>`. `FirewallRule` carries `spec` — the exact
+   argument string `ufw show added` printed, comment stripped — and the handler
+   passes *that* to `ufw delete`; the client only selects a live rule, it never
+   supplies the command.
+3. **The mandatory-rule protection was bypassable**: the target was looked up
+   ignoring `source`, and a request that matched nothing deleted anyway, so a
+   raw call could remove the SSH/app-port rule. A miss is now a 404, the
+   matched rule's live `is_mandatory` flag a 403.
+4. **Enabling trusted an exit code that lies.** `ufw --force enable` exits 0
+   even when iptables failed to load, so `enabled = true` was recorded on a
+   firewall filtering nothing. `enable_verified` re-reads the live state and,
+   when a mandatory allow rule is missing, turns the firewall back off and
+   explains why.
+5. **Disabling had no confirmation** — the only one-click destructive action on
+   the page, and it opens every port the firewall blocked. It now requires the
+   same `{"confirmed": true}` body as enabling.
+6. **A `Port 2222` in `/etc/ssh/sshd_config.d/*.conf` was invisible**, so the
+   mandatory rule protected port 22 while SSH listened on 2222 — a guaranteed
+   lockout on the first enable. `detect_ssh_ports()` reads the main file **and**
+   the drop-ins.
+7. **Every `ufw` call was a blocking `std::process::Command` in an async
+   handler with no timeout**; `ufw` shells out to `iptables`, which takes the
+   xtables lock. All calls now use `tokio::process::Command` with
+   `kill_on_drop` and a 30 s `UFW_TIMEOUT`.
+
+Also fixed: the rule list mis-parsed interface-scoped rules (`in on eth0`) and
+rules with no port (`allow from 1.2.3.4`) and could read a keyword out of a
+rule's own comment; a duplicate rule was reported and audited as a fresh change
+although ufw skips it and exits 0; `disable` wrote back a cached `ssh_port` of
+0.
+
+**Added:** the default policy in `GET /firewall/status` (parsed from `ufw status
+verbose`) with a new admin `POST /firewall/default-policy`, a warning in the
+enable preview when the incoming default is `allow` (enabling would filter
+nothing), and `GET /firewall/history` exposing the change log that was recorded
+and never read (`list_change_log` was dead code). The card gains the
+default-policy row and dialog, a "Recent changes" list, one focus-trapped
+confirmation dialog for enable/disable/remove/policy (it was a
+`role="presentation"` div inside a `role="button"` overlay with no focus
+handling), labelled inputs, an `aria-label` per remove button and a
+`role="status"` line for every outcome — failures used to land in an empty
+`else {}`.
+
+Tests: `firewall.rs` 9 → 31, `handlers/firewall.rs` 0 → 2,
+`security_integration.rs` 18 → 25, `security.spec.ts` 30 → 41 `test(` blocks
+(39 → 43 runtime) with a new §5b that mocks the firewall endpoints via
+`page.route`. `cargo test --lib firewall` 31/31,
+`cargo test --test security_integration` 25/25, `security.spec.ts` 35 passed /
+8 skipped / 0 failed (Firefox, scratch server), `npm run check` 0/0,
+`npm run build` OK. No live `ufw` mutation on this host (`sudo -n true` fails,
+so `ufw_available()` is `false`); the signed-off 2026-07-16 enable/disable
+cycle remains the live reference. See `docs/guides/firewall.md`.
 
 **Fixed on 2026-10-21 — Backup/restic production-ready:**
 
