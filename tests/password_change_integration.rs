@@ -102,8 +102,7 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/users", axum::routing::post(handle_user_create))
         .route(
             "/api/users/{username}/password",
-            axum::routing::put(handle_user_update_password)
-                .delete(handle_user_delete_placeholder),
+            axum::routing::put(handle_user_update_password).delete(handle_user_delete_placeholder),
         )
         .with_state(state.clone())
         .layer(axum::middleware::from_fn_with_state(
@@ -209,7 +208,11 @@ async fn test_login_flags_a_user_created_through_the_admin_api() {
         })),
     )
     .await;
-    assert_eq!(create["success"], json!(true), "create must succeed: {create}");
+    assert_eq!(
+        create["success"],
+        json!(true),
+        "create must succeed: {create}"
+    );
 
     let member = login_data(&mut r, "member1", "MemberPass123").await;
     assert_eq!(
@@ -506,13 +509,14 @@ async fn test_change_screen_endpoints_pass_for_a_flagged_session() {
         Some(json!({"new_password": "NewOwnerPass1", "current_password": "WrongCurrent1"})),
     )
     .await;
-    assert_ne!(status_bad, StatusCode::FORBIDDEN, "guard must not fire: {bad}");
+    assert_ne!(
+        status_bad,
+        StatusCode::FORBIDDEN,
+        "guard must not fire: {bad}"
+    );
     assert_eq!(bad["success"], json!(false));
     assert!(
-        bad["message"]
-            .as_str()
-            .unwrap_or("")
-            .contains("password"),
+        bad["message"].as_str().unwrap_or("").contains("password"),
         "the handler's password error must surface: {bad}"
     );
 

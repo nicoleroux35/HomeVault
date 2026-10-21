@@ -623,7 +623,8 @@ pub async fn handle_admin_user_sessions(
                 return ResponseHelper::json_error(format!("User '{}' not found", username));
             }
 
-            let session_repo = crate::storage::session_repo::SessionRepository::new(state.db.pool());
+            let session_repo =
+                crate::storage::session_repo::SessionRepository::new(state.db.pool());
             let sessions = match session_repo.find_all_by_username(&username).await {
                 Ok(s) => s,
                 Err(e) => {
@@ -641,7 +642,10 @@ pub async fn handle_admin_user_sessions(
                 })
                 .collect();
             let total = infos.len();
-            ResponseHelper::json_success(AdminUserSessionsResponse { sessions: infos, total })
+            ResponseHelper::json_success(AdminUserSessionsResponse {
+                sessions: infos,
+                total,
+            })
         }
         Err(e) => ResponseHelper::json_error(format!("Session invalid: {}", e)),
     }
@@ -688,12 +692,17 @@ pub async fn handle_user_set_expiry(
                 None | Some("") => Ok(None),
                 Some(raw) => {
                     match chrono::DateTime::parse_from_rfc3339(raw) {
-                        Ok(dt) if dt >= chrono::Utc::now() => Ok(Some(dt.with_timezone(&chrono::Utc))),
+                        Ok(dt) if dt >= chrono::Utc::now() => {
+                            Ok(Some(dt.with_timezone(&chrono::Utc)))
+                        }
                         // A horizon already in the past would only make the
                         // account expire with no warning — refuse it so the
                         // mistake surfaces in the UI instead.
                         Ok(_) => Err("Expiry must be in the future".to_string()),
-                        Err(_) => Err("Invalid timestamp (expected RFC 3339, e.g. 2027-01-31T00:00:00Z)".to_string()),
+                        Err(_) => Err(
+                            "Invalid timestamp (expected RFC 3339, e.g. 2027-01-31T00:00:00Z)"
+                                .to_string(),
+                        ),
                     }
                 }
             };
@@ -720,9 +729,7 @@ pub async fn handle_user_set_expiry(
                         "expires_at": expires_at.map(|dt| dt.to_rfc3339()),
                     }))
                 }
-                Err(e) => {
-                    ResponseHelper::json_error(format!("Failed to set expiry: {}", e))
-                }
+                Err(e) => ResponseHelper::json_error(format!("Failed to set expiry: {}", e)),
             }
         }
         Err(e) => ResponseHelper::json_error(format!("Session invalid: {}", e)),
@@ -753,7 +760,8 @@ pub async fn handle_admin_revoke_user_sessions(
                 return ResponseHelper::json_error("Admin access required".to_string());
             }
 
-            let session_repo = crate::storage::session_repo::SessionRepository::new(state.db.pool());
+            let session_repo =
+                crate::storage::session_repo::SessionRepository::new(state.db.pool());
             // delete_by_username returns no count; enumerate the target's
             // tokens and delete_many them instead, so the event log and the
             // response carry a revoked number.

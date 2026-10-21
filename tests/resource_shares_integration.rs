@@ -49,8 +49,8 @@ use homevault::auth::AuthService;
 use homevault::config::PathGuard;
 use homevault::handlers::auth::handle_login;
 use homevault::handlers::resource_shares::{
-    handle_grant_access, handle_grant_group_access, handle_list_access,
-    handle_list_group_access, handle_my_access, handle_revoke_access, handle_revoke_group_access,
+    handle_grant_access, handle_grant_group_access, handle_list_access, handle_list_group_access,
+    handle_my_access, handle_revoke_access, handle_revoke_group_access,
 };
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::AppState;
@@ -613,7 +613,9 @@ async fn test_group_grant_crud_and_listing() {
         Method::POST,
         "/api/shares/access/groups",
         Some(&token),
-        Some(json!({"group": "family", "kind": "app", "resource": "jellyfin", "permission": "full"})),
+        Some(
+            json!({"group": "family", "kind": "app", "resource": "jellyfin", "permission": "full"}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -660,11 +662,7 @@ async fn test_group_grant_endpoints_are_admin_only() {
     let token = login(&mut r, "member", "pw12345678").await;
 
     for (method, uri, body) in [
-        (
-            Method::GET,
-            "/api/shares/access/groups",
-            None,
-        ),
+        (Method::GET, "/api/shares/access/groups", None),
         (
             Method::POST,
             "/api/shares/access/groups",
