@@ -59,7 +59,13 @@ and starve its own `check-username` calls.
 login screen).
 
 Login returns a session token (stored as `session-token` in localStorage) and
-sets an `hv_session` cookie read only by the per-app reverse proxy.
+sets an `hv_session` cookie read only by the app-proxy auth entry point:
+`GET /app-auth?app=<store>:<app>` (browser navigation, unauthenticated by
+design — it is the redirect target of a gated app's proxy). It validates the
+`hv_session` cookie, mints an app-proxy-scoped `hv_app_session` and redirects
+to the app's proxy port; under an HTTPS deployment the gate's redirect targets
+the TLS entry, because the `Secure` session cookie would never travel over
+plain HTTP (see [Apps Center](./guides/apps-center.md)).
 `POST /auth/setup` returns the same session shape plus `totp_enabled` and
 `backup_codes` when TOTP was enrolled at the wizard's password step.
 2FA-enabled accounts: `/auth/login` returns `requires_2fa`; the TOTP code is sent
@@ -503,9 +509,12 @@ template — from the embedded `catalog/` dir plus admin-added community stores.
 Wire ids are namespaced `<store>:<app>`; the install key (compose project + data
 dir) is the **bare** app id for the built-in `homevault` store, `<store>-<app>`
 otherwise. Each installed app gets a dedicated reverse-proxy listener
-(47000–47999, `src/app_proxy`) with an optional `hv_session`-cookie auth gate;
+(47000–47999, `src/app_proxy`) with an optional app-scoped-cookie auth gate;
 the app's own published port stays bound to `0.0.0.0` on purpose (the proxy is
-an extra entry point, not a lockdown). See [Docker](./guides/docker.md).
+an extra entry point, not a lockdown). The proxy's auth gate accepts only the
+proxy-scoped `hv_app_session` minted by `GET /app-auth` — never the API
+session. See [Docker](./guides/docker.md) and
+[Apps Center](./guides/apps-center.md).
 
 Every Compose project-name path parameter is validated by
 `ComposeManager::validate_name` before it's joined onto a filesystem path

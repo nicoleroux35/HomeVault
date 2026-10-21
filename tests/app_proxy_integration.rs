@@ -2,7 +2,7 @@
  * File          : app_proxy_integration.rs
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Last modified : 21/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
@@ -29,11 +29,15 @@
 //!   through;
 //! - both HomeVault cookies (`hv_session`, `hv_app_session`) being stripped
 //!   from the request before it reaches the upstream app, while the app's own
-//!   cookies survive.
+//!   cookies survive;
+//! - the gate redirect following the TLS entry (`https://{host}:8443`) when
+//!   the HTTPS listener is active, because `hv_session` is `Secure` there and
+//!   plain-HTTP targets would loop the round-trip.
 //!
 //! One `#[tokio::test]` on purpose — `APP_PROXY` is a process-global whose
-//! main port is set once, so a single sequential flow avoids cross-test
-//! interference.
+//! main port is set once, and `tls::TLS_ACTIVE` is a process-global too, so a
+//! single sequential flow avoids cross-test interference (the TLS flag is
+//! reset before any assertion can fail).
 //!
 //! Run: cargo test --test app_proxy_integration
 
@@ -189,6 +193,28 @@ async fn test_app_proxy_end_to_end() {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::FOUND);
+
+    // 7. With the HTTPS listener up (`TLS_ACTIVE`), the gate must redirect to
+    //    the TLS entry instead of the plain-HTTP main port: under TLS the
+    //    `hv_session` cookie is `Secure` and the browser would never re-send
+    //    it on `http://`, which would loop the auth round-trip forever. The
+    //    process-global is reset before the assertions so it can never leak
+    //    state on a failing assert.
+    homevault::tls::set_tls_active(true);
+    let resp = client.get(format!("{base}/ping")).send().await.unwrap();
+    let location = resp
+        .headers()
+        .get("location")
+        .map(|v| v.to_str().unwrap().to_string())
+        .unwrap_or_default();
+    let cache_control = resp
+        .headers()
+        .get("cache-control")
+        .map(|v| v.to_str().unwrap().to_string());
+    homevault::tls::set_tls_active(false);
+    assert_eq!(resp.status(), reqwest::StatusCode::FOUND);
+    assert_eq!(location, "https://127.0.0.1:8443/app-auth?app=test%3Aecho");
+    assert_eq!(cache_control.as_deref(), Some("no-store"));
 
     APP_PROXY.stop("test:echo").await;
 }

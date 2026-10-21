@@ -2,7 +2,7 @@
  * File          : serve.rs
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Last modified : 21/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
@@ -97,14 +97,26 @@ pub async fn handle(
                 .and_then(|v| v.to_str().ok())
                 .map(|h| h.split(':').next().unwrap_or(h).to_string())
                 .unwrap_or_else(|| "localhost".to_string());
-            let location = format!(
-                "http://{host}:{}/app-auth?app={}",
-                ctx.main_port,
-                url::form_urlencoded::byte_serialize(ctx.ns_id.as_bytes()).collect::<String>()
-            );
+            // The redirect must land on the main origin the browser actually
+            // holds `hv_session` on. Under an enabled HTTPS listener that
+            // cookie is `Secure`, so pointing at the plain-HTTP main port
+            // would loop forever — the browser never re-sends the cookie
+            // there. Computed per request because TLS can be turned on after
+            // this proxy was spawned.
+            let tls = crate::tls::tls_active();
+            let tls_port = if tls {
+                crate::tls::load_settings().effective_https_port()
+            } else {
+                0
+            };
+            let location = app_auth_location(ctx.main_port, tls, tls_port, &host, &ctx.ns_id);
             let mut resp = text(StatusCode::FOUND, "Authentication required");
             resp.headers_mut()
                 .insert(LOCATION, HeaderValue::from_str(&location).unwrap());
+            resp.headers_mut().insert(
+                hyper::header::CACHE_CONTROL,
+                HeaderValue::from_static("no-store"),
+            );
             return Ok(resp);
         }
     }
@@ -231,6 +243,28 @@ pub async fn handle(
     }
 }
 
+/// Location of the server-chosen `/app-auth` entry on the main origin.
+///
+/// Pure builder so both TLS states are unit-testable. Plain HTTP targets
+/// `main_port`; with TLS enabled the target is the actual HTTPS entry,
+/// because `hv_session` is `Secure` there and would never be re-sent over
+/// plain HTTP (see the call site). `ns_id` is percent-encoded for the query.
+pub fn app_auth_location(
+    main_port: u16,
+    tls_active: bool,
+    tls_https_port: u16,
+    host: &str,
+    ns_id: &str,
+) -> String {
+    let (scheme, port) = if tls_active {
+        ("https", tls_https_port)
+    } else {
+        ("http", main_port)
+    };
+    let encoded = url::form_urlencoded::byte_serialize(ns_id.as_bytes()).collect::<String>();
+    format!("{scheme}://{host}:{port}/app-auth?app={encoded}")
+}
+
 fn rewrite_host<B>(req: &mut Request<B>, target_port: u16) {
     if let Ok(v) = HeaderValue::from_str(&format!("127.0.0.1:{target_port}")) {
         req.headers_mut().insert(HOST, v);
@@ -276,4 +310,43 @@ fn relay_response(resp: Response<Incoming>) -> Response<BoxedBody> {
 #[allow(dead_code)]
 fn empty() -> BoxedBody {
     Empty::<Bytes>::new().map_err(|e| Box::new(e) as _).boxed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_app_auth_location_http_main_origin() {
+        assert_eq!(
+            app_auth_location(8080, false, 0, "homevault.lan", "default:joplin"),
+            "http://homevault.lan:8080/app-auth?app=default%3Ajoplin"
+        );
+    }
+
+    #[test]
+    fn test_app_auth_location_follows_tls_entry() {
+        // TLS active: the redirect must target the HTTPS entry — that is where
+        // the `Secure` `hv_session` cookie the browser holds actually travels.
+        assert_eq!(
+            app_auth_location(8080, true, 8443, "homevault.lan", "default:immich"),
+            "https://homevault.lan:8443/app-auth?app=default%3Aimmich"
+        );
+    }
+
+    #[test]
+    fn test_app_auth_location_custom_https_port() {
+        assert_eq!(
+            app_auth_location(81, true, 9005, "location.host", "home:docmost"),
+            "https://location.host:9005/app-auth?app=home%3Adocmost"
+        );
+    }
+
+    #[test]
+    fn test_app_auth_location_encodes_namespaces() {
+        assert_eq!(
+            app_auth_location(8080, false, 0, "h", "store two:app&1"),
+            "http://h:8080/app-auth?app=store+two%3Aapp%261"
+        );
+    }
 }

@@ -130,7 +130,14 @@ dashboard. Now:
   meaningless against the API and is revoked when the proxy stops or the user
   logs out.
 - A request with no valid app session gets a 302 to `/app-auth?app=<ns_id>`,
-  never a bare `/login`.
+  never a bare `/login`. **TLS-aware (2026-10-21):** under an active HTTPS
+  listener the redirect targets `https://{host}:{https_port}` — `hv_session`
+  is `Secure` there and would never be re-sent over plain HTTP, which would
+  loop the round-trip forever. The `hv_app_session` cookie itself stays
+  *without* `Secure` on purpose: the proxy listener is plain HTTP even under
+  an HTTPS dashboard, and a `Secure` cookie would never travel to an
+  `http://` origin. Both redirects mint auth cookies, so they carry
+  `Cache-Control: no-store`.
 - **Both** HomeVault cookies (`hv_session`, `hv_app_session`) are stripped from
   the request before it is forwarded upstream, so an installed app never sees
   either credential while its own cookies survive

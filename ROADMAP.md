@@ -88,6 +88,27 @@ deliberately stays write-only/boot-applied). Tests: `network.rs` 43 → 52 unit
 `TESTING.md`'s "remaining to test" (needs a real host). See
 `CLAUDE.md` (2026-10-21 addendum).
 
+**Fixed on 2026-10-21 — APPS production-ready / app-proxy auth under HTTPS:**
+
+Apps Center's per-app reverse proxy had one real defect that only hit the
+security-motivated setups: the gate redirected unauthenticated browsers to a
+hard-coded `http://{main_port}/app-auth`, but under an HTTPS deployment the
+`hv_session` cookie carries `Secure` and is never re-sent over plain HTTP —
+the round-trip looped forever and every "require login" app was unusable
+precisely under TLS. The gate's redirect is now TLS-aware
+(`https://{host}:{https_port}/app-auth` while the HTTPS listener is up,
+computed per request), auth-minting redirects carry `Cache-Control:
+no-store`, the login screen honours the flow's `next` parameter (same-origin
+paths only — no open-redirect window), and the app-session store is capped at
+512 live entries with soonest-expiring eviction. `hv_app_session` deliberately
+stays without `Secure` (the proxy listener is plain HTTP even under an HTTPS
+dashboard). `docs/guides/apps-center.md` was rewritten to describe the
+shipped launcher (Docker apps open in a new browser tab; the earlier
+iframe + mixed-content-toast design was never on this path). Tests: 4 new
+unit tests on the location builder, the store-cap test, and an end-to-end
+TLS redirect step in `tests/app_proxy_integration.rs`. See `CLAUDE.md`
+(2026-10-21 addendum) and `CHANGELOG.md` [Unreleased] → Fixed.
+
 **Fixed on 2026-10-20 — Docker production-ready:**
 
 The Docker module was audited end to end and every gap closed in one pass:

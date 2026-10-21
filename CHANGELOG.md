@@ -150,6 +150,28 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **App-proxy auth under HTTPS (2026-10-21).** The proxy gate redirected
+  unauthenticated browsers to a hard-coded `http://{main_port}/app-auth`; on a
+  TLS deployment the `hv_session` cookie carries `Secure` and the browser
+  would never re-send it over plain HTTP, looping the app-auth round-trip
+  forever and making every "require login" app unusable exactly on the
+  high-security setups that want the gate. The redirect now targets
+  `https://{host}:{https_port}/app-auth` whenever the HTTPS listener is up
+  (computed per request — TLS can be enabled after a proxy spawned), and the
+  auth-minting redirects (gate challenge + `/app-auth`) carry
+  `Cache-Control: no-store`. The login screen honours the flow's
+  `next=/app-auth?…` parameter — same-origin paths only, so no open-redirect
+  window — and continues the round-trip after sign-in instead of dead-dropping
+  on the desktop. `hv_app_session` deliberately stays without `Secure` (the
+  proxy listener is plain HTTP even under an HTTPS dashboard). Also: the
+  in-memory app-session store is now capped at 512 live entries with
+  soonest-expiring eviction, so repeated `/app-auth` hits cannot grow it
+  without limit. `docs/guides/apps-center.md` rewritten to match the shipped
+  launcher (Docker apps open in a new browser tab; the old iframe +
+  mixed-content-toast design was never on this path). Tests: `serve.rs` 4 unit
+  (TLS-aware location builder), `app_auth.rs` +1 (store cap),
+  `tests/app_proxy_integration.rs` step 7 asserts the TLS redirect end-to-end.
+
 - **Terminal E2E suite (2026-10-20).** After the `@xterm/xterm` 5 → 6
   dependency refresh of 2026-10-19, `terminal.spec.ts` re-runs green on
   firefox and chromium (81/81 each): the scratch-instance "What's New" modal

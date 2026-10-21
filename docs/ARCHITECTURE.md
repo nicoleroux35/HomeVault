@@ -467,7 +467,10 @@ origin (`src/handlers/app_auth.rs`, `src/app_proxy/app_auth.rs`). `/app-auth`
 validates the real session, mints the scoped token and redirects to the app
 origin; the proxy then strips both HomeVault cookies before forwarding
 upstream. The scoped token grants proxy access only and is revoked on logout
-or when the proxy stops. See [guides/docker.md](./guides/docker.md).
+or when the proxy stops. The gate's redirect to `/app-auth` is TLS-aware
+(2026-10-21): under an active HTTPS listener it targets the TLS main entry,
+because the `hv_session` cookie is `Secure` there and would never be re-sent
+over plain HTTP. See [guides/docker.md](./guides/docker.md).
 
 ## Related docs
 

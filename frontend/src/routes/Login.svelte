@@ -2,7 +2,7 @@
      File          : Login.svelte
      Author        : Nicolas Le Roux
      Created       : 28/09/2026
-     Last modified : 12/10/2026 by Nicolas Le Roux
+     Last modified : 21/10/2026 by Nicolas Le Roux
      Version       : 1.0.0
 
      Description:
@@ -137,6 +137,19 @@
   }
 
   function gotoDesktop() {
+    // The app-proxy auth flow lands here as `/login?next=/app-auth?app=…`:
+    // after sign-in, finish that round-trip instead of dead-dropping on the
+    // desktop. This must be a full (non-SPA) navigation — `/app-auth` is a
+    // server endpoint that mints the app-session cookie and bounces to the
+    // app's proxy port. Same-origin paths only: an absolute or
+    // scheme-relative `next` would be an open redirect in.
+    const requested = new URLSearchParams(window.location.search).get('next') || '';
+    const safeSameOrigin =
+      requested.startsWith('/') && !requested.startsWith('//') && !requested.includes('\\');
+    if (safeSameOrigin) {
+      window.location.href = requested;
+      return;
+    }
     // Let the gate take over — it re-renders the desktop and syncs the URL.
     appGate.enterApp();
     window.history.pushState({}, '', '/desktop');

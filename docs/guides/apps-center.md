@@ -5,8 +5,12 @@ opened from the desktop topbar.
 
 ## Backend
 
-No dedicated backend; the launcher reads the same app registry the desktop
-uses and opens apps as desktop windows.
+The launcher itself has no dedicated backend: it reads the same app registry
+the desktop uses and opens native apps as desktop windows. Installed Docker
+catalog apps come from `GET /api/docker/catalog` (which also reports each
+app's per-app reverse-proxy port — see
+[Docker's app catalog](./docker.md#app-catalog-manifest-driven--2026-09-03-overhaul)
+and the proxy section below).
 
 ## Frontend
 
@@ -28,27 +32,77 @@ Installed Docker catalog apps (see
 [Docker's app catalog](./docker.md#app-catalog-manifest-driven--2026-09-03-overhaul))
 show up as real Launchpad tiles too, not just inside the Docker app's own tab:
 
-- `Desktop.svelte` fetches `GET /docker/catalog` on mount (`loadDockerCatalog`)
-  into `dockerApps`, and a derived `installedDockerApps` maps every
-  `installed` entry to an app-shaped object (`id: 'docker-<catalogId>'`,
-  `isDockerApp: true`, `dockerPort: installed_port`).
-- `openApp()` branches on `isDockerApp`: instead of opening a Svelte
-  component, it calls the new `windowManager.openWindowUrl(id, name, icon,
-  url)` with `url = http://<hostname>:<port>` (fixed `8123` for Home
-  Assistant, which has no `installed_port`). The window renders an `<iframe
-  sandbox="allow-scripts allow-forms allow-same-origin allow-popups
-  allow-modals">` instead of a component — a genuinely new window-content
-  type (`Window.contentType === 'url'`), added without touching any existing
-  `component`/`componentLoader` window.
-- **Mixed content**: if HomeVault itself is served over HTTPS and the catalog
-  app is plain HTTP (every template here is, by default), the browser may
-  block the iframe outright. `openApp()` shows a one-time toast pointing at
-  the direct `http://host:port` URL in that case — documented as a v1
-  limitation, not solved with per-app TLS termination.
-- The catalog is refetched when the Docker app's own window closes (an
-  event-driven hook on the existing close handler, not a new polling
-  interval), so installing/uninstalling an app updates the Launchpad the next
-  time it's opened.
+- `Desktop.svelte` fetches `GET /api/docker/catalog` on mount
+  (`loadDockerCatalog`) into `dockerApps`, and a derived `installedDockerApps`
+  maps every `installed` entry to an app-shaped object
+  (`id: 'docker-<catalogId>'`, `isDockerApp: true`). The launch port prefers
+  the per-app reverse proxy (`proxy_port`) and falls back to the container's
+  own published port; Home Assistant runs with `network_mode: host` and has no
+  compose-published port, so its UI is always on the fixed `8123`.
+- **Opening behaviour**: Docker apps never open as an in-app window or
+  iframe. Their tile routes the click to `openExternalUrl` — the app's own
+  web UI at `http://<hostname>:<port>` opens in a **new browser tab** (or a
+  popup window when the user picks it), same as the Docker page's container
+  "Open" menu. This is a deliberate design (2026-10-18): a top-level
+  navigation from an HTTPS dashboard to a plain-HTTP app origin is *not*
+  mixed content — browsers block only embedded subresources (iframes,
+  `fetch`) — so no per-app TLS is needed for apps to be reachable under an
+  HTTPS admin entry. The scheme stays `http://` because the per-app proxy
+  listener is plain HTTP even when the dashboard runs HTTPS.
+- The catalog is refetched on a 30-second interval, when the Launchpad opens,
+  when the Docker app's own window closes, and on desktop switches, so
+  installing/uninstalling an app updates the Launchpad without a dedicated
+  polling endpoint. A stopped app renders its tile **greyed out** (not
+  clickable); an installed app that publishes no port renders disabled with a
+  "no web UI" label.
+
+### The per-app reverse proxy and the auth round-trip
+
+Each installed (and running) catalog app gets its own reverse-proxy listener
+on a dedicated port (47000–47999), forwarding to the container's published
+port, with an optional auth gate (on by default, toggleable per app via
+`POST /api/docker/catalog/{id}/proxy`). The gate's auth model
+(`src/app_proxy/`, contract of 2026-10-17):
+
+1. A request without a valid `hv_app_session` is issued a `302` to the
+   **server-chosen** entry on the main origin,
+   `GET /app-auth?app=<store>:<app>`. The app proxy **never** accepts
+   `hv_session`; both HomeVault cookies are stripped from the request before
+   it is forwarded upstream, so the container never sees either credential.
+2. `/app-auth` validates the real API session cookie (`hv_session`), mints an
+   app-proxy-scoped session (`hv_app_session`) and redirects back to the
+   app's proxy origin. That cookie is *deliberately never `Secure`*: the
+   proxy listener is plain HTTP even under an HTTPS dashboard, and a `Secure`
+   cookie would never be sent to an `http://` origin, breaking every gated
+   app. The token is proxy-scoped only — it is meaningless against the API —
+   and is revoked on logout and whenever the app's proxy stops.
+3. The login screen honours the `next` parameter of the redirect
+   (`/login?next=/app-auth?app=…`): after sign-in the browser continues the
+   round-trip as a full navigation instead of dead-dropping on the desktop.
+   `next` is restricted to same-origin paths — an absolute or scheme-relative
+   value would be an open redirect.
+
+**HTTPS deployments (fixed 2026-10-21).** The gate's redirect target is now
+TLS-aware. Under TLS the `hv_session` cookie is `Secure`, so pointing an
+unauthenticated browser at the plain-HTTP main port would never receive the
+cookie back and the round-trip would loop forever: the redirect now targets
+`https://{host}:{https_port}/app-auth` whenever the HTTPS listener is up
+(otherwise the plain-HTTP main port, as before). Additionally:
+
+- `/app-auth` responses and the gate challenge carry `Cache-Control: no-store`
+  (they mint auth cookies; no intermediary may cache them).
+- The app-session store (`APP_AUTH`) is capped at 512 live sessions — the
+  soonest-expiring entry is evicted at the cap — so repeated `/app-auth` hits
+  cannot grow the in-memory store without limit between the 12-hour expiries.
+
+### Known tradeoffs
+
+- The app's own published port stays open on the LAN; the proxy is an
+  additional consistent entry (single host name, uniform auth), not a
+  firewall. Documented by design — do not silently change this.
+- Proxy listeners are plain HTTP even under an HTTPS dashboard (per-app TLS
+  termination is not implemented; the top-level navigation design above keeps
+  apps reachable either way).
 
 > **History:** `frontend/src/routes/AppsCenter.svelte`,
 > `frontend/src/routes/Apps.svelte`, and
@@ -63,7 +117,10 @@ show up as real Launchpad tiles too, not just inside the Docker app's own tab:
 > Removing them also surfaced that `VPN.svelte` — a fully-built page calling
 > real, already-routed backend endpoints — had never been added to the `apps`
 > array and so was unreachable from any UI; it's now a normal entry like every
-> other app (see [VPN](./vpn.md)).
+> other app (see [VPN](./vpn.md)). The earlier design that rendered proxied
+> apps inside a sandboxed `windowManager` iframe (with a mixed-content toast
+> pointing at the direct URL) was never shipped on this path: Docker apps
+> open in a new tab instead.
 
 ## Invariants
 
@@ -72,7 +129,14 @@ show up as real Launchpad tiles too, not just inside the Docker app's own tab:
   place to keep in sync.
 - Do not reintroduce a component-local hardcoded app list for the launcher —
   that's exactly the bug class the dead files above had.
+- Do not add a `hv_session`-based shortcut to the proxy gate (see
+  `CLAUDE.md` → "Client/server contract & app-proxy auth"): the gate accepts
+  only `hv_app_session`, and both HomeVault cookies are stripped upstream.
+- `hv_app_session` must stay without the `Secure` flag, and the proxy
+  listeners must stay plain HTTP: make them consistent together or the gated
+  apps become unreachable.
 
 ## Related
 
-- [Desktop](./desktop.md), [VPN](./vpn.md)
+- [Desktop](./desktop.md), [Docker](./docker.md), [VPN](./vpn.md),
+  [TLS](./tls.md)
