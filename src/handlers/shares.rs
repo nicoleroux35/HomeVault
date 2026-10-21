@@ -39,6 +39,53 @@ use axum::{
     response::Response,
 };
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Hard ceiling for one share operation. Every `SharesService` call reads or
+/// rewrites a root-owned file and/or shells out to `sudo
+/// systemctl`/`tee`/`exportfs`; an unbounded wait would pin a request (and a
+/// blocking-pool thread) forever.
+const SHARE_OP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Timeout for a full SFTP jail reconciliation (many `sudo` calls).
+const JAIL_REBUILD_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Run a blocking `SharesService` operation on the blocking thread pool with a
+/// hard timeout. `SharesService` is entirely synchronous (file IO + `sudo`
+/// subprocesses), so calling it directly from an async handler would block a
+/// runtime worker — this is the single funnel every handler uses.
+async fn run_share_op<T, E, F>(op: &str, f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, E> + Send + 'static,
+    T: Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
+    match tokio::time::timeout(SHARE_OP_TIMEOUT, tokio::task::spawn_blocking(f)).await {
+        Ok(Ok(result)) => result.map_err(|e| e.to_string()),
+        Ok(Err(join_err)) => Err(format!("{op} worker failed: {join_err}")),
+        Err(_) => Err(format!(
+            "{op} timed out after {}s",
+            SHARE_OP_TIMEOUT.as_secs()
+        )),
+    }
+}
+
+/// Run the async SFTP jail reconciliation under the same hard ceiling.
+async fn run_jail_rebuild(state: &AppState) -> Result<(), String> {
+    match tokio::time::timeout(
+        JAIL_REBUILD_TIMEOUT,
+        SftpJailService::rebuild_jails(state.db.pool()),
+    )
+    .await
+    {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err(format!(
+            "SFTP jail rebuild timed out after {}s",
+            JAIL_REBUILD_TIMEOUT.as_secs()
+        )),
+    }
+}
 
 /// Best-effort SFTP jail rebuild after an SFTP-affecting mutation (share
 /// create/update/delete/toggle, config save, key set). Never fails the
@@ -46,7 +93,7 @@ use std::sync::Arc;
 /// failing for one stale share) shouldn't block the share/config write that
 /// already succeeded; it's logged and left for the next rebuild to retry.
 async fn rebuild_sftp_jails_best_effort(state: &AppState) {
-    if let Err(e) = SftpJailService::rebuild_jails(state.db.pool()).await {
+    if let Err(e) = run_jail_rebuild(state).await {
         tracing::warn!("SFTP: jail rebuild failed: {}", e);
     }
 }
@@ -130,7 +177,7 @@ pub async fn handle_shares_list(
         return resp;
     }
 
-    match SharesService::get_shares() {
+    match run_share_op("list shares", SharesService::get_shares).await {
         Ok(shares) => ResponseHelper::json_success(shares),
         Err(e) => ResponseHelper::json_error(format!("Failed to list shares: {}", e)),
     }
@@ -151,7 +198,13 @@ pub async fn handle_share_get(
         return ResponseHelper::json_error("Invalid share type".to_string());
     };
 
-    match SharesService::get_share(&name, share_type) {
+    let share_type_for_op = share_type.clone();
+    let name_for_op = name.clone();
+    match run_share_op("get share", move || {
+        SharesService::get_share(&name_for_op, share_type_for_op)
+    })
+    .await
+    {
         Ok(share) => ResponseHelper::json_success(share),
         Err(e) => ResponseHelper::json_error(format!("Share not found: {}", e)),
     }
@@ -180,7 +233,13 @@ pub async fn handle_share_update(
         options: req.options.clone(),
     };
 
-    match SharesService::update_share(&name, share_type.clone(), update) {
+    let name_for_op = name.clone();
+    let type_for_op = share_type.clone();
+    match run_share_op("update share", move || {
+        SharesService::update_share(&name_for_op, type_for_op, update)
+    })
+    .await
+    {
         Ok(_) => {
             if share_type == ShareType::Sftp {
                 rebuild_sftp_jails_best_effort(&state).await;
@@ -220,7 +279,7 @@ pub async fn handle_share_create(
         options: req.options.clone().unwrap_or_default(),
     };
 
-    match SharesService::create_share(&share) {
+    match run_share_op("create share", move || SharesService::create_share(&share)).await {
         Ok(_) => {
             crate::events::log_event(format!(
                 "Admin '{}' created {} share '{}' at '{}'",
@@ -256,7 +315,13 @@ pub async fn handle_share_delete(
         return ResponseHelper::json_error("Invalid share type".to_string());
     };
 
-    match SharesService::delete_share(&name, share_type.clone()) {
+    let name_for_op = name.clone();
+    let type_for_op = share_type.clone();
+    match run_share_op("delete share", move || {
+        SharesService::delete_share(&name_for_op, type_for_op)
+    })
+    .await
+    {
         Ok(_) => {
             crate::events::log_event_warn(format!(
                 "Admin '{}' deleted share '{}'",
@@ -290,7 +355,13 @@ pub async fn handle_share_toggle(
         return ResponseHelper::json_error("Invalid share type".to_string());
     };
 
-    match SharesService::set_share_enabled(&name, share_type.clone(), enabled) {
+    let name_for_op = name.clone();
+    let type_for_op = share_type.clone();
+    match run_share_op("toggle share", move || {
+        SharesService::set_share_enabled(&name_for_op, type_for_op, enabled)
+    })
+    .await
+    {
         Ok(_) => {
             if share_type == ShareType::Sftp {
                 rebuild_sftp_jails_best_effort(&state).await;
@@ -316,7 +387,7 @@ pub async fn handle_smb_config_get(
         return resp;
     }
 
-    match SharesService::get_smb_config() {
+    match run_share_op("load SMB config", SharesService::get_smb_config).await {
         Ok(config) => ResponseHelper::json_success(config),
         Err(e) => ResponseHelper::json_error(format!("Failed to load SMB config: {}", e)),
     }
@@ -333,7 +404,11 @@ pub async fn handle_smb_config_update(
         return resp;
     }
 
-    match SharesService::save_smb_config(&req) {
+    match run_share_op("save SMB config", move || {
+        SharesService::save_smb_config(&req)
+    })
+    .await
+    {
         Ok(_) => ResponseHelper::json_success("SMB config updated".to_string()),
         Err(e) => ResponseHelper::json_error(format!("Failed to save SMB config: {}", e)),
     }
@@ -349,7 +424,7 @@ pub async fn handle_nfs_config_get(
         return resp;
     }
 
-    match SharesService::get_nfs_config() {
+    match run_share_op("load NFS config", SharesService::get_nfs_config).await {
         Ok(config) => ResponseHelper::json_success(config),
         Err(e) => ResponseHelper::json_error(format!("Failed to load NFS config: {}", e)),
     }
@@ -366,7 +441,11 @@ pub async fn handle_nfs_config_update(
         return resp;
     }
 
-    match SharesService::save_nfs_config(&req) {
+    match run_share_op("save NFS config", move || {
+        SharesService::save_nfs_config(&req)
+    })
+    .await
+    {
         Ok(_) => ResponseHelper::json_success("NFS config updated".to_string()),
         Err(e) => ResponseHelper::json_error(format!("Failed to save NFS config: {}", e)),
     }
@@ -402,7 +481,12 @@ pub async fn handle_share_service_start(
         };
     }
 
-    match SharesService::start_service(share_type.clone()) {
+    let type_for_op = share_type.clone();
+    match run_share_op("start service", move || {
+        SharesService::start_service(type_for_op)
+    })
+    .await
+    {
         Ok(_) => ResponseHelper::json_success("Service started".to_string()),
         Err(e) => ResponseHelper::json_error(format!("Failed to start service: {}", e)),
     }
@@ -430,7 +514,12 @@ pub async fn handle_share_service_stop(
         };
     }
 
-    match SharesService::stop_service(share_type.clone()) {
+    let type_for_op = share_type.clone();
+    match run_share_op("stop service", move || {
+        SharesService::stop_service(type_for_op)
+    })
+    .await
+    {
         Ok(_) => ResponseHelper::json_success("Service stopped".to_string()),
         Err(e) => ResponseHelper::json_error(format!("Failed to stop service: {}", e)),
     }
@@ -463,7 +552,12 @@ pub async fn handle_share_service_restart(
         };
     }
 
-    match SharesService::restart_service(share_type.clone()) {
+    let type_for_op = share_type.clone();
+    match run_share_op("restart service", move || {
+        SharesService::restart_service(type_for_op)
+    })
+    .await
+    {
         Ok(_) => ResponseHelper::json_success("Service restarted".to_string()),
         Err(e) => ResponseHelper::json_error(format!("Failed to restart service: {}", e)),
     }
@@ -479,7 +573,7 @@ pub async fn handle_ftp_config_get(
         return resp;
     }
 
-    match SharesService::get_ftp_config() {
+    match run_share_op("load FTP config", SharesService::get_ftp_config).await {
         Ok(config) => ResponseHelper::json_success(config),
         Err(e) => ResponseHelper::json_error(format!("Failed to load FTP config: {}", e)),
     }
@@ -496,7 +590,11 @@ pub async fn handle_ftp_config_update(
         return resp;
     }
 
-    match SharesService::save_ftp_config(&req) {
+    match run_share_op("save FTP config", move || {
+        SharesService::save_ftp_config(&req)
+    })
+    .await
+    {
         Ok(_) => ResponseHelper::json_success("FTP config updated".to_string()),
         Err(e) => ResponseHelper::json_error(format!("Failed to save FTP config: {}", e)),
     }
@@ -512,7 +610,7 @@ pub async fn handle_webdav_config_get(
         return resp;
     }
 
-    match SharesService::get_webdav_config() {
+    match run_share_op("load WebDAV config", SharesService::get_webdav_config).await {
         Ok(config) => ResponseHelper::json_success(config),
         Err(e) => ResponseHelper::json_error(format!("Failed to load WebDAV config: {}", e)),
     }
@@ -529,7 +627,11 @@ pub async fn handle_webdav_config_update(
         return resp;
     }
 
-    match SharesService::save_webdav_config(&req) {
+    match run_share_op("save WebDAV config", move || {
+        SharesService::save_webdav_config(&req)
+    })
+    .await
+    {
         Ok(_) => {
             // Rebuild the in-process listener from the new config: saving the
             // settings is the admin's explicit "apply" action, so it starts
@@ -553,7 +655,7 @@ pub async fn handle_sftp_config_get(
         return resp;
     }
 
-    match SharesService::get_sftp_config() {
+    match run_share_op("load SFTP config", SharesService::get_sftp_config).await {
         Ok(config) => ResponseHelper::json_success(config),
         Err(e) => ResponseHelper::json_error(format!("Failed to load SFTP config: {}", e)),
     }
@@ -571,7 +673,11 @@ pub async fn handle_sftp_config_update(
         return resp;
     }
 
-    match SharesService::save_sftp_config(&req) {
+    match run_share_op("save SFTP config", move || {
+        SharesService::save_sftp_config(&req)
+    })
+    .await
+    {
         Ok(_) => {
             rebuild_sftp_jails_best_effort(&state).await;
             ResponseHelper::json_success("SFTP config updated".to_string())
@@ -592,7 +698,14 @@ pub async fn handle_sftp_grantees_list(
         return resp;
     }
 
-    match SftpJailService::list_grantees(state.db.pool()).await {
+    match tokio::time::timeout(
+        JAIL_REBUILD_TIMEOUT,
+        SftpJailService::list_grantees(state.db.pool()),
+    )
+    .await
+    .map_err(|_| "SFTP grantee list timed out".to_string())
+    .and_then(|res| res.map_err(|e| e.to_string()))
+    {
         Ok(grantees) => ResponseHelper::json_success(grantees),
         Err(e) => ResponseHelper::json_error(format!("Failed to list SFTP users: {}", e)),
     }
@@ -624,7 +737,13 @@ pub async fn handle_sftp_key_set(
         return ResponseHelper::json_error(format!("User '{}' not found", req.username));
     }
 
-    match SftpJailService::set_authorized_key(&req.username, &req.public_key) {
+    let username_for_op = req.username.clone();
+    let key_for_op = req.public_key.clone();
+    match run_share_op("set SFTP key", move || {
+        SftpJailService::set_authorized_key(&username_for_op, &key_for_op)
+    })
+    .await
+    {
         Ok(_) => {
             crate::events::log_event(format!(
                 "Admin '{}' set an SFTP public key for user '{}'",
@@ -650,7 +769,7 @@ pub async fn handle_sftp_rebuild(
         return resp;
     }
 
-    match SftpJailService::rebuild_jails(state.db.pool()).await {
+    match run_jail_rebuild(&state).await {
         Ok(_) => ResponseHelper::json_success("SFTP access refreshed".to_string()),
         Err(e) => ResponseHelper::json_error(format!("Failed to refresh SFTP access: {}", e)),
     }
