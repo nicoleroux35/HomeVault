@@ -179,9 +179,35 @@ pub struct ActivitySnapshot {
     pub speed_bps: Option<u64>,
 }
 
+/// One-shot cancellation callback registered by a job's producer.
+///
+/// A job that owns a real OS resource (a `sudo ddrescue` child process, a
+/// running `photorec`) registers a hook that actually stops it. Cancelling the
+/// job then runs the hook *and* flips the job's state to
+/// [`ProgressState::Cancelled`], so the UI never reports "cancelled" for work
+/// that is still running.
+pub type CancelHook = Box<dyn FnOnce() + Send + 'static>;
+
+/// Outcome of [`ProgressManager::cancel_job`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancelOutcome {
+    /// Unknown job id — nothing to cancel.
+    NotFound,
+    /// The job was tracked but had no producer hook (nothing to stop beyond
+    /// dropping it from the activity feed).
+    NoHook,
+    /// The producer's hook ran: its real work is being stopped.
+    HookRan,
+}
+
 /// Central registry for all active progress-tracking jobs.
 pub struct ProgressManager {
     jobs: RwLock<HashMap<String, JobInfo>>,
+    /// Cancellation hooks, keyed like `jobs`. Kept in a separate map so the
+    /// hook can be taken out (and run) without holding the `jobs` lock while
+    /// the callback shells out to `kill`.
+    cancel_hooks: Mutex<HashMap<String, CancelHook>>,
 }
 
 impl Default for ProgressManager {
@@ -194,6 +220,76 @@ impl ProgressManager {
     pub fn new() -> Self {
         Self {
             jobs: RwLock::new(HashMap::new()),
+            cancel_hooks: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Register the producer's cancellation hook for `job_id`.
+    ///
+    /// Replaces any previously registered hook (the newest producer wins).
+    /// Registering for an unknown job is allowed: the caller usually creates
+    /// the job first, but the hook is keyed independently so ordering can't
+    /// silently drop a cancellation.
+    pub fn register_cancel_hook(&self, job_id: &str, hook: CancelHook) {
+        self.cancel_hooks.lock().insert(job_id.to_string(), hook);
+    }
+
+    /// Drop the registered hook without running it (the job finished on its
+    /// own). Prevents the map from growing with dead entries.
+    pub fn clear_cancel_hook(&self, job_id: &str) {
+        self.cancel_hooks.lock().remove(job_id);
+    }
+
+    /// Cancel a job: run its producer hook (if any), mark it `Cancelled` on the
+    /// SSE stream, and drop it from the tracked set.
+    ///
+    /// Returns what actually happened, so the HTTP layer can answer honestly —
+    /// the previous `remove_job`-only implementation replied "Job cancelled"
+    /// while a `sudo ddrescue` clone kept writing to a disk.
+    pub fn cancel_job(&self, job_id: &str) -> CancelOutcome {
+        let known = self.jobs.read().contains_key(job_id);
+        let hook = self.cancel_hooks.lock().remove(job_id);
+        let had_hook = hook.is_some();
+
+        if let Some(hook) = hook {
+            hook();
+        }
+
+        if known {
+            self.mark_cancelled(job_id, "Cancelled by admin");
+        }
+
+        match (known, had_hook) {
+            (false, false) => CancelOutcome::NotFound,
+            (_, false) => {
+                self.jobs.write().remove(job_id);
+                CancelOutcome::NoHook
+            }
+            (_, true) => {
+                // The producer's task still owns the id until it observes the
+                // cancellation and finishes; dropping it here would make its
+                // final `fail_job` a no-op. `remove_job` is the producer's job.
+                CancelOutcome::HookRan
+            }
+        }
+    }
+
+    /// Flip a tracked job to [`ProgressState::Cancelled`] and broadcast it.
+    /// Returns `false` for an unknown id.
+    pub fn mark_cancelled(&self, job_id: &str, message: &str) -> bool {
+        if let Some(job) = self.jobs.read().get(job_id) {
+            let event = ProgressEvent::new(
+                job_id.to_string(),
+                job.job_type.clone(),
+                ProgressState::Cancelled,
+                0.0,
+                message,
+            );
+            *job.last_event.lock() = Some(event.clone());
+            let _ = job.sender.send(event);
+            true
+        } else {
+            false
         }
     }
 
@@ -353,9 +449,10 @@ impl ProgressManager {
         })
     }
 
-    /// Remove a job (completed or abandoned).
+    /// Remove a job (completed or abandoned) and drop any stale cancel hook.
     pub fn remove_job(&self, job_id: &str) {
         self.jobs.write().remove(job_id);
+        self.cancel_hooks.lock().remove(job_id);
     }
 
     /// Get all tracked jobs (ID, type, state).
@@ -418,6 +515,11 @@ impl ProgressManager {
             // (`job.state` alone is only the create-time seed).
             effective_state(job) == ProgressState::Running || age_duration < max_age
         });
+        // Drop hooks whose job is gone, so a long-lived process doesn't
+        // accumulate closures holding child PIDs.
+        let live: std::collections::HashSet<String> = jobs.keys().cloned().collect();
+        drop(jobs);
+        self.cancel_hooks.lock().retain(|id, _| live.contains(id));
     }
 }
 
@@ -499,6 +601,18 @@ impl ProgressEmitter {
     /// Mark job as failed
     pub fn fail(job_id: &str, error: &str) -> bool {
         PROGRESS_MANAGER.fail_job(job_id, error)
+    }
+
+    /// Mark a job as cancelled (its producer observed the stop request and
+    /// unwound). Distinct from `fail`: the UI shows "cancelled", not an error.
+    pub fn cancelled(job_id: &str, message: &str) -> bool {
+        PROGRESS_MANAGER.mark_cancelled(job_id, message)
+    }
+
+    /// Register the producer's cancellation hook — see
+    /// [`ProgressManager::register_cancel_hook`].
+    pub fn register_cancel_hook(job_id: &str, hook: crate::sse::CancelHook) {
+        PROGRESS_MANAGER.register_cancel_hook(job_id, hook)
     }
 
     /// Get current progress
@@ -783,5 +897,89 @@ mod tests {
         m.complete_job(&id, "ok");
         m.cleanup_old_jobs(Duration::from_secs(0));
         assert!(!m.list_activity().iter().any(|s| s.id == id));
+    }
+
+    // -----------------------------------------------------------------------
+    // Cancellation — the producer hook is what actually stops the work
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cancel_job_runs_the_registered_hook() {
+        let m = ProgressManager::new();
+        let id = m.create_job(JobType::Backup, "start");
+
+        let fired = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&fired);
+        m.register_cancel_hook(&id, Box::new(move || flag.store(true, Ordering::SeqCst)));
+
+        assert_eq!(m.cancel_job(&id), CancelOutcome::HookRan);
+        assert!(fired.load(Ordering::SeqCst), "the hook must run");
+        // Marked cancelled on the stream, and still tracked so the producer
+        // can report its own final state.
+        let event = m.get_progress(&id).expect("job still tracked");
+        assert_eq!(event.state, ProgressState::Cancelled);
+    }
+
+    #[test]
+    fn cancel_job_of_an_unknown_id_is_not_found() {
+        let m = ProgressManager::new();
+        assert_eq!(m.cancel_job("never-created"), CancelOutcome::NotFound);
+    }
+
+    #[test]
+    fn cancel_job_without_a_hook_still_drops_the_job() {
+        let m = ProgressManager::new();
+        let id = m.create_job(JobType::Backup, "start");
+        assert_eq!(m.cancel_job(&id), CancelOutcome::NoHook);
+        assert!(
+            m.get_progress(&id).is_none(),
+            "a hook-less job has nothing to stop — it is simply dropped"
+        );
+    }
+
+    #[test]
+    fn cancel_job_runs_the_hook_only_once() {
+        let m = ProgressManager::new();
+        let id = m.create_job(JobType::Backup, "start");
+
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&count);
+        m.register_cancel_hook(
+            &id,
+            Box::new(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+
+        assert_eq!(m.cancel_job(&id), CancelOutcome::HookRan);
+        assert_eq!(m.cancel_job(&id), CancelOutcome::NoHook);
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "a taken hook must not run twice"
+        );
+    }
+
+    #[test]
+    fn remove_job_drops_a_registered_hook() {
+        let m = ProgressManager::new();
+        let id = m.create_job(JobType::Backup, "start");
+
+        let fired = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&fired);
+        m.register_cancel_hook(&id, Box::new(move || flag.store(true, Ordering::SeqCst)));
+
+        m.remove_job(&id);
+        assert_eq!(m.cancel_job(&id), CancelOutcome::NotFound);
+        assert!(!fired.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn mark_cancelled_reports_unknown_jobs() {
+        let m = ProgressManager::new();
+        assert!(!m.mark_cancelled("nope", "Cancelled"));
+        let id = m.create_job(JobType::Backup, "start");
+        assert!(m.mark_cancelled(&id, "Cancelled"));
+        assert_eq!(m.get_progress(&id).unwrap().state, ProgressState::Cancelled);
     }
 }
