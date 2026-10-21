@@ -848,6 +848,38 @@ test.describe('5 — Profile / role / groups / quota / delete flows', () => {
   });
 });
 
+test('5.10b — a HomeVault account is flagged as deletable and not as a Linux account', async ({
+  page,
+  playwright,
+}) => {
+  // Regression guard for the host-account split: only a PAM-mirrored row is a
+  // "Linux account" (badge, deletion refused); a HomeVault-created account
+  // must show no badge, keep its Delete button enabled, and say that deleting
+  // it also removes the Linux user it may own.
+  const ctx = await newCtx(playwright);
+  const target = await createUser(ctx, adminHeaders, { fullname: 'Host Badge Check' });
+  try {
+    await gotoUsers(page, adminTokens);
+    await win(page).locator('[data-testid="users-tile"]', { hasText: target.username }).click();
+
+    await expect(
+      win(page).locator('[data-testid="users-host-badge"]'),
+    ).toHaveCount(0);
+    await expect(
+      win(page).locator('[data-testid="users-host-delete-hint"]'),
+    ).toHaveCount(0);
+    await expect(
+      win(page).getByText('Deleting this account also removes its Linux user.'),
+    ).toBeVisible();
+    await expect(
+      win(page).getByRole('button', { name: 'Delete', exact: true }),
+    ).toBeEnabled();
+  } finally {
+    await deleteUser(ctx, adminHeaders, target.username);
+    await ctx.dispose();
+  }
+});
+
 test.describe('5 — Self password change logs the session out', () => {
   let ctx: APIRequestContext;
   let self: Tokens;

@@ -249,3 +249,259 @@ fn configure_sudoers_produces_a_visudo_valid_file() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Host account lifecycle (2026-10-21)
+//
+// `HostAccountService` is what makes a HomeVault role change / password change
+// / lock / delete actually reach the Linux account. None of it can run in the
+// normal test suite (every command needs root), so the real effects are pinned
+// here, on a disposable machine:
+//
+//   sudo -E cargo test --test login_pam_integration -- --ignored --nocapture
+// ---------------------------------------------------------------------------
+
+use homevault::host_accounts::{HostAccountService, HOST_ADMIN_GROUPS};
+
+/// The account's supplementary groups, as `id -nG` reports them.
+fn host_groups(name: &str) -> Vec<String> {
+    Command::new("id")
+        .args(["-nG", name])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `passwd -S` status letter: `L` locked, `P` usable password.
+fn password_status(name: &str) -> String {
+    Command::new("passwd")
+        .args(["-S", name])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or("")
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+#[ignore = "needs root + useradd/usermod/gpasswd"]
+async fn grant_admin_provisions_the_account_and_every_admin_group() {
+    if !is_root() {
+        eprintln!("skipping: not root");
+        return;
+    }
+    // The reserved group is created at startup by `ensure_admin_group`; make
+    // sure it is there for this standalone test.
+    let _ = Command::new("groupadd").arg("homevault_admin").status();
+
+    let user = "hv_acct_grant";
+    let _ = Command::new("userdel").args(["-r", user]).status();
+
+    HostAccountService::grant_admin(user)
+        .await
+        .expect("grant_admin should provision the account");
+
+    assert!(
+        Command::new("id")
+            .arg(user)
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "the Linux account must exist"
+    );
+    let groups = host_groups(user);
+    assert!(
+        groups.iter().any(|g| g == "homevault_admin"),
+        "expected homevault_admin, got {groups:?}"
+    );
+    for group in HOST_ADMIN_GROUPS {
+        let exists = Command::new("getent")
+            .args(["group", group])
+            .output()
+            .unwrap()
+            .status
+            .success();
+        if exists {
+            assert!(
+                groups.iter().any(|g| g == group),
+                "expected membership in '{}', got {groups:?}",
+                group
+            );
+        }
+    }
+
+    delete_linux_user(user);
+}
+
+#[tokio::test]
+#[ignore = "needs root + useradd/usermod/gpasswd"]
+async fn revoke_admin_clears_every_admin_group() {
+    if !is_root() {
+        eprintln!("skipping: not root");
+        return;
+    }
+    let _ = Command::new("groupadd").arg("homevault_admin").status();
+    let user = "hv_acct_revoke";
+    if !create_linux_user(user, "Hv-Pam-Pass-123") {
+        eprintln!("skipping: could not create the test account");
+        return;
+    }
+    for group in HOST_ADMIN_GROUPS {
+        let _ = Command::new("usermod").args(["-aG", group, user]).status();
+    }
+
+    HostAccountService::revoke_admin(user)
+        .await
+        .expect("revoke_admin");
+
+    let groups = host_groups(user);
+    for group in HOST_ADMIN_GROUPS {
+        assert!(
+            !groups.iter().any(|g| g == group),
+            "'{}' must be revoked, still in {groups:?}",
+            group
+        );
+    }
+
+    delete_linux_user(user);
+}
+
+#[tokio::test]
+#[ignore = "needs root + PAM + useradd/chpasswd"]
+async fn set_password_rotates_the_host_credential() {
+    if !is_root() || !python_pam_available() {
+        eprintln!("skipping: not root or PAM module missing");
+        return;
+    }
+    let user = "hv_acct_passwd";
+    let old_pass = "Hv-Pam-Pass-123";
+    let new_pass = "Hv-Pam-Pass-456";
+    if !create_linux_user(user, old_pass) {
+        eprintln!("skipping: could not create the test account");
+        return;
+    }
+
+    HostAccountService::set_password(user, new_pass)
+        .await
+        .expect("set_password");
+
+    let auth = in_memory_auth().await;
+    assert!(
+        matches!(
+            auth.authenticate(user, new_pass, "127.0.0.1", None).await,
+            Ok(true)
+        ),
+        "the new host password must work"
+    );
+    assert!(
+        auth.authenticate(user, old_pass, "127.0.0.1", None)
+            .await
+            .is_err(),
+        "the old host password must stop working"
+    );
+
+    delete_linux_user(user);
+}
+
+#[tokio::test]
+#[ignore = "needs root + useradd/usermod"]
+async fn set_locked_locks_and_unlocks_the_host_credential() {
+    if !is_root() {
+        eprintln!("skipping: not root");
+        return;
+    }
+    let user = "hv_acct_lock";
+    if !create_linux_user(user, "Hv-Pam-Pass-123") {
+        eprintln!("skipping: could not create the test account");
+        return;
+    }
+    assert_eq!(password_status(user), "P", "precondition: usable password");
+
+    HostAccountService::set_locked(user, true)
+        .await
+        .expect("lock");
+    assert_eq!(
+        password_status(user),
+        "L",
+        "the host password must be locked"
+    );
+
+    HostAccountService::set_locked(user, false)
+        .await
+        .expect("unlock");
+    assert_eq!(
+        password_status(user),
+        "P",
+        "the host password must be usable again"
+    );
+
+    delete_linux_user(user);
+}
+
+#[tokio::test]
+#[ignore = "needs root + useradd/userdel"]
+async fn delete_account_removes_the_linux_account_but_keeps_its_home() {
+    if !is_root() {
+        eprintln!("skipping: not root");
+        return;
+    }
+    let user = "hv_acct_delete";
+    if !create_linux_user(user, "Hv-Pam-Pass-123") {
+        eprintln!("skipping: could not create the test account");
+        return;
+    }
+    let home = std::path::Path::new("/home").join(user);
+    assert!(home.exists(), "precondition: useradd -m created a home");
+
+    HostAccountService::delete_account(user)
+        .await
+        .expect("delete_account");
+
+    assert!(
+        !Command::new("id")
+            .arg(user)
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "the Linux account must be gone"
+    );
+    // Home removal is the caller's explicit `delete_home_folder` choice, so
+    // the account deletion itself must leave the files alone.
+    assert!(home.exists(), "the home directory must be kept");
+
+    let _ = Command::new("rm")
+        .args(["-rf", home.to_str().unwrap()])
+        .status();
+}
+
+#[tokio::test]
+#[ignore = "needs root + useradd"]
+async fn delete_account_refuses_a_system_account() {
+    if !is_root() {
+        eprintln!("skipping: not root");
+        return;
+    }
+    // `nobody` exists everywhere and must never be deletable from the app.
+    let err = HostAccountService::delete_account("nobody")
+        .await
+        .expect_err("deleting a system account must be refused");
+    assert!(matches!(
+        err,
+        homevault::host_accounts::HostAccountError::SystemAccount(_)
+    ));
+}

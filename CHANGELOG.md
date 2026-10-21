@@ -150,6 +150,66 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Users/Groups production-ready pass (2026-10-21) — deleting an account now
+  really removes it, and demoting an admin really demotes it.**
+
+  A HomeVault account can be backed by a real Linux account (a PAM sign-in
+  mirrors one; an admin promotion provisions one). Nothing ever touched that
+  host half, which produced four holes:
+
+  1. **`DELETE /users/{u}` left a working login.** Only the row was dropped, so
+     a deleted admin kept its Linux login *and* — admin status is derived from
+     `homevault_admin` membership — a working HomeVault **admin** login that
+     the next PAM sign-in silently recreated. The handler now runs `userdel`
+     **before** the row delete, so a refusal (account still logged in, no
+     privileges) aborts with a clear message and leaves both sides consistent
+     and retryable. A PAM-mirrored row whose Linux account still exists is
+     refused (`400`, message names the command) because HomeVault did not
+     create that account; if the Linux account is already gone the stale row
+     *can* be removed, so the page stays cleanable.
+  2. **Demotion left real sudo.** `PUT /users/{u}/role` cleared only
+     `homevault_admin`; `sudo`/`wheel` stayed, and the demoted session kept the
+     `is_admin` flag it was created with (up to 30 days with "remember me").
+     `HostAccountService::revoke_admin` clears all three **before** the
+     `role_id` write, `AuthService::update_role` signs the demoted account out,
+     and `AuthService::get_session` re-derives `is_admin` from the current role
+     on every call.
+  3. **Locking left the host password usable** — SSH and the web terminal
+     ignored the DB flag. `usermod -L` / `-U` now mirrors lock/unlock.
+  4. **A password reset was a no-op for a PAM-mirrored account** (its hash is
+     the PAM sentinel, so the old host password kept working). The new secret
+     is now pushed through `chpasswd` on **stdin** (never argv, which `ps`
+     would expose).
+
+  New module `src/host_accounts.rs` (`HostAccountService`) is the single entry
+  point for all of it: a username gate before any command
+  (`[A-Za-z_][A-Za-z0-9_-]{0,31}`, never a leading `-`), a system-account
+  refusal (`uid < 1000` or `>= 65534`), a 20 s `HOST_OP_TIMEOUT` on
+  `tokio::process` with `kill_on_drop`, and `userdel` deliberately without
+  `-r` (home removal follows the explicit `delete_home_folder` choice and the
+  path HomeVault recorded). The Users page shows a **Linux account** badge on
+  mirrored rows and disables Delete with an explanation (4 locales), and the
+  home-configuration row is now dropped with the account even when the files
+  are kept, so a recreated username inherits neither path nor quota.
+
+  Groups hardening in the same pass: a group member must be an existing
+  HomeVault user (`create_group`/`add_user_to_group` provision a Linux account
+  per member, so an unchecked name created an unmanaged OS account) — blank
+  names and >500 members are refused too; `DELETE /groups/{name}` now purges
+  **all four** display-name references (`hv_groups`, `transfer_quotas`,
+  `resource_group_shares` and — new — `share_permissions`, extracted as the
+  testable `purge_group_references`), matching what a rename migrates;
+  `GET /users/{u}/groups` is admin-or-self; and every handler call into
+  `GroupService` now goes through `crate::groups::run_group_op`
+  (`spawn_blocking`, 15 s ceiling) instead of blocking a Tokio worker — the
+  Users list resolves every row's `id -nG` in one hop instead of one per row.
+
+  Tests: `host_accounts` unit 14/14; `users_integration` 71 → 79;
+  `groups_integration` 34 → 38; `groups.rs` unit 5 → 9; `users.spec.ts` +5.10b.
+  The six real host effects are `#[ignore]`d root-only tests in
+  `tests/login_pam_integration.rs` (see the TESTING.md checklist) — they were
+  not run here (no disposable host account on the workstation).
+
 - **Rescue production-ready pass (2026-10-21).** Four classes of gap in the one
   app allowed to write to raw block devices:
 

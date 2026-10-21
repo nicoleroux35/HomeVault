@@ -29,6 +29,12 @@ pub const USER_ROLE_ID: i64 = 1;
 /// Role ID for an administrator.
 pub const ADMIN_ROLE_ID: i64 = 2;
 
+/// Sentinel `password_hash` for host (PAM) accounts mirrored into the `users`
+/// table. It is not a valid Argon2 PHC string, so `verify_password` can never
+/// accept it: these accounts authenticate through the host's PAM stack and are
+/// detected by this exact value (`User::is_host_mirror`).
+pub const PAM_PROVISIONED_HASH: &str = "!pam-provisioned";
+
 /// A registered user in the HomeVault system.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct User {
@@ -67,6 +73,14 @@ impl User {
     /// Returns `true` if this user has the admin role.
     pub fn is_admin(&self) -> bool {
         self.role_id == ADMIN_ROLE_ID
+    }
+
+    /// `true` when this row mirrors a host (Linux/PAM) account rather than a
+    /// HomeVault-created one. Such an account's credential lives in
+    /// `/etc/shadow`, and HomeVault must never delete it behind the admin's
+    /// back — see `handle_user_delete`.
+    pub fn is_host_mirror(&self) -> bool {
+        self.password_hash == PAM_PROVISIONED_HASH
     }
 
     /// `true` once the admin-set expiry horizon has passed. `None` (the

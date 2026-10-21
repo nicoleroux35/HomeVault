@@ -28,6 +28,37 @@ use thiserror::Error;
 /// Prefix used for all HomeVault-managed system groups to avoid naming collisions.
 pub const GROUP_PREFIX: &str = "homevault_";
 
+/// Hard ceiling for one group-management command. `getent` on a host with a
+/// slow NSS backend, or `groupadd` on a locked `/etc/group`, must never pin an
+/// HTTP request indefinitely.
+pub const GROUP_OP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Run a blocking group operation on the blocking pool, under a hard ceiling.
+///
+/// Every `GroupService` method shells out with `std::process::Command`, which
+/// blocks the calling thread for the whole command. Handlers used to call them
+/// straight from async code, so a hung `getent` (NSS/LDAP/SSSD) or `groupadd`
+/// stalled a Tokio worker and, with enough concurrent requests, the whole
+/// runtime. This is the single entry point handlers must use instead.
+pub async fn run_group_op<T, F>(op: &'static str, f: F) -> Result<T, GroupError>
+where
+    F: FnOnce() -> Result<T, GroupError> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::time::timeout(GROUP_OP_TIMEOUT, tokio::task::spawn_blocking(f)).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(join_error)) => Err(GroupError::CommandFailed(format!(
+            "{} worker failed: {}",
+            op, join_error
+        ))),
+        Err(_) => Err(GroupError::CommandFailed(format!(
+            "{} timed out after {}s",
+            op,
+            GROUP_OP_TIMEOUT.as_secs()
+        ))),
+    }
+}
+
 /// Errors that can occur during group management operations.
 #[derive(Error, Debug)]
 pub enum GroupError {
@@ -536,6 +567,57 @@ impl GroupService {
         let groups_output = String::from_utf8_lossy(&output.stdout);
         Ok(groups_output.contains(&full_group_name))
     }
+
+    /// Group memberships for several users in one call.
+    ///
+    /// The Users page shows a group list per row; resolving them one
+    /// `spawn_blocking` at a time from the handler would cost one blocking hop
+    /// per account. This keeps the whole listing in a single hop (one `id` per
+    /// user, as before).
+    pub fn get_users_groups(
+        usernames: &[String],
+    ) -> std::collections::HashMap<String, Vec<String>> {
+        usernames
+            .iter()
+            .map(|username| {
+                (
+                    username.clone(),
+                    Self::get_user_groups(username).unwrap_or_default(),
+                )
+            })
+            .collect()
+    }
+
+    /// Maximum number of members a single HomeVault group may hold.
+    pub const MAX_GROUP_MEMBERS: usize = 500;
+
+    /// Normalise a requested member list: trim, drop blanks, de-duplicate
+    /// (first occurrence wins) and enforce [`Self::MAX_GROUP_MEMBERS`].
+    ///
+    /// Shared by group creation and the Users page's membership sync, so both
+    /// reject the same nonsense with the same message instead of letting a
+    /// blank or duplicated name reach `usermod`.
+    pub fn normalize_member_list(members: &[String]) -> Result<Vec<String>, String> {
+        let mut normalized: Vec<String> = Vec::new();
+        for member in members {
+            let name = member.trim();
+            if name.is_empty() {
+                return Err("Member names cannot be empty".to_string());
+            }
+            if !normalized.iter().any(|existing| existing == name) {
+                normalized.push(name.to_string());
+            }
+        }
+
+        if normalized.len() > Self::MAX_GROUP_MEMBERS {
+            return Err(format!(
+                "A group cannot have more than {} members",
+                Self::MAX_GROUP_MEMBERS
+            ));
+        }
+
+        Ok(normalized)
+    }
 }
 
 #[cfg(test)]
@@ -594,5 +676,48 @@ mod tests {
             .map(GroupService::get_display_name)
             .collect();
         assert_eq!(groups, vec!["developers".to_string()]);
+    }
+
+    #[test]
+    fn test_normalize_member_list_trims_and_deduplicates() {
+        let members = vec![
+            " alice ".to_string(),
+            "bob".to_string(),
+            "alice".to_string(),
+            "bob".to_string(),
+        ];
+        assert_eq!(
+            GroupService::normalize_member_list(&members).unwrap(),
+            vec!["alice".to_string(), "bob".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_normalize_member_list_rejects_blank_names() {
+        // A blank name would otherwise reach `usermod -a -G <group> ""`.
+        assert!(GroupService::normalize_member_list(&["  ".to_string()]).is_err());
+        assert!(GroupService::normalize_member_list(&["".to_string()]).is_err());
+    }
+
+    #[test]
+    fn test_normalize_member_list_enforces_the_cap() {
+        let too_many: Vec<String> = (0..=GroupService::MAX_GROUP_MEMBERS)
+            .map(|i| format!("user{}", i))
+            .collect();
+        assert!(GroupService::normalize_member_list(&too_many).is_err());
+
+        let at_cap: Vec<String> = (0..GroupService::MAX_GROUP_MEMBERS)
+            .map(|i| format!("user{}", i))
+            .collect();
+        assert_eq!(
+            GroupService::normalize_member_list(&at_cap).unwrap().len(),
+            GroupService::MAX_GROUP_MEMBERS
+        );
+    }
+
+    #[test]
+    fn test_normalize_member_list_allows_an_empty_list() {
+        // Removing every member is a valid operation.
+        assert!(GroupService::normalize_member_list(&[]).unwrap().is_empty());
     }
 }

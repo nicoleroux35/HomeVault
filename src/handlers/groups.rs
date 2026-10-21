@@ -24,7 +24,10 @@
 //! Unix group management endpoints (list, create, delete, membership) on
 //! top of the host's groups via GroupService.
 
-use crate::groups::{AddMemberRequest, CreateGroupRequest, GroupService, UpdateGroupMetaRequest};
+use crate::groups::{
+    run_group_op, AddMemberRequest, CreateGroupRequest, GroupService, UpdateGroupMetaRequest,
+};
+use crate::handlers::admin_guard::{require_admin, require_auth};
 use crate::handlers::AppState;
 use crate::storage::database::ADMIN_GROUP_NAME;
 use crate::utils::ResponseHelper;
@@ -40,53 +43,29 @@ pub async fn handle_groups_list_users(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
+    if let Err(resp) = require_admin(&state, &headers).await {
+        return resp;
     }
 
-    match state.auth.get_session(session_token).await {
-        Ok(session) => {
-            if !session.is_admin {
-                return ResponseHelper::json_error("Admin access required".to_string());
-            }
-
-            match state.auth.get_all_users().await {
-                Ok(users) => {
-                    let list: Vec<_> = users.into_iter().map(|u| u.username).collect();
-                    ResponseHelper::json_success(list)
-                }
-                Err(e) => ResponseHelper::json_error(format!("Failed to list users: {}", e)),
-            }
+    match state.auth.get_all_users().await {
+        Ok(users) => {
+            let list: Vec<_> = users.into_iter().map(|u| u.username).collect();
+            ResponseHelper::json_success(list)
         }
-        Err(_) => ResponseHelper::json_unauthorized("Invalid session".to_string()),
+        Err(e) => ResponseHelper::json_error(format!("Failed to list users: {}", e)),
     }
 }
-
 /// Lists all system groups (read, admin, or any user).
 #[axum_macros::debug_handler]
 pub async fn handle_groups_list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
+    if let Err(resp) = require_auth(&state, &headers).await {
+        return resp;
     }
 
-    if state.auth.get_session(session_token).await.is_err() {
-        return ResponseHelper::json_unauthorized("Invalid session".to_string());
-    }
-
-    match GroupService::list_groups() {
+    match run_group_op("list groups", GroupService::list_groups).await {
         Ok(mut groups) => {
             // Descriptions live in the `hv_groups` mirror only (the OS group
             // database has no such field). A group created straight on the
@@ -105,7 +84,6 @@ pub async fn handle_groups_list(
         Err(e) => ResponseHelper::json_error(format!("Failed to list groups: {}", e)),
     }
 }
-
 /// Returns details of a single group by name.
 #[axum_macros::debug_handler]
 pub async fn handle_group_get(
@@ -113,25 +91,15 @@ pub async fn handle_group_get(
     Path(name): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
+    if let Err(resp) = require_auth(&state, &headers).await {
+        return resp;
     }
 
-    if state.auth.get_session(session_token).await.is_err() {
-        return ResponseHelper::json_unauthorized("Invalid session".to_string());
-    }
-
-    match GroupService::get_group(&name) {
+    match run_group_op("get group", move || GroupService::get_group(&name)).await {
         Ok(group) => ResponseHelper::json_success(group),
         Err(e) => ResponseHelper::json_error(format!("Group not found: {}", e)),
     }
 }
-
 /// Creates a new system group with the given members.
 #[axum_macros::debug_handler]
 pub async fn handle_group_create(
@@ -139,33 +107,41 @@ pub async fn handle_group_create(
     headers: HeaderMap,
     req: axum::extract::Json<CreateGroupRequest>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let admin_username = match state.auth.get_session(session_token).await {
-        Ok(session) => {
-            if !session.is_admin {
-                return ResponseHelper::json_error("Admin access required".to_string());
-            }
-            session.username
-        }
-        Err(_) => return ResponseHelper::json_unauthorized("Invalid session".to_string()),
+    let admin_username = match require_admin(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
     };
 
-    match GroupService::create_group(&req.name, &req.members) {
+    let members = match GroupService::normalize_member_list(&req.members) {
+        Ok(members) => members,
+        Err(e) => return ResponseHelper::json_error(e),
+    };
+
+    // Every member must be a real HomeVault account. `create_group` provisions
+    // a Linux account for each one, so an unchecked name would let a typo (or
+    // a deliberate request) create an OS account that has no HomeVault user
+    // behind it — and no way to manage it from this page.
+    for member in &members {
+        if !state.auth.user_exists(member).await {
+            return ResponseHelper::json_error(format!("User '{}' not found", member));
+        }
+    }
+
+    let name = req.name.trim().to_string();
+    let members_for_op = members.clone();
+    let outcome = run_group_op("create group", move || {
+        GroupService::create_group(&name, &members_for_op)
+    })
+    .await;
+
+    match outcome {
         Ok(group) => {
             // Mirror the group in `hv_groups` so it has a description slot and
             // a stable row for renames. Best-effort: the OS group already
             // exists and must not be rolled back over a mirror hiccup.
             let repo = crate::storage::group_repo::HvGroupRepository::new(state.db.pool());
             if let Err(e) = repo
-                .create(&req.name.trim(), req.description.as_deref())
+                .create(req.name.trim(), req.description.as_deref())
                 .await
             {
                 tracing::warn!(
@@ -184,7 +160,6 @@ pub async fn handle_group_create(
         Err(e) => ResponseHelper::json_error(format!("Failed to create group: {}", e)),
     }
 }
-
 /// Renames a group and/or sets its description (2026-10-20).
 ///
 /// A rename is not just `groupmod -n`: everything that keys on the group's
@@ -206,23 +181,9 @@ pub async fn handle_group_update(
     headers: HeaderMap,
     req: axum::extract::Json<UpdateGroupMetaRequest>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let admin_username = match state.auth.get_session(session_token).await {
-        Ok(session) => {
-            if !session.is_admin {
-                return ResponseHelper::json_error("Admin access required".to_string());
-            }
-            session.username
-        }
-        Err(_) => return ResponseHelper::json_unauthorized("Invalid session".to_string()),
+    let admin_username = match require_admin(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
     };
 
     let old_display = GroupService::get_display_name(&name);
@@ -233,8 +194,10 @@ pub async fn handle_group_update(
     // The group must exist on the host before anything is written: a
     // description-only call would otherwise create an `hv_groups` row for a
     // group that is not there (and then fail on the read-back).
-    if let Err(e) = GroupService::get_group(&old_display) {
-        return ResponseHelper::json_error(format!("Group not found: {}", e));
+    let lookup = old_display.clone();
+    match run_group_op("get group", move || GroupService::get_group(&lookup)).await {
+        Ok(_) => {}
+        Err(e) => return ResponseHelper::json_error(format!("Group not found: {}", e)),
     }
 
     let mut current_display = old_display.clone();
@@ -243,7 +206,13 @@ pub async fn handle_group_update(
     if let Some(target) = req.name.as_deref() {
         let target = target.trim();
         if !target.is_empty() && target != old_display {
-            match GroupService::rename_group(&old_display, target) {
+            let old_for_op = old_display.clone();
+            let new_for_op = target.to_string();
+            match run_group_op("rename group", move || {
+                GroupService::rename_group(&old_for_op, &new_for_op)
+            })
+            .await
+            {
                 Ok(_) => {
                     current_display = GroupService::get_display_name(target);
                     crate::events::log_event(format!(
@@ -345,12 +314,12 @@ pub async fn handle_group_update(
         }
     }
 
-    match GroupService::get_group(&current_display) {
+    let final_name = current_display.clone();
+    match run_group_op("get group", move || GroupService::get_group(&final_name)).await {
         Ok(group) => ResponseHelper::json_success(group),
         Err(e) => ResponseHelper::json_error(format!("Group not found: {}", e)),
     }
 }
-
 /// Deletes a group. The admin group is protected and cannot be removed.
 #[axum_macros::debug_handler]
 pub async fn handle_group_delete(
@@ -358,23 +327,9 @@ pub async fn handle_group_delete(
     Path(name): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let admin_username = match state.auth.get_session(session_token).await {
-        Ok(session) => {
-            if !session.is_admin {
-                return ResponseHelper::json_error("Admin access required".to_string());
-            }
-            session.username
-        }
-        Err(_) => return ResponseHelper::json_unauthorized("Invalid session".to_string()),
+    let admin_username = match require_admin(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
     };
 
     let full_group_name = GroupService::get_full_group_name(&name);
@@ -384,32 +339,28 @@ pub async fn handle_group_delete(
         return ResponseHelper::json_error("The admin group cannot be deleted".to_string());
     }
 
-    match GroupService::delete_group(&name) {
+    let name_for_op = name.clone();
+    match run_group_op("delete group", move || {
+        GroupService::delete_group(&name_for_op)
+    })
+    .await
+    {
         Ok(_) => {
-            // Clean up any configured transfer quota so a future group
-            // created with this same display name doesn't silently
-            // inherit a stale limit/usage from a completely different,
-            // deleted group.
-            let quota_repo =
-                crate::storage::transfer_quota_repo::TransferQuotaRepository::new(state.db.pool());
-            let _ = quota_repo.delete("group", &name).await;
-
-            // Same reasoning for the group's resource grants (migration 051):
-            // drop them with the group, otherwise a later group reusing the
-            // display name would inherit access nobody granted it.
-            let resource_repo =
-                crate::storage::resource_share_repo::ResourceShareRepository::new(state.db.pool());
-            let _ = resource_repo.revoke_all_for_group(&name).await;
-
-            // And the `hv_groups` mirror row, for the same reason: a stale
-            // description would otherwise reappear on a future group created
-            // with this display name.
-            // `hv_groups.name` holds the display name (no prefix), so
-            // normalise whatever the caller passed.
-            let group_repo = crate::storage::group_repo::HvGroupRepository::new(state.db.pool());
-            let _ = group_repo
-                .delete(&GroupService::get_display_name(&name))
-                .await;
+            // Every table that keys on the group's *display name* must follow
+            // the OS delete, or a later group created with the same name
+            // silently inherits the deleted one's access and settings.
+            if let Err(e) = purge_group_references(
+                state.db.pool().as_ref(),
+                &GroupService::get_display_name(&name),
+            )
+            .await
+            {
+                tracing::warn!(
+                    "Group '{}' deleted but some references could not be purged: {}",
+                    name,
+                    e
+                );
+            }
 
             crate::events::log_event_warn(format!(
                 "Admin '{}' deleted group '{}'",
@@ -421,6 +372,60 @@ pub async fn handle_group_delete(
     }
 }
 
+/// Drop every database reference keyed on a group's display name.
+///
+/// Runs after the OS delete in [`handle_group_delete`]. Split out so the
+/// cleanup itself is testable without a real `groupdel` (which needs root):
+///
+///   - `transfer_quotas` (`subject_type = 'group'`),
+///   - `resource_group_shares` (group-level resource grants, migration 051),
+///   - `share_permissions` (`grantee_type = 'group'`, the SMB/NFS ACL grants),
+///   - `hv_groups` (the description mirror).
+///
+/// A rename migrates the same four references (`handle_group_update`); this is
+/// the delete half of that invariant.
+pub async fn purge_group_references(
+    pool: &sqlx::SqlitePool,
+    display_name: &str,
+) -> Result<(), String> {
+    let mut failures: Vec<String> = Vec::new();
+
+    let quota_repo = crate::storage::transfer_quota_repo::TransferQuotaRepository::new(
+        std::sync::Arc::new(pool.clone()),
+    );
+    if let Err(e) = quota_repo.delete("group", display_name).await {
+        failures.push(format!("transfer_quotas: {}", e));
+    }
+
+    let resource_repo = crate::storage::resource_share_repo::ResourceShareRepository::new(
+        std::sync::Arc::new(pool.clone()),
+    );
+    if let Err(e) = resource_repo.revoke_all_for_group(display_name).await {
+        failures.push(format!("resource_group_shares: {}", e));
+    }
+
+    if let Err(e) = sqlx::query(
+        "DELETE FROM share_permissions WHERE grantee_type = 'group' AND grantee_name = ?",
+    )
+    .bind(display_name)
+    .execute(pool)
+    .await
+    {
+        failures.push(format!("share_permissions: {}", e));
+    }
+
+    let group_repo =
+        crate::storage::group_repo::HvGroupRepository::new(std::sync::Arc::new(pool.clone()));
+    if let Err(e) = group_repo.delete(display_name).await {
+        failures.push(format!("hv_groups: {}", e));
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
 /// Adds a user to a group. Admin-group membership requires admin role.
 #[axum_macros::debug_handler]
 pub async fn handle_group_add_member(
@@ -429,49 +434,38 @@ pub async fn handle_group_add_member(
     headers: HeaderMap,
     req: axum::extract::Json<AddMemberRequest>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    // Every caller needs a real, valid admin session — not just the
-    // admin-group branch below. This mirrors handle_group_remove_member's
-    // bar; previously this check only ran for the admin group, so a
-    // non-empty-but-invalid token could add a user to any other group.
-    let admin_username = match state.auth.get_session(session_token).await {
-        Ok(session) => {
-            if !session.is_admin {
-                return ResponseHelper::json_error("Admin access required".to_string());
-            }
-            session.username
-        }
-        Err(_) => return ResponseHelper::json_unauthorized("Invalid session".to_string()),
+    let admin_username = match require_admin(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
     };
 
-    let username = &req.username;
+    let username = req.username.trim().to_string();
+    if username.is_empty() {
+        return ResponseHelper::json_error("Username cannot be empty".to_string());
+    }
+
+    // The member must be a HomeVault account: adding an arbitrary name would
+    // provision a Linux account (`ensure_linux_user`) with no user behind it.
+    if !state.auth.user_exists(&username).await {
+        return ResponseHelper::json_error(format!("User '{}' not found", username));
+    }
+
     let full_group_name = GroupService::get_full_group_name(&group_name);
 
-    if full_group_name == ADMIN_GROUP_NAME {
-        let is_admin = state.auth.is_admin(username).await;
-        if !is_admin {
-            return ResponseHelper::json_error(
-                "Only users with admin role can be added to the admin group".to_string(),
-            );
-        }
+    if full_group_name == ADMIN_GROUP_NAME && !state.auth.is_admin(&username).await {
+        return ResponseHelper::json_error(
+            "Only users with admin role can be added to the admin group".to_string(),
+        );
     }
 
-    if let Err(e) = GroupService::ensure_linux_user(username) {
-        return ResponseHelper::json_error(format!(
-            "Failed to provision Linux account for '{}': {}",
-            username, e
-        ));
-    }
-
-    match GroupService::add_user_to_group(username, &group_name) {
+    let group_for_op = group_name.clone();
+    let user_for_op = username.clone();
+    match run_group_op("add group member", move || {
+        GroupService::ensure_linux_user(&user_for_op)?;
+        GroupService::add_user_to_group(&user_for_op, &group_for_op)
+    })
+    .await
+    {
         Ok(_) => {
             crate::events::log_event(format!(
                 "Admin '{}' added user '{}' to group '{}'",
@@ -482,7 +476,6 @@ pub async fn handle_group_add_member(
         Err(e) => ResponseHelper::json_error(format!("Failed to add user to group: {}", e)),
     }
 }
-
 /// Removes a user from a group (admin only).
 #[axum_macros::debug_handler]
 pub async fn handle_group_remove_member(
@@ -490,44 +483,35 @@ pub async fn handle_group_remove_member(
     Path((group_name, username)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let admin_username = match state.auth.get_session(session_token).await {
-        Ok(session) => {
-            if !session.is_admin {
-                return ResponseHelper::json_error("Admin access required".to_string());
-            }
-            session.username
-        }
-        Err(_) => return ResponseHelper::json_unauthorized("Invalid session".to_string()),
+    let admin_username = match require_admin(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
     };
 
     let full_group_name = GroupService::get_full_group_name(&group_name);
 
     // Admin-group membership is derived from each user's DB role_id (see
-    // handle_user_update_role's sync_admin_user_to_group call, which is the
-    // only path that ever *adds* someone here) and handle_group_add_member
-    // above already refuses to add anyone who isn't already a DB admin.
-    // Removing directly through this generic endpoint would strip real host
-    // sudo while leaving the DB role (and therefore the Users page's admin
-    // badge and the user's own session privileges) unchanged, permanently
-    // desyncing the two pages with none of handle_user_update_role's
-    // last-admin/self-demotion protections. Demote via the Users page's
-    // role toggle instead, which keeps both in sync.
+    // handle_user_update_role's sync, which is the only path that ever *adds*
+    // someone here) and handle_group_add_member above already refuses to add
+    // anyone who isn't already a DB admin. Removing directly through this
+    // generic endpoint would strip real host sudo while leaving the DB role
+    // (and therefore the Users page's admin badge and the user's own session
+    // privileges) unchanged, permanently desyncing the two pages with none of
+    // handle_user_update_role's last-admin/self-demotion protections. Demote
+    // via the Users page's role toggle instead, which keeps both in sync.
     if full_group_name == ADMIN_GROUP_NAME {
         return ResponseHelper::json_error(
             "Cannot remove a member from the admin group here — change their role from the Users page instead".to_string(),
         );
     }
 
-    match GroupService::remove_user_from_group(&username, &group_name) {
+    let group_for_op = group_name.clone();
+    let user_for_op = username.clone();
+    match run_group_op("remove group member", move || {
+        GroupService::remove_user_from_group(&user_for_op, &group_for_op)
+    })
+    .await
+    {
         Ok(_) => {
             crate::events::log_event(format!(
                 "Admin '{}' removed user '{}' from group '{}'",
@@ -538,7 +522,6 @@ pub async fn handle_group_remove_member(
         Err(e) => ResponseHelper::json_error(format!("Failed to remove user from group: {}", e)),
     }
 }
-
 /// Returns the group names a given user belongs to.
 #[axum_macros::debug_handler]
 pub async fn handle_user_groups(
@@ -546,20 +529,25 @@ pub async fn handle_user_groups(
     Path(username): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
+    let caller = match require_auth(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
 
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
+    // A member's group list is only theirs to read: another account's
+    // memberships are an admin concern (`require_admin`), matching the rest of
+    // this module. Listing the groups themselves stays open to any signed-in
+    // user (`handle_groups_list`).
+    if caller != username && !state.auth.is_admin(&caller).await {
+        return ResponseHelper::json_forbidden("Access denied".to_string());
     }
 
-    if state.auth.get_session(session_token).await.is_err() {
-        return ResponseHelper::json_unauthorized("Invalid session".to_string());
-    }
-
-    match GroupService::get_user_groups(&username) {
+    let lookup = username.clone();
+    match run_group_op("list user groups", move || {
+        GroupService::get_user_groups(&lookup)
+    })
+    .await
+    {
         Ok(groups) => ResponseHelper::json_success(groups),
         Err(e) => ResponseHelper::json_error(format!("Failed to get user groups: {}", e)),
     }
