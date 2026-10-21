@@ -901,6 +901,93 @@ fn netplan_dir() -> &'static std::path::Path {
     std::path::Path::new("/etc/netplan")
 }
 
+/// True when the netplan CLI actually exists. `/etc/netplan` alone is not a
+/// guarantee: a Debian host can carry a leftover empty directory with no
+/// netplan.io package, and the reconcile would then spawn-fail and pointlessly
+/// roll back instead of reporting "no persistence backend".
+fn netplan_available() -> bool {
+    ["/usr/sbin/netplan", "/usr/bin/netplan"]
+        .iter()
+        .any(|p| std::path::Path::new(p).exists())
+}
+
+/// The absolute path of the netplan file HomeVault owns for `name`.
+fn netplan_path(name: &str) -> String {
+    format!(
+        "{}/{}",
+        netplan_dir().to_str().unwrap_or("/etc/netplan"),
+        netplan_file_name(name)
+    )
+}
+
+/// Restore netplan's own mode expectation on a file we just wrote or restored
+/// (`write_as_root`/`tee` re-creates it with the process umask, typically 644;
+/// netplan warns on files open to group/other). Best-effort on every caller —
+/// a failed chmod must never poison a successful write/restore.
+fn chmod_netplan_file(path: &str) {
+    let _ = ip_sudo("chmod")
+        .args(["600", path])
+        .output()
+        .map_err(|e| e.to_string());
+}
+
+/// Read a root-owned file via `sudo cat`, mirroring `write_as_root` (the
+/// legacy unprivileged-service mode cannot read `/etc/netplan`'s 600 files;
+/// the root systemd service routes through sudo transparently). `path` is
+/// built from an interface name already validated against the live list.
+fn read_as_root(path: &str) -> Result<String, String> {
+    let out = Command::new("sudo")
+        .args(["cat", path])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(format!(
+            "failed to read {}: {}",
+            path,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Delete one root-owned file via `sudo rm -f` (rollback of our own file when
+/// no previous snapshot existed; scoped to the 99-homevault glob in the
+/// sudoers for the legacy unprivileged mode).
+fn remove_netplan_file(name: &str) -> Result<(), String> {
+    let path = netplan_path(name);
+    let out = Command::new("sudo")
+        .args(["rm", "-f", &path])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(format!(
+            "failed to remove {}: {}",
+            path,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+/// Run `netplan apply` — the step that makes the just-written file drive
+/// systemd-networkd / NetworkManager instead of sitting idle until the next
+/// reboot.
+fn netplan_apply() -> Result<(), String> {
+    let output = ip_sudo("netplan")
+        .args(["apply"])
+        .output()
+        .map_err(|e| format!("netplan could not be run: {}", e))?;
+    if !output.status.success() {
+        return Err(format!(
+            "netplan apply failed (exit {}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    tracing::info!("netplan apply re-asserted the persisted network configuration");
+    Ok(())
+}
+
 /// ifupdown's include directory that `/etc/network/interfaces` sources.
 const IFUPDOWN_DIR: &str = "/etc/network/interfaces.d";
 
@@ -908,10 +995,14 @@ const IFUPDOWN_DIR: &str = "/etc/network/interfaces.d";
 /// Called by the config handler AFTER `apply_interface_config` succeeded: a
 /// persistence failure must not flip the mutation into an error, it is
 /// reported so the operator knows the change is temporary.
+///
+/// On the netplan backend the write returns a `PersistedChange` carrying the
+/// pre-change snapshot of our own file — the rollback source for
+/// `apply_persisted_config`, which the handler runs immediately after.
 pub fn persist_interface_config(
     name: &str,
     config: &InterfaceConfig,
-) -> Result<&'static str, String> {
+) -> Result<PersistedChange, String> {
     // Same gate as the applier: the name is interpolated into file paths and
     // YAML keys below, so only a real interface (validated against the live
     // list) may reach this point.
@@ -919,21 +1010,22 @@ pub fn persist_interface_config(
         return Err(format!("Unknown network interface: {}", name));
     }
 
-    // Backend 1 — netplan (write mode 600, netplan's own expectation).
-    if netplan_dir().is_dir() {
+    // Backend 1 — netplan (write mode 600, netplan's own expectation). The
+    // CLI must exist too: a leftover empty /etc/netplan without the package
+    // is not a usable backend.
+    if netplan_dir().is_dir() && netplan_available() {
+        // Snapshot the file WE own for this interface before overwriting it.
+        // It becomes unreadable directly (600 root) after the first write,
+        // hence via `sudo cat`.
+        let previous_netplan = read_netplan_file(name);
         let yaml = render_netplan_yaml(name, config, netplan_renderer(netplan_dir()));
-        let path = format!(
-            "{}/{}",
-            netplan_dir().to_str().unwrap_or("/etc/netplan"),
-            netplan_file_name(name)
-        );
-        write_as_root(&path, &yaml)?;
+        write_as_root(&netplan_path(name), &yaml)?;
         // `write_as_root` does not set the mode; enforce it explicitly.
-        let _ = ip_sudo("chmod")
-            .args(["600", &path])
-            .output()
-            .map_err(|e| e.to_string())?;
-        return Ok("netplan");
+        chmod_netplan_file(&netplan_path(name));
+        return Ok(PersistedChange {
+            backend: "netplan",
+            previous_netplan,
+        });
     }
 
     // Backend 2 — ifupdown (only when the include dir actually exists AND
@@ -948,10 +1040,47 @@ pub fn persist_interface_config(
         let stanza = render_ifupdown_stanza(name, config);
         let path = format!("{}/homevault-{}", IFUPDOWN_DIR, name);
         write_as_root(&path, &stanza)?;
-        return Ok("ifupdown");
+        return Ok(PersistedChange {
+            backend: "ifupdown",
+            previous_netplan: None,
+        });
     }
 
     Err("No supported persistence backend found (neither netplan nor ifupdown)".to_string())
+}
+
+/// The write result of `persist_interface_config`: which backend took the
+/// write, plus the pre-change snapshot of our own netplan file for the
+/// rollback path of `apply_persisted_config`.
+pub struct PersistedChange {
+    /// Backend that accepted the write: `"netplan"` or `"ifupdown"`.
+    pub backend: &'static str,
+    /// The previous `99-homevault-<name>.yaml` content, when one existed.
+    /// `None` means either a first-ever persist (nothing to restore) or an
+    /// unreadable snapshot — a rollback then deletes the file instead, which
+    /// hands the interface back to the distro's default configuration.
+    pub previous_netplan: Option<String>,
+}
+
+/// Snapshot our own netplan file for `name`, tolerating both "not there yet"
+/// (first persist) and an unreadable snapshot (warn + continue: the rollback
+/// then deletes instead of restoring). The content is netplan YAML rendered
+/// by this module earlier — never a secret store (no keys or PSKs live in
+/// these files).
+fn read_netplan_file(name: &str) -> Option<String> {
+    match read_as_root(&netplan_path(name)) {
+        Ok(content) => Some(content),
+        Err(e) => {
+            if !e.contains("No such file") {
+                tracing::warn!(
+                    "could not snapshot the previous netplan file for '{}': {} (rollback will delete it instead of restoring)",
+                    name,
+                    e
+                );
+            }
+            None
+        }
+    }
 }
 
 /// Render the ifupdown stanza for one interface (backend 2). Pure so it is
@@ -1012,6 +1141,273 @@ fn render_ifupdown_stanza(name: &str, config: &InterfaceConfig) -> String {
         Some(Ipv6Method::Disabled) | None => {}
     }
     s
+}
+
+// ---------------------------------------------------------------------------
+// Applied, verified, rolled back (2026-10-21)
+//
+// `persist_interface_config` above only WRITES the netplan file; until now
+// the persisted config was never applied — the live state had been put on
+// the wire by hand one step earlier, and `netplan apply` right after would
+// tear the interface down under the admin's own session, so runtime and
+// boot state were allowed to differ by one re-apply cycle. The admin could
+// therefore never see, in the same session, whether the persisted file is
+// actually loadable and equivalent to what is on the wire.
+//
+// `apply_persisted_config` closes that gap with the production pattern:
+//
+//   1. `sudo netplan apply` — with our file just written, the renderer only
+//      re-asserts the exact settings the live step already put in place.
+//   2. VERIFY the wire actually converged (static address present, default
+//      route via the configured gateway, static IPv6 present) with a 10 s
+//      polling grace — `netplan apply` returns after dispatching to
+//      systemd-networkd/NetworkManager, but the addresses settle
+//      asynchronously.
+//   3. On any failure: ROLLBACK both halves — restore the previous netplan
+//      file (or delete ours when none existed) and re-assert the previous
+//      live configuration, so the operator session that drove the change
+//      never loses connectivity — then a plain error naming what failed.
+//
+// Only the netplan backend is reconciled: an ifupdown stanza is applied by
+// `ifup` at boot, and an `ifdown`/`ifup` pair would tear the interface down
+// under the operator exactly like the netplan concern this closes — the
+// original write-only reasoning, kept where the live apply genuinely is the
+// boot path.
+// ---------------------------------------------------------------------------
+
+/// Grace window for the renderer to converge before the verification gives
+/// up and rolls everything back.
+const VERIFY_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+/// Poll cadence inside `VERIFY_GRACE`.
+const VERIFY_STEP: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The two `ip … route show default` outputs (v4, v6), captured once per
+/// verification round by the caller and fed to the pure verdict below.
+struct LiveRoutes<'a> {
+    v4: &'a str,
+    v6: &'a str,
+}
+
+/// Pure post-apply verdict — does the live reading satisfy what the netplan
+/// file claims to persist? Each failing check names exactly what moved, so
+/// the error the operator sees is diagnostic, not generic.
+fn check_live_state_matches(
+    iface_up: bool,
+    live_ipv4: Option<&str>,
+    live_ipv6_global: &[&str],
+    routes: &LiveRoutes<'_>,
+    config: &InterfaceConfig,
+) -> Result<(), String> {
+    // The interface vanishing (renderer erased it, config kicked it out) is
+    // the session-killing case this reconcile defends against — verdict
+    // first.
+    if !iface_up {
+        return Err("the interface went down".to_string());
+    }
+
+    // IPv4 — static demands exactly the persisted address; DHCP demands any
+    // global address at all (the wire must converge to *a* lease or the
+    // admin's change visibly failed to take effect).
+    match (&config.method, &config.ip) {
+        (IpMethod::Static, Some(ip)) => {
+            if live_ipv4 != Some(ip.as_str()) {
+                return Err(format!(
+                    "the static IPv4 address {} is not on the interface",
+                    ip
+                ));
+            }
+        }
+        (IpMethod::Static, None) => {}
+        (IpMethod::Dhcp, _) => {
+            if live_ipv4.is_none() {
+                return Err("no IPv4 address after the DHCP re-apply".to_string());
+            }
+        }
+    }
+
+    // Default route — checked only when a gateway was part of the change.
+    // Any line carrying `via <gw>` counts, so multi-default-route hosts stay
+    // verifiable; the needle never matches another interface's gateway.
+    if config.method == IpMethod::Static {
+        if let Some(gw) = &config.gateway {
+            let needle = format!("via {}", gw);
+            if !routes.v4.split('\n').any(|l| l.trim().contains(&needle)) {
+                return Err(format!("the default route via {} is missing", gw));
+            }
+        }
+    }
+
+    // Static IPv6 — exact `addr/prefix` presence. `Auto`/`Dhcp`/`Disabled`
+    // are not verified: SLAAC leftovers make "absence" unreadable at the
+    // wire level, and none of the three owns a static address to check.
+    if config.ipv6_method == Some(Ipv6Method::Static) {
+        if let Some(v6) = &config.ipv6 {
+            let expected = format!("{}/{}", v6, config.ipv6_prefix.unwrap_or(64));
+            if !live_ipv6_global.iter().any(|a| *a == expected) {
+                return Err(format!(
+                    "the static IPv6 address {} is not on the interface",
+                    expected
+                ));
+            }
+        }
+        if let Some(gw) = &config.ipv6_gateway {
+            let needle = format!("via {}", gw);
+            if !routes.v6.split('\n').any(|l| l.trim().contains(&needle)) {
+                return Err(format!("the default IPv6 route via {} is missing", gw));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Undo BOTH halves of a netplan change: put our netplan file back to the
+/// pre-change content (delete it when no snapshot existed) and re-assert the
+/// previous live configuration. Every step is best-effort and logged — the
+/// wire restore below is what keeps the operator session alive.
+fn rollback_netplan_change(
+    name: &str,
+    previous_config: &InterfaceConfig,
+    previous_netplan: Option<&String>,
+) {
+    let restore = match previous_netplan {
+        Some(yaml) => {
+            let r = write_as_root(&netplan_path(name), yaml);
+            chmod_netplan_file(&netplan_path(name));
+            r
+        }
+        None => remove_netplan_file(name),
+    };
+    if let Err(e) = restore {
+        tracing::warn!(
+            "network rollback for '{}': could not restore the netplan file: {}",
+            name,
+            e
+        );
+    }
+    if let Err(e) = netplan_apply() {
+        tracing::warn!(
+            "network rollback for '{}': netplan apply on the restored file failed: {}",
+            name,
+            e
+        );
+    }
+    // Live half — put back what the operator saw before the change, i.e. the
+    // address their session is talking over.
+    if let Err(e) = apply_interface_config(name, previous_config) {
+        tracing::warn!(
+            "network rollback for '{}': could not re-apply the previous live configuration: {}",
+            name,
+            e
+        );
+    }
+}
+
+/// Apply the just-persisted netplan file and verify the wire converged; on
+/// any failure roll back and return a plain error (the handler turns it into
+/// the API error answer — `success:false` — only AFTER the live state has
+/// been restored for real).
+///
+/// No-op for the ifupdown backend (applied by `ifup` at boot, see the
+/// section comment) and for hosts without a netplan directory (the write
+/// side guarantees the `"netplan"` backend only ever comes back when
+/// `/etc/netplan` existed). `previous_config` is the capture
+/// `get_interface_config` made BEFORE the live apply — the rollback target.
+///
+/// Deliberately blocking: it shells out to `netplan`/`ip` and polls for up
+/// to `VERIFY_GRACE` seconds. The handler wraps everything in
+/// `spawn_blocking`.
+pub fn apply_persisted_config(
+    name: &str,
+    config: &InterfaceConfig,
+    change: &PersistedChange,
+    previous_config: &InterfaceConfig,
+) -> Result<(), String> {
+    if change.backend != "netplan" || !netplan_dir().is_dir() || !netplan_available() {
+        return Ok(());
+    }
+
+    let name_owned = name.to_string();
+    let verify = |config: &InterfaceConfig| -> Result<(), String> {
+        let start = std::time::Instant::now();
+        loop {
+            let routes = read_route_tables();
+            let iface_status = read_interface_status(&name_owned);
+            let (live_ipv4, _) = read_interface_ip(&name_owned);
+            let live_ipv6 = read_all_ipv6_addresses(&name_owned);
+            match check_live_state_matches(
+                iface_status == InterfaceStatus::Up,
+                live_ipv4.as_deref(),
+                &live_ipv6.iter().map(String::as_str).collect::<Vec<_>>(),
+                &LiveRoutes {
+                    v4: &routes.0,
+                    v6: &routes.1,
+                },
+                config,
+            ) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    if start.elapsed() >= VERIFY_GRACE {
+                        return Err(e);
+                    }
+                    std::thread::sleep(VERIFY_STEP);
+                }
+            }
+        }
+    };
+
+    let apply_result = netplan_apply();
+    let verify_result = match apply_result {
+        Err(_) => Ok(()), // apply already failed; the rollback below is unified
+        Ok(()) => verify(config),
+    };
+
+    match (apply_result, verify_result) {
+        (Ok(()), Ok(())) => {
+            tracing::info!(
+                "netplan reconcile for '{}' verified: the persisted configuration is on the wire",
+                name
+            );
+            Ok(())
+        }
+        (apply_result, verify_result) => {
+            let detail = match (apply_result, verify_result) {
+                (Err(e), _) => e,
+                (Ok(()), Err(e)) => format!("post-apply verification failed: {}", e),
+                _ => "unknown".to_string(),
+            };
+            tracing::warn!(
+                "netplan reconcile for '{}' failed ({}); rolling back to the pre-change configuration",
+                name,
+                detail
+            );
+            rollback_netplan_change(name, previous_config, change.previous_netplan.as_ref());
+            Err(format!(
+                "netplan apply failed for {} ({}). Every change was rolled back — the previous configuration is on the wire again; nothing was persisted.",
+                name, detail
+            ))
+        }
+    }
+}
+
+/// Read the two default-route tables once per verification round (empty
+/// output when `ip` fails — the verdict then fails its route checks and the
+/// polling continues until the grace window expires).
+fn read_route_tables() -> (String, String) {
+    fn stdout_of(args: &[&str]) -> String {
+        Command::new("ip")
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default()
+    }
+    (
+        stdout_of(&["route", "show", "default"]),
+        // `ip -6 …` — the `-6` flag goes first, route/show/default follow.
+        stdout_of(&["-6", "route", "show", "default"]),
+    )
 }
 
 /// Read current interface configuration.
@@ -2221,5 +2617,120 @@ mod tests {
         c.ipv6_method = Some(Ipv6Method::Disabled);
         let s = render_ifupdown_stanza("eth0", &c);
         assert!(!s.contains("inet6"));
+    }
+
+    // -- check_live_state_matches (apply-verify-rollback verdict) ----------
+
+    fn routes_v4(body: &str) -> LiveRoutes<'_> {
+        LiveRoutes { v4: body, v6: "" }
+    }
+
+    #[test]
+    fn test_check_live_state_matches_static_happy_path() {
+        let routes = routes_v4("default via 10.0.0.1 dev eth0 metric 100");
+        assert!(
+            check_live_state_matches(true, Some("10.0.0.5"), &[], &routes, &static_cfg()).is_ok()
+        );
+    }
+
+    #[test]
+    fn test_check_live_state_matches_down_interface_is_the_first_verdict() {
+        let routes = routes_v4("default via 10.0.0.1 dev eth0");
+        let err = check_live_state_matches(false, Some("10.0.0.5"), &[], &routes, &static_cfg())
+            .unwrap_err();
+        assert!(err.contains("went down"), "{}", err);
+    }
+
+    #[test]
+    fn test_check_live_state_matches_wrong_static_address_fails() {
+        let routes = routes_v4("default via 10.0.0.1 dev eth0");
+        let err = check_live_state_matches(true, Some("10.0.0.99"), &[], &routes, &static_cfg())
+            .unwrap_err();
+        assert!(err.contains("static IPv4 address 10.0.0.5"), "{}", err);
+    }
+
+    #[test]
+    fn test_check_live_state_matches_no_address_for_static_fails() {
+        let routes = routes_v4("default via 10.0.0.1 dev eth0");
+        let err = check_live_state_matches(true, None, &[], &routes, &static_cfg()).unwrap_err();
+        assert!(err.contains("static IPv4 address"), "{}", err);
+    }
+
+    #[test]
+    fn test_check_live_state_matches_dhcp_needs_any_global_v4() {
+        let mut c = cfg(IpMethod::Dhcp);
+        c.ip = Some("10.0.0.5".to_string()); // even with an ip field, DHCP mode means "any lease"
+        let routes = routes_v4("default via 10.0.0.1 dev eth0");
+        assert!(check_live_state_matches(true, Some("192.168.1.42"), &[], &routes, &c).is_ok());
+        let err = check_live_state_matches(true, None, &[], &routes, &c).unwrap_err();
+        assert!(err.contains("no IPv4 address"), "{}", err);
+    }
+
+    #[test]
+    fn test_check_live_state_matches_missing_default_route_fails() {
+        // Both v4 route outputs empty (`ip` failed) — the gateway check must
+        // fail, naming the gateway.
+        let routes = routes_v4("");
+        let err = check_live_state_matches(true, Some("10.0.0.5"), &[], &routes, &static_cfg())
+            .unwrap_err();
+        assert!(
+            err.contains("default route via 10.0.0.1 is missing"),
+            "{}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_check_live_state_matches_route_needle_wins_not_the_first_route() {
+        // Multi-gateway host: the config's gateway can sit on any line, but a
+        // DIFFERENT gateway does not satisfy it.
+        let other = routes_v4("default via 172.16.0.1 dev eth1\n");
+        assert!(
+            check_live_state_matches(true, Some("10.0.0.5"), &[], &other, &static_cfg()).is_err()
+        );
+        let both =
+            routes_v4("default via 172.16.0.1 dev eth1\ndefault via 10.0.0.1 dev eth0 metric 50\n");
+        assert!(
+            check_live_state_matches(true, Some("10.0.0.5"), &[], &both, &static_cfg()).is_ok()
+        );
+    }
+
+    #[test]
+    fn test_check_live_state_matches_static_ipv6_address_and_route() {
+        let mut c = static_cfg();
+        c.ipv6_method = Some(Ipv6Method::Static);
+        c.ipv6 = Some("2001:db8::5".to_string());
+        c.ipv6_prefix = Some(64);
+        c.ipv6_gateway = Some("2001:db8::1".to_string());
+
+        // No v6 line at all (like `ip -6 route show default` alone) — v4 must
+        // still pass; the v6 address check fails naming the exact CIDR.
+        let routes = routes_v4("default via 10.0.0.1 dev eth0");
+        let err = check_live_state_matches(true, Some("10.0.0.5"), &[], &routes, &c).unwrap_err();
+        assert!(
+            err.contains("static IPv6 address 2001:db8::5/64"),
+            "{}",
+            err
+        );
+
+        // Address present, gateway route absent → the route message.
+        let addrs = ["2001:db8::5/64".to_string(), "fe80::1/64".to_string()];
+        let refs: Vec<&str> = addrs.iter().map(String::as_str).collect();
+        let err = check_live_state_matches(true, Some("10.0.0.5"), &refs, &routes, &c).unwrap_err();
+        assert!(
+            err.contains("default IPv6 route via 2001:db8::1 is missing"),
+            "{}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_check_live_state_matches_no_ipv6_intent_is_never_verified() {
+        // `Auto`/`Dhcp`/`Disabled`/none own no static address to wait for —
+        // SLAAC leftovers would make absence unreadable, so they pass.
+        let mut c = cfg(IpMethod::Dhcp);
+        c.ipv6_method = Some(Ipv6Method::Auto);
+        let routes = routes_v4("default via 192.168.1.1 dev wlan0");
+        assert!(check_live_state_matches(true, Some("192.168.1.10"), &[], &routes, &c).is_ok());
     }
 }

@@ -233,21 +233,61 @@ pub async fn handle_network_interface_config_update(
         ipv6_dns_servers: config.ipv6_dns_servers,
     };
 
-    if let Err(e) = net::apply_interface_config(&name, &cfg) {
-        return ResponseHelper::json_error(e);
-    }
+    // The whole put is blocking (reads, `ip`/`dhclient`/`netplan` shells, a
+    // 10 s verify-poll on the reconcile) — spawn_blocking, same as the read
+    // path and every other hardware-facing handler.
+    //
+    // Success tuple: (persisted?, rolled-back?). The order inside is the
+    // safety contract:
+    //   1. capture the PRE-change live state (the rollback target),
+    //   2. live-apply (on failure nothing is touched — plain error),
+    //   3. persist (best effort — never fails the request),
+    //   4. reconcile the netplan file (apply + verify; on failure everything
+    //      is rolled back to step 1's state and an error is reported).
+    // `name` is needed again below (log/event lines) — the closure takes its
+    // own copy.
+    let iface_name = name.clone();
+    let (persisted, rolled_back) =
+        match tokio::task::spawn_blocking(move || -> Result<(bool, Option<String>), String> {
+            let name = iface_name;
+            let previous_config = net::get_interface_config(&name);
 
-    // The live state is applied; best-effort persist it so a reboot keeps it.
-    // A persistence failure must NOT fail the request — the change is live —
-    // but the response says the change is temporary so the operator can act
-    // (e.g. install netplan) instead of silently losing the config at boot.
-    let persisted = match net::persist_interface_config(&name, &cfg) {
-        Ok(_backend) => true,
-        Err(e) => {
-            tracing::warn!("Network config persistence for '{}' failed: {}", name, e);
-            false
-        }
-    };
+            net::apply_interface_config(&name, &cfg)?;
+
+            let persisted = match net::persist_interface_config(&name, &cfg) {
+                Ok(change) => Some(change),
+                Err(e) => {
+                    tracing::warn!("Network config persistence for '{}' failed: {}", name, e);
+                    None
+                }
+            };
+
+            let rolled_back = match &persisted {
+                Some(change) => {
+                    net::apply_persisted_config(&name, &cfg, change, &previous_config).err()
+                }
+                None => None,
+            };
+
+            Ok((persisted.is_some(), rolled_back))
+        })
+        .await
+        {
+            Ok(Ok(pair)) => pair,
+            Ok(Err(e)) => return ResponseHelper::json_error(e),
+            Err(e) => return ResponseHelper::json_error(format!("Internal error: {}", e)),
+        };
+
+    // A reconcile failure means the change did NOT survive: everything went
+    // back to the pre-change state, so say so explicitly instead of letting
+    // the operator discover that "success" was a mirage.
+    if let Some(err) = rolled_back {
+        crate::events::log_event(format!(
+            "Admin '{}' updated network configuration for interface '{}' (method: {}) — netplan reconcile failed, change rolled back: {}",
+            admin_username, name, config.method, err
+        ));
+        return ResponseHelper::json_error(err);
+    }
 
     crate::events::log_event(format!(
         "Admin '{}' updated network configuration for interface '{}' (method: {})",

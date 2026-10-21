@@ -321,6 +321,11 @@
         });
       }
     } else {
+      // A netplan reconcile failure rolls the whole change back — including
+      // the live state — so refresh what is actually on the wire before the
+      // error reaches the operator, instead of showing the pre-rollback
+      // card contents.
+      await loadInterfaces();
       notifyNetworkError(response.message || translate('network.apply_failed'));
     }
     saving = false;

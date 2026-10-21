@@ -1,6 +1,6 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-20 — current version: 1.0.0
+Last updated: 2026-10-21 — current version: 1.0.0
 
 ## Current state
 
@@ -11,8 +11,9 @@ group rename/description — all 2026-10-20), storage
 (disks/partitions/ZFS-Btrfs-mdadm virtual disks/LUKS2
 encryption/SMART health), RAID (mdadm/ZFS/Btrfs creation), shares
 (SMB/NFS/FTP/WebDAV/SFTP), file explorer, backups (restic), cloud sync
-(rclone), network (interfaces, WiFi, diagnostics, **persisted interface
-configuration via netplan/ifupdown as of 2026-10-20**), security
+(rclone), network (interfaces, WiFi, diagnostics, **persisted interface configuration
+applied, verified and rolled back in-session via netplan/ifupdown as of
+2026-10-21**), security
 (antivirus/anti-ransomware/firewall), web terminal, VPN (WireGuard/
 OpenVPN), downloader (aria2), Syncthing, Docker + application catalog
 (volumes, disk-usage reporting and prune, container inspect/exec/pause/
@@ -62,6 +63,30 @@ fixed and listed under "Fixed on 2026-10-12" below.
 - Keep auditing "under real conditions" (real backend, no mocks) every
   new page, following the methodology already applied to each guide in
   `docs/guides/` (results in `TESTING.md`).
+
+**Fixed on 2026-10-21 — Network production-ready:**
+
+The Network screen was the last one whose own headline feature stopped half
+way: `PUT /network/interfaces/{name}/config` persisted the new IP configuration
+(written 2026-10-20) but **never applied it** — runtime and boot state could
+differ by one re-apply cycle, and the admin could not see in the session
+whether the netplan file was loadable and equivalent to the wire. The request
+now runs the production apply-verify-rollback pattern: capture the pre-change
+state → live apply → persist (the write returns the backend *plus a snapshot
+of the previous netplan file*) → `netplan apply` → verify the wire converged
+within a 10 s grace (static address present, default route via the configured
+gateway, static v6 present, interface up — pure verdict `check_live_state_matches`)
+→ on any failure, roll back both halves (previous file restored or ours
+deleted, `netplan apply` again, previous live configuration re-asserted so the
+operator session survives) and answer `success:false` naming what failed.
+Sudoers gained the scoped `netplan apply` / `cat` / `chmod 600` / `rm -f`
+shapes for `/etc/netplan/99-homevault-*.yaml`, and `netplan.io` joined the
+dependency inventory (optional — Debian hosts without it keep ifupdown, which
+deliberately stays write-only/boot-applied). Tests: `network.rs` 43 → 52 unit
+(9 on the verify verdict), `cargo test` full run green (lib 917), docs in
+`docs/guides/network.md` + `docs/API.md`; the live reconcile pass is listed in
+`TESTING.md`'s "remaining to test" (needs a real host). See
+`CLAUDE.md` (2026-10-21 addendum).
 
 **Fixed on 2026-10-20 — Docker production-ready:**
 
