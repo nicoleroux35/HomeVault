@@ -2,7 +2,7 @@
      File          : Docker.svelte
      Author        : Nicolas Le Roux
      Created       : 28/09/2026
-     Last modified : 13/10/2026 by Nicolas Le Roux
+     Last modified : 21/10/2026 by Nicolas Le Roux
      Version       : 1.0.0
 
      Description:
@@ -701,7 +701,10 @@
   }
 
   // The URL the "Open" button points at: the per-app reverse proxy when it
-  // is up, else the app's own published port.
+  // is up, else the app's own published port. Always http:// — the proxy
+  // listener is plain HTTP even under an HTTPS dashboard, and opening it in
+  // a new tab is a top-level navigation (allowed from HTTPS pages), not an
+  // embedded subresource, so it is never blocked as mixed content.
   function appOpenUrl(app: CatalogApp): string | null {
     const port = app.proxy_port ?? app.installed_port;
     return port ? `http://${location.hostname}:${port}` : null;

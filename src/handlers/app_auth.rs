@@ -2,7 +2,7 @@
  * File          : app_auth.rs
  * Author        : Nicolas Le Roux
  * Created       : 13/10/2026
- * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Last modified : 21/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
@@ -41,6 +41,12 @@
 //! carried by the browser to the proxy port on the same host. The token grants
 //! proxy access only — it is meaningless against the API — so this is a
 //! strictly narrower credential than the `hv_session` the proxy used to read.
+//!
+//! Under an HTTPS deployment this entry is reached over TLS (the proxy gate's
+//! redirect is TLS-aware — see `app_proxy::serve::app_auth_location`) and then
+//! redirects to the proxy's plain-HTTP origin: a top-level navigation
+//! HTTPS→HTTP is allowed, while the `hv_app_session` cookie must stay
+//! non-`Secure` to be delivered there.
 //!
 //! Deliberately a top-level browser navigation, so it authenticates from the
 //! cookie rather than the `x-session-token` header. It is a read-only GET that
@@ -104,7 +110,11 @@ pub async fn handle_app_auth(
 
     let token = APP_AUTH.mint(&username);
 
-    // Preserve the host the browser used; swap to the proxy port.
+    // Preserve the host the browser used; swap to the proxy port. The proxy
+    // listener is plain HTTP by design even when the dashboard runs HTTPS:
+    // the browser followed a top-level navigation here, and HTTPS→HTTP
+    // top-level navigation is allowed (it is not mixed content — only
+    // embedded subresources are).
     let host = headers
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
@@ -121,6 +131,12 @@ fn redirect(location: &str) -> Response {
     if let Ok(v) = HeaderValue::from_str(location) {
         resp.headers_mut().insert(LOCATION, v);
     }
+    // The redirect carries an auth cookie; no intermediary or browser cache
+    // may store it.
+    resp.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store"),
+    );
     resp
 }
 

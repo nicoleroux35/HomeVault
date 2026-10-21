@@ -2,7 +2,7 @@
  * File          : app_auth.rs
  * Author        : Nicolas Le Roux
  * Created       : 14/10/2026
- * Last modified : 14/10/2026 by Nicolas Le Roux
+ * Last modified : 21/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
@@ -57,6 +57,13 @@ use uuid::Uuid;
 /// proxy is a convenience surface, not a place to hold a long-lived grant.
 const APP_SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 
+/// Upper bound on live app sessions. `/app-auth` is a plain GET that mints on
+/// every hit, so a misbehaving browser tab or script could otherwise grow this
+/// store unboundedly between the 12-hour expiries. When the cap is hit, the
+/// soonest-expiring session is evicted to make room — a home instance has only
+/// a couple of apps and users, so legitimate traffic never reaches this.
+const MAX_APP_SESSIONS: usize = 512;
+
 /// Global store, mirroring `APP_PROXY`'s process-wide singleton.
 pub static APP_AUTH: Lazy<AppAuthStore> = Lazy::new(AppAuthStore::new);
 
@@ -88,6 +95,9 @@ impl AppAuthStore {
         let token = format!("hva_{}", Uuid::new_v4().simple());
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         Self::purge_expired(&mut sessions);
+        if sessions.len() >= MAX_APP_SESSIONS {
+            Self::evict_soonest(&mut sessions);
+        }
         sessions.insert(
             token.clone(),
             AppSession {
@@ -127,6 +137,19 @@ impl AppAuthStore {
     fn purge_expired(sessions: &mut HashMap<String, AppSession>) {
         let now = Instant::now();
         sessions.retain(|_, s| s.expires_at > now);
+    }
+
+    /// Drops the live session with the earliest expiry to make room for a new
+    /// mint (only called at the [`MAX_APP_SESSIONS`] cap).
+    fn evict_soonest(sessions: &mut HashMap<String, AppSession>) {
+        let Some(oldest) = sessions
+            .iter()
+            .min_by_key(|(_, s)| s.expires_at)
+            .map(|(k, _)| k.clone())
+        else {
+            return;
+        };
+        sessions.remove(&oldest);
     }
 
     #[cfg(test)]
@@ -182,5 +205,29 @@ mod tests {
         assert_eq!(store.validate(&a), None);
         assert_eq!(store.validate(&b), None);
         assert_eq!(store.len(), 0);
+    }
+
+    /// Minting is bounded: at the cap the soonest-expiring session is evicted
+    /// so the in-memory store cannot grow without limit under repeated
+    /// `/app-auth` hits.
+    #[test]
+    fn test_mint_is_capped_and_keeps_the_newest_sessions() {
+        let store = AppAuthStore::new();
+        for i in 0..MAX_APP_SESSIONS {
+            store.mint(&format!("user{i}"));
+        }
+        assert_eq!(store.len(), MAX_APP_SESSIONS);
+        // One more mint evicts the oldest entry instead of growing the store…
+        let overflow = store.mint("overflow-user");
+        assert_eq!(store.validate(&overflow).as_deref(), Some("overflow-user"));
+        assert_eq!(store.len(), MAX_APP_SESSIONS);
+        // …and the store's oldest entry was the one evicted.
+        let evicted = store
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .any(|s| s.username == "user0");
+        assert!(!evicted);
     }
 }
