@@ -49,7 +49,8 @@ use homevault::auth::AuthService;
 use homevault::config::PathGuard;
 use homevault::handlers::auth::handle_login;
 use homevault::handlers::resource_shares::{
-    handle_grant_access, handle_list_access, handle_my_access, handle_revoke_access,
+    handle_grant_access, handle_grant_group_access, handle_list_access,
+    handle_list_group_access, handle_my_access, handle_revoke_access, handle_revoke_group_access,
 };
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::AppState;
@@ -111,6 +112,12 @@ fn access_router(state: Arc<AppState>) -> Router {
                 .delete(handle_revoke_access),
         )
         .route("/api/shares/access/mine", get(handle_my_access))
+        .route(
+            "/api/shares/access/groups",
+            get(handle_list_group_access)
+                .post(handle_grant_group_access)
+                .delete(handle_revoke_group_access),
+        )
         .with_state(state)
 }
 
@@ -574,4 +581,236 @@ async fn test_revoke_all_for_member_clears_every_kind() {
     let removed = repo.revoke_all_for_member("gina").await.unwrap();
     assert_eq!(removed, 3);
     assert!(repo.list_for_member("gina", None).await.unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Group-level grants (migration 051, 2026-10-20)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_group_grant_crud_and_listing() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "pw12345678", 2).await;
+    let mut r = access_router(state);
+    let token = login(&mut r, "admin1", "pw12345678").await;
+
+    // Grant to a group.
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/shares/access/groups",
+        Some(&token),
+        Some(json!({"group": "family", "kind": "app", "resource": "jellyfin", "permission": "write"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["group_name"], json!("family"));
+    assert_eq!(body["data"]["permission"], json!("write"));
+
+    // Idempotent: a second grant updates the level, no duplicate row.
+    let (status, _) = send(
+        &mut r,
+        Method::POST,
+        "/api/shares/access/groups",
+        Some(&token),
+        Some(json!({"group": "family", "kind": "app", "resource": "jellyfin", "permission": "full"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/shares/access/groups?group=family",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let rows = body["data"].as_array().expect("array");
+    assert_eq!(rows.len(), 1, "one row per (group, kind, resource)");
+    assert_eq!(rows[0]["permission"], json!("full"));
+
+    // Revoke, then revoking again is "no such grant".
+    let (status, _) = send(
+        &mut r,
+        Method::DELETE,
+        "/api/shares/access/groups?group=family&kind=app&resource=jellyfin",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = send(
+        &mut r,
+        Method::DELETE,
+        "/api/shares/access/groups?group=family&kind=app&resource=jellyfin",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_group_grant_endpoints_are_admin_only() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "member", "pw12345678", 1).await;
+    let mut r = access_router(state);
+    let token = login(&mut r, "member", "pw12345678").await;
+
+    for (method, uri, body) in [
+        (
+            Method::GET,
+            "/api/shares/access/groups",
+            None,
+        ),
+        (
+            Method::POST,
+            "/api/shares/access/groups",
+            Some(json!({"group": "family", "kind": "app", "resource": "jellyfin"})),
+        ),
+        (
+            Method::DELETE,
+            "/api/shares/access/groups?group=family&kind=app&resource=jellyfin",
+            None,
+        ),
+    ] {
+        let (status, _) = send(&mut r, method.clone(), uri, Some(&token), body).await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "{} {} must be admin-only",
+            method,
+            uri
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_group_grant_rejects_unknown_kind() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "pw12345678", 2).await;
+    let mut r = access_router(state);
+    let token = login(&mut r, "admin1", "pw12345678").await;
+
+    let (status, _) = send(
+        &mut r,
+        Method::POST,
+        "/api/shares/access/groups",
+        Some(&token),
+        Some(json!({"group": "family", "kind": "disk", "resource": "x"})),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+}
+
+/// The union rule end-to-end, without needing real OS groups: the repository
+/// is the same one the handlers call, and `merge_strongest` is the single
+/// place the "strongest wins" decision lives.
+#[tokio::test]
+async fn test_effective_access_unions_direct_and_group_grants() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "pw12345678", 2).await;
+    create_test_user(&state, "member", "pw12345678", 1).await;
+    let repo = ResourceShareRepository::new(state.db.pool());
+
+    // Direct: read on the app. Group: full on the same app + write on another.
+    repo.upsert(
+        "admin1",
+        "member",
+        ResourceKind::App,
+        "jellyfin",
+        ResourcePermission::Read,
+    )
+    .await
+    .expect("direct grant");
+    repo.upsert_group(
+        "admin1",
+        "family",
+        ResourceKind::App,
+        "jellyfin",
+        ResourcePermission::Full,
+    )
+    .await
+    .expect("group grant");
+    repo.upsert_group(
+        "admin1",
+        "family",
+        ResourceKind::App,
+        "photos",
+        ResourcePermission::Write,
+    )
+    .await
+    .expect("group grant 2");
+
+    let direct = repo
+        .visible_resources("member", ResourceKind::App)
+        .await
+        .expect("direct rows");
+    let inherited = repo
+        .visible_resources_for_groups(&["family".to_string()], ResourceKind::App)
+        .await
+        .expect("group rows");
+    let merged = ResourceShareRepository::merge_strongest(direct, inherited);
+
+    assert_eq!(
+        merged,
+        vec![
+            ("jellyfin".to_string(), "full".to_string()),
+            ("photos".to_string(), "write".to_string()),
+        ],
+        "the union keeps the strongest level per resource"
+    );
+
+    // A group the member is not in contributes nothing.
+    let other = repo
+        .visible_resources_for_groups(&["strangers".to_string()], ResourceKind::App)
+        .await
+        .expect("empty");
+    assert!(other.is_empty());
+
+    // Revoking the group grant demotes nobody who holds a direct row, and
+    // removes the group-only one.
+    repo.revoke_group("family", ResourceKind::App, "photos")
+        .await
+        .expect("revoke");
+    let direct = repo
+        .visible_resources("member", ResourceKind::App)
+        .await
+        .expect("direct rows");
+    let inherited = repo
+        .visible_resources_for_groups(&["family".to_string()], ResourceKind::App)
+        .await
+        .expect("group rows");
+    let merged = ResourceShareRepository::merge_strongest(direct, inherited);
+    assert_eq!(
+        merged,
+        vec![("jellyfin".to_string(), "full".to_string())],
+        "the direct row survives, the group-only one is gone"
+    );
+}
+
+#[tokio::test]
+async fn test_revoke_all_for_group_drops_every_kind() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "pw12345678", 2).await;
+    let repo = ResourceShareRepository::new(state.db.pool());
+    for (kind, resource) in [
+        (ResourceKind::App, "jellyfin"),
+        (ResourceKind::Folder, "/srv/media"),
+        (ResourceKind::Share, "photos"),
+    ] {
+        repo.upsert_group("admin1", "family", kind, resource, ResourcePermission::Read)
+            .await
+            .expect("grant");
+    }
+
+    let deleted = repo.revoke_all_for_group("family").await.expect("purge");
+    assert_eq!(deleted, 3);
+    assert!(repo
+        .list_groups_all(Some("family"))
+        .await
+        .expect("list")
+        .is_empty());
 }

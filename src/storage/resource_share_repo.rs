@@ -136,6 +136,46 @@ impl From<ResourceShareRow> for ResourceShare {
     }
 }
 
+/// A resource access grant held by a *group* (`resource_group_shares`,
+/// migration 051). Every member of `group_name` inherits it, at the union of
+/// their own direct grants and this one, strongest permission winning.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceGroupShare {
+    pub id: i64,
+    pub owner: String,
+    pub group_name: String,
+    pub kind: String,
+    pub resource: String,
+    pub permission: String,
+    pub created_at: String,
+}
+
+/// Database row from `resource_group_shares`.
+#[derive(Debug, Clone, FromRow)]
+pub struct ResourceGroupShareRow {
+    pub id: i64,
+    pub owner: String,
+    pub group_name: String,
+    pub kind: String,
+    pub resource: String,
+    pub permission: String,
+    pub created_at: String,
+}
+
+impl From<ResourceGroupShareRow> for ResourceGroupShare {
+    fn from(row: ResourceGroupShareRow) -> Self {
+        Self {
+            id: row.id,
+            owner: row.owner,
+            group_name: row.group_name,
+            kind: row.kind,
+            resource: row.resource,
+            permission: row.permission,
+            created_at: row.created_at,
+        }
+    }
+}
+
 /// Repository for per-member resource access grants.
 #[derive(Clone)]
 pub struct ResourceShareRepository {
@@ -278,6 +318,169 @@ impl ResourceShareRepository {
         Ok(result.rows_affected())
     }
 
+    /// Grant (or update) `group_name`'s access to `kind:resource`. Idempotent,
+    /// same contract as [`Self::upsert`] for a single member.
+    pub async fn upsert_group(
+        &self,
+        owner: &str,
+        group_name: &str,
+        kind: ResourceKind,
+        resource: &str,
+        permission: ResourcePermission,
+    ) -> Result<ResourceGroupShare, DbError> {
+        sqlx::query(
+            r#"
+            INSERT INTO resource_group_shares (owner, group_name, kind, resource, permission)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(group_name, kind, resource) DO UPDATE SET
+                permission = excluded.permission,
+                owner = excluded.owner
+            "#,
+        )
+        .bind(owner)
+        .bind(group_name)
+        .bind(kind.as_str())
+        .bind(resource)
+        .bind(permission.as_str())
+        .execute(self.pool.as_ref())
+        .await?;
+
+        self.find_group(group_name, kind, resource)
+            .await?
+            .ok_or(DbError::NotFound)
+    }
+
+    /// Look up one group grant.
+    pub async fn find_group(
+        &self,
+        group_name: &str,
+        kind: ResourceKind,
+        resource: &str,
+    ) -> Result<Option<ResourceGroupShare>, DbError> {
+        let row = sqlx::query_as::<_, ResourceGroupShareRow>(
+            "SELECT id, owner, group_name, kind, resource, permission, created_at FROM resource_group_shares WHERE group_name = ? AND kind = ? AND resource = ?",
+        )
+        .bind(group_name)
+        .bind(kind.as_str())
+        .bind(resource)
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+        Ok(row.map(ResourceGroupShare::from))
+    }
+
+    /// Every group grant on the instance, optionally narrowed to one group.
+    pub async fn list_groups_all(
+        &self,
+        group_name: Option<&str>,
+    ) -> Result<Vec<ResourceGroupShare>, DbError> {
+        let rows = match group_name {
+            Some(g) => {
+                sqlx::query_as::<_, ResourceGroupShareRow>(
+                    "SELECT id, owner, group_name, kind, resource, permission, created_at FROM resource_group_shares WHERE group_name = ? ORDER BY group_name, kind, resource",
+                )
+                .bind(g)
+                .fetch_all(self.pool.as_ref())
+                .await?
+            }
+            None => {
+                sqlx::query_as::<_, ResourceGroupShareRow>(
+                    "SELECT id, owner, group_name, kind, resource, permission, created_at FROM resource_group_shares ORDER BY group_name, kind, resource",
+                )
+                .fetch_all(self.pool.as_ref())
+                .await?
+            }
+        };
+        Ok(rows.into_iter().map(ResourceGroupShare::from).collect())
+    }
+
+    /// Revoke one group grant. Returns `true` when a row was removed.
+    pub async fn revoke_group(
+        &self,
+        group_name: &str,
+        kind: ResourceKind,
+        resource: &str,
+    ) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "DELETE FROM resource_group_shares WHERE group_name = ? AND kind = ? AND resource = ?",
+        )
+        .bind(group_name)
+        .bind(kind.as_str())
+        .bind(resource)
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Follow a group rename: every grant keyed by `old_name` moves to
+    /// `new_name`. Returns the number of rows moved. The OS rename has already
+    /// happened by the time a caller gets here, so this must never be skipped.
+    pub async fn rename_group_name(&self, old_name: &str, new_name: &str) -> Result<u64, DbError> {
+        let result =
+            sqlx::query("UPDATE resource_group_shares SET group_name = ? WHERE group_name = ?")
+                .bind(new_name)
+                .bind(old_name)
+                .execute(self.pool.as_ref())
+                .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Revoke every grant a group holds (group deleted/renamed away).
+    pub async fn revoke_all_for_group(&self, group_name: &str) -> Result<u64, DbError> {
+        let result = sqlx::query("DELETE FROM resource_group_shares WHERE group_name = ?")
+            .bind(group_name)
+            .execute(self.pool.as_ref())
+            .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Every grant `groups` hold for `kind`, as `resource -> permission`.
+    pub async fn visible_resources_for_groups(
+        &self,
+        groups: &[String],
+        kind: ResourceKind,
+    ) -> Result<Vec<(String, String)>, DbError> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        for group in groups {
+            let rows = sqlx::query_as::<_, (String, String)>(
+                "SELECT resource, permission FROM resource_group_shares WHERE group_name = ? AND kind = ? ORDER BY resource",
+            )
+            .bind(group)
+            .bind(kind.as_str())
+            .fetch_all(self.pool.as_ref())
+            .await?;
+            out.extend(rows);
+        }
+        Ok(out)
+    }
+
+    /// Merge two `resource -> permission` lists into one, keeping the strongest
+    /// level per resource (`full` ⊃ `write` ⊃ `read`). Pure, so the union rule
+    /// is unit-tested without a database.
+    pub fn merge_strongest(
+        direct: Vec<(String, String)>,
+        inherited: Vec<(String, String)>,
+    ) -> Vec<(String, String)> {
+        use std::collections::BTreeMap;
+        let mut merged: BTreeMap<String, ResourcePermission> = BTreeMap::new();
+        for (resource, level) in direct.into_iter().chain(inherited) {
+            let Some(parsed) = ResourcePermission::parse(&level) else {
+                continue;
+            };
+            merged
+                .entry(resource)
+                .and_modify(|current| {
+                    if parsed.implies(*current) {
+                        *current = parsed;
+                    }
+                })
+                .or_insert(parsed);
+        }
+        merged
+            .into_iter()
+            .map(|(r, p)| (r, p.as_str().to_string()))
+            .collect()
+    }
+
     /// The set of resources of `kind` that `member` may see, as a
     /// `resource -> permission` map. This is the server-side filter every
     /// listing and WebSocket event must pass through.
@@ -338,6 +541,58 @@ mod tests {
             assert_eq!(ResourcePermission::parse(p.as_str()), Some(p));
         }
         assert_eq!(ResourcePermission::parse("admin"), None);
+    }
+
+    #[test]
+    fn test_merge_strongest_takes_the_stronger_level() {
+        // Direct read + inherited write → write.
+        let merged = ResourceShareRepository::merge_strongest(
+            vec![("jellyfin".to_string(), "read".to_string())],
+            vec![("jellyfin".to_string(), "write".to_string())],
+        );
+        assert_eq!(merged, vec![("jellyfin".to_string(), "write".to_string())]);
+
+        // Direct full + inherited read → full (a weaker group row must never
+        // demote a member who holds a stronger direct grant).
+        let merged = ResourceShareRepository::merge_strongest(
+            vec![("media".to_string(), "full".to_string())],
+            vec![("media".to_string(), "read".to_string())],
+        );
+        assert_eq!(merged, vec![("media".to_string(), "full".to_string())]);
+    }
+
+    #[test]
+    fn test_merge_strongest_is_a_union_sorted_by_resource() {
+        let merged = ResourceShareRepository::merge_strongest(
+            vec![("b-app".to_string(), "read".to_string())],
+            vec![
+                ("a-folder".to_string(), "write".to_string()),
+                ("b-app".to_string(), "full".to_string()),
+            ],
+        );
+        assert_eq!(
+            merged,
+            vec![
+                ("a-folder".to_string(), "write".to_string()),
+                ("b-app".to_string(), "full".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_merge_strongest_ignores_unknown_levels() {
+        // A corrupt row must not grant anything (fail closed), and must not
+        // shadow a valid row for the same resource either.
+        let merged = ResourceShareRepository::merge_strongest(
+            vec![("x".to_string(), "admin".to_string())],
+            vec![("x".to_string(), "read".to_string())],
+        );
+        assert_eq!(merged, vec![("x".to_string(), "read".to_string())]);
+        assert!(ResourceShareRepository::merge_strongest(
+            vec![("y".to_string(), "bogus".to_string())],
+            vec![]
+        )
+        .is_empty());
     }
 
     #[test]

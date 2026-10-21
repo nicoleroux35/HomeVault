@@ -370,8 +370,7 @@ pub async fn handle_raid_rebuild(
     // `mdadm --add` used to accept a partitioned, mounted or system disk
     // silently.
     if let Some(replacement) = payload.replacement_device.as_ref() {
-        if let Err(e) =
-            DiskService::validate_pool_devices(std::slice::from_ref(replacement)).await
+        if let Err(e) = DiskService::validate_pool_devices(std::slice::from_ref(replacement)).await
         {
             return ResponseHelper::json_error(format!("Failed to rebuild RAID: {}", e));
         }
@@ -751,8 +750,7 @@ pub async fn handle_virtual_disk_grow(
 
     // The new disk must be whole, free and not the system disk — same gate
     // as creation.
-    if let Err(e) =
-        DiskService::validate_pool_devices(std::slice::from_ref(&payload.device)).await
+    if let Err(e) = DiskService::validate_pool_devices(std::slice::from_ref(&payload.device)).await
     {
         return ResponseHelper::json_error(format!("Failed to grow virtual disk: {}", e));
     }
@@ -763,11 +761,9 @@ pub async fn handle_virtual_disk_grow(
                 "Admin '{}' grew virtual disk '{}' onto device {} (background reshape in progress)",
                 admin_username, name, payload.device
             ));
-            ResponseHelper::json_success(
-                serde_json::json!({
-                    "message": format!("Disk {} added — the array is reshaping in the background", payload.device),
-                }),
-            )
+            ResponseHelper::json_success(serde_json::json!({
+                "message": format!("Disk {} added — the array is reshaping in the background", payload.device),
+            }))
         }
         Err(e) => ResponseHelper::json_error(format!("Failed to grow virtual disk: {}", e)),
     }

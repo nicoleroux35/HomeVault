@@ -368,6 +368,19 @@ Other behaviour:
 - Assign roles: admin or user
 - Lock/unlock accounts
 - Admin can disable 2FA for other users
+- A password the admin chose or generated (at account creation, or in the
+  Security card) must be replaced by its owner: the next sign-in accepts only
+  a password change, and the session is limited to that step until it is done
+- The Security card also lists the account's active sessions (token masked to
+  an 8-character reference - the admin can audit but never replay) with a
+  "Sign out everywhere" button that revokes all of them at once
+- An "Account expiry" card sets a date after which the account can no longer
+  sign in (its live sessions are revoked too); "No expiry" is the default and
+  removing the date restores the account without touching its lock state
+- The access card also lists the grants the member inherits from their groups
+  ("Inherited from groups") and can grant a resource to one of those groups;
+  every member of the group gets it, strongest level winning, and leaving the
+  group removes it at once
 - Deleting an account revokes the share permissions granted to it directly (the
   real filesystem access control entries and the stored grants), purges its
   home directory, its SFTP jail, its sessions, its terminal sessions and its
@@ -627,7 +640,8 @@ For safety, the first-run endpoints only answer clients on the local network and
 
 - Create a group — the name is up to 32 characters of lowercase letters, digits and hyphens — view the groups, open one to see its members, and delete it.
 - Add and remove members from a group's detail view, or from the Users app, which offers the same membership as chips on each account.
-- Groups are the sharing unit: a file-share permission can be granted to a group instead of to each person individually, and a transfer quota can be set per group. A group grant applies to every current member and stops applying the moment someone is removed.
+- Groups are the sharing unit: a file-share permission can be granted to a group instead of to each person individually, a resource access (app, folder or share) can be granted to a group, and a transfer quota can be set per group. A group grant applies to every current member and stops applying the moment someone is removed.
+- A group can be renamed and described from its detail view. Renaming keeps everything the group was granted (resource access, quotas, share permissions) attached, and the admin group cannot be renamed because it carries the root-level sudo grant.
 - The homevault_admin group is special — it grants root-level access on the host. It is never offered as an ordinary tickable group: it appears as a read-only chip driven by the account's role, so membership cannot be granted by accident.
 - Accounts get shell-less Linux users of the same name so they can reach the server over SFTP; the group membership is what a share grant is evaluated against."#.to_string(),
         },

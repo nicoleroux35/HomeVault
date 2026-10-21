@@ -40,7 +40,7 @@ impl UserRepository {
     /// Look up a user by their unique username.
     pub async fn find_by_username(&self, username: &str) -> Result<Option<User>, DbError> {
         let user = sqlx::query_as::<_, User>(
-            "SELECT username, password_hash, fullname, email, role_id, locked, created_at, avatar_seed FROM users WHERE username = ?"
+            "SELECT username, password_hash, fullname, email, role_id, locked, created_at, avatar_seed, must_change_password, expires_at FROM users WHERE username = ?"
         )
         .bind(username)
         .fetch_optional(self.pool.as_ref())
@@ -52,7 +52,7 @@ impl UserRepository {
     /// Insert a new user row.
     pub async fn create(&self, user: &User) -> Result<(), DbError> {
         sqlx::query(
-            "INSERT INTO users (username, password_hash, fullname, email, role_id, locked, created_at, avatar_seed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO users (username, password_hash, fullname, email, role_id, locked, created_at, avatar_seed, must_change_password, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         .bind(&user.username)
         .bind(&user.password_hash)
@@ -62,6 +62,8 @@ impl UserRepository {
         .bind(user.locked)
         .bind(user.created_at)
         .bind(&user.avatar_seed)
+        .bind(user.must_change_password)
+        .bind(user.expires_at)
         .execute(self.pool.as_ref())
         .await?;
 
@@ -71,13 +73,14 @@ impl UserRepository {
     /// Update all mutable fields of a user.
     pub async fn update(&self, user: &User) -> Result<(), DbError> {
         sqlx::query(
-            "UPDATE users SET password_hash = ?, fullname = ?, email = ?, role_id = ?, locked = ? WHERE username = ?"
+            "UPDATE users SET password_hash = ?, fullname = ?, email = ?, role_id = ?, locked = ?, must_change_password = ? WHERE username = ?"
         )
         .bind(&user.password_hash)
         .bind(&user.fullname)
         .bind(&user.email)
         .bind(user.role_id)
         .bind(user.locked)
+        .bind(user.must_change_password)
         .bind(&user.username)
         .execute(self.pool.as_ref())
         .await?;
@@ -117,7 +120,7 @@ impl UserRepository {
     /// List all users.
     pub async fn find_all(&self) -> Result<Vec<User>, DbError> {
         let users = sqlx::query_as::<_, User>(
-            "SELECT username, password_hash, fullname, email, role_id, locked, created_at, avatar_seed FROM users",
+            "SELECT username, password_hash, fullname, email, role_id, locked, created_at, avatar_seed, must_change_password, expires_at FROM users",
         )
         .fetch_all(self.pool.as_ref())
         .await?;
@@ -128,7 +131,7 @@ impl UserRepository {
     /// List users with pagination (newest-first).
     pub async fn find_all_paginated(&self, limit: i64, offset: i64) -> Result<Vec<User>, DbError> {
         let users = sqlx::query_as::<_, User>(
-            "SELECT username, password_hash, fullname, email, role_id, locked, created_at, avatar_seed
+            "SELECT username, password_hash, fullname, email, role_id, locked, created_at, avatar_seed, must_change_password, expires_at
              FROM users
              ORDER BY created_at DESC
              LIMIT ? OFFSET ?"
@@ -145,6 +148,23 @@ impl UserRepository {
     pub async fn update_role(&self, username: &str, role_id: i64) -> Result<(), DbError> {
         sqlx::query("UPDATE users SET role_id = ? WHERE username = ?")
             .bind(role_id)
+            .bind(username)
+            .execute(self.pool.as_ref())
+            .await?;
+
+        Ok(())
+    }
+
+    /// Set (or clear with `None` = never) the admin expiry horizon. Deliberately
+    /// not part of [`Self::update`] — profile saves must never shift the horizon
+    /// as a side effect, only this endpoint may move it.
+    pub async fn update_expires_at(
+        &self,
+        username: &str,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<(), DbError> {
+        sqlx::query("UPDATE users SET expires_at = ? WHERE username = ?")
+            .bind(expires_at)
             .bind(username)
             .execute(self.pool.as_ref())
             .await?;
@@ -186,7 +206,7 @@ impl UserRepository {
     /// Look up a user by their email address.
     pub async fn find_by_email(&self, email: &str) -> Result<Option<User>, DbError> {
         let user = sqlx::query_as::<_, User>(
-            "SELECT username, password_hash, fullname, email, role_id, locked, created_at, avatar_seed FROM users WHERE email = ?"
+            "SELECT username, password_hash, fullname, email, role_id, locked, created_at, avatar_seed, must_change_password, expires_at FROM users WHERE email = ?"
         )
         .bind(email)
         .fetch_optional(self.pool.as_ref())

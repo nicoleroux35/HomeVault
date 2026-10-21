@@ -1,0 +1,12 @@
+-- A password an admin chose or generated (account creation, admin reset)
+-- travels out of band and can stay valid forever. `must_change_password = 1`
+-- marks such a password: the owner's first sign-in accepts ONLY a password
+-- change (enforced server-side by `middleware::password_change_guard`, which
+-- limits a flagged session to `/auth/me`, `/auth/logout` and the self password
+-- change). Any self-service change (current password verified) clears it.
+-- Setup, recovery and a user's own change never set it — the user chose those
+-- passwords, so there is no out-of-band secret left to retire.
+--
+-- `DEFAULT 0` keeps every existing row (and the setup wizard's admin INSERT,
+-- which does not name this column) unflagged.
+ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0;

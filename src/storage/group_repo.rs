@@ -147,6 +147,23 @@ impl HvGroupRepository {
         self.find_by_name(name).await?.ok_or(DbError::NotFound)
     }
 
+    /// Move a mirror row to a new display name (group rename). The `full_name`
+    /// follows the `homevault_<name>` convention; `gid` is preserved because
+    /// `groupmod -n` keeps it.
+    pub async fn rename(&self, old_name: &str, new_name: &str) -> Result<bool, DbError> {
+        let full_name = format!("homevault_{}", new_name);
+        let result = sqlx::query(
+            "UPDATE hv_groups SET name = ?, full_name = ? WHERE name = ? AND is_system = 0",
+        )
+        .bind(new_name)
+        .bind(&full_name)
+        .bind(old_name)
+        .execute(self.pool.as_ref())
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Set the POSIX GID for a group (after OS-level group creation).
     pub async fn update_gid(&self, name: &str, gid: i64) -> Result<(), DbError> {
         sqlx::query("UPDATE hv_groups SET gid = ? WHERE name = ?")
@@ -201,18 +218,20 @@ impl HvGroupRepository {
         Ok(row.0 > 0)
     }
 
-    /// Update a group's description.
+    /// Update a group's description. Returns `false` when no mirror row
+    /// matches — a group created straight on the host has none yet, and the
+    /// caller then creates one instead of silently doing nothing.
     pub async fn update_description(
         &self,
         name: &str,
         description: Option<&str>,
-    ) -> Result<(), DbError> {
-        sqlx::query("UPDATE hv_groups SET description = ? WHERE name = ?")
+    ) -> Result<bool, DbError> {
+        let result = sqlx::query("UPDATE hv_groups SET description = ? WHERE name = ?")
             .bind(description)
             .bind(name)
             .execute(self.pool.as_ref())
             .await?;
 
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 }

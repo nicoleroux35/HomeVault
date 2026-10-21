@@ -40,7 +40,131 @@ follows [Semantic Versioning](https://semver.org/).
   (both card popover menus clipped by the card's `overflow-hidden`, Escape not
   closing them from the trigger, and a racy container count in test 5.2).
 
+- **Group rename and description (2026-10-20).** `PUT /api/groups/{name}`
+  takes `{ name?, description? }`: a rename runs `groupmod -n` and then moves
+  every reference that keys on the **display name** — the `hv_groups` mirror
+  (name + `full_name`, `gid` preserved), `resource_group_shares` (group-level
+  grants), `transfer_quotas` (`subject_type = 'group'`) and
+  `share_permissions` (`grantee_type = 'group'`) — so a rename can no longer
+  orphan a group's access. The OS rename runs first, so a refusal (name taken,
+  no sudo) leaves every reference untouched; the admin group is refused
+  outright because it carries the sudoers rule. The description lives in the
+  `hv_groups` mirror only (the OS has no such column), is created on demand
+  when the mirror row is missing, and `""` clears it. `GET /groups` now
+  carries `description`; the Groups detail pane gains an "Identity" card
+  (rename + description, read-only for the admin group) and the create form a
+  description field. Deleting a group now also drops its mirror row and its
+  grants, so a re-created display name inherits neither. Tests:
+  `groups_integration.rs` 26 → 34,
+  `tests/e2e/groups/group-identity.spec.ts` 3 passed / 3 skipped (the editing
+  half needs `groupadd`/`groupmod` over NOPASSWD sudo).
+
+- **Group-level resource access (2026-10-20, migration 051).** Per-member
+  grants (`resource_shares`) had to be re-typed for every account, and a member
+  added to a group later inherited nothing. `resource_group_shares` keys the
+  same `(kind, resource, permission)` triple by HomeVault **group** name
+  (no FK — groups live in `/etc/group`), exposed as `GET/POST/DELETE
+  /shares/access/groups` (admin-only, event-logged). Effective access is the
+  union of direct and group grants, resolved **at read time** from the member's
+  live OS membership, strongest level winning — nothing is copied, so leaving
+  a group revokes the inherited access on the next request and revoking a group
+  row never demotes a member who also holds a direct row. `GET
+  /shares/access/mine` gained `inherited`; the Users access card lists the
+  group grants under "Inherited from groups" with an editor limited to the
+  member's own groups; deleting a group purges its grants. Tests: 3 unit
+  (`merge_strongest`), `resource_shares_integration.rs` 10 → 15,
+  `tests/e2e/users/group-access.spec.ts` 2 passed / 2 skipped (the
+  inheritance half needs `groupadd` over NOPASSWD sudo).
+
+- **Account expiry (2026-10-20, migration 050).** `users.expires_at` (NULL =
+  never, the default) gives an account an admin-set horizon: past it,
+  `AuthService::authenticate` refuses sign-in before the password is verified
+  (`401 Account has expired`, no lockout footprint, PAM fall-through
+  included), and `AuthService::revoke_expired_account_sessions` deletes the
+  sessions the account still held — once at boot and then from a 10-minute
+  loop started with the other schedulers. `PUT /users/{username}/expiry` is
+  the only writer (the profile update never moves it) and a past date is
+  refused so the mistake surfaces in the UI instead of locking someone out.
+  The Users detail pane gains an "Account expiry" card (datetime-local editor,
+  local rendering of the stored UTC instant, an "Expired" badge). Tests:
+  `users_integration.rs` 66 → 71, `tests/e2e/users/account-expiry.spec.ts`
+  4/4 (Firefox, scratch server).
+
+- **Admin per-user session management (2026-10-20).** The Users detail pane's
+  Security card now lists a member's active sessions — address, created and
+  expiry, token masked to its first 8 characters + `…` — with a "Sign out
+  everywhere" button, backed by `GET /users/{username}/sessions` and `DELETE
+  /users/{username}/sessions` (admin-only, event-logged bulk revoke). The
+  masking is deliberate: a full token read would let an admin replay someone
+  else's session, so revocation is bulk-only — what an incident needs, and the
+  user simply signs back in afterwards. Tests: `users_integration.rs` 61 → 66,
+  `tests/e2e/users/admin-sessions.spec.ts` 2/2 (Firefox, scratch server).
+
+- **Forced first-sign-in password change (2026-10-20, migration 049).** A
+  password an admin chose or generated — account creation via `POST /users`, or
+  an admin password reset targeting someone else — now sets
+  `users.must_change_password`. The owner's next sign-in routes to a forced
+  password-change screen on the login shell, change included, nothing else:
+  `middleware::password_change_guard` answers `403
+  password_change_required` to any other API call the flagged session makes
+  (client-side UI is not the boundary). Login, `/auth/me`, the setup response
+  and `PUT /users/{u}/password` carry the flag; self changes clear it, an
+  admin reset re-arms it, setup and recovery never set it. Members who cannot
+  reach the admin-only desktop still get the change screen — the "random
+  password handed over out of band" flow now ends with the owner's own
+  password. Tests: `middleware/password_change_guard.rs` (5 unit),
+  `tests/password_change_integration.rs` (8), `login_integration.rs` 62/62,
+  `users_integration.rs` 61/61, `tests/e2e/password-change/` 16/16 (Firefox,
+  scratch server). The E2E pass caught two real bugs, both fixed: the guard
+  blocked the gate's boot read (`GET /auth/setup-status`), which killed the
+  reload-mid-flow path, and cargo does not track `static/dist` for its
+  `include_dir!` embed — the binary kept serving the pre-change bundle until
+  `handlers/spa.rs` was touched.
+
+- **Network configuration persistence (2026-10-20).** A configuration applied
+  from the Network app now survives a reboot: `PUT
+  /network/interfaces/{name}/config` persists the applied config to netplan
+  (`/etc/netplan/99-homevault-<name>.yaml`, renderer mirrored from the
+  existing config, static v4+v6 merged into one `addresses:`/`routes:` pair)
+  or, without netplan, to an ifupdown stanza. Without any backend the change
+  still applies live and the UI shows a "temporary" warning. The config is
+  written, never applied — `netplan apply` is left to boot.
+
+### Fixed
+
+- **Terminal E2E suite (2026-10-20).** After the `@xterm/xterm` 5 → 6
+  dependency refresh of 2026-10-19, `terminal.spec.ts` re-runs green on
+  firefox and chromium (81/81 each): the scratch-instance "What's New" modal
+  is dismissed before driving the dock, 2.10 compares the terminal body
+  against the v6 paint surface (`.xterm-scrollable-element`) instead of the
+  v5-era `.xterm-viewport` (which is now a hard-coded black lib layer), 14.1
+  asserts survival invariants instead of an exact tab count, and the
+  dev-server-only failures (4.2, 10.3) pass against the production bundle.
+- **RAID validation order + four HEAD-red unit tests (2026-10-20).** The
+  2026-10-19 "20 findings" pass was never test-executed; `cargo test` at HEAD
+  failed on 4 unit tests. `validate_virtual_disk_request` now applies the
+  raid10 even-count rules to `md_member_slots` **before** the device-count
+  floor, and the floor no longer shades the degraded-create semantics
+  (2-member raid5 `allow_missing` is valid — the `missing` placeholder fills
+  to the exact minimum; the budget governs); the health order test asserts the
+  nine checks including `raid_arrays`; the initramfs best-effort fallbacks
+  (`update-initramfs`, `dracut`) are pinned in a documented
+  `BEST_EFFORT_INITRAMFS_TOOLS` audit exemption instead of being flagged as
+  uninstallable. Full `cargo test` green (lib 892, all integration suites).
+
 ### Changed
+
+- **The 7 simplicity rules are now project rules (2026-10-20).** HomeVault is
+  an appliance for a home user, so simplicity is a correctness bar next to
+  accessibility: (1) immediately understandable, (2) only what the task needs,
+  (3) fewer steps / less effort, (4) progressive complexity, (5) predictable
+  and consistent, (6) reassuring and reversible, (7) adapted to the user.
+  Written into `CLAUDE.md` → "Simplicity rules" (binding, with the
+  accessibility baseline taking precedence where they interact), summarized
+  for every agent in `AGENTS.md` → "Simplicity is a correctness bar", and
+  detailed with the per-screen review checklist in
+  `docs/guides/design-system.md` → §7.2. No code change: this is the review
+  bar every new or edited screen is now held to.
 
 - **Workspace hygiene audit (2026-10-19).** Small correctness-of-the-tree fixes
   from a full verification pass (`cargo test` 1 622/0, `svelte-check` 0/0,

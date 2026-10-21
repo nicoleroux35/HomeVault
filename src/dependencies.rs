@@ -1085,6 +1085,22 @@ mod tests {
         "wg-quick",
     ];
 
+    /// The two initramfs generators RAID creation may invoke — **as pure
+    /// best-effort fallbacks, both wrapped in `let _ =`**
+    /// (`src/disk.rs`, mdadm post-create): `update-initramfs` on
+    /// initramfs-tools distros, `dracut` elsewhere. HomeVault deliberately
+    /// installs NEITHER:
+    /// - `initramfs-tools` is `Priority: important` and ships with every
+    ///   kernel-capable Debian/Ubuntu base — and a system booted without any
+    ///   generator does not exist;
+    /// - installing `dracut` *alongside* it to satisfy an audit would risk
+    ///   switching the kernel postinst regime on an apt-based host, a much
+    ///   worse outcome than skipping an optional regeneration.
+    /// Each base therefore already ships exactly one of the two (this is the
+    /// same "cannot be missing on a bootable base" class BASE_BINARIES pins,
+    /// kept out of it because the pair is an either/or, not a single package).
+    const BEST_EFFORT_INITRAMFS_TOOLS: &[&str] = &["dracut", "update-initramfs"];
+
     /// Binaries provided by packages every supported base already ships:
     /// `Priority: required` / `Essential` (coreutils, util-linux, procps,
     /// passwd, debianutils, libc-bin, gzip, findutils, systemd, sudo,
@@ -1221,6 +1237,7 @@ mod tests {
             .filter(|bin| !probed.contains(*bin))
             .filter(|bin| !BASE_BINARIES.contains(bin))
             .filter(|bin| !BINARIES_WITH_DEDICATED_CHECK.contains(bin))
+            .filter(|bin| !BEST_EFFORT_INITRAMFS_TOOLS.contains(bin))
             .collect();
 
         assert!(
@@ -1228,7 +1245,7 @@ mod tests {
             "these binaries are executed by HomeVault but have no install source:\n  {}\n\
              Add a `DependencySpec` for each (package + `binary_present` check) so \
              install.sh installs it, or list it in BASE_BINARIES / \
-             BINARIES_WITH_DEDICATED_CHECK with a reason.",
+             BINARIES_WITH_DEDICATED_CHECK / BEST_EFFORT_INITRAMFS_TOOLS with a reason.",
             uncovered.join("\n  ")
         );
     }

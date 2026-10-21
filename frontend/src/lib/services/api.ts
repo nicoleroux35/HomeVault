@@ -633,6 +633,28 @@ class ApiClient {
     return this.delete(`/shares/access?member=${encodeURIComponent(member)}&kind=${kind}&resource=${encodeURIComponent(resource)}`);
   }
 
+  /** Admin: every group-level grant, optionally narrowed to one group. */
+  async listGroupResourceAccess(group?: string) {
+    const qs = group ? `?group=${encodeURIComponent(group)}` : '';
+    return this.get(`/shares/access/groups${qs}`, { cache: false });
+  }
+
+  /** Admin: grant (or update) a group's access to a resource. Every member of
+   *  the group inherits it, unioned with their own direct grants. */
+  async grantGroupResourceAccess(group: string, kind: 'app' | 'folder' | 'share', resource: string, permission: 'read' | 'write' | 'full' = 'read') {
+    return this.post('/shares/access/groups', { group, kind, resource, permission });
+  }
+
+  /** Admin: revoke a group's access to a resource. */
+  async revokeGroupResourceAccess(group: string, kind: 'app' | 'folder' | 'share', resource: string) {
+    return this.delete(`/shares/access/groups?group=${encodeURIComponent(group)}&kind=${kind}&resource=${encodeURIComponent(resource)}`);
+  }
+
+  /** The group names a given account belongs to (OS membership). */
+  async getUserGroups(username: string) {
+    return this.get(`/users/${encodeURIComponent(username)}/groups`, { cache: false });
+  }
+
   // ==============================================
   // Web shortcuts
   // ==============================================
@@ -680,8 +702,17 @@ class ApiClient {
     return this.get(`/groups/${encodeURIComponent(name)}`);
   }
 
-  async createGroup(name: string, members: string[] = []) {
-    return this.post('/groups', { name, members });
+  async createGroup(name: string, members: string[] = [], description?: string) {
+    return this.post('/groups', { name, members, description: description || null });
+  }
+
+  /** Rename a group and/or set its description. The server migrates every
+   *  display-name reference (mirror, resource grants, quotas, ACLs) on a
+   *  rename, so callers never patch those by hand. */
+  async updateGroup(name: string, patch: { name?: string; description?: string | null }) {
+    const res = await this.put(`/groups/${encodeURIComponent(name)}`, patch);
+    this.invalidateCache('/groups');
+    return res;
   }
 
   async deleteGroup(name: string) {
@@ -925,6 +956,22 @@ class ApiClient {
 
   async revokeAllSessions() {
     return this.post('/security/sessions/revoke-all');
+  }
+
+  /** Admin Users screen: another user's active sessions — token values are
+   *  masked to audit references (`id`), revocation is bulk only. */
+  async getAdminUserSessions(username: string) {
+    return this.get(`/users/${username}/sessions`, { cache: false });
+  }
+
+  async revokeAdminUserSessions(username: string) {
+    return this.delete(`/users/${username}/sessions`);
+  }
+
+  /** Admin Users screen: set (`expiresAt` = RFC 3339) or clear (`null`)
+   *  the account's expiry horizon (migration 050). */
+  async setUserExpiry(username: string, expiresAt: string | null) {
+    return this.put(`/users/${username}/expiry`, { expires_at: expiresAt });
   }
 
   // Login history

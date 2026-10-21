@@ -739,6 +739,281 @@ pub fn set_interface_state(name: &str, up: bool) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Persistence (2026-10-20)
+//
+// `apply_interface_config` only changes the LIVE state (`ip`, `dhclient`,
+// `/proc/sys`) — a reboot lost every static address / DNS server the admin
+// had applied. This section persists the last-applied config so it is
+// re-applied at boot. Two backends, probed in this order:
+//
+//   1. **netplan** — Ubuntu's default; write `<base>/99-homevault-<name>.yaml`.
+//      The `99-` prefix and the interface key (`ethernets.<name>`) mean our
+//      file only overrides the one interface the admin actually touched;
+//      every other interface and mapping stays whatever the distro ships.
+//      The `renderer` is *mirrored*, never invented: if the existing netplan
+//      files declare `renderer: NetworkManager`, we re-declare the same one —
+//      writing the networkd default over an NM-managed host would fight
+//      NetworkManager at boot.
+//   2. **ifupdown** — the classic `/etc/network/interfaces.d/` include dir
+//      (only there when netplan is absent, e.g. plain Debian).
+//
+// Whatever the backend, the config is ONLY written, never applied: the live
+// state was already applied by `apply_interface_config`, and running
+// `netplan apply` right after it would tear the interface down and race the
+// admin's own remote session over the very interface they are configuring.
+// The Netplan YAML carries no secrets (no Wi-Fi PSK lives here — that is
+// wpa_supplicant's job), but the 600 mode is kept because netplan applies
+// directory-wide permission expectations to its config files.
+// ---------------------------------------------------------------------------
+
+/// Where the persisted netplan file for `name` lives.
+fn netplan_file_name(name: &str) -> String {
+    format!("99-homevault-{}.yaml", name)
+}
+
+/// Read the renderer the existing netplan configuration declares, if any.
+/// Files are read lexicographically — netplan merges in that order too, so
+/// the last declared value wins, mirroring how netplan itself would resolve
+/// two conflicting `renderer:` keys into the merged config.
+fn netplan_renderer(netplan_dir: &std::path::Path) -> Option<&'static str> {
+    let mut files: Vec<_> = std::fs::read_dir(netplan_dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "yaml" || e == "yml"))
+        .collect();
+    files.sort();
+    let mut renderer: Option<&'static str> = None;
+    for f in files {
+        let Ok(text) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        for line in text.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("renderer:") {
+                let value = rest.trim().trim_matches('"').trim_matches('\'');
+                // Netplan accepts `NetworkManager` / `networkd` (case-insensitive).
+                let canonical = if value.eq_ignore_ascii_case("NetworkManager") {
+                    "NetworkManager"
+                } else if value.eq_ignore_ascii_case("networkd") {
+                    "networkd"
+                } else {
+                    // An unknown renderer — leave the previous value untouched
+                    // rather than propagate something netplan may reject.
+                    continue;
+                };
+                renderer = Some(canonical);
+            }
+        }
+    }
+    renderer
+}
+
+/// Render the netplan YAML for one interface. Pure so it is unit-testable;
+/// `renderer` is `None` when no existing netplan file declares one (netplan
+/// falls back to `networkd` on its own).
+///
+/// The IPv4 and IPv6 static arms BOTH contribute `addresses` (and both
+/// gateways go into one `routes` table), so the entries are collected per
+/// family below instead of written per arm — duplicate YAML keys are a
+/// netplan parse error, and a static/static config (the common NAS setup: a
+/// fixed v4 + a fixed v6) would otherwise emit two `addresses:` blocks.
+fn render_netplan_yaml(name: &str, config: &InterfaceConfig, renderer: Option<&str>) -> String {
+    // Per-family switches, then the shared lists both static arms feed.
+    let dhcp4 = config.method == IpMethod::Dhcp;
+    let dhcp6 = config
+        .ipv6_method
+        .as_ref()
+        .is_some_and(|m| *m == Ipv6Method::Dhcp);
+    // Only emit `accept-ra` when IPv6 is being configured at all: with no
+    // IPv6 intent the interface keeps the host default.
+    let accept_ra = match config.ipv6_method {
+        Some(Ipv6Method::Auto) | Some(Ipv6Method::Dhcp) => Some(true),
+        Some(Ipv6Method::Static) | Some(Ipv6Method::Disabled) => Some(false),
+        None => None,
+    };
+
+    let mut addresses = Vec::new();
+    let mut routes = Vec::new();
+    let mut nameservers = Vec::new();
+
+    if config.method == IpMethod::Static {
+        if let Some(ip) = &config.ip {
+            let prefix = netmask_to_prefix(config.netmask.as_deref().unwrap_or("255.255.255.0"));
+            addresses.push(format!("{}/{}", ip, prefix));
+        }
+        if let Some(gw) = &config.gateway {
+            routes.push(gw.clone());
+        }
+        nameservers.extend(config.dns_servers.iter().cloned());
+    }
+
+    if config.ipv6_method == Some(Ipv6Method::Static) {
+        if let Some(v6) = &config.ipv6 {
+            let prefix = config.ipv6_prefix.unwrap_or(64);
+            addresses.push(format!("{}/{}", v6, prefix));
+        }
+        if let Some(gw) = &config.ipv6_gateway {
+            routes.push(gw.clone());
+        }
+        nameservers.extend(config.ipv6_dns_servers.iter().cloned());
+    }
+
+    let mut y = String::new();
+    y.push_str("# Written by HomeVault from the last configuration applied\n");
+    y.push_str("# through the web UI (Network app). Delete this file to hand the\n");
+    y.push_str("# interface back to the distro's default configuration.\n");
+    y.push_str("network:\n  version: 2\n");
+    if let Some(r) = renderer {
+        y.push_str(&format!("  renderer: {}\n", r));
+    }
+    y.push_str(&format!("  ethernets:\n    {}:\n", name));
+    y.push_str(&format!("      dhcp4: {}\n", dhcp4));
+    if let Some(ar) = accept_ra {
+        y.push_str(&format!("      accept-ra: {}\n", ar));
+    }
+    y.push_str(&format!("      dhcp6: {}\n", dhcp6));
+    if !addresses.is_empty() {
+        y.push_str("      addresses:\n");
+        for a in &addresses {
+            y.push_str(&format!("        - \"{}\"\n", a));
+        }
+    }
+    if !routes.is_empty() {
+        y.push_str("      routes:\n");
+        for gw in &routes {
+            y.push_str("        - to: default\n");
+            y.push_str(&format!("          via: {}\n", gw));
+        }
+    }
+    if !nameservers.is_empty() {
+        y.push_str("      nameservers:\n        addresses:\n");
+        for dns in &nameservers {
+            y.push_str(&format!("          - \"{}\"\n", dns));
+        }
+    }
+    y
+}
+
+/// netplan's configuration directory on this host.
+fn netplan_dir() -> &'static std::path::Path {
+    std::path::Path::new("/etc/netplan")
+}
+
+/// ifupdown's include directory that `/etc/network/interfaces` sources.
+const IFUPDOWN_DIR: &str = "/etc/network/interfaces.d";
+
+/// Persist the just-applied config for `name` to the first available backend.
+/// Called by the config handler AFTER `apply_interface_config` succeeded: a
+/// persistence failure must not flip the mutation into an error, it is
+/// reported so the operator knows the change is temporary.
+pub fn persist_interface_config(
+    name: &str,
+    config: &InterfaceConfig,
+) -> Result<&'static str, String> {
+    // Same gate as the applier: the name is interpolated into file paths and
+    // YAML keys below, so only a real interface (validated against the live
+    // list) may reach this point.
+    if !list_interfaces().iter().any(|i| i.name == name) {
+        return Err(format!("Unknown network interface: {}", name));
+    }
+
+    // Backend 1 — netplan (write mode 600, netplan's own expectation).
+    if netplan_dir().is_dir() {
+        let yaml = render_netplan_yaml(name, config, netplan_renderer(netplan_dir()));
+        let path = format!(
+            "{}/{}",
+            netplan_dir().to_str().unwrap_or("/etc/netplan"),
+            netplan_file_name(name)
+        );
+        write_as_root(&path, &yaml)?;
+        // `write_as_root` does not set the mode; enforce it explicitly.
+        let _ = ip_sudo("chmod")
+            .args(["600", &path])
+            .output()
+            .map_err(|e| e.to_string())?;
+        return Ok("netplan");
+    }
+
+    // Backend 2 — ifupdown (only when the include dir actually exists AND
+    // `/etc/network/interfaces` sources it; a bare ifupdown without includes
+    // can play this back silently, which is worse than not persisting).
+    let interfaces_file = std::fs::read_to_string("/etc/network/interfaces").unwrap_or_default();
+    if std::path::Path::new(IFUPDOWN_DIR).is_dir()
+        && interfaces_file
+            .lines()
+            .any(|l| l.trim().starts_with("source ") && l.trim().contains("interfaces.d"))
+    {
+        let stanza = render_ifupdown_stanza(name, config);
+        let path = format!("{}/homevault-{}", IFUPDOWN_DIR, name);
+        write_as_root(&path, &stanza)?;
+        return Ok("ifupdown");
+    }
+
+    Err("No supported persistence backend found (neither netplan nor ifupdown)".to_string())
+}
+
+/// Render the ifupdown stanza for one interface (backend 2). Pure so it is
+/// unit-testable.
+fn render_ifupdown_stanza(name: &str, config: &InterfaceConfig) -> String {
+    let mut s = String::new();
+    s.push_str("# Written by HomeVault from the last configuration applied\n");
+    s.push_str("# through the web UI (Network app). Delete this file to hand the\n");
+    s.push_str("# interface back to /etc/network/interfaces defaults.\n");
+    s.push_str(&format!("auto {}\n", name));
+    s.push_str(&format!(
+        "iface {} inet {}\n",
+        name,
+        if config.method == IpMethod::Static {
+            "static"
+        } else {
+            "dhcp"
+        }
+    ));
+    if config.method == IpMethod::Static {
+        if let Some(ip) = &config.ip {
+            let prefix = netmask_to_prefix(config.netmask.as_deref().unwrap_or("255.255.255.0"));
+            s.push_str(&format!("    address {}/{}\n", ip, prefix));
+        }
+        if let Some(gw) = &config.gateway {
+            s.push_str(&format!("    gateway {}\n", gw));
+        }
+        if !config.dns_servers.is_empty() {
+            s.push_str(&format!(
+                "    dns-nameservers {}\n",
+                config.dns_servers.join(" ")
+            ));
+        }
+    }
+    match config.ipv6_method {
+        Some(Ipv6Method::Static) => {
+            s.push_str(&format!("iface {} inet6 static\n", name));
+            if let Some(v6) = &config.ipv6 {
+                let prefix = config.ipv6_prefix.unwrap_or(64);
+                s.push_str(&format!("    address {}/{}\n", v6, prefix));
+            }
+            if let Some(gw) = &config.ipv6_gateway {
+                s.push_str(&format!("    gateway {}\n", gw));
+            }
+            if !config.ipv6_dns_servers.is_empty() {
+                s.push_str(&format!(
+                    "    dns-nameservers {}\n",
+                    config.ipv6_dns_servers.join(" ")
+                ));
+            }
+        }
+        Some(Ipv6Method::Dhcp) => {
+            s.push_str(&format!("iface {} inet6 dhcp\n", name));
+        }
+        Some(Ipv6Method::Auto) => {
+            s.push_str(&format!("iface {} inet6 auto\n", name));
+        }
+        Some(Ipv6Method::Disabled) | None => {}
+    }
+    s
+}
+
 /// Read current interface configuration.
 pub fn get_interface_config(name: &str) -> InterfaceConfig {
     // Check if DHCP is in use via dhclient leases or resolv.conf hints
@@ -1785,5 +2060,166 @@ mod tests {
             false,
         );
         assert_eq!(out, "nameserver 10.0.0.1\n");
+    }
+
+    // -- network persistence (netplan / ifupdown rendering) -------------
+
+    fn cfg(method: IpMethod) -> InterfaceConfig {
+        InterfaceConfig {
+            method,
+            ip: None,
+            netmask: None,
+            gateway: None,
+            dns_servers: vec![],
+            ipv6_method: None,
+            ipv6: None,
+            ipv6_prefix: None,
+            ipv6_gateway: None,
+            ipv6_dns_servers: vec![],
+        }
+    }
+
+    fn static_cfg() -> InterfaceConfig {
+        let mut c = cfg(IpMethod::Static);
+        c.ip = Some("10.0.0.5".to_string());
+        c.netmask = Some("255.255.255.0".to_string());
+        c.gateway = Some("10.0.0.1".to_string());
+        c.dns_servers = vec!["1.1.1.1".to_string(), "8.8.8.8".to_string()];
+        c
+    }
+
+    #[test]
+    fn test_netplan_yaml_dhcp4_only() {
+        let y = render_netplan_yaml("eth0", &cfg(IpMethod::Dhcp), None);
+        assert!(y.contains("dhcp4: true"));
+        assert!(!y.contains("addresses:"));
+        assert!(!y.contains("routes:"));
+        // No IPv6 intent anywhere: no accept-ra block, and dhcp6 defaults off.
+        assert!(!y.contains("accept-ra:"));
+        assert!(y.contains("dhcp6: false"));
+        // No renderer invented when the host config declares none.
+        assert!(!y.contains("renderer:"));
+    }
+
+    #[test]
+    fn test_netplan_yaml_static_merges_both_families() {
+        let mut c = static_cfg();
+        c.ipv6_method = Some(Ipv6Method::Static);
+        c.ipv6 = Some("2001:db8::5".to_string());
+        c.ipv6_prefix = Some(64);
+        c.ipv6_gateway = Some("2001:db8::1".to_string());
+        c.ipv6_dns_servers = vec!["2001:4860:4860::8888".to_string()];
+        let y = render_netplan_yaml("eth0", &c, None);
+
+        // ONE interface-level `addresses:` block carrying both families —
+        // duplicate keys are a netplan parse error, so the merged list is the
+        // whole point. (`nameservers:` nests its own indented `addresses:`
+        // block below, which is why the count counts the exact indentation.)
+        assert_eq!(y.matches("\n      addresses:").count(), 1);
+        assert!(y.contains("- \"10.0.0.5/24\""));
+        assert!(y.contains("- \"2001:db8::5/64\""));
+        // ONE `routes:` table with both default routes.
+        assert_eq!(y.matches("\n      routes:").count(), 1);
+        assert_eq!(y.matches("to: default").count(), 2);
+        assert!(y.contains("via: 10.0.0.1"));
+        assert!(y.contains("via: \"2001:db8::1\"") || y.contains("via: 2001:db8::1"));
+        // Nameservers from both families share the one list.
+        assert!(y.contains("- \"1.1.1.1\""));
+        assert!(y.contains("- \"2001:4860:4860::8888\""));
+        // Static of both kinds: RA acceptance must be off.
+        assert!(y.contains("accept-ra: false"));
+    }
+
+    #[test]
+    fn test_netplan_yaml_mirrors_declared_renderer() {
+        let y = render_netplan_yaml("eth0", &cfg(IpMethod::Dhcp), Some("NetworkManager"));
+        assert!(y.contains("renderer: NetworkManager"));
+    }
+
+    #[test]
+    fn test_netplan_yaml_iface_not_quoted() {
+        // The interface key is a mapping key, not a scalar — netplan expects
+        // `ethernets:\n    eth0:` (bare identifier).
+        let y = render_netplan_yaml("eth0", &cfg(IpMethod::Dhcp), None);
+        assert!(y.contains("  ethernets:\n    eth0:\n"));
+    }
+
+    #[test]
+    fn test_netplan_renderer_reads_last_declared_value() {
+        let dir = std::env::temp_dir().join(format!("hv-netplan-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("01-distro.yaml"),
+            "network:\n  renderer: networkd\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("02-nm.yaml"),
+            "network:\n  version: 2\n  renderer: NetworkManager\n",
+        )
+        .unwrap();
+        // Lexicographic order — like netplan's merge, the last declared value wins.
+        assert_eq!(netplan_renderer(&dir), Some("NetworkManager"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_netplan_renderer_ignores_unknown_renderer_values() {
+        let dir = std::env::temp_dir().join(format!("hv-netplan-test-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("01-weird.yaml"),
+            "network:\n  renderer: some-other-plane\n",
+        )
+        .unwrap();
+        assert_eq!(netplan_renderer(&dir), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_netplan_renderer_empty_dir_is_none() {
+        let dir = std::env::temp_dir().join(format!("hv-netplan-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(netplan_renderer(&dir), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_netplan_file_name_is_namespaced() {
+        assert_eq!(netplan_file_name("eth0"), "99-homevault-eth0.yaml");
+    }
+
+    #[test]
+    fn test_ifupdown_stanza_static() {
+        let mut c = static_cfg();
+        c.ipv6_method = Some(Ipv6Method::Static);
+        c.ipv6 = Some("2001:db8::5".to_string());
+        c.ipv6_prefix = Some(64);
+        let s = render_ifupdown_stanza("eth0", &c);
+        assert!(s.contains("auto eth0\n"));
+        assert!(s.contains("iface eth0 inet static"));
+        assert!(s.contains("address 10.0.0.5/24"));
+        assert!(s.contains("gateway 10.0.0.1"));
+        assert!(s.contains("dns-nameservers 1.1.1.1 8.8.8.8"));
+        assert!(s.contains("iface eth0 inet6 static"));
+        assert!(s.contains("address 2001:db8::5/64"));
+    }
+
+    #[test]
+    fn test_ifupdown_stanza_dhcp() {
+        let s = render_ifupdown_stanza("eth1", &cfg(IpMethod::Dhcp));
+        assert!(s.contains("auto eth1\n"));
+        assert!(s.contains("iface eth1 inet dhcp"));
+    }
+
+    #[test]
+    fn test_ifupdown_stanza_ipv6_auto_and_disabled() {
+        let mut c = cfg(IpMethod::Dhcp);
+        c.ipv6_method = Some(Ipv6Method::Auto);
+        assert!(render_ifupdown_stanza("eth0", &c).contains("iface eth0 inet6 auto"));
+
+        c.ipv6_method = Some(Ipv6Method::Disabled);
+        let s = render_ifupdown_stanza("eth0", &c);
+        assert!(!s.contains("inet6"));
     }
 }

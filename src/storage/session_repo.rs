@@ -122,6 +122,22 @@ impl SessionRepository {
         Ok(row.0)
     }
 
+    /// Delete every live session owned by an account whose admin-set expiry
+    /// horizon (`users.expires_at`, migration 050) has passed. Called by the
+    /// boot sweep and the periodic auth-housekeeping loop — paired with the
+    /// sign-in refusal in `AuthService::authenticate`.
+    pub async fn revoke_expired_user_sessions(&self) -> Result<u64, DbError> {
+        let now = chrono::Utc::now();
+        let result = sqlx::query(
+            "DELETE FROM sessions WHERE username IN (\n             SELECT username FROM users WHERE expires_at IS NOT NULL AND expires_at <= ?\n        )",
+        )
+        .bind(now)
+        .execute(self.pool.as_ref())
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
     /// Number of sessions belonging to a specific user.
     pub async fn count_by_username(&self, username: &str) -> Result<i64, DbError> {
         let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM sessions WHERE username = ?")

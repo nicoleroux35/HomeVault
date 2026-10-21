@@ -165,14 +165,23 @@ Notable handlers (see `API.md` for the full map):
 ## Storage / repository layer
 
 `src/storage/` holds SQLx repositories. Each repo wraps a pool and provides typed
-async CRUD. Migrations are in `sqlx/migrations/` (**001–048**), embedded in the
+async CRUD. Migrations are in `sqlx/migrations/` (**001–051**), embedded in the
 binary via `include_dir!` and applied at startup. `storage/database.rs::Database::run_migrations`
 runs each pending file once (tracked in `_hv_migrations`); the hand-rolled SQL
 statement splitter tracks `--` line comments explicitly, so a semicolon inside a
 comment doesn't get treated as a statement terminator; `migrate_roles_005` seeds
 default roles. Recent migrations: `027_app_stores.sql`,
 `028_password_recovery_codes.sql`, `029_drop_password_reset_tokens.sql`
-(the old email reset flow was deleted), `030_drop_user_wallpapers.sql`,
+(the old email reset flow was deleted), (2026-10-20 group rename/description adds **no** migration: it reuses
+`hv_groups` from `008_permissions_schema.sql`),
+**`051_resource_group_shares.sql`**
+(group-level resource grants, resolved as a union with the per-member rows at
+read time from live OS group membership), **`050_users_expires_at.sql`**
+(users.expires_at: an admin-set horizon after which sign-in is refused and
+the live sessions are swept), **`049_must_change_password.sql`**
+(users.must_change_password: a password an admin chose or generated must be
+replaced by its owner at first sign-in, limited server-side by
+`middleware::password_change_guard`), `030_drop_user_wallpapers.sql`,
 `031_explorer_favorites.sql`, `032_user_home_size.sql` (`user_homes.size_limit_bytes`),
 `033_rag_knowledge_base.sql` (RAG documents, chunks, index status),
 `034_explorer_share_links.sql` (Explorer "share by link"),
