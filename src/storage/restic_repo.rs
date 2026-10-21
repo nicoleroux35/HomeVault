@@ -235,11 +235,18 @@ impl ResticRepository {
         Ok(id)
     }
 
+    /// Close a job once its run ends.
+    ///
+    /// `snapshot_id` is filled in here rather than at creation because the
+    /// job row is now created **before** the run (so `started_at` is the real
+    /// start time and a crash leaves a visible row); restic only reports the
+    /// snapshot id at the end. `None` keeps the stored value.
     #[allow(clippy::too_many_arguments)]
     pub async fn update_backup_job(
         &self,
         id: &str,
         status: &str,
+        snapshot_id: Option<&str>,
         files_new: u64,
         files_changed: u64,
         files_unmodified: u64,
@@ -252,9 +259,10 @@ impl ResticRepository {
         let now = Utc::now().to_rfc3339();
 
         sqlx::query(
-            "UPDATE restic_backup_jobs SET status = ?, files_new = ?, files_changed = ?, files_unmodified = ?, data_added_bytes = ?, total_files_processed = ?, total_bytes = ?, duration_secs = ?, error_message = ?, finished_at = ? WHERE id = ?",
+            "UPDATE restic_backup_jobs SET status = ?, snapshot_id = COALESCE(?, snapshot_id), files_new = ?, files_changed = ?, files_unmodified = ?, data_added_bytes = ?, total_files_processed = ?, total_bytes = ?, duration_secs = ?, error_message = ?, finished_at = ? WHERE id = ?",
         )
         .bind(status)
+        .bind(snapshot_id)
         .bind(files_new as i64)
         .bind(files_changed as i64)
         .bind(files_unmodified as i64)
@@ -284,6 +292,25 @@ impl ResticRepository {
         .fetch_optional(self.pool.as_ref())
         .await?;
         Ok(row.and_then(|r| r.0))
+    }
+
+    /// Close every job still marked `running`.
+    ///
+    /// A job row is created before its run, so a crash, a restart or a
+    /// `systemctl stop` during a backup leaves it `running` forever: the
+    /// history shows a phantom run, `GET /api/restic/jobs` lists it as live,
+    /// and the user cannot tell it apart from a real one. Called once at
+    /// startup, before the scheduler starts its own runs.
+    pub async fn fail_stale_running_jobs(&self) -> Result<u64, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE restic_backup_jobs SET status = 'failed', error_message = ?, finished_at = ? WHERE status = 'running'",
+        )
+        .bind("Interrupted: HomeVault stopped before the backup finished")
+        .bind(&now)
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected())
     }
 }
 

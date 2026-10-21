@@ -451,13 +451,13 @@ catalog, files, VMs, knowledge search, reboot). See
 | GET | `/restic/repos/{id}/jobs` | auth | backup job history |
 | POST | `/restic/repos/{id}/unlock` | admin | |
 | POST | `/restic/repos/{id}/prune` | admin | |
-| POST | `/restic/backup` | admin | run backup (SSE progress) |
+| POST | `/restic/backup` | admin | **starts** a backup and answers immediately: `{status:"running", job_id, backup_job_id}` (SSE progress, cancellable via `DELETE /progress/{job_id}`) |
 | GET | `/restic/reminders` | auth | backup reminders — per repo: `last_backup_at` + `days_since` + `stale`, so the UI can nag when a repository hasn't been backed up recently |
-| GET | `/restic/restore-plan` | auth | `?repo_id=&snapshot=` — pre-flight space check `{ size_bytes, available_bytes, fits }` (snapshot restore size vs free space on the destination); the restore dialog debounces this before committing |
-| POST | `/restic/restore` | admin | |
-| POST | `/restic/check` | auth | |
-| POST | `/restic/forget` | admin | apply retention |
-| POST | `/restic/snapshots/delete` | admin | |
+| GET | `/restic/restore-plan` | admin | `?repo_id=&snapshot_id=&target=` — pre-flight space check `{ required_bytes, available_bytes, fits }` (snapshot restore size vs free space on the destination); the restore dialog debounces this before committing |
+| POST | `/restic/restore` | admin | **starts** a restore: `{status:"running", job_id}` |
+| POST | `/restic/check` | auth | metadata check; `{"read_data": true}` re-reads every pack and is **admin** |
+| POST | `/restic/forget` | admin | apply retention — at least one rule required, `keep_within` validated (`30d`, `1y2m`) |
+| POST | `/restic/snapshots/delete` | admin | `snapshot_id` validated (`[A-Za-z0-9._-]`, no leading `-`) |
 | GET | `/restic/schedules` | auth | |
 | POST | `/restic/schedules` | admin | |
 | PUT/DELETE | `/restic/schedules/{id}` | admin | |
@@ -466,8 +466,12 @@ catalog, files, VMs, knowledge search, reboot). See
 | POST | `/restic/retention-policies` | admin | |
 | PUT/DELETE | `/restic/retention-policies/{id}` | admin | |
 
-Backup jobs are marked `completed`/`failed` in the DB on both success and failure
-paths (`handle_restic_backup_create`).
+Backup and restore are **background jobs**: the endpoints answer with a
+`job_id` before the run starts, progress is streamed from `restic backup --json`,
+and the `restic_backup_jobs` row is created (status `running`) before the run —
+a job left `running` by a restart is closed at the next startup. One
+backup/restore per repository at a time (`RepoRunLock`). Every positional
+argument and path is validated in `src/restic.rs` before restic is spawned.
 
 ## Docker — `docker/*` (almost entirely `admin`)
 

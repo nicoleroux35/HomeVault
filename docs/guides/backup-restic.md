@@ -62,34 +62,119 @@ Handlers in `src/handlers/restic.rs`. Scheduler in `src/restic_scheduler.rs`
 `src/storage/restic_repo.rs`, schedules in `src/storage/restic_schedule_repo.rs`,
 retention in `src/storage/backup_retention_repo.rs`. Wrapper in `src/restic.rs`.
 
-## Backend
-
-Handlers in `src/handlers/restic.rs`. Scheduler in `src/restic_scheduler.rs`
-(`compute_next_run`, `run_scheduler_loop`). Repos in
-`src/storage/restic_repo.rs`, schedules in `src/storage/restic_schedule_repo.rs`,
-retention in `src/storage/backup_retention_repo.rs`. Wrapper in `src/restic.rs`.
-
 | Endpoint | Auth | Notes |
 |----------|------|-------|
 | `GET /restic/available`, `/restic/version` | auth | |
 | `GET /restic/repos` | auth | `?include_password=` → admin only when true |
-| `POST /restic/repos` | admin | create |
+| `POST /restic/repos` | admin | create + `restic init` |
 | `GET/PUT/DELETE /restic/repos/{id}` | auth/admin | |
 | `GET /restic/repos/{id}/snapshots\|stats\|jobs` | auth | |
 | `POST /restic/repos/{id}/unlock\|prune` | admin | |
-| `POST /restic/backup` | admin | run backup (SSE progress) |
-| `POST /restic/restore\|forget` | admin | |
-| `POST /restic/check` | auth | integrity check (read-level session) |
+| `POST /restic/backup` | admin | **starts** a backup, answers `{status:"running", job_id, backup_job_id}` |
+| `POST /restic/restore` | admin | **starts** a restore, answers `{status:"running", job_id}` |
+| `POST /restic/forget` | admin | at least one retention rule required |
+| `POST /restic/check` | auth | metadata check for any session; `read_data: true` (re-reads every pack) is **admin** |
 | `POST /restic/snapshots/delete` | admin | |
 | `GET /restic/schedules` | auth | list schedules |
 | `POST /restic/schedules` | admin | create |
 | `PUT/DELETE /restic/schedules/{id}` | admin | update/delete |
 | `PUT /restic/schedules/{id}/enabled` | admin | enable/disable |
 | `GET /restic/retention-policies` | auth | list |
-| `POST /restic/retention-policies` | admin | create |
+| `POST /restic/retention-policies` | admin | create (at least one limit, values > 0) |
 | `PUT/DELETE /restic/retention-policies/{id}` | admin | update/delete |
 | `GET /restic/reminders` | auth | **backup reminders** — for each repo, `last_backup_at` + `days_since` + a `stale` flag, so the UI can nag when a repository has not been backed up recently |
-| `GET /restic/restore-plan` | auth | **pre-flight space check** — `?repo_id=&snapshot=` → `{ size_bytes, available_bytes, fits }`, comparing the snapshot's total restore size (`restic::restore_size`) with the free space (`df`) on the destination. Debounced by the restore dialog before the user commits |
+| `GET /restic/restore-plan` | admin | **pre-flight space check** — `?repo_id=&snapshot_id=&target=` → `{ required_bytes, available_bytes, fits }`, comparing the snapshot's total restore size (`restic::restore_size`) with the free space (`df`) on the destination. Debounced by the restore dialog before the user commits |
+
+### Long-running runs are background jobs (2026-10-21)
+
+`POST /restic/backup` and `POST /restic/restore` used to run restic **inline**:
+the HTTP request stayed open for the whole run (hours on a multi-TB dataset),
+`trackJob` was only called once the job had already finished (so the floating
+island showed a completed job), a browser timeout looked like a failed backup,
+and the Tokio worker was parked for the duration.
+
+Both now return immediately:
+
+```json
+{ "status": "running", "job_id": "…", "backup_job_id": "…", "repository": "nas" }
+```
+
+- the run happens in a spawned task, with the blocking restic call on
+  `spawn_blocking` (`ResticService::run_restic_op`);
+- `restic backup --json` is read **line by line**
+  (`ResticService::create_backup_streaming`), so `percent_done` / `bytes_done`
+  become real SSE progress (`ResticProgress` → `ProgressEmitter::progress_extended`)
+  instead of the old 5 % → 90 % jump;
+- `DELETE /api/progress/{job_id}` really stops the process: the child is
+  registered in `ResticService`'s run registry and the cancel hook sends
+  **SIGINT** (restic then releases its repository lock), with SIGKILL after 10 s
+  as a watchdog. The job ends `cancelled`, not `failed`.
+- **One run per repository.** `RepoRunLock` refuses a second backup/restore on
+  the same repo with "A backup or restore is already running on this
+  repository" instead of letting restic answer "repository is already locked"
+  after a full source scan. Two different repositories may run in parallel.
+- the `restic_backup_jobs` row is written **before** the run (status
+  `running`), so `started_at` is the real start time and the run is visible
+  while it happens. `snapshot_id` is filled in when restic reports it.
+- the scheduler closes every leftover `running` job at startup
+  (`fail_stale_running_jobs`): a crash or a `systemctl stop` mid-backup used to
+  leave a phantom run in the history for ever.
+
+`POST /restic/check` stays synchronous (the dialog shows the verdict inline),
+but it also runs off the runtime and is cancellable. `--read-data` re-reads
+every pack file — hours of disk I/O — so it requires admin.
+
+### Arguments are validated before restic is spawned
+
+Every value that would become an argv entry is checked in `src/restic.rs`:
+`validate_snapshot_id`, `validate_backup_path`, `validate_restore_target`,
+`validate_snapshot_name`, `validate_repository`, `validate_password`,
+`validate_display_name`, `validate_keep_within`, `validate_tags`,
+`validate_exclude_patterns`.
+
+- `restic forget <snapshot_id>` with `snapshot_id = "--keep-last=0"` was a
+  **full repository wipe**: the value was passed positionally and parsed as an
+  option. Snapshot ids are now limited to `[A-Za-z0-9._-]`, no leading `-`.
+- backup sources and restore targets must be **absolute** (which also makes a
+  leading `-` impossible), free of control characters and of `..`.
+- the pre-backup filesystem snapshot name builds `/tmp/restic-snap-<name>`, so
+  a name of `../../etc` used to mount over an arbitrary directory.
+- `forget` with no rule at all is refused here instead of coming back as
+  restic's "Fatal: no policy was specified".
+- repository create/update refuse an empty name, an empty location, an empty
+  password, a relative source path and an unknown `retention_policy_id`.
+
+### The check verdict
+
+`restic check` prints **"no errors were found"** on success — a line that
+contains the substring `error`. The old collector kept every line containing
+`error`, so `healthy` was `false` on *every* healthy repository. The verdict now
+comes from `ResticService::parse_check_output`: the success sentinel is
+excluded, only `error:` / `fatal:` / `unable to` / `failed to` / `is damaged`
+lines count, and a non-zero exit with no recognizable marker still reports one.
+
+### Retention: count, age and size
+
+The scheduler applies the repository's policy (or the default `apply_to_all`
+policy) after each successful run:
+
+1. `max_count` → `--keep-last`, `max_age_days` → `--keep-within <n>d`;
+2. `max_size_gb` → measured with `restic stats`, then a `--keep-last` derived
+   from the average snapshot size (`plan_keep_last_for_size`), followed by
+   `forget --prune`.
+
+`max_size_gb` used to be stored, returned by the API and **never applied**. The
+size pass never keeps 0 snapshots and never deletes the newest one: a single
+snapshot over the cap is left alone (with a log line) rather than wiped.
+
+### Pre-backup filesystem snapshots
+
+`snapshot_create_before_backup` mounts a ZFS/Btrfs snapshot at
+`/tmp/restic-snap-<name>` and backs that up. A failed mount now **aborts the
+run**: it used to be ignored, so the backup silently captured an empty mount
+point, reported success and deleted the snapshot — the user believed their data
+was safe. `SnapshotMount` (RAII) unmounts and removes the directory on every
+exit path.
 
 ## Frontend
 
@@ -109,19 +194,35 @@ retention in `src/storage/backup_retention_repo.rs`. Wrapper in `src/restic.rs`.
   `frontend/src/lib/components/backup/BackupProgressIsland.svelte`, mounted once
   in `Desktop.svelte`. Because it lives above the app windows, a running backup
   keeps its progress visible while the user switches apps; `Restic.svelte`
-  registers each run with `trackJob`.
+  registers each run with `trackJob(jobId, label, onSettle)` and `onSettle`
+  reloads the snapshot/job lists when the run really ends (the start endpoint
+  answers before the run, so reloading at that moment would show the previous
+  state).
 
 ## Invariants
 
 - Every one of the 26 `restic.rs` handlers requires a session (a past bug accepted
   any non-empty token, and `?include_password=true` leaked every repo password
   in plaintext). Read = `require_auth`; mutations (incl. `include_password`) =
-  `require_admin`.
-- `handle_restic_backup_create` must call `update_backup_job` after
-  `create_backup_job` on **both** success and failure paths, so jobs are never
-  stuck on `running`.
+  `require_admin`; `check` is `require_auth` but `read_data: true` is admin.
+- **No blocking restic call on a Tokio worker.** Every handler goes through
+  `ResticService::run_restic_op` (`spawn_blocking`, optional timeout:
+  `RESTIC_QUERY_TIMEOUT` for metadata, `RESTIC_INIT_TIMEOUT` for `init`, none for
+  the data-moving operations, which rely on cancellation instead).
+- **The backup job row exists before the run.** `create_backup_job` (status
+  `running`) → run → `update_backup_job` (`completed` / `failed` / `cancelled`,
+  plus the `snapshot_id` restic reported). The startup reaper
+  (`fail_stale_running_jobs`) closes anything left `running`.
+- **One backup/restore per repository** (`RepoRunLock`), shared by the manual
+  handlers and the scheduler. It is released by `Drop`, so an early return or a
+  panic cannot wedge a repository.
+- **Nothing unvalidated reaches argv.** New operations must validate every
+  positional argument and every path with the `validate_*` helpers in
+  `src/restic.rs`; `snapshot_id` in particular is never passed through as-is.
 - The scheduler computes `next_run_at` via the `cron` crate and reschedules (and
-  marks `failed`) even when a run errors.
+  marks `failed`) even when a run errors — a single failure must not wedge a
+  schedule with a stale `next_run_at`. It also skips (and reschedules) a run
+  when another run already owns the repository.
 - Backup/restore/verify already emit `ProgressEmitter` progress, so they show in
   the desktop [activity taskbar](./activity.md) with no `restic.rs` change
   (`/api/activity` reads the same `PROGRESS_MANAGER` registry). The floating

@@ -2,8 +2,8 @@
  * File          : backupJobs.svelte.ts
  * Author        : Nicolas Le Roux
  * Created       : 13/10/2026
- * Last modified : 13/10/2026 by Nicolas Le Roux
- * Version       : 1.0.0
+ * Last modified : 21/10/2026 by Nicolas Le Roux
+ * Version       : 1.1.0
  *
  * Description:
  *   Persistent backup/restore job tracking for the floating progress
@@ -16,7 +16,8 @@
  *   - svelte (>= 5, runes)
  *
  * Usage:
- *   trackJob(jobId, label) right after starting a backup/restore;
+ *   trackJob(jobId, label, onSettle?) right after starting a backup/restore;
+ *   `onSettle` refreshes the page once the run really ends;
  *   trackedJobs()/activeTrackedJobs() feed the island.
  * =============================================================================
  */
@@ -47,24 +48,39 @@ export function trackedJobs(): TrackedJob[] {
 }
 
 /** Subscribe to a progress job and surface it in the island. Idempotent. */
-export function trackJob(jobId: string, label: string): void {
+export function trackJob(jobId: string, label: string, onSettle?: () => void): void {
   if (!jobId || seen.has(jobId)) return;
   seen.add(jobId);
   const entry: TrackedJob = { jobId, label, progress: 0, message: label, state: 'running' };
   jobs.push(entry);
+  // `onSettle` runs once, whichever way the job ends. The backup page uses it
+  // to refresh the snapshot/job lists when the run actually finishes: the
+  // start endpoint now answers immediately, so refreshing at that moment
+  // would list the *previous* state.
+  let settled = false;
+  const settle = () => {
+    if (settled) return;
+    settled = true;
+    onSettle?.();
+  };
   api.subscribeToProgress(
     jobId,
     (event: any) => {
       entry.progress = typeof event.progress === 'number' ? event.progress : entry.progress;
       entry.message = event.message || entry.message;
-      if (event.state === 'failed') entry.state = 'failed';
+      if (event.state === 'failed') {
+        entry.state = 'failed';
+        settle();
+      }
     },
     () => {
       entry.progress = 100;
       entry.state = 'done';
+      settle();
     },
     () => {
       entry.state = 'failed';
+      settle();
     },
   );
 }

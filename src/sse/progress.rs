@@ -615,6 +615,13 @@ impl ProgressEmitter {
         PROGRESS_MANAGER.register_cancel_hook(job_id, hook)
     }
 
+    /// Drop the producer's cancellation hook once its work is over, so the
+    /// registry does not keep a closure (and its captured job id) alive for
+    /// every finished backup.
+    pub fn clear_cancel_hook(job_id: &str) {
+        PROGRESS_MANAGER.clear_cancel_hook(job_id)
+    }
+
     /// Get current progress
     pub fn get(job_id: &str) -> Option<ProgressEvent> {
         PROGRESS_MANAGER.get_progress(job_id)

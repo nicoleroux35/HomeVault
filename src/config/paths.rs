@@ -110,6 +110,17 @@ pub fn logs_dir() -> PathBuf {
     base_dir().join("logs")
 }
 
+/// Directory holding restic's local cache.
+///
+/// restic caches repository indexes under `$XDG_CACHE_HOME/restic` (or
+/// `~/.cache/restic`) by default. On an appliance the service account may
+/// have no writable `$HOME` at all, and a backup then fails with an obscure
+/// cache error — so every restic invocation is pinned to a directory
+/// HomeVault owns (`RESTIC_CACHE_DIR`).
+pub fn restic_cache_dir() -> PathBuf {
+    data_dir().join("restic-cache")
+}
+
 /// Directory holding the Syncthing configuration.
 pub fn syncthing_dir() -> PathBuf {
     base_dir().join("syncthing")

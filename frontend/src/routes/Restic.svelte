@@ -162,7 +162,7 @@
   let newSchedule = $state({ name: '', cron_expression: '0 2 * * *', enabled: true });
 
   let showPolicyManagerModal = $state(false);
-  let newPolicy = $state({ name: '', max_count: 30, max_age_days: 90, apply_to_all: false });
+  let newPolicy = $state({ name: '', max_count: 30, max_age_days: 90, max_size_gb: 0, apply_to_all: false });
 
   let backupTags = $state('');
   let backupExclude = $state('');
@@ -260,6 +260,12 @@
   let forgetKeepMonthly = $state(6);
   let forgetKeepYearly = $state(3);
   let forgetPrune = $state(true);
+  // At least one bucket must be non-zero, otherwise restic has no policy.
+  const hasForgetRule = $derived(
+    [forgetKeepLast, forgetKeepDaily, forgetKeepWeekly, forgetKeepMonthly, forgetKeepYearly].some(
+      (v) => typeof v === 'number' && v > 0
+    )
+  );
 
   let totalSnapshots = $state(0);
   let aggregateSize = $state(0);
@@ -451,11 +457,12 @@
       name: newPolicy.name.trim(),
       max_count: newPolicy.max_count || undefined,
       max_age_days: newPolicy.max_age_days || undefined,
+      max_size_gb: newPolicy.max_size_gb || undefined,
       apply_to_all: newPolicy.apply_to_all,
     });
 
     if (resp.success) {
-      newPolicy = { name: '', max_count: 30, max_age_days: 90, apply_to_all: false };
+      newPolicy = { name: '', max_count: 30, max_age_days: 90, max_size_gb: 0, apply_to_all: false };
       await loadRetentionPolicies();
     } else {
     }
@@ -580,6 +587,9 @@
     if (!selectedRepo) return;
     backupInProgress = true;
 
+    // The endpoint starts the run and answers immediately with its job id:
+    // the backup itself can take hours, so it is tracked as a background job
+    // and the lists are refreshed when the job really settles.
     const resp = await api.resticBackup({
       repo_id: selectedRepo.id,
       tags: backupTags || undefined,
@@ -589,11 +599,21 @@
 
     if (resp.success) {
       if ((resp.data as any)?.job_id && selectedRepo) {
-        trackJob((resp.data as any).job_id, `${translate('restic.run_backup')} — ${selectedRepo.name}`);
+        trackJob(
+          (resp.data as any).job_id,
+          `${translate('restic.run_backup')} — ${selectedRepo.name}`,
+          () => {
+            void loadSnapshots();
+            void loadJobs();
+            void loadStats();
+            void loadReminders();
+          }
+        );
       }
       showCreateBackupModal = false;
-      await Promise.all([loadSnapshots(), loadJobs()]);
-      await loadReminders();
+      // Refresh now as well: the history row is already `running`, so the
+      // operator sees the job they just started.
+      await Promise.all([loadJobs(), loadReminders()]);
     } else {
     }
     backupInProgress = false;
@@ -612,7 +632,16 @@
 
     if (resp.success) {
       if ((resp.data as any)?.job_id && selectedRepo) {
-        trackJob((resp.data as any).job_id, `${translate('restic.restore_btn')} — ${snapshot.short_id}`);
+        // A restore writes for as long as the snapshot is big: tracked as a
+        // background job, with the snapshot list refreshed when it settles.
+        trackJob(
+          (resp.data as any).job_id,
+          `${translate('restic.restore_btn')} — ${snapshot.short_id}`,
+          () => {
+            void loadSnapshots();
+            void loadJobs();
+          }
+        );
       }
       pendingRestoreSnapshot = null;
       showResticRestoreModal = false;
@@ -638,6 +667,10 @@
 
   async function runForget() {
     if (!selectedRepo) return;
+
+    // The backend refuses a call with no retention rule at all (restic would
+    // answer "Fatal: no policy was specified"), so say it here first.
+    if (!hasForgetRule) return;
 
     const resp = await api.resticForget({
       repo_id: selectedRepo.id,
@@ -1160,7 +1193,7 @@
   {#snippet footer()}
     <div class="flex gap-2.5 justify-end">
       <Button variant="ghost" onclick={() => showForgetModal = false}>{$t('common.cancel')}</Button>
-      <Button variant="primary" onclick={runForget}>{$t('restic.apply_retention')}</Button>
+      <Button variant="primary" onclick={runForget} disabled={!hasForgetRule}>{$t('restic.apply_retention')}</Button>
     </div>
   {/snippet}
 </Modal>
@@ -1200,7 +1233,7 @@
         <div class="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
           <div class="flex-1 min-w-0">
             <div class="text-sm font-semibold text-[var(--hv-shell-text-strong)]">{policy.name}</div>
-            <div class="text-xs text-[var(--hv-shell-text-2)]">{#if policy.max_count}{translate('restic.policy_summary_count', { count: String(policy.max_count) })}{/if}{#if policy.max_age_days} · {translate('restic.policy_summary_age', { days: String(policy.max_age_days) })}{/if}{#if policy.apply_to_all} · {$t('restic.policy_summary_default')}{/if}</div>
+            <div class="text-xs text-[var(--hv-shell-text-2)]">{#if policy.max_count}{translate('restic.policy_summary_count', { count: String(policy.max_count) })}{/if}{#if policy.max_age_days} · {translate('restic.policy_summary_age', { days: String(policy.max_age_days) })}{/if}{#if policy.max_size_gb} · {translate('restic.policy_summary_size', { size: String(policy.max_size_gb) })}{/if}{#if policy.apply_to_all} · {$t('restic.policy_summary_default')}{/if}</div>
           </div>
           <button data-testid="restic-action-danger" class="grid place-items-center w-9 h-9 flex-none rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-fill)] text-[var(--hv-shell-text-strong)] cursor-pointer hover:bg-[var(--hv-error-bg)] hover:text-[var(--hv-error)] hv-ic" onclick={() => deleteRetentionPolicy(policy)} title={$t('common.delete')} aria-label={$t('common.delete')}><IconTrash size={14} /></button>
         </div>
@@ -1213,8 +1246,9 @@
     <input id="pol-name" class={inp} type="text" bind:value={newPolicy.name} placeholder={$t('restic.policy_name_placeholder')} />
   </div>
   <div class="grid grid-cols-2 @max-[360px]:grid-cols-1 gap-3 mt-3">
-    <div class="flex flex-col gap-1.5"><label for="pol-count" class={fieldLabel}>{$t('restic.max_count_label')}</label><input id="pol-count" class={inp} type="number" bind:value={newPolicy.max_count} min="0" /></div>
-    <div class="flex flex-col gap-1.5"><label for="pol-age" class={fieldLabel}>{$t('restic.max_age_days_label')}</label><input id="pol-age" class={inp} type="number" bind:value={newPolicy.max_age_days} min="0" /></div>
+    <div class="flex flex-col gap-1.5"><label for="pol-count" class={fieldLabel}>{$t('restic.max_count_label')}</label><input id="pol-count" class={inp} type="number" bind:value={newPolicy.max_count} min="1" /></div>
+    <div class="flex flex-col gap-1.5"><label for="pol-age" class={fieldLabel}>{$t('restic.max_age_days_label')}</label><input id="pol-age" class={inp} type="number" bind:value={newPolicy.max_age_days} min="1" /></div>
+    <div class="flex flex-col gap-1.5"><label for="pol-size" class={fieldLabel}>{$t('restic.max_size_gb_label')}</label><input id="pol-size" class={inp} type="number" bind:value={newPolicy.max_size_gb} min="1" /></div>
   </div>
   <div class="mt-3"><Toggle bind:checked={newPolicy.apply_to_all} label={$t('restic.apply_to_all_label')} /></div>
   {#snippet footer()}
