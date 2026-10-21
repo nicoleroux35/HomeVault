@@ -11,7 +11,7 @@ Handlers in `src/handlers/auth.rs`; service in `src/auth/service.rs`; types in
 
 | Endpoint | Auth | Notes |
 |----------|------|-------|
-| `POST /auth/login` | public | returns session token; `requires_2fa: true` if 2FA enabled. Also sets a `hv_session` cookie (proxy-only). `429` when the per-IP throttle or the per-account lockout trips. |
+| `POST /auth/login` | public | returns session token; `requires_2fa: true` if 2FA enabled. An account past its `users.expires_at` horizon (migration 050) is refused with `401 Account has expired` before the password is verified — see `users.md` `Account expiry`. Also sets a `hv_session` cookie (proxy-only). `429` when the per-IP throttle or the per-account lockout trips. The response also carries `must_change_password` (an admin-chosen password — see `users.md`): the client routes to the forced-change screen. |
 | `POST /auth/2fa/verify` | public | completes login with TOTP code; same IP throttle as `/auth/login` |
 | `POST /auth/2fa/setup` | auth | `action`: `generate`/`verify`/`disable`/`status`/`backup_codes` |
 | `POST /auth/logout` | auth | invalidates the session, clears the cookie |
@@ -38,6 +38,11 @@ Handlers in `src/handlers/auth.rs`; service in `src/auth/service.rs`; types in
 > so the login screen can read it from anywhere. See `setup-wizard.md`.
 
 ## Password policy (single source of truth)
+
+`SetupService::validate_password` — min 12 chars, upper + lower + digit, banned
+list, repeated-run cap. The forced first-sign-in change screen mirrors it
+client-side; see `users.md` `Forced password change` for the flow and the
+`middleware::password_change_guard` allowlist.
 
 `SetupService::validate_password` (`src/setup.rs`) is the only policy:
 

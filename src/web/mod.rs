@@ -135,8 +135,8 @@ use crate::handlers::{
     },
     groups::{
         handle_group_add_member, handle_group_create, handle_group_delete, handle_group_get,
-        handle_group_remove_member, handle_groups_list, handle_groups_list_users,
-        handle_user_groups,
+        handle_group_remove_member, handle_group_update, handle_groups_list,
+        handle_groups_list_users, handle_user_groups,
     },
     journal::{
         handle_journal_cleanup_settings_get, handle_journal_cleanup_settings_update,
@@ -178,7 +178,9 @@ use crate::handlers::{
         handle_rclone_status, handle_run_sync_job, handle_save_config, handle_sync,
     },
     resource_shares::{
-        handle_grant_access, handle_list_access, handle_my_access, handle_revoke_access,
+        handle_grant_access, handle_grant_group_access, handle_list_access,
+        handle_list_group_access, handle_my_access, handle_revoke_access,
+        handle_revoke_group_access,
     },
     restic::{
         handle_restic_available, handle_restic_backup_create, handle_restic_backup_jobs,
@@ -268,8 +270,9 @@ use crate::handlers::{
         handle_user_home_put,
     },
     users::{
-        handle_admin_disable_2fa, handle_user_count, handle_user_create, handle_user_delete,
-        handle_user_exists, handle_user_get, handle_user_set_locked, handle_user_update,
+        handle_admin_disable_2fa, handle_admin_revoke_user_sessions, handle_admin_user_sessions,
+        handle_user_count, handle_user_create, handle_user_delete, handle_user_exists,
+        handle_user_get, handle_user_set_expiry, handle_user_set_locked, handle_user_update,
         handle_user_update_full, handle_user_update_groups, handle_user_update_password,
         handle_user_update_role, handle_users_list,
     },
@@ -589,6 +592,15 @@ pub fn create_app(state: AppStateArc) -> Router {
                 .delete(handle_revoke_access),
         )
         .route("/api/shares/access/mine", get(handle_my_access))
+        // Group-level grants (migration 051): "everyone in `family` may use
+        // Jellyfin". Resolved as a union with the per-member rows at read
+        // time from live OS group membership — nothing is copied over.
+        .route(
+            "/api/shares/access/groups",
+            get(handle_list_group_access)
+                .post(handle_grant_group_access)
+                .delete(handle_revoke_group_access),
+        )
         // Web shortcuts: fetch a page's title/description/favicon (SSRF-guarded).
         .route("/api/shortcuts/fetch-metadata", post(handle_fetch_metadata))
         // Antivirus (ClamAV) - status/settings/scans/threats
@@ -1301,12 +1313,26 @@ pub fn create_app(state: AppStateArc) -> Router {
             axum::routing::put(handle_user_update_password),
         )
         .route(
+            // Admin per-user session management: audit (masked tokens) +
+            // force logout everywhere for a user whose device is lost or
+            // whose session is suspected stolen.
+            "/api/users/{username}/sessions",
+            axum::routing::get(handle_admin_user_sessions)
+                .delete(handle_admin_revoke_user_sessions),
+        )
+        .route(
             "/api/users/{username}/role",
             axum::routing::put(handle_user_update_role),
         )
         .route(
             "/api/users/{username}/locked",
             axum::routing::put(handle_user_set_locked),
+        )
+        .route(
+            // Account expiry (migration 050): profile saves must never move
+            // this horizon, only this dedicated admin endpoint does.
+            "/api/users/{username}/expiry",
+            axum::routing::put(handle_user_set_expiry),
         )
         .route(
             "/api/users/{username}/2fa/disable",
@@ -1341,7 +1367,12 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/groups/users", get(handle_groups_list_users))
         .route("/api/groups", get(handle_groups_list))
         .route("/api/groups", post(handle_group_create))
-        .route("/api/groups/{name}", get(handle_group_get))
+        .route(
+            "/api/groups/{name}",
+            // Rename + description (2026-10-20): a rename migrates the
+            // display-name references (mirror, group grants, quotas, ACLs).
+            get(handle_group_get).put(handle_group_update),
+        )
         .route(
             "/api/groups/{name}",
             axum::routing::delete(handle_group_delete),
@@ -1704,6 +1735,16 @@ pub fn create_app(state: AppStateArc) -> Router {
         crate::middleware::contract_middleware,
     ));
 
+    // First-sign-in password change enforcement: a session still holding an
+    // admin-chosen password (`users.must_change_password`, migration 049) may
+    // only reach /auth/me, /auth/logout and its own password change — the
+    // UI gate shows the change screen, but this layer is the boundary the
+    // UI cannot bypass. See `middleware::password_change_guard`.
+    let api_with_terminal = api_with_terminal.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::middleware::password_change_guard_middleware,
+    ));
+
     // Cache lifetimes are set per file by the `spa` handlers themselves (see
     // `spa::asset_response` + `CACHE_IMMUTABLE` / `CACHE_REVALIDATE`), not by
     // a blanket layer here: a layer applied after the merges below would also
@@ -1935,6 +1976,24 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     ));
     tokio::spawn(crate::snapshot_scheduler::run_scheduler_loop(state.clone()));
     tokio::spawn(crate::metrics::run_collector_loop(state.db.pool()));
+    // Account-expiry deactivation path (2026-10-20, migration 050): a live
+    // session of an account past its `users.expires_at` horizon dies at the
+    // next sweep. Sign-in refusal is immediate (`AuthService::authenticate`
+    // re-checks `expires_at` on every attempt), this loop only bounds how
+    // long an already-held session can outlive the horizon. One cheap SQL
+    // DELETE every 10 minutes; no scheduler module of its own.
+    {
+        let auth = state.auth.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
+            loop {
+                interval.tick().await;
+                if let Err(e) = auth.revoke_expired_account_sessions().await {
+                    tracing::warn!("Expired-account session sweep failed: {}", e);
+                }
+            }
+        });
+    }
     // Re-apply persisted disk spindown settings after boot — hdparm's -S
     // timer is per-drive volatile state.
     {

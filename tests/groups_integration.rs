@@ -64,6 +64,7 @@ use homevault::handlers::{
     auth::handle_login,
     groups::{
         handle_group_add_member, handle_group_create, handle_group_delete, handle_group_get,
+        handle_group_update,
         handle_group_remove_member, handle_groups_list, handle_groups_list_users,
         handle_user_groups,
     },
@@ -132,7 +133,10 @@ fn groups_router(state: Arc<AppState>) -> Router {
         .route("/api/groups/users", get(handle_groups_list_users))
         .route("/api/groups", get(handle_groups_list))
         .route("/api/groups", axum::routing::post(handle_group_create))
-        .route("/api/groups/{name}", get(handle_group_get))
+        .route(
+            "/api/groups/{name}",
+            get(handle_group_get).put(handle_group_update),
+        )
         .route(
             "/api/groups/{name}",
             axum::routing::delete(handle_group_delete),
@@ -683,4 +687,260 @@ async fn test_user_groups_allows_any_valid_session() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// ===========================================================================
+// Rename + description (2026-10-20)
+//
+// The OS half (`groupmod`) needs sudo, which this sandbox lacks — so these
+// tests cover the contract that does NOT touch the host: the admin gate, the
+// admin-group refusal, the clean failure when the rename cannot run, and the
+// description path, which is pure database (the `hv_groups` mirror).
+// ===========================================================================
+
+#[tokio::test]
+async fn test_group_update_no_token() {
+    let (state, _tmp, _g) = setup_state().await;
+    let mut r = groups_router(state);
+    let (status, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/groups/family",
+        None,
+        Some(json!({"description": "Household"})),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+    assert_eq!(body["success"], json!(false));
+}
+
+#[tokio::test]
+async fn test_group_update_requires_admin() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "member", "Passw0rd!123", 1).await;
+    let mut r = groups_router(state);
+    let token = login(&mut r, "member", "Passw0rd!123").await;
+    let (status, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/groups/family",
+        Some(&token),
+        Some(json!({"name": "relatives"})),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Admin"));
+}
+
+#[tokio::test]
+async fn test_group_update_refuses_to_rename_the_admin_group() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = groups_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    // Renaming the sudo grant would leave the sudoers rule dangling.
+    let (status, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/groups/homevault_admin",
+        Some(&token),
+        Some(json!({"name": "admins"})),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("admin group"));
+}
+
+#[tokio::test]
+async fn test_group_update_rename_fails_cleanly_without_sudo() {
+    // No `sudo groupmod` in this sandbox: the endpoint must answer with a
+    // clean error, never a panic — and must not have touched the mirror.
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = groups_router(state.clone());
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/groups/hvtest_nonexistent",
+        Some(&token),
+        Some(json!({"name": "hvtest_renamed"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["success"], json!(false));
+}
+
+#[tokio::test]
+async fn test_group_description_is_stored_and_listed() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let repo = homevault::storage::group_repo::HvGroupRepository::new(state.db.pool());
+
+    // A group with no mirror row yet: the handler creates one rather than
+    // silently dropping the description. Exercised through the repository
+    // contract the handler relies on, because the endpoint's happy path ends
+    // in `getent`, which has no row to return for a group that only exists
+    // in the mirror.
+    assert!(repo.update_description("family", Some("Household"))
+        .await
+        .expect("update")
+        == false);
+    let created = repo.create("family", Some("Household")).await.expect("create");
+    assert_eq!(created.description.as_deref(), Some("Household"));
+
+    assert!(repo.update_description("family", Some("Close family"))
+        .await
+        .expect("update"));
+    let rows = repo.list_non_system().await.expect("list");
+    assert_eq!(
+        rows.iter()
+            .find(|g| g.name == "family")
+            .and_then(|g| g.description.clone())
+            .as_deref(),
+        Some("Close family")
+    );
+
+    // Clearing works and is not the same as "leave alone".
+    assert!(repo.update_description("family", None).await.expect("clear"));
+    let rows = repo.list_non_system().await.expect("list");
+    assert!(rows
+        .iter()
+        .find(|g| g.name == "family")
+        .expect("row")
+        .description
+        .is_none());
+}
+
+#[tokio::test]
+async fn test_group_rename_moves_the_dependent_rows() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let groups = homevault::storage::group_repo::HvGroupRepository::new(state.db.pool());
+    let resources =
+        homevault::storage::resource_share_repo::ResourceShareRepository::new(state.db.pool());
+
+    groups.create("family", Some("Household")).await.expect("mirror");
+    resources
+        .upsert_group(
+            "admin1",
+            "family",
+            homevault::storage::resource_share_repo::ResourceKind::App,
+            "jellyfin",
+            homevault::storage::resource_share_repo::ResourcePermission::Write,
+        )
+        .await
+        .expect("grant");
+
+    // The two migrations `handle_group_update` performs after the OS rename.
+    assert!(groups.rename("family", "relatives").await.expect("mirror rename"));
+    assert_eq!(
+        resources
+            .rename_group_name("family", "relatives")
+            .await
+            .expect("grant rename"),
+        1
+    );
+
+    // The grants now hang off the new name, and the old one holds nothing.
+    assert!(resources
+        .list_groups_all(Some("family"))
+        .await
+        .expect("old")
+        .is_empty());
+    let moved = resources
+        .list_groups_all(Some("relatives"))
+        .await
+        .expect("new");
+    assert_eq!(moved.len(), 1);
+    assert_eq!(moved[0].resource, "jellyfin");
+
+    // The mirror followed too, with the full_name convention and gid intact.
+    let rows = groups.list_non_system().await.expect("list");
+    let row = rows.iter().find(|g| g.name == "relatives").expect("renamed row");
+    assert_eq!(row.full_name, "homevault_relatives");
+    assert_eq!(row.description.as_deref(), Some("Household"));
+}
+
+#[tokio::test]
+async fn test_group_delete_purges_the_mirror_and_the_group_grants() {
+    // `handle_group_delete` runs these two cleanups after the OS delete. The
+    // OS half needs sudo, so the contract is pinned here: a group re-created
+    // with the same display name must inherit neither a stale description nor
+    // grants nobody made for it.
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let groups = homevault::storage::group_repo::HvGroupRepository::new(state.db.pool());
+    let resources =
+        homevault::storage::resource_share_repo::ResourceShareRepository::new(state.db.pool());
+
+    groups
+        .create("family", Some("Household"))
+        .await
+        .expect("mirror");
+    resources
+        .upsert_group(
+            "admin1",
+            "family",
+            homevault::storage::resource_share_repo::ResourceKind::App,
+            "jellyfin",
+            homevault::storage::resource_share_repo::ResourcePermission::Read,
+        )
+        .await
+        .expect("grant");
+
+    assert!(groups.delete("family").await.expect("mirror delete"));
+    assert_eq!(
+        resources
+            .revoke_all_for_group("family")
+            .await
+            .expect("grant purge"),
+        1
+    );
+
+    assert!(groups.list_non_system().await.expect("list").is_empty());
+    assert!(resources
+        .list_groups_all(Some("family"))
+        .await
+        .expect("grants")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_group_update_does_not_create_a_mirror_row_for_a_missing_group() {
+    // A description-only PUT on a group that does not exist on the host must
+    // fail *before* writing: otherwise `hv_groups` would grow a phantom row
+    // for a group nobody created.
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = groups_router(state.clone());
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/groups/ghostgroup",
+        Some(&token),
+        Some(json!({"description": "Should not be stored"})),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Group not found"));
+
+    let repo = homevault::storage::group_repo::HvGroupRepository::new(state.db.pool());
+    assert!(
+        repo.list_non_system().await.expect("list").is_empty(),
+        "no mirror row must be created for a group that does not exist"
+    );
 }

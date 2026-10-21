@@ -355,7 +355,10 @@ impl HealthService {
         let mut failed = Vec::new();
         let mut healthy = 0usize;
         for device in &devices {
-            let detail = Command::new("sudo").arg("mdadm").args(["--detail", device]).output();
+            let detail = Command::new("sudo")
+                .arg("mdadm")
+                .args(["--detail", device])
+                .output();
             let state = detail
                 .ok()
                 .map(|d| {
@@ -740,7 +743,7 @@ mod tests {
     // -- run_all_checks / run_check ------------------------------------------
 
     #[test]
-    fn test_run_all_checks_returns_the_eight_checks_in_order() {
+    fn test_run_all_checks_returns_the_nine_checks_in_order() {
         let _g = env_guard();
         let health = HealthService::run_all_checks().expect("run_all_checks");
         let names: Vec<&str> = health.checks.iter().map(|c| c.name.as_str()).collect();
@@ -752,6 +755,7 @@ mod tests {
                 "memory",
                 "disk_space",
                 "disk_smart",
+                "raid_arrays",
                 "network",
                 "services",
                 "temperatures",

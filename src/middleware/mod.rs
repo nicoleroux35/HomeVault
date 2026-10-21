@@ -32,6 +32,7 @@ pub mod csp_nonce;
 pub mod csrf;
 pub mod https_redirect;
 pub mod logging;
+pub mod password_change_guard;
 pub mod peer_addr;
 pub mod rate_limit;
 pub mod security_headers;
@@ -42,6 +43,9 @@ pub use csp_nonce::{stamp_nonce, CspNonce, NONCE_PLACEHOLDER};
 pub use csrf::csrf_middleware;
 pub use https_redirect::{https_redirect_middleware, HttpsRedirect};
 pub use logging::logging_middleware;
+pub use password_change_guard::{
+    is_self_password_change, password_change_guard_middleware, PASSWORD_CHANGE_REQUIRED,
+};
 pub use peer_addr::PeerAddr;
 pub use rate_limit::rate_limit_middleware;
 pub use security_headers::{security_headers_middleware, ArrivedOverTls};

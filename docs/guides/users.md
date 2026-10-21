@@ -10,12 +10,15 @@ Handlers in `src/handlers/users.rs`; models in `src/handlers/users_models.rs`.
 | Endpoint | Auth | Notes |
 |----------|------|-------|
 | `GET /users` | admin | list |
-| `POST /users` | admin | create (random password if empty) |
+| `POST /users` | admin | create (random password if empty); sets `must_change_password` (the owner replaces it at first sign-in) |
 | `GET /users/{username}` | admin | detail |
 | `PUT /users/{username}` | admin | update |
 | `PUT /users/{username}/full` | admin | full profile (first/last name) |
 | `DELETE /users/{username}` | admin | delete (kills PTY sessions via `state.pty_manager.kill_session`; also revokes the account's direct share permissions, see Invariants) |
-| `PUT /users/{username}/password` | admin | reset password |
+| `PUT /users/{username}/password` | admin | reset password; targeting someone else re-arms `must_change_password`, a self change clears it |
+| `GET /users/{username}/sessions` | admin | list a user's active sessions; tokens masked to 8 chars + `…` — an admin audits, never hijacks |
+| `DELETE /users/{username}/sessions` | admin | bulk revoke: sign that user out everywhere (their current device included); the user just signs back in |
+| `PUT /users/{username}/expiry` | admin | set (`{"expires_at": "<RFC 3339>"}`) or clear (`null`) the account horizon; a past date is refused |
 | `PUT /users/{username}/role` | admin | change role |
 | `PUT /users/{username}/locked` | admin | lock/unlock — a **permanent** lock (clears `locked_until`); the automatic lockout from failed logins expires by itself |
 | `POST /users/{username}/2fa/disable` | admin | admin disable 2FA |
@@ -90,6 +93,9 @@ making them an admin. Grants live in `resource_shares`
 | `GET /shares/access/mine` | auth | the caller's own effective access |
 | `POST /shares/access` | admin | grant/update `{member, kind, resource, permission?}` |
 | `DELETE /shares/access` | admin | revoke `?member=&kind=&resource=` |
+| `GET /shares/access/groups` | admin | every group grant (optional `?group=`) |
+| `POST /shares/access/groups` | admin | grant/update `{group, kind, resource, permission?}` |
+| `DELETE /shares/access/groups` | admin | revoke `?group=&kind=&resource=` |
 
 `kind` ∈ `app` \| `folder` \| `share`; `permission` ∈ `read` \| `write` \|
 `full` (default `read`; `full ⊇ write ⊇ read`). Repository:
@@ -105,8 +111,95 @@ not a boundary. `event_visible_to` is the WebSocket whitelist: an event tagged
 with `resource_kind` / `resource` is only delivered to a member who can access
 that resource; untagged events go to everyone.
 
+### Group-level grants (2026-10-20, migration 051)
+
+Re-typing the same grant for every member of a household does not scale, and
+an account added to a group later inherited nothing. `resource_group_shares`
+(`sqlx/migrations/051_resource_group_shares.sql`) holds the same
+`(kind, resource, permission)` triple keyed by **group display name** instead
+of a member. `group_name` is a HomeVault group (the name the Groups app shows,
+i.e. `hv_<name>` without the prefix) and deliberately has **no foreign key**:
+groups live in `/etc/group`, `hv_groups` is only a metadata mirror.
+
+Resolution is a **union, computed at read time** from the member's *live* OS
+membership (`GroupService::get_user_groups`, off the async runtime via
+`spawn_blocking`): `effective_visible_resources()` merges direct grants and
+group grants with `ResourceShareRepository::merge_strongest` — strongest level
+wins (`full ⊃ write ⊃ read`). Nothing is copied into `resource_shares`, so
+
+- leaving a group revokes the inherited access on the very next request (no
+  cache to invalidate, no migration to run),
+- revoking a group row never demotes a member who also holds a direct row,
+- a corrupt level is ignored rather than granting anything (fail closed).
+
+`GET /shares/access/mine` gained `inherited` (the group grants that apply to
+the caller) so the UI can explain *why* a resource is visible. The Users
+detail pane's access card renders them under "Inherited from groups" with a
+small editor (group select limited to the member's own groups, then kind,
+resource, permission). Deleting a group purges its grants
+(`revoke_all_for_group`) — a later group reusing the display name must not
+inherit access nobody granted it.
+
 The editor is `frontend/src/lib/components/users/MemberAccessCard.svelte`,
 embedded in the Users detail view (admins see a read-only note instead).
+
+## Account expiry (2026-10-20, migration 050)
+
+`users.expires_at` (NULL = never, the default for every account) is an
+admin-set UTC horizon. `PUT /users/{username}/expiry` is its only writer — the
+profile update deliberately does not touch it, so a name/e-mail save can never
+shift the horizon as a side effect, and a date already in the past is refused
+(that mistake would lock the account out with no warning). Enforcement is
+layered like the lockout and the password guard:
+
+1. `AuthService::authenticate` re-checks the horizon on **every** attempt and
+   returns `AuthError::AccountExpired` before the password is even verified —
+   no credential feedback, no lockout-ladder footprint, and the PAM
+   fall-through is covered too;
+2. `AuthService::revoke_expired_account_sessions` deletes the sessions of
+   expired accounts — called once at boot (`init`) and by a 10-minute loop
+   started with the other schedulers in `web/mod.rs`. That loop is the
+   deactivation path for a session an account already held; sign-in refusal is
+   immediate and independent of it.
+
+The Users detail pane renders it as its own "Account expiry" card
+(`users-expiry-edit` → `users-expiry-input` datetime-local → save/remove),
+showing the local time of the stored UTC instant and an "Expired" badge once
+the horizon is behind us. The filter rail's "active" filter still means
+`locked = false`; an expired account is reported by that badge, not by the
+lock flag (expiry is not a lock — clearing the horizon restores the account
+without touching `locked`/`locked_until`).
+
+## Admin per-user sessions (2026-10-20)
+
+Incident tooling next to the Security card's password form: `GET
+/api/users/{username}/sessions` returns the target's live sessions — IP,
+created/expires and a token **masked to its first 8 characters + `…`** — and
+`DELETE` on the same path signs that user out of every device at once
+(`handle_admin_user_sessions` / `handle_admin_revoke_user_sessions`). The
+masking is the security decision of this feature: a full token list would let
+an admin replay someone else's session silently, so revocation is bulk-only —
+an incident needs "log them out everywhere", and the user simply signs back
+in. The Users detail pane renders the list (`users-session-row`, masked
+reference as `<code>`) with a "Sign out everywhere" button inside the Security
+card; the list reloads only when the pane opens or switches to another user,
+so a finished action's notice is not wiped by the post-save rail refresh.
+
+## Forced password change (2026-10-20, migration 049)
+
+A password an admin chose or generated — `POST /users` and `PUT /users/{username}/password`
+**targeting someone else** — travels out of band and can stay valid forever. Both set
+`users.must_change_password = 1` (migration `049_must_change_password.sql`,
+`DEFAULT 0`). Any change where the current password was verified (self change, recovery reset) clears it;
+setup never sets it. The login response and `/auth/me` expose the flag as
+`must_change_password`, so the client routes to a forced-change screen on the login shell
+(`Login.svelte` in `passwordChangeMode`, gate route `password-change` in `appGate.ts`) —
+and `middleware::password_change_guard` is the real boundary: a flagged session may only
+reach `GET /auth/me`, `GET /auth/setup-status`, `GET /api/settings/public`,
+`POST /auth/logout` and `PUT /users/{own username}/password`; every other API call answers
+403 with code `password_change_required`. Never shrink that allowlist — the change screen
+(and a reload mid-flow) needs exactly those reads, and a flagged *admin* session must
+still not be able to reset someone else's password while skipping its own obligation.
 
 ## Frontend
 
@@ -369,6 +462,17 @@ data and pre-existing shape constants (`AVATAR_COLORS`' palette, the
   `test_user_delete_revokes_its_direct_share_permissions_only`.
 - If the edited user is the current admin, a self password change invalidates the
   session and forces logout/redirect (shared with [My Account](./account.md)).
+- Group-level grants are resolved, never copied: `effective_visible_resources`
+  unions `resource_shares` with `resource_group_shares` at read time from the
+  member's live OS groups. Anything that lists resources must go through
+  `visible_app_ids` / `can_access` / `event_visible_to` so the union rule is
+  applied once. Guard: `resource_share_repo` unit tests +
+  `resource_shares_integration.rs`.
+- The expiry horizon has exactly one writer, `PUT /users/{u}/expiry`; the
+  profile update deliberately never touches `expires_at`. Sign-in refusal lives
+  in `AuthService::authenticate` *before* the password check (no credential
+  oracle, no lockout footprint, PAM included) and an expired account is **not**
+  a locked one — never reuse `locked`/`locked_until` for it.
 - `home_size_bytes` and `home_path` are mutually exclusive on the wire: picking
   a disk clears the explicit path and vice versa. `saveProfile` must keep
   forwarding **both** through `updateUserFull`.

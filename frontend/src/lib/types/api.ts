@@ -42,6 +42,11 @@ export interface LoginResponse {
   username: string;
   is_admin: boolean;
   requires_2fa?: boolean;
+  /** `true` when the account still holds an admin-chosen password (creation
+   *  or reset, migration 049): the client routes to the forced password-change
+   *  screen; the server enforces the same restriction per-request
+   *  (see `middleware::password_change_guard`). */
+  must_change_password?: boolean;
   /** Only on `POST /auth/setup`: whether the TOTP enrolled at the wizard's
    *  password step was persisted for the new account. */
   totp_enabled?: boolean;
@@ -108,6 +113,13 @@ export interface User {
   avatar_seed?: string;
   avatar_url?: string;
   two_fa_enabled?: boolean;
+  /** Admin-set expiry horizon (RFC 3339), `null`/absent = never
+   *  (migration 050). Past it, sign-in is refused and live sessions are
+   *  swept by the scheduler. */
+  expires_at?: string | null;
+  /** `true` on `/auth/me` when the account must change its password
+   *  before any other API call (admin-chosen password). */
+  must_change_password?: boolean;
 }
 
 // ── System ──────────────────────────────────────────────────────────────────

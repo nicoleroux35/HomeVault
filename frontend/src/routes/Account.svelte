@@ -118,6 +118,7 @@
         user: { ...user, avatar_seed: user.avatar_seed, avatar_url: user.avatar_url },
         isAuthenticated: true,
         isLoading: false,
+        mustChangePassword: null,
       });
     }
     avatarRegenerating = false;
@@ -141,6 +142,7 @@
         user: { ...user, fullname: profileForm.fullname, email: profileForm.email },
         isAuthenticated: true,
         isLoading: false,
+        mustChangePassword: null,
       });
     } else {
       profileError = res.message || res.error || translate('common.error');

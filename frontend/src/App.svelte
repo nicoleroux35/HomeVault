@@ -102,6 +102,7 @@
     (gateRoute === 'login' ||
       gateRoute === 'setup' ||
       gateRoute === 'recovery' ||
+      gateRoute === 'password-change' ||
       gateRoute === 'error') &&
     currentPath !== '/login' &&
     currentPath !== '/'
@@ -123,6 +124,8 @@
     <SetupWizard />
   {:else if $appGate.route === 'recovery'}
     <Login recoveryMode />
+  {:else if $appGate.route === 'password-change'}
+    <Login passwordChangeMode />
   {:else if $appGate.route === 'error'}
     <Login connectionError />
   {:else if $appGate.route === 'login'}

@@ -33,6 +33,8 @@
     display_name: string;
     gid: number;
     member_count: number;
+    /** Free text from the `hv_groups` mirror; the OS group has no such field. */
+    description?: string | null;
   }
 
   type QuotaUnit = 'MB' | 'TB' | 'PB';
@@ -58,7 +60,13 @@
   let submitting = false;
   let errors: Record<string, string> = {};
 
-  let createForm = { name: '', members: [] as string[] };
+  let createForm = { name: '', members: [] as string[], description: '' };
+
+  // Rename + description editor for the selected group. `name` is the display
+  // name; the server migrates every reference on a rename.
+  let metaForm = { name: '', description: '' };
+  let metaBusy = false;
+  let metaOk = '';
   let createSearch = '';
 
   let membersSelected: string[] = [];
@@ -204,6 +212,8 @@
     creating = false;
     errors = {};
     memberSearch = '';
+    metaOk = '';
+    metaForm = { name: g.display_name || g.name, description: g.description ?? '' };
     loadMembers(g);
     loadQuota(g);
   }
@@ -211,7 +221,7 @@
   function closeDetail() { selectedGroup = null; creating = false; errors = {}; }
 
   function startCreate() {
-    createForm = { name: '', members: [] };
+    createForm = { name: '', members: [], description: '' };
     createSearch = '';
     errors = {};
     selectedGroup = null;
@@ -267,7 +277,7 @@
     if (!/^[a-z0-9_-]+$/.test(name)) { errors = { name: translate('groups.name_invalid') }; return; }
     if (groups.some((g) => g.display_name === name)) { errors = { name: translate('groups.name_exists') }; return; }
     submitting = true;
-    const res = await api.createGroup(name, createForm.members);
+    const res = await api.createGroup(name, createForm.members, createForm.description.trim());
     submitting = false;
     if (res.success) {
       creating = false;
@@ -318,6 +328,41 @@
     if (ok) { await refreshAll(); errors = { membersOk: translate('groups.members_updated') }; }
   }
 
+  async function saveMeta() {
+    if (!selectedGroup || isProtected(selectedGroup)) return;
+    errors = {};
+    metaOk = '';
+    const name = metaForm.name.trim();
+    const description = metaForm.description.trim();
+    if (!name) { errors = { meta: translate('groups.rename_required') }; return; }
+    if (!/^[a-z0-9_-]+$/.test(name)) { errors = { meta: translate('groups.name_invalid') }; return; }
+    const renamed = name !== (selectedGroup.display_name || selectedGroup.name);
+    if (renamed && groups.some((g) => g.display_name === name)) {
+      errors = { meta: translate('groups.name_exists') };
+      return;
+    }
+    const descriptionChanged = description !== (selectedGroup.description ?? '');
+    if (!renamed && !descriptionChanged) { metaOk = translate('groups.meta_unchanged'); return; }
+
+    metaBusy = true;
+    const res = await api.updateGroup(selectedGroup.display_name || selectedGroup.name, {
+      name: renamed ? name : undefined,
+      description: descriptionChanged ? description : undefined,
+    });
+    metaBusy = false;
+    if (res.success) {
+      const notice = renamed ? translate('groups.renamed_ok') : translate('groups.description_saved');
+      await loadGroups();
+      // The detail pane must follow the rename, or the next save would target
+      // the old name. `hydrateDetail` resets the notices, so set it after.
+      const again = groups.find((g) => g.display_name === name) || null;
+      if (again) hydrateDetail(again);
+      metaOk = notice;
+    } else {
+      errors = { meta: res.message || res.error || translate('groups.meta_failed') };
+    }
+  }
+
   async function saveQuota() {
     if (!selectedGroup) return;
     submitting = true;
@@ -366,7 +411,7 @@
   <!-- Page-level primary action: a WindowToolbar row under the header, never
        inside it (the header bar is icon + title + window controls only). -->
   {#snippet toolbarRight()}
-    <Button variant="primary" onclick={startCreate}>
+    <Button variant="primary" data-testid="groups-new" onclick={startCreate}>
       <IconPlus size={17} stroke={2} /> {$t('groups.new')}
     </Button>
   {/snippet}
@@ -415,6 +460,9 @@
             <span class="flex-1 min-w-0 flex flex-col gap-0.5">
               <span data-testid="groups-row-name" class="text-c-card-title font-semibold text-[var(--hv-shell-text-strong)] truncate">{g.display_name || g.name}</span>
               <span class="font-[family-name:var(--hv-font-mono)] text-c-xs text-[var(--hv-shell-text)] truncate">@{g.display_name} · GID {g.gid}</span>
+              {#if g.description}
+                <span data-testid="groups-row-description" class="text-c-xs text-[var(--hv-shell-text)] truncate">{g.description}</span>
+              {/if}
             </span>
             <span class="flex flex-col items-end gap-1.5 flex-none">
               <span data-testid="groups-badge" class="inline-flex items-center h-6 px-2.5 rounded-full bg-[var(--hv-primary-selected-bg)] text-[var(--hv-primary)] text-c-xs font-bold">
@@ -464,6 +512,21 @@
               class={cn(inp, 'font-[family-name:var(--hv-font-mono)]', errors.name && 'border-[var(--hv-error)]')}
               bind:value={createForm.name}
               placeholder="ex. developpeurs"
+              autocomplete="off"
+            />
+          </FormRow>
+
+          <FormRow
+            label={$t('groups.description_label')}
+            for="c-desc"
+            help={$t('groups.description_hint')}
+          >
+            <input
+              id="c-desc"
+              data-testid="groups-create-description"
+              class={inp}
+              bind:value={createForm.description}
+              maxlength="200"
               autocomplete="off"
             />
           </FormRow>
@@ -531,6 +594,9 @@
           <div class="flex-1 min-w-0">
             <div data-testid="groups-detail-h1" class="text-c-2xl font-semibold tracking-tight text-[var(--hv-shell-text-strong)] truncate">{selectedGroup.display_name || selectedGroup.name}</div>
             <div class="font-[family-name:var(--hv-font-mono)] text-c-base text-[var(--hv-shell-text)] mt-0.5 truncate">@{selectedGroup.display_name} · GID {selectedGroup.gid}</div>
+            {#if selectedGroup.description}
+              <div data-testid="groups-detail-description" class="text-c-base text-[var(--hv-shell-text)] mt-0.5 truncate">{selectedGroup.description}</div>
+            {/if}
           </div>
           {#if prot}
             <span data-testid="groups-state" class="sys lg inline-flex items-center gap-1.5 h-[30px] px-3 rounded-full bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text)] text-xs flex-none">
@@ -542,6 +608,57 @@
         {#if errors.action}
           <div data-testid="groups-err" class="px-3 py-2.5 rounded-lg bg-[var(--hv-error-bg)] border border-[var(--hv-error)] mb-3 text-xs text-[var(--hv-error-text)]">{errors.action}</div>
         {/if}
+
+        <SectionCard data-testid="groups-meta-card" class="mb-4">
+          <div class="flex items-center gap-2 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)] mb-3">
+            <IconUserCog size={16} stroke={2} /> {$t('groups.meta_title')}
+          </div>
+
+          {#if prot}
+            <div data-testid="groups-meta-readonly" class="px-3 py-3 rounded-lg bg-[var(--hv-warning-light)] border border-[var(--hv-warning)] text-c-label leading-relaxed text-[var(--hv-warning)]">{$t('groups.meta_admin_readonly')}</div>
+          {:else}
+            <p class="m-0 text-c-base text-[var(--hv-shell-text)]">{$t('groups.meta_hint')}</p>
+
+            {#if errors.meta}
+              <div role="alert" data-testid="groups-meta-err" class="mt-3 px-3 py-2 rounded-lg bg-[var(--hv-error-bg)] text-[var(--hv-error-text)] text-sm">{errors.meta}</div>
+            {/if}
+            {#if metaOk}
+              <p role="status" data-testid="groups-meta-ok" class="m-0 mt-3 text-xs text-[var(--hv-success)]">{metaOk}</p>
+            {/if}
+
+            <div class="mt-3 flex flex-col gap-3">
+              <label class="flex flex-col gap-1 text-c-label font-semibold text-[var(--hv-shell-text-strong)]">
+                {$t('groups.rename_label')}
+                <input
+                  data-testid="groups-rename-input"
+                  class={cn(inp, 'font-[family-name:var(--hv-font-mono)]')}
+                  bind:value={metaForm.name}
+                  maxlength="32"
+                  autocomplete="off"
+                  aria-describedby="groups-rename-hint"
+                />
+                <span id="groups-rename-hint" class="text-c-xs font-normal text-[var(--hv-shell-text)]">{$t('groups.rename_hint')}</span>
+              </label>
+
+              <label class="flex flex-col gap-1 text-c-label font-semibold text-[var(--hv-shell-text-strong)]">
+                {$t('groups.description_label')}
+                <input
+                  data-testid="groups-description-input"
+                  class={inp}
+                  bind:value={metaForm.description}
+                  maxlength="200"
+                  autocomplete="off"
+                  aria-describedby="groups-description-hint"
+                />
+                <span id="groups-description-hint" class="text-c-xs font-normal text-[var(--hv-shell-text)]">{$t('groups.description_hint')}</span>
+              </label>
+            </div>
+
+            <Button variant="primary" size="sm" class="mt-3" onclick={saveMeta} disabled={metaBusy}>
+              <IconCheck size={16} stroke={2.2} /> {$t('common.save')}
+            </Button>
+          {/if}
+        </SectionCard>
 
         <SectionCard data-testid="groups-card" class="mb-4">
           <div class="flex items-center justify-between gap-2.5 mb-3">

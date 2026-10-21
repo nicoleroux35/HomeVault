@@ -144,10 +144,45 @@ pub struct UserListItem {
     pub avatar_url: String,
     #[serde(default)]
     pub two_fa_enabled: bool,
+    /// Admin-set expiry horizon (`None` = never; migration 050). The detail
+    /// pane edits it through `PUT /users/{u}/expiry`, never via profile save.
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 /// Response containing the total number of users.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserCountResponse {
     pub count: i64,
+}
+
+/// One active session of a target user, in the admin vocabulary. The token is
+/// MASKED (8 chars + ellipsis): an admin audits and force-logs-out, but never
+/// receives a usable credential for someone else's session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminSessionInfo {
+    /// Masked session token reference (first 8 characters + `…`).
+    pub id: String,
+    /// IP address the session was created from.
+    pub ip_address: String,
+    /// Session creation timestamp (RFC 3339).
+    pub created_at: String,
+    /// Session expiry timestamp (RFC 3339).
+    pub expires_at: String,
+}
+
+/// Response wrapper for the admin per-user sessions list.
+#[derive(Debug, Serialize)]
+pub struct AdminUserSessionsResponse {
+    pub sessions: Vec<AdminSessionInfo>,
+    pub total: usize,
+}
+
+/// Body for setting (RFC 3339 timestamp) or clearing (`null` = never) a
+/// user's expiry horizon — migration 050, `users.expires_at`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SetExpiryRequest {
+    /// `None` clears the horizon; `Some` must parse as RFC 3339 UTC.
+    #[serde(default)]
+    pub expires_at: Option<String>,
 }

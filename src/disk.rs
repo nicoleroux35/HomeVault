@@ -861,7 +861,10 @@ impl DiskService {
         if candidate.trim_start_matches("/dev/") == disk_name {
             return true;
         }
-        let rest = match candidate.trim_start_matches("/dev/").strip_prefix(disk_name) {
+        let rest = match candidate
+            .trim_start_matches("/dev/")
+            .strip_prefix(disk_name)
+        {
             Some(rest) => rest,
             None => return false,
         };
@@ -896,7 +899,10 @@ impl DiskService {
         // Validate RAID level
         let valid_levels = ["raid0", "raid1", "raid5", "raid6", "raid10"];
         if !valid_levels.contains(&req.level.as_str()) {
-            return Err(DiskError::Parse(format!("Invalid RAID level: {}", req.level)));
+            return Err(DiskError::Parse(format!(
+                "Invalid RAID level: {}",
+                req.level
+            )));
         }
 
         // Validate minimum devices for each level
@@ -904,7 +910,10 @@ impl DiskService {
         let missing_slots = if req.allow_missing {
             let min = min_devices;
             if req.members.len() < min {
-                usize::max(max_missing_for_level(&req.level), min.saturating_sub(req.members.len()))
+                usize::max(
+                    max_missing_for_level(&req.level),
+                    min.saturating_sub(req.members.len()),
+                )
             } else {
                 0
             }
@@ -1135,10 +1144,7 @@ impl DiskService {
                                                 let pct = ((pos / total) * 100.0).clamp(0.0, 100.0);
                                                 p.report(
                                                     10 + (pct * 0.3) as u8,
-                                                    &format!(
-                                                        "Initial resync running: {:.0}%",
-                                                        pct
-                                                    ),
+                                                    &format!("Initial resync running: {:.0}%", pct),
                                                 );
                                             }
                                         }
@@ -1281,8 +1287,7 @@ impl DiskService {
                     "UUID={} {} {} defaults,nofail 0 2",
                     uuid, mount_point, filesystem
                 );
-                if let Err(e) =
-                    Self::append_marked_entry("/etc/fstab", &marker, &fstab_line).await
+                if let Err(e) = Self::append_marked_entry("/etc/fstab", &marker, &fstab_line).await
                 {
                     return Err(e);
                 }
@@ -1532,13 +1537,11 @@ impl DiskService {
             for pair in devices.chunks(2) {
                 args.push("mirror".to_string());
                 for device in pair {
-                    args.push(
-                        if device.starts_with("/dev/") {
-                            device.clone()
-                        } else {
-                            format!("/dev/{}", device)
-                        },
-                    );
+                    args.push(if device.starts_with("/dev/") {
+                        device.clone()
+                    } else {
+                        format!("/dev/{}", device)
+                    });
                 }
             }
         } else {
@@ -1774,14 +1777,8 @@ impl DiskService {
             rows.push(LsblkRow {
                 name,
                 r#type: fields.get("TYPE").cloned().unwrap_or_default(),
-                parent: fields
-                    .get("PKNAME")
-                    .filter(|p| !p.is_empty())
-                    .cloned(),
-                mount_point: fields
-                    .get("MOUNTPOINT")
-                    .filter(|m| !m.is_empty())
-                    .cloned(),
+                parent: fields.get("PKNAME").filter(|p| !p.is_empty()).cloned(),
+                mount_point: fields.get("MOUNTPOINT").filter(|m| !m.is_empty()).cloned(),
                 fstype: fields.get("FSTYPE").filter(|f| !f.is_empty()).cloned(),
                 size: fields.get("SIZE").cloned().unwrap_or_else(|| "0".into()),
                 vendor: fields.get("VENDOR").cloned().unwrap_or_default(),
@@ -1854,7 +1851,11 @@ impl DiskService {
                 {
                     facts.md_member = String::from_utf8_lossy(&out.stdout).contains("raid");
                 }
-                if let Ok(out) = Command::new("zpool").args(["status", &device_path]).output().await {
+                if let Ok(out) = Command::new("zpool")
+                    .args(["status", &device_path])
+                    .output()
+                    .await
+                {
                     facts.zfs_member = out.status.success();
                 }
                 if let Ok(out) = Command::new("btrfs")
@@ -1984,13 +1985,7 @@ impl DiskService {
         // descendant (partitions, LUKS, LVM…). Children automatically
         // disqualify — a pool member must be a bare leaf block device.
         if let Ok(output) = Command::new("lsblk")
-            .args([
-                "-n",
-                "-P",
-                "-o",
-                "NAME,TYPE,MOUNTPOINT,FSTYPE",
-                device_path,
-            ])
+            .args(["-n", "-P", "-o", "NAME,TYPE,MOUNTPOINT,FSTYPE", device_path])
             .output()
             .await
         {
@@ -2030,7 +2025,11 @@ impl DiskService {
         {
             facts.md_member = String::from_utf8_lossy(&out.stdout).contains("raid");
         }
-        if let Ok(out) = Command::new("zpool").args(["status", device_path]).output().await {
+        if let Ok(out) = Command::new("zpool")
+            .args(["status", device_path])
+            .output()
+            .await
+        {
             facts.zfs_member = out.status.success();
         }
         if let Ok(out) = Command::new("btrfs")
@@ -2508,7 +2507,10 @@ impl DiskService {
 
         let valid_levels = ["raid0", "raid1", "raid5", "raid6", "raid10"];
         if !valid_levels.contains(&req.level.as_str()) {
-            return Err(DiskError::Parse(format!("Invalid RAID level: {}", req.level)));
+            return Err(DiskError::Parse(format!(
+                "Invalid RAID level: {}",
+                req.level
+            )));
         }
 
         match req.filesystem.as_str() {
@@ -2527,24 +2529,27 @@ impl DiskService {
                 "At least one member device is required".to_string(),
             ));
         }
-        if req.members.len() < min {
-            return Err(DiskError::Parse(format!(
-                "RAID {} requires at least {} devices (spares don't count)",
-                req.level, min
-            )));
-        }
+
+        // Slot accounting ONCE, before every rule below: with `allow_missing`
+        // the request's mdadm member-slot count includes the `missing`
+        // placeholders, so a degraded create must never be measured against
+        // the raw member count (a below-minimum member list is exactly the
+        // point of a degraded create).
+        let slots_total = md_member_slots(req);
 
         // Technological rules the dispatcher will enforce; spelled out here
-        // so the API rejects before the job ever starts.
+        // so the API rejects before the job ever starts. They run BEFORE the
+        // device-count floor on purpose: they are the sharper diagnostics, and
+        // a 3-member raid10 must say "pairs", not "needs 4 devices".
         if req.filesystem == "zfs" {
-            if req.level == "raid10" && req.members.len() % 2 != 0 {
+            if req.level == "raid10" && slots_total % 2 != 0 {
                 return Err(DiskError::Parse(
                     "A ZFS raid10 pool needs pairs of devices (even count)".to_string(),
                 ));
             }
         }
         if req.filesystem == "ext4" || req.filesystem == "xfs" {
-            if req.level == "raid10" && req.members.len() % 2 != 0 {
+            if req.level == "raid10" && slots_total % 2 != 0 {
                 return Err(DiskError::Parse(
                     "RAID 10 requires an even number of members".to_string(),
                 ));
@@ -2563,7 +2568,7 @@ impl DiskService {
                 "A RAID 0 array has no redundancy — hot spares are not supported".to_string(),
             ));
         } else if req.allow_missing {
-            let slots = md_member_slots(req) - req.members.len();
+            let slots = slots_total - req.members.len();
             if slots == 0 {
                 return Err(DiskError::Parse(
                     "The array already meets its minimum — nothing to create degraded".to_string(),
@@ -2576,11 +2581,16 @@ impl DiskService {
                     max_missing_for_level(&req.level)
                 )));
             }
-            if md_member_slots(req) > min {
+            if slots_total > min {
                 return Err(DiskError::Parse(
                     "A degraded create needs exactly the level minimum".to_string(),
                 ));
             }
+        } else if req.members.len() < min {
+            return Err(DiskError::Parse(format!(
+                "RAID {} requires at least {} devices (spares don't count)",
+                req.level, min
+            )));
         }
 
         Ok(())
@@ -2743,12 +2753,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_raid_invalid_level() {
-        let req = mdreq(
-            "hvtest",
-            "raid99",
-            vec!["/dev/null", "/dev/null"],
-            "ext4",
-        );
+        let req = mdreq("hvtest", "raid99", vec!["/dev/null", "/dev/null"], "ext4");
         let err = DiskService::create_raid(&req, None).await.unwrap_err();
         assert!(matches!(err, DiskError::Parse(ref m) if m.contains("Invalid RAID level")));
     }
@@ -2756,12 +2761,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_raid_too_few_devices() {
         // raid5 needs at least 3 devices.
-        let req = mdreq(
-            "hvtest",
-            "raid5",
-            vec!["/dev/null", "/dev/null"],
-            "ext4",
-        );
+        let req = mdreq("hvtest", "raid5", vec!["/dev/null", "/dev/null"], "ext4");
         let err = DiskService::create_raid(&req, None).await.unwrap_err();
         assert!(matches!(err, DiskError::Parse(ref m) if m.contains("at least 3 devices")));
     }
@@ -2780,12 +2780,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_raid_invalid_name() {
-        let req = mdreq(
-            "bad name!",
-            "raid1",
-            vec!["/dev/null", "/dev/null"],
-            "ext4",
-        );
+        let req = mdreq("bad name!", "raid1", vec!["/dev/null", "/dev/null"], "ext4");
         let err = DiskService::create_raid(&req, None).await.unwrap_err();
         assert!(
             matches!(err, DiskError::Parse(ref m) if m.contains("1-32 characters") || m.contains("alphanumeric"))
@@ -2794,7 +2789,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_raid_name_too_long() {
-        let req = mdreq(&"a".repeat(33), "raid1", vec!["/dev/null", "/dev/null"], "ext4");
+        let req = mdreq(
+            &"a".repeat(33),
+            "raid1",
+            vec!["/dev/null", "/dev/null"],
+            "ext4",
+        );
         let err = DiskService::create_raid(&req, None).await.unwrap_err();
         assert!(matches!(err, DiskError::Parse(ref m) if m.contains("1-32 characters")));
     }
@@ -2942,12 +2942,7 @@ mod tests {
 
     // -- validate_virtual_disk_request --------------------------------------
 
-    fn vreq(
-        name: &str,
-        level: &str,
-        members: &[&str],
-        filesystem: &str,
-    ) -> VirtualDiskRequest {
+    fn vreq(name: &str, level: &str, members: &[&str], filesystem: &str) -> VirtualDiskRequest {
         VirtualDiskRequest {
             name: name.to_string(),
             level: level.to_string(),
@@ -2960,7 +2955,12 @@ mod tests {
 
     #[test]
     fn test_validate_accepts_a_baseline_raid5_mdadm_request() {
-        let req = vreq("storage", "raid5", &["/dev/sdb", "/dev/sdc", "/dev/sdd"], "ext4");
+        let req = vreq(
+            "storage",
+            "raid5",
+            &["/dev/sdb", "/dev/sdc", "/dev/sdd"],
+            "ext4",
+        );
         DiskService::validate_virtual_disk_request(&req).unwrap_or_else(|e| panic!("{e}"));
     }
 
@@ -2982,12 +2982,22 @@ mod tests {
 
     #[test]
     fn test_validate_rejects_spares_and_missing_on_native_pools() {
-        let mut req = vreq("tank", "raid6", &["/dev/sdb", "/dev/sdc", "/dev/sdd", "/dev/sde"], "zfs");
+        let mut req = vreq(
+            "tank",
+            "raid6",
+            &["/dev/sdb", "/dev/sdc", "/dev/sdd", "/dev/sde"],
+            "zfs",
+        );
         req.spares = vec!["/dev/sdf".to_string()];
         let err = DiskService::validate_virtual_disk_request(&req).unwrap_err();
         assert!(matches!(err, DiskError::Parse(ref m) if m.contains("hot spares")));
 
-        let mut req = vreq("tank", "raid6", &["/dev/sdb", "/dev/sdc", "/dev/sdd", "/dev/sde"], "btrfs");
+        let mut req = vreq(
+            "tank",
+            "raid6",
+            &["/dev/sdb", "/dev/sdc", "/dev/sdd", "/dev/sde"],
+            "btrfs",
+        );
         req.allow_missing = true;
         let err = DiskService::validate_virtual_disk_request(&req).unwrap_err();
         assert!(matches!(err, DiskError::Parse(ref m) if m.contains("hot spares")));
@@ -3009,12 +3019,7 @@ mod tests {
 
     #[test]
     fn test_validate_rejects_uneven_raid10_layouts() {
-        let req = vreq(
-            "hv",
-            "raid10",
-            &["/dev/sdb", "/dev/sdc", "/dev/sdd"],
-            "zfs",
-        );
+        let req = vreq("hv", "raid10", &["/dev/sdb", "/dev/sdc", "/dev/sdd"], "zfs");
         let err = DiskService::validate_virtual_disk_request(&req).unwrap_err();
         assert!(matches!(err, DiskError::Parse(ref m) if m.contains("pairs of devices")));
 

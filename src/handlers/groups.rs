@@ -24,7 +24,9 @@
 //! Unix group management endpoints (list, create, delete, membership) on
 //! top of the host's groups via GroupService.
 
-use crate::groups::{AddMemberRequest, CreateGroupRequest, GroupListItem, GroupService};
+use crate::groups::{
+    AddMemberRequest, CreateGroupRequest, GroupService, UpdateGroupMetaRequest,
+};
 use crate::handlers::AppState;
 use crate::storage::database::ADMIN_GROUP_NAME;
 use crate::utils::ResponseHelper;
@@ -87,9 +89,20 @@ pub async fn handle_groups_list(
     }
 
     match GroupService::list_groups() {
-        Ok(groups) => {
-            let response: Vec<GroupListItem> = groups;
-            ResponseHelper::json_success(response)
+        Ok(mut groups) => {
+            // Descriptions live in the `hv_groups` mirror only (the OS group
+            // database has no such field). A group created straight on the
+            // host simply has none — never an error.
+            let repo = crate::storage::group_repo::HvGroupRepository::new(state.db.pool());
+            if let Ok(rows) = repo.list_non_system().await {
+                for group in groups.iter_mut() {
+                    group.description = rows
+                        .iter()
+                        .find(|r| r.name == group.display_name)
+                        .and_then(|r| r.description.clone());
+                }
+            }
+            ResponseHelper::json_success(groups)
         }
         Err(e) => ResponseHelper::json_error(format!("Failed to list groups: {}", e)),
     }
@@ -149,6 +162,21 @@ pub async fn handle_group_create(
 
     match GroupService::create_group(&req.name, &req.members) {
         Ok(group) => {
+            // Mirror the group in `hv_groups` so it has a description slot and
+            // a stable row for renames. Best-effort: the OS group already
+            // exists and must not be rolled back over a mirror hiccup.
+            let repo = crate::storage::group_repo::HvGroupRepository::new(state.db.pool());
+            if let Err(e) = repo
+                .create(&req.name.trim(), req.description.as_deref())
+                .await
+            {
+                tracing::warn!(
+                    "Group '{}' created on the host but not mirrored in hv_groups: {}",
+                    req.name,
+                    e
+                );
+            }
+
             crate::events::log_event(format!(
                 "Admin '{}' created group '{}'",
                 admin_username, req.name
@@ -156,6 +184,164 @@ pub async fn handle_group_create(
             ResponseHelper::json_success(group)
         }
         Err(e) => ResponseHelper::json_error(format!("Failed to create group: {}", e)),
+    }
+}
+
+/// Renames a group and/or sets its description (2026-10-20).
+///
+/// A rename is not just `groupmod -n`: everything that keys on the group's
+/// **display name** has to follow, or the group silently loses access it was
+/// granted. Migrated here, in one place, after the OS rename succeeded:
+///
+///   - `hv_groups` mirror (name + full_name, gid preserved),
+///   - `resource_group_shares` (group-level resource grants, migration 051),
+///   - `transfer_quotas` (`subject = 'group'`, so a rename never resurrects a
+///     default limit or leaks the old one's usage),
+///   - `share_permissions` (`grantee_type = 'group'`, the SMB/NFS ACL grants).
+///
+/// The admin group is refused: it is the passwordless-sudo grant, and
+/// renaming it would leave the sudoers rule dangling.
+#[axum_macros::debug_handler]
+pub async fn handle_group_update(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    req: axum::extract::Json<UpdateGroupMetaRequest>,
+) -> Response {
+    let session_token = headers
+        .get("x-session-token")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+
+    if session_token.is_empty() {
+        return ResponseHelper::json_error("No session token provided".to_string());
+    }
+
+    let admin_username = match state.auth.get_session(session_token).await {
+        Ok(session) => {
+            if !session.is_admin {
+                return ResponseHelper::json_error("Admin access required".to_string());
+            }
+            session.username
+        }
+        Err(_) => return ResponseHelper::json_unauthorized("Invalid session".to_string()),
+    };
+
+    let old_display = GroupService::get_display_name(&name);
+    if GroupService::is_admin_group(&old_display) {
+        return ResponseHelper::json_error("The admin group cannot be renamed".to_string());
+    }
+
+    // The group must exist on the host before anything is written: a
+    // description-only call would otherwise create an `hv_groups` row for a
+    // group that is not there (and then fail on the read-back).
+    if let Err(e) = GroupService::get_group(&old_display) {
+        return ResponseHelper::json_error(format!("Group not found: {}", e));
+    }
+
+    let mut current_display = old_display.clone();
+
+    // 1. Rename first: if the OS refuses, nothing else must have changed.
+    if let Some(target) = req.name.as_deref() {
+        let target = target.trim();
+        if !target.is_empty() && target != old_display {
+            match GroupService::rename_group(&old_display, target) {
+                Ok(_) => {
+                    current_display = GroupService::get_display_name(target);
+                    crate::events::log_event(format!(
+                        "Admin '{}' renamed group '{}' to '{}'",
+                        admin_username, old_display, current_display
+                    ));
+                }
+                Err(e) => {
+                    return ResponseHelper::json_error(format!("Failed to rename group: {}", e))
+                }
+            }
+
+            // 2. Follow the display-name references. Each is best-effort and
+            // logged: the OS rename already happened, so a partial failure
+            // here is an inconsistency to surface, not a rollback.
+            let old_name = old_display.clone();
+            let new_name = current_display.clone();
+            let repo = crate::storage::group_repo::HvGroupRepository::new(state.db.pool());
+            if let Err(e) = repo.rename(&old_name, &new_name).await {
+                tracing::warn!("hv_groups mirror rename '{}' → '{}' failed: {}", old_name, new_name, e);
+            }
+
+            let resource_repo =
+                crate::storage::resource_share_repo::ResourceShareRepository::new(state.db.pool());
+            if let Err(e) = resource_repo.rename_group_name(&old_name, &new_name).await {
+                tracing::warn!(
+                    "resource_group_shares rename '{}' → '{}' failed: {}",
+                    old_name,
+                    new_name,
+                    e
+                );
+            }
+
+            if let Err(e) = sqlx::query(
+                "UPDATE transfer_quotas SET subject_name = ? WHERE subject_type = 'group' AND subject_name = ?",
+            )
+            .bind(&new_name)
+            .bind(&old_name)
+            .execute(state.db.pool().as_ref())
+            .await
+            {
+                tracing::warn!(
+                    "transfer_quotas rename '{}' → '{}' failed: {}",
+                    old_name,
+                    new_name,
+                    e
+                );
+            }
+
+            if let Err(e) = sqlx::query(
+                "UPDATE share_permissions SET grantee_name = ? WHERE grantee_type = 'group' AND grantee_name = ?",
+            )
+            .bind(&new_name)
+            .bind(&old_name)
+            .execute(state.db.pool().as_ref())
+            .await
+            {
+                tracing::warn!(
+                    "share_permissions rename '{}' → '{}' failed: {}",
+                    old_name,
+                    new_name,
+                    e
+                );
+            }
+        }
+    }
+
+    // 3. Description: `None` = leave alone, `Some("")` = clear.
+    if let Some(description) = req.description.as_deref() {
+        let value = if description.trim().is_empty() {
+            None
+        } else {
+            Some(description.trim())
+        };
+        let repo = crate::storage::group_repo::HvGroupRepository::new(state.db.pool());
+        match repo.update_description(&current_display, value).await {
+            Ok(true) => {}
+            Ok(false) => {
+                // No mirror row (group created straight on the host): create
+                // one so the description has somewhere to live.
+                if let Err(e) = repo.create(&current_display, value).await {
+                    return ResponseHelper::json_error(format!(
+                        "Failed to store the description: {}",
+                        e
+                    ));
+                }
+            }
+            Err(e) => {
+                return ResponseHelper::json_error(format!("Failed to store the description: {}", e))
+            }
+        }
+    }
+
+    match GroupService::get_group(&current_display) {
+        Ok(group) => ResponseHelper::json_success(group),
+        Err(e) => ResponseHelper::json_error(format!("Group not found: {}", e)),
     }
 }
 
@@ -201,6 +387,23 @@ pub async fn handle_group_delete(
             let quota_repo =
                 crate::storage::transfer_quota_repo::TransferQuotaRepository::new(state.db.pool());
             let _ = quota_repo.delete("group", &name).await;
+
+            // Same reasoning for the group's resource grants (migration 051):
+            // drop them with the group, otherwise a later group reusing the
+            // display name would inherit access nobody granted it.
+            let resource_repo =
+                crate::storage::resource_share_repo::ResourceShareRepository::new(state.db.pool());
+            let _ = resource_repo.revoke_all_for_group(&name).await;
+
+            // And the `hv_groups` mirror row, for the same reason: a stale
+            // description would otherwise reappear on a future group created
+            // with this display name.
+            // `hv_groups.name` holds the display name (no prefix), so
+            // normalise whatever the caller passed.
+            let group_repo = crate::storage::group_repo::HvGroupRepository::new(state.db.pool());
+            let _ = group_repo
+                .delete(&GroupService::get_display_name(&name))
+                .await;
 
             crate::events::log_event_warn(format!(
                 "Admin '{}' deleted group '{}'",

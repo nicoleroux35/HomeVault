@@ -54,12 +54,27 @@ pub struct Group {
 pub struct CreateGroupRequest {
     pub name: String,
     pub members: Vec<String>,
+    /// Optional description stored in the `hv_groups` mirror (migration 008).
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// Request payload for updating an existing group's members.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateGroupRequest {
     pub members: Vec<String>,
+}
+
+/// Request payload for renaming a group and/or setting its description
+/// (2026-10-20). Both fields are optional: a `PUT` may carry only one of them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateGroupMetaRequest {
+    /// New display name (no `homevault_` prefix; it is added automatically).
+    #[serde(default)]
+    pub name: Option<String>,
+    /// New description; `Some("")` clears it, `None` leaves it untouched.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// Request payload for adding a single user to a group.
@@ -77,6 +92,11 @@ pub struct GroupListItem {
     pub display_name: String,
     pub gid: u32,
     pub member_count: usize,
+    /// Free-text description from the `hv_groups` mirror (`None` = none set).
+    /// The OS has no such field, so this is DB-only and may be absent for a
+    /// group created straight on the host.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// Service for managing HomeVault system groups via `getent`, `groupadd`, `groupdel`, `usermod`.
@@ -146,6 +166,9 @@ impl GroupService {
                     display_name,
                     gid,
                     member_count: members.len(),
+                    // Filled in by the handler from the `hv_groups` mirror —
+                    // the OS group database has no description column.
+                    description: None,
                 });
             }
         }
@@ -309,6 +332,76 @@ impl GroupService {
         }
 
         Ok(())
+    }
+
+    /// Rename a group at the OS level (`groupmod -n`), display names in,
+    /// display names out. The admin group cannot be renamed (it is the sudo
+    /// grant), and an existing target name is refused rather than merged.
+    ///
+    /// Callers are responsible for migrating the references a rename breaks —
+    /// the `hv_groups` mirror, `resource_group_shares`, `transfer_quotas` and
+    /// `share_permissions` all key on the display name. `handle_group_update`
+    /// does exactly that; never call this without it.
+    pub fn rename_group(old_name: &str, new_name: &str) -> Result<Group, GroupError> {
+        let old_display = Self::get_display_name(old_name.trim());
+        let new_display = new_name.trim().to_string();
+
+        if let Err(e) = Self::validate_group_name(&new_display) {
+            return Err(GroupError::CommandFailed(e));
+        }
+        if new_display.starts_with(GROUP_PREFIX) {
+            return Err(GroupError::CommandFailed(
+                "Do not include the 'homevault_' prefix — it is added automatically".to_string(),
+            ));
+        }
+        if Self::is_admin_group(&old_display) || Self::is_admin_group(&new_display) {
+            return Err(GroupError::CommandFailed(
+                "The admin group cannot be renamed".to_string(),
+            ));
+        }
+        if old_display == new_display {
+            return Self::get_group(&new_display);
+        }
+
+        let old_full = Self::get_full_group_name(&old_display);
+        let new_full = Self::get_full_group_name(&new_display);
+
+        // Source must exist...
+        if !Command::new("getent")
+            .args(["group", &old_full])
+            .output()?
+            .status
+            .success()
+        {
+            return Err(GroupError::NotFound(old_display));
+        }
+        // ...and the target must not.
+        if Command::new("getent")
+            .args(["group", &new_full])
+            .output()?
+            .status
+            .success()
+        {
+            return Err(GroupError::CommandFailed(format!(
+                "Group '{}' already exists",
+                new_display
+            )));
+        }
+
+        let output = Command::new("sudo")
+            .arg("groupmod")
+            .arg("-n")
+            .arg(&new_full)
+            .arg(&old_full)
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(GroupError::CommandFailed(stderr.to_string()));
+        }
+
+        tracing::info!("Renamed group '{}' to '{}'", old_full, new_full);
+        Self::get_group(&new_full)
     }
 
     /// Ensure `username` has a real Linux account, provisioning a bare one

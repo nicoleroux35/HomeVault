@@ -34,7 +34,7 @@
   import FolderPicker from '$lib/components/theme/FolderPicker.svelte';
   import MemberAccessCard from '$lib/components/users/MemberAccessCard.svelte';
   import type { AvailableHomeDisk } from '$lib/types/api';
-  import { IconSearch, IconPlus, IconMinus, IconLock, IconLockOpen, IconUsers, IconFolder, IconFolderOpen, IconKey, IconTrash, IconCheck, IconX, IconShield, IconShieldOff, IconGauge, IconArrowLeft, IconEye, IconEyeOff } from '@tabler/icons-svelte';
+  import { IconSearch, IconPlus, IconMinus, IconLock, IconLockOpen, IconUsers, IconFolder, IconFolderOpen, IconKey, IconTrash, IconCheck, IconX, IconShield, IconShieldOff, IconGauge, IconArrowLeft, IconEye, IconEyeOff, IconLogout, IconDeviceDesktop, IconClock } from '@tabler/icons-svelte';
 
   interface User {
     username: string;
@@ -50,6 +50,8 @@
     home_path: string | null;
     home_size_bytes: number | null;
     two_fa_enabled: boolean;
+    /** Admin-set expiry horizon (RFC 3339, `null` = never; migration 050). */
+    expires_at: string | null;
   }
   interface Group { name: string; display_name: string; }
 
@@ -359,6 +361,131 @@
   // whole width whenever a user is selected or we're creating one.
   $: detailOpen = creating || !!selectedUser;
 
+  // ── Admin per-user sessions (2026-10-20) ────────────────────────────────
+  // Audit + incident tooling on the Security card: the admin sees how many
+  // sessions exist, from which addresses, since when (tokens masked to audit
+  // references by the backend) and can force logout everywhere — reversible,
+  // so no confirmation dialog (unlike delete, which is not).
+  interface AdminSessionRow {
+    id: string;
+    ip_address: string;
+    created_at: string;
+    expires_at: string;
+  }
+  let userSessions: AdminSessionRow[] = [];
+  let userSessionsLoading = false;
+  let userSessionsBusy = false;
+  let userSessionsError = '';
+  let userSessionsNotice = '';
+
+  function formatSessionDate(s: string): string {
+    if (!s) return '—';
+    const LOCALE_MAP: Record<string, string> = { en: 'en-US', fr: 'fr-FR', de: 'de-DE', es: 'es-ES' };
+    return new Date(s).toLocaleString(LOCALE_MAP[$languageStore] || 'en-US', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
+  async function loadUserSessions(username = selectedUser?.username) {
+    if (!username) return;
+    userSessionsLoading = true;
+    userSessionsError = '';
+    userSessionsNotice = '';
+    const res = await api.getAdminUserSessions(username);
+    userSessionsLoading = false;
+    if (res.success) {
+      userSessions = res.data?.sessions ?? [];
+    } else {
+      userSessionsError = res.message || res.error || translate('users.sessions_error');
+    }
+  }
+
+  async function revokeAllUserSessions() {
+    if (!selectedUser) return;
+    userSessionsBusy = true;
+    userSessionsError = '';
+    userSessionsNotice = '';
+    const res = await api.revokeAdminUserSessions(selectedUser.username);
+    userSessionsBusy = false;
+    if (res.success) {
+      userSessions = [];
+      userSessionsNotice = translate('users.sessions_revoked');
+      await refreshAll();
+    } else {
+      userSessionsError = res.message || res.error || translate('users.sessions_error');
+    }
+  }
+
+  // ── Account expiry (2026-10-20, migration 050) ─────────────────────────
+  // Admin-set horizon per account. Lives in its own card because the server
+  // keeps it off the profile-save path: only this form may move it. The
+  // datetime-local input carries a local-time value; it is converted to a
+  // UTC RFC 3339 stamp for the API, and back for display.
+  let expiryEditing = false;
+  let expiryValue = '';
+  let expirySaving = false;
+
+  $: userIsExpired =
+    !!selectedUser?.expires_at &&
+    !Number.isNaN(new Date(selectedUser.expires_at).getTime()) &&
+    new Date(selectedUser.expires_at) < new Date();
+
+  function openExpiryEditor() {
+    const iso = selectedUser?.expires_at ?? null;
+    if (iso) {
+      const d = new Date(iso);
+      if (!Number.isNaN(d.getTime())) {
+        const pad = (n: number) => String(n).padStart(2, '0');
+        expiryValue = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      } else {
+        expiryValue = '';
+      }
+    } else {
+      expiryValue = '';
+    }
+    expiryEditing = true;
+  }
+
+  async function saveExpiry() {
+    if (!selectedUser) return;
+    const trimmed = expiryValue.trim();
+    if (trimmed && Number.isNaN(new Date(trimmed).getTime())) {
+      errors = { expiry: translate('users.expiry_invalid') };
+      return;
+    }
+    expirySaving = true;
+    const iso = trimmed ? new Date(trimmed).toISOString() : null;
+    const res = await api.setUserExpiry(selectedUser.username, iso);
+    expirySaving = false;
+    if (res.success) {
+      selectedUser = { ...selectedUser, expires_at: res.data?.expires_at ?? null };
+      expiryEditing = false;
+      await refreshAll();
+      errors = {
+        saved:
+          res.data?.expires_at != null
+            ? translate('users.expiry_saved')
+            : translate('users.expiry_cleared'),
+      };
+    } else {
+      errors = { expiry: res.message || res.error || translate('users.expiry_error') };
+    }
+  }
+
+  // (Re)load when the detail pane opens or switches target — but NOT on the
+  // re-assignations `refreshAll()` performs to the same username (they used
+  // to wipe the just-set success/error notice of a finished action). Closing
+  // the detail pane clears the memo so a re-open reloads honestly.
+  let sessionsFor = '';
+  $: if (detailOpen && !creating && selectedUser && sessionsFor !== selectedUser.username) {
+    sessionsFor = selectedUser.username;
+    loadUserSessions(selectedUser.username);
+  }
+
   // Narrow + a pane open → the rail unmounts entirely (PageLayout's
   // `sidebarHidden` → WindowSidebar's `{#if !hidden}`), so exactly one view is
   // in the DOM at a time. Unmounting — not hiding — is what lets an E2E test
@@ -407,7 +534,7 @@
     loadQuota(u);
   }
   function selectUser(u: User) { hydrateDetail(u); }
-  function closeDetail() { selectedUser = null; creating = false; errors = {}; }
+  function closeDetail() { selectedUser = null; creating = false; errors = {}; sessionsFor = ''; }
 
   function startCreate() {
     createForm = blankCreate();
@@ -1113,6 +1240,54 @@
             </SectionCard>
           </form>
 
+          <!-- 1b. Account expiry (2026-10-20, migration 050) -->
+          <form onsubmit={(e) => { e.preventDefault(); saveExpiry(); }}>
+            <SectionCard data-testid="users-setting-row" divider>
+              {#snippet titleSnippet()}
+                <h2 class={cardTitle}><IconClock size={17} stroke={2} aria-hidden="true" /> {$t('users.expiry_title')}</h2>
+              {/snippet}
+              {#snippet actions()}
+                {#if !expiryEditing}
+                  <button type="button" data-testid="users-expiry-edit" class={cn(ghostBtn, 'h-9 px-3 text-c-label')} onclick={openExpiryEditor}>
+                    <IconClock size={16} stroke={1.9} aria-hidden="true" /> {$t('users.expiry_set_btn')}
+                  </button>
+                {:else}
+                  <button type="submit" data-testid="users-expiry-save" class={primaryBtn} disabled={expirySaving}>
+                    <IconCheck size={16} stroke={2.2} aria-hidden="true" /> {$t('common.save')}
+                  </button>
+                {/if}
+              {/snippet}
+              {#if !expiryEditing}
+                <div class="flex items-baseline gap-2 flex-wrap">
+                  <!-- The value is text, not a form field; the heading is the
+                       accessible anchor, no fake label needed. -->
+                  <span class="text-c-base text-[var(--hv-shell-text-strong)]">
+                    {selectedUser.expires_at ? formatSessionDate(selectedUser.expires_at) : $t('users.expiry_never')}
+                  </span>
+                  {#if userIsExpired}
+                    <span data-testid="users-expiry-badge" class="inline-flex items-center h-7 px-2 rounded-full text-c-xs font-bold bg-[var(--hv-error-bg)] text-[var(--hv-error-text)]" role="status">{$t('users.expiry_badge')}</span>
+                  {/if}
+                </div>
+                <p class={cn(hint, 'mt-1.5')}>{$t('users.expiry_hint')}</p>
+              {:else}
+                <div class="grid grid-cols-1 @min-[640px]:grid-cols-[auto_1fr_auto] items-end gap-3">
+                  <div class={field}>
+                    <label for="d-expiry" class={fieldLabel}>{$t('users.expiry_title')}</label>
+                  </div>
+                  <div class={field}>
+                    <input id="d-expiry" data-testid="users-expiry-input" class={inp} type="datetime-local" bind:value={expiryValue} />
+                  </div>
+                  <button type="button" data-testid="users-expiry-clear" class={cn(ghostBtn, 'h-11 px-3 text-c-label')} onclick={() => { expiryValue = ''; saveExpiry(); }} disabled={expirySaving}>
+                    <IconX size={16} stroke={2} aria-hidden="true" /> {$t('users.expiry_clear_btn')}
+                  </button>
+                </div>
+                <p class={cn(hint, 'mt-1.5')}>{$t('users.expiry_editor_hint')}</p>
+              {/if}
+              {#if errors.expiry}<p data-testid="users-expiry-err" class={cn(errTxt, 'm-0 mt-1.5')} role="alert">{errors.expiry}</p>{/if}
+              {#if errors.saved}<p data-testid="users-expiry-ok" class={cn(okTxt, 'm-0 mt-1.5')} role="status">{errors.saved}</p>{/if}
+            </SectionCard>
+          </form>
+
           <!-- 2. Role & groups -->
           <form onsubmit={(e) => { e.preventDefault(); saveRoleAndGroups(); }}>
             <SectionCard data-testid="users-setting-row" divider>
@@ -1349,6 +1524,53 @@
                   onclick={handleDisable2FA}
                   class={cn(switchTrack, selectedUser.two_fa_enabled ? 'bg-[var(--hv-primary)] justify-end' : 'bg-[var(--hv-shell-border)] justify-start')}
                 ><span class={switchKnob}></span></button>
+              </div>
+            </div>
+
+            <!-- Sessions (2026-10-20): audit + force logout. Tokens never
+                 leave the server masked; the bulk revoke is the incident
+                 action (reversible — the user just signs back in). -->
+            <div class="mt-4 border-t border-[var(--hv-shell-border-soft)] pt-4" data-testid="users-sessions">
+              <div class="flex items-baseline gap-1.5 flex-wrap">
+                <!-- A real <label for>: 8.1 asserts every visible input[id]
+                     has a matching label; the heading anchors the section. -->
+                <h3 id="d-sessions-title" class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('users.sessions_title')}</h3>
+                <small class="text-xs text-[var(--hv-shell-text)]">{$t('users.sessions_hint')}</small>
+              </div>
+              {#if userSessionsError}<span data-testid="users-err" class={cn(errTxt, 'block')} role="alert">{userSessionsError}</span>{/if}
+              {#if userSessionsNotice}<span data-testid="users-ok" class={cn(okTxt, 'block')} role="status">{userSessionsNotice}</span>{/if}
+              {#if userSessionsLoading}
+                <p data-testid="users-sessions-loading" class="m-0 mt-2 text-xs text-[var(--hv-shell-text-3)]">{$t('common.loading')}</p>
+              {:else if userSessions.length === 0}
+                <p data-testid="users-sessions-empty" class="m-0 mt-2 text-xs text-[var(--hv-shell-text-3)]">{$t('users.sessions_empty')}</p>
+              {:else}
+                <ul data-testid="users-sessions-list" class="list-none m-0 mt-2 p-0 flex flex-col gap-2">
+                  {#each userSessions as s (s.id)}
+                    <li data-testid="users-session-row" class="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
+                      <span class="flex-none grid place-items-center w-11 h-11 rounded-lg bg-[var(--hv-shell-border)] text-[var(--hv-shell-text-2)]">
+                        <IconDeviceDesktop size={20} stroke={1.9} aria-hidden="true" />
+                      </span>
+                      <div class="flex-1 min-w-0">
+                        <strong class="font-[family-name:var(--hv-font-mono)] text-sm text-[var(--hv-shell-text-strong)]">{s.ip_address}</strong>
+                        <small class="block text-xs text-[var(--hv-shell-text)] mt-0.5">
+                          {$t('account.signed_in')}: {formatSessionDate(s.created_at)} — {$t('account.expires')}: {formatSessionDate(s.expires_at)}
+                        </small>
+                      </div>
+                      <code class="flex-none text-xs text-[var(--hv-shell-text-3)] font-[family-name:var(--hv-font-mono)]" title={$t('users.sessions_masked_hint')}>{s.id}</code>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+              <div class="mt-2.5">
+                <button
+                  type="button"
+                  data-testid="users-sessions-revoke"
+                  class={cn(ghostBtn)}
+                  onclick={revokeAllUserSessions}
+                  disabled={userSessionsBusy || userSessionsLoading || userSessions.length === 0}
+                >
+                  <IconLogout size={16} stroke={1.9} aria-hidden="true" /> {$t('users.sessions_revoke')}
+                </button>
               </div>
             </div>
 

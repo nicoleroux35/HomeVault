@@ -597,6 +597,7 @@
           },
           isAuthenticated: true,
           isLoading: false,
+          mustChangePassword: null,
         });
         // Remember whether 2FA (enrolled at the password step) was persisted,
         // so the post-recovery summary can show the one-time backup codes.
