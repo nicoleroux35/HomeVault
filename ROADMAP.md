@@ -109,6 +109,39 @@ unit tests on the location builder, the store-cap test, and an end-to-end
 TLS redirect step in `tests/app_proxy_integration.rs`. See `CLAUDE.md`
 (2026-10-21 addendum) and `CHANGELOG.md` [Unreleased] → Fixed.
 
+**Fixed on 2026-10-21 — VPN production-ready:**
+
+The VPN module answered three classes of "it looks done but fails in
+production": (a) an OpenVPN start answered "started" while `openvpn --daemon`
+had merely forked — bad credentials or an unreachable endpoint left a daemon
+retrying forever behind a success the admin already saw; (b) an uploaded
+`.ovpn` profile was executed as root with no content check, so the exec-hook
+directives (`up`, `client-connect`, `auth-user-pass-verify`, `script-security
+> 1`, …) were a privilege escalation away from any compromised admin
+session; (c) every VPN status poll and peer provisioning contacted three
+external echo endpoints with no cache. The fix, verified empirically against
+OpenVPN 2.6.19 during this pass: the start is now **start → verify →
+rollback** — per-connection log + `--cd /etc/openvpn` (`--daemon` chdir()s to
+`/`, and the client-side `--status` file carries no connection state — both
+behaviours were confirmed on a live 2.6.19 client, not read from docs), a
+10 s / 250 ms poll for the `Initialization Sequence Completed` marker, kill +
+log-derived error message on timeout or fatal, idempotence when already
+running, credentials kept only while the connection exists
+(`/etc/openvpn/openvpn-<name>.auth`, 0600, deleted on stop/delete — never
+`/run`, which the service cannot write); the profile deny list is enforced in
+the engine and at the handler (400 naming the directive, 409 on replacing a
+running profile); `ensure_wireguard_server` verifies `wg0` came up after
+`wg-quick up`; all VPN mutation handlers run through `spawn_blocking`; and
+`discover_public_ip` is cached (`PublicIpCache`, 15 min positive / 60 s
+negative TTL, injected-instant unit tests). Frontend: per-card connecting
+spinner on the OpenVPN start (`vpn.connecting` ×4 locales). `docs/guides/
+vpn.md` rewritten — the previous text still described the pre-roadwarrior
+`/wireguard/keygen` + `/{name}/start` endpoints — and `docs/API.md` lists the
+real routes. Tests: `vpn.rs` unit 14 → 29, `vpn_integration.rs` 22 → 25; the
+real tunnel pass (WireGuard handshake from a phone, an OpenVPN auth failure
+watched through the verify) is recorded in `TESTING.md`'s "Remaining to
+test" list. See `CLAUDE.md` (2026-10-21 addendum).
+
 **Fixed on 2026-10-20 — Docker production-ready:**
 
 The Docker module was audited end to end and every gap closed in one pass:

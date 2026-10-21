@@ -150,6 +150,46 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **VPN production-ready pass (2026-10-21).** Three gap classes closed,
+  verified empirically against OpenVPN 2.6.19 during the pass:
+  (a) an **OpenVPN start now verifies the tunnel before answering** —
+  `openvpn --daemon` exits 0 immediately, so starts used to report success
+  while the daemon silently retried forever (bad credentials, unreachable
+  endpoint); the daemon now launches with a per-connection log and
+  `--cd /etc/openvpn` (`--daemon` chdir()s to `/`, which used to break every
+  relative path inside a profile; the client-side `--status` file carries no
+  connection state, only statistics — both verified on a live 2.6.19 client),
+  the log is polled 250 ms for up to 10 s for `Initialization Sequence
+  Completed`, a fatal (`Options error` / `Exiting due to fatal error`)
+  short-circuits the wait, and on timeout *or* fatal the daemon is killed
+  (rollback) and the API answers naming the log's error line. Starting an
+  already-running profile is idempotent. Credentials live in
+  `/etc/openvpn/openvpn-<name>.auth` (0600), are **kept while the connection
+  runs** (OpenVPN re-reads them on renegotiation) and are deleted on
+  stop/delete — they were previously thrown into `/run`, which the
+  unprivileged service cannot even write; (b) **uploaded `.ovpn` profiles
+  are content-validated** — the exec-hook directives (`up`, `down`,
+  `down-pre`, `route-up`, `ipchange`, `learn-address`, `client-connect`,
+  `client-disconnect`, `auth-user-pass-verify`, `tls-verify`, `askpass`) and
+  `script-security > 1` are refused (400 naming the directive, enforced both
+  at engine save time and at the handler), and re-uploading over a profile
+  whose daemon is currently running answers **409** (stop first);
+  (c) `ensure_wireguard_server` verifies `wg0` actually came up after
+  `wg-quick up` instead of trusting its silent success. Plus: every VPN
+  handler mutation runs through `spawn_blocking` (a start may hold the full
+  10 s grace), stop/delete remove the per-connection `.log`/`.auth`
+  defence files, start failures are `log_event`-warned, and
+  `discover_public_ip` gets a **`PublicIpCache`** (15 min positive / 60 s
+  negative TTL) so VPN status polls and peer provisioning no longer mean an
+  external HTTPS request per page view. Frontend: the OpenVPN card's start
+  button shows a disabled spinning connecting state while the verified start
+  is in flight (`vpn.connecting` ×4 locales). `docs/guides/vpn.md` rewritten
+  (the previous text still described the pre-roadwarrior
+  `/wireguard/keygen` + `/{name}/start` endpoints) and `docs/API.md`'s VPN
+  table now lists the real routes. Tests: `vpn.rs` unit 14 → 29 (deny-list
+  matrix, log parsers, summary stripping), `vpn_integration.rs` 22 → 25
+  (guarded content-validation 400s). See `CLAUDE.md` (2026-10-21 addendum)
+  and `TESTING.md` remaining list for the live tunnel pass.
 - **App-proxy auth under HTTPS (2026-10-21).** The proxy gate redirected
   unauthenticated browsers to a hard-coded `http://{main_port}/app-auth`; on a
   TLS deployment the `hv_session` cookie carries `Secure` and the browser
