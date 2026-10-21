@@ -45,12 +45,14 @@ use crate::config::paths;
 use crate::groups::GroupService;
 use crate::permissions::PermissionService;
 use crate::shares::{
-    append_file_as_root, write_file_as_root, SftpConfig, Share, ShareType, SharesService,
+    append_file_as_root, validate_share_name, validate_share_path, write_file_as_root, SftpConfig,
+    Share, ShareType, SharesService,
 };
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 use tracing::warn;
 
@@ -62,6 +64,8 @@ pub enum SftpError {
     CommandFailed(String),
     #[error("Invalid SSH public key")]
     InvalidKey,
+    #[error("Invalid SFTP field: {0}")]
+    InvalidField(String),
 }
 
 const SFTP_GROUP: &str = "homevault-sftp";
@@ -71,6 +75,11 @@ const SFTP_CONFIG_FILE: &str = "/etc/homevault-sftp/sshd_config";
 const SFTP_SERVICE_FILE: &str = "/etc/systemd/system/homevault-sftp.service";
 const FSTAB_PATH: &str = "/etc/fstab";
 const FSTAB_TAG_PREFIX: &str = "# homevault-sftp:";
+
+/// Hard ceiling for one full jail reconciliation (dozens of blocking `sudo`
+/// calls — `useradd`, `mount --bind`, `gpasswd`, `tee`). A hung mount must
+/// surface as a clean error, never leave a request pending forever.
+const JAIL_REBUILD_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// A user with SFTP access to at least one share, for the "SFTP Users" key
 /// management panel.
@@ -243,6 +252,11 @@ impl SftpJailService {
     /// `AuthorizedKeysFile` against the real filesystem before chrooting.
     pub fn set_authorized_key(username: &str, public_key: &str) -> Result<(), SftpError> {
         let key = Self::validate_public_key(public_key)?;
+        // The username becomes a directory under the keys and jails roots
+        // (`sftp_keys_dir().join(username)`), so reject any path fragment
+        // before it reaches a filesystem path or a `sudo useradd` argument.
+        validate_share_name(username)
+            .map_err(|e| SftpError::InvalidField(format!("username: {e}")))?;
         Self::ensure_group()?;
         Self::ensure_linux_user(username)?;
 
@@ -356,12 +370,37 @@ Subsystem sftp internal-sftp
         Ok(())
     }
 
+    /// Validate everything that is about to be written as one `/etc/fstab`
+    /// line: the bind source, the mount point and the username that both
+    /// paths are built from. `/etc/fstab` is whitespace-separated, so a space
+    /// in any of these values would shift columns (device/mount point/type/
+    /// options) and a newline would append an arbitrary extra mount; the
+    /// mount point is `jail/<share name>`, so `..`/`.`-only names could
+    /// traverse out of the jail.
+    fn validate_fstab_line_parts(
+        share_path: &str,
+        mountpoint: &str,
+        username: &str,
+        share_name: &str,
+    ) -> Result<(), SftpError> {
+        validate_share_path(share_path)
+            .map_err(|e| SftpError::InvalidField(format!("share path: {e}")))?;
+        validate_share_path(mountpoint)
+            .map_err(|e| SftpError::InvalidField(format!("jail mount point: {e}")))?;
+        validate_share_name(username)
+            .map_err(|e| SftpError::InvalidField(format!("username: {e}")))?;
+        validate_share_name(share_name)
+            .map_err(|e| SftpError::InvalidField(format!("share name: {e}")))?;
+        Ok(())
+    }
+
     fn ensure_fstab_entry(
         share_path: &str,
         mountpoint: &str,
         username: &str,
         share_name: &str,
     ) -> Result<(), SftpError> {
+        Self::validate_fstab_line_parts(share_path, mountpoint, username, share_name)?;
         let tag = format!("{}{}:{}", FSTAB_TAG_PREFIX, username, share_name);
         let fstab = fs::read_to_string(FSTAB_PATH).unwrap_or_default();
         if fstab.contains(&tag) {
@@ -488,11 +527,16 @@ Subsystem sftp internal-sftp
     /// Never deletes a Linux account outright — only this feature's own
     /// group membership and jail contents, since the account may pre-date
     /// or outlive this feature (e.g. a promoted admin's real shell account).
+    ///
+    /// Two phases: the desired state is resolved from the DB (async), then the
+    /// mount/account reconciliation — dozens of blocking `sudo` calls — runs
+    /// on the blocking thread pool with a hard timeout, so a slow `mount
+    /// --bind` can never stall the async runtime or hang a request forever.
     pub async fn rebuild_jails(pool: Arc<sqlx::SqlitePool>) -> Result<(), SftpError> {
-        Self::ensure_group()?;
-
-        let shares =
-            SharesService::get_shares().map_err(|e| SftpError::CommandFailed(e.to_string()))?;
+        let shares = tokio::task::spawn_blocking(SharesService::get_shares)
+            .await
+            .map_err(|e| SftpError::CommandFailed(format!("share list worker failed: {e}")))?
+            .map_err(|e| SftpError::CommandFailed(e.to_string()))?;
         let sftp_shares: Vec<Share> = shares
             .into_iter()
             .filter(|s| s.share_type == ShareType::Sftp && s.enabled)
@@ -525,7 +569,33 @@ Subsystem sftp internal-sftp
             }
         }
 
+        let apply = tokio::task::spawn_blocking(move || Self::apply_jail_state(desired));
+        match tokio::time::timeout(JAIL_REBUILD_TIMEOUT, apply).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(join_err)) => Err(SftpError::CommandFailed(format!(
+                "SFTP jail rebuild worker failed: {join_err}"
+            ))),
+            Err(_) => Err(SftpError::CommandFailed(format!(
+                "SFTP jail rebuild timed out after {}s — a bind mount or account operation is hanging",
+                JAIL_REBUILD_TIMEOUT.as_secs()
+            ))),
+        }
+    }
+
+    /// Blocking half of [`Self::rebuild_jails`]: group/account provisioning,
+    /// bind mounts, fstab entries and stale-jail cleanup. Runs on the blocking
+    /// thread pool (every call inside shells out with `sudo`).
+    fn apply_jail_state(desired: BTreeMap<String, Vec<(String, String)>>) -> Result<(), SftpError> {
+        Self::ensure_group()?;
+
         for (username, grants) in &desired {
+            if let Err(e) = validate_share_name(username) {
+                warn!(
+                    "SFTP: skipping grantee '{}' — username is not a safe Linux account name: {}",
+                    username, e
+                );
+                continue;
+            }
             if let Err(e) = Self::ensure_linux_user(username) {
                 warn!(
                     "SFTP: failed to ensure Linux account for '{}': {}",
@@ -596,8 +666,10 @@ Subsystem sftp internal-sftp
     /// List every user with SFTP access to at least one share, for the
     /// "SFTP Users" key-management panel.
     pub async fn list_grantees(pool: Arc<sqlx::SqlitePool>) -> Result<Vec<SftpGrantee>, SftpError> {
-        let shares =
-            SharesService::get_shares().map_err(|e| SftpError::CommandFailed(e.to_string()))?;
+        let shares = tokio::task::spawn_blocking(SharesService::get_shares)
+            .await
+            .map_err(|e| SftpError::CommandFailed(format!("share list worker failed: {e}")))?
+            .map_err(|e| SftpError::CommandFailed(e.to_string()))?;
         let sftp_shares: Vec<Share> = shares
             .into_iter()
             .filter(|s| s.share_type == ShareType::Sftp)
@@ -733,5 +805,86 @@ mod tests {
         // A recognized prefix but only one whitespace-separated field.
         assert!(SftpJailService::validate_public_key("ssh-ed25519").is_err());
         assert!(SftpJailService::validate_public_key("ssh-rsa ").is_err());
+    }
+
+    #[test]
+    fn test_fstab_line_parts_accept_a_normal_jail_mount() {
+        assert!(SftpJailService::validate_fstab_line_parts(
+            "/mnt/pool/media",
+            "/var/lib/homevault/sftp-jails/alice/media",
+            "alice",
+            "media",
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn test_fstab_line_parts_reject_column_and_line_injection() {
+        // /etc/fstab is whitespace-separated: a space shifts the columns, a
+        // newline appends an extra (arbitrary) mount line.
+        let ok_mp = "/var/lib/homevault/sftp-jails/alice/media";
+        for bad_path in [
+            "/mnt/pool/me dia",
+            "/mnt/pool/media\n/ (rw)",
+            "/mnt/pool/media\n/tmp *(rw)",
+            "relative/path",
+        ] {
+            assert!(
+                SftpJailService::validate_fstab_line_parts(bad_path, ok_mp, "alice", "media")
+                    .is_err(),
+                "path {bad_path:?} must be rejected"
+            );
+        }
+
+        for bad_mp in ["/var/lib/x/alice/me dia", "/var/lib/x\n/ (rw)"] {
+            assert!(
+                SftpJailService::validate_fstab_line_parts(
+                    "/mnt/pool/media",
+                    bad_mp,
+                    "alice",
+                    "media"
+                )
+                .is_err(),
+                "mount point {bad_mp:?} must be rejected"
+            );
+        }
+
+        for bad_user in ["alice/bob", "..", "ali ce", "alice\nroot"] {
+            assert!(
+                SftpJailService::validate_fstab_line_parts(
+                    "/mnt/pool/media",
+                    ok_mp,
+                    bad_user,
+                    "media"
+                )
+                .is_err(),
+                "username {bad_user:?} must be rejected"
+            );
+        }
+
+        for bad_share in ["../etc", "me dia", "media\n/"] {
+            assert!(
+                SftpJailService::validate_fstab_line_parts(
+                    "/mnt/pool/media",
+                    ok_mp,
+                    "alice",
+                    bad_share
+                )
+                .is_err(),
+                "share name {bad_share:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_set_authorized_key_rejects_a_path_fragment_username() {
+        // Rejected before any `sudo useradd` runs (no side effect in tests).
+        for bad_user in ["alice/../root", "../alice", "ali ce", ""] {
+            let err = SftpJailService::set_authorized_key(
+                bad_user,
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIabc key",
+            );
+            assert!(err.is_err(), "{bad_user:?} must be rejected");
+        }
     }
 }

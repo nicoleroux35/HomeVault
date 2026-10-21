@@ -339,9 +339,33 @@ shares), separate from the POSIX-ACL share permissions above. `kind` ∈ {`app`,
 `folder`, `share`}, `permission` ∈ {`read`, `write`, `full`}. See
 [Users](./guides/users.md) for the server-side filter contract.
 
-`share_type` ∈ {`smb`, `nfs`, `ftp`, `webdav`}. Permission grant applies the real
-POSIX ACL **before** the DB write; revoke deletes the DB row even if the ACL
+`share_type` ∈ {`smb`, `nfs`, `ftp`, `webdav`, `sftp`}. Permission grant applies the
+real POSIX ACL **before** the DB write; revoke deletes the DB row even if the ACL
 removal fails (see `src/permissions.rs`).
+
+**Validation (2026-10-21).** Share values are embedded verbatim in root-owned
+config files, so they are validated before any privileged write and a rejection
+is a `400` naming the field:
+
+- `name`: ASCII letters/digits/`-`/`_`/`.` (≤ 64), no leading `.`, no `..`, not
+  a Samba-reserved section (`global`, `homes`, `printers`, `admin$`).
+- `comment`: single line (no control characters), ≤ 200 chars.
+- `path`: absolute, no whitespace/control/`( ) , # ;`, no `..`.
+- `options` (NFS): whitespace-free tokens, no `( ) , # " '`, ≤ 16 entries —
+  they are written as `path *(opt1,opt2)`.
+- SMB global config: one-line `workgroup` (≤ 15), `security_mode` ∈
+  {`user`,`share`,`domain`,`server`,`ads`}, octal `create_mask`/`directory_mask`.
+- FTP config: single-line `welcome_message`, non-zero ports, `passive_ports` =
+  `min` or `min-max` with min < max, `max_clients` ≥ 1.
+
+`PUT /shares/{name}/nfs/toggle/{enabled}` rewrites the export line
+(`# homevault-nfs-disabled:<name>` tag) and reloads `exportfs -ra`; the state
+survives a reboot. A share name matching several exports in `/etc/exports`
+answers `400` listing the colliding paths instead of silently editing all of
+them. All share operations run on the blocking pool under a timeout
+(`spawn_blocking` + 30 s, SFTP jail rebuild 120 s) — a hung
+`systemctl`/`mount` returns `{ success:false, message }`, never an indefinitely
+pending request.
 
 ## Network — `/api/network/*` (router in `src/handlers/network.rs`)
 

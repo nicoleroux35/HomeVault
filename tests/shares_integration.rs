@@ -890,6 +890,271 @@ async fn test_sftp_rebuild_admin_path_never_500s() {
 }
 
 // ===========================================================================
+// 8. Config-file injection guards — rejected as 400 before any privileged write
+// ===========================================================================
+//
+// Every value below would otherwise be formatted verbatim into a root-owned
+// config file: `name`/`comment`/`path` into `/etc/samba/smb.conf`, `path` and
+// `options` into `/etc/exports`, `welcome_message` into `/etc/vsftpd.conf`,
+// and the SMB global values into `smb.conf`'s `[global]` section. The
+// validators run before the protocol dispatch, so none of these requests ever
+// reaches `sudo tee` — which is exactly why they are safe to run here.
+
+#[tokio::test]
+async fn test_create_share_rejects_smb_section_forging_in_the_name() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = shares_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    // A newline forges a whole extra Samba section; a bracket breaks out of
+    // the section header; `global`/`homes` would rewrite Samba's own sections.
+    for name in [
+        "media\n[everything]\n  path = /",
+        "media]",
+        "[global]",
+        "global",
+        "homes",
+        "me dia",
+        "../etc",
+    ] {
+        let (status, body) = send(
+            &mut r,
+            Method::POST,
+            "/api/shares",
+            Some(&token),
+            Some(json!({
+                "name": name,
+                "share_type": "smb",
+                "path": "/mnt/pool/media",
+                "comment": ""
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "name {name:?}: {body}");
+        assert_eq!(body["success"], json!(false), "name {name:?}: {body}");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("share name"),
+            "the rejection must name the offending field: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_create_share_rejects_exports_column_injection_in_path_and_options() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = shares_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    // Path: whitespace splits /etc/exports columns, `)` closes the client
+    // list, `#` comments the rest of the line out, `..` traverses.
+    for path in [
+        "/mnt/pool/media *(rw,no_root_squash)",
+        "/mnt/pool/media)",
+        "/mnt/pool/me dia",
+        "/mnt/../etc",
+        "relative/path",
+    ] {
+        let (status, body) = send(
+            &mut r,
+            Method::POST,
+            "/api/shares",
+            Some(&token),
+            Some(json!({
+                "name": "media",
+                "share_type": "nfs",
+                "path": path,
+                "comment": ""
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "path {path:?}: {body}");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("share path"),
+            "the rejection must name the offending field: {body}"
+        );
+    }
+
+    // Options: `path *(opts)` — a `)` fabricates a second client clause.
+    for options in [
+        json!(["rw) /etc *(no_root_squash"]),
+        json!(["rw,sync"]),
+        json!(["rw sync"]),
+        json!([""]),
+    ] {
+        let (status, body) = send(
+            &mut r,
+            Method::POST,
+            "/api/shares",
+            Some(&token),
+            Some(json!({
+                "name": "media",
+                "share_type": "nfs",
+                "path": "/mnt/pool/media",
+                "comment": "",
+                "options": options
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "options {options}: {body}");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("NFS option"),
+            "the rejection must name the offending field: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_create_share_rejects_a_multiline_comment() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = shares_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    for comment in [
+        "harmless\n  read only = no\n  browseable = no",
+        "harmless\rpath = /",
+    ] {
+        let (status, body) = send(
+            &mut r,
+            Method::POST,
+            "/api/shares",
+            Some(&token),
+            Some(json!({
+                "name": "media",
+                "share_type": "smb",
+                "path": "/mnt/pool/media",
+                "comment": comment
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{comment:?}: {body}");
+        assert!(
+            body["message"].as_str().unwrap_or("").contains("comment"),
+            "the rejection must name the offending field: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_update_share_rejects_injected_path_and_comment() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = shares_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let cases = [
+        json!({"path": "/mnt/pool/media *(rw)"}),
+        json!({"path": "/mnt/../etc"}),
+        json!({"comment": "x\n  read only = no"}),
+        json!({"options": ["rw) /etc *(no_root_squash"]}),
+    ];
+    for body in cases {
+        let (status, resp) = send(
+            &mut r,
+            Method::PUT,
+            "/api/shares/media/smb",
+            Some(&token),
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {resp}");
+        assert_eq!(resp["success"], json!(false), "{body}: {resp}");
+    }
+}
+
+#[tokio::test]
+async fn test_smb_config_update_rejects_multiline_and_bad_values() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = shares_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let mutations: &[(&str, Value)] = &[
+        ("workgroup", json!("WORK\nGROUP")),
+        ("workgroup", json!("GRP]")),
+        ("security_mode", json!("user\n  guest ok = yes")),
+        ("security_mode", json!("bogus")),
+        ("protocol_version", json!("SMB3\n;")),
+        ("create_mask", json!("9999")),
+        ("directory_mask", json!("0o755")),
+        ("additional_params", json!(["\n[evil]"])),
+    ];
+
+    for (field, value) in mutations {
+        let mut cfg = valid_smb_config();
+        cfg[field] = value.clone();
+        let (status, body) = send(
+            &mut r,
+            Method::PUT,
+            "/api/shares/smb/config",
+            Some(&token),
+            Some(cfg),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{field} = {value}: {body}");
+        assert_eq!(body["success"], json!(false), "{field}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn test_ftp_config_update_rejects_banner_injection_and_bad_ports() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = shares_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let base = json!({
+        "port": 21,
+        "allowed_users": [],
+        "passive_ports": "30000-31000",
+        "max_clients": 10,
+        "force_tls": false,
+        "allow_anonymous": false,
+        "chroot": true,
+        "welcome_message": "Welcome to HomeVault FTP"
+    });
+
+    let mutations: &[(&str, Value)] = &[
+        (
+            "welcome_message",
+            json!("hi\nlocal_enable=YES\nanonymous_enable=YES"),
+        ),
+        ("welcome_message", json!("hi\rwrite_enable=YES")),
+        ("passive_ports", json!("abc")),
+        ("passive_ports", json!("31000-30000")),
+        ("passive_ports", json!("30000-")),
+        ("port", json!(0)),
+        ("max_clients", json!(0)),
+    ];
+
+    for (field, value) in mutations {
+        let mut cfg = base.clone();
+        cfg[field] = value.clone();
+        let (status, body) = send(
+            &mut r,
+            Method::PUT,
+            "/api/shares/ftp/config",
+            Some(&token),
+            Some(cfg),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{field} = {value}: {body}");
+        assert_eq!(body["success"], json!(false), "{field}: {body}");
+    }
+}
+
+// ===========================================================================
 // 9. WebDAV — in-process service lifecycle
 // ===========================================================================
 
