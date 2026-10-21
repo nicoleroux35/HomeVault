@@ -47,7 +47,8 @@
 use crate::handlers::admin_guard::{require_admin, require_auth};
 use crate::handlers::AppState;
 use crate::storage::resource_share_repo::{
-    ResourceKind, ResourcePermission, ResourceShare, ResourceShareRepository,
+    ResourceGroupShare, ResourceKind, ResourcePermission, ResourceShare,
+    ResourceShareRepository,
 };
 use crate::utils::ResponseHelper;
 use axum::{extract::State, http::HeaderMap, response::Response, Json as AxumJson};
@@ -74,6 +75,32 @@ pub struct RevokeQuery {
     pub resource: String,
 }
 
+/// Body of `POST /api/shares/access/groups`.
+#[derive(Debug, Deserialize)]
+pub struct GroupGrantRequest {
+    /// HomeVault group display name (no `hv_` prefix), e.g. `family`.
+    pub group: String,
+    pub kind: String,
+    pub resource: String,
+    #[serde(default)]
+    pub permission: Option<String>,
+}
+
+/// Query of `DELETE /api/shares/access/groups`.
+#[derive(Debug, Deserialize)]
+pub struct GroupRevokeQuery {
+    pub group: String,
+    pub kind: String,
+    pub resource: String,
+}
+
+/// Query of `GET /api/shares/access/groups` (admin listing).
+#[derive(Debug, Deserialize)]
+pub struct GroupListQuery {
+    #[serde(default)]
+    pub group: Option<String>,
+}
+
 /// Query of `GET /api/shares/access` (admin listing).
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
@@ -94,6 +121,10 @@ pub struct MyAccessResponse {
     pub apps: Vec<ResourceShare>,
     pub folders: Vec<ResourceShare>,
     pub shares: Vec<ResourceShare>,
+    /// Grants inherited from the member's groups (`resource_group_shares`,
+    /// migration 051) — shown so the UI can explain *why* a resource is
+    /// visible, and so revoking a direct row never looks like a bug.
+    pub inherited: Vec<ResourceGroupShare>,
 }
 
 /// `GET /api/shares/access` — admin: every grant (optionally for one member).
@@ -141,6 +172,7 @@ pub async fn handle_my_access(State(state): State<Arc<AppState>>, headers: Heade
     let mut apps = Vec::new();
     let mut folders = Vec::new();
     let mut shares = Vec::new();
+    let mut inherited = Vec::new();
 
     if !is_admin {
         for (kind, bucket) in [
@@ -153,6 +185,17 @@ pub async fn handle_my_access(State(state): State<Arc<AppState>>, headers: Heade
                 Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
             }
         }
+
+        // Group-inherited grants (migration 051). Resolved from the member's
+        // live OS groups, so a membership change takes effect on the next call
+        // with nothing to invalidate.
+        let groups = member_groups(&username).await;
+        for group in &groups {
+            match repo.list_groups_all(Some(group)).await {
+                Ok(list) => inherited.extend(list),
+                Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
+            }
+        }
     }
 
     ResponseHelper::json_success(MyAccessResponse {
@@ -162,6 +205,7 @@ pub async fn handle_my_access(State(state): State<Arc<AppState>>, headers: Heade
         apps,
         folders,
         shares,
+        inherited,
     })
 }
 
@@ -256,6 +300,116 @@ pub async fn handle_revoke_access(
 }
 
 // ---------------------------------------------------------------------------
+// Group-level grants (migration 051)
+// ---------------------------------------------------------------------------
+
+/// `GET /api/shares/access/groups` — admin: every group grant (optionally one group).
+pub async fn handle_list_group_access(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<GroupListQuery>,
+) -> Response {
+    if let Err(resp) = require_admin(&state, &headers).await {
+        return resp;
+    }
+    let repo = ResourceShareRepository::new(state.db.pool());
+    match repo.list_groups_all(q.group.as_deref()).await {
+        Ok(grants) => ResponseHelper::json_success(grants),
+        Err(e) => ResponseHelper::json_error(format!("Database error: {}", e)),
+    }
+}
+
+/// `POST /api/shares/access/groups` — admin: grant (or update) a group's access.
+pub async fn handle_grant_group_access(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumJson(payload): AxumJson<GroupGrantRequest>,
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(resp) => return resp,
+    };
+
+    if payload.group.trim().is_empty() || payload.resource.trim().is_empty() {
+        return ResponseHelper::json_error("group and resource are required".to_string());
+    }
+    let Some(kind) = ResourceKind::parse(&payload.kind) else {
+        return ResponseHelper::json_error(
+            "Invalid kind: must be app, folder or share".to_string(),
+        );
+    };
+    let permission = match payload.permission.as_deref() {
+        None => ResourcePermission::Read,
+        Some(p) => match ResourcePermission::parse(p) {
+            Some(p) => p,
+            None => {
+                return ResponseHelper::json_error(
+                    "Invalid permission: must be read, write or full".to_string(),
+                )
+            }
+        },
+    };
+
+    let repo = ResourceShareRepository::new(state.db.pool());
+    match repo
+        .upsert_group(
+            &admin,
+            payload.group.trim(),
+            kind,
+            payload.resource.trim(),
+            permission,
+        )
+        .await
+    {
+        Ok(grant) => {
+            crate::events::log_event(format!(
+                "Admin '{}' granted group '{}' {} access to {} '{}'",
+                admin,
+                grant.group_name,
+                permission.as_str(),
+                kind.as_str(),
+                grant.resource
+            ));
+            ResponseHelper::json_success(grant)
+        }
+        Err(e) => ResponseHelper::json_error(format!("Failed to grant group access: {}", e)),
+    }
+}
+
+/// `DELETE /api/shares/access/groups` — admin: revoke a group's access.
+pub async fn handle_revoke_group_access(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<GroupRevokeQuery>,
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(resp) => return resp,
+    };
+    let Some(kind) = ResourceKind::parse(&q.kind) else {
+        return ResponseHelper::json_error(
+            "Invalid kind: must be app, folder or share".to_string(),
+        );
+    };
+
+    let repo = ResourceShareRepository::new(state.db.pool());
+    match repo.revoke_group(&q.group, kind, &q.resource).await {
+        Ok(true) => {
+            crate::events::log_event(format!(
+                "Admin '{}' revoked group '{}' access to {} '{}'",
+                admin,
+                q.group,
+                kind.as_str(),
+                q.resource
+            ));
+            ResponseHelper::json_success(serde_json::json!({ "revoked": true }))
+        }
+        Ok(false) => ResponseHelper::json_error("No such group grant".to_string()),
+        Err(e) => ResponseHelper::json_error(format!("Failed to revoke group access: {}", e)),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Server-side filter helpers for other modules
 // ---------------------------------------------------------------------------
 
@@ -276,11 +430,7 @@ pub async fn visible_app_ids(
     if is_admin(state, username).await {
         return Ok(None);
     }
-    let repo = ResourceShareRepository::new(state.db.pool());
-    let rows = repo
-        .visible_resources(username, ResourceKind::App)
-        .await
-        .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+    let rows = effective_visible_resources(state, username, ResourceKind::App).await?;
     Ok(Some(rows.into_iter().map(|(r, _)| r).collect()))
 }
 
@@ -294,10 +444,56 @@ pub async fn can_access(
     if is_admin(state, username).await {
         return true;
     }
-    let repo = ResourceShareRepository::new(state.db.pool());
-    repo.can_access(username, kind, resource, ResourcePermission::Read)
+    effective_visible_resources(state, username, kind)
         .await
+        .map(|rows| {
+            rows.into_iter().any(|(r, level)| {
+                r == resource
+                    && ResourcePermission::parse(&level)
+                        .map(|p| p.implies(ResourcePermission::Read))
+                        .unwrap_or(false)
+            })
+        })
         .unwrap_or(false)
+}
+
+/// The member's live OS group names (`id -nG`, filtered to HomeVault groups).
+///
+/// Blocking call, so it runs on the blocking pool — same pattern as
+/// `transfer_quota` uses for group quotas. A failure is treated as "no
+/// groups": the caller then sees only its direct grants, i.e. fails closed.
+pub async fn member_groups(username: &str) -> Vec<String> {
+    let owned = username.to_string();
+    tokio::task::spawn_blocking(move || crate::groups::GroupService::get_user_groups(&owned))
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .unwrap_or_default()
+}
+
+/// The member's *effective* `resource -> permission` map for `kind`: direct
+/// grants ∪ group grants, strongest level winning.
+///
+/// This is the one place the union rule lives, so every consumer (app
+/// catalog, explorer roots, share list, WebSocket fan-out, `can_access`)
+/// agrees. Nothing is denormalised into `resource_shares`, so leaving a group
+/// revokes the inherited access on the very next call.
+pub async fn effective_visible_resources(
+    state: &Arc<AppState>,
+    username: &str,
+    kind: ResourceKind,
+) -> Result<Vec<(String, String)>, sqlx::Error> {
+    let repo = ResourceShareRepository::new(state.db.pool());
+    let direct = repo
+        .visible_resources(username, kind)
+        .await
+        .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+    let groups = member_groups(username).await;
+    let inherited = repo
+        .visible_resources_for_groups(&groups, kind)
+        .await
+        .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+    Ok(ResourceShareRepository::merge_strongest(direct, inherited))
 }
 
 /// Whether `username` holds the admin role. A lookup failure is treated as

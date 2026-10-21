@@ -250,11 +250,24 @@ pub async fn handle_login(
                     // ONLY by the per-app reverse proxy's auth gate
                     // (crate::app_proxy). Additive — response body unchanged.
                     let token = session.token.clone();
+                    // An account still holding an admin-chosen password
+                    // (creation/reset) must change it before anything else:
+                    // the client routes to the change screen, and the server
+                    // enforces the same restriction per-request
+                    // (middleware::password_change_guard). A PAM/system
+                    // account has no users row and no flag.
+                    let must_change_password = state
+                        .auth
+                        .get_user(&req.username)
+                        .await
+                        .map(|u| u.must_change_password)
+                        .unwrap_or(false);
                     let response = LoginResponse {
                         token: session.token,
                         csrf_token: session.csrf_token,
                         username: session.username,
                         is_admin: session.is_admin,
+                        must_change_password,
                     };
                     crate::app_proxy::cookie::attach_session(
                         ResponseHelper::json_success(response),
@@ -284,6 +297,10 @@ pub async fn handle_login(
                 ),
                 AuthError::UserLocked => (
                     "Account is locked".to_string(),
+                    axum::http::StatusCode::UNAUTHORIZED,
+                ),
+                AuthError::AccountExpired => (
+                    "Account has expired — contact your administrator".to_string(),
                     axum::http::StatusCode::UNAUTHORIZED,
                 ),
                 AuthError::TooManyAttempts => (
@@ -340,11 +357,18 @@ pub async fn handle_2fa_verify(
                 session.username, ip_address
             ));
             let token = session.token.clone();
+            let must_change_password = state
+                .auth
+                .get_user(&req.username)
+                .await
+                .map(|u| u.must_change_password)
+                .unwrap_or(false);
             let response = LoginResponse {
                 token: session.token,
                 csrf_token: session.csrf_token,
                 username: session.username,
                 is_admin: session.is_admin,
+                must_change_password,
             };
             crate::app_proxy::cookie::attach_session(
                 ResponseHelper::json_success(response),
@@ -564,6 +588,7 @@ pub async fn handle_get_current_user(
                     "two_fa_enabled": two_fa_enabled,
                     "avatar_seed": user.avatar_seed,
                     "avatar_url": format!("/api/users/{}/avatar.svg", user.username),
+                    "must_change_password": user.must_change_password,
                 });
                 ResponseHelper::json_success(user_data)
             }
@@ -983,6 +1008,8 @@ pub async fn handle_setup(
                 "csrf_token": session.csrf_token,
                 "username": session.username,
                 "is_admin": session.is_admin,
+                // The setup password was chosen by its owner on this form.
+                "must_change_password": false,
                 "totp_enabled": totp_enabled,
                 "backup_codes": backup_codes,
             });

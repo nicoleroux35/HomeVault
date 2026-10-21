@@ -3,8 +3,35 @@
 **Purpose:** Ethernet interface configuration, WiFi scan/connect, diagnostics, and
 connection summary.
 
-## Backend
+## Persistance (2026-10-20)
 
+`apply_interface_config` changes the live state only (`ip`, `dhclient`,
+`/proc/sys`); `persist_interface_config` (`src/network.rs`) is called by the
+config handler afterwards to make the change survive a reboot. Two backends,
+probed in order:
+
+1. **netplan** — `<base>/99-homevault-<name>.yaml`. The `99-` prefix and the
+   `ethernets.<name>` key keep the file scoped to the one interface the admin
+   touched; the `renderer` is **mirrored** from the existing netplan files
+   (lexicographically last declared value wins, like netplan's own merge), so
+   a NetworkManager-managed host is never silently handed to networkd. Static
+   v4 + static v6 share one `addresses:` list and one `routes:` table
+   (duplicate keys are a netplan parse error). The file is written mode 600
+   over `sudo tee`.
+2. **ifupdown** — `/etc/network/interfaces.d/homevault-<name>`, only when the
+   include directory exists **and** `/etc/network/interfaces` sources it.
+
+With neither backend, the request still succeeds (the live state is applied)
+but the message becomes `"(temporary — persistence unavailable)"` and the
+frontend shows the `network.temp_config` warning toast. A persistence failure
+must never fail the request; it is logged as a warning. The persisted config
+is **written, never applied** — running `netplan apply` right after the live
+mutations would tear the interface down under the admin's own session — runtime
+and boot state may therefore differ for one re-apply cycle. The YAML/stanza
+rendering is pure and unit-tested (`test_netplan_yaml_*`, `test_ifupdown_stanza_*`);
+no secrets are ever written (the Wi-Fi PSK stays in wpa_supplicant's store).
+
+## Backend
 Router built by `src/handlers/network.rs::create_network_router` and nested at
 `/api/network` (`src/web/mod.rs:1069`).
 

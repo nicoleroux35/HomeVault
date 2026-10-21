@@ -4,11 +4,15 @@ Last updated: 2026-10-20 — current version: 1.0.0
 
 ## Current state
 
-HomeVault today covers: dashboard, users/groups, storage
+HomeVault today covers: dashboard, users/groups (a forced first-sign-in
+password change on admin-chosen passwords, admin-side session audit/revoke,
+per-account expiry horizons, per-member *and* per-group resource access, and
+group rename/description — all 2026-10-20), storage
 (disks/partitions/ZFS-Btrfs-mdadm virtual disks/LUKS2
 encryption/SMART health), RAID (mdadm/ZFS/Btrfs creation), shares
 (SMB/NFS/FTP/WebDAV/SFTP), file explorer, backups (restic), cloud sync
-(rclone), network, security
+(rclone), network (interfaces, WiFi, diagnostics, **persisted interface
+configuration via netplan/ifupdown as of 2026-10-20**), security
 (antivirus/anti-ransomware/firewall), web terminal, VPN (WireGuard/
 OpenVPN), downloader (aria2), Syncthing, Docker + application catalog
 (volumes, disk-usage reporting and prune, container inspect/exec/pause/

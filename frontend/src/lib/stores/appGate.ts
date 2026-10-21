@@ -48,6 +48,7 @@ export type GateRoute =
   | 'recovery'
   | 'login'
   | 'app'
+  | 'password-change'
   | 'error';
 
 export interface GateState {
@@ -91,6 +92,13 @@ function createAppGate() {
     }
 
     await authStore.checkAuth();
+    // A session windowed down to the password-change flow (admin-chosen
+    // password, migration 049) may not reach the desktop: before anything
+    // else the owner sets their own password on the forced-change screen.
+    if (get(authStore).mustChangePassword) {
+      set({ route: 'password-change', status });
+      return;
+    }
     set({ route: get(authStore).isAuthenticated ? 'app' : 'login', status });
   }
 
@@ -104,7 +112,14 @@ function createAppGate() {
     set({ route: 'login', status: null });
   }
 
-  return { subscribe, refresh, enterApp, signOut };
+  /** The login flow found a windowed (`must-change-password`) session: the
+   *  gate switches to the forced password-change screen, which reuses
+   *  Login's gateway shell (`Login.svelte` `passwordChangeMode`). */
+  function requirePasswordChange() {
+    set({ route: 'password-change', status: null });
+  }
+
+  return { subscribe, refresh, enterApp, signOut, requirePasswordChange };
 }
 
 export const appGate = createAppGate();

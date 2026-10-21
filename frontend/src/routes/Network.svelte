@@ -308,6 +308,18 @@
     if (response.success) {
       showConfigModal = false;
       await loadInterfaces();
+      // Netplan/ifupdown persistence is best-effort: the live state is always
+      // applied, but a reboot then re-applies the server's persisted config.
+      // The backend answers "(temporary — persistence unavailable)" when it
+      // could not write it (no netplan, missing sudo) — surface that, exactly
+      // like notifyNetworkError surfaces the failure branch.
+      if (response.message?.includes('temporary')) {
+        notificationsStore.add({
+          title: $t('network.title'),
+          message: translate('network.temp_config'),
+          type: 'warning',
+        });
+      }
     } else {
       notifyNetworkError(response.message || translate('network.apply_failed'));
     }

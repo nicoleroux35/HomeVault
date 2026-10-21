@@ -60,7 +60,8 @@ use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{
     auth::handle_login,
     users::{
-        handle_admin_disable_2fa, handle_user_count, handle_user_create, handle_user_delete,
+        handle_admin_disable_2fa, handle_admin_revoke_user_sessions, handle_admin_user_sessions,
+        handle_user_count, handle_user_create, handle_user_delete, handle_user_set_expiry,
         handle_user_exists, handle_user_get, handle_user_set_locked, handle_user_update,
         handle_user_update_full, handle_user_update_groups, handle_user_update_password,
         handle_user_update_role, handle_users_list,
@@ -150,6 +151,15 @@ fn users_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/users/{username}/password",
             axum::routing::put(handle_user_update_password),
+        )
+        .route(
+            "/api/users/{username}/sessions",
+            axum::routing::get(handle_admin_user_sessions)
+                .delete(handle_admin_revoke_user_sessions),
+        )
+        .route(
+            "/api/users/{username}/expiry",
+            axum::routing::put(handle_user_set_expiry),
         )
         .route(
             "/api/users/{username}/role",
@@ -1614,4 +1624,292 @@ async fn test_user_exists_false() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["exists"], json!(false));
+}
+
+// ===========================================================================
+// Admin per-user session management (2026-10-20)
+// ===========================================================================
+
+/// Insert two live sessions for a user directly into the DB.
+async fn seed_sessions(state: &AppState, username: &str, tokens: &[&str]) {
+    for (i, token) in tokens.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO sessions (token, username, ip_address, csrf_token, created_at, expires_at)
+             VALUES (?, ?, '10.0.0.9', ?, datetime('now'), datetime('now', '+1 day'))",
+        )
+        .bind(token)
+        .bind(username)
+        .bind(format!("csrf-{}-{}", username, i))
+        .execute(&*state.db.pool())
+        .await
+        .expect("Failed to insert test session");
+    }
+}
+
+#[tokio::test]
+async fn test_admin_sessions_lists_masked_tokens_only() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    create_test_user(&state, "regular1", "Passw0rd!123", 1).await;
+    seed_sessions(&state, "regular1", &["tok-aaaaaaaa-live", "tok-bbbbbbbb-live"]).await;
+    let mut r = users_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/users/regular1/sessions",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["total"], json!(2));
+    // MASKED: the full live token must not appear anywhere in the payload.
+    assert!(
+        !body["data"]["sessions"][0]["id"]
+            .as_str()
+            .unwrap()
+            .contains("tok-aaaaaaaa"),
+        "the full token must never be handed to the admin"
+    );
+    assert_eq!(body["data"]["sessions"][0]["ip_address"], json!("10.0.0.9"));
+}
+
+#[tokio::test]
+async fn test_admin_sessions_is_admin_only() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    create_test_user(&state, "regular1", "Passw0rd!123", 1).await;
+    let mut r = users_router(state);
+    let token = login(&mut r, "regular1", "Passw0rd!123").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/users/admin1/sessions",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+    assert!(body["message"].as_str().unwrap_or("").contains("Admin"));
+}
+
+#[tokio::test]
+async fn test_admin_revoke_user_sessions_revokes_everything() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    create_test_user(&state, "regular1", "Passw0rd!123", 1).await;
+    seed_sessions(&state, "regular1", &["tok-cccccccc-live", "tok-dddddddd-live"]).await;
+    let mut r = users_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::DELETE,
+        "/api/users/regular1/sessions",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["revoked"], json!(2));
+
+    // And the list is now empty.
+    let (_, listed) = send(
+        &mut r,
+        Method::GET,
+        "/api/users/regular1/sessions",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(listed["data"]["total"], json!(0));
+}
+
+#[tokio::test]
+async fn test_admin_revoke_user_sessions_is_admin_only() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    create_test_user(&state, "regular1", "Passw0rd!123", 1).await;
+    let mut r = users_router(state);
+    let token = login(&mut r, "regular1", "Passw0rd!123").await;
+
+    // A member must NOT be able to nuke anyone's (even their own remaining
+    // devices') sessions through THIS endpoint — that is what
+    // /security/sessions/revoke-all is for.
+    let (status, _) = send(
+        &mut r,
+        Method::DELETE,
+        "/api/users/admin1/sessions",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_admin_revoke_user_sessions_without_session_is_refused() {
+    let (state, _tmp, _g) = setup_state().await;
+    let mut r = users_router(state);
+
+    let (status, body) = send(
+        &mut r,
+        Method::DELETE,
+        "/api/users/anybody/sessions",
+        None,
+        None,
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+    assert!(body["message"].as_str().unwrap_or("").contains("token"));
+}
+
+// ===========================================================================
+// Admin account expiry (2026-10-20, migration 050)
+// ===========================================================================
+
+#[tokio::test]
+async fn test_set_expiry_and_read_it_back() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    create_test_user(&state, "regular1", "Passw0rd!123", 1).await;
+    let mut r = users_router(state.clone());
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    // Set a horizon a year out.
+    let when = (chrono::Utc::now() + chrono::Duration::days(365)).to_rfc3339();
+    let (status, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/users/regular1/expiry",
+        Some(&token),
+        Some(json!({"expires_at": when})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["expires_at"], json!(when));
+
+    // The stored user carries it; sign-in still works (future horizon).
+    let user = state.auth.get_user("regular1").await.expect("get_user");
+    assert!(user.expires_at.is_some(), "horizon must be stored");
+    assert!(!user.is_expired_at(chrono::Utc::now()));
+
+    // Clear it — back to "never".
+    let (status, cleared) = send(
+        &mut r,
+        Method::PUT,
+        "/api/users/regular1/expiry",
+        Some(&token),
+        Some(json!({"expires_at": null})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cleared["data"]["expires_at"], json!(null));
+    let user = state.auth.get_user("regular1").await.expect("get_user");
+    assert!(user.expires_at.is_none(), "cleared horizon must be NULL");
+}
+
+#[tokio::test]
+async fn test_set_expiry_rejects_past_and_garbage() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    create_test_user(&state, "regular1", "Passw0rd!123", 1).await;
+    let mut r = users_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    // A horizon in the past would silently lock the account out — refused.
+    let past = (chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339();
+    let (status, _) = send(
+        &mut r,
+        Method::PUT,
+        "/api/users/regular1/expiry",
+        Some(&token),
+        Some(json!({"expires_at": past})),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+
+    // Garbage never reaches the column either.
+    let (status, _) = send(
+        &mut r,
+        Method::PUT,
+        "/api/users/regular1/expiry",
+        Some(&token),
+        Some(json!({"expires_at": "not-a-date"})),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_set_expiry_is_admin_only() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    create_test_user(&state, "regular1", "Passw0rd!123", 1).await;
+    let mut r = users_router(state);
+    let token = login(&mut r, "regular1", "Passw0rd!123").await;
+
+    let (status, _) = send(
+        &mut r,
+        Method::PUT,
+        "/api/users/regular1/expiry",
+        Some(&token),
+        Some(json!({"expires_at": null})),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_expired_account_cannot_authenticate() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "expired1", "Passw0rd!123", 1).await;
+    // Set the horizon in the past directly (the endpoint refuses that by
+    // design) and give the account a live session.
+    sqlx::query("UPDATE users SET expires_at = ? WHERE username = 'expired1'")
+        .bind((chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339())
+        .execute(&*state.db.pool())
+        .await
+        .expect("set past horizon");
+    let mut r = users_router(state);
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/auth/login",
+        None,
+        Some(json!({"username": "expired1", "password": "Passw0rd!123"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(
+        body["message"].as_str().unwrap_or("").contains("expired"),
+        "the message must say the account expired, got: {}",
+        body["message"]
+    );
+}
+
+#[tokio::test]
+async fn test_sweep_deletes_sessions_of_expired_accounts_only() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "gone1", "Passw0rd!123", 1).await;
+    create_test_user(&state, "alive1", "Passw0rd!123", 1).await;
+    sqlx::query("UPDATE users SET expires_at = ? WHERE username = 'gone1'")
+        .bind((chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339())
+        .execute(&*state.db.pool())
+        .await
+        .expect("set past horizon");
+    seed_sessions(&state, "gone1", &["tok-gone-aaaaaaa"]).await;
+    seed_sessions(&state, "alive1", &["tok-alive-aaaaaaa"]).await;
+
+    let deleted = state.auth.revoke_expired_account_sessions().await.expect("sweep");
+    assert_eq!(deleted, 1, "only the expired account's session dies");
+
+    let session_repo =
+        homevault::storage::session_repo::SessionRepository::new(state.db.pool());
+    assert!(session_repo.find_by_token("tok-gone-aaaaaaa").await.unwrap().is_none());
+    assert!(session_repo.find_by_token("tok-alive-aaaaaaa").await.unwrap().is_some());
 }

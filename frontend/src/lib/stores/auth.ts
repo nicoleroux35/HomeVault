@@ -23,7 +23,7 @@
  * =============================================================================
  */
 
-import { writable, derived } from 'svelte/store';
+import { writable, derived, get } from 'svelte/store';
 import type { User } from '$lib/types/api';
 import { api } from '$lib/services/api';
 
@@ -32,6 +32,15 @@ interface AuthState {
   user: User | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  /**
+   * Username whose session is windowed down to the password-change flow
+   * (`must_change_password`, migration 049). Non-null means: tokens are held
+   * and valid, but only for `PUT /users/{username}/password`, `/auth/me` and
+   * `/auth/logout` (enforced server-side by
+   * `middleware::password_change_guard`); the gate must route to the
+   * forced-change screen, never the desktop.
+   */
+  mustChangePassword: string | null;
 }
 
 function createAuthStore() {
@@ -39,6 +48,7 @@ function createAuthStore() {
     user: null,
     isAuthenticated: false,
     isLoading: true,
+    mustChangePassword: null,
   });
 
   return {
@@ -61,6 +71,29 @@ function createAuthStore() {
         : await api.login({ username, password, remember_me: rememberMe });
 
       if (response.success && response.data) {
+        // An account still holding an admin-chosen password (creation or an
+        // admin reset) keeps its session but only inside the forced
+        // password-change window: the server already limits it to the
+        // change endpoints, so the client must not wrap it into the desktop
+        // (and must skip the non-admin invalidation below — regular members
+        // get the change screen too, then are signed out like everyone else).
+        if (response.data.must_change_password) {
+          if (response.data.token) {
+            api.setTokens(response.data.token, response.data.csrf_token || '');
+          }
+          // `user` stays null so stores subscribed to authStore (wallpaper,
+          // monitor, …) never fetch with the windowed session: every fetch
+          // but the change endpoints is refused, and the change screen
+          // needs none of them.
+          set({
+            user: null,
+            isAuthenticated: false,
+            isLoading: false,
+            mustChangePassword: response.data.username,
+          });
+          return { success: true, mustChangePassword: true, isAdmin: response.data.is_admin };
+        }
+
         // This login page is administrators-only (see the "Access Denied" /
         // login.error.not_admin handling in Login.svelte) — but the backend
         // has no separate concept of a "web-eligible" account, so a
@@ -82,6 +115,7 @@ function createAuthStore() {
             user: null,
             isAuthenticated: false,
             isLoading: false,
+            mustChangePassword: null,
           });
 
           return { success: true, isAdmin: false };
@@ -111,6 +145,7 @@ function createAuthStore() {
           user: fullUser,
           isAuthenticated: user.is_admin,
           isLoading: false,
+          mustChangePassword: null,
         });
 
         return { success: true, isAdmin: response.data.is_admin };
@@ -123,6 +158,7 @@ function createAuthStore() {
           user: null,
           isAuthenticated: false,
           isLoading: false,
+          mustChangePassword: null,
         });
 
         return { success: false, error: response.message || response.error || 'Login failed' };
@@ -138,7 +174,35 @@ function createAuthStore() {
         user: null,
         isAuthenticated: false,
         isLoading: false,
+        mustChangePassword: null,
       });
+    },
+
+    /**
+     * The one mutation a windowed (`mustChangePassword`) session may make:
+     * verify the current password, set the new one. The backend deletes
+     * every session of the account on success (the owner-chosen password
+     * clears the flag), so the locally held token pair is wiped right after.
+     */
+    async completePasswordChange(currentPassword: string, newPassword: string) {
+      const username = get(authStore).mustChangePassword;
+      if (!username) return { success: false, message: 'No pending password change' };
+
+      const response = await api.updateUserPassword(username, newPassword, currentPassword);
+      if (response.success) {
+        // The server already deleted every session of this account
+        // (AuthService::update_password). clearTokens() (not a manual
+        // removal) so the in-memory token pair dies with them.
+        api.clearTokens();
+        set({
+          user: null,
+          isAuthenticated: false,
+          isLoading: false,
+          mustChangePassword: null,
+        });
+        return { success: true };
+      }
+      return { success: false, message: response.message || response.error || 'Change failed' };
     },
 
     /**
@@ -153,6 +217,7 @@ function createAuthStore() {
           user: null,
           isAuthenticated: false,
           isLoading: false,
+          mustChangePassword: null,
         });
         return;
       }
@@ -160,10 +225,24 @@ function createAuthStore() {
       const response = await api.getCurrentUser();
 
       if (response.success && response.data) {
+        if (response.data.must_change_password) {
+          // A flagged session survives a page reload: keep the tokens
+          // (the windowed session is still valid for the change endpoint)
+          // and hand the gate the pending username. `user` stays null for
+          // the same reason as at login.
+          set({
+            user: null,
+            isAuthenticated: false,
+            isLoading: false,
+            mustChangePassword: response.data.username,
+          });
+          return;
+        }
         set({
           user: response.data,
           isAuthenticated: true,
           isLoading: false,
+          mustChangePassword: null,
         });
       } else {
         // Token is invalid or expired – wipe it so the user has to log in
@@ -183,6 +262,7 @@ function createAuthStore() {
           user: null,
           isAuthenticated: false,
           isLoading: false,
+          mustChangePassword: null,
         });
       }
     },

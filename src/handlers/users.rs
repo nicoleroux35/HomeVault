@@ -93,6 +93,7 @@ pub async fn handle_users_list(State(state): State<Arc<AppState>>, headers: Head
                             role,
                             role_id: user.role_id,
                             locked: user.locked,
+                            expires_at: user.expires_at,
                             created_at: user.created_at,
                             groups,
                             home_enabled: home.as_ref().map(|h| h.enabled).unwrap_or(false),
@@ -580,6 +581,204 @@ pub async fn handle_user_update_groups(
     }
 }
 
+/// Mask a live session token down to an audit reference: the admin can spot
+/// "which session is which" between two list calls, but cannot replay it.
+fn mask_session_token(token: &str) -> String {
+    let mut masked: String = token.chars().take(8).collect();
+    masked.push('…');
+    masked
+}
+
+/// Admin view of a target user's active sessions (audit + incident tooling);
+/// pairs with the bulk revoke below — surgical revocation of one particular
+/// device would need the full token, and the admin must never hold a usable
+/// credential for somebody else's session, so the read masks to 8 chars + `…`.
+#[axum_macros::debug_handler]
+pub async fn handle_admin_user_sessions(
+    State(state): State<Arc<AppState>>,
+    Path(username): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let session_token = headers
+        .get("x-session-token")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+
+    if session_token.is_empty() {
+        return ResponseHelper::json_error("No session token provided".to_string());
+    }
+
+    match state.auth.get_session(session_token).await {
+        Ok(session) => {
+            if !session.is_admin {
+                return ResponseHelper::json_error("Admin access required".to_string());
+            }
+
+            let user_repo = crate::storage::user_repo::UserRepository::new(state.db.pool());
+            if user_repo
+                .find_by_username(&username)
+                .await
+                .is_ok_and(|u| u.is_none())
+            {
+                return ResponseHelper::json_error(format!("User '{}' not found", username));
+            }
+
+            let session_repo = crate::storage::session_repo::SessionRepository::new(state.db.pool());
+            let sessions = match session_repo.find_all_by_username(&username).await {
+                Ok(s) => s,
+                Err(e) => {
+                    return ResponseHelper::json_error(format!("Failed to fetch sessions: {}", e))
+                }
+            };
+
+            let infos: Vec<AdminSessionInfo> = sessions
+                .into_iter()
+                .map(|s| AdminSessionInfo {
+                    id: mask_session_token(&s.token),
+                    ip_address: s.ip_address,
+                    created_at: s.created_at.to_rfc3339(),
+                    expires_at: s.expires_at.to_rfc3339(),
+                })
+                .collect();
+            let total = infos.len();
+            ResponseHelper::json_success(AdminUserSessionsResponse { sessions: infos, total })
+        }
+        Err(e) => ResponseHelper::json_error(format!("Session invalid: {}", e)),
+    }
+}
+
+/// Set (or clear, `null` = never) the target user's expiry horizon
+/// (`users.expires_at`, migration 050). Admin-only; deliberately a separate
+/// endpoint from the profile update so a profile save can never shift the
+/// horizon as a side effect. Takes effect on the next sign-in attempt
+/// immediately, and on already-held sessions at the next sweep (boot +
+/// periodic loop calling `AuthService::revoke_expired_account_sessions`).
+#[axum_macros::debug_handler]
+pub async fn handle_user_set_expiry(
+    State(state): State<Arc<AppState>>,
+    Path(username): Path<String>,
+    headers: HeaderMap,
+    req: axum::extract::Json<SetExpiryRequest>,
+) -> Response {
+    let session_token = headers
+        .get("x-session-token")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+
+    if session_token.is_empty() {
+        return ResponseHelper::json_error("No session token provided".to_string());
+    }
+
+    match state.auth.get_session(session_token).await {
+        Ok(session) => {
+            if !session.is_admin {
+                return ResponseHelper::json_error("Admin access required".to_string());
+            }
+
+            let user_repo = crate::storage::user_repo::UserRepository::new(state.db.pool());
+            if user_repo
+                .find_by_username(&username)
+                .await
+                .is_ok_and(|u| u.is_none())
+            {
+                return ResponseHelper::json_error(format!("User '{}' not found", username));
+            }
+
+            let parsed = match req.expires_at.as_deref() {
+                None | Some("") => Ok(None),
+                Some(raw) => {
+                    match chrono::DateTime::parse_from_rfc3339(raw) {
+                        Ok(dt) if dt >= chrono::Utc::now() => Ok(Some(dt.with_timezone(&chrono::Utc))),
+                        // A horizon already in the past would only make the
+                        // account expire with no warning — refuse it so the
+                        // mistake surfaces in the UI instead.
+                        Ok(_) => Err("Expiry must be in the future".to_string()),
+                        Err(_) => Err("Invalid timestamp (expected RFC 3339, e.g. 2027-01-31T00:00:00Z)".to_string()),
+                    }
+                }
+            };
+            let expires_at = match parsed {
+                Ok(v) => v,
+                Err(msg) => return ResponseHelper::json_error(msg),
+            };
+
+            match user_repo.update_expires_at(&username, expires_at).await {
+                Ok(()) => {
+                    match expires_at {
+                        Some(at) => crate::events::log_event(format!(
+                            "Admin '{}' set user '{}' to expire at {}",
+                            session.username,
+                            username,
+                            at.to_rfc3339()
+                        )),
+                        None => crate::events::log_event(format!(
+                            "Admin '{}' cleared the expiry of user '{}'",
+                            session.username, username
+                        )),
+                    }
+                    ResponseHelper::json_success(serde_json::json!({
+                        "expires_at": expires_at.map(|dt| dt.to_rfc3339()),
+                    }))
+                }
+                Err(e) => {
+                    ResponseHelper::json_error(format!("Failed to set expiry: {}", e))
+                }
+            }
+        }
+        Err(e) => ResponseHelper::json_error(format!("Session invalid: {}", e)),
+    }
+}
+
+/// Force logout everywhere for a target user: revokes ALL of their sessions
+/// (including their current one — the admin's purpose here is incident
+/// response, not politeness; the user can sign back in at any time).
+#[axum_macros::debug_handler]
+pub async fn handle_admin_revoke_user_sessions(
+    State(state): State<Arc<AppState>>,
+    Path(username): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let session_token = headers
+        .get("x-session-token")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+
+    if session_token.is_empty() {
+        return ResponseHelper::json_error("No session token provided".to_string());
+    }
+
+    match state.auth.get_session(session_token).await {
+        Ok(session) => {
+            if !session.is_admin {
+                return ResponseHelper::json_error("Admin access required".to_string());
+            }
+
+            let session_repo = crate::storage::session_repo::SessionRepository::new(state.db.pool());
+            // delete_by_username returns no count; enumerate the target's
+            // tokens and delete_many them instead, so the event log and the
+            // response carry a revoked number.
+            let revoked = match session_repo.find_all_by_username(&username).await {
+                Ok(sessions) => {
+                    let tokens: Vec<String> = sessions.into_iter().map(|s| s.token).collect();
+                    session_repo.delete_many(&tokens).await
+                }
+                Err(e) => Err(e),
+            };
+            match revoked {
+                Ok(deleted) => {
+                    crate::events::log_event(format!(
+                        "Admin '{}' revoked all {} session(s) of user '{}'",
+                        session.username, deleted, username
+                    ));
+                    ResponseHelper::json_success(serde_json::json!({ "revoked": deleted }))
+                }
+                Err(e) => ResponseHelper::json_error(format!("Failed to revoke sessions: {}", e)),
+            }
+        }
+        Err(e) => ResponseHelper::json_error(format!("Session invalid: {}", e)),
+    }
+}
+
 /// Updates a user's password. Admins can set without current password; users must confirm theirs.
 #[axum_macros::debug_handler]
 pub async fn handle_user_update_password(
@@ -623,7 +822,18 @@ pub async fn handle_user_update_password(
 
             match state
                 .auth
-                .update_password(&username, current_password, &req.new_password)
+                .update_password(
+                    &username,
+                    current_password,
+                    &req.new_password,
+                    // An admin resetting someone else's password chose (or let
+                    // the server generate) an out-of-band secret: its owner
+                    // must change it at the next sign-in. A self change — the
+                    // current password was verified or the session is the
+                    // admin's own — is owner-chosen, which also clears any
+                    // pending requirement.
+                    session.is_admin && session.username != username,
+                )
                 .await
             {
                 Ok(_) => {

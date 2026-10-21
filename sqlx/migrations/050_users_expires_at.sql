@@ -1,0 +1,17 @@
+-- Account expiry (2026-10-20): an admin can give an account a UTC horizon
+-- after which it can no longer authenticate. NULL (the default for every
+-- row, including existing ones) means "never" — no behaviour change unless
+-- the admin explicitly sets a date.
+--
+-- Enforcement is layered, mirroring the password_change_guard/lockout
+-- pattern:
+--   1. `AuthService::authenticate` refuses sign-in once `now > expires_at`
+--      (`AuthError::AccountExpired`), re-armed on every attempt;
+--   2. a background sweep (`AuthService::revoke_expired_account_sessions`,
+--      started with the other schedulers and once at boot) deletes the live
+--      sessions an already-signed-in expired account still holds.
+--
+-- Temporary-lock state (`locked`/`locked_until`, migration 047) is
+-- deliberately untouched: an expired account never reaches the lockout
+-- ladder, because expiry is checked before the password is even verified.
+ALTER TABLE users ADD COLUMN expires_at TEXT;

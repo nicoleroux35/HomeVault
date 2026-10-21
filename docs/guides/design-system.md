@@ -1132,6 +1132,63 @@ These are correctness rules, enforced by review and by the E2E
 - **Heading structure.** One `<h1>` per screen (Login now marks its brand
   title as the top heading; wizard steps use real `<h1>`s).
 
+### 7.2 Simplicity invariants — the 7 rules (2026-10-20)
+
+HomeVault is an appliance for a home user. **Simple is a correctness bar, like
+accessibility**: a screen that works but needs a manual, offers ten options for
+a one-option task, or hides its main action behind jargon is not done. Review
+every new or edited screen against the seven rules below; they are binding, and
+the summary lives in `CLAUDE.md` → "Simplicity rules".
+
+1. **Immediately understandable.** A first-time user gets what the screen is
+   for and what to do without a manual:
+   - a plain-language `<h1>` (and one per screen — §7.1), plus one sentence of
+     context in the subtitle when the title alone is ambiguous;
+   - explicit text labels — an ambiguous icon-only button is never the primary
+     action (icon-only stays fine for the compact secondary controls, with an
+     `aria-label`, §7.1);
+   - no internal jargon in user-facing copy (`RAID array degraded` → "One disk
+     has failed — your data is still safe"; protocol names only where the user
+     must choose between them);
+   - an empty state that says what to do next, not just "No data";
+   - test: header + primary button must explain the screen in one sentence.
+2. **Only what the task needs.** Drop buttons, fields, options and status rows
+   the current task does not use. Simplicity does **not** mean removing
+   features — it means not imposing them on everyone: move the rest behind an
+   "Advanced" disclosure (`i18n` `common.advanced` / `*.w_advanced`), a details
+   panel, or the item's own window. A modal that scrolls is a smell: the
+   secondary fields belong in an Advanced section.
+3. **Fewer steps, less effort.** Prefill sensible values (the path the user
+   came from, the current share, a recommended retention), remember the last
+   choice for repeat actions, pick a relevant default, and never ask for
+   something the server already knows. No confirmation step that only repeats
+   what the user just typed; no wizard step whose answer is always the same.
+4. **Progressive complexity.** Essentials first; advanced settings stay
+   reachable (collapsed section, "Advanced" toggle, secondary route, the CLI /
+   API) but never sit in the beginner's default path. The default path of every
+   wizard completes with zero advanced input.
+5. **Predictable and consistent.** The same label means the same behaviour
+   everywhere (`Save` applies, `Cancel` discards, `Delete` removes) and the
+   same button variant sits in the same place on every screen (`Save` in the
+   rail footer, `Cancel`/confirm order in modal footers — §4.3). Important
+   actions are where they are expected, and every action returns immediate
+   visible feedback (pending state, toast, updated row) — never a silent click.
+6. **Reassuring and reversible.** Prefer **Undo** / revert-last-action /
+   recoverable errors (trash + restore, soft delete, cancelling a running job)
+   over confirmation dialogs. Confirm **only** when the action is genuinely
+   destructive or hard to reverse, and the dialog names the consequence and the
+   affected item ("Delete share `media`? 3 accounts lose access."). Destructive
+   styling (`--hv-danger`) is reserved for those actions.
+7. **Adapted to the user.** A beginner finishes the common tasks on the default
+   path; an experienced user reaches shortcuts and power features (keyboard
+   shortcuts — `docs/guides/shortcuts.md`, multi-select, bulk actions, CLI/API
+   parity) without those cluttering the beginner path. Never require a beginner
+   to understand an expert concept to complete a common task.
+
+Applying these rules must never break §7.1: a control hidden behind "Advanced"
+is still labelled, focusable and 44px, and collapsing a section does not remove
+it from the keyboard order.
+
 ## 8. Migration checklist (screens, in priority order)
 
 Each screen migrates in one pass: replace hand-rolled markup/CSS with the

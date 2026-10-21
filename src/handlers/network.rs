@@ -237,13 +237,32 @@ pub async fn handle_network_interface_config_update(
         return ResponseHelper::json_error(e);
     }
 
+    // The live state is applied; best-effort persist it so a reboot keeps it.
+    // A persistence failure must NOT fail the request — the change is live —
+    // but the response says the change is temporary so the operator can act
+    // (e.g. install netplan) instead of silently losing the config at boot.
+    let persisted = match net::persist_interface_config(&name, &cfg) {
+        Ok(_backend) => true,
+        Err(e) => {
+            tracing::warn!("Network config persistence for '{}' failed: {}", name, e);
+            false
+        }
+    };
+
     crate::events::log_event(format!(
         "Admin '{}' updated network configuration for interface '{}' (method: {})",
         admin_username, name, config.method
     ));
     ResponseHelper::json_success(ApiSuccess {
         success: true,
-        message: Some(format!("Configuration applied to {}", name)),
+        message: Some(if persisted {
+            format!("Configuration applied to {} (persisted)", name)
+        } else {
+            format!(
+                "Configuration applied to {} (temporary — persistence unavailable)",
+                name
+            )
+        }),
     })
 }
 

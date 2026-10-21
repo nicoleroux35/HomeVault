@@ -28,9 +28,9 @@ SPA's `ApiClient` (`frontend/src/lib/services/api.ts`) prefixes every call with
 
 | Method | Path | Auth | Handler |
 |--------|------|------|---------|
-| POST | `/auth/login` | public | `handle_login` — 401 bad credentials, 429 per-IP throttle / account lockout |
+| POST | `/auth/login` | public | `handle_login` — 401 bad credentials, 429 per-IP throttle / account lockout; response includes `must_change_password` (admin-chosen password pending) |
 | POST | `/auth/logout` | auth | `handle_logout` |
-| GET | `/auth/me` | auth | `handle_get_current_user` |
+| GET | `/auth/me` | auth | `handle_get_current_user` — includes `must_change_password` |
 | POST | `/auth/2fa/verify` | public | `handle_2fa_verify` |
 | POST | `/auth/2fa/setup` | auth | `handle_2fa_setup` |
 | POST | `/auth/recovery-code` | auth | `handle_generate_recovery_code` (400 if one exists unless `?regenerate=true`) |
@@ -146,7 +146,10 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 | PUT | `/users/{username}` | admin | `handle_user_update` |
 | PUT | `/users/{username}/full` | admin | `handle_user_update_full` |
 | DELETE | `/users/{username}` | admin | `handle_user_delete` (kills PTY sessions; revokes the account's direct share grants — ACL + DB — and purges its SFTP jail) |
-| PUT | `/users/{username}/password` | admin | `handle_user_update_password` |
+| PUT | `/users/{username}/password` | admin | `handle_user_update_password` — admin-vs-target sets `must_change_password` (owner must change it at first sign-in); self change clears it. A flagged session is limited server-side (`middleware::password_change_guard`) to whoami/logout/its own password change, other calls get `403 password_change_required` |
+| GET | `/users/{username}/sessions` | admin | `handle_admin_user_sessions` — active sessions of that user, tokens masked to 8 chars + `…` |
+| DELETE | `/users/{username}/sessions` | admin | `handle_admin_revoke_user_sessions` — revoke all of that user's sessions (`{"revoked": n}`) |
+| PUT | `/users/{username}/expiry` | admin | `handle_user_set_expiry` — set (`{"expires_at": "<RFC 3339>"}`, must be future) or clear (`null`) the horizon; enforcement in `AuthService::authenticate` + the session sweep |
 | PUT | `/users/{username}/role` | admin | `handle_user_update_role` |
 | PUT | `/users/{username}/locked` | admin | `handle_user_set_locked` — a **permanent** lock (clears `locked_until`); an automatic lockout instead expires on its own (see `guides/auth.md`) |
 | POST | `/users/{username}/2fa/disable` | admin | `handle_admin_disable_2fa` |
@@ -166,6 +169,7 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 | GET | `/groups` | admin | `handle_groups_list` |
 | POST | `/groups` | admin | `handle_group_create` |
 | GET | `/groups/{name}` | admin | `handle_group_get` |
+| PUT | `/groups/{name}` | admin | `handle_group_update` — `{ name?, description? }`: rename (migrates the mirror, group grants, quotas and ACLs) and/or set the description |
 | DELETE | `/groups/{name}` | admin | `handle_group_delete` |
 | POST | `/groups/{name}/members` | admin | `handle_group_add_member` |
 | DELETE | `/groups/{name}/members/{username}` | admin | `handle_group_remove_member` |
@@ -320,6 +324,9 @@ and `handle_share_get` accepted any non-empty `X-Session-Token`; they now use
 | GET | `/shares/access/mine` | auth | `handle_my_access` — the caller's own effective access (`all: true` for admins) |
 | POST | `/shares/access` | admin | `handle_grant_access` — `{member, kind, resource, permission?}` |
 | DELETE | `/shares/access` | admin | `handle_revoke_access` — `?member=&kind=&resource=` |
+| GET | `/shares/access/groups` | admin | `handle_list_group_access` — every group-level grant (optional `?group=`) |
+| POST | `/shares/access/groups` | admin | `handle_grant_group_access` — `{group, kind, resource, permission?}` |
+| DELETE | `/shares/access/groups` | admin | `handle_revoke_group_access` — `?group=&kind=&resource=` |
 
 `/shares/access` is the **fine-grained per-member** layer (apps / folders /
 shares), separate from the POSIX-ACL share permissions above. `kind` ∈ {`app`,

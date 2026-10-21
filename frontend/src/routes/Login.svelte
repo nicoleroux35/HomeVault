@@ -45,6 +45,12 @@
   // the new hardware (step-up authentication) instead of dead-ending on the
   // Setup Wizard.
   export let recoveryMode = false;
+  // Set by the app gate on the forced password-change route (`must_change_password`,
+  // migration 049): the signed-in session holds an admin-chosen password, and
+  // the only thing it may do — client-side like server-side — is set a new
+  // one. The gateway shell (wallpaper, clock, card) is reused; the form below
+  // is the change flow.
+  export let passwordChangeMode = false;
   // Real server version + TLS indicator for the card footer. The version comes
   // from the public `/api/settings/public` endpoint (no auth needed on the
   // login screen); TLS is detected by the transport (HTTPS = built-in TLS or a
@@ -86,9 +92,11 @@
     ? t('login.authenticated')
     : showForgotPassword
       ? t('login.forgot_heading')
-      : requires2fa
-        ? t('login.2fa_heading')
-        : t('login.secure_signin');
+      : passwordChangeMode
+        ? t('login.pwchange_heading')
+        : requires2fa
+          ? t('login.2fa_heading')
+          : t('login.secure_signin');
 
   $: timerColorClass =
     totpRemaining <= 5
@@ -143,6 +151,10 @@
 
   onMount(() => {
     insecureConnection = isInsecureConnection();
+    // Consumed the one-shot confirmation: the key is read during component
+    // initialisation (pwNotice) and cleared here so a later refresh shows a
+    // plain login card.
+    if (pwNotice) sessionStorage.removeItem('hv_password_changed');
     api.getPublicSettings().then((res) => {
       if (res.success && res.data?.version) serverVersion = res.data.version;
     }).catch(() => {});
@@ -273,6 +285,16 @@
     try {
       const result = await authStore.login(username, password, totpCode || undefined, rememberMe);
       if (result.success) {
+        // An admin-chosen password (creation or reset) windows this session
+        // to the password-change flow: the gate switches the login shell to
+        // the change form instead of the desktop. Intercepted before the
+        // admin check — a flagged member is not an admin and must still get
+        // the change screen, not the "Access Denied" error.
+        if (result.mustChangePassword) {
+          isLoading = false;
+          appGate.requirePasswordChange();
+          return;
+        }
         if (!result.isAdmin) { isLoading = false; showLoginError('login.error.not_admin'); return; }
         // Hardware-change recovery: the admin's sign-in doubles as the
         // confirmation step, so re-baseline the fingerprint before entering.
@@ -452,6 +474,74 @@
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Forced password change (must_change_password, migration 049)
+  // -------------------------------------------------------------------------
+
+  // Set right after a successful change, read (and cleared) by the freshly
+  // mounted login card: "Password updated — sign in with your new password."
+  let pwNotice =
+    typeof window !== 'undefined' && sessionStorage.getItem('hv_password_changed') === '1';
+
+  let pwCurrent = '';
+  let pwNew = '';
+  let pwConfirm = '';
+  let showPwNewText = false;
+  let pwLoading = false;
+  let pwError = '';
+
+  // Client mirror of SetupService::validate_password (min 12 chars, upper +
+  // lower + digit) — the server re-validates; this just avoids a round trip.
+  function pwValidate(next: string): string {
+    if (next.length < 12) return t('login.pwchange_error_weak');
+    if (!/[A-Z]/.test(next) || !/[a-z]/.test(next) || !/[0-9]/.test(next)) {
+      return t('login.pwchange_error_weak');
+    }
+    return '';
+  }
+
+  async function handleForcedPasswordChange() {
+    pwError = '';
+    if (!pwCurrent) { pwError = t('login.validation.password_required'); return; }
+    if (!pwNew) { pwError = t('login.pwchange_error_new_required'); return; }
+    const weak = pwValidate(pwNew);
+    if (weak) { pwError = weak; return; }
+    if (pwNew !== pwConfirm) { pwError = t('login.pwchange_error_mismatch'); return; }
+
+    pwLoading = true;
+    try {
+      const result = await authStore.completePasswordChange(pwCurrent, pwNew);
+      if (result.success) {
+        // update_password deleted every session server-side and the store
+        // wiped the (dead) token pair: land on the normal login card with
+        // the confirmation notice.
+        sessionStorage.setItem('hv_password_changed', '1');
+        pwNotice = true;
+        appGate.signOut();
+        return;
+      }
+      const msg = (result.message || '').toLowerCase();
+      if (msg.includes('invalid password') || msg.includes('current password')) {
+        pwError = t('login.pwchange_error_current');
+      } else if (msg.includes('at least') || msg.includes('too common') || msg.includes('security requirements')) {
+        pwError = t('login.pwchange_error_weak');
+      } else {
+        pwError = result.message || t('login.pwchange_error');
+      }
+    } catch {
+      pwError = t('login.error.network');
+    } finally {
+      pwLoading = false;
+    }
+  }
+
+  async function cancelForcedPasswordChange() {
+    // The windowed session is worthless outside the change flow: end it for
+    // real (server-side logout) instead of leaving a limited session alive.
+    await authStore.logout();
+    appGate.signOut();
+  }
+
 </script>
 
 <div class="hv-login-page relative min-h-screen w-full overflow-y-auto bg-[image:var(--hv-login-bg-gradient)]" data-testid="login-page">
@@ -475,7 +565,60 @@
           )}
           data-testid="login-container"
         >
-          {#if showForgotPassword}
+          {#if passwordChangeMode}
+            <div class="border-b border-[var(--hv-login-hairline)] px-8 pt-8 pb-6 text-center max-[480px]:px-6 max-[480px]:pt-7 max-[480px]:pb-5">
+              <div class="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-[image:var(--hv-login-logo-grad)] shadow-[var(--hv-login-logo-shadow)]" data-testid="login-icon-box">
+                <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="white" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><circle cx="12" cy="14" r="2.4"/><path d="M12 16.4V19"/></svg>
+              </div>
+              <h1 class="m-0! text-t-title-3! font-semibold tracking-wide text-[var(--hv-shell-text-strong)]" data-testid="login-brand-title">HomeVault</h1>
+              <div class="mt-0.5 text-xs uppercase tracking-wider text-[var(--hv-login-muted)]" data-testid="login-secure-signin">{stepLabel}</div>
+            </div>
+
+            <form onsubmit={(e)=>{e.preventDefault();handleForcedPasswordChange();}}>
+              <div class="flex flex-col gap-4 px-8 py-6 max-[480px]:px-6 max-[480px]:py-5">
+                <div class="flex items-start gap-2 rounded-md border border-[var(--hv-login-timer-warn)] bg-[var(--hv-login-accent-soft)] px-3 py-2.5" role="status" data-testid="login-pwchange-notice">
+                  <IconAlertTriangle size={18} stroke={2} class="mt-0.5 shrink-0 text-[var(--hv-login-timer-warn)]" />
+                  <p class="m-0 text-t-body leading-relaxed text-[var(--hv-shell-text-2)]">{t('login.pwchange_notice')}</p>
+                </div>
+                <div class="flex flex-col gap-1.5">
+                  <label for="pw-current" class="text-xs font-medium uppercase tracking-[0.1em] text-[var(--hv-login-muted)]">{t('login.password_label')}</label>
+                  <div class={fieldWrapperClass}>
+                    <IconLock size={19} stroke={1.7} class="shrink-0 text-[var(--hv-login-muted)]" />
+                    <input id="pw-current" type="password" class={textInputClass} bind:value={pwCurrent} oninput={() => pwError = ''} placeholder={t('login.password_placeholder')} disabled={pwLoading} autocomplete="current-password" aria-invalid={pwError ? 'true' : undefined} aria-labelledby="pw-current" />
+                  </div>
+                </div>
+                <div class="flex flex-col gap-1.5">
+                  <label for="pw-new" class="text-xs font-medium uppercase tracking-[0.1em] text-[var(--hv-login-muted)]">{t('login.pwchange_new_label')}</label>
+                  <div class={fieldWrapperClass}>
+                    <IconLock size={19} stroke={1.7} class="shrink-0 text-[var(--hv-login-muted)]" />
+                    <input id="pw-new" type={showPwNewText ? 'text' : 'password'} class={textInputClass} bind:value={pwNew} oninput={() => pwError = ''} placeholder={t('login.pwchange_new_placeholder')} disabled={pwLoading} autocomplete="new-password" aria-labelledby="pw-new" />
+                    <button type="button" data-testid="login-pwchange-toggle" class="grid h-8 w-8 flex-none cursor-pointer place-items-center rounded-full border-none bg-transparent text-[var(--hv-login-muted)] hover:text-[var(--hv-shell-text-strong)] disabled:opacity-60 hv-ic" aria-label={showPwNewText ? t('login.hide_password') : t('login.show_password')} onclick={() => (showPwNewText = !showPwNewText)} disabled={pwLoading}>
+                      {#if showPwNewText}<IconEyeOff size={20} stroke={1.7}/>{:else}<IconEye size={20} stroke={1.7}/>{/if}
+                    </button>
+                  </div>
+                </div>
+                <div class="flex flex-col gap-1.5">
+                  <label for="pw-confirm" class="text-xs font-medium uppercase tracking-[0.1em] text-[var(--hv-login-muted)]">{t('login.pwchange_confirm_label')}</label>
+                  <div class={fieldWrapperClass}>
+                    <IconLock size={19} stroke={1.7} class="shrink-0 text-[var(--hv-login-muted)]" />
+                    <input id="pw-confirm" type="password" class={textInputClass} bind:value={pwConfirm} oninput={() => pwError = ''} placeholder={t('login.pwchange_new_placeholder')} disabled={pwLoading} autocomplete="new-password" aria-labelledby="pw-confirm" />
+                  </div>
+                </div>
+                {#if pwError}
+                  <div role="alert" aria-live="assertive" class="flex items-center gap-2 text-xs text-[var(--hv-login-error)]" data-testid="login-pwchange-error">
+                    <svg viewBox="0 0 16 16" fill="currentColor" class="h-3.5 w-3.5 shrink-0" aria-hidden="true"><circle cx="8" cy="8" r="7" opacity=".15"/><path d="M8 4v5M8 11v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    {pwError}
+                  </div>
+                {/if}
+                <Button variant="primary" class={ctaClass} size="lg" fullWidth type="submit" disabled={pwLoading} data-testid="login-pwchange-submit">
+                  {#if pwLoading}<div class="hv-spinner"></div><span>{t('login.pwchange_working')}</span>{:else}<span>{t('login.pwchange_submit')}</span>{/if}
+                </Button>
+                <Button variant="ghost" fullWidth type="button" onclick={cancelForcedPasswordChange} disabled={pwLoading} data-testid="login-pwchange-cancel">
+                  <IconArrowLeft size={16} stroke={2} />{t('login.pwchange_cancel')}
+                </Button>
+              </div>
+            </form>
+          {:else if showForgotPassword}
             <div class="border-b border-[var(--hv-login-hairline)] px-8 pt-8 pb-6 text-center max-[480px]:px-6 max-[480px]:pt-7 max-[480px]:pb-5">
               <div class="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-[image:var(--hv-login-logo-grad)] shadow-[var(--hv-login-logo-shadow)]" data-testid="login-icon-box">
                 <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="white" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><circle cx="12" cy="14" r="2.4"/><path d="M12 16.4V19"/></svg>
@@ -529,6 +672,11 @@
 
             <form onsubmit={(e)=>{e.preventDefault();handleLogin();}}>
               <div class="flex flex-col gap-4 px-8 py-6 max-[480px]:px-6 max-[480px]:py-5">
+                {#if pwNotice}
+                  <div class="rounded-md border border-[var(--hv-login-accent-soft-border)] bg-[var(--hv-login-accent-soft)] px-3 py-2.5 text-center" role="status" data-testid="login-pw-changed">
+                    <p class="m-0 text-t-body text-[var(--hv-shell-text-2)]">{t('login.pwchange_success')}</p>
+                  </div>
+                {/if}
                 {#if insecureConnection}
                   <div class="flex items-start gap-2 rounded-md border border-[var(--hv-login-timer-warn)] bg-[var(--hv-login-accent-soft)] px-3 py-2.5" role="status" data-testid="login-insecure-banner">
                     <IconAlertTriangle size={18} stroke={2} class="mt-0.5 shrink-0 text-[var(--hv-login-timer-warn)]" />
