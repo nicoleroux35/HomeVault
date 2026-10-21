@@ -64,9 +64,8 @@ use homevault::handlers::{
     auth::handle_login,
     groups::{
         handle_group_add_member, handle_group_create, handle_group_delete, handle_group_get,
-        handle_group_update,
-        handle_group_remove_member, handle_groups_list, handle_groups_list_users,
-        handle_user_groups,
+        handle_group_remove_member, handle_group_update, handle_groups_list,
+        handle_groups_list_users, handle_user_groups,
     },
     AppState,
 };
@@ -729,10 +728,7 @@ async fn test_group_update_requires_admin() {
     )
     .await;
     assert_ne!(status, StatusCode::OK);
-    assert!(body["message"]
-        .as_str()
-        .unwrap_or("")
-        .contains("Admin"));
+    assert!(body["message"].as_str().unwrap_or("").contains("Admin"));
 }
 
 #[tokio::test]
@@ -790,14 +786,20 @@ async fn test_group_description_is_stored_and_listed() {
     // contract the handler relies on, because the endpoint's happy path ends
     // in `getent`, which has no row to return for a group that only exists
     // in the mirror.
-    assert!(repo.update_description("family", Some("Household"))
+    assert!(
+        repo.update_description("family", Some("Household"))
+            .await
+            .expect("update")
+            == false
+    );
+    let created = repo
+        .create("family", Some("Household"))
         .await
-        .expect("update")
-        == false);
-    let created = repo.create("family", Some("Household")).await.expect("create");
+        .expect("create");
     assert_eq!(created.description.as_deref(), Some("Household"));
 
-    assert!(repo.update_description("family", Some("Close family"))
+    assert!(repo
+        .update_description("family", Some("Close family"))
         .await
         .expect("update"));
     let rows = repo.list_non_system().await.expect("list");
@@ -810,7 +812,10 @@ async fn test_group_description_is_stored_and_listed() {
     );
 
     // Clearing works and is not the same as "leave alone".
-    assert!(repo.update_description("family", None).await.expect("clear"));
+    assert!(repo
+        .update_description("family", None)
+        .await
+        .expect("clear"));
     let rows = repo.list_non_system().await.expect("list");
     assert!(rows
         .iter()
@@ -828,7 +833,10 @@ async fn test_group_rename_moves_the_dependent_rows() {
     let resources =
         homevault::storage::resource_share_repo::ResourceShareRepository::new(state.db.pool());
 
-    groups.create("family", Some("Household")).await.expect("mirror");
+    groups
+        .create("family", Some("Household"))
+        .await
+        .expect("mirror");
     resources
         .upsert_group(
             "admin1",
@@ -841,7 +849,10 @@ async fn test_group_rename_moves_the_dependent_rows() {
         .expect("grant");
 
     // The two migrations `handle_group_update` performs after the OS rename.
-    assert!(groups.rename("family", "relatives").await.expect("mirror rename"));
+    assert!(groups
+        .rename("family", "relatives")
+        .await
+        .expect("mirror rename"));
     assert_eq!(
         resources
             .rename_group_name("family", "relatives")
@@ -865,7 +876,10 @@ async fn test_group_rename_moves_the_dependent_rows() {
 
     // The mirror followed too, with the full_name convention and gid intact.
     let rows = groups.list_non_system().await.expect("list");
-    let row = rows.iter().find(|g| g.name == "relatives").expect("renamed row");
+    let row = rows
+        .iter()
+        .find(|g| g.name == "relatives")
+        .expect("renamed row");
     assert_eq!(row.full_name, "homevault_relatives");
     assert_eq!(row.description.as_deref(), Some("Household"));
 }

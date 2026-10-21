@@ -24,9 +24,7 @@
 //! Unix group management endpoints (list, create, delete, membership) on
 //! top of the host's groups via GroupService.
 
-use crate::groups::{
-    AddMemberRequest, CreateGroupRequest, GroupService, UpdateGroupMetaRequest,
-};
+use crate::groups::{AddMemberRequest, CreateGroupRequest, GroupService, UpdateGroupMetaRequest};
 use crate::handlers::AppState;
 use crate::storage::database::ADMIN_GROUP_NAME;
 use crate::utils::ResponseHelper;
@@ -265,7 +263,12 @@ pub async fn handle_group_update(
             let new_name = current_display.clone();
             let repo = crate::storage::group_repo::HvGroupRepository::new(state.db.pool());
             if let Err(e) = repo.rename(&old_name, &new_name).await {
-                tracing::warn!("hv_groups mirror rename '{}' → '{}' failed: {}", old_name, new_name, e);
+                tracing::warn!(
+                    "hv_groups mirror rename '{}' → '{}' failed: {}",
+                    old_name,
+                    new_name,
+                    e
+                );
             }
 
             let resource_repo =
@@ -334,7 +337,10 @@ pub async fn handle_group_update(
                 }
             }
             Err(e) => {
-                return ResponseHelper::json_error(format!("Failed to store the description: {}", e))
+                return ResponseHelper::json_error(format!(
+                    "Failed to store the description: {}",
+                    e
+                ))
             }
         }
     }
