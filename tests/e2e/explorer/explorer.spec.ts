@@ -342,9 +342,20 @@ test.beforeAll(async ({ playwright }) => {
     });
   }
   if (!res.ok()) throw new Error(`could not create the throwaway non-admin: ${res.status()} ${await res.text()}`);
-  const lg = await apiLogin(sharedCtx, username, password);
-  if (!lg.token) throw new Error('throwaway non-admin could not log in');
-  plainUser = { username, password, token: lg.token, csrf: lg.csrf };
+  // The account was created with an admin-chosen password, so
+  // `password_change_guard` refuses every call until the owner replaces it.
+  // Clear the flag here: these tests are about explorer authorization, and a
+  // 403 from the forced-change gate would prove nothing.
+  const ownedPassword = `Owned${password}`;
+  const flagged = await apiLogin(sharedCtx, username, password);
+  if (!flagged.token) throw new Error('throwaway non-admin could not log in');
+  await sharedCtx.put(`/api/users/${username}/password`, {
+    headers: { 'x-session-token': flagged.token, 'x-csrf-token': flagged.csrf },
+    data: { current_password: password, new_password: ownedPassword },
+  });
+  const lg = await apiLogin(sharedCtx, username, ownedPassword);
+  if (!lg.token) throw new Error('throwaway non-admin could not log in after the password change');
+  plainUser = { username, password: ownedPassword, token: lg.token, csrf: lg.csrf };
 });
 
 test.afterAll(async () => {

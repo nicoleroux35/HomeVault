@@ -215,15 +215,24 @@ test.beforeAll(async ({ playwright }) => {
   adminHeaders = { 'x-session-token': admin.token, 'x-csrf-token': admin.csrf };
   adminTokens = { username: ADMIN_USER, password: ADMIN_PASS, token: admin.token, csrf: admin.csrf };
 
-  // Throwaway non-admin for the security section.
+  // Throwaway non-admin for the security section. `POST /api/users` stores an
+  // admin-chosen password, so `password_change_guard` refuses every call until
+  // the owner replaces it — clear it, or the 403s below would come from the
+  // forced-change gate instead of the admin gate they are about.
   const username = `raid_${Date.now().toString(36)}`;
   const password = 'RaidUserPassw0rd!';
   await sharedCtx.post('/api/users', {
     headers: adminHeaders,
     data: { username, password, fullname: 'RAID E2E', email: '', role_id: USER_ROLE_ID, groups: [], home_enabled: false },
   });
-  const lg = await apiLogin(sharedCtx, username, password);
-  plainUser = { username, password, token: lg.token, csrf: lg.csrf };
+  const ownedPassword = `Owned${password}`;
+  const flagged = await apiLogin(sharedCtx, username, password);
+  await sharedCtx.put(`/api/users/${username}/password`, {
+    headers: { 'x-session-token': flagged.token, 'x-csrf-token': flagged.csrf },
+    data: { current_password: password, new_password: ownedPassword },
+  });
+  const lg = await apiLogin(sharedCtx, username, ownedPassword);
+  plainUser = { username, password: ownedPassword, token: lg.token, csrf: lg.csrf };
 });
 
 test.afterAll(async () => {

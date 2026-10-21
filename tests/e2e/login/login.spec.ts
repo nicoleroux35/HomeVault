@@ -1879,6 +1879,9 @@ test.describe('22 — Successful login', () => {
 test.describe.serial('23 — Non-admin login', () => {
   const viewer = `viewer_${Date.now()}`;
   const viewerPass = 'ViewerPass123';
+  // The owner-chosen password set through the forced change screen on the
+  // first sign-in (the admin-chosen `viewerPass` is never usable past it).
+  const viewerOwnPass = 'ViewerOwn12345';
   let created = false;
   let ctx: APIRequestContext;
   let headers: Record<string, string>;
@@ -1895,15 +1898,37 @@ test.describe.serial('23 — Non-admin login', () => {
     }
   });
 
-  test('23.1 — a valid non-admin login is refused at the UI with the not-admin modal', async ({
+  test('23.1 — a flagged non-admin sees the change screen first, then is refused as not-admin', async ({
     page,
   }) => {
     test.skip(!created, 'could not create a throwaway viewer account');
     await gotoLogin(page);
     if ((await detectState(page)) !== 'login') return;
 
+    // 1. First sign-in. `POST /api/users` sets an admin-chosen password, so
+    // the account is flagged `must_change_password` and the change screen
+    // comes before the administrators-only check — a member's password is
+    // also shared with SMB/SFTP, so rotating it is not optional. It must
+    // never reach /desktop in the meantime.
     await page.locator('#username').fill(viewer);
     await page.locator('#password').fill(viewerPass);
+    await page.locator('button[type="submit"]').click();
+    await expect(page.getByTestId('login-pwchange-notice')).toBeVisible({ timeout: 15_000 });
+    expect(page.url()).toContain('/login');
+
+    // 2. Complete the change. The server deletes every session of the
+    // account, so the user lands back on the plain sign-in card.
+    await page.locator('#pw-current').fill(viewerPass);
+    await page.locator('#pw-new').fill(viewerOwnPass);
+    await page.locator('#pw-confirm').fill(viewerOwnPass);
+    await page.getByTestId('login-pwchange-submit').click();
+    await expect(page.getByTestId('login-pw-changed')).toBeVisible({ timeout: 15_000 });
+
+    // 3. Signing in with the owner-chosen password now hits the real rule:
+    // this page is administrators-only, so the session is refused at the UI
+    // and immediately invalidated instead of being left dangling.
+    await page.locator('#username').fill(viewer);
+    await page.locator('#password').fill(viewerOwnPass);
     await page.locator('button[type="submit"]').click();
 
     const modal = page.locator('[data-testid="login-error-msg"]').first();
@@ -1926,6 +1951,12 @@ test.describe.serial('23 — Non-admin login', () => {
 test.describe.serial('24 — Recovery-code reset (end to end)', () => {
   const user = `rec_${Date.now()}`;
   const oldPass = 'OldRecPassw0rd1';
+  // `createViewer` sets an admin-chosen password, so the account is flagged
+  // `must_change_password` and `password_change_guard` refuses every API call
+  // (the recovery-code generation included) until the owner replaces it.
+  // `ownedPass` is that owner-chosen password, `newPass` the one the recovery
+  // flow sets afterwards.
+  const ownedPass = 'OwnedPassw0rd3';
   const newPass = 'NewRecPassw0rd2';
   let created = false;
   let recoveryCode = '';
@@ -1937,10 +1968,22 @@ test.describe.serial('24 — Recovery-code reset (end to end)', () => {
     created = await createViewer(ctx, headers, user, oldPass);
     if (!created) return;
 
-    // Log in as the throwaway account and generate its recovery code
-    // exactly as the setup wizard would.
-    const login = await ctx.post('/api/auth/login', {
+    // Log in as the throwaway account, clear the forced first-sign-in change
+    // (the account was created with an admin-chosen password), then generate
+    // its recovery code exactly as the setup wizard would.
+    const first = await ctx.post('/api/auth/login', {
       data: { username: user, password: oldPass },
+    });
+    const firstBody = await first.json().catch(() => ({}));
+    const firstToken = firstBody?.data?.token || '';
+    const firstCsrf = firstBody?.data?.csrf_token || '';
+    await ctx.put(`/api/users/${user}/password`, {
+      headers: { 'x-session-token': firstToken, 'x-csrf-token': firstCsrf },
+      data: { current_password: oldPass, new_password: ownedPass },
+    });
+    // The password change revokes the flagged session.
+    const login = await ctx.post('/api/auth/login', {
+      data: { username: user, password: ownedPass },
     });
     const body = await login.json().catch(() => ({}));
     const token = body?.data?.token || '';
@@ -2006,13 +2049,13 @@ test.describe.serial('24 — Recovery-code reset (end to end)', () => {
       { timeout: 10_000 },
     );
 
-    // 4. New password authenticates; old one is rejected.
+    // 4. New password authenticates; the previous one is rejected.
     const good = await ctx.post('/api/auth/login', {
       data: { username: user, password: newPass },
     });
     expect((await good.json())?.success).toBe(true);
     const bad = await ctx.post('/api/auth/login', {
-      data: { username: user, password: oldPass },
+      data: { username: user, password: ownedPass },
     });
     expect(bad.status()).toBe(401);
   });
@@ -2107,22 +2150,29 @@ test.describe('25 — Lockout hardening', () => {
       await gotoLogin(page);
       if ((await detectState(page)) !== 'login') return;
 
-      // Four wrong passwords → still a plain credentials error.
-      for (let i = 0; i < 4; i++) {
+      // Wrong passwords until the lock trips. The threshold itself (five) is
+      // pinned by the Rust suite; what matters here is the copy. Retrying
+      // instead of assuming the fifth submit is the one that locks: the
+      // per-IP throttle (30 logins/min) can absorb an attempt before it
+      // reaches the per-account counter, and a suite run shares that IP.
+      const msg = page.locator('[data-testid="login-error-msg"]');
+      let text = '';
+      for (let i = 0; i < 10; i++) {
         await fillAndSubmit(page, user, 'WrongPassw0rd9');
-        await page.waitForTimeout(1_200);
+        await expect(msg).toBeVisible({ timeout: 10_000 });
+        text = ((await msg.textContent()) || '').toLowerCase();
+        if (/lock/.test(text)) break;
+        // Before the lock: the plain credentials error, never a dead end.
+        expect(text).toMatch(/incorrect username or password/);
         await dismissModal(page);
+        await page.waitForTimeout(1_200);
       }
 
-      // The fifth trips the lock: the message must say so AND point at the way
-      // back in (wait, or the recovery code) — not "contact support".
-      await fillAndSubmit(page, user, 'WrongPassw0rd9');
-      const msg = page.locator('[data-testid="login-error-msg"]');
-      await expect(msg).toBeVisible({ timeout: 10_000 });
-      const text = (await msg.textContent()) || '';
-      expect(text.toLowerCase()).toMatch(/lock/);
-      expect(text.toLowerCase()).toMatch(/5 minutes|recovery code|forgot/);
-      expect(text.toLowerCase()).not.toMatch(/contact support/);
+      // The lock message must say so AND point at the way back in (wait, or
+      // the recovery code) — not "contact support".
+      expect(text).toMatch(/lock/);
+      expect(text).toMatch(/5 minutes|recovery code|forgot/);
+      expect(text).not.toMatch(/contact support/);
       await dismissModal(page);
 
       // The account really is locked: even the right password is refused.

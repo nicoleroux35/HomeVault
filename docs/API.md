@@ -851,16 +851,20 @@ Read endpoints `auth`; scan/settings mutations `admin`. See
 
 ## Firewall (ufw) — `firewall/*`
 
-Read endpoints `auth`; enable/disable/rule mutations `admin`. Enabling requires
-`{"confirmed": true}` in the body; mandatory SSH/app-port rules cannot be
-deleted through `/firewall/rules`. See [Firewall](./guides/firewall.md).
+Read endpoints `auth`; every mutation is `admin`. Enabling **and** disabling
+require `{"confirmed": true}` in the body. Deleting a rule selects a live rule
+(by its `spec`, or by port/protocol/action/source) — an absent rule is a 404
+and a mandatory SSH/app-port rule is a 403, both checked against live `ufw`
+state. See [Firewall](./guides/firewall.md).
 
 | Method | Path | Auth |
 |--------|------|------|
 | GET | `/firewall/status` | auth |
 | GET | `/firewall/enable/preview` | auth |
+| GET | `/firewall/history?limit=` | auth |
 | POST | `/firewall/enable` | admin |
 | POST | `/firewall/disable` | admin |
+| POST | `/firewall/default-policy` | admin |
 | POST/DELETE | `/firewall/rules` | admin |
 
 ## Anti-Ransomware — `ransomware/*`

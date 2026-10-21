@@ -162,8 +162,21 @@ async function createUser(
   if (!res.ok()) {
     throw new Error(`could not create throwaway user: ${res.status()} ${await res.text()}`);
   }
-  const { token, csrf } = await apiLogin(ctx, username, password);
-  return { username, password, token, csrf };
+  // `POST /api/users` stores an admin-chosen password, so the account is
+  // flagged `must_change_password` and `password_change_guard` answers
+  // `403 password_change_required` to every API call until the owner picks
+  // their own. Several tests use this member's session for real reads and
+  // 2FA enrolment, so clear the flag here and hand back the owned password
+  // (the caller must never assume `opts.password` is still current).
+  const ownedPassword = `Owned${password}`;
+  const flagged = await apiLogin(ctx, username, password);
+  await ctx.put(`/api/users/${username}/password`, {
+    headers: { 'x-session-token': flagged.token, 'x-csrf-token': flagged.csrf },
+    data: { current_password: password, new_password: ownedPassword },
+  });
+  // The change revokes every session of the account.
+  const { token, csrf } = await apiLogin(ctx, username, ownedPassword);
+  return { username, password: ownedPassword, token, csrf };
 }
 
 async function deleteUser(

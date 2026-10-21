@@ -130,8 +130,9 @@ use crate::handlers::{
         handle_explorer_watch, handle_explorer_watch_ticket,
     },
     firewall::{
-        handle_firewall_disable, handle_firewall_enable, handle_firewall_enable_preview,
-        handle_firewall_rule_add, handle_firewall_rule_delete, handle_firewall_status,
+        handle_firewall_default_policy, handle_firewall_disable, handle_firewall_enable,
+        handle_firewall_enable_preview, handle_firewall_history, handle_firewall_rule_add,
+        handle_firewall_rule_delete, handle_firewall_status,
     },
     groups::{
         handle_group_add_member, handle_group_create, handle_group_delete, handle_group_get,
@@ -628,6 +629,11 @@ pub fn create_app(state: AppStateArc) -> Router {
         )
         .route("/api/firewall/enable", post(handle_firewall_enable))
         .route("/api/firewall/disable", post(handle_firewall_disable))
+        .route(
+            "/api/firewall/default-policy",
+            post(handle_firewall_default_policy),
+        )
+        .route("/api/firewall/history", get(handle_firewall_history))
         .route(
             "/api/firewall/rules",
             post(handle_firewall_rule_add).delete(handle_firewall_rule_delete),
@@ -2010,12 +2016,14 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     tracing::info!("Background schedulers started (ransomware watcher, backups, cache-tier mover, antivirus, journal cleanup, scheduled tasks, metrics collector)");
 
-    let firewall_available = crate::firewall::ufw_available();
-    if firewall_available {
-        let ssh_port = crate::firewall::detect_ssh_port();
+    if crate::firewall::ufw_available() {
+        // Every SSH port sshd may listen on, not just the first: a `Port 2222`
+        // in an `sshd_config.d/*.conf` drop-in used to be missed, so the boot
+        // re-assert left the admin's actual SSH port closed.
+        let ssh_ports = crate::firewall::detect_ssh_ports();
         let app_port = crate::firewall::detect_app_port();
-        tokio::task::spawn_blocking(move || {
-            if let Err(e) = crate::firewall::ensure_mandatory_rules(ssh_port, app_port) {
+        tokio::spawn(async move {
+            if let Err(e) = crate::firewall::ensure_mandatory_rules(&ssh_ports, app_port).await {
                 tracing::warn!(
                     "Failed to (re)assert mandatory firewall rules at startup: {}",
                     e

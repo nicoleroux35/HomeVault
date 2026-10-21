@@ -261,7 +261,8 @@ pub async fn ensure_wireguard_server() -> Result<WireGuardServerInfo, String> {
             "allow",
             None,
             "homevault-wireguard",
-        );
+        )
+        .await;
     } else if !is_wireguard_server_running() {
         start_wireguard_server()?;
     }
