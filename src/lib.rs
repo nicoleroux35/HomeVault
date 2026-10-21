@@ -52,6 +52,7 @@ pub mod events;
 pub mod firewall;
 pub mod groups;
 pub mod health;
+pub mod host_accounts;
 pub mod i18n;
 pub mod incus;
 pub mod journal_cleanup_scheduler;

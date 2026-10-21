@@ -48,7 +48,7 @@
 
 use super::models::{Session, User};
 use crate::storage::database::ADMIN_GROUP_NAME;
-use crate::storage::models::{ADMIN_ROLE_ID, USER_ROLE_ID};
+use crate::storage::models::{ADMIN_ROLE_ID, PAM_PROVISIONED_HASH, USER_ROLE_ID};
 use crate::storage::{
     Database, LoginAttemptRepository, PasswordHistoryRepository, PasswordRecoveryCodeRepository,
     SessionRepository, User2faRepository, UserRepository,
@@ -77,9 +77,6 @@ const RECOVERY_CODE_GROUPS: usize = 8;
 /// infeasible regardless; this is only defence-in-depth against online guessing.
 const MAX_RECOVERY_CODE_ATTEMPTS: i64 = 5;
 const RECOVERY_CODE_WINDOW_SECONDS: i64 = 900;
-/// Placeholder `password_hash` for host/PAM accounts mirrored into `users`
-/// (see [`AuthService::ensure_pam_user_row`]). Never a valid Argon2 string.
-const PAM_PROVISIONED_HASH: &str = "!pam-provisioned";
 
 #[derive(Error, Debug)]
 pub enum AuthError {
@@ -121,6 +118,8 @@ pub enum AuthError {
     InvalidRecoveryCode,
     #[error("Too many recovery attempts")]
     TooManyRecoveryAttempts,
+    #[error("Host account update failed: {0}")]
+    HostSync(String),
 }
 
 impl From<crate::storage::DbError> for AuthError {
@@ -968,10 +967,18 @@ except Exception as e:
         let session = session_repo.find_by_token(token).await?;
 
         match session {
-            Some(session) => {
+            Some(mut session) => {
                 if session.expires_at < Utc::now() {
                     return Err(AuthError::SessionExpired);
                 }
+                // `is_admin` is a snapshot taken at sign-in. Re-derive it from
+                // the current role on every use: a demoted account would
+                // otherwise keep admin API access for the rest of its session
+                // lifetime (up to 30 days with "remember me"), which no
+                // handler-side check could catch because they all read this
+                // field. The lookup is the same indexed one `require_admin`
+                // already pays for.
+                session.is_admin = self.is_admin(&session.username).await;
                 Ok(session)
             }
             None => Err(AuthError::SessionNotFound),
@@ -1111,6 +1118,23 @@ except Exception as e:
 
         self.add_password_to_history(username, &old_hash).await?;
 
+        // Keep the Linux account's password in step with the HomeVault one.
+        // Without this, resetting a host-backed account's password left the
+        // old host credential working for SSH and the web terminal — and for a
+        // PAM-mirrored account (sentinel hash) the reset did nothing at all
+        // until the row stopped being a mirror. Best-effort: the DB write has
+        // already succeeded and is what the app authenticates against, so a
+        // host hiccup is logged rather than turned into a misleading failure.
+        if let Err(e) =
+            crate::host_accounts::HostAccountService::set_password(username, new_password).await
+        {
+            tracing::warn!(
+                "Password updated for '{}' but the Linux account could not follow: {}",
+                username,
+                e
+            );
+        }
+
         let session_repo = SessionRepository::new(Arc::clone(&self.pool));
         session_repo.delete_by_username(username).await?;
 
@@ -1129,58 +1153,60 @@ except Exception as e:
             .ok_or(AuthError::UserNotFound)?;
 
         let old_role_id = user.role_id;
-        user.role_id = role_id;
-        user_repo.update(&user).await?;
+        let demoting = role_id != ADMIN_ROLE_ID && old_role_id == ADMIN_ROLE_ID;
+        let promoting = role_id == ADMIN_ROLE_ID && old_role_id != ADMIN_ROLE_ID;
 
-        if role_id == ADMIN_ROLE_ID && old_role_id != ADMIN_ROLE_ID {
-            Self::sync_user_to_admin_group(username).await?;
-        } else if role_id != ADMIN_ROLE_ID && old_role_id == ADMIN_ROLE_ID {
-            Self::remove_user_from_admin_group(username).await?;
-        }
-
-        Ok(())
-    }
-
-    async fn sync_user_to_admin_group(username: &str) -> Result<(), AuthError> {
-        use std::process::Command;
-
-        let output = Command::new("groups")
-            .arg(username)
-            .output()
-            .map_err(|e| AuthError::Database(e.to_string()))?;
-
-        if output.status.success() {
-            let groups_output = String::from_utf8_lossy(&output.stdout);
-            if !groups_output.contains(ADMIN_GROUP_NAME) {
-                let _ = Command::new("usermod")
-                    .args(["-a", "-G", ADMIN_GROUP_NAME, username])
-                    .output();
-
-                tracing::info!(
-                    "Added user '{}' to admin group '{}'",
+        // Demotion revokes the host grants FIRST, before the database row
+        // changes. `is_admin` and `create_session` derive admin status from
+        // sudo/wheel/homevault_admin membership, so a demotion that only
+        // rewrote `role_id` (the pre-2026-10-21 behaviour, which cleared
+        // `homevault_admin` alone) left the account with real root access —
+        // and the next PAM sign-in promoted it straight back to admin. Doing
+        // this first means a host failure aborts with the DB still consistent
+        // with the host, instead of reporting a demotion that did not happen.
+        if demoting {
+            match crate::host_accounts::HostAccountService::revoke_admin(username).await {
+                Ok(removed) if !removed.is_empty() => tracing::info!(
+                    "Demoted '{}': removed host admin group(s) {}",
                     username,
-                    ADMIN_GROUP_NAME
-                );
+                    removed.join(", ")
+                ),
+                Ok(_) => {}
+                Err(e) => return Err(AuthError::HostSync(e.to_string())),
             }
         }
 
-        Ok(())
-    }
+        user.role_id = role_id;
+        user_repo.update(&user).await?;
 
-    async fn remove_user_from_admin_group(username: &str) -> Result<(), AuthError> {
-        use std::process::Command;
+        if promoting {
+            // Best-effort: the role is already the source of truth for the
+            // app, and a host that cannot provision an account (missing sudo,
+            // an over-long login name) must not roll the promotion back. The
+            // warning names the account so it stays discoverable.
+            match crate::host_accounts::HostAccountService::grant_admin(username).await {
+                Ok(added) if !added.is_empty() => tracing::info!(
+                    "Promoted '{}': granted host admin group(s) {}",
+                    username,
+                    added.join(", ")
+                ),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(
+                    "Promoted '{}' but the Linux account could not be provisioned: {}",
+                    username,
+                    e
+                ),
+            }
+        }
 
-        let output = Command::new("gpasswd")
-            .args(["-d", username, ADMIN_GROUP_NAME])
-            .output()
-            .map_err(|e| AuthError::Database(e.to_string()))?;
-
-        if output.status.success() {
-            tracing::info!(
-                "Removed user '{}' from admin group '{}'",
-                username,
-                ADMIN_GROUP_NAME
-            );
+        if demoting {
+            // Sessions carry the `is_admin` flag they were created with, so
+            // the demoted account would otherwise keep admin API access for
+            // the rest of its session lifetime (up to 30 days with "remember
+            // me"). Signing them out is the only way to make the demotion
+            // immediate.
+            let session_repo = SessionRepository::new(Arc::clone(&self.pool));
+            session_repo.delete_by_username(username).await?;
         }
 
         Ok(())
@@ -1207,6 +1233,21 @@ except Exception as e:
 
         if !locked {
             self.clear_failed_attempts(username).await?;
+        }
+
+        // Lock the host credential too: the database flag stops a PAM sign-in,
+        // but the same password still opened an SSH session or the web
+        // terminal. Best-effort for the same reason as the password sync —
+        // the account is locked in HomeVault either way, and an account with
+        // no Linux user has nothing to lock.
+        if let Err(e) = crate::host_accounts::HostAccountService::set_locked(username, locked).await
+        {
+            tracing::warn!(
+                "User '{}' {} in HomeVault but the Linux account could not follow: {}",
+                username,
+                if locked { "locked" } else { "unlocked" },
+                e
+            );
         }
 
         Ok(())

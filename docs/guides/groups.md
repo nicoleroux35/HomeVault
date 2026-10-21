@@ -9,15 +9,15 @@ Handlers in `src/handlers/groups.rs`; service in `src/groups.rs`
 
 | Endpoint | Auth | Notes |
 |----------|------|-------|
-| `GET /groups` | admin | list groups |
-| `POST /groups` | admin | create (name ≤32, lowercase/numbers/hyphens; optional `description`) |
-| `GET /groups/{name}` | admin | detail + members |
+| `GET /groups` | auth | list groups |
+| `POST /groups` | admin | create (name ≤32, lowercase/numbers/hyphens; optional `description`); every member must be an existing HomeVault user |
+| `GET /groups/{name}` | auth | detail + members |
 | `PUT /groups/{name}` | admin | rename and/or set the description — `{ name?, description? }` |
-| `DELETE /groups/{name}` | admin | delete |
-| `POST /groups/{name}/members` | admin | add member `{ username }` |
+| `DELETE /groups/{name}` | admin | delete + purge every display-name reference (see below) |
+| `POST /groups/{name}/members` | admin | add member `{ username }` — must be an existing HomeVault user |
 | `DELETE /groups/{name}/members/{username}` | admin | remove member |
 | `GET /groups/users` | admin | available users |
-| `GET /users/{username}/groups` | admin | groups of a user |
+| `GET /users/{username}/groups` | admin/self | groups of a user |
 
 ### Rename and description (2026-10-20)
 
@@ -52,6 +52,46 @@ it; omitting the field leaves it alone.
 `GroupService::rename_group` is OS-only and knows nothing about those tables —
 never call it without the handler's migration step.
 
+### Membership validation and delete cleanup (2026-10-21)
+
+`GroupService::create_group` / `add_user_to_group` provision a **real Linux
+account** for each member (`ensure_linux_user`). An unchecked member name would
+therefore create an OS account with no HomeVault user behind it — unmanageable
+from this page and invisible to the Users list. Both handlers now require every
+member to exist in the `users` table first:
+
+- `POST /groups` → `400 "User '<x>' not found"`, checked before the OS group is
+  created (no half-provisioned group).
+- `POST /groups/{name}/members` → same check before any host command.
+- `GroupService::normalize_member_list` trims, drops duplicates and enforces
+  `MAX_GROUP_MEMBERS` (500); a blank name is a `400` rather than reaching
+  `usermod -a -G <group> ""`.
+
+**Delete purges everything keyed on the display name.** A rename migrates the
+four references listed above; delete drops the same four, in
+`handlers/groups.rs::purge_group_references` (split out so it is testable
+without root):
+
+| Reference | What is removed |
+|-----------|-----------------|
+| `hv_groups` mirror | the row (a stale description would reappear on a re-created group) |
+| `resource_group_shares` | `revoke_all_for_group` |
+| `transfer_quotas` | `subject_name` where `subject_type = 'group'` |
+| `share_permissions` | `grantee_name` where `grantee_type = 'group'` |
+
+Without the last two, a group deleted and later re-created under the same
+display name silently inherited the old group's quota and share ACLs.
+
+**No blocking commands on the async runtime.** Every `GroupService` method
+shells out with `std::process::Command`. Handlers used to call them directly
+from async code, so a hung `getent` (NSS/LDAP/SSSD) or `groupadd` on a locked
+`/etc/group` stalled a Tokio worker — and with a few concurrent requests, the
+whole runtime. All handler calls now go through
+`crate::groups::run_group_op(op, closure)`: `spawn_blocking` under a 15 s
+`GROUP_OP_TIMEOUT`, mirroring `run_share_op` in the shares module. The Users
+page resolves the whole list's memberships in **one** hop
+(`GroupService::get_users_groups`) instead of one per row.
+
 ## Frontend
 
 - `frontend/src/routes/Groups.svelte`.
@@ -71,6 +111,13 @@ never call it without the handler's migration step.
 
 - The `homevault_admin` group is hidden and protected here too
   (`GroupService::is_admin_group`). It cannot be deleted/renamed through this API.
+- A member must be an existing HomeVault account: `create_group` provisions a
+  Linux account for every member, so an unchecked name creates an unmanaged OS
+  account.
+- A delete must purge **all four** display-name references (see *Membership
+  validation and delete cleanup*), not just the OS group.
+- Handler calls into `GroupService` go through `run_group_op` (blocking pool,
+  15 s ceiling) — never a direct call from async code.
 - A rename must migrate **all four** display-name references listed above in the
   same request; a new table keyed by group name joins that list.
 - Member-count cache: the page invalidates `/groups` cache after add/remove/delete

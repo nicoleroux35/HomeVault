@@ -667,146 +667,35 @@ impl Database {
         Ok(())
     }
 
-    /// Sync a single admin user to the `homevault_admin` system group and sudo/wheel.
-    /// Creates the Linux user if it does not exist (best-effort).
+    /// Sync a single admin user to the host admin groups (`homevault_admin`,
+    /// `sudo`, `wheel`) and provision its Linux account when needed.
+    ///
+    /// Delegates to [`crate::host_accounts::HostAccountService::grant_admin`],
+    /// which is the single implementation of "this account is a host admin";
+    /// this method used to carry a second, drifted copy that ran `usermod`
+    /// without `sudo` and ignored its exit status. Best-effort by contract:
+    /// the caller's DB role is already the source of truth, and a host that
+    /// cannot provision an account must not fail the role change.
     pub async fn sync_admin_user_to_group(&self, username: &str) -> Result<(), DbError> {
-        // First, ensure the Linux user exists
-        let user_exists = tokio::process::Command::new("id")
-            .arg(username)
-            .output()
-            .await
-            .map(|output| output.status.success())
-            .unwrap_or(false);
-
-        if !user_exists {
-            // Create Linux user with home directory
-            tracing::info!("Creating Linux user '{}' for admin access", username);
-            let home_path = crate::config::paths::user_home_path(username);
-            let home = home_path.to_string_lossy();
-            let output = tokio::process::Command::new("sudo")
-                .arg("useradd")
-                .args([
-                    "-m", // Create home directory
-                    "-d",
-                    home.as_ref(), // Home under /home/homevault/{user}
-                    "-s",
-                    "/bin/bash", // Set shell to bash
-                    "-G",
-                    ADMIN_GROUP_NAME, // Add to admin group
+        match crate::host_accounts::HostAccountService::grant_admin(username).await {
+            Ok(groups) if !groups.is_empty() => {
+                tracing::info!(
+                    "Synced admin '{}' to host group(s) {}",
                     username,
-                ])
-                .output()
-                .await
-                .map_err(DbError::Io)?;
-
-            if output.status.success() {
-                tracing::info!("Created Linux user '{}' with home directory", username);
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                tracing::warn!(
-                    "Failed to create Linux user '{}': {}. Terminal access may be limited.",
-                    username,
-                    stderr
+                    groups.join(", ")
                 );
-                // Don't fail - user can still use HomeVault without Linux account
-                return Ok(());
+                Ok(())
             }
-        } else {
-            tracing::info!("Linux user '{}' already exists", username);
-        }
-
-        // Add user to homevault_admin group
-        let output = tokio::process::Command::new("getent")
-            .args(["group", ADMIN_GROUP_NAME])
-            .output()
-            .await
-            .map_err(DbError::Io)?;
-
-        if output.status.success() {
-            // Check if user is already in the group
-            let group_line = String::from_utf8_lossy(&output.stdout);
-            let members: Vec<String> = group_line
-                .split(':')
-                .nth(3)
-                .map(|m| {
-                    m.split(',')
-                        .filter(|s| !s.is_empty())
-                        .map(|s| s.to_string())
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            if !members.contains(&username.to_string()) {
-                let output = tokio::process::Command::new("sudo")
-                    .arg("usermod")
-                    .args(["-a", "-G", ADMIN_GROUP_NAME, username])
-                    .output()
-                    .await
-                    .map_err(DbError::Io)?;
-
-                if output.status.success() {
-                    tracing::info!(
-                        "Added user '{}' to admin group '{}'",
-                        username,
-                        ADMIN_GROUP_NAME
-                    );
-                } else {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    tracing::warn!("Failed to add user '{}' to group: {}", username, stderr);
-                }
-            }
-        } else {
-            tracing::warn!("Admin group '{}' does not exist yet", ADMIN_GROUP_NAME);
-        }
-
-        // Also add to system sudo group for full admin privileges
-        // Check if 'sudo' group exists (Debian/Ubuntu)
-        let sudo_check = tokio::process::Command::new("getent")
-            .args(["group", "sudo"])
-            .output()
-            .await
-            .map_err(DbError::Io)?;
-
-        if sudo_check.status.success() {
-            let output = tokio::process::Command::new("sudo")
-                .arg("usermod")
-                .args(["-a", "-G", "sudo", username])
-                .output()
-                .await
-                .map_err(DbError::Io)?;
-
-            if output.status.success() {
-                tracing::info!("Added user '{}' to system 'sudo' group", username);
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                tracing::debug!("Could not add user to sudo group: {}", stderr);
+            Ok(_) => Ok(()),
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to sync admin '{}' to the host: {}. HomeVault admin role is unaffected.",
+                    username,
+                    e
+                );
+                Ok(())
             }
         }
-
-        // Check if 'wheel' group exists (RedHat/CentOS/Fedora)
-        let wheel_check = tokio::process::Command::new("getent")
-            .args(["group", "wheel"])
-            .output()
-            .await
-            .map_err(DbError::Io)?;
-
-        if wheel_check.status.success() {
-            let output = tokio::process::Command::new("sudo")
-                .arg("usermod")
-                .args(["-a", "-G", "wheel", username])
-                .output()
-                .await
-                .map_err(DbError::Io)?;
-
-            if output.status.success() {
-                tracing::info!("Added user '{}' to system 'wheel' group", username);
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                tracing::debug!("Could not add user to wheel group: {}", stderr);
-            }
-        }
-
-        Ok(())
     }
 
     /// Verify the admin user's home directory exists with correct ownership.

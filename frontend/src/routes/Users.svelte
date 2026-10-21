@@ -52,6 +52,9 @@
     two_fa_enabled: boolean;
     /** Admin-set expiry horizon (RFC 3339, `null` = never; migration 050). */
     expires_at: string | null;
+    /** `true` when the row mirrors a Linux host (PAM) account: HomeVault did
+     * not create it and must not delete it. */
+    is_host_account: boolean;
   }
   interface Group { name: string; display_name: string; }
 
@@ -752,6 +755,10 @@
 
   async function handleDelete() {
     if (!selectedUser) return;
+    // A Linux host (PAM) account is not HomeVault's to delete: the button is
+    // disabled for it, and the server refuses too — this keeps a keyboard
+    // activation from sending a request that can only fail.
+    if (selectedUser.is_host_account) return;
     if (!(await dlg.ask(translate('users.delete_confirm', { name: selectedUser.fullname || selectedUser.username })))) return;
     submitting = true;
     const res = await api.deleteUser(selectedUser.username, deleteHomeFolder);
@@ -968,6 +975,9 @@
                 <span class="flex min-w-0 items-center gap-1.5">
                   <span class="truncate text-c-base font-semibold text-[var(--hv-shell-text-strong)]">{u.fullname || u.username}</span>
                   <span data-testid="users-badge" class:admin={u.role === 'admin'} class={cn('inline-flex items-center h-5 flex-none px-2 rounded-full bg-[var(--hv-shell-border)] text-c-xs font-bold text-[var(--hv-shell-text-2)]', u.role === 'admin' && 'bg-[var(--hv-primary-light)] text-[var(--hv-primary)]')}>{u.role === 'admin' ? $t('users.role_admin2') : $t('users.role_user2')}</span>
+                  {#if u.is_host_account}
+                    <span data-testid="users-host-badge" class="inline-flex items-center h-5 flex-none px-2 rounded-full border border-[var(--hv-shell-border-strong)] text-c-xs font-bold text-[var(--hv-shell-text-2)]">{$t('users.host_account_badge')}</span>
+                  {/if}
                 </span>
                 <span class="truncate font-[family-name:var(--hv-font-mono)] text-c-xs text-[var(--hv-shell-text)]">@{u.username}</span>
               </span>
@@ -1628,9 +1638,15 @@
                 <div class="flex items-baseline gap-1.5 flex-wrap">
                   <strong class="text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('users.delete_account')}</strong>
                   <small class="text-xs text-[var(--hv-shell-text)]">{deleteHomeFolder ? $t('users.delete_purge_hint') : $t('users.delete_keep_hint')}</small>
+                  {#if !selectedUser.is_host_account}
+                    <small class="text-xs text-[var(--hv-shell-text)]">{$t('users.host_account_delete_hint')}</small>
+                  {/if}
                 </div>
               </div>
               <div class="flex items-center flex-wrap gap-2.5">
+                {#if selectedUser.is_host_account}
+                  <p id="users-host-delete-hint" data-testid="users-host-delete-hint" class="m-0 basis-full text-xs text-[var(--hv-warning)]">{$t('users.host_account_hint', { username: selectedUser.username })}</p>
+                {/if}
                 {#if selectedUser.home_enabled && selectedUser.home_path}
                   <button
                     type="button"
@@ -1644,7 +1660,7 @@
                     {deleteHomeFolder ? $t('users.erase_folder') : $t('users.keep_folder')}
                   </button>
                 {/if}
-                <button type="button" data-testid="users-btn" class="inline-flex items-center gap-2 h-11 px-5 border-none rounded-lg bg-[var(--hv-error)] text-white text-c-base font-semibold cursor-pointer hover:bg-[var(--hv-error-hover)] disabled:opacity-55 disabled:cursor-default" onclick={handleDelete} disabled={submitting}>{$t('common.delete')}</button>
+                <button type="button" data-testid="users-btn" class="inline-flex items-center gap-2 h-11 px-5 border-none rounded-lg bg-[var(--hv-error)] text-white text-c-base font-semibold cursor-pointer hover:bg-[var(--hv-error-hover)] disabled:opacity-55 disabled:cursor-default" onclick={handleDelete} disabled={submitting || selectedUser.is_host_account} aria-describedby={selectedUser.is_host_account ? 'users-host-delete-hint' : undefined}>{$t('common.delete')}</button>
               </div>
             </div>
           </SectionCard>

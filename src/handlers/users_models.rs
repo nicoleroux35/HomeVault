@@ -148,6 +148,12 @@ pub struct UserListItem {
     /// pane edits it through `PUT /users/{u}/expiry`, never via profile save.
     #[serde(default)]
     pub expires_at: Option<DateTime<Utc>>,
+    /// `true` when the account mirrors a host (Linux/PAM) account rather than
+    /// a HomeVault-created one. Its credential lives in `/etc/shadow` and its
+    /// Linux user is not HomeVault's to delete — the Users page shows a badge
+    /// and disables deletion for it.
+    #[serde(default)]
+    pub is_host_account: bool,
 }
 
 /// Response containing the total number of users.

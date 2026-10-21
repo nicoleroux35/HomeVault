@@ -1934,3 +1934,247 @@ async fn test_sweep_deletes_sessions_of_expired_accounts_only() {
         .unwrap()
         .is_some());
 }
+
+// ===========================================================================
+// Host-account lifecycle (2026-10-21)
+//
+// The real `userdel`/`usermod -L`/`chpasswd` half needs root and a disposable
+// machine — see `tests/login_pam_integration.rs` for the `#[ignore]`d host
+// tests. What is pinned here is every decision the handlers make *around*
+// those commands, without touching the host.
+// ===========================================================================
+
+/// Insert a user row the way a PAM sign-in does: sentinel hash, no
+/// HomeVault-chosen password.
+async fn create_host_mirror_row(state: &AppState, username: &str, role_id: i64) {
+    sqlx::query(
+        "INSERT INTO users (username, password_hash, fullname, email, role_id, locked, created_at, avatar_seed)
+         VALUES (?, '!pam-provisioned', '', '', ?, 0, datetime('now'), 'testseed')",
+    )
+    .bind(username)
+    .bind(role_id)
+    .execute(&*state.db.pool())
+    .await
+    .expect("Failed to insert host mirror row");
+}
+
+#[tokio::test]
+async fn test_users_list_flags_host_accounts() {
+    // The Users page needs to tell a HomeVault account apart from a mirrored
+    // Linux one: only the former is HomeVault's to delete.
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    create_test_user(&state, "plainuser", "Passw0rd!123", 1).await;
+    create_host_mirror_row(&state, "hostuser", 1).await;
+    let mut r = users_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let (_, body) = send(&mut r, Method::GET, "/api/users", Some(&token), None).await;
+    let users = body["data"].as_array().expect("user list");
+    let find = |name: &str| {
+        users
+            .iter()
+            .find(|u| u["username"] == json!(name))
+            .cloned()
+            .unwrap_or_else(|| panic!("'{}' missing from the list", name))
+    };
+
+    assert_eq!(find("plainuser")["is_host_account"], json!(false));
+    assert_eq!(find("hostuser")["is_host_account"], json!(true));
+    assert_eq!(find("admin1")["is_host_account"], json!(false));
+}
+
+#[tokio::test]
+async fn test_user_get_flags_host_accounts() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    create_host_mirror_row(&state, "hostuser", 1).await;
+    let mut r = users_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/users/hostuser",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], json!(true));
+    assert_eq!(body["data"]["is_host_account"], json!(true));
+}
+
+#[tokio::test]
+async fn test_user_delete_removes_a_stale_host_mirror_row() {
+    // The Linux account is already gone (removed on the server by hand), so
+    // the mirror row is the only thing left. Deleting it must be allowed —
+    // otherwise the Users page could never be cleaned up.
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    create_host_mirror_row(&state, "stalehost", 1).await;
+    let mut r = users_router(state.clone());
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let (_, body) = send(
+        &mut r,
+        Method::DELETE,
+        "/api/users/stalehost",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(
+        body["success"],
+        json!(true),
+        "stale mirror row must be removable"
+    );
+    assert!(!state.auth.user_exists("stalehost").await);
+}
+
+#[tokio::test]
+async fn test_user_delete_drops_the_home_folder_row_even_when_files_are_kept() {
+    // A deleted account's home configuration must not survive it: a new
+    // account created with the same username would otherwise inherit the old
+    // disk/path/quota settings (same reasoning as the transfer-quota and
+    // recents cleanups).
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    create_test_user(&state, "homeduser", "Passw0rd!123", 1).await;
+    let repo = homevault::storage::user_home_repo::UserHomeRepository::new(state.db.pool());
+    repo.upsert(&homevault::storage::user_home_repo::UserHome {
+        username: "homeduser".to_string(),
+        enabled: true,
+        disk: Some("sda".to_string()),
+        path: Some("/tmp/hv-test-homeduser".to_string()),
+        created_at: chrono::Utc::now(),
+        size_limit_bytes: Some(1024),
+    })
+    .await
+    .expect("home row");
+
+    let mut r = users_router(state.clone());
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+    let (_, body) = send(
+        &mut r,
+        Method::DELETE,
+        "/api/users/homeduser",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], json!(true));
+
+    assert!(
+        repo.find_by_username("homeduser").await.unwrap().is_none(),
+        "the home configuration row must go with the account"
+    );
+    assert!(
+        !std::path::Path::new("/tmp/hv-test-homeduser").exists(),
+        "the files are kept when delete_home_folder is not set"
+    );
+}
+
+#[tokio::test]
+async fn test_user_demotion_revokes_the_demoted_sessions() {
+    // A session carries the `is_admin` flag it was created with. Demoting an
+    // admin must therefore sign them out, or they keep admin API access for
+    // the rest of the session lifetime.
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    create_test_user(&state, "admin2", "Passw0rd!123", 2).await;
+    let mut r = users_router(state.clone());
+    let token1 = login(&mut r, "admin1", "Passw0rd!123").await;
+    let token2 = login(&mut r, "admin2", "Passw0rd!123").await;
+
+    // admin2 can use admin endpoints before the demotion.
+    let (_, before) = send(&mut r, Method::GET, "/api/users", Some(&token2), None).await;
+    assert_eq!(before["success"], json!(true));
+
+    let (_, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/users/admin2/role",
+        Some(&token1),
+        Some(json!({"role_id": 1})),
+    )
+    .await;
+    assert_eq!(body["success"], json!(true), "demotion itself succeeds");
+
+    let user = state.auth.get_user("admin2").await.expect("admin2");
+    assert_eq!(user.role_id, 1);
+
+    // The old token is gone, so the demoted account cannot keep acting.
+    let (_, after) = send(&mut r, Method::GET, "/api/users", Some(&token2), None).await;
+    assert_eq!(
+        after["success"],
+        json!(false),
+        "the demoted admin's session must be revoked"
+    );
+}
+
+#[tokio::test]
+async fn test_user_create_rejects_more_than_fifty_groups() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = users_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let mut payload = valid_create_payload("toomanygroups");
+    payload["groups"] = json!((0..51).map(|i| format!("group{}", i)).collect::<Vec<_>>());
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/users",
+        Some(&token),
+        Some(payload),
+    )
+    .await;
+    assert_eq!(body["success"], json!(false));
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Maximum 50 groups"));
+}
+
+#[tokio::test]
+async fn test_user_update_groups_rejects_an_unknown_group() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    create_test_user(&state, "member1", "Passw0rd!123", 1).await;
+    let mut r = users_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let (_, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/users/member1/groups",
+        Some(&token),
+        Some(json!({"groups": ["ghostgroup"]})),
+    )
+    .await;
+    assert_eq!(body["success"], json!(false));
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("does not exist"));
+}
+
+#[tokio::test]
+async fn test_user_create_rejects_a_blank_group_name() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = users_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let mut payload = valid_create_payload("blankgroupuser");
+    payload["groups"] = json!(["  "]);
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/users",
+        Some(&token),
+        Some(payload),
+    )
+    .await;
+    assert_eq!(body["success"], json!(false));
+}
