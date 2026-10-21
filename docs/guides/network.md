@@ -24,12 +24,59 @@ probed in order:
 With neither backend, the request still succeeds (the live state is applied)
 but the message becomes `"(temporary — persistence unavailable)"` and the
 frontend shows the `network.temp_config` warning toast. A persistence failure
-must never fail the request; it is logged as a warning. The persisted config
-is **written, never applied** — running `netplan apply` right after the live
-mutations would tear the interface down under the admin's own session — runtime
-and boot state may therefore differ for one re-apply cycle. The YAML/stanza
-rendering is pure and unit-tested (`test_netplan_yaml_*`, `test_ifupdown_stanza_*`);
-no secrets are ever written (the Wi-Fi PSK stays in wpa_supplicant's store).
+must never fail the request; it is logged as a warning. The YAML/stanza
+rendering is pure and unit-tested (`test_netplan_yaml_*`,
+`test_ifupdown_stanza_*`); no secrets are ever written (the Wi-Fi PSK stays in
+wpa_supplicant's store).
+
+## Apply, verify, roll back (2026-10-21)
+
+Since 2026-10-21, persisting is followed by **actually applying** the persisted
+file (`apply_persisted_config`, called by the config handler right after
+`persist_interface_config`), so runtime and boot state can no longer drift by a
+re-apply cycle and the admin sees in the same session that the file is
+loadable and equivalent to what is on the wire:
+
+1. **Capture** — before anything is touched, the handler reads
+   `get_interface_config(name)`: that pre-change state is the rollback target.
+2. **Live apply** — unchanged (`ip`, `dhclient`, `/proc/sys`); on failure
+   nothing has been touched yet and the raw error is returned.
+3. **Persist** — as above; `persist_interface_config` now returns a
+   `PersistedChange` carrying which backend took the write plus the
+   pre-change snapshot of our own netplan file (read back via `sudo cat` —
+   after the first write the file is root-owned mode 600).
+4. **Reconcile (netplan backend only)** — `netplan apply` re-asserts the exact
+   settings the live step already put in place, then the wire is **verified**
+   with a 10 s polling grace (250 ms steps, `VERIFY_GRACE`/`VERIFY_STEP`):
+   static v4 address present, default route `via` the configured gateway,
+   static v6 `addr/prefix` present, interface still up. The verdict is a pure
+   function (`check_live_state_matches`, unit-tested) fed by live reads.
+5. **Roll back on any failure** — both halves: restore the previous netplan
+   file (or delete ours when none existed — `sudo rm -f` scoped to
+   `/etc/netplan/99-homevault-*.yaml`), run `netplan apply` again, then
+   re-apply the previous live configuration via `apply_interface_config` —
+   that last step is what keeps the operator's own session alive. The API
+   answers `success:false` with the failure detail; `Network.svelte`
+   reloads the interfaces so the cards reflect the rolled-back wire.
+
+Design decisions worth keeping:
+
+- **Ifupdown stays write-only.** Its stanza is applied by `ifup` at boot; an
+  `ifdown`/`ifup` pair would tear the interface down under the operator — the
+  exact concern the rollback pattern closes for netplan. `ifupdown` changes
+  there answering `(persisted)` without a reconcile.
+- **Renderer choice is never invented**: only our own `99-homevault-*` files
+  are written/restored; on a failed reconcile the distro's files are untouched.
+- **A DHCP change needs *a* lease after the apply** (any global v4 address) —
+  the wire must converge for the change to count as applied.
+- The `netplan apply`, `chmod 600 /etc/netplan/99-homevault-*.yaml`,
+  `rm -f /etc/netplan/99-homevault-*.yaml` and
+  `cat /etc/netplan/99-homevault-*.yaml` shapes are scoped in the sudoers
+  file (`src/setup.rs::configure_sudoers`) for the legacy non-root service
+  mode; the root systemd service routes through sudo transparently.
+- `netplan.io` is an optional dependency (`src/dependencies.rs`,
+  `installer/install.sh`): Ubuntu always ships it, Debian hosts without it
+  fall through to ifupdown or stay temporary-only.
 
 ## Backend
 Router built by `src/handlers/network.rs::create_network_router` and nested at
@@ -45,7 +92,7 @@ unaffected: the Wi-Fi endpoints report the tool as unavailable.
 | `GET /network/interfaces` | auth | list interfaces |
 | `GET /network/interfaces/{name}` | auth | interface detail |
 | `GET /network/interfaces/{name}/config` | auth | IP/DNS/gateway config |
-| `PUT /network/interfaces/{name}/config` | admin | change config |
+| `PUT /network/interfaces/{name}/config` | admin | change config — persisted **and applied** (apply-verify-rollback, see above); a failed reconcile answers `success:false` after the wire was rolled back to the pre-change state |
 | `PUT /network/interfaces/{name}/state` | admin | bring up/down (`{ up }`) |
 | `GET /network/wifi/scan` | auth | scan APs |
 | `GET /network/wifi/status` | auth | WiFi status |
@@ -75,6 +122,10 @@ unaffected: the Wi-Fi endpoints report the tool as unavailable.
   reachable").
 - The `[network]` section of `fr.toml` must stay fully translated (a ~50-key gap
   existed; DE/ES were correct).
+- The verify verdict `check_live_state_matches` is pure and unit-tested; the
+  live netplan path itself needs a real host (see `TESTING.md` — "remaining to
+  test live"). Never run `netplan apply` outside the apply-verify-rollback
+  pattern.
 - **Editable since 2026-09-12** — `CLAUDE.md`'s frozen-area registry is gone, so
   `Network.svelte`, the network handlers and the `network.*` i18n section are
   open to edits. The invariants above stay binding: a change keeps the Rust

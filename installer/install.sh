@@ -847,6 +847,14 @@ fi
 
 install_optional aria2 "aria2 (multi-protocol downloader)"
 
+# Network persistence — netplan materializes the Network screen's persisted
+# interface config (`/etc/netplan/99-homevault-<if>.yaml` → `netplan apply`,
+# applied and verified in the same session, not just at the next reboot;
+# `src/network.rs`). Ubuntu always ships it; Debian hosts without it keep the
+# ifupdown backend or answer "(temporary — persistence unavailable)". Non-fatal
+# like the rest of install_optional — the absence is probed at runtime.
+install_optional netplan.io "Netplan (persist interface configuration)"
+
 # Security tools (antivirus scanning, firewall). Non-fatal like the rest of
 # install_optional: HomeVault must still run fine if these are declined, and
 # detects their absence at runtime to degrade the UI instead of crashing.

@@ -128,7 +128,25 @@ follows [Semantic Versioning](https://semver.org/).
   existing config, static v4+v6 merged into one `addresses:`/`routes:` pair)
   or, without netplan, to an ifupdown stanza. Without any backend the change
   still applies live and the UI shows a "temporary" warning. The config is
-  written, never applied — `netplan apply` is left to boot.
+  written, never applied — `netplan apply` is left to boot. **(Closed
+  2026-10-21 — see the bullet below.)**
+- **Network apply-verify-rollback (2026-10-21).** The persisted interface
+  configuration is now **applied and verified in the same request**, closing
+  the one-cycle runtime/boot drift. `PUT
+  /network/interfaces/{name}/config` captures the pre-change state, applies
+  it live, persists it (the write returns the backend plus a snapshot of the
+  previous netplan file), runs `netplan apply`, and verifies the wire
+  converged within a 10 s polling grace (static address, default route via
+  the configured gateway, static IPv6, interface up). On any failure the
+  change rolls back on both halves — previous file restored (or ours deleted)
+  and the previous live configuration re-asserted, so the operator session
+  never loses connectivity — and the API answers `success:false` naming what
+  failed; the UI reloads the interfaces after a rollback. Supporting changes:
+  scoped sudoers shapes (`netplan apply`, `cat`/`chmod 600`/`rm -f` on
+  `/etc/netplan/99-homevault-*.yaml`) and `netplan.io` in the dependency
+  inventory + `install.sh` (optional; ifupdown stays write-only and
+  boot-applied). Tests: `src/network.rs` 43 → 52 unit (pure verify verdict),
+  full `cargo test` green (lib 917, all integration suites).
 
 ### Fixed
 
