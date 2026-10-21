@@ -22,10 +22,10 @@
 
 //! Docker Compose project management (files, templates, CLI lifecycle).
 
+use crate::docker::{run_command, run_docker, LONG_TIMEOUT, SHORT_TIMEOUT};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use thiserror::Error;
 
 /// Errors that can occur during Docker Compose operations.
@@ -39,6 +39,10 @@ pub enum ComposeError {
     ProjectNotFound(String),
     #[error("Command failed: {0}")]
     CommandFailed(String),
+    /// A CLI call timed out or could not be spawned. Carried through so the
+    /// caller can distinguish "timed out" from "docker said no".
+    #[error("{0}")]
+    Docker(#[from] crate::docker::DockerError),
 }
 
 /// A Docker Compose project with its services and current status.
@@ -105,9 +109,7 @@ impl ComposeManager {
     }
 
     pub fn is_available() -> bool {
-        Command::new("docker")
-            .args(["compose", "version"])
-            .output()
+        run_docker(&["compose", "version"], SHORT_TIMEOUT)
             .map(|o| o.status.success())
             .unwrap_or(false)
     }
@@ -118,18 +120,15 @@ impl ComposeManager {
     /// the Compose tab's "Validate syntax" button so an admin catches YAML /
     /// schema mistakes before hitting Deploy.
     pub fn validate_config(config: &str) -> Result<(), ComposeError> {
-        let mut child = Command::new("docker")
-            .args(["compose", "-f", "-", "config", "--quiet"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(config.as_bytes())?;
-        }
-
-        let output = child.wait_with_output()?;
+        let output = crate::docker::run_command_with_stdin(
+            {
+                let mut c = Command::new("docker");
+                c.args(["compose", "-f", "-", "config", "--quiet"]);
+                c
+            },
+            config,
+            SHORT_TIMEOUT,
+        )?;
 
         if output.status.success() {
             Ok(())
@@ -245,10 +244,15 @@ impl ComposeManager {
     fn get_project_status(name: &str) -> Result<String, ComposeError> {
         let project_dir = Self::get_compose_dir().join(name);
 
-        let output = Command::new("docker")
-            .args(["compose", "ps", "--format", "json"])
-            .current_dir(&project_dir)
-            .output()?;
+        let output = run_command(
+            {
+                let mut c = Command::new("docker");
+                c.args(["compose", "ps", "--format", "json"])
+                    .current_dir(&project_dir);
+                c
+            },
+            SHORT_TIMEOUT,
+        )?;
 
         if !output.status.success() {
             return Ok("stopped".to_string());
@@ -350,10 +354,14 @@ impl ComposeManager {
             return Err(ComposeError::ProjectNotFound(name.to_string()));
         }
 
-        let output = Command::new("docker")
-            .args(["compose", "up", "-d"])
-            .current_dir(&project_dir)
-            .output()?;
+        let output = run_command(
+            {
+                let mut c = Command::new("docker");
+                c.args(["compose", "up", "-d"]).current_dir(&project_dir);
+                c
+            },
+            LONG_TIMEOUT,
+        )?;
 
         if !output.status.success() {
             return Err(ComposeError::CommandFailed(
@@ -372,10 +380,14 @@ impl ComposeManager {
             return Err(ComposeError::ProjectNotFound(name.to_string()));
         }
 
-        let output = Command::new("docker")
-            .args(["compose", "down"])
-            .current_dir(&project_dir)
-            .output()?;
+        let output = run_command(
+            {
+                let mut c = Command::new("docker");
+                c.args(["compose", "down"]).current_dir(&project_dir);
+                c
+            },
+            LONG_TIMEOUT,
+        )?;
 
         if !output.status.success() {
             return Err(ComposeError::CommandFailed(
@@ -391,6 +403,48 @@ impl ComposeManager {
         Self::start_project(name)
     }
 
+    /// Pull the newest images for a project and redeploy it — the Compose
+    /// tab's "Update" action. `up -d` alone never re-pulls, so a stack kept
+    /// running for months would stay on its original image.
+    pub fn pull_project(name: &str) -> Result<(), ComposeError> {
+        Self::validate_name(name)?;
+        let project_dir = Self::get_compose_dir().join(name);
+
+        if !project_dir.exists() {
+            return Err(ComposeError::ProjectNotFound(name.to_string()));
+        }
+
+        let pull = run_command(
+            {
+                let mut c = Command::new("docker");
+                c.args(["compose", "pull"]).current_dir(&project_dir);
+                c
+            },
+            LONG_TIMEOUT,
+        )?;
+        if !pull.status.success() {
+            return Err(ComposeError::CommandFailed(
+                String::from_utf8_lossy(&pull.stderr).trim().to_string(),
+            ));
+        }
+
+        let up = run_command(
+            {
+                let mut c = Command::new("docker");
+                c.args(["compose", "up", "-d"]).current_dir(&project_dir);
+                c
+            },
+            LONG_TIMEOUT,
+        )?;
+        if !up.status.success() {
+            return Err(ComposeError::CommandFailed(
+                String::from_utf8_lossy(&up.stderr).trim().to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
     pub fn get_project_services(name: &str) -> Result<Vec<ContainerService>, ComposeError> {
         Self::validate_name(name)?;
         let project_dir = Self::get_compose_dir().join(name);
@@ -399,10 +453,15 @@ impl ComposeManager {
             return Err(ComposeError::ProjectNotFound(name.to_string()));
         }
 
-        let output = Command::new("docker")
-            .args(["compose", "ps", "--format", "json"])
-            .current_dir(&project_dir)
-            .output()?;
+        let output = run_command(
+            {
+                let mut c = Command::new("docker");
+                c.args(["compose", "ps", "--format", "json"])
+                    .current_dir(&project_dir);
+                c
+            },
+            SHORT_TIMEOUT,
+        )?;
 
         if !output.status.success() {
             return Ok(Vec::new());

@@ -291,16 +291,24 @@ RAID levels: RAID0 (stripe), RAID1 (mirror), RAID5 (parity), RAID6 (double parit
             id: "docker".to_string(),
             title: "Docker Management".to_string(),
             content: r#"The Docker app provides a web interface for Docker Engine:
-- Container lifecycle: start, stop, restart, remove, view logs
+- Container lifecycle: start, stop, restart, pause, resume, kill, rename, remove, view logs
+- Live log streaming (tail size, timestamps, follow), with download
+- Container details (image, state, limits, mounts, ports, networks, environment, labels)
+- Change a container's memory, CPU and restart policy in place, without recreating it
+- Run a one-off command inside a container
+- Update a container to its newest image (pull, then recreate with the same settings)
 - Edit a container's docker-compose.yml in place (Compose-managed containers), then save or save and redeploy
-- Image management: pull, remove, view layers
+- Image management: pull, build from a host folder, remove, view layers
+- Private registry sign-in and sign-out for pulling private images
+- Disk usage report and cleanup of unused images, volumes, containers, networks and build cache
 - Network management
-- Volume management
+- Volume management: list, create, delete, see which containers use a volume
+- Docker engine settings (daemon.json) editable from the interface
 - App Catalog: install pre-configured apps from manifests
 - Community stores: add third-party app repositories
 - Per-app reverse proxy with session-cookie auth gate
 - Port conflict detection before container creation
-- Docker Compose deploy and management
+- Docker Compose deploy and management, including pulling the newest images
 - Container I/O stats (network rx/tx, block read/write)
 - App update detection (image digest comparison with registries)"#.to_string(),
         },

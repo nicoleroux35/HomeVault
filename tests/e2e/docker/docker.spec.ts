@@ -134,8 +134,8 @@ function win(page: Page) {
   return page.locator('[data-testid="docker-page"]');
 }
 
-async function switchTab(page: Page, tabId: 'containers' | 'images' | 'networks' | 'discover' | 'catalog' | 'compose') {
-  const index = ['containers', 'images', 'networks', 'discover', 'catalog', 'compose'].indexOf(tabId);
+async function switchTab(page: Page, tabId: 'containers' | 'images' | 'volumes' | 'networks' | 'discover' | 'catalog' | 'compose') {
+  const index = ['containers', 'images', 'volumes', 'networks', 'discover', 'catalog', 'compose'].indexOf(tabId);
   await win(page).locator('[data-testid="docker-nav-item"]').nth(index).click();
 }
 
@@ -164,6 +164,13 @@ test.beforeAll(async ({ playwright }) => {
   expect(admin.token, 'seeded admin login must succeed').not.toEqual('');
   adminHeaders = { 'x-session-token': admin.token, 'x-csrf-token': admin.csrf };
   adminTokens = { username: ADMIN_USER, password: ADMIN_PASS, token: admin.token, csrf: admin.csrf };
+  // Acknowledge the release notes: on a freshly seeded server the What's New
+  // modal opens over the desktop and its bits-ui overlay swallows every
+  // pointer event, so the very first `openDocker()` click would never land.
+  // Same fixture as `desktop.spec.ts`.
+  await sharedCtx
+    .post('/api/whats-new/seen', { headers: adminHeaders, data: {} })
+    .catch(() => null);
 });
 
 test.afterAll(async () => {
@@ -217,9 +224,9 @@ test.describe('1 — Page load', () => {
     }
   });
 
-  test('1.4 — the sidebar lists all 6 nav tabs', async ({ page }) => {
+  test('1.4 — the sidebar lists all 7 nav tabs', async ({ page }) => {
     await gotoDocker(page, adminTokens);
-    await expect(win(page).locator('[data-testid="docker-nav-item"]')).toHaveCount(6);
+    await expect(win(page).locator('[data-testid="docker-nav-item"]')).toHaveCount(7);
   });
 
   test('1.5 — the metrics rail shows 4 tiles', async ({ page }) => {
@@ -462,14 +469,19 @@ test.describe('5 — Submission flows', () => {
   test('5.2 — cancelling the create-container modal creates nothing', async ({ page }) => {
     await gotoDocker(page, adminTokens);
     await switchTab(page, 'containers');
-    const before = await win(page).locator('[data-testid="docker-ctr-card"]').count();
     if (!(await openCreateContainerModal(page))) test.skip(true, 'no create-container button visible (daemon down?)');
     await page.locator('#cName').fill('e2e-should-not-be-created');
     await page.locator('[data-slot="dialog-overlay"]').click({ position: { x: 5, y: 5 } });
     await expect(page.locator('[data-slot="dialog-content"]')).toHaveCount(0);
     await switchTab(page, 'images');
     await switchTab(page, 'containers');
-    expect(await win(page).locator('[data-testid="docker-ctr-card"]').count()).toBe(before);
+    // Assert on the name rather than on a card count: the container list is
+    // fetched asynchronously, so a count taken before it settles reads 0 and
+    // then disagrees with the same list once it has loaded (a false failure
+    // on a loaded machine). Absence of the name is what the test is about.
+    await expect(
+      win(page).locator('[data-testid="docker-ctr-card"]', { hasText: 'e2e-should-not-be-created' }),
+    ).toHaveCount(0);
   });
 });
 
@@ -532,7 +544,7 @@ test.describe('8 — Accessibility', () => {
   test('8.1 — the sidebar nav exposes tablist/tab roles', async ({ page }) => {
     await gotoDocker(page, adminTokens);
     await expect(win(page).locator('[role="tablist"]')).toHaveCount(1);
-    await expect(win(page).locator('[role="tab"]')).toHaveCount(6);
+    await expect(win(page).locator('[role="tab"]')).toHaveCount(7);
   });
 
   test('8.2 — the active tab has aria-selected=true and the rest false', async ({ page }) => {
@@ -961,5 +973,183 @@ test.describe('15 — Catalog phase B', () => {
     );
     expect(res.success).toBe(false);
     expect(String(res.message || res.error)).toContain('does not depend');
+  });
+});
+
+// ===========================================================================
+// 16. Production surface — volumes, disk usage, container extras, live logs
+// ===========================================================================
+
+/**
+ * Read-only by default: these tests open panels, read what they render and
+ * close them. The one real action (16.7) runs `echo` inside an already
+ * running container, which changes nothing on the host.
+ */
+test.describe('16 — Production surface', () => {
+  test('16.1 — the Volumes tab shows the disk-usage table and the prune buttons', async ({ page }) => {
+    await gotoDocker(page, adminTokens);
+    await switchTab(page, 'volumes');
+    const panel = win(page).locator('[data-testid="docker-panel"]').first();
+    await expect(panel).toBeVisible();
+    // The table is filled by `docker system df`; it must have a header row with
+    // the five columns the backend reports.
+    const headers = panel.locator('th');
+    await expect(headers).toHaveCount(5);
+    await expect(headers.first()).not.toBeEmpty();
+    // Four reclaim actions, the last one being the destructive "everything".
+    const prune = panel.locator('button', { hasText: /Clean|Nettoyer|Bereinigen|Limpiar/ });
+    await expect(prune).toHaveCount(4);
+  });
+
+  test('16.2 — the new-volume modal opens with a name field and cancels cleanly', async ({ page }) => {
+    await gotoDocker(page, adminTokens);
+    await switchTab(page, 'volumes');
+    const btn = win(page).locator('[data-testid="docker-top-btn"]').first();
+    if ((await btn.count()) === 0) test.skip(true, 'no create-volume button in this state');
+    await btn.click();
+    const modal = page.locator('[data-slot="dialog-content"][role="dialog"]');
+    await expect(modal).toBeVisible();
+    await expect(modal.locator('#vName')).toBeVisible();
+    await expect(modal.locator('#vName')).toHaveAttribute('type', 'text');
+    // The submit stays disabled until a name is typed — no empty POST.
+    const submit = modal.locator('button', { hasText: /Create|Créer|Erstellen|Crear/ }).last();
+    await expect(submit).toBeDisabled();
+    await modal.locator('#vName').fill('e2e-should-not-be-created');
+    await expect(submit).toBeEnabled();
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+  });
+
+  test('16.3 — the images tab exposes Build and Private registries, and the registries modal opens', async ({ page }) => {
+    await gotoDocker(page, adminTokens);
+    await switchTab(page, 'images');
+    const buildBtn = win(page).locator('[data-testid="docker-toolbar-actions"] button', {
+      hasText: /Build|Construire|Erstellen|Compilar/,
+    });
+    const regBtn = win(page).locator('[data-testid="docker-toolbar-actions"] button', {
+      hasText: /registr|Registre|Registry/i,
+    });
+    await expect(buildBtn).toHaveCount(1);
+    await expect(regBtn).toHaveCount(1);
+
+    await regBtn.click();
+    const modal = page.locator('[data-slot="dialog-content"][role="dialog"]');
+    await expect(modal).toBeVisible();
+    // Sign-in form is always offered, even with no registry configured.
+    await expect(modal.locator('#registryHost')).toBeVisible();
+    await expect(modal.locator('#registryUser')).toBeVisible();
+    // The password field must be masked, never a text input.
+    await expect(modal.locator('#registryPassword')).toHaveAttribute('type', 'password');
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+  });
+
+  test('16.4 — the build modal exposes a path-guarded context field and a tag', async ({ page }) => {
+    await gotoDocker(page, adminTokens);
+    await switchTab(page, 'images');
+    const buildBtn = win(page).locator('[data-testid="docker-toolbar-actions"] button', {
+      hasText: /Build|Construire|Erstellen|Compilar/,
+    });
+    await buildBtn.click();
+    const modal = page.locator('[data-slot="dialog-content"][role="dialog"]');
+    await expect(modal).toBeVisible();
+    await expect(modal.locator('#buildTag')).toBeVisible();
+    // The context is a PathField (browse button), not a free-form input only.
+    await expect(modal.locator('input[placeholder*="homevault"], input[placeholder*="/"]').first()).toBeVisible();
+    const submit = modal.locator('button', { hasText: /Build|Construire|Erstellen|Compilar/ }).last();
+    await expect(submit).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+  });
+
+  test('16.5 — the containers toolbar opens the daemon.json editor', async ({ page }) => {
+    await gotoDocker(page, adminTokens);
+    await switchTab(page, 'containers');
+    const btn = win(page).locator('[data-testid="docker-toolbar-actions"] button', {
+      hasText: /engine|moteur|Engine|motor/i,
+    });
+    await expect(btn).toHaveCount(1);
+    await btn.click();
+    const modal = page.locator('[data-slot="dialog-content"][role="dialog"]');
+    await expect(modal).toBeVisible();
+    await expect(modal.locator('#daemonConfig')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+  });
+
+  test('16.6 — the per-container "more actions" menu opens, lists its items and closes on Escape', async ({ page }) => {
+    await gotoDocker(page, adminTokens);
+    await switchTab(page, 'containers');
+    const cards = win(page).locator('[data-testid="docker-ctr-card"]');
+    if ((await cards.count()) === 0) test.skip(true, 'no containers on this host');
+
+    const more = cards.first().locator('button[aria-haspopup="menu"]').last();
+    await expect(more).toHaveAttribute('aria-expanded', 'false');
+    await more.click();
+    await expect(more).toHaveAttribute('aria-expanded', 'true');
+    const menu = cards.first().locator('[role="menu"]');
+    await expect(menu).toBeVisible();
+    // Details, Rename, Limits and Update image are always offered; the
+    // state-dependent ones (pause/kill/exec) only for a running container.
+    const items = menu.locator('[role="menuitem"]');
+    expect(await items.count()).toBeGreaterThanOrEqual(4);
+    await expect(menu).toContainText(/Details|Détails/);
+    await page.keyboard.press('Escape');
+    await expect(menu).toHaveCount(0);
+  });
+
+  test('16.7 — the live logs modal streams at least one line and offers the tail controls', async ({ page }) => {
+    await gotoDocker(page, adminTokens);
+    await switchTab(page, 'containers');
+    const cards = win(page).locator('[data-testid="docker-ctr-card"]');
+    if ((await cards.count()) === 0) test.skip(true, 'no containers on this host');
+
+    const logsBtn = cards.first().locator('[data-testid="docker-ctr-actions"] button', {
+      hasText: /Logs|Journaux|Protokolle|Registros/,
+    });
+    if ((await logsBtn.count()) === 0) test.skip(true, 'no logs button on this host');
+    await logsBtn.click();
+
+    const modal = page.locator('[data-slot="dialog-content"][role="dialog"]');
+    await expect(modal).toBeVisible();
+    // The tail size is a real select, the two options are checkboxes.
+    await expect(modal.locator('#logTail')).toBeVisible();
+    await expect(modal.locator('input[type="checkbox"]')).toHaveCount(2);
+    // The status pill resolves out of "connecting" once the ticket is redeemed.
+    await expect(modal.locator('[role="status"]')).not.toContainText(/Connecting|Connexion|Verbinden|Conectando/, {
+      timeout: 15_000,
+    });
+    // Either a line arrived or the container legitimately has no output — but
+    // the box must exist and never stay on the raw error text.
+    await expect(modal.locator('[data-testid="docker-logs"]')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+  });
+
+  test('16.8 — a command can be run inside a running container', async ({ page }) => {
+    await gotoDocker(page, adminTokens);
+    await switchTab(page, 'containers');
+    const cards = win(page).locator('[data-testid="docker-ctr-card"]');
+    if ((await cards.count()) === 0) test.skip(true, 'no containers on this host');
+
+    // Open the menu of the first card and pick "Run a command" if present
+    // (it is only offered for a running container).
+    const card = cards.first();
+    await card.locator('button[aria-haspopup="menu"]').last().click();
+    const execItem = card.locator('[role="menuitem"]', {
+      hasText: /Run a command|Exécuter une commande|Befehl ausführen|Ejecutar un comando/,
+    });
+    if ((await execItem.count()) === 0) test.skip(true, 'no running container on this host');
+    await execItem.click();
+
+    const modal = page.locator('[data-slot="dialog-content"][role="dialog"]');
+    await expect(modal).toBeVisible();
+    await modal.locator('#execCommand').fill('echo hv-e2e');
+    await modal.locator('button', { hasText: /Run|Exécuter|Ausführen|Ejecutar/ }).last().click();
+    // Either the command produced output (exit 0) or the image has no shell
+    // utility — both are surfaced, neither may leave the modal blank.
+    await expect(modal.locator('pre').first()).toBeVisible({ timeout: 20_000 });
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
   });
 });

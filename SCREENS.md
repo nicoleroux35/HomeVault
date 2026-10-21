@@ -405,28 +405,43 @@ and in the Groups screen.
 
 ## 19. Docker
 
-**4 tabs:**
+**7 tabs: Containers, Images, Volumes, Networks, Discover, App Catalog, Compose.**
+
+The screen refreshes on tab switch, on window focus and every 45 s
+(`onAppVisible(refreshCurrent, { pollMs: 45_000 })`) — not every 5 s.
 
 ### Containers
-- Container cards: name, image, status, creation date, ports, memory/CPU, available-update indicators
-- Start/Stop/Restart
-- Deletion
-- Logs (real-time stream)
+- Container cards: name, image, status (running / restarting / paused / stopped), creation date, ports, memory/CPU, "update available" badge
+- Start / Stop / Restart, Logs, Edit compose file
+- "More actions" menu: Details (inspect), Pause / Resume, Kill (SIGKILL, confirmed), Rename, Change limits (memory / CPU / restart policy, applied in place), Run a command (exec), Update to newest image (recreate, confirmed)
+- Logs: live SSE tail — tail size (100–5000), timestamps, follow toggle, status pill (live / connecting / ended / disconnected), download, restart stream
 - Editing of `docker-compose.yml` (containers from a Compose project managed by HomeVault): modal editor, syntax validation, save, save + redeploy
 - Creation: name, image, ports, volumes (path via FolderPicker), environment variables, networks
-- Refresh every 5s
+- Toolbar: Daemon settings (`daemon.json` editor, validated before write, restarts Docker)
 
 ### Images
 - Image list: repository, tag, size, date
-- Download from Docker Hub (search + results)
+- Download from Docker Hub (search + results), build an image from a host folder (path-guarded), private registry sign-in / sign-out
 - Deletion
+
+### Volumes
+- Disk usage table (`docker system df`): type, total, active, size, reclaimable
+- Prune: unused images, unused volumes, build cache, everything unused (all confirmed)
+- Volume list: name, driver, mountpoint, in-use badge, containers using it
+- Creation and deletion (force-confirmed when the volume is attached)
 
 ### Networks
 - Network list: name, driver, scope, subnet, gateway, connected containers
 
-### Compose / Catalog
-- Compose projects: list with services and status, start/stop/restart/deletion, editing of the compose file
-- App catalog: one-click install/uninstall (Plex, Jellyfin, Nextcloud, Pi-hole, Vaultwarden, Home Assistant, Grafana, etc.)
+### Discover
+- Docker Hub search and image discovery
+
+### App Catalog
+- Manifest-driven packages from the embedded store plus admin-added community stores (15 built-in: BookStack, FreshRSS, Gitea, Grafana, Home Assistant, Immich, Jellyfin, n8n, Navidrome, ownCloud, Paperless-ngx, Pi-hole, Uptime Kuma, Vaultwarden, Vikunja)
+- One-click install/uninstall with dependency, settings and compatibility review; per-app reverse proxy with optional auth gate; per-app logs; update detection and "update all"
+
+### Compose
+- Compose projects: list with services and status, start/stop/restart/update-to-newest-images/deletion, editing of the compose file
 
 ---
 
