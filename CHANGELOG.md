@@ -150,6 +150,33 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Shares production-ready pass (2026-10-21).** Share fields were formatted
+  verbatim into **root-owned** config files, so every one of them was a config
+  injection: `name`/`comment`/`path` into `/etc/samba/smb.conf` (a newline in a
+  name forged an extra Samba section — `include = /tmp/evil.conf` — and a
+  bracket broke out of the section header), `path` + `options` into
+  `/etc/exports` (whitespace shifted the columns, a `)` in an option closed the
+  client list and fabricated `*(no_root_squash)`), `welcome_message` into
+  `vsftpd.conf` (`ftpd_banner=` is one line) and the SFTP jail path pair into
+  `/etc/fstab`. Pure validators (`validate_share_name`,
+  `validate_share_comment`, `validate_share_path`, `validate_nfs_options`,
+  `validate_smb_config`, `validate_ftp_config`) now run inside `SharesService`
+  before any privileged write — so handler, cache-share sync and
+  ransomware auto-disable paths are all covered — and reject with a `400`
+  naming the field. `/etc/exports` is rewritten through one parser/generator
+  pair instead of ad hoc line surgery: the NFS toggle writes a
+  `# homevault-nfs-disabled:<name>` tag (the old
+  `exportfs -o rw /<name>` / `exportfs -u /<name>` calls were a wrong-shape
+  no-op that only changed the in-memory table and silently came back on
+  reload/reboot), and delete/update resolve the single matching line by parsed
+  name — two exports whose path basenames collided used to delete each other
+  silently, they now answer `400` listing both paths. Every `SharesService`
+  call moved off the async runtime (`spawn_blocking` + 30 s timeout, SFTP jail
+  rebuild 120 s with its DB phase kept async and its mount/account phase
+  blocking), and `rebuild_jails` / `list_grantees` / `set_authorized_key` no
+  longer run `sudo` inline in a handler. Tests: `shares.rs` unit 14 → 34,
+  `sftp.rs` unit 6 → 9, `shares_integration.rs` 20 → 26. See
+  `docs/guides/shares.md` and `CLAUDE.md` (2026-10-21 addendum).
 - **VPN production-ready pass (2026-10-21).** Three gap classes closed,
   verified empirically against OpenVPN 2.6.19 during the pass:
   (a) an **OpenVPN start now verifies the tunnel before answering** —

@@ -64,6 +64,39 @@ fixed and listed under "Fixed on 2026-10-12" below.
   new page, following the methodology already applied to each guide in
   `docs/guides/` (results in `TESTING.md`).
 
+**Fixed on 2026-10-21 — Shares production-ready:**
+
+The Shares app was the one screen whose inputs still reached **root-owned**
+config files unvalidated, so an admin session (or anything that can reach the
+API) could rewrite system configuration: a share name with a newline forged an
+extra `smb.conf` section (an `include =` directive is root code execution on
+the next Samba reload), a `)` in an NFS option closed the client list and
+fabricated `*(no_root_squash)`, a whitespace in a path shifted `/etc/exports`
+and `/etc/fstab` columns, a multi-line FTP banner appended `anonymous_enable=
+YES`, and the SFTP jail wrote a share path straight into `/etc/fstab`. The
+pass adds one validation layer in `SharesService` (share name/comment/path/NFS
+options, SMB global config, FTP config) that runs before *any* privileged
+write, so every caller is covered — handlers answer `400` naming the field.
+`/etc/exports` now has a single pure parser/generator pair: the enable/disable
+toggle writes (or strips) a `# homevault-nfs-disabled:<name>` tag instead of
+the previous wrong-shape `exportfs -o rw /<name>` / `exportfs -u /<name>`
+no-op that silently reverted on reboot, and delete/update rewrite exactly one
+line — two exports sharing a path basename used to delete each other, they are
+now an explicit `400` listing the colliding paths. Finally the whole module
+left the async runtime: `run_share_op` (spawn_blocking + 30 s timeout) wraps
+every service call, `rebuild_jails` was split into an async DB phase and a
+blocking mount/account phase under a 120 s ceiling. Tests: `shares.rs`
+14 → 34 unit, `sftp.rs` 6 → 9 unit, `shares_integration.rs` 20 → 26
+integration (`cargo test` lib 942 → 965; the three neighbouring share suites
+— `resource_shares`, `share_links`, `api_contract` — plus `users`, `groups`
+and `mdns` re-run green). Docs: `docs/guides/shares.md` gained the validation
+table, the exports-rewrite semantics and the blocking-pool invariants;
+`docs/API.md`'s Shares section documents the validation and the toggle
+semantics. The live-host pass (real SMB/NFS/vsftpd reloads, the disabled
+export surviving a reboot, an ambiguous-basename 400 against a real
+`/etc/exports`) is recorded in `TESTING.md`'s "Remaining to test" list. See
+`CLAUDE.md` (2026-10-21 addendum).
+
 **Fixed on 2026-10-21 — Network production-ready:**
 
 The Network screen was the last one whose own headline feature stopped half

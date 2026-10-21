@@ -58,6 +58,64 @@ via `systemctl`; that is gone. `WEBDAV` is a process-wide manager
   systemd unit + Python script on an upgraded host. mDNS uses
   `crate::webdav::running_port()`, not `unit_active`.
 
+### Config-file injection hardening (2026-10-21)
+
+Every share value that reaches a root-owned config file is now validated
+**before** it is formatted into that file, by pure validators in
+`src/shares.rs` (`validate_share_name`, `validate_share_comment`,
+`validate_share_path`, `validate_nfs_options`, `validate_smb_config`,
+`validate_ftp_config`). They run in `SharesService::create_share` /
+`update_share` / `delete_share` and in `save_smb_config` / `save_ftp_config`,
+i.e. before any `sudo tee`, `systemctl`, `exportfs` or `useradd`, and the
+handlers surface them as a `400` naming the offending field.
+
+| Field | Accepted | Why |
+|-------|----------|-----|
+| `name` | ASCII letters, digits, `-`, `_`, `.`; ≤ 64 chars; no leading `.`, no `..`, not `global`/`homes`/`printers`/`admin$` | becomes an `smb.conf` `[section]` header, an `/etc/homevault/*.json` key and a jail directory (`jail/<name>`) |
+| `comment` | one line (no control chars except tab), ≤ 200 chars | `comment = …` is one `smb.conf` line — a newline forged extra directives |
+| `welcome_message` (FTP) | one line, ≤ 120 chars | `ftpd_banner=…` is one `vsftpd.conf` line |
+| `path` | absolute, no whitespace/control/`( ) , # ;`, no `..` | first column of `/etc/exports` and of the SFTP `/etc/fstab` bind entry — a space shifts columns, `)`/`#` rewrite the option list |
+| `options` (NFS) | one token each: no whitespace/control/`( ) , # " '`, ≤ 16 entries | written as `path *(opt1,opt2)`; a `)` closed the client list and fabricated extra exports |
+| SMB global | `workgroup` one line ≤ 15, `security_mode` ∈ {user, share, domain, server, ads}, `protocol_version` alnum/`_`/`.`, masks 3-4 octal digits | `[global]` directives are one line each |
+| FTP ports | `port`/passive bounds non-zero u16, `passive_ports` = `min` or `min-max` with min < max, `max_clients` ≥ 1 | parsed then formatted into `vsftpd.conf` |
+
+`PathGuard` still applies downstream (it guards the *filesystem* operations of
+the share's own content); these validators guard the *config files* — a share
+whose path is outside the allowed roots is rejected later, not here.
+
+### NFS exports are rewritten, not appended around (2026-10-21)
+
+`/etc/exports` is now handled through one pure parser/generator pair
+(`parse_nfs_export_line`, `nfs_export_line`), so every mutation rewrites
+exactly one line:
+
+- **disable** prefixes the line with `# homevault-nfs-disabled:<name>` and
+  **enable** strips it again, followed by a best-effort `exportfs -ra`. The
+  old toggle ran `exportfs -o rw /<name>` / `exportfs -u /<name>` — a
+  no-op/wrong-shape call that changed only the in-memory export table, so a
+  disabled share silently came back on the next reload or reboot. Tagged lines
+  are parsed back as *disabled* shares, so the UI keeps listing them.
+- **delete** and **update** resolve the single matching line by parsed share
+  name and rewrite only that line — the old code removed/replaced *every* line
+  whose path basename matched, so two exports `/data/media` and `/backup/media`
+  silently deleted each other. A name that matches several exports is now an
+  explicit `400` listing the colliding paths instead of a wrong-line edit.
+
+### Blocking work is off the async runtime (2026-10-21)
+
+`SharesService` is entirely synchronous (file IO + `sudo`
+`tee`/`systemctl`/`exportfs`) and `SftpJailService::rebuild_jails` shells out
+per grant. Handlers no longer call either directly:
+
+- `run_share_op(op, closure)` in `src/handlers/shares.rs` runs every service
+  call on `spawn_blocking` under a 30 s `tokio::time::timeout`.
+- `rebuild_jails` is split in two phases — resolve the desired state from the
+  DB (async), then reconcile accounts/mounts/fstab on `spawn_blocking` — under
+  a 120 s timeout. `list_grantees` and `set_authorized_key` are wrapped the
+  same way.
+- A hung `mount --bind`/`systemctl` now returns a clean error naming the
+  operation and its timeout instead of pinning a runtime worker forever.
+
 | Endpoint | Auth | Notes |
 |----------|------|-------|
 | `GET /shares` | admin | list shares |
@@ -100,6 +158,24 @@ Granting first fails with a `setfacl` error.
 
 ## Invariants
 
+- **Every value written into a root-owned config file is validated first.**
+  `validate_share_name` / `validate_share_comment` / `validate_share_path` /
+  `validate_nfs_options` / `validate_smb_config` / `validate_ftp_config` run
+  inside `SharesService` before any `sudo tee`, so *any* caller (handlers,
+  cache-share sync, ransomware auto-disable) is covered — never format an
+  unvalidated share field into `smb.conf`, `/etc/exports`, `vsftpd.conf` or
+  `/etc/fstab`. The SFTP jail code reuses `validate_share_path` /
+  `validate_share_name` for its fstab line and for grantees' usernames.
+- **`/etc/exports` is parsed and re-serialised through one pure pair**
+  (`parse_nfs_export_line` / `nfs_export_line`); a mutation rewrites exactly
+  one line and a name matching several exports is a `400`, never a
+  multiple-line rewrite. Disabled exports stay in the file behind the
+  `# homevault-nfs-disabled:<name>` tag so the state survives reboots.
+- **No `SharesService`/`SftpJailService` call runs inline in an async
+  handler.** They go through `run_share_op`/`run_jail_rebuild`
+  (`spawn_blocking` + timeout). `SftpJailService::rebuild_jails` keeps its
+  async DB resolution phase separate from its blocking reconciliation phase —
+  keep that split when touching it.
 - **WebDAV has no systemd unit.** Never reintroduce `systemctl` calls for the
   `webdav` protocol, a generated `homevault-webdav.py`, or a root-owned DAV
   process. `SharesService::start/stop/restart_service(Webdav)` returns an

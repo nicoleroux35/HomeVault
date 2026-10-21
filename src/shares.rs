@@ -45,6 +45,8 @@ pub enum ShareError {
     CommandFailed(String),
     #[error("Config file not found: {0}")]
     ConfigNotFound(String),
+    #[error("{0}")]
+    InvalidField(String),
 }
 
 /// A file share definition, applicable across SMB, NFS, FTP, and WebDAV.
@@ -324,6 +326,331 @@ pub(crate) fn mkdir_as_root(dir: &std::path::Path) -> std::io::Result<()> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Input validation — pure helpers
+// ---------------------------------------------------------------------------
+//
+// Every value that reaches a root-owned config file (`smb.conf`, `/etc/exports`,
+// `vsftpd.conf`, `/etc/fstab`) is validated *before* it is formatted into that
+// file. These are format-injection guards: a share name with a newline could
+// forge extra Samba sections, an NFS option containing `)` could fabricate
+// extra client lists in `/etc/exports`, a path with whitespace could inject
+// extra columns into `/etc/exports` or `/etc/fstab`. Validators return
+// `Result<(), String>` so `sftp.rs` can reuse them for its fstab/jail paths.
+
+/// Samba-reserved section names that may never be used as a share name —
+/// deleting or rewriting such a section would corrupt `smb.conf` itself.
+const RESERVED_SMB_SECTION_NAMES: [&str; 4] = ["global", "homes", "printers", "admin$"];
+
+/// Tag written in `/etc/exports` in front of a disabled NFS export line:
+/// `# homevault-nfs-disabled:<name> /path *(options)`. Unlike the old
+/// `exportfs -u` toggle (an in-memory-only change that silently came back on
+/// reboot), disabling rewrites the file, so the state survives restarts.
+pub(crate) const NFS_DISABLED_TAG: &str = "# homevault-nfs-disabled:";
+
+/// Maximum accepted length for a share name.
+const SHARE_NAME_MAX: usize = 64;
+
+/// Validate a share name: single non-empty token of ASCII letters, digits,
+/// `-`, `_` and `.`; no leading `.`; no `..` segment (a jail mount point is
+/// built as `jail/<name>`, so `.`-only names could traverse out of it); not a
+/// Samba-reserved section name; this also makes the name safe to embed in
+/// `smb.conf` section headers and in `/etc/homevault/*.json` keys.
+pub fn validate_share_name(name: &str) -> Result<(), String> {
+    if name.trim() != name {
+        return Err("share name must not start or end with whitespace".to_string());
+    }
+    if name.is_empty() {
+        return Err("share name must not be empty".to_string());
+    }
+    if name.chars().count() > SHARE_NAME_MAX {
+        return Err(format!(
+            "share name must be at most {SHARE_NAME_MAX} characters"
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err("share name may only contain letters, digits, '-', '_' and '.' (no spaces, brackets, slashes or newlines — those could forge extra smb.conf sections or /etc/exports columns)".to_string());
+    }
+    if name.starts_with('.') || name.contains("..") {
+        return Err("share name must not start with '.' or contain '..'".to_string());
+    }
+    if RESERVED_SMB_SECTION_NAMES
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(name))
+    {
+        return Err(format!("share name '{name}' is reserved by Samba"));
+    }
+    Ok(())
+}
+
+/// Validate a share comment / FTP banner: a single line, no control
+/// characters (tab allowed), max length. Both smb.conf (`comment = …`) and
+/// vsftpd.conf (`ftpd_banner=…`) put this value on exactly one line.
+pub fn validate_share_comment(comment: &str) -> Result<(), String> {
+    if comment.chars().count() > 200 {
+        return Err("comment must be at most 200 characters".to_string());
+    }
+    if comment.chars().any(|c| c.is_control() && c != '\t') {
+        return Err(
+            "comment must be a single line (no newlines or control characters)".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Validate a share path: absolute Unix path, no whitespace, no control
+/// characters and none of `( ) , # ;` — the path is embedded verbatim as the
+/// first column of `/etc/exports` and in `/etc/fstab`, where spaces inject
+/// extra columns and `)`/`,`/`#` inject or terminate the export options and
+/// comments. `..` segments are rejected (no intentional traversal).
+pub fn validate_share_path(path: &str) -> Result<(), String> {
+    if !path.starts_with('/') {
+        return Err("share path must be absolute (start with '/')".to_string());
+    }
+    if path.chars().count() > 200 {
+        return Err("share path must be at most 200 characters".to_string());
+    }
+    if path
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '(' | ')' | ',' | '#' | ';'))
+    {
+        return Err("share path must not contain spaces or any of ( ) , # ; — it is embedded verbatim in /etc/exports and /etc/fstab".to_string());
+    }
+    if path.split('/').skip(1).any(|seg| seg == "..") {
+        return Err("share path must not contain '..' segments".to_string());
+    }
+    Ok(())
+}
+
+/// Validate NFS export options: each single token without whitespace,
+/// control characters, or any of `( ) , # " '`. Options are written as
+/// `path *(opt1,opt2)`, so a `)` in an option would close the client list
+/// and fabricate an extra client clause (`rw) /etc *(no_root_squash`).
+pub fn validate_nfs_options(options: &[String]) -> Result<(), String> {
+    if options.len() > 16 {
+        return Err("too many NFS options (max 16)".to_string());
+    }
+    for opt in options {
+        if opt.is_empty() {
+            return Err("NFS options must not be empty strings".to_string());
+        }
+        if opt.chars().count() > 60 {
+            return Err(format!("NFS option '{opt}' is too long"));
+        }
+        if opt.chars().any(|c| {
+            c.is_whitespace() || c.is_control() || matches!(c, '(' | ')' | ',' | '#' | '"' | '\'')
+        }) {
+            return Err(format!("NFS option '{opt}' contains a forbidden character (whitespace, control character or one of ( ) , # \" ') — options are embedded in /etc/exports as 'path *(opts)'"));
+        }
+    }
+    Ok(())
+}
+
+/// Single-line + max-length check shared by the per-protocol config
+/// validators. `forbid_section_chars` additionally rejects `[`, `]` and `;`
+/// (values formatted into smb.conf, where those characters could forge
+/// section boundaries or commented-out directives).
+fn check_config_value(
+    field: &str,
+    value: &str,
+    max: usize,
+    forbid_section_chars: bool,
+) -> Result<(), String> {
+    if value.chars().count() > max {
+        return Err(format!("{field} must be at most {max} characters"));
+    }
+    if value.chars().any(|c| c.is_control() && c != '\t') {
+        return Err(format!(
+            "{field} must be a single line (no newlines or control characters)"
+        ));
+    }
+    if forbid_section_chars && value.contains(['[', ']', ';']) {
+        return Err(format!(
+            "{field} must not contain '[', ']' or ';' (config-file section characters)"
+        ));
+    }
+    Ok(())
+}
+
+/// Validate the global SMB service config before it is formatted into
+/// `smb.conf` (`workgroup = …`, `security = …`, … are one-line directives).
+/// `additional_params` is only persisted to `/etc/homevault/smb.json` today —
+/// it is validated single-line anyway so that any future consumer of the
+/// stored array can never emit multi-line values.
+pub(crate) fn validate_smb_config(config: &SmbConfig) -> Result<(), String> {
+    check_config_value("workgroup", &config.workgroup, 15, true)?;
+    let security = config.security_mode.to_lowercase();
+    match security.as_str() {
+        "user" | "share" | "domain" | "server" | "ads" => {}
+        other => {
+            return Err(format!(
+                "security_mode '{other}' is not valid (use user, share, domain, server or ads)"
+            ))
+        }
+    }
+    if !config
+        .protocol_version
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+    {
+        return Err("protocol_version may only contain letters, digits, '_' and '.'".to_string());
+    }
+    for (name, mask) in [
+        ("create_mask", &config.create_mask),
+        ("directory_mask", &config.directory_mask),
+    ] {
+        if !(3..=4).contains(&mask.chars().count())
+            || mask.chars().any(|c| !('0'..='7').contains(&c))
+        {
+            return Err(format!(
+                "{name} must be 3-4 octal digits (e.g. 0755), got '{mask}'"
+            ));
+        }
+    }
+    for param in &config.additional_params {
+        check_config_value("additional_params entries", param, 200, true)?;
+    }
+    Ok(())
+}
+
+/// Validate the global FTP service config before it is formatted into
+/// `vsftpd.conf`: the banner must be single-line (it lands in
+/// `ftpd_banner=…`), `passive_ports` must be `"min"` or `"min-max"`, both
+/// `port` and the passive bounds must be non-zero u16s.
+pub(crate) fn validate_ftp_config(config: &FtpConfig) -> Result<(), String> {
+    check_config_value("welcome_message", &config.welcome_message, 120, true)?;
+    if config.port == 0 {
+        return Err("FTP port must not be 0".to_string());
+    }
+    if config.max_clients == 0 {
+        return Err("max_clients must be at least 1".to_string());
+    }
+    let mut parts = config.passive_ports.split('-');
+    let parse_port = |s: &str| -> Result<u16, String> {
+        s.trim()
+            .parse::<u16>()
+            .map_err(|_| format!("passive_ports '{s}' is not a valid port number"))
+            .and_then(|p| {
+                if p == 0 {
+                    Err(format!("passive_ports '{s}' must not be 0"))
+                } else {
+                    Ok(p)
+                }
+            })
+    };
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(min), None, _) => {
+            parse_port(min)?;
+        }
+        (Some(min), Some(max), None) => {
+            if parse_port(min)? >= parse_port(max)? {
+                return Err(format!(
+                    "passive_ports range '{min}-{max}' must have min below max"
+                ));
+            }
+        }
+        _ => {
+            return Err("passive_ports must be 'min' or 'min-max' (e.g. '30000-31000')".to_string())
+        }
+    }
+    Ok(())
+}
+
+/// Build the appended smb.conf section for a share (single line per field;
+/// inputs are validated by the caller).
+fn smb_share_section(name: &str, comment: &str, path: &str) -> String {
+    format!(
+        "\n[{name}]\n  comment = {comment}\n  path = {path}\n  browseable = yes\n  read only = no\n  create mask = 0755\n"
+    )
+}
+
+/// Build the `/etc/exports` line for a share: `path *(options)`. An empty
+/// options list keeps the historical safe default; the options token is
+/// guarded by [`validate_nfs_options`].
+fn nfs_export_line(path: &str, options: &[String]) -> String {
+    let opts = if options.is_empty() {
+        "rw,sync,no_subtree_check".to_string()
+    } else {
+        options.join(",")
+    };
+    format!("{path} *({opts})\n")
+}
+
+/// Build the tagged (disabled) form of an `/etc/exports` line:
+/// `# homevault-nfs-disabled:<name> path *(options)`.
+fn nfs_disabled_line(name: &str, export_line: &str) -> String {
+    format!("{NFS_DISABLED_TAG}{name} {}\n", export_line.trim_end())
+}
+
+/// Parse a single `/etc/exports` line into a share.
+///
+/// Returns `None` for blank lines and plain comments. Lines carrying the
+/// [`NFS_DISABLED_TAG`] prefix are parsed with `enabled: false` (the tag's
+/// share name is ignored — the parsed name is the path's basename, the same
+/// convention enabled lines use, so list/toggle/delete all key on it).
+fn parse_nfs_export_line(raw_line: &str) -> Option<Share> {
+    let trimmed = raw_line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let body = match trimmed.strip_prefix(NFS_DISABLED_TAG) {
+        Some(rest) => {
+            // "<name> <path> *(opts)" → the share body after the tag name.
+            match rest.split_once(' ') {
+                Some((_, line)) => line.trim(),
+                None => rest,
+            }
+        }
+        None => {
+            if trimmed.starts_with('#') {
+                return None;
+            }
+            trimmed
+        }
+    };
+    let enabled = trimmed.strip_prefix(NFS_DISABLED_TAG).is_none();
+
+    let parts: Vec<&str> = body.split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let path = parts[0];
+    let name = std::path::Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string());
+
+    // `*(rw,sync,no_subtree_check)` → ["rw", "sync", "no_subtree_check"], so
+    // the parsed option list round-trips through `nfs_export_line` exactly.
+    let mut options: Vec<String> = Vec::new();
+    for client_token in &parts[1..] {
+        let inner = client_token
+            .strip_prefix('*')
+            .unwrap_or(client_token)
+            .trim_start_matches('(')
+            .trim_end_matches(')');
+        options.extend(
+            inner
+                .split(',')
+                .filter(|opt| !opt.is_empty())
+                .map(|opt| opt.to_string()),
+        );
+    }
+
+    Some(Share {
+        name,
+        share_type: ShareType::Nfs,
+        path: path.to_string(),
+        enabled,
+        comment: String::new(),
+        options,
+    })
+}
+
 /// Service for managing SMB, NFS, FTP, and WebDAV shares.
 pub struct SharesService;
 
@@ -366,6 +693,18 @@ impl SharesService {
         share_type: ShareType,
         update: ShareUpdate,
     ) -> Result<(), ShareError> {
+        // Validate every field that will be formatted into a root-owned
+        // config file before dispatching (see the validators' docs).
+        validate_share_name(name).map_err(ShareError::InvalidField)?;
+        if let Some(path) = &update.path {
+            validate_share_path(path).map_err(ShareError::InvalidField)?;
+        }
+        if let Some(comment) = &update.comment {
+            validate_share_comment(comment).map_err(ShareError::InvalidField)?;
+        }
+        if let Some(options) = &update.options {
+            validate_nfs_options(options).map_err(ShareError::InvalidField)?;
+        }
         match share_type {
             ShareType::Smb => Self::update_smb_share(name, update),
             ShareType::Nfs => Self::update_nfs_share(name, update),
@@ -377,6 +716,12 @@ impl SharesService {
 
     /// Create a new share. Dispatches to the protocol-specific handler.
     pub fn create_share(share: &Share) -> Result<(), ShareError> {
+        // Validate before any privileged side effect — these values end up
+        // verbatim in `smb.conf` / `/etc/exports` / `vsftpd.conf`.
+        validate_share_name(&share.name).map_err(ShareError::InvalidField)?;
+        validate_share_path(&share.path).map_err(ShareError::InvalidField)?;
+        validate_share_comment(&share.comment).map_err(ShareError::InvalidField)?;
+        validate_nfs_options(&share.options).map_err(ShareError::InvalidField)?;
         match share.share_type {
             ShareType::Smb => Self::create_smb_share(share),
             ShareType::Nfs => Self::create_nfs_share(share),
@@ -388,6 +733,7 @@ impl SharesService {
 
     /// Delete a share. Dispatches to the protocol-specific handler.
     pub fn delete_share(name: &str, share_type: ShareType) -> Result<(), ShareError> {
+        validate_share_name(name).map_err(ShareError::InvalidField)?;
         match share_type {
             ShareType::Smb => Self::delete_smb_share(name),
             ShareType::Nfs => Self::delete_nfs_share(name),
@@ -397,7 +743,9 @@ impl SharesService {
         }
     }
 
-    /// Enable or disable a share. For SMB, toggles `browseable`; for NFS, calls `exportfs -u/-o`.
+    /// Enable or disable a share. For SMB, toggles `browseable`; for NFS,
+    /// rewrites the `/etc/exports` line (tagged-comment form, so the state
+    /// survives a reboot) and reloads exports.
     pub fn set_share_enabled(
         name: &str,
         share_type: ShareType,
@@ -405,6 +753,7 @@ impl SharesService {
     ) -> Result<(), ShareError> {
         match share_type {
             ShareType::Smb => {
+                validate_share_name(name).map_err(ShareError::InvalidField)?;
                 let config_path = "/etc/samba/smb.conf";
                 if !std::path::Path::new(config_path).exists() {
                     warn!("Samba config file not found: {}", config_path);
@@ -436,28 +785,7 @@ impl SharesService {
                     write_file_as_root("/etc/samba/smb.conf", &new_config)?;
                 }
             }
-            ShareType::Nfs => match enabled {
-                true => {
-                    if let Err(e) = Command::new("sudo")
-                        .arg("exportfs")
-                        .args(["-o", "rw", &format!("/{}", name)])
-                        .output()
-                        .map(|o| o.status.success())
-                    {
-                        warn!("Failed to enable NFS share {}: {}", name, e);
-                    }
-                }
-                false => {
-                    if let Err(e) = Command::new("sudo")
-                        .arg("exportfs")
-                        .args(["-u", &format!("/{}", name)])
-                        .output()
-                        .map(|o| o.status.success())
-                    {
-                        warn!("Failed to disable NFS share {}: {}", name, e);
-                    }
-                }
-            },
+            ShareType::Nfs => Self::set_nfs_share_enabled(name, enabled)?,
             ShareType::Ftp | ShareType::Webdav | ShareType::Sftp => {
                 let filename = format!("{}.json", name);
                 let shares_path = match share_type {
@@ -496,6 +824,7 @@ impl SharesService {
 
     /// Persist the SMB service config to disk and apply it to smb.conf.
     pub fn save_smb_config(config: &SmbConfig) -> Result<(), ShareError> {
+        validate_smb_config(config).map_err(ShareError::InvalidField)?;
         let path = get_smb_config_path();
         if let Some(parent) = path.parent() {
             mkdir_as_root(parent)?;
@@ -750,6 +1079,7 @@ impl SharesService {
 
     /// Persist the FTP service config to disk and apply it to vsftpd.conf.
     pub fn save_ftp_config(config: &FtpConfig) -> Result<(), ShareError> {
+        validate_ftp_config(config).map_err(ShareError::InvalidField)?;
         let path = get_ftp_config_path();
         if let Some(parent) = path.parent() {
             mkdir_as_root(parent)?;
@@ -764,6 +1094,13 @@ impl SharesService {
 
     fn apply_ftp_config(config: &FtpConfig) -> Result<(), ShareError> {
         let vsftpd_conf = "/etc/vsftpd.conf";
+        // Defence in depth: `ftpd_banner=` is a single-line directive, and the
+        // banner is already validated single-line in `save_ftp_config`; strip
+        // any line break anyway so no caller path can ever append directives.
+        let banner = config
+            .welcome_message
+            .replace(['\r', '\n'], " ")
+            .replace('\t', " ");
         let content = format!(
             r#"listen=YES
 listen_port={port}
@@ -789,7 +1126,7 @@ ftpd_banner={banner}
             pasv_max = config.passive_ports.split('-').nth(1).unwrap_or("31000"),
             max_clients = config.max_clients,
             chroot = if config.chroot { "YES" } else { "NO" },
-            banner = config.welcome_message,
+            banner = banner,
         );
 
         if config.force_tls {
@@ -876,10 +1213,7 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
 
     fn create_smb_share(share: &Share) -> Result<(), ShareError> {
         let config_path = "/etc/samba/smb.conf";
-        let share_section = format!(
-            "\n[{}]\n  comment = {}\n  path = {}\n  browseable = yes\n  read only = no\n  create mask = 0755\n",
-            share.name, share.comment, share.path
-        );
+        let share_section = smb_share_section(&share.name, &share.comment, &share.path);
 
         append_file_as_root(config_path, &share_section)?;
 
@@ -897,12 +1231,7 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
 
     fn create_nfs_share(share: &Share) -> Result<(), ShareError> {
         let exports_path = "/etc/exports";
-        let options = if share.options.is_empty() {
-            "rw,sync,no_subtree_check".to_string()
-        } else {
-            share.options.join(",")
-        };
-        let export_line = format!("{} {}({})\n", share.path, "*", options);
+        let export_line = nfs_export_line(&share.path, &share.options);
 
         append_file_as_root(exports_path, &export_line)?;
 
@@ -1084,27 +1413,8 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
         let mut shares = Vec::new();
 
         for line in exports.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-
-            let parts: Vec<&str> = trimmed.split_whitespace().collect();
-            if parts.len() >= 2 {
-                let path = parts[0];
-                let name = std::path::Path::new(path)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| path.to_string());
-
-                shares.push(Share {
-                    name,
-                    share_type: ShareType::Nfs,
-                    path: path.to_string(),
-                    enabled: true,
-                    comment: String::new(),
-                    options: parts[1..].iter().map(|s| s.to_string()).collect(),
-                });
+            if let Some(share) = parse_nfs_export_line(line) {
+                shares.push(share);
             }
         }
 
@@ -1295,64 +1605,73 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
     }
 
     fn delete_nfs_share(name: &str) -> Result<(), ShareError> {
-        if let Err(e) = Command::new("sudo")
-            .arg("exportfs")
-            .args(["-u", &format!("/{}", name)])
-            .output()
-            .map(|o| o.status.success())
-        {
-            warn!("Failed to remove NFS export for {}: {}", name, e);
-        }
+        validate_share_name(name).map_err(ShareError::InvalidField)?;
 
         let exports_path = "/etc/exports";
         if !std::path::Path::new(exports_path).exists() {
             warn!("NFS exports file not found: {}", exports_path);
             return Err(ShareError::ConfigNotFound(exports_path.to_string()));
         }
-        let exports = std::fs::read_to_string(exports_path).map_err(|e| {
+        let raw = std::fs::read_to_string(exports_path).map_err(|e| {
             warn!("Failed to read exports for deletion: {}", e);
             e
         })?;
 
-        let mut new_exports = String::new();
-        for line in exports.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with('#') {
-                new_exports.push_str(line);
-                new_exports.push('\n');
-                continue;
-            }
-
-            let parts: Vec<&str> = trimmed.split_whitespace().collect();
-            if !parts.is_empty() {
-                let path = parts[0];
-                let share_name = std::path::Path::new(path)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-
-                if share_name != name {
-                    new_exports.push_str(line);
-                    new_exports.push('\n');
+        // Match by parsed share name, removing exactly the one matching line —
+        // never by line-rewriting heuristics, and never more than one line.
+        let mut matched: Vec<(usize, String)> = Vec::new();
+        for (idx, line) in raw.lines().enumerate() {
+            if let Some(share) = parse_nfs_export_line(line) {
+                if share.name == name {
+                    matched.push((idx, share.path));
                 }
             }
         }
 
-        write_file_as_root("/etc/exports", &new_exports)?;
-
-        if let Err(e) = Command::new("sudo")
-            .arg("exportfs")
-            .args(["-ra"])
-            .output()
-            .map(|o| o.status.success())
-        {
-            warn!(
-                "Failed to reload NFS exports after deletion for {}: {}",
-                name, e
-            );
+        match matched.len() {
+            0 => return Err(ShareError::NotFound(name.to_string())),
+            1 => {}
+            _ => {
+                let paths: Vec<&str> = matched.iter().map(|(_, p)| p.as_str()).collect();
+                return Err(ShareError::InvalidField(format!(
+                    "share name '{name}' is ambiguous in /etc/exports (matching paths: {}) — remove the other export first",
+                    paths.join(", ")
+                )));
+            }
         }
 
+        let drop_idx = matched[0].0;
+        let mut new_exports = String::new();
+        for (idx, line) in raw.lines().enumerate() {
+            if idx == drop_idx {
+                continue;
+            }
+            new_exports.push_str(line);
+            new_exports.push('\n');
+        }
+
+        write_file_as_root(exports_path, &new_exports)?;
+        Self::reload_nfs_exports(name, "deletion");
         Ok(())
+    }
+
+    /// Best-effort `exportfs -ra` after an `/etc/exports` rewrite: the file is
+    /// the source of truth, so a reload failure is logged, not fatal (the
+    /// export will be applied on the next reload/reboot either way).
+    fn reload_nfs_exports(name: &str, context: &str) {
+        match Command::new("sudo").arg("exportfs").args(["-ra"]).output() {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => warn!(
+                "exportfs -ra failed after NFS share {} ({}): {}",
+                context,
+                name,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+            Err(e) => warn!(
+                "Failed to reload NFS exports after {} for {}: {}",
+                context, name, e
+            ),
+        }
     }
 
     fn delete_ftp_share(name: &str) -> Result<(), ShareError> {
@@ -1482,62 +1801,132 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
             return Err(ShareError::ConfigNotFound(exports_path.to_string()));
         }
 
-        let exports = std::fs::read_to_string(exports_path)?;
-        let mut new_exports = String::new();
-        let mut found = false;
+        let raw = std::fs::read_to_string(exports_path)?;
 
-        for line in exports.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                new_exports.push_str(line);
-                new_exports.push('\n');
-                continue;
+        // Resolve the single existing export line for `name` first, so a
+        // basename collision across different parent directories is an
+        // explicit error instead of a silent multi-line rewrite.
+        let mut matched: Vec<(usize, Share)> = Vec::new();
+        for (idx, line) in raw.lines().enumerate() {
+            if let Some(share) = parse_nfs_export_line(line) {
+                if share.name == name {
+                    matched.push((idx, share));
+                }
             }
+        }
+        let (line_idx, existing) = match matched.len() {
+            0 => return Err(ShareError::NotFound(name.to_string())),
+            1 => (matched[0].0, matched[0].1.clone()),
+            _ => {
+                let paths: Vec<&str> = matched.iter().map(|(_, s)| s.path.as_str()).collect();
+                return Err(ShareError::InvalidField(format!(
+                    "share name '{name}' is ambiguous in /etc/exports (matching paths: {}) — update the other export first",
+                    paths.join(", ")
+                )));
+            }
+        };
 
-            let parts: Vec<&str> = trimmed.split_whitespace().collect();
-            if !parts.is_empty() {
-                let path = parts[0];
-                let share_name = std::path::Path::new(path)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
+        let new_path = update.path.clone().unwrap_or_else(|| existing.path.clone());
+        let new_options = update
+            .options
+            .clone()
+            .unwrap_or_else(|| existing.options.clone());
 
-                if share_name == name {
-                    found = true;
-                    let new_path = update.path.clone().unwrap_or_else(|| path.to_string());
-                    let options = if let Some(ref opts) = update.options {
-                        opts.join(",")
-                    } else if parts.len() > 1 {
-                        parts[1..].join(" ")
+        // Validation already ran in `update_share`; re-check here so a direct
+        // caller can never write an unvalidated line.
+        validate_share_path(&new_path).map_err(ShareError::InvalidField)?;
+        validate_nfs_options(&new_options).map_err(ShareError::InvalidField)?;
+
+        // Preserve the enable/disable state carried by the existing line.
+        let replacement = if existing.enabled {
+            nfs_export_line(&new_path, &new_options)
+        } else {
+            nfs_disabled_line(name, &nfs_export_line(&new_path, &new_options))
+        };
+
+        let mut new_exports = String::new();
+        for (idx, line) in raw.lines().enumerate() {
+            if idx == line_idx {
+                new_exports.push_str(replacement.trim_end());
+            } else {
+                new_exports.push_str(line);
+            }
+            new_exports.push('\n');
+        }
+
+        write_file_as_root(exports_path, &new_exports)?;
+        Self::reload_nfs_exports(name, "update");
+        Ok(())
+    }
+
+    /// Rewrite `/etc/exports` so the single export line for `name` is
+    /// disabled (prefixed with [`NFS_DISABLED_TAG`]) or re-enabled (tag
+    /// removed), then reload. The tag makes the state survive a reboot, which
+    /// the previous in-memory `exportfs -u` toggle did not.
+    fn set_nfs_share_enabled(name: &str, enabled: bool) -> Result<(), ShareError> {
+        validate_share_name(name).map_err(ShareError::InvalidField)?;
+
+        let exports_path = "/etc/exports";
+        if !std::path::Path::new(exports_path).exists() {
+            return Err(ShareError::ConfigNotFound(exports_path.to_string()));
+        }
+        let raw = std::fs::read_to_string(exports_path)?;
+
+        let mut active: Vec<(usize, String)> = Vec::new();
+        let mut disabled: Vec<(usize, String)> = Vec::new();
+        for (idx, line) in raw.lines().enumerate() {
+            if let Some(share) = parse_nfs_export_line(line) {
+                if share.name == name {
+                    if share.enabled {
+                        active.push((idx, share.path));
                     } else {
-                        "rw,sync,no_subtree_check".to_string()
-                    };
-                    new_exports.push_str(&format!("{} *({})\n", new_path, options));
-                } else {
-                    new_exports.push_str(line);
-                    new_exports.push('\n');
+                        disabled.push((idx, share.path));
+                    }
                 }
             }
         }
 
-        if !found {
-            return Err(ShareError::NotFound(name.to_string()));
+        let candidates = if enabled { &disabled } else { &active };
+        let already_in_state = if enabled { &active } else { &disabled };
+
+        let target = match candidates.len() {
+            0 => {
+                if !already_in_state.is_empty() {
+                    // Already in the requested state — idempotent no-op.
+                    return Ok(());
+                }
+                return Err(ShareError::NotFound(name.to_string()));
+            }
+            1 => candidates[0].0,
+            _ => {
+                let paths: Vec<&str> = candidates.iter().map(|(_, p)| p.as_str()).collect();
+                return Err(ShareError::InvalidField(format!(
+                    "share name '{name}' is ambiguous in /etc/exports (matching paths: {}) — disambiguate by removing the duplicate export first",
+                    paths.join(", ")
+                )));
+            }
+        };
+
+        let mut new_exports = String::new();
+        for (idx, line) in raw.lines().enumerate() {
+            if idx == target {
+                let parsed = parse_nfs_export_line(line)
+                    .ok_or_else(|| ShareError::NotFound(name.to_string()))?;
+                let plain = nfs_export_line(&parsed.path, &parsed.options);
+                if enabled {
+                    // Un-tag: keep the export line as-is.
+                    new_exports.push_str(plain.trim_end());
+                } else {
+                    new_exports.push_str(nfs_disabled_line(name, &plain).trim_end());
+                }
+            } else {
+                new_exports.push_str(line);
+            }
+            new_exports.push('\n');
         }
 
-        write_file_as_root("/etc/exports", &new_exports)?;
-
-        if let Err(e) = Command::new("sudo")
-            .arg("exportfs")
-            .args(["-ra"])
-            .output()
-            .map(|o| o.status.success())
-        {
-            warn!(
-                "Failed to reload NFS exports after updating share {}: {}",
-                name, e
-            );
-        }
-
+        write_file_as_root(exports_path, &new_exports)?;
+        Self::reload_nfs_exports(name, if enabled { "enable" } else { "disable" });
         Ok(())
     }
 
@@ -1786,5 +2175,313 @@ mod tests {
         let partial: ShareUpdate = serde_json::from_str(r#"{"enabled": false}"#).unwrap();
         assert_eq!(partial.enabled, Some(false));
         assert!(partial.path.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Input validation — the format-injection guards
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_share_name_accepts_ordinary_names() {
+        for name in ["media", "Media_2024", "a-b.c", "photos2", "x"] {
+            assert!(validate_share_name(name).is_ok(), "{name:?} must be valid");
+        }
+    }
+
+    #[test]
+    fn test_validate_share_name_rejects_smb_section_forging() {
+        // A newline or a bracket in a name would forge an extra Samba section
+        // (or escape the section header) inside /etc/samba/smb.conf.
+        for name in [
+            "media\n[global]",
+            "media\r[evil]",
+            "media]",
+            "[global]",
+            "me dia",
+            "a\tb",
+            "a;b",
+        ] {
+            assert!(
+                validate_share_name(name).is_err(),
+                "{name:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_share_name_rejects_path_fragments_and_reserved_sections() {
+        for name in [
+            "media/pool",
+            "media\\pool",
+            "..",
+            "a..b",
+            ".hidden",
+            "global",
+            "GLOBAL",
+            "homes",
+            "printers",
+            "admin$",
+        ] {
+            assert!(
+                validate_share_name(name).is_err(),
+                "{name:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_share_name_rejects_empty_whitespace_and_oversized() {
+        assert!(validate_share_name("").is_err());
+        assert!(validate_share_name(" media").is_err());
+        assert!(validate_share_name("media ").is_err());
+        assert!(validate_share_name(&"a".repeat(SHARE_NAME_MAX + 1)).is_err());
+        assert!(validate_share_name(&"a".repeat(SHARE_NAME_MAX)).is_ok());
+    }
+
+    #[test]
+    fn test_validate_share_comment_accepts_single_line_text() {
+        for comment in ["", "Family media", "Café 2024", "a\tb"] {
+            assert!(validate_share_comment(comment).is_ok(), "{comment:?}");
+        }
+    }
+
+    #[test]
+    fn test_validate_share_comment_rejects_newline_injection() {
+        // `comment = <value>` is one smb.conf line: a newline would let the
+        // value add directives to the section.
+        for comment in [
+            "ok\n  read only = no",
+            "ok\rpath = /etc",
+            "ok\u{0000}",
+            "ok\u{0007}",
+        ] {
+            assert!(
+                validate_share_comment(comment).is_err(),
+                "{comment:?} must be rejected"
+            );
+        }
+        assert!(validate_share_comment(&"c".repeat(201)).is_err());
+    }
+
+    #[test]
+    fn test_validate_share_path_accepts_ordinary_absolute_paths() {
+        for path in ["/mnt/pool/media", "/srv/data", "/", "/mnt/a-b/c.d"] {
+            assert!(validate_share_path(path).is_ok(), "{path:?}");
+        }
+    }
+
+    #[test]
+    fn test_validate_share_path_rejects_relative_paths_and_traversal() {
+        for path in ["mnt/pool", "", "/mnt/../etc", "/mnt/./a/../.."] {
+            assert!(validate_share_path(path).is_err(), "{path:?} must fail");
+        }
+    }
+
+    #[test]
+    fn test_validate_share_path_rejects_exports_and_fstab_column_injection() {
+        // A space splits extra columns in /etc/exports and /etc/fstab; `)`,
+        // `,` and `#` terminate/fabricate export options and comments.
+        for path in [
+            "/mnt/po ol/media",
+            "/mnt/media *(rw)",
+            "/mnt/media #comment",
+            "/mnt/media;rm -rf /",
+            "/mnt/media\n/other *(rw)",
+            "/mnt/media\u{0009}x",
+        ] {
+            assert!(
+                validate_share_path(path).is_err(),
+                "{path:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_nfs_options_accepts_normal_options() {
+        for options in [
+            vec![],
+            vec!["rw".to_string()],
+            vec![
+                "rw".to_string(),
+                "sync".to_string(),
+                "no_subtree_check".to_string(),
+                "root_squash".to_string(),
+            ],
+            vec!["anonuid=1000".to_string(), "fsid=0".to_string()],
+        ] {
+            assert!(
+                validate_nfs_options(&options).is_ok(),
+                "{options:?} must be valid"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_nfs_options_rejects_client_list_forging() {
+        // `path *({opts})` — a `)` in an option closes the client list and a
+        // space starts a new one, fabricating extra exports.
+        for options in [
+            vec!["rw) /etc *(no_root_squash".to_string()],
+            vec!["rw)".to_string()],
+            vec!["a b".to_string()],
+            vec!["rw,sync".to_string()],
+            vec!["rw\nno_root_squash".to_string()],
+            vec!["".to_string()],
+            vec![format!("{}\n#", "x".repeat(5))],
+        ] {
+            assert!(
+                validate_nfs_options(&options).is_err(),
+                "{options:?} must be rejected"
+            );
+        }
+        let too_many: Vec<String> = (0..17).map(|i| format!("opt{i}")).collect();
+        assert!(validate_nfs_options(&too_many).is_err());
+    }
+
+    #[test]
+    fn test_smb_share_section_is_one_field_per_line() {
+        let section = smb_share_section("media", "Family media", "/mnt/pool/media");
+        assert!(section.contains("\n[media]\n"), "{section:?}");
+        assert!(
+            section.contains("  comment = Family media\n"),
+            "{section:?}"
+        );
+        assert!(
+            section.contains("  path = /mnt/pool/media\n"),
+            "{section:?}"
+        );
+        assert_eq!(
+            section.lines().filter(|l| l.contains("path =")).count(),
+            1,
+            "exactly one path directive: {section:?}"
+        );
+    }
+
+    #[test]
+    fn test_nfs_export_line_defaults_and_round_trip() {
+        assert_eq!(
+            nfs_export_line("/mnt/pool/media", &[]),
+            "/mnt/pool/media *(rw,sync,no_subtree_check)\n"
+        );
+
+        let parsed = parse_nfs_export_line("/mnt/pool/media *(rw,sync,no_subtree_check)").unwrap();
+        assert_eq!(parsed.name, "media");
+        assert_eq!(parsed.path, "/mnt/pool/media");
+        assert!(parsed.enabled);
+        assert_eq!(parsed.options, vec!["rw", "sync", "no_subtree_check"]);
+        // Round-trip: re-serialising the parsed options reproduces the line.
+        assert_eq!(
+            nfs_export_line(&parsed.path, &parsed.options),
+            "/mnt/pool/media *(rw,sync,no_subtree_check)\n"
+        );
+    }
+
+    #[test]
+    fn test_parse_nfs_export_line_skips_blanks_and_plain_comments() {
+        for line in [
+            "",
+            "   ",
+            "# a comment",
+            "#homevault-nfs-disabled-without-space",
+        ] {
+            assert!(parse_nfs_export_line(line).is_none(), "{line:?}");
+        }
+    }
+
+    #[test]
+    fn test_nfs_disabled_tag_round_trips_as_a_disabled_share() {
+        let plain = nfs_export_line("/mnt/pool/media", &["rw".to_string()]);
+        let tagged = nfs_disabled_line("media", &plain);
+        assert!(tagged.starts_with(NFS_DISABLED_TAG), "{tagged:?}");
+
+        let parsed = parse_nfs_export_line(&tagged).unwrap();
+        assert_eq!(parsed.name, "media");
+        assert_eq!(parsed.path, "/mnt/pool/media");
+        assert!(!parsed.enabled, "a tagged line is a disabled share");
+        assert_eq!(parsed.options, vec!["rw"]);
+    }
+
+    #[test]
+    fn test_validate_smb_config_accepts_the_default() {
+        assert!(validate_smb_config(&SmbConfig::default()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_smb_config_rejects_multiline_and_bad_values() {
+        let with = |f: fn(&mut SmbConfig)| {
+            let mut cfg = SmbConfig::default();
+            f(&mut cfg);
+            cfg
+        };
+
+        assert!(validate_smb_config(&with(|c| c.workgroup = "WORK\nGROUP".to_string())).is_err());
+        assert!(
+            validate_smb_config(&with(|c| c.security_mode = "user\n[evil]".to_string())).is_err()
+        );
+        assert!(validate_smb_config(&with(|c| c.security_mode = "bogus".to_string())).is_err());
+        assert!(
+            validate_smb_config(&with(|c| c.protocol_version = "SMB3\n#".to_string())).is_err()
+        );
+        assert!(validate_smb_config(&with(|c| c.create_mask = "9999".to_string())).is_err());
+        assert!(validate_smb_config(&with(|c| c.directory_mask = "0o755".to_string())).is_err());
+        assert!(validate_smb_config(&with(|c| c.workgroup = "GRP]".to_string())).is_err());
+        assert!(validate_smb_config(&with(|c| {
+            c.additional_params = vec!["\n[evil]".to_string()]
+        }))
+        .is_err());
+    }
+
+    fn ftp_config_fixture() -> FtpConfig {
+        FtpConfig {
+            port: 21,
+            allowed_users: vec![],
+            passive_ports: "30000-31000".to_string(),
+            max_clients: 10,
+            force_tls: false,
+            allow_anonymous: false,
+            chroot: true,
+            welcome_message: "Welcome to HomeVault FTP".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_validate_ftp_config_accepts_a_normal_config() {
+        assert!(validate_ftp_config(&ftp_config_fixture()).is_ok());
+
+        let mut single = ftp_config_fixture();
+        single.passive_ports = "30000".to_string();
+        assert!(validate_ftp_config(&single).is_ok());
+    }
+
+    #[test]
+    fn test_validate_ftp_config_rejects_banner_injection() {
+        // `ftpd_banner=` is a single-line vsftpd.conf directive.
+        let mut cfg = ftp_config_fixture();
+        cfg.welcome_message = "hi\nlocal_enable=YES\nanonymous_enable=YES".to_string();
+        assert!(validate_ftp_config(&cfg).is_err());
+
+        let mut cfg = ftp_config_fixture();
+        cfg.welcome_message = "hi\rwrite_enable=YES".to_string();
+        assert!(validate_ftp_config(&cfg).is_err());
+    }
+
+    #[test]
+    fn test_validate_ftp_config_rejects_bad_ports_and_client_counts() {
+        let mut cfg = ftp_config_fixture();
+        cfg.port = 0;
+        assert!(validate_ftp_config(&cfg).is_err());
+
+        let mut cfg = ftp_config_fixture();
+        cfg.max_clients = 0;
+        assert!(validate_ftp_config(&cfg).is_err());
+
+        for passive in ["abc", "31000-30000", "30000-", "-31000", "0-100"] {
+            let mut cfg = ftp_config_fixture();
+            cfg.passive_ports = passive.to_string();
+            assert!(
+                validate_ftp_config(&cfg).is_err(),
+                "{passive:?} must be rejected"
+            );
+        }
     }
 }
