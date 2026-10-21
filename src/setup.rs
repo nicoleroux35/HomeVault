@@ -709,6 +709,15 @@ impl SetupService {
         let journalctl = Self::resolve_bin("journalctl", "/usr/bin/journalctl");
         let tail = Self::resolve_bin("tail", "/usr/bin/tail");
 
+        // Network interface config — the Network screen's live apply runs
+        // `ip`/`dhclient` through the generic network grant above; the
+        // persistence layer additionally runs `netplan apply` to materialize
+        // the written `/etc/netplan/99-homevault-<name>.yaml` (see the
+        // netplan grant below). Scoped to the exact `apply` subcommand — the
+        // bare binary can also edit config interactively, which this process
+        // never does.
+        let netplan = Self::resolve_bin("netplan", "/usr/sbin/netplan");
+
         // Shares page service control (smbd/nfs-server/vsftpd/homevault-sftp)
         // — `homevault` needs root to start/stop/restart/reload these systemd
         // units the same way it needs root for mdadm/zpool above; unlike those,
@@ -810,7 +819,17 @@ homevault ALL=(%homevault_admin) NOPASSWD: /usr/bin/sudo -u * -i
 # homevault user against paths it already owns. mdadm needs root even for
 # read-only --detail (confirmed live: fails with "must be super-user"
 # otherwise), used by both the RAID page and Rescue's mdadm diagnose/repair.
-homevault ALL=(root) NOPASSWD: {wg}, {wg_quick}, {openvpn}, {pkill}, {kill}, {ip}, {ufw}, {mdadm}, {wpa_cli}
+homevault ALL=(root) NOPASSWD: {wg}, {wg_quick}, {openvpn}, {pkill}, {kill}, {ip}, {ufw}, {mdadm}, {wpa_cli}, {netplan} apply
+
+# Network persistence files — `/etc/netplan/99-homevault-<if>.yaml` are
+# written through the unscoped `tee` grant above and end up root-owned; the
+# persistence layer must also (a) snapshot our previous file before
+# overwriting it (`cat`, the apply-verify-rollback source), (b) re-assert
+# netplan's own 600 mode after every `tee`/`chmod` follow-up, and (c) delete
+# the file during a rollback when no previous version existed (`rm -f`).
+# All three shapes stay scoped to the HomeVault-owned file name prefix —
+# nothing else under /etc/netplan (or anywhere else) is touched.
+homevault ALL=(root) NOPASSWD: {chmod} 600 /etc/netplan/99-homevault-*.yaml, {rm} -f /etc/netplan/99-homevault-*.yaml, {cat} /etc/netplan/99-homevault-*.yaml
 
 # WireGuard server boot persistence — the roadwarrior server+peer feature in
 # src/vpn.rs enables the packaged `wg-quick@wg0` systemd unit the first time

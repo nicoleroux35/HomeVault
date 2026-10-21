@@ -154,6 +154,15 @@ fn check_mkfs_exfat() -> bool {
 fn check_wpa_cli() -> bool {
     binary_present("wpa_cli", "/usr/sbin/wpa_cli")
 }
+// Interface-config persistence (`src/network.rs`): `netplan apply` is what
+// materializes the written `/etc/netplan/99-homevault-*.yaml` so the Network
+// screen's persisted config is applied and verified in the same session, not
+// just at the next reboot. Ubuntu ships netplan.io on every install; a Debian
+// host without it falls through to the ifupdown backend or answers
+// "(temporary — persistence unavailable)".
+fn check_netplan() -> bool {
+    binary_present("netplan", "/usr/sbin/netplan")
+}
 fn check_sensors() -> bool {
     binary_present("sensors", "/usr/bin/sensors")
 }
@@ -407,6 +416,15 @@ fn specs() -> Vec<DependencySpec> {
             required: false,
             used_by: "Wi-Fi scan / join / status (Network app)",
             check_installed: check_wpa_cli,
+            check_running: None,
+        },
+        DependencySpec {
+            name: "netplan",
+            package: "netplan.io",
+            category: "Network",
+            required: false,
+            used_by: "Persisting interface configuration across reboots (Network app)",
+            check_installed: check_netplan,
             check_running: None,
         },
         DependencySpec {

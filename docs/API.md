@@ -346,7 +346,7 @@ Read endpoints `auth`; config/state/WiFi mutations `admin`.
 | GET | `/network/interfaces` | auth |
 | GET | `/network/interfaces/{name}` | auth |
 | GET | `/network/interfaces/{name}/config` | auth |
-| PUT | `/network/interfaces/{name}/config` | admin |
+| PUT | `/network/interfaces/{name}/config` | admin — applies live, persists (netplan/ifupdown), then `netplan apply` + wire verify; a failed reconcile rolls everything back and answers `{ success:false, message }` |
 | PUT | `/network/interfaces/{name}/state` | admin |
 | GET | `/network/wifi/scan` | auth |
 | GET | `/network/wifi/status` | auth |
