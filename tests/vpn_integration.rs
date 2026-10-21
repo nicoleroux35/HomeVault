@@ -2,7 +2,7 @@
  * File          : vpn_integration.rs
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Last modified : 21/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
@@ -598,6 +598,93 @@ async fn test_openvpn_delete_rejects_invalid_name_via_encoded_slash() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+//profile-content validation: the create handler refuses exec-bearing
+// profiles (the daemon runs as root) BEFORE any file is written, so these
+// tests never touch /etc/openvpn and stay deterministic across hosts.
+
+#[tokio::test]
+async fn test_openvpn_create_rejects_script_exec_directive() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = vpn_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/vpn/openvpn",
+        Some(&token),
+        Some(json!({
+            "name": "eviltunnel",
+            "config_content": "client\ndev tun\nremote vpn.example.com 1194\nup /tmp/evil.sh\n"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap().contains("'up'"),
+        "the offending directive must be named: {}",
+        body["error"]
+    );
+}
+
+#[tokio::test]
+async fn test_openvpn_create_rejects_script_security_above_one() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = vpn_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/vpn/openvpn",
+        Some(&token),
+        Some(json!({
+            "name": "eviltunnel",
+            "config_content": "client\ndev tun\nscript-security 2\nup /tmp/evil.sh\n"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap().contains("script-security"),
+        "the offending directive must be named: {}",
+        body["error"]
+    );
+}
+
+#[tokio::test]
+async fn test_openvpn_create_rejects_credential_collector_directive() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = vpn_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    // `auth-user-pass-verify` pipes the user's credentials into an external
+    // command — same privilege-escalation class as a script hook.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/vpn/openvpn",
+        Some(&token),
+        Some(json!({
+            "name": "eviltunnel",
+            "config_content": "client\nauth-user-pass-verify /tmp/collect.py via-env\n"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("auth-user-pass-verify"),
+        "the offending directive must be named: {}",
+        body["error"]
+    );
 }
 
 // ---------------------------------------------------------------------------

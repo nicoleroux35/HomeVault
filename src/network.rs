@@ -2,7 +2,7 @@
  * File          : network.rs
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Last modified : 21/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
@@ -23,7 +23,8 @@
 use serde::{Deserialize, Serialize};
 use std::net::{Ipv4Addr, Ipv6Addr, UdpSocket};
 use std::process::Command;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// Run a wpa_cli command via sudo.
 /// wpa_supplicant's control socket is root-owned and not accessible to the
@@ -1704,6 +1705,72 @@ pub async fn discover_public_ip() -> Option<Ipv4Addr> {
         }
     }
 
+    // The echo endpoints below are an external dependency: the VPN screens
+    // hit this function on every server-status poll and peer provisioning,
+    // which otherwise means an HTTPS request to strangers per page view.
+    // A hit is cached for [`PUBLIC_IP_TTL`], a miss (all endpoints down,
+    // e.g. an offline NAS) for the shorter negative [`PUBLIC_IP_NEG_TTL`]
+    // so connectivity is re-detected soon after it returns.
+    let now = Instant::now();
+    if let Some(cached) = PUBLIC_IP_CACHE.get(now) {
+        return cached;
+    }
+
+    let ip = fetch_public_ip_from_endpoints().await;
+    PUBLIC_IP_CACHE.insert(Instant::now(), ip);
+    ip
+}
+
+/// TTL of a successfully fetched public IP address.
+const PUBLIC_IP_TTL: Duration = Duration::from_secs(15 * 60);
+/// TTL of a failed lookup (all echo endpoints unreachable).
+const PUBLIC_IP_NEG_TTL: Duration = Duration::from_secs(60);
+
+/// One cached lookup: the instant it was fetched and its result (the inner
+/// Option being None marks a negative entry — a prior all-endpoints
+/// failure that must not be replayed forever).
+struct PublicIpCacheEntry {
+    fetched_at: Instant,
+    value: Option<Ipv4Addr>,
+}
+
+/// Tiny cache around [`discover_public_ip`], injectable with a timestamp in
+/// the unit tests so TTL expiry is exercised without sleeping.
+struct PublicIpCache(Mutex<Option<PublicIpCacheEntry>>);
+
+static PUBLIC_IP_CACHE: PublicIpCache = PublicIpCache(Mutex::new(None));
+
+impl PublicIpCache {
+    /// `None` = no fresh entry (go fetch); `Some(inner)` = a hit, where the
+    /// inner Option is the cached result itself.
+    fn get(&self, now: Instant) -> Option<Option<Ipv4Addr>> {
+        let guard = self.0.lock().ok()?;
+        let entry = guard.as_ref()?;
+        let ttl = if entry.value.is_some() {
+            PUBLIC_IP_TTL
+        } else {
+            PUBLIC_IP_NEG_TTL
+        };
+        if now.duration_since(entry.fetched_at) < ttl {
+            Some(entry.value)
+        } else {
+            None
+        }
+    }
+
+    fn insert(&self, now: Instant, value: Option<Ipv4Addr>) {
+        if let Ok(mut guard) = self.0.lock() {
+            *guard = Some(PublicIpCacheEntry {
+                fetched_at: now,
+                value,
+            });
+        }
+    }
+}
+
+/// The uncached HTTP loop: the first echo endpoint that answers with a
+/// parseable IPv4 address wins.
+async fn fetch_public_ip_from_endpoints() -> Option<Ipv4Addr> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
@@ -2732,5 +2799,65 @@ mod tests {
         c.ipv6_method = Some(Ipv6Method::Auto);
         let routes = routes_v4("default via 192.168.1.1 dev wlan0");
         assert!(check_live_state_matches(true, Some("192.168.1.10"), &[], &routes, &c).is_ok());
+    }
+
+    // -- PublicIpCache ------------------------------------------------------
+
+    fn ip(value: &str) -> Option<Ipv4Addr> {
+        Some(value.parse().unwrap())
+    }
+
+    #[test]
+    fn test_public_ip_cache_hit_within_ttl() {
+        let cache = PublicIpCache(Mutex::new(None));
+        let now = Instant::now();
+        cache.insert(now, ip("203.0.113.7"));
+        // Slightly later than insert but inside the positive TTL.
+        assert_eq!(
+            cache.get(now + PUBLIC_IP_TTL - Duration::from_secs(1)),
+            Some(ip("203.0.113.7"))
+        );
+    }
+
+    #[test]
+    fn test_public_ip_cache_miss_after_ttl() {
+        let cache = PublicIpCache(Mutex::new(None));
+        let now = Instant::now();
+        cache.insert(now, ip("203.0.113.7"));
+        assert_eq!(cache.get(now + PUBLIC_IP_TTL), None);
+        assert_eq!(
+            cache.get(now + PUBLIC_IP_TTL + Duration::from_secs(30)),
+            None
+        );
+    }
+
+    #[test]
+    fn test_public_ip_cache_empty_is_a_miss() {
+        let cache = PublicIpCache(Mutex::new(None));
+        assert_eq!(cache.get(Instant::now()), None);
+    }
+
+    #[test]
+    fn test_public_ip_cache_negative_entry_has_short_ttl() {
+        let cache = PublicIpCache(Mutex::new(None));
+        let now = Instant::now();
+        cache.insert(now, None);
+        assert_eq!(
+            cache.get(now + PUBLIC_IP_NEG_TTL - Duration::from_secs(1)),
+            Some(None)
+        );
+        assert_eq!(cache.get(now + PUBLIC_IP_NEG_TTL), None);
+    }
+
+    #[test]
+    fn test_public_ip_cache_overwrite_replaces_value() {
+        let cache = PublicIpCache(Mutex::new(None));
+        let now = Instant::now();
+        cache.insert(now, ip("203.0.113.7"));
+        cache.insert(now + PUBLIC_IP_NEG_TTL, ip("198.51.100.2"));
+        assert_eq!(
+            cache.get(now + PUBLIC_IP_NEG_TTL + Duration::from_secs(5)),
+            Some(ip("198.51.100.2"))
+        );
     }
 }
