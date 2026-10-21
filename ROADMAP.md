@@ -64,6 +64,59 @@ fixed and listed under "Fixed on 2026-10-12" below.
   new page, following the methodology already applied to each guide in
   `docs/guides/` (results in `TESTING.md`).
 
+**Fixed on 2026-10-21 — Backup/restic production-ready:**
+
+The backup page could tell a user their data was safe when it was not, and
+could destroy a repository from a single crafted field. Five holes:
+
+1. **Backup and restore ran inside the HTTP request.** The endpoint stayed open
+   for the whole run — hours on a multi-TB dataset — the floating island only
+   learned about the job once it had finished (so it showed a *completed*
+   backup from the start), a browser timeout looked like a failed backup, and a
+   Tokio worker was parked for the duration. Both endpoints now answer
+   `{status:"running", job_id, backup_job_id}` immediately and the run continues
+   in a spawned task on `spawn_blocking` (`ResticService::run_restic_op`); every
+   other restic call goes through it too, with a timeout
+   (`RESTIC_QUERY_TIMEOUT` 120 s, `RESTIC_INIT_TIMEOUT` 300 s).
+2. **The progress was fabricated** (5 %, then 90 %). `restic backup --json` is
+   newline-delimited JSON, now read line by line
+   (`create_backup_streaming`): `percent_done` / `bytes_done` drive real SSE
+   progress, mapped to 1–99 % so 100 % waits for the summary.
+3. **A healthy repository was reported broken.** `check_repo` kept any line
+   containing `error`, and `restic check` prints "**no errors were found**" on
+   success — `healthy` was `false` on every healthy repository.
+   `parse_check_output` excludes the sentinel and only counts real error
+   markers.
+4. **`snapshot_id` was an injection vector.** It was passed positionally to
+   `restic forget`, so `{"snapshot_id":"--keep-last=0"}` was parsed as an
+   *option* and forgot every snapshot: a delete request became a full wipe.
+   `validate_snapshot_id` (`[A-Za-z0-9._-]`, no leading `-`), absolute-path
+   validation of sources and restore targets, a strict pre-backup snapshot name
+   (it becomes `/tmp/restic-snap-<name>`), and the other `validate_*` helpers
+   refuse the value before restic is spawned. Repository create/update also
+   refuse an empty name/location/password, a relative source path, an unknown
+   `retention_policy_id`, and `snapshot_create_before_backup` without a pool and
+   an absolute dataset.
+5. **A failed snapshot mount was ignored**: the backup captured an empty mount
+   point, reported success and deleted the snapshot. `SnapshotMount` (RAII)
+   aborts the run.
+
+Also fixed: one backup/restore per repository (`RepoRunLock`, shared with the
+scheduler) instead of restic's "repository is already locked" after a full
+scan; **real cancellation** (SIGINT so restic releases its lock, SIGKILL after
+10 s, job ends `cancelled`); the job row is written **before** the run and
+`fail_stale_running_jobs()` closes leftovers at startup; `max_size_gb` is
+finally applied (`plan_keep_last_for_size`, average snapshot size, never 0 and
+never the newest snapshot); retention limits must be > 0, a create needs at
+least one, and only one policy may be `apply_to_all`; `check --read-data` is
+admin; `forget` with no rule is refused up front.
+
+Tests: `restic.rs` 29, `restic_scheduler.rs` 16, `handlers/restic.rs` 6,
+`restic_integration.rs` 24, `backup.spec.ts` 27. `cargo test --lib restic`
+51/51, `cargo test --test restic_integration` 24/24, `npm run check` 0/0,
+`npm run build` OK. The §13 real-restic E2E skips on this host (`restic` is not
+installed). See `docs/guides/backup-restic.md`.
+
 **Fixed on 2026-10-21 — Users/Groups production-ready:**
 
 Deleting an account did not delete the Linux account behind it, and demoting an

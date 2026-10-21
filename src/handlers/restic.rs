@@ -31,7 +31,9 @@
 
 use crate::handlers::admin_guard::{require_admin, require_auth};
 use crate::handlers::AppState;
-use crate::restic::{ResticRepo, ResticService};
+use crate::restic::{
+    RepoRunLock, ResticError, ResticRepo, ResticService, RESTIC_INIT_TIMEOUT, RESTIC_QUERY_TIMEOUT,
+};
 use crate::restic_scheduler::compute_next_run;
 use crate::sse::ProgressEmitter;
 use crate::storage::restic_repo::ResticRepository;
@@ -202,6 +204,73 @@ pub async fn handle_restic_repo_create(
         Err(response) => return response,
     };
 
+    // A repository with an empty name, an empty location or no source path
+    // used to be accepted, then failed on the first backup with restic's own
+    // wording. Refuse it here, where the form can show it. Validation comes
+    // before the availability probe so the caller learns what is actually
+    // wrong with the request, not just that restic is missing.
+    if let Err(e) = ResticService::validate_display_name("Repository name", &req.name) {
+        return ResponseHelper::json_error(e.to_string());
+    }
+    if let Err(e) = ResticService::validate_repository(&req.repository) {
+        return ResponseHelper::json_error(e.to_string());
+    }
+    if let Err(e) = ResticService::validate_password(&req.password) {
+        return ResponseHelper::json_error(e.to_string());
+    }
+    if let Err(e) = ResticService::validate_exclude_patterns(req.exclude_patterns.as_deref()) {
+        return ResponseHelper::json_error(e.to_string());
+    }
+    if let Err(e) = ResticService::validate_tags(req.tags.as_deref()) {
+        return ResponseHelper::json_error(e.to_string());
+    }
+    for path in &req.source_paths {
+        if let Err(e) = ResticService::validate_backup_path(path) {
+            return ResponseHelper::json_error(e.to_string());
+        }
+    }
+    if let Some(pool_id) = req.retention_policy_id.as_deref() {
+        if !pool_id.trim().is_empty() {
+            let policies = RetentionPolicyRepository::new(state.db.pool());
+            match policies.get_by_id(pool_id).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    return ResponseHelper::json_error("Retention policy not found".to_string())
+                }
+                Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
+            }
+        }
+    }
+
+    // A repo configured to snapshot before backing up is useless without a
+    // pool and a dataset — and it used to be saved that way, failing only at
+    // the first run.
+    if req.snapshot_create_before_backup.unwrap_or(false) {
+        let pool = req
+            .snapshot_pool
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let dataset = req
+            .snapshot_dataset
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if pool.is_empty() {
+            return ResponseHelper::json_error(
+                "A snapshot pool is required when snapshotting before a backup".to_string(),
+            );
+        }
+        if let Err(e) = ResticService::validate_backup_path(&dataset) {
+            return ResponseHelper::json_error(format!(
+                "Snapshot dataset: {}",
+                e.to_string().trim_start_matches("Invalid input: ")
+            ));
+        }
+    }
+
     if !ResticService::is_available() {
         return ResponseHelper::json_error(
             "restic CLI is not installed or not found in PATH".to_string(),
@@ -244,7 +313,13 @@ pub async fn handle_restic_repo_create(
                 updated_at: new_repo.updated_at,
             };
 
-            match ResticService::init_repo(&repo_config) {
+            match ResticService::run_restic_op(
+                "restic init",
+                Some(RESTIC_INIT_TIMEOUT),
+                move || ResticService::init_repo(&repo_config),
+            )
+            .await
+            {
                 Ok(()) => {
                     crate::events::log_event(format!(
                         "Admin '{}' created and initialized backup repository '{}'",
@@ -274,6 +349,49 @@ pub async fn handle_restic_repo_update(
 ) -> Response {
     if let Err(response) = require_admin(&state, &headers).await {
         return response;
+    }
+
+    // Only the fields that are present are validated: `update` keeps the
+    // stored value for the others.
+    if let Some(name) = req.name.as_deref() {
+        if let Err(e) = ResticService::validate_display_name("Repository name", name) {
+            return ResponseHelper::json_error(e.to_string());
+        }
+    }
+    if let Some(repository) = req.repository.as_deref() {
+        if let Err(e) = ResticService::validate_repository(repository) {
+            return ResponseHelper::json_error(e.to_string());
+        }
+    }
+    if let Some(password) = req.password.as_deref() {
+        if let Err(e) = ResticService::validate_password(password) {
+            return ResponseHelper::json_error(e.to_string());
+        }
+    }
+    if let Err(e) = ResticService::validate_exclude_patterns(req.exclude_patterns.as_deref()) {
+        return ResponseHelper::json_error(e.to_string());
+    }
+    if let Err(e) = ResticService::validate_tags(req.tags.as_deref()) {
+        return ResponseHelper::json_error(e.to_string());
+    }
+    if let Some(paths) = req.source_paths.as_deref() {
+        for path in paths {
+            if let Err(e) = ResticService::validate_backup_path(path) {
+                return ResponseHelper::json_error(e.to_string());
+            }
+        }
+    }
+    if let Some(policy_id) = req.retention_policy_id.as_deref() {
+        if !policy_id.trim().is_empty() {
+            let policies = RetentionPolicyRepository::new(state.db.pool());
+            match policies.get_by_id(policy_id).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    return ResponseHelper::json_error("Retention policy not found".to_string())
+                }
+                Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
+            }
+        }
     }
 
     let repo = ResticRepository::new(state.db.pool());
@@ -340,12 +458,26 @@ pub async fn handle_restic_snapshots_list(
         Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
     };
 
-    match ResticService::list_snapshots(&repo_config) {
+    let cfg = repo_config.clone();
+    match ResticService::run_restic_op("restic snapshots", Some(RESTIC_QUERY_TIMEOUT), move || {
+        ResticService::list_snapshots(&cfg)
+    })
+    .await
+    {
         Ok(snapshots) => ResponseHelper::json_success(snapshots),
         Err(e) => ResponseHelper::json_error(format!("Failed to list snapshots: {}", e)),
     }
 }
 
+/// `POST /api/restic/backup` — **starts** a backup and answers immediately.
+///
+/// The handler used to run restic inline, so the HTTP request stayed open for
+/// the whole run (hours for a multi-TB dataset) and the frontend only called
+/// `trackJob` once the job was already over: the floating progress island and
+/// the activity taskbar both showed a finished job, and a browser timeout
+/// looked like a failed backup. The run now happens in a spawned task, the
+/// response carries the progress `job_id`, and the SSE stream reports real
+/// percentages read from `restic backup --json`.
 pub async fn handle_restic_backup_create(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -363,129 +495,246 @@ pub async fn handle_restic_backup_create(
         Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
     };
 
+    // Everything is validated before the run slot is taken, so a rejected
+    // request never blocks the repository.
+    if let Err(e) = ResticService::validate_exclude_patterns(req.exclude_patterns.as_deref()) {
+        return ResponseHelper::json_error(e.to_string());
+    }
+    if let Err(e) = ResticService::validate_tags(req.tags.as_deref()) {
+        return ResponseHelper::json_error(e.to_string());
+    }
+
+    let snapshot_name = req
+        .snapshot_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("restic-{}", chrono::Utc::now().format("%Y%m%d_%H%M%S")));
+
+    let (snapshot_pool, snapshot_dataset) = if repo_config.snapshot_create_before_backup {
+        if let Err(e) = ResticService::validate_snapshot_name(&snapshot_name) {
+            return ResponseHelper::json_error(e.to_string());
+        }
+        let pool = repo_config.snapshot_pool.clone().unwrap_or_default();
+        let dataset = repo_config.snapshot_dataset.clone().unwrap_or_default();
+        if pool.trim().is_empty() || dataset.trim().is_empty() {
+            return ResponseHelper::json_error(
+                "This repository is configured to snapshot before backing up, but no snapshot pool/dataset is set"
+                    .to_string(),
+            );
+        }
+        if let Err(e) = ResticService::validate_backup_path(&dataset) {
+            return ResponseHelper::json_error(e.to_string());
+        }
+        (pool, dataset)
+    } else {
+        if repo_config.source_paths.is_empty() {
+            return ResponseHelper::json_error(
+                "No source paths configured for this repository".to_string(),
+            );
+        }
+        for path in &repo_config.source_paths {
+            if let Err(e) = ResticService::validate_backup_path(path) {
+                return ResponseHelper::json_error(e.to_string());
+            }
+        }
+        (String::new(), String::new())
+    };
+
+    // One run per repository: restic takes an exclusive lock anyway, and a
+    // second run only fails after scanning the source tree.
+    let Some(run_lock) = RepoRunLock::acquire(&repo_config.id) else {
+        return ResponseHelper::json_error(
+            "A backup or restore is already running on this repository".to_string(),
+        );
+    };
+
+    if !ResticService::is_available() {
+        return ResponseHelper::json_error(
+            "restic CLI is not installed or not found in PATH".to_string(),
+        );
+    }
+
+    let source = if repo_config.snapshot_create_before_backup {
+        snapshot_dataset.clone()
+    } else {
+        repo_config.source_paths.join(",")
+    };
+
+    // The job row is created *before* the run (status `running`), so the
+    // history records when the backup started, the UI can show it while it
+    // runs, and a crash leaves a row the startup reaper can close instead of
+    // no trace at all.
+    let db_job_id = match repo_repo
+        .create_backup_job(&req.repo_id, None, &source, "manual")
+        .await
+    {
+        Ok(id) => Some(id),
+        Err(e) => {
+            tracing::warn!("Could not record the backup job before starting it: {}", e);
+            None
+        }
+    };
+
+    let job_id = ProgressEmitter::backup(&source, &repo_config.repository);
+    ProgressEmitter::progress(&job_id, 1.0, "Starting restic backup...");
+    // Returned to the client so it can reload the history row it will become.
+    let backup_job_id = db_job_id.clone();
+
+    let cancel_id = job_id.clone();
+    ProgressEmitter::register_cancel_hook(
+        &job_id,
+        Box::new(move || {
+            if !ResticService::cancel_run(&cancel_id) {
+                tracing::warn!(
+                    "Backup cancellation requested for '{}', which had not started its restic process yet",
+                    cancel_id
+                );
+            }
+        }),
+    );
+
     crate::events::log_event(format!(
         "Admin '{}' started a manual backup for repository '{}'",
         admin_username, repo_config.name
     ));
 
-    let job_id =
-        ProgressEmitter::backup(&repo_config.source_paths.join(","), &repo_config.repository);
-    ProgressEmitter::progress(&job_id, 5.0, "Starting restic backup...");
+    let task_job_id = job_id.clone();
+    let task_repo = repo_config.clone();
+    let task_pool = state.db.pool();
+    let exclude = req.exclude_patterns.clone();
+    let tags = req.tags.clone();
+    tokio::spawn(async move {
+        // Released when this task ends, whatever the outcome.
+        let _run_lock = run_lock;
+        let job = task_job_id.clone();
+        let repo_for_run = task_repo.clone();
 
-    let result = if repo_config.snapshot_create_before_backup {
-        let pool = repo_config.snapshot_pool.as_deref().unwrap_or("zpool");
-        let dataset = repo_config
-            .snapshot_dataset
-            .as_deref()
-            .unwrap_or("zpool/data");
-        let snap_name = req
-            .snapshot_name
-            .unwrap_or_else(|| format!("restic-{}", chrono::Utc::now().format("%Y%m%d_%H%M%S")));
+        let joined = tokio::task::spawn_blocking(move || {
+            let mut emit = |p: crate::restic::ResticProgress| {
+                // 1..99 so the bar never sits at 100 while restic is still
+                // writing the summary.
+                let pct = 1.0 + (p.percent.clamp(0.0, 100.0) * 0.98);
+                ProgressEmitter::progress_extended(
+                    &job,
+                    pct,
+                    &p.message,
+                    Some(p.bytes_done),
+                    Some(p.total_bytes),
+                    None,
+                );
+            };
+            if repo_for_run.snapshot_create_before_backup {
+                ResticService::create_backup_with_snapshot(
+                    &repo_for_run,
+                    &snapshot_pool,
+                    &snapshot_dataset,
+                    &snapshot_name,
+                    exclude.as_deref(),
+                    tags.as_deref(),
+                    Some(&job),
+                    &mut emit,
+                )
+            } else {
+                ResticService::create_backup_streaming(
+                    &repo_for_run,
+                    &repo_for_run.source_paths,
+                    exclude.as_deref(),
+                    tags.as_deref(),
+                    Some(&job),
+                    &mut emit,
+                )
+            }
+        })
+        .await;
 
-        ProgressEmitter::progress(&job_id, 15.0, "Creating filesystem snapshot...");
-        ResticService::create_backup_with_snapshot(
-            &repo_config,
-            pool,
-            dataset,
-            &snap_name,
-            req.exclude_patterns.as_deref(),
-            req.tags.as_deref(),
-        )
-    } else {
-        let paths = if repo_config.source_paths.is_empty() {
-            return ResponseHelper::json_error(
-                "No source paths configured for this repository".to_string(),
-            );
-        } else {
-            repo_config.source_paths.clone()
+        let repo_repo = ResticRepository::new(task_pool);
+        let outcome: Result<_, String> = match joined {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(ResticError::Cancelled)) => Err("__cancelled__".to_string()),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(join_err) => Err(format!("backup task panicked: {join_err}")),
         };
 
-        ProgressEmitter::progress(&job_id, 30.0, "Running restic backup...");
-        ResticService::create_backup(
-            &repo_config,
-            &paths,
-            req.exclude_patterns.as_deref(),
-            req.tags.as_deref(),
-        )
-    };
-
-    match result {
-        Ok(backup_result) => {
-            ProgressEmitter::progress(&job_id, 90.0, "Recording backup job...");
-
-            if let Ok(db_job_id) = repo_repo
-                .create_backup_job(
-                    &req.repo_id,
-                    Some(&backup_result.snapshot_id),
-                    &repo_config.source_paths.join(","),
-                    "manual",
-                )
-                .await
-            {
-                let _ = repo_repo
-                    .update_backup_job(
-                        &db_job_id,
-                        "completed",
-                        backup_result.files_new,
-                        backup_result.files_changed,
-                        backup_result.files_unmodified,
-                        backup_result.data_added_bytes,
-                        backup_result.total_files_processed,
-                        backup_result.total_bytes,
-                        backup_result.duration_secs,
-                        None,
-                    )
-                    .await;
+        match outcome {
+            Ok(result) => {
+                if let Some(id) = db_job_id.as_deref() {
+                    let _ = repo_repo
+                        .update_backup_job(
+                            id,
+                            "completed",
+                            Some(&result.snapshot_id),
+                            result.files_new,
+                            result.files_changed,
+                            result.files_unmodified,
+                            result.data_added_bytes,
+                            result.total_files_processed,
+                            result.total_bytes,
+                            result.duration_secs,
+                            None,
+                        )
+                        .await;
+                }
+                ProgressEmitter::complete(&task_job_id, "Restic backup completed successfully");
+                crate::events::log_event(format!(
+                    "Backup completed for repository '{}' ({} files, {} bytes added)",
+                    task_repo.name, result.total_files_processed, result.data_added_bytes
+                ));
             }
-
-            ProgressEmitter::complete(&job_id, "Restic backup completed successfully");
-            crate::events::log_event(format!(
-                "Backup completed for repository '{}' ({} files, {} bytes added)",
-                repo_config.name,
-                backup_result.total_files_processed,
-                backup_result.data_added_bytes
-            ));
-            ResponseHelper::json_success(serde_json::json!({
-                "result": backup_result,
-                "job_id": job_id
-            }))
-        }
-        Err(e) => {
-            crate::events::log_event_warn(format!(
-                "Backup failed for repository '{}': {}",
-                repo_config.name, e
-            ));
-            if let Ok(db_job_id) = repo_repo
-                .create_backup_job(
-                    &req.repo_id,
-                    None,
-                    &repo_config.source_paths.join(","),
-                    "manual",
-                )
-                .await
-            {
-                let _ = repo_repo
-                    .update_backup_job(
-                        &db_job_id,
-                        "failed",
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        Some(&e.to_string()),
-                    )
-                    .await;
+            Err(msg) if msg == "__cancelled__" => {
+                if let Some(id) = db_job_id.as_deref() {
+                    let _ = repo_repo
+                        .update_backup_job(
+                            id,
+                            "cancelled",
+                            None,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            Some("Cancelled by admin"),
+                        )
+                        .await;
+                }
+                ProgressEmitter::cancelled(&task_job_id, "Backup cancelled");
+                crate::events::log_event_warn(format!(
+                    "Backup cancelled for repository '{}'",
+                    task_repo.name
+                ));
             }
-
-            ProgressEmitter::fail(&job_id, &e.to_string());
-            ResponseHelper::json_error(format!("Backup failed: {}", e))
+            Err(msg) => {
+                if let Some(id) = db_job_id.as_deref() {
+                    let _ = repo_repo
+                        .update_backup_job(id, "failed", None, 0, 0, 0, 0, 0, 0, 0, Some(&msg))
+                        .await;
+                }
+                ProgressEmitter::fail(&task_job_id, &msg);
+                crate::events::log_event_warn(format!(
+                    "Backup failed for repository '{}': {}",
+                    task_repo.name, msg
+                ));
+            }
         }
-    }
+        ProgressEmitter::clear_cancel_hook(&task_job_id);
+    });
+
+    ResponseHelper::json_success(serde_json::json!({
+        "status": "running",
+        "job_id": job_id,
+        "backup_job_id": backup_job_id,
+        "repository": repo_config.name,
+    }))
 }
 
+/// `POST /api/restic/restore` — starts a restore and answers immediately.
+///
+/// Same reason as the backup handler: a restore writes for as long as the
+/// snapshot is big, and the frontend already treats the response's `job_id`
+/// as a tracked background job.
 pub async fn handle_restic_restore(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -503,45 +752,138 @@ pub async fn handle_restic_restore(
         Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
     };
 
+    // `snapshot_id` and `target` reach restic's argv: validate them before
+    // anything is spawned (`--target` as a snapshot id would otherwise be
+    // re-parsed as an option).
+    if let Err(e) = ResticService::validate_snapshot_id(&req.snapshot_id) {
+        return ResponseHelper::json_error(e.to_string());
+    }
+    if let Err(e) = ResticService::validate_restore_target(&req.target) {
+        return ResponseHelper::json_error(e.to_string());
+    }
+    if let Err(e) = ResticService::validate_exclude_patterns(req.exclude_patterns.as_deref()) {
+        return ResponseHelper::json_error(e.to_string());
+    }
+
+    let Some(run_lock) = RepoRunLock::acquire(&repo_config.id) else {
+        return ResponseHelper::json_error(
+            "A backup or restore is already running on this repository".to_string(),
+        );
+    };
+
+    if !ResticService::is_available() {
+        return ResponseHelper::json_error(
+            "restic CLI is not installed or not found in PATH".to_string(),
+        );
+    }
+
     let job_id = ProgressEmitter::restore(&req.snapshot_id, &req.target);
-    ProgressEmitter::progress(&job_id, 10.0, "Starting restore...");
+    ProgressEmitter::progress(&job_id, 5.0, "Starting restore...");
+
+    let cancel_id = job_id.clone();
+    ProgressEmitter::register_cancel_hook(
+        &job_id,
+        Box::new(move || {
+            if !ResticService::cancel_run(&cancel_id) {
+                tracing::warn!(
+                    "Restore cancellation requested for '{}', which had not started its restic process yet",
+                    cancel_id
+                );
+            }
+        }),
+    );
+
     crate::events::log_event_warn(format!(
         "Admin '{}' started a restore from repository '{}' (snapshot: {}) to '{}'",
         admin_username, repo_config.name, req.snapshot_id, req.target
     ));
 
-    match ResticService::restore_snapshot(
-        &repo_config,
-        &req.snapshot_id,
-        &req.target,
-        req.exclude_patterns.as_deref(),
-        req.include_paths.as_deref(),
-    ) {
-        Ok(()) => {
-            ProgressEmitter::complete(&job_id, "Restore completed successfully");
-            crate::events::log_event(format!(
-                "Restore completed for repository '{}' to '{}'",
-                repo_config.name, req.target
-            ));
-            ResponseHelper::json_success(serde_json::json!({ "success": true, "job_id": job_id }))
+    let task_job_id = job_id.clone();
+    let task_repo = repo_config.clone();
+    let snapshot_id = req.snapshot_id.clone();
+    let target = req.target.clone();
+    let exclude = req.exclude_patterns.clone();
+    let include = req.include_paths.clone();
+    tokio::spawn(async move {
+        let _run_lock = run_lock;
+        let job = task_job_id.clone();
+        let repo_for_run = task_repo.clone();
+        let snap = snapshot_id.clone();
+        let dest = target.clone();
+
+        let joined = tokio::task::spawn_blocking(move || {
+            ResticService::restore_snapshot(
+                &repo_for_run,
+                &snap,
+                &dest,
+                exclude.as_deref(),
+                include.as_deref(),
+                Some(&job),
+            )
+        })
+        .await;
+
+        let outcome: Result<(), String> = match joined {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(ResticError::Cancelled)) => Err("__cancelled__".to_string()),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(join_err) => Err(format!("restore task panicked: {join_err}")),
+        };
+
+        match outcome {
+            Ok(()) => {
+                ProgressEmitter::complete(&task_job_id, "Restore completed successfully");
+                crate::events::log_event(format!(
+                    "Restore completed for repository '{}' to '{}'",
+                    task_repo.name, target
+                ));
+            }
+            Err(msg) if msg == "__cancelled__" => {
+                ProgressEmitter::cancelled(&task_job_id, "Restore cancelled");
+                crate::events::log_event_warn(format!(
+                    "Restore cancelled for repository '{}'",
+                    task_repo.name
+                ));
+            }
+            Err(msg) => {
+                ProgressEmitter::fail(&task_job_id, &msg);
+                crate::events::log_event_warn(format!(
+                    "Restore failed for repository '{}': {}",
+                    task_repo.name, msg
+                ));
+            }
         }
-        Err(e) => {
-            ProgressEmitter::fail(&job_id, &e.to_string());
-            crate::events::log_event_warn(format!(
-                "Restore failed for repository '{}': {}",
-                repo_config.name, e
-            ));
-            ResponseHelper::json_error(format!("Restore failed: {}", e))
-        }
-    }
+        ProgressEmitter::clear_cancel_hook(&task_job_id);
+    });
+
+    ResponseHelper::json_success(serde_json::json!({
+        "status": "running",
+        "job_id": job_id,
+        "repository": repo_config.name,
+        "snapshot_id": req.snapshot_id,
+        "target": req.target,
+    }))
 }
 
+/// `POST /api/restic/check` — integrity check, synchronous.
+///
+/// `--read-data` re-reads every pack file, which is hours of I/O on a real
+/// repository, so it requires **admin**: an ordinary session could otherwise
+/// saturate the backup disk on demand. The light check (metadata only) stays
+/// available to any authenticated user. The call itself runs on the blocking
+/// pool and is cancellable through the progress job.
 pub async fn handle_restic_check(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     axum::extract::Json(req): axum::extract::Json<CheckRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers).await {
+    let read_data = req.read_data.unwrap_or(false);
+    let auth = if read_data {
+        require_admin(&state, &headers).await.map(|_| ())
+    } else {
+        require_auth(&state, &headers).await.map(|_| ())
+    };
+    if let Err(response) = auth {
         return response;
     }
 
@@ -553,9 +895,38 @@ pub async fn handle_restic_check(
     };
 
     let job_id = ProgressEmitter::verify(&repo_config.name);
-    ProgressEmitter::progress(&job_id, 10.0, "Checking repository integrity...");
+    ProgressEmitter::progress(
+        &job_id,
+        10.0,
+        if read_data {
+            "Checking repository integrity (reading every pack)..."
+        } else {
+            "Checking repository integrity..."
+        },
+    );
 
-    match ResticService::check_repo(&repo_config, req.read_data.unwrap_or(false)) {
+    let cancel_id = job_id.clone();
+    ProgressEmitter::register_cancel_hook(
+        &job_id,
+        Box::new(move || {
+            if !ResticService::cancel_run(&cancel_id) {
+                tracing::warn!(
+                    "Check cancellation requested for '{}', which had not started its restic process yet",
+                    cancel_id
+                );
+            }
+        }),
+    );
+
+    let cfg = repo_config.clone();
+    let check_job = job_id.clone();
+    let result = ResticService::run_restic_op("restic check", None, move || {
+        ResticService::check_repo(&cfg, read_data, Some(&check_job))
+    })
+    .await;
+    ProgressEmitter::clear_cancel_hook(&job_id);
+
+    match result {
         Ok(result) => {
             ProgressEmitter::complete(
                 &job_id,
@@ -569,6 +940,10 @@ pub async fn handle_restic_check(
                 "check": result,
                 "job_id": job_id
             }))
+        }
+        Err(ResticError::Cancelled) => {
+            ProgressEmitter::cancelled(&job_id, "Check cancelled");
+            ResponseHelper::json_error("Check cancelled".to_string())
         }
         Err(e) => {
             ProgressEmitter::fail(&job_id, &e.to_string());
@@ -593,7 +968,12 @@ pub async fn handle_restic_stats(
         Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
     };
 
-    match ResticService::get_stats(&repo_config) {
+    let cfg = repo_config.clone();
+    match ResticService::run_restic_op("restic stats", Some(RESTIC_QUERY_TIMEOUT), move || {
+        ResticService::get_stats(&cfg)
+    })
+    .await
+    {
         Ok(stats) => ResponseHelper::json_success(stats),
         Err(e) => ResponseHelper::json_error(format!("Failed to get stats: {}", e)),
     }
@@ -615,17 +995,44 @@ pub async fn handle_restic_forget(
         Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
     };
 
-    match ResticService::forget_snapshots(
-        &repo_config,
-        req.keep_last,
-        req.keep_hourly,
-        req.keep_daily,
-        req.keep_weekly,
-        req.keep_monthly,
-        req.keep_yearly,
-        req.keep_within,
-        req.prune.unwrap_or(true),
-    ) {
+    // Refused before restic is spawned: a call with no rule at all used to
+    // reach restic and come back as "Fatal: no policy was specified".
+    if let Some(ref w) = req.keep_within {
+        if let Err(e) = ResticService::validate_keep_within(w) {
+            return ResponseHelper::json_error(e.to_string());
+        }
+    }
+    let has_rule = req.keep_last.is_some()
+        || req.keep_hourly.is_some()
+        || req.keep_daily.is_some()
+        || req.keep_weekly.is_some()
+        || req.keep_monthly.is_some()
+        || req.keep_yearly.is_some()
+        || req.keep_within.is_some();
+    if !has_rule {
+        return ResponseHelper::json_error(
+            "At least one retention rule (keep-last, keep-daily, keep-within, …) is required"
+                .to_string(),
+        );
+    }
+
+    let cfg = repo_config.clone();
+    let result = ResticService::run_restic_op("restic forget", None, move || {
+        ResticService::forget_snapshots(
+            &cfg,
+            req.keep_last,
+            req.keep_hourly,
+            req.keep_daily,
+            req.keep_weekly,
+            req.keep_monthly,
+            req.keep_yearly,
+            req.keep_within,
+            req.prune.unwrap_or(true),
+        )
+    })
+    .await;
+
+    match result {
         Ok(()) => ResponseHelper::json_success(serde_json::json!({ "success": true })),
         Err(e) => ResponseHelper::json_error(format!("Forget failed: {}", e)),
     }
@@ -647,7 +1054,12 @@ pub async fn handle_restic_prune(
         Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
     };
 
-    match ResticService::prune_repo(&repo_config) {
+    let cfg = repo_config.clone();
+    match ResticService::run_restic_op("restic prune", None, move || {
+        ResticService::prune_repo(&cfg)
+    })
+    .await
+    {
         Ok(()) => ResponseHelper::json_success(serde_json::json!({ "success": true })),
         Err(e) => ResponseHelper::json_error(format!("Prune failed: {}", e)),
     }
@@ -669,7 +1081,12 @@ pub async fn handle_restic_unlock(
         Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
     };
 
-    match ResticService::unlock_repo(&repo_config) {
+    let cfg = repo_config.clone();
+    match ResticService::run_restic_op("restic unlock", Some(RESTIC_QUERY_TIMEOUT), move || {
+        ResticService::unlock_repo(&cfg)
+    })
+    .await
+    {
         Ok(()) => ResponseHelper::json_success(serde_json::json!({ "success": true })),
         Err(e) => ResponseHelper::json_error(format!("Unlock failed: {}", e)),
     }
@@ -709,6 +1126,12 @@ pub async fn handle_restic_snapshot_delete(
     if repo_id.is_empty() || snapshot_id.is_empty() {
         return ResponseHelper::json_error("repo_id and snapshot_id are required".to_string());
     }
+    // `snapshot_id` becomes a positional argument of `restic forget`; without
+    // this check a value like `--keep-last=0` was parsed as an option and
+    // wiped the repository instead of deleting one snapshot.
+    if let Err(e) = ResticService::validate_snapshot_id(snapshot_id) {
+        return ResponseHelper::json_error(e.to_string());
+    }
 
     let repo_repo = ResticRepository::new(state.db.pool());
     let repo_config = match repo_repo.get_by_id(repo_id).await {
@@ -717,7 +1140,13 @@ pub async fn handle_restic_snapshot_delete(
         Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
     };
 
-    match ResticService::delete_snapshot(&repo_config, snapshot_id) {
+    let cfg = repo_config.clone();
+    let snap = snapshot_id.to_string();
+    match ResticService::run_restic_op("restic forget", Some(RESTIC_QUERY_TIMEOUT), move || {
+        ResticService::delete_snapshot(&cfg, &snap)
+    })
+    .await
+    {
         Ok(()) => ResponseHelper::json_success(serde_json::json!({ "success": true })),
         Err(e) => ResponseHelper::json_error(format!("Failed to delete snapshot: {}", e)),
     }
@@ -835,16 +1264,26 @@ pub async fn handle_restic_restore_plan(
     if params.target.len() > 4096 || params.target.contains('\0') {
         return ResponseHelper::json_error("Invalid target path".to_string());
     }
+    if let Err(e) = ResticService::validate_restore_target(&params.target) {
+        return ResponseHelper::json_error(e.to_string());
+    }
     let repo_repo = ResticRepository::new(state.db.pool());
     let repo_config = match repo_repo.get_by_id(&params.repo_id).await {
         Ok(Some(r)) => r,
         Ok(None) => return ResponseHelper::json_error("Repository not found".to_string()),
         Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
     };
-    let required = match ResticService::restore_size(&repo_config, &params.snapshot_id) {
-        Ok(n) => n,
-        Err(e) => return ResponseHelper::json_error(format!("Failed to size snapshot: {}", e)),
-    };
+    let cfg = repo_config.clone();
+    let snap = params.snapshot_id.clone();
+    let required =
+        match ResticService::run_restic_op("restic stats", Some(RESTIC_QUERY_TIMEOUT), move || {
+            ResticService::restore_size(&cfg, &snap)
+        })
+        .await
+        {
+            Ok(n) => n,
+            Err(e) => return ResponseHelper::json_error(format!("Failed to size snapshot: {}", e)),
+        };
     let target = params.target.clone();
     let available = tokio::task::spawn_blocking(move || target_available_bytes(&target))
         .await
@@ -882,6 +1321,60 @@ pub struct UpdateRetentionPolicyRequest {
     pub apply_to_all: Option<bool>,
 }
 
+/// A retention limit is a positive integer: `max_count = 0` would mean
+/// "forget every snapshot" and a negative age is meaningless.
+///
+/// `require_a_limit` is true on create (a policy with no limit at all would
+/// silently never prune) and false on update (a partial update that only
+/// renames the policy must stay valid).
+fn validate_retention_limits(
+    max_count: Option<i64>,
+    max_age_days: Option<i64>,
+    max_size_gb: Option<i64>,
+    require_a_limit: bool,
+) -> Result<(), String> {
+    for (label, value) in [
+        ("max_count", max_count),
+        ("max_age_days", max_age_days),
+        ("max_size_gb", max_size_gb),
+    ] {
+        if let Some(v) = value {
+            if v <= 0 {
+                return Err(format!("{label} must be greater than 0"));
+            }
+        }
+    }
+    if require_a_limit && max_count.is_none() && max_age_days.is_none() && max_size_gb.is_none() {
+        return Err(
+            "At least one retention limit (snapshot count, age or size) is required".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Only one policy may be the `apply_to_all` default: the scheduler resolves
+/// it with `get_default`, which returns the first match by name — with two
+/// flagged policies which one wins was arbitrary.
+async fn ensure_single_default_policy(
+    repo: &RetentionPolicyRepository,
+    exclude_id: Option<&str>,
+) -> Result<(), String> {
+    let policies = repo
+        .list_all()
+        .await
+        .map_err(|e| format!("Database error: {}", e))?;
+    let clash = policies
+        .into_iter()
+        .find(|p| p.apply_to_all && Some(p.id.as_str()) != exclude_id);
+    match clash {
+        Some(existing) => Err(format!(
+            "Retention policy '{}' is already the default for every repository",
+            existing.name
+        )),
+        None => Ok(()),
+    }
+}
+
 pub async fn handle_retention_policies_list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -910,8 +1403,21 @@ pub async fn handle_retention_policy_create(
     if req.name.trim().is_empty() {
         return ResponseHelper::json_error("Policy name is required".to_string());
     }
+    if let Err(e) =
+        validate_retention_limits(req.max_count, req.max_age_days, req.max_size_gb, true)
+    {
+        return ResponseHelper::json_error(e);
+    }
+    if let Err(e) = ResticService::validate_display_name("Policy name", &req.name) {
+        return ResponseHelper::json_error(e.to_string());
+    }
 
     let repo = RetentionPolicyRepository::new(state.db.pool());
+    if req.apply_to_all.unwrap_or(false) {
+        if let Err(e) = ensure_single_default_policy(&repo, None).await {
+            return ResponseHelper::json_error(e);
+        }
+    }
     match repo
         .create(
             req.name.trim(),
@@ -944,7 +1450,23 @@ pub async fn handle_retention_policy_update(
         return response;
     }
 
+    if let Err(e) =
+        validate_retention_limits(req.max_count, req.max_age_days, req.max_size_gb, false)
+    {
+        return ResponseHelper::json_error(e);
+    }
+    if let Some(name) = req.name.as_deref() {
+        if let Err(e) = ResticService::validate_display_name("Policy name", name) {
+            return ResponseHelper::json_error(e.to_string());
+        }
+    }
+
     let repo = RetentionPolicyRepository::new(state.db.pool());
+    if req.apply_to_all == Some(true) {
+        if let Err(e) = ensure_single_default_policy(&repo, Some(&id)).await {
+            return ResponseHelper::json_error(e);
+        }
+    }
     match repo
         .update(
             &id,
@@ -1199,6 +1721,34 @@ pub async fn handle_restic_schedule_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- retention-policy limits -----------------------------------------
+
+    #[test]
+    fn test_retention_limits_accept_positive_values() {
+        assert!(validate_retention_limits(Some(30), None, None, true).is_ok());
+        assert!(validate_retention_limits(None, Some(90), None, true).is_ok());
+        assert!(validate_retention_limits(None, None, Some(500), true).is_ok());
+        assert!(validate_retention_limits(Some(7), Some(30), Some(100), true).is_ok());
+    }
+
+    #[test]
+    fn test_retention_limits_refuse_zero_and_negative() {
+        // `max_count = 0` would mean "forget every snapshot".
+        assert!(validate_retention_limits(Some(0), None, None, true).is_err());
+        assert!(validate_retention_limits(None, Some(0), None, true).is_err());
+        assert!(validate_retention_limits(None, None, Some(-5), true).is_err());
+        assert!(validate_retention_limits(Some(-1), None, None, true).is_err());
+    }
+
+    #[test]
+    fn test_retention_limits_require_a_limit_on_create_only() {
+        // Create with no limit at all: refused (it would never prune).
+        let err = validate_retention_limits(None, None, None, true).unwrap_err();
+        assert!(err.contains("At least one retention limit"));
+        // A partial update that only renames the policy stays valid.
+        assert!(validate_retention_limits(None, None, None, false).is_ok());
+    }
 
     #[test]
     fn test_days_since_counts_whole_days() {

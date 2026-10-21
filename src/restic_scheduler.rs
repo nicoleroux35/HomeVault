@@ -25,7 +25,8 @@
 //! repo's retention policy (if any) afterwards.
 
 use crate::handlers::AppState;
-use crate::restic::{ResticRepo, ResticService};
+use crate::restic::{RepoRunLock, ResticError, ResticRepo, ResticService, RESTIC_QUERY_TIMEOUT};
+use crate::sse::ProgressEmitter;
 use crate::storage::restic_repo::ResticRepository;
 use crate::storage::{ResticSchedule, ResticScheduleRepository, RetentionPolicyRepository};
 use chrono::Utc;
@@ -105,6 +106,20 @@ fn normalize_crontab_dow(expr: &str) -> String {
 /// Runs forever, checking for due schedules every `POLL_INTERVAL_SECS`.
 /// Intended to be `tokio::spawn`ed once at server startup.
 pub async fn run_scheduler_loop(state: Arc<AppState>) {
+    // A job row is written before its run starts, so anything still `running`
+    // here belongs to a process that is gone (crash, restart, `systemctl
+    // stop` during a backup). Close those first, otherwise the history shows
+    // a phantom run for ever.
+    let repo_repo = ResticRepository::new(state.db.pool());
+    match repo_repo.fail_stale_running_jobs().await {
+        Ok(0) => {}
+        Ok(n) => tracing::warn!(
+            "Closed {} restic backup job(s) left running by a previous process",
+            n
+        ),
+        Err(e) => tracing::warn!("Could not close stale restic backup jobs: {}", e),
+    }
+
     let mut interval = tokio::time::interval(Duration::from_secs(POLL_INTERVAL_SECS));
     loop {
         interval.tick().await;
@@ -145,57 +160,112 @@ async fn run_one_schedule(state: &Arc<AppState>, schedule: &ResticSchedule) -> R
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("repository {} not found", schedule.repo_id))?;
 
+    // One run per repository, shared with the manual handlers: a scheduled
+    // run that fires while an admin is restoring must not start, and vice
+    // versa. Reschedule first so a skipped run does not wedge the schedule.
+    let Some(_run_lock) = RepoRunLock::acquire(&repo_config.id) else {
+        reschedule(&schedule_repo, schedule).await?;
+        return Err(format!(
+            "repository '{}' is busy: another backup or restore is running",
+            repo_config.name
+        ));
+    };
+
+    if !ResticService::is_available() {
+        reschedule(&schedule_repo, schedule).await?;
+        return Err("restic CLI is not installed or not found in PATH".to_string());
+    }
+
+    let source = if repo_config.snapshot_create_before_backup {
+        repo_config.snapshot_dataset.clone().unwrap_or_default()
+    } else {
+        repo_config.source_paths.join(",")
+    };
+
     crate::events::log_event(format!(
         "Scheduled backup '{}' started for repository '{}'",
         schedule.name, repo_config.name
     ));
 
-    let backup_result = if repo_config.snapshot_create_before_backup {
-        let pool = repo_config.snapshot_pool.as_deref().unwrap_or("zpool");
-        let dataset = repo_config
-            .snapshot_dataset
-            .as_deref()
-            .unwrap_or("zpool/data");
-        let snap_name = format!("restic-sched-{}", Utc::now().format("%Y%m%d_%H%M%S"));
-        ResticService::create_backup_with_snapshot(
-            &repo_config,
-            pool,
-            dataset,
-            &snap_name,
-            repo_config.exclude_patterns.as_deref(),
-            repo_config.tags.as_deref(),
-        )
-    } else if repo_config.source_paths.is_empty() {
-        Err(crate::restic::ResticError::CommandFailed(
-            "No source paths configured for this repository".to_string(),
-        ))
-    } else {
-        ResticService::create_backup(
-            &repo_config,
-            &repo_config.source_paths,
-            repo_config.exclude_patterns.as_deref(),
-            repo_config.tags.as_deref(),
-        )
+    // Job row first (status `running`): `started_at` is the real start time,
+    // the run is visible while it happens, and a crash leaves a row the
+    // startup reaper closes.
+    let db_job_id = repo_repo
+        .create_backup_job(&schedule.repo_id, None, &source, "scheduled")
+        .await
+        .ok();
+
+    let job_id = ProgressEmitter::backup(&source, &repo_config.repository);
+    ProgressEmitter::progress(&job_id, 1.0, "Starting scheduled restic backup...");
+
+    let cancel_id = job_id.clone();
+    ProgressEmitter::register_cancel_hook(
+        &job_id,
+        Box::new(move || {
+            ResticService::cancel_run(&cancel_id);
+        }),
+    );
+
+    let cfg = repo_config.clone();
+    let job = job_id.clone();
+    let snap_name = format!("restic-sched-{}", Utc::now().format("%Y%m%d_%H%M%S"));
+    let joined = tokio::task::spawn_blocking(move || {
+        let mut emit = |p: crate::restic::ResticProgress| {
+            let pct = 1.0 + (p.percent.clamp(0.0, 100.0) * 0.98);
+            ProgressEmitter::progress_extended(
+                &job,
+                pct,
+                &p.message,
+                Some(p.bytes_done),
+                Some(p.total_bytes),
+                None,
+            );
+        };
+        if cfg.snapshot_create_before_backup {
+            let pool = cfg.snapshot_pool.clone().unwrap_or_default();
+            let dataset = cfg.snapshot_dataset.clone().unwrap_or_default();
+            ResticService::create_backup_with_snapshot(
+                &cfg,
+                &pool,
+                &dataset,
+                &snap_name,
+                cfg.exclude_patterns.as_deref(),
+                cfg.tags.as_deref(),
+                Some(&job),
+                &mut emit,
+            )
+        } else {
+            ResticService::create_backup_streaming(
+                &cfg,
+                &cfg.source_paths,
+                cfg.exclude_patterns.as_deref(),
+                cfg.tags.as_deref(),
+                Some(&job),
+                &mut emit,
+            )
+        }
+    })
+    .await;
+    ProgressEmitter::clear_cancel_hook(&job_id);
+
+    let outcome: Result<_, String> = match joined {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(ResticError::Cancelled)) => Err("__cancelled__".to_string()),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(join_err) => Err(format!("backup task panicked: {join_err}")),
     };
 
     // Always reschedule, even on failure — a single failed run (e.g. the
     // backend disk was briefly unreachable) must not silently wedge the
     // schedule forever with a stale `next_run_at`.
-    match backup_result {
+    match outcome {
         Ok(result) => {
-            if let Ok(db_job_id) = repo_repo
-                .create_backup_job(
-                    &schedule.repo_id,
-                    Some(&result.snapshot_id),
-                    &repo_config.source_paths.join(","),
-                    "scheduled",
-                )
-                .await
-            {
+            if let Some(id) = db_job_id.as_deref() {
                 let _ = repo_repo
                     .update_backup_job(
-                        &db_job_id,
+                        id,
                         "completed",
+                        Some(&result.snapshot_id),
                         result.files_new,
                         result.files_changed,
                         result.files_unmodified,
@@ -207,6 +277,7 @@ async fn run_one_schedule(state: &Arc<AppState>, schedule: &ResticSchedule) -> R
                     )
                     .await;
             }
+            ProgressEmitter::complete(&job_id, "Scheduled backup completed successfully");
             crate::events::log_event(format!(
                 "Scheduled backup '{}' completed for repository '{}' ({} files, {} bytes added)",
                 schedule.name,
@@ -217,24 +288,13 @@ async fn run_one_schedule(state: &Arc<AppState>, schedule: &ResticSchedule) -> R
             apply_retention(state, &repo_config).await;
             reschedule(&schedule_repo, schedule).await
         }
-        Err(e) => {
-            crate::events::log_event_warn(format!(
-                "Scheduled backup '{}' failed for repository '{}': {}",
-                schedule.name, repo_config.name, e
-            ));
-            if let Ok(db_job_id) = repo_repo
-                .create_backup_job(
-                    &schedule.repo_id,
-                    None,
-                    &repo_config.source_paths.join(","),
-                    "scheduled",
-                )
-                .await
-            {
+        Err(msg) if msg == "__cancelled__" => {
+            if let Some(id) = db_job_id.as_deref() {
                 let _ = repo_repo
                     .update_backup_job(
-                        &db_job_id,
-                        "failed",
+                        id,
+                        "cancelled",
+                        None,
                         0,
                         0,
                         0,
@@ -242,18 +302,66 @@ async fn run_one_schedule(state: &Arc<AppState>, schedule: &ResticSchedule) -> R
                         0,
                         0,
                         0,
-                        Some(&e.to_string()),
+                        Some("Cancelled by admin"),
                     )
                     .await;
             }
+            ProgressEmitter::cancelled(&job_id, "Scheduled backup cancelled");
+            crate::events::log_event_warn(format!(
+                "Scheduled backup '{}' cancelled for repository '{}'",
+                schedule.name, repo_config.name
+            ));
             reschedule(&schedule_repo, schedule).await?;
-            Err(format!("backup failed: {}", e))
+            Err("backup cancelled".to_string())
+        }
+        Err(msg) => {
+            if let Some(id) = db_job_id.as_deref() {
+                let _ = repo_repo
+                    .update_backup_job(id, "failed", None, 0, 0, 0, 0, 0, 0, 0, Some(&msg))
+                    .await;
+            }
+            ProgressEmitter::fail(&job_id, &msg);
+            crate::events::log_event_warn(format!(
+                "Scheduled backup '{}' failed for repository '{}': {}",
+                schedule.name, repo_config.name, msg
+            ));
+            reschedule(&schedule_repo, schedule).await?;
+            Err(format!("backup failed: {}", msg))
         }
     }
 }
 
+/// Number of newest snapshots to keep so a repository fits under a byte cap.
+///
+/// `max_size_gb` used to be stored, exposed by the API and **never applied**:
+/// a user who set "keep at most 100 GB" got an unbounded repository. restic
+/// has no size-based `forget`, so this derives a `--keep-last` from the
+/// average snapshot size (`total_size / count`) — a documented heuristic
+/// that is exact enough for a cap and needs no per-snapshot stats call.
+///
+/// Returns `None` when nothing has to be dropped: already under the cap,
+/// nothing to prune, or a single snapshot that is itself over the cap (a
+/// retention policy must never delete the only backup).
+pub(crate) fn plan_keep_last_for_size(
+    total_size: u64,
+    snapshot_count: u64,
+    cap_bytes: u64,
+) -> Option<u64> {
+    if snapshot_count == 0 || cap_bytes == 0 || total_size <= cap_bytes {
+        return None;
+    }
+    let average = (total_size / snapshot_count).max(1);
+    let keep = (cap_bytes / average).max(1);
+    if keep >= snapshot_count {
+        None
+    } else {
+        Some(keep)
+    }
+}
+
 /// Applies the repo's retention policy (or the default `apply_to_all` policy
-/// if the repo has none assigned) via `restic forget --prune`.
+/// if the repo has none assigned): the count/age rules first, then the size
+/// cap.
 async fn apply_retention(state: &Arc<AppState>, repo_config: &ResticRepo) {
     let policy_repo = RetentionPolicyRepository::new(state.db.pool());
 
@@ -267,26 +375,98 @@ async fn apply_retention(state: &Arc<AppState>, repo_config: &ResticRepo) {
     };
 
     let keep_within = policy.max_age_days.map(|d| format!("{}d", d));
-    if policy.max_count.is_none() && keep_within.is_none() {
+
+    if policy.max_count.is_some() || keep_within.is_some() {
+        let cfg = repo_config.clone();
+        let keep_last = policy.max_count.map(|n| n as u64);
+        let result = ResticService::run_restic_op("restic forget", None, move || {
+            ResticService::forget_snapshots(
+                &cfg,
+                keep_last,
+                None,
+                None,
+                None,
+                None,
+                None,
+                keep_within,
+                true,
+            )
+        })
+        .await;
+        if let Err(e) = result {
+            tracing::warn!(
+                "Retention policy application failed for repo '{}': {}",
+                repo_config.name,
+                e
+            );
+        }
+    }
+
+    // Size cap: measure, derive a `--keep-last`, forget with `--prune`.
+    let Some(cap_gb) = policy.max_size_gb else {
+        return;
+    };
+    let cap_bytes = (cap_gb.max(0) as u64).saturating_mul(1024 * 1024 * 1024);
+    if cap_bytes == 0 {
         return;
     }
 
-    if let Err(e) = ResticService::forget_snapshots(
-        repo_config,
-        policy.max_count.map(|n| n as u64),
-        None,
-        None,
-        None,
-        None,
-        None,
-        keep_within,
-        true,
-    ) {
-        tracing::warn!(
-            "Retention policy application failed for repo '{}': {}",
+    let cfg = repo_config.clone();
+    let stats =
+        match ResticService::run_restic_op("restic stats", Some(RESTIC_QUERY_TIMEOUT), move || {
+            ResticService::get_stats(&cfg)
+        })
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    "Could not measure repository '{}' for its size cap: {}",
+                    repo_config.name,
+                    e
+                );
+                return;
+            }
+        };
+
+    let cfg = repo_config.clone();
+    let count = match ResticService::run_restic_op(
+        "restic snapshots",
+        Some(RESTIC_QUERY_TIMEOUT),
+        move || ResticService::list_snapshots(&cfg),
+    )
+    .await
+    {
+        Ok(s) => s.len() as u64,
+        Err(e) => {
+            tracing::warn!(
+                "Could not list snapshots of '{}' for its size cap: {}",
+                repo_config.name,
+                e
+            );
+            return;
+        }
+    };
+
+    let Some(keep) = plan_keep_last_for_size(stats.total_size, count, cap_bytes) else {
+        return;
+    };
+
+    let cfg = repo_config.clone();
+    let result = ResticService::run_restic_op("restic forget", None, move || {
+        ResticService::forget_snapshots(&cfg, Some(keep), None, None, None, None, None, None, true)
+    })
+    .await;
+    match result {
+        Ok(()) => crate::events::log_event(format!(
+            "Size retention applied to repository '{}': kept the {} newest snapshot(s) to stay under {} GB",
+            repo_config.name, keep, cap_gb
+        )),
+        Err(e) => tracing::warn!(
+            "Size retention failed for repo '{}': {}",
             repo_config.name,
             e
-        );
+        ),
     }
 }
 
@@ -318,7 +498,7 @@ mod tests {
     //!
     //! Run: `cargo test restic_scheduler::tests`
 
-    use super::{compute_next_run, normalize_crontab_dow};
+    use super::{compute_next_run, normalize_crontab_dow, plan_keep_last_for_size};
     use chrono::{DateTime, Datelike, TimeZone, Utc, Weekday};
 
     fn at(s: &str) -> DateTime<Utc> {
@@ -445,5 +625,56 @@ mod tests {
         assert_eq!(next, Utc.with_ymd_and_hms(2026, 12, 31, 23, 30, 0).unwrap());
         let after = compute_next_run("30 23 * * *", next).unwrap().unwrap();
         assert_eq!(after, Utc.with_ymd_and_hms(2027, 1, 1, 23, 30, 0).unwrap());
+    }
+
+    // -- size-based retention --------------------------------------------
+
+    const GB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn test_size_plan_does_nothing_under_the_cap() {
+        // 10 snapshots, 40 GB total, cap 100 GB.
+        assert_eq!(plan_keep_last_for_size(40 * GB, 10, 100 * GB), None);
+        // exactly at the cap
+        assert_eq!(plan_keep_last_for_size(100 * GB, 10, 100 * GB), None);
+    }
+
+    #[test]
+    fn test_size_plan_keeps_a_fraction_of_the_snapshots() {
+        // 10 snapshots of ~10 GB, cap 50 GB → keep the 5 newest.
+        assert_eq!(plan_keep_last_for_size(100 * GB, 10, 50 * GB), Some(5));
+        // 10 snapshots of ~10 GB, cap 10 GB → keep 1.
+        assert_eq!(plan_keep_last_for_size(100 * GB, 10, 10 * GB), Some(1));
+        // 100 snapshots of ~2 GB, cap 20 GB → keep 10.
+        assert_eq!(plan_keep_last_for_size(200 * GB, 100, 20 * GB), Some(10));
+    }
+
+    #[test]
+    fn test_size_plan_never_keeps_zero_and_never_keeps_everything() {
+        // A cap smaller than one snapshot: keep exactly the newest, never 0 —
+        // a retention policy must not be able to delete every backup.
+        assert_eq!(plan_keep_last_for_size(100 * GB, 4, 1), Some(1));
+        // A single snapshot over the cap: nothing to prune.
+        assert_eq!(plan_keep_last_for_size(100 * GB, 1, 10 * GB), None);
+        // No snapshots, no cap → no plan.
+        assert_eq!(plan_keep_last_for_size(100 * GB, 0, 10 * GB), None);
+        assert_eq!(plan_keep_last_for_size(100 * GB, 10, 0), None);
+    }
+
+    #[test]
+    fn test_size_plan_result_is_always_below_the_count() {
+        // The plan is fed straight to `--keep-last`; a value >= the count
+        // would be a no-op that still pays for a `prune`.
+        for (count, total, cap) in [
+            (2u64, 100 * GB, 10 * GB),
+            (7, 100 * GB, 10 * GB),
+            (1000, 500 * GB, GB),
+            (3, 3 * GB, 2 * GB),
+        ] {
+            if let Some(keep) = plan_keep_last_for_size(total, count, cap) {
+                assert!(keep >= 1, "keep was {keep}");
+                assert!(keep < count, "keep {keep} must be < count {count}");
+            }
+        }
     }
 }

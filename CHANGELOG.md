@@ -150,6 +150,75 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Backup/restic production-ready pass (2026-10-21) — the run is a real
+  background job, its progress is real, and no unvalidated value reaches
+  restic's argv.**
+
+  Five user-visible holes:
+
+  1. **Backup and restore ran inside the HTTP request.** `POST /restic/backup`
+     and `/restic/restore` blocked until restic exited — hours on a multi-TB
+     dataset. The browser saw a stalled request, the floating island only
+     learned about the job once it had already finished (so it showed a
+     *completed* backup from the start), and a Tokio worker stayed parked.
+     Both endpoints now answer immediately with
+     `{status:"running", job_id, backup_job_id}` and the run continues in a
+     spawned task, the blocking restic call on `spawn_blocking`
+     (`ResticService::run_restic_op`). Snapshots, stats, unlock, prune, forget
+     and restore-plan go through the same helper with a timeout
+     (`RESTIC_QUERY_TIMEOUT` 120 s, `RESTIC_INIT_TIMEOUT` 300 s for `init`).
+  2. **The progress bar was fabricated** (5 %, then 90 %). `restic backup
+     --json` is newline-delimited JSON; it is now read line by line
+     (`create_backup_streaming`) and `percent_done` / `bytes_done` drive real
+     SSE progress (`ResticProgress`), mapped to 1–99 % so 100 % waits for the
+     summary line.
+  3. **Every healthy repository was reported broken.** `check_repo` collected
+     any line containing `error`, and `restic check` prints "**no errors were
+     found**" on success — so `healthy` was `false` for a healthy repository.
+     The verdict now comes from `parse_check_output`, which excludes the
+     success sentinel and only counts `error:` / `fatal:` / `unable to` /
+     `failed to` / `is damaged`.
+  4. **Argument injection could wipe a repository.** `snapshot_id` was passed
+     positionally to `restic forget`, so `{"snapshot_id":"--keep-last=0"}` was
+     parsed as an option and forgot **every** snapshot. `validate_snapshot_id`
+     (`[A-Za-z0-9._-]`, no leading `-`) plus absolute-path validation of
+     backup sources and restore targets, a strict pre-backup snapshot name
+     (it becomes `/tmp/restic-snap-<name>`), and `validate_repository` /
+     `validate_password` / `validate_display_name` / `validate_keep_within` /
+     `validate_tags` / `validate_exclude_patterns` refuse the value before
+     restic is spawned. Repository create/update also refuse an empty name,
+     location or password, a relative source path, an unknown
+     `retention_policy_id`, and `snapshot_create_before_backup` without a pool
+     and an absolute dataset.
+  5. **A failed snapshot mount was ignored**, so the backup captured an empty
+     mount point, reported success and deleted the snapshot. `SnapshotMount`
+     (RAII) now aborts the run when the mount fails.
+
+  The run is supervised too: **one backup/restore per repository**
+  (`RepoRunLock`, shared with the scheduler, released on `Drop`) answers
+  "already running" instead of restic's "repository is already locked" after a
+  full scan; **cancellation really stops the process** (SIGINT so restic
+  releases its lock, SIGKILL after 10 s; the job ends `cancelled`); the
+  `restic_backup_jobs` row is written **before** the run and
+  `fail_stale_running_jobs()` closes leftovers at startup (a crash used to
+  leave a phantom `running` job for ever), with `snapshot_id` filled in on
+  completion; **`max_size_gb` is finally applied** — it was stored, returned
+  by the API and never read, and now becomes a `--keep-last` derived from the
+  average snapshot size (`plan_keep_last_for_size`), never 0 and never
+  deleting the newest snapshot; **retention policies are validated** (limits
+  > 0, at least one limit on create, a single `apply_to_all` default); and
+  **`check --read-data` is admin** (it re-reads every pack). Frontend:
+  `trackJob(jobId, label, onSettle?)` refreshes the lists when the job really
+  settles, the policy form gained the size cap, and "Apply retention" is
+  disabled when no bucket is set.
+
+  Tests: `restic.rs` 8 → 29, `restic_scheduler.rs` 12 → 16,
+  `handlers/restic.rs` 3 → 6, `restic_integration.rs` 17 → 24,
+  `backup.spec.ts` 25 → 27. `cargo test --lib restic` 51/51,
+  `cargo test --test restic_integration` 24/24, `npm run check` 0/0,
+  `npm run build` OK, `cargo clippy --all-targets` clean on the touched files.
+  The §13 real-restic E2E skips on this host (`restic` is not installed).
+
 - **Users/Groups production-ready pass (2026-10-21) — deleting an account now
   really removes it, and demoting an admin really demotes it.**
 
