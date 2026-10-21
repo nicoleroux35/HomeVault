@@ -2,7 +2,7 @@
  * File          : cookie.rs
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Last modified : 21/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
@@ -95,8 +95,12 @@ pub fn app_session_from_cookie_header(header: &str) -> Option<&str> {
 
 /// Attach `Set-Cookie: hv_app_session=<token>` to a response. `HttpOnly` so
 /// page scripts can't read it; `SameSite=Lax` so a top-level navigation to the
-/// app origin carries it; not `Secure` because HomeVault is commonly served
-/// over plain HTTP on a LAN.
+/// app origin carries it. Deliberately never `Secure` — even when the dashboard
+/// runs HTTPS, the per-app proxy listeners stay plain HTTP, and a `Secure`
+/// cookie is dropped by the browser on any `http://` origin, which would make
+/// the gated apps permanently unavailable. The token is proxy-scoped: it
+/// grants nothing against the API and is stripped before requests reach the
+/// container upstream.
 pub fn attach_app_session(mut resp: Response, token: &str) -> Response {
     let cookie = format!(
         "{APP_SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={REMEMBER_MAX_AGE}"
@@ -226,7 +230,9 @@ mod secure_cookie_tests {
     }
 
     /// Plain HTTP on a LAN is the common deployment: a `Secure` cookie would be
-    /// silently dropped by the browser and the app proxy would break.
+    /// silently dropped by the browser and the app proxy would break. This is
+    /// also why `attach_app_session` is never `Secure` — the proxy listener is
+    /// always `http://` even when the dashboard runs HTTPS.
     #[test]
     fn test_plain_http_cookie_has_no_secure_flag() {
         let resp = attach_session(Response::new(Body::empty()), "tok", false, false);

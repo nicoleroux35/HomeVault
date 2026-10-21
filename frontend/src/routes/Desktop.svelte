@@ -2,7 +2,7 @@
      File          : Desktop.svelte
      Author        : Nicolas Le Roux
      Created       : 28/09/2026
-     Last modified : 19/10/2026 by Nicolas Le Roux
+     Last modified : 21/10/2026 by Nicolas Le Roux
      Version       : 1.0.0
 
      Description:
@@ -1126,6 +1126,9 @@
         running: a.running,
         // undefined when the app publishes no port → the tile renders
         // disabled with a "no web UI" label instead of being clickable.
+        // The scheme is always http://: the per-app proxy listener is plain
+        // HTTP (even under an HTTPS dashboard) and the landing is a new-tab
+        // top-level navigation, which browsers allow from HTTPS pages.
         url: port ? `http://${location.hostname}:${port}` : undefined,
       };
     });
