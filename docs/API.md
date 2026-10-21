@@ -647,7 +647,14 @@ admin-only. There are no read-only `auth` endpoints here.
 events; the SPA subscribes via `EventSource` (`api.subscribeToProgress`).
 `/status` answers the job's **real last event** (latest `%`, message, byte
 counters and state — `completed`/`failed` included) and a 400 for an id that was
-never created or was already removed. In a `ProgressEvent`, `job_type` is a
+never created or was already removed.
+
+Cancelling runs the job producer's registered hook
+(`ProgressManager::register_cancel_hook`) — that is what actually stops the
+work; the job then reports `state: "cancelled"`. The response is
+`{job_id, cancelled, message}`, and an unknown id is a `400` rather than the
+old unconditional "Job cancelled" (which left a `sudo ddrescue` clone running
+after the UI said it was stopped). In a `ProgressEvent`, `job_type` is a
 tagged object: `{"type":"backup"}` for the built-in kinds,
 `{"type":"custom","name":"explorer_copy"}` for a feature job (the enum uses
 serde **adjacent** tagging — plain internal tagging cannot serialize the
@@ -667,9 +674,27 @@ stable slug localised client-side. See [guides/activity.md](./guides/activity.md
 
 ## Rescue — `/rescue/*` (`admin`)
 
-`tools`, `devices` (`GET`); `ddrescue/clone`, `ddrescue/status/{log}`,
-`testdisk/analyze`, `testdisk/rebuild`, `photorec/recover`, `mdadm/diagnose`,
-`mdadm/repair` (`POST`). Implemented in `src/handlers/rescue.rs` + `src/rescue/`.
+`tools`, `devices`, `ddrescue/mapfile` (`GET`); `ddrescue/clone`,
+`ddrescue/status/{log}`, `testdisk/analyze`, `testdisk/rebuild`,
+`photorec/recover`, `mdadm/diagnose`, `mdadm/repair` (`POST`). Implemented in
+`src/handlers/rescue.rs` + `src/rescue/`. Full semantics in
+[guides/rescue.md](./guides/rescue.md).
+
+- `ddrescue/status/{log}` takes a **mapfile path** and answers
+  `{running, progress, bytes_copied, bytes_total, speed, message}`. The path is
+  confined to `/tmp`, `/var/tmp` and `paths::rescue_dir()` and must be an
+  existing regular file that is not a symlink (≤ 16 MiB) — a missing file is
+  not an error, it means no mapfile has been written yet. `ddrescue/mapfile`
+  reports the directory the per-job default mapfiles live in.
+- Only options the packaged tools can honour are accepted; anything else is a
+  `400` naming the field (see the option table in `guides/rescue.md`). That
+  includes TestDisk's `deep_search`/`log_path`/`force` and PhotoRec's
+  `keep_broken`/`max_size`, which used to be accepted and ignored.
+- A clone is refused when the destination is the same device, is in use
+  (mounted / active swap / md / LVM / dm-crypt member) or is smaller than the
+  source.
+- Clones and carves can be stopped: `DELETE /progress/{job_id}` now runs the
+  job's cancellation hook, which SIGTERMs the tool's process group.
 
 ## VPN — `/vpn/*` (all `admin`)
 

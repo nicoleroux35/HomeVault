@@ -23,87 +23,85 @@
 //! Rescue tool execution (ddrescue, TestDisk, PhotoRec, mdadm),
 //! validator-gated, with progress streaming.
 
+use super::jobs;
 use super::models::*;
-use super::validator::SecurityValidator;
+use super::validator::{check_clone_safety, ClonePlan, SecurityValidator};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tokio::process::Command;
+use tracing::warn;
+
+/// Ceiling for the `--version` probes behind `GET /rescue/tools`. A missing
+/// tool fails immediately; a wedged one must not hang the request.
+const TOOL_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Ceiling for `lsblk` (device list, sizes, usage).
+const LSBLK_TIMEOUT: Duration = Duration::from_secs(15);
+/// Ceiling for `testdisk /list` (read-only partition enumeration).
+const TESTDISK_ANALYZE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Ceiling for the scripted `testdisk /cmd … analyze,search` deep scan.
+const TESTDISK_REBUILD_TIMEOUT: Duration = Duration::from_secs(300);
+/// Ceiling for any `mdadm` call (both are prompt; a hung one is a kernel issue).
+const MDADM_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct RescueService;
 
 impl RescueService {
+    /// Run `cmd` to completion under a hard timeout, killing it on expiry.
+    ///
+    /// Every subprocess in this module goes through here: a stuck `testdisk`,
+    /// `mdadm` or `lsblk` used to leave the HTTP request pending forever (no
+    /// timeout anywhere in the pre-2026-10-21 code except the TestDisk scan).
+    async fn run_output(
+        mut cmd: Command,
+        timeout: Duration,
+        what: &str,
+    ) -> Result<std::process::Output, RescueError> {
+        cmd.kill_on_drop(true);
+        match tokio::time::timeout(timeout, cmd.output()).await {
+            Ok(Ok(out)) => Ok(out),
+            Ok(Err(e)) => Err(RescueError::Io(e)),
+            Err(_) => Err(RescueError::Parse(format!(
+                "{what} did not finish within {}s and was stopped",
+                timeout.as_secs()
+            ))),
+        }
+    }
+
     pub async fn check_tools() -> Vec<ToolStatus> {
-        let tools = vec!["ddrescue", "testdisk", "photorec", "mdadm"];
         let mut statuses = Vec::new();
 
-        for tool in tools {
-            let (available, version) = Self::check_tool(tool).await;
-            statuses.push(ToolStatus {
-                name: tool.to_string(),
-                available,
-                version,
-            });
+        for tool in ["ddrescue", "testdisk", "photorec", "mdadm"] {
+            let mut cmd = Command::new(tool);
+            cmd.arg("--version");
+            statuses.push(
+                match Self::run_output(cmd, TOOL_PROBE_TIMEOUT, tool).await {
+                    Ok(o) if o.status.success() => {
+                        // mdadm writes its version banner to stderr, not
+                        // stdout, unlike the other three tools.
+                        let text = if tool == "mdadm" {
+                            &o.stderr
+                        } else {
+                            &o.stdout
+                        };
+                        ToolStatus {
+                            name: tool.to_string(),
+                            available: true,
+                            version: String::from_utf8_lossy(text)
+                                .lines()
+                                .next()
+                                .map(|l| l.trim().to_string()),
+                        }
+                    }
+                    _ => ToolStatus {
+                        name: tool.to_string(),
+                        available: false,
+                        version: None,
+                    },
+                },
+            );
         }
 
         statuses
-    }
-
-    async fn check_tool(tool: &str) -> (bool, Option<String>) {
-        match tool {
-            "ddrescue" => {
-                let output = Command::new("ddrescue").arg("--version").output().await;
-                match output {
-                    Ok(o) if o.status.success() => {
-                        let ver = String::from_utf8_lossy(&o.stdout)
-                            .lines()
-                            .next()
-                            .map(|l| l.to_string());
-                        (true, ver)
-                    }
-                    _ => (false, None),
-                }
-            }
-            "testdisk" => {
-                let output = Command::new("testdisk").arg("--version").output().await;
-                match output {
-                    Ok(o) if o.status.success() => {
-                        let ver = String::from_utf8_lossy(&o.stdout)
-                            .lines()
-                            .next()
-                            .map(|l| l.to_string());
-                        (true, ver)
-                    }
-                    _ => (false, None),
-                }
-            }
-            "photorec" => {
-                let output = Command::new("photorec").arg("--version").output().await;
-                match output {
-                    Ok(o) if o.status.success() => {
-                        let ver = String::from_utf8_lossy(&o.stdout)
-                            .lines()
-                            .next()
-                            .map(|l| l.to_string());
-                        (true, ver)
-                    }
-                    _ => (false, None),
-                }
-            }
-            "mdadm" => {
-                let output = Command::new("mdadm").arg("--version").output().await;
-                match output {
-                    // mdadm writes its version banner to stderr, not stdout,
-                    // unlike the other three tools checked above.
-                    Ok(o) if o.status.success() => {
-                        let ver = String::from_utf8_lossy(&o.stderr)
-                            .lines()
-                            .next()
-                            .map(|l| l.trim().to_string());
-                        (true, ver)
-                    }
-                    _ => (false, None),
-                }
-            }
-            _ => (false, None),
-        }
     }
 
     pub async fn list_block_devices() -> Result<Vec<BlockDevice>, RescueError> {
@@ -116,10 +114,9 @@ impl RescueService {
         // the transport, and the TRAN string as the "read-only" flag (and
         // then reported RO, not RM, as `removable`). `-b` gives SIZE in bytes
         // so there's no locale-formatted "465,8G" to parse.
-        let output = Command::new("lsblk")
-            .args(["-d", "-n", "-b", "-P", "-o", "NAME,SIZE,TYPE,MODEL,TRAN,RM"])
-            .output()
-            .await?;
+        let mut lsblk = Command::new("lsblk");
+        lsblk.args(["-d", "-n", "-b", "-P", "-o", "NAME,SIZE,TYPE,MODEL,TRAN,RM"]);
+        let output = Self::run_output(lsblk, LSBLK_TIMEOUT, "lsblk").await?;
 
         for line in String::from_utf8_lossy(&output.stdout).lines() {
             let field = |key: &str| -> String {
@@ -153,6 +150,99 @@ impl RescueService {
         Ok(devices)
     }
 
+    /// Block-device byte size, from `lsblk -b`. `None` when it can't be read
+    /// (the clone-safety check degrades to a warning, never to a panic).
+    async fn device_size(device: &Path) -> Option<u64> {
+        let mut cmd = Command::new("lsblk");
+        cmd.args(["-b", "-n", "-d", "-o", "SIZE"]).arg(device);
+        let out = Self::run_output(cmd, LSBLK_TIMEOUT, "lsblk").await.ok()?;
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .next()?
+            .trim()
+            .parse::<u64>()
+            .ok()
+    }
+
+    /// Why `device` must not be overwritten right now, if it must not.
+    ///
+    /// Two independent sources, because either alone misses real cases:
+    /// - mounted filesystems / swap on the device **or any of its children**
+    ///   (`lsblk`, so `/dev/sdb` with a mounted `sdb1` is caught);
+    /// - sysfs `holders`: a device that backs an md array, an LVM volume or a
+    ///   dm-crypt mapping has live holders but no mountpoint of its own —
+    ///   cloning onto it corrupts the array.
+    async fn device_in_use(device: &Path) -> Option<String> {
+        let mut cmd = Command::new("lsblk");
+        cmd.args(["-n", "-r", "-o", "NAME,TYPE,MOUNTPOINTS"])
+            .arg(device);
+        if let Ok(out) = Self::run_output(cmd, LSBLK_TIMEOUT, "lsblk").await {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                let fields: Vec<&str> = line.split_whitespace().collect();
+                if fields.len() < 2 {
+                    continue;
+                }
+                let (name, kind) = (fields[0], fields[1]);
+                // Rows: `sdb disk /mnt/data` or `sdb1 part [SWAP]`.
+                if let Some(mount) = fields.get(2) {
+                    return Some(format!("{name} is mounted on {mount}"));
+                }
+                if matches!(
+                    kind,
+                    "md" | "raid0" | "raid1" | "raid4" | "raid5" | "raid6" | "raid10"
+                ) {
+                    return Some(format!("{name} is an active md array"));
+                }
+                if matches!(kind, "crypt" | "lvm") {
+                    return Some(format!("{name} is an active {kind} mapping"));
+                }
+            }
+        }
+
+        // sysfs holders: the device backs something (md/LVM/dm), even though
+        // it has no mountpoint of its own.
+        if let Some(name) = device.file_name().and_then(|n| n.to_str()) {
+            let holders = Path::new("/sys/class/block").join(name).join("holders");
+            if let Ok(entries) = std::fs::read_dir(&holders) {
+                let names: Vec<String> = entries
+                    .flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect();
+                if !names.is_empty() {
+                    return Some(format!(
+                        "{} is in use by {}",
+                        device.display(),
+                        names.join(", ")
+                    ));
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Default ddrescue mapfile for a job.
+    ///
+    /// Under HomeVault's own root-owned `rescue/` directory rather than
+    /// `/tmp`: the mapfile is written **as root** by ddrescue, and `/tmp` is
+    /// world-writable, so a pre-planted symlink there would have redirected a
+    /// root write. `validate_log_path` then checks whatever the admin passed
+    /// explicitly.
+    fn default_mapfile(job_id: &str) -> Result<PathBuf, RescueError> {
+        let dir = crate::config::paths::rescue_dir();
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir.join(format!("ddrescue_{job_id}.log")))
+    }
+
+    /// The default mapfile path as a string, without creating anything — used
+    /// by the handler to report the path it will use before the job runs.
+    pub fn default_mapfile_display(job_id: &str) -> String {
+        crate::config::paths::rescue_dir()
+            .join(format!("ddrescue_{job_id}.log"))
+            .to_string_lossy()
+            .into_owned()
+    }
+
     pub async fn ddrescue_clone(
         source: &str,
         destination: &str,
@@ -167,12 +257,53 @@ impl RescueService {
         // touching it with a destructive disk-to-disk clone.
         let source_path = SecurityValidator::validate_block_device(source)?;
         let dest_path = SecurityValidator::validate_block_device(destination)?;
+
+        options.validate()?;
+        let block_size = options.validated_block_size()?;
+
+        // Resolve the mapfile through the shared validator, **without**
+        // creating its final component: ddrescue writes this file as root, so
+        // a symlink planted at that path would be followed by a root write.
+        // The path the handler reported is resolved (not canonicalized) for
+        // exactly the same reason.
         let logfile = match &options.logfile {
-            Some(lf) => SecurityValidator::validate_log_path(lf)?
-                .to_string_lossy()
-                .into_owned(),
-            None => "/tmp/ddrescue.log".to_string(),
+            Some(lf) => SecurityValidator::validate_log_path(lf)?,
+            None => Self::default_mapfile(job_id)?,
         };
+        if let Some(parent) = logfile.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        // Belt and braces: if anything exists at the mapfile path already, it
+        // must be a plain regular file.
+        if let Ok(meta) = std::fs::symlink_metadata(&logfile) {
+            if meta.file_type().is_symlink() {
+                return Err(RescueError::Security(format!(
+                    "Mapfile '{}' is a symbolic link — refusing to write through it",
+                    logfile.display()
+                )));
+            }
+            if !meta.is_file() {
+                return Err(RescueError::Security(format!(
+                    "Mapfile '{}' exists and is not a regular file",
+                    logfile.display()
+                )));
+            }
+        }
+
+        // Safety net before a destructive write: same device, an in-use
+        // destination (mounted/swap/md/LVM), or one smaller than the source.
+        let plan = ClonePlan {
+            source: source_path.clone(),
+            destination: dest_path.clone(),
+            source_size: Self::device_size(&source_path).await,
+            destination_size: Self::device_size(&dest_path).await,
+            destination_in_use: Self::device_in_use(&dest_path).await,
+        };
+        let warnings = check_clone_safety(&plan).map_err(RescueError::InvalidInput)?;
+        for warning in &warnings {
+            warn!("ddrescue: {}", warning);
+            ProgressEmitter::progress(job_id, 0.0, warning);
+        }
 
         ProgressEmitter::progress(
             job_id,
@@ -188,7 +319,7 @@ impl RescueService {
             "-v".to_string(),
             "--force".to_string(),
             "-b".to_string(),
-            options.block_size.unwrap_or(512).to_string(),
+            block_size.to_string(),
         ];
 
         if options.direct_io.unwrap_or(false) {
@@ -209,18 +340,37 @@ impl RescueService {
 
         args.push(source_path.to_string_lossy().into_owned());
         args.push(dest_path.to_string_lossy().into_owned());
-        args.push(logfile);
+        args.push(logfile.to_string_lossy().into_owned());
+
+        // Register before spawning so a cancellation that arrives during
+        // `spawn()` is not lost (the pgid is attached right after).
+        let handle = jobs::start(job_id, "ddrescue clone");
 
         // Raw block devices are `root:disk` mode 0660 — like every other
         // disk-touching command in the codebase (mdadm below, disk.rs,
         // pools.rs) this must go through `sudo` so it works when HomeVault
         // is not itself root. `sudo` is a no-op wrap when it already is.
-        let mut child = Command::new("sudo")
-            .arg("ddrescue")
+        //
+        // `process_group(0)` puts `sudo` + `ddrescue` in a fresh group so a
+        // cancellation can signal both at once: killing only the `sudo`
+        // wrapper leaves the real tool writing to the disk.
+        let mut cmd = Command::new("sudo");
+        cmd.arg("ddrescue")
             .args(&args)
+            .process_group(0)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()?;
+            .stderr(std::process::Stdio::piped());
+
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                handle.finish();
+                return Err(RescueError::Io(e));
+            }
+        };
+        if let Some(pid) = child.id() {
+            handle.attach(pid);
+        }
 
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
@@ -262,6 +412,18 @@ impl RescueService {
         }
 
         let status = child.wait().await?;
+        handle.finish();
+
+        // A cancelled clone writes a valid mapfile on SIGTERM, so it can be
+        // resumed; report it as cancelled, not as a failure.
+        if handle.cancelled() {
+            ProgressEmitter::cancelled(
+                job_id,
+                "Clone cancelled — the mapfile is kept, so the clone can be resumed",
+            );
+            return Err(RescueError::Cancelled);
+        }
+
         if status.success() {
             ProgressEmitter::complete(job_id, "ddrescue clone completed successfully");
         } else {
@@ -292,7 +454,33 @@ impl RescueService {
     // is the only real source of truth for an on-demand status check —
     // parsed directly below.
     pub async fn get_ddrescue_log(logfile: &str) -> Result<DdrescueStatus, RescueError> {
-        let content = match tokio::fs::read_to_string(logfile).await {
+        // The path comes straight from a URL segment: confine it to the rescue
+        // directories, refuse symlinks, non-files and oversized files before
+        // reading anything with the service's own privileges.
+        //
+        // A missing file is *not* an error: a clone that has not been started
+        // yet has no mapfile, and the UI polls this endpoint to decide whether
+        // to show "resume". The confinement checks still apply — the path is
+        // rejected before the existence of the file is even considered, so a
+        // probe of an arbitrary system path can never report success/failure
+        // differences that leak whether it exists.
+        let path = match SecurityValidator::validate_readable_log_path(logfile) {
+            Ok(path) => path,
+            Err(RescueError::JobNotFound(_)) => {
+                return Ok(DdrescueStatus {
+                    job_id: String::new(),
+                    progress: 0.0,
+                    message: "No mapfile yet — the rescue has not started writing one".to_string(),
+                    bytes_copied: None,
+                    bytes_total: None,
+                    speed: None,
+                    running: false,
+                });
+            }
+            Err(e) => return Err(e),
+        };
+
+        let content = match tokio::fs::read_to_string(&path).await {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(DdrescueStatus {
@@ -372,19 +560,20 @@ impl RescueService {
         }
     }
 
-    pub async fn testdisk_analyze(
-        device: &str,
-        _options: &TestDiskOptions,
-    ) -> Result<TestDiskResult, RescueError> {
+    pub async fn testdisk_analyze(device: &str) -> Result<TestDiskResult, RescueError> {
         let device_path = SecurityValidator::validate_block_device(device)?;
 
         // `sudo`-wrapped: TestDisk opens the raw device (root:disk 0660).
         // Without this it prints "Unable to open ... Permission denied" and
         // the handler still returns success with an empty partition list.
-        let output = Command::new("sudo")
-            .args(["testdisk", "/log", "/list", &device_path.to_string_lossy()])
-            .output()
-            .await?;
+        //
+        // Nothing here can be honoured from the old options: the scripted mode
+        // this integration uses always performs the deep scan (`analyze,
+        // search`) and TestDisk writes its own log to its working directory,
+        // so `deep_search`/`log_path` were accepted and silently ignored.
+        let mut cmd = Command::new("sudo");
+        cmd.args(["testdisk", "/log", "/list", &device_path.to_string_lossy()]);
+        let output = Self::run_output(cmd, TESTDISK_ANALYZE_TIMEOUT, "testdisk /list").await?;
 
         let log = String::from_utf8_lossy(&output.stdout).to_string();
 
@@ -462,10 +651,7 @@ impl RescueService {
         partitions
     }
 
-    pub async fn testdisk_rebuild(
-        device: &str,
-        _options: &TestDiskOptions,
-    ) -> Result<String, RescueError> {
+    pub async fn testdisk_rebuild(device: &str) -> Result<String, RescueError> {
         // Rebuilding a partition table is a real write to the raw disk — must
         // never run against an unvalidated or protected device.
         let device_path = SecurityValidator::validate_block_device(device)?;
@@ -500,19 +686,16 @@ impl RescueService {
             .kill_on_drop(true)
             .spawn()?;
 
-        let output = match tokio::time::timeout(
-            std::time::Duration::from_secs(300),
-            child.wait_with_output(),
-        )
-        .await
-        {
-            Ok(res) => res?,
-            Err(_) => {
-                return Err(RescueError::Parse(
-                    "TestDisk scan did not finish within 5 minutes and was stopped.".to_string(),
-                ));
-            }
-        };
+        let output =
+            match tokio::time::timeout(TESTDISK_REBUILD_TIMEOUT, child.wait_with_output()).await {
+                Ok(res) => res?,
+                Err(_) => {
+                    return Err(RescueError::Parse(format!(
+                        "TestDisk scan did not finish within {} minutes and was stopped.",
+                        TESTDISK_REBUILD_TIMEOUT.as_secs() / 60
+                    )));
+                }
+            };
 
         let stderr = String::from_utf8_lossy(&output.stderr);
         if !output.status.success() && !stderr.trim().is_empty() {
@@ -551,10 +734,12 @@ impl RescueService {
         output_dir: &str,
         options: &PhotoRecOptions,
         job_id: &str,
+        owner: Option<&str>,
     ) -> Result<(), RescueError> {
         use crate::sse::ProgressEmitter;
 
         let device_path = SecurityValidator::validate_block_device(device)?;
+        options.validate()?;
         let output_path = SecurityValidator::validate_output_path(output_dir)?;
         tokio::fs::create_dir_all(&output_path).await?;
 
@@ -573,22 +758,16 @@ impl RescueService {
         // fileopt/everything/enable-disable filtering was verified to
         // actually filter, not just get ignored) comes from
         // https://www.cgsecurity.org/testdisk_doc/scripted_run.html.
-        // `keep_broken` has no working equivalent found here (every
-        // `keep_corrupted_file` variant tried produced a hard syntax error,
-        // which would abort recovery entirely) so it's intentionally left
-        // unwired, same as before this fix — not a regression.
+        //
+        // `keep_broken` and `max_size` used to be accepted here and had no
+        // effect at all: every `keep_corrupted_file` variant is a hard syntax
+        // error on 7.2 (it aborts the recovery) and there is no size filter in
+        // the /cmd grammar. They are gone from the API rather than silently
+        // ignored.
         let mut cmd_parts: Vec<String> = Vec::new();
         if let Some(pt) = &options.partition_type {
-            let keyword = match pt.as_str() {
-                "Intel" => Some("partition_i386"),
-                "EFI" => Some("partition_gpt"),
-                "Mac" => Some("partition_mac"),
-                "Sun" => Some("partition_sun"),
-                "None" => Some("partition_none"),
-                _ => None,
-            };
-            if let Some(k) = keyword {
-                cmd_parts.push(k.to_string());
+            if let Some(keyword) = partition_type_keyword(pt) {
+                cmd_parts.push(keyword.to_string());
             }
         }
         if let Some(types) = &options.file_types {
@@ -613,15 +792,28 @@ impl RescueService {
             cmd_parts.join(","),
         ];
 
-        // `sudo`-wrapped: PhotoRec reads the raw device. Recovered files land
-        // in `output_path` owned by root — the reader below
-        // (`find_latest_photorec_result_dir`) still lists them fine.
-        let mut child = Command::new("sudo")
-            .arg("photorec")
+        let handle = jobs::start(job_id, "PhotoRec recovery");
+
+        // `sudo`-wrapped: PhotoRec reads the raw device, so the recovered files
+        // land owned by root — the chown below hands them to the admin who
+        // asked for them. Same `process_group(0)` reasoning as ddrescue above.
+        let mut cmd = Command::new("sudo");
+        cmd.arg("photorec")
             .args(&args)
+            .process_group(0)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()?;
+            .stderr(std::process::Stdio::piped());
+
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                handle.finish();
+                return Err(RescueError::Io(e));
+            }
+        };
+        if let Some(pid) = child.id() {
+            handle.attach(pid);
+        }
 
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
@@ -663,13 +855,41 @@ impl RescueService {
         }
 
         let status = child.wait().await?;
+        handle.finish();
+
+        if handle.cancelled() {
+            ProgressEmitter::cancelled(
+                job_id,
+                "Recovery cancelled — the files already carved are kept",
+            );
+            return Err(RescueError::Cancelled);
+        }
+
         if status.success() {
             // PhotoRec never writes into the /d directory itself — it always
             // creates a numbered sibling (recup_dir.1, .2, ...) per run, so
             // reporting the requested output_dir as-is would point the user
             // at an empty folder. Find the actual one it just created.
-            let result_dir = Self::find_latest_photorec_result_dir(&output_path)
-                .unwrap_or_else(|| output_dir.to_string());
+            let scan_root = output_path.clone();
+            let scanned = tokio::task::spawn_blocking(move || {
+                Self::find_latest_photorec_result_dir(&scan_root)
+            })
+            .await
+            .unwrap_or(None);
+            let result_dir = scanned.unwrap_or_else(|| output_dir.to_string());
+
+            // The carve ran as root, so everything it wrote is root-owned and
+            // unreadable to the admin who asked for it. Hand the recovered
+            // tree to them (best effort: the account may not exist locally).
+            if let Some(user) = owner {
+                if let Err(e) = Self::chown_recursive(user, Path::new(&result_dir)).await {
+                    warn!(
+                        "PhotoRec: recovered files in {} could not be handed to '{}': {}",
+                        result_dir, user, e
+                    );
+                }
+            }
+
             ProgressEmitter::complete(
                 job_id,
                 &format!("PhotoRec recovery completed. Files saved to {}", result_dir),
@@ -679,6 +899,34 @@ impl RescueService {
             return Err(RescueError::Parse("PhotoRec recovery failed".to_string()));
         }
 
+        Ok(())
+    }
+
+    /// `chown -R user:user <dir>` — best effort, and only for a username that
+    /// looks like a real account name (it reaches an argv slot).
+    async fn chown_recursive(user: &str, dir: &Path) -> Result<(), RescueError> {
+        let valid = !user.is_empty()
+            && user.len() <= 32
+            && !user.starts_with('-')
+            && user
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-');
+        if !valid {
+            return Err(RescueError::InvalidInput(format!(
+                "refusing to chown to invalid account name '{user}'"
+            )));
+        }
+
+        let mut cmd = Command::new("sudo");
+        cmd.args(["chown", "-R"])
+            .arg(format!("{user}:{user}"))
+            .arg(dir);
+        let out = Self::run_output(cmd, LSBLK_TIMEOUT, "chown").await?;
+        if !out.status.success() {
+            return Err(RescueError::Parse(
+                String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -732,10 +980,9 @@ impl RescueService {
         // mdadm requires root even for a read-only --detail (confirmed live:
         // "must be super-user to perform this action" otherwise) — delegated
         // to root via the sudoers NOPASSWD rule, same as ufw/wg/openvpn.
-        let output = Command::new("sudo")
-            .args(["mdadm", "--detail", &device])
-            .output()
-            .await?;
+        let mut cmd = Command::new("sudo");
+        cmd.args(["mdadm", "--detail", &device]);
+        let output = Self::run_output(cmd, MDADM_TIMEOUT, "mdadm --detail").await?;
         let stdout = String::from_utf8_lossy(&output.stdout);
 
         if !output.status.success() {
@@ -823,11 +1070,10 @@ impl RescueService {
         // (only idle/frozen/check/repair are, per `man mdadm`); mapped to
         // "repair", the real write-correcting action, since that's what it
         // was clearly intended to mean.
-        let action = match options.action.as_deref() {
-            Some("rewrite") => "repair",
-            Some(other) => other,
-            None => "repair",
-        };
+        //
+        // The value is whitelisted: it used to be forwarded verbatim
+        // (`Some(other) => other`), i.e. any string reached `--action=<value>`.
+        let action = options.validated_action()?;
         let mut args: Vec<String> = vec![format!("--action={}", action), device.clone()];
 
         if options.force.unwrap_or(false) {
@@ -838,11 +1084,9 @@ impl RescueService {
         }
 
         // Same root requirement as mdadm_diagnose above.
-        let output = Command::new("sudo")
-            .arg("mdadm")
-            .args(&args)
-            .output()
-            .await?;
+        let mut cmd = Command::new("sudo");
+        cmd.arg("mdadm").args(&args);
+        let output = Self::run_output(cmd, MDADM_TIMEOUT, "mdadm --action").await?;
 
         if output.status.success() {
             Ok(format!("Repair started for {}", device))

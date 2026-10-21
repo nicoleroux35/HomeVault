@@ -150,6 +150,73 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Rescue production-ready pass (2026-10-21).** Four classes of gap in the one
+  app allowed to write to raw block devices:
+
+  1. **The Cancel button cancelled nothing.** `DELETE /api/progress/{job_id}`
+     removed the job from the tracking map and answered "Job cancelled" while
+     the `sudo ddrescue` clone kept writing to the destination disk (and
+     `photorec` kept carving) — nothing in the process ever observed the
+     request, and the UI had no stop control at all. `ProgressManager` now has
+     `register_cancel_hook` / `clear_cancel_hook` / `cancel_job`
+     (`CancelOutcome::{NotFound,NoHook,HookRan}`) and `mark_cancelled`, using
+     the `ProgressState::Cancelled` that already existed but was never emitted;
+     the handler runs the producer's hook and answers
+     `{job_id, cancelled, message}` (`400` for an unknown id, instead of a
+     phantom success). New `src/rescue/jobs.rs` tracks each rescue job that owns
+     a live process: both tools are spawned with `process_group(0)` and a cancel
+     runs `sudo kill -s TERM -- -<pgid>`, escalating to `SIGKILL` after 10 s —
+     signalling only the `sudo` wrapper left the real tool running. A cancel
+     that arrives between `register` and `spawn` is not lost. A cancelled clone
+     is reported as *cancelled* (not failed, not completed — it has copied only
+     part of the disk) and keeps its mapfile so it can be resumed.
+  2. **Arbitrary-file read.** `GET /api/rescue/ddrescue/status/{logfile}` took
+     the raw URL segment and `read_to_string`'d it as the service user, so any
+     admin session could read (and probe the existence and size of) any file.
+     `validate_readable_log_path` now requires an existing regular file under
+     `/tmp`, `/var/tmp` or `paths::rescue_dir()`, with no symlink in the final
+     component (a planted `/tmp/x -> /etc/shadow` must not be read through) and
+     ≤ 16 MiB; a missing file still means "no mapfile yet". The same
+     non-following check and component-wise containment (`/tmpfoo` is not inside
+     `/tmp`) applies to output paths, and a symlinked parent resolving outside
+     the allowed roots is refused.
+  3. **Destructive clone with no safety net.** `check_clone_safety` (pure,
+     unit-tested) now refuses a destination that is the same device, is in use
+     (`lsblk` mountpoints on the device *and its children* plus sysfs `holders`,
+     which catches a member of an active md array / LVM VG / dm-crypt mapping
+     that has no mountpoint of its own) or is smaller than the source —
+     unreadable sizes degrade to a warning. `validate_block_device` resolves
+     the **live** root disk through `findmnt /` instead of trusting a hardcoded
+     `sda`/`nvme0n1`/`vda` list, and matches device names partition-aware
+     (`sda1` belongs to `sda`; `sdaa` does not).
+  4. **Options that lied.** TestDisk's `deep_search`/`log_path`/`force` and
+     PhotoRec's `keep_broken`/`max_size` were accepted, shown as applied in the
+     UI, and never reached the tool; `mdadm`'s `action` was forwarded verbatim
+     into `--action=`; `file_types` were spliced into PhotoRec's
+     **comma-separated** `/cmd` grammar (so `"jpg,search"` injected a command);
+     no subprocess except the TestDisk scan had a timeout. Every option is now
+     validated (`DdrescueOptions::validate`, `PhotoRecOptions::validate`,
+     `MdadmOptions::validated_action`) and an un-honourable field is a `400`
+     naming it; the dead fields are gone from the API *and* the UI (TestDisk has
+     no advanced block any more — nothing left to put in one). All subprocesses
+     run through `RescueService::run_output` (kill-on-drop + timeout: probes
+     10 s, `lsblk` 15 s, TestDisk analyse 120 s, TestDisk scan 300 s, mdadm
+     60 s).
+  5. **Root-owned output into a world-writable directory.** The default
+     ddrescue mapfile was `/tmp/ddrescue.log` — shared between runs (a second
+     clone read the first run's map and silently copied nothing while reporting
+     success) and written by a root tool in a directory anyone can plant a
+     symlink in; it is now per-job under the root-owned
+     `paths::rescue_dir()`, with a `GET /api/rescue/ddrescue/mapfile` route
+     reporting it. PhotoRec's recovered tree is `chown -R`'d to the requesting
+     admin (the carve runs as root, so the files were otherwise unreadable to
+     them) and the frontend no longer discards the recovered path it parsed out
+     of the completion message.
+
+  Tests: `rescue` unit 8 → **44**, `sse::progress` unit 20 → **26**, `lib`
+  965 → **999**, `rescue_integration` 28 → **38**, `progress_integration`
+  7 → **8**, E2E `rescue.spec.ts` 53 → **59**.
+
 - **Shares production-ready pass (2026-10-21).** Share fields were formatted
   verbatim into **root-owned** config files, so every one of them was a config
   injection: `name`/`comment`/`path` into `/etc/samba/smb.conf` (a newline in a

@@ -35,7 +35,6 @@
 
   // -- Modes simple/avancé --
   let ddMode: 'simple' | 'advanced' = 'simple';
-  let tdMode: 'simple' | 'advanced' = 'simple';
   let prMode: 'simple' | 'advanced' = 'simple';
   let mdMode: 'simple' | 'advanced' = 'simple';
 
@@ -47,6 +46,7 @@
   let ddRunning = false;
   let ddProgress = 0;
   let ddMessage = '';
+  let ddCancelPending = false;
   // ddrescue advanced
   let ddBlockSize = 512;
   let ddRetryPasses = 0;
@@ -58,20 +58,15 @@
   let tdDevice = '';
   let tdAnalyzing = false;
   let tdResult: any = null;
-  // TestDisk advanced
-  let tdDeepSearch = false;
-  let tdLogPath = '';
-  let tdForce = false;
 
   // -- PhotoRec --
   let prDevice = '';
   let prOutputDir = '/tmp/recovered';
   let prJobId = '';
   let prRunning = false;
+  let prCancelPending = false;
   // PhotoRec advanced
   let prFileTypes: string[] = [];
-  let prKeepBroken = false;
-  let prMaxSize = 0;
   let prPartitionType = '';
 
   const availableFileTypes = ['jpg', 'png', 'gif', 'pdf', 'zip', 'doc', 'xls', 'mp3', 'mp4', 'avi'];
@@ -133,11 +128,18 @@
   // "running" flag. Previously "failed" and connection-error paths never
   // reset that flag at all, leaving the Start button permanently disabled
   // with no way to retry after a real failure.
+  //
+  // onCancelled fires when the job ends in the `cancelled` state (an admin
+  // pressed Cancel and the tool was actually stopped): it must not be
+  // reported as a failure, and it must not be reported as a success either —
+  // a stopped clone has copied *some* of the disk, and saying "clone
+  // completed" would be a lie the user acts on.
   function connectSSE(
     jobId: string,
     onProgress: (pct: number, msg: string) => void,
     onSuccess: (msg: string) => void,
-    onSettle: () => void
+    onSettle: () => void,
+    onCancelled?: (msg: string) => void
   ) {
     const evtSource = new EventSource(`/api/progress/${jobId}`);
     let opened = false;
@@ -153,6 +155,10 @@
           evtSource.close();
           settle();
           onSuccess(data.message || '');
+        } else if (data.state === 'cancelled') {
+          evtSource.close();
+          settle();
+          if (onCancelled) onCancelled(data.message || '');
         } else if (data.state === 'failed') {
           evtSource.close();
           settle();
@@ -197,6 +203,31 @@
     }
   }
 
+  /** Stops a running job for real: `DELETE /api/progress/{job_id}` runs the
+      producer's cancellation hook, which SIGTERMs the tool's process group
+      (see `src/rescue/jobs.rs`). Before 2026-10-21 that endpoint only dropped
+      the job from the tracking map, so the UI had no way to stop a clone that
+      was going to run for hours. */
+  async function cancelJob(jobId: string, setPending: (v: boolean) => void, label: string) {
+    if (!jobId) return;
+    setPending(true);
+    const r = await api.cancelJob(jobId);
+    setPending(false);
+    if (!r.success) {
+      notifyRescueError(r.message || translate('rescue.cancel_failed'));
+      return;
+    }
+    notificationsStore.add({ title: $t('rescue.title'), message: `${label}: ${r.data?.message ?? translate('rescue.cancel_requested')}`, type: 'info' });
+  }
+
+  function cancelDdrescue() {
+    return cancelJob(ddJobId, (v) => (ddCancelPending = v), translate('rescue.start_clone'));
+  }
+
+  function cancelPhotoRec() {
+    return cancelJob(prJobId, (v) => (prCancelPending = v), translate('rescue.start_recovery'));
+  }
+
   async function startDdrescue() {
     if (!ddSource || !ddDest) {
       return;
@@ -218,7 +249,8 @@
       connectSSE(ddJobId,
         (pct, msg) => { ddProgress = pct; ddMessage = msg; },
         () => { ddProgress = 100; ddMessage = translate('rescue.clone_completed'); },
-        () => { ddRunning = false; }
+        () => { ddRunning = false; },
+        (msg) => { ddMessage = msg || translate('rescue.clone_cancelled'); }
       );
     } else {
       ddRunning = false;
@@ -232,10 +264,10 @@
     }
     tdAnalyzing = true;
     tdResult = null;
-    const r = await api.testdiskAnalyze(tdDevice, {
-      deep_search: tdMode === 'advanced' ? tdDeepSearch || undefined : undefined,
-      log_path: tdMode === 'advanced' && tdLogPath ? tdLogPath : undefined,
-    });
+    // No options: the scripted mode always deep-scans and TestDisk writes its
+    // own log, so `deep_search`/`log_path` are rejected by the API now
+    // instead of being accepted and silently ignored.
+    const r = await api.testdiskAnalyze(tdDevice);
     if (r.success && r.data) {
       tdResult = r.data;
     } else {
@@ -249,10 +281,7 @@
       return;
     }
     tdAnalyzing = true;
-    const r = await api.testdiskRebuild(tdDevice, {
-      deep_search: tdMode === 'advanced' ? tdDeepSearch || undefined : undefined,
-      force: tdMode === 'advanced' ? tdForce || undefined : undefined,
-    });
+    const r = await api.testdiskRebuild(tdDevice);
     if (!r.success) {
       notifyRescueError(r.message || translate('rescue.testdisk_rebuild_failed'));
     }
@@ -266,8 +295,6 @@
     prRunning = true;
     const r = await api.photorecRecover(prDevice, prOutputDir, {
       file_types: prMode === 'advanced' && prFileTypes.length > 0 ? prFileTypes : undefined,
-      keep_broken: prMode === 'advanced' ? prKeepBroken || undefined : undefined,
-      max_size: prMode === 'advanced' && prMaxSize > 0 ? prMaxSize : undefined,
       partition_type: prMode === 'advanced' && prPartitionType ? prPartitionType : undefined,
     });
     if (r.success && r.data) {
@@ -276,12 +303,25 @@
         () => {},
         (msg) => {
           // PhotoRec always writes into a numbered sibling of the requested
-          // output directory (e.g. /tmp/recovered.1) — surface the real
-          // path from the completion message so it's not just "done" with
-          // no way to find the recovered files.
+          // output directory (e.g. /tmp/recovered.1) — surface the real path
+          // from the completion message, otherwise the user is left with
+          // "done" and no way to find the recovered files. The backend also
+          // chowns that directory to the requesting admin, since the carve
+          // runs as root and the files would otherwise be unreadable to them.
           const path = msg.match(/Files saved to (.+)$/)?.[1];
+          const message = path
+            ? `${translate('rescue.recovery_completed')} — ${path}`
+            : translate('rescue.recovery_completed');
+          notificationsStore.add({ title: $t('rescue.title'), message, type: 'success' });
         },
-        () => { prRunning = false; }
+        () => { prRunning = false; },
+        (msg) => {
+          notificationsStore.add({
+            title: $t('rescue.title'),
+            message: msg || translate('rescue.recovery_cancelled'),
+            type: 'info',
+          });
+        }
       );
     } else {
       prRunning = false;
@@ -428,6 +468,11 @@
                 <div class="h-full bg-[var(--hv-primary)] transition-[width]" style="width: {ddProgress}%"></div>
               </div>
               <p class="mt-2 mb-0 text-xs text-[var(--hv-neutral-500)] font-[family-name:var(--hv-font-mono)]">{ddMessage}</p>
+              <div class="mt-3">
+                <Button variant="danger" disabled={ddCancelPending} onclick={cancelDdrescue}>
+                  <IconCircleX size={16} /> {$t('rescue.cancel_clone')}
+                </Button>
+              </div>
             </div>
           {/if}
         </SectionCard>
@@ -455,10 +500,6 @@
         <SectionCard title={$t('rescue.td_title')}>
           {#snippet actions()}
             {@render toolBadge('testdisk')}
-            <div class={modeToggle}>
-              <button data-testid="rescue-mode-btn" class:active={tdMode === 'simple'} class={cn(modeBtn, tdMode === 'simple' && 'bg-[var(--hv-primary)] text-white')} onclick={() => (tdMode = 'simple')}>{$t('rescue.mode_simple')}</button>
-              <button data-testid="rescue-mode-btn" class:active={tdMode === 'advanced'} class={cn(modeBtn, tdMode === 'advanced' && 'bg-[var(--hv-primary)] text-white')} onclick={() => (tdMode = 'advanced')}>{$t('rescue.mode_advanced')}</button>
-            </div>
           {/snippet}
           <div class={formGroup}>
             <label class={formLabel} for="rescue-td-device">{$t('rescue.device_to_analyze')}</label>
@@ -470,20 +511,10 @@
             </select>
           </div>
 
-          {#if tdMode === 'advanced'}
-            <div data-testid="rescue-advanced" class="p-4 mb-4 bg-[var(--hv-neutral-50)] border border-dashed border-[var(--hv-border)] rounded-lg">
-              <div class="flex gap-4 mb-4 flex-wrap">
-                <label data-testid="rescue-checkbox" class={checkboxLabel}><input type="checkbox" class="w-4 h-4" bind:checked={tdDeepSearch} /> {$t('rescue.deep_search')}</label>
-              </div>
-              <div class={formGroup}>
-                <label class={formLabel} for="rescue-td-logpath">{$t('rescue.log_path')}</label>
-                <PathField id="rescue-td-logpath" bind:value={tdLogPath} mode="file" placeholder="/tmp/testdisk.log" />
-              </div>
-              <div class="flex gap-4 mb-4 flex-wrap">
-                <label data-testid="rescue-checkbox" class={checkboxLabel}><input type="checkbox" class="w-4 h-4" bind:checked={tdForce} /> {$t('rescue.force_write')}</label>
-              </div>
-            </div>
-          {/if}
+          <!-- No advanced block: the only two settings TestDisk ever offered
+               here (deep scan, custom log path) had no effect — the scripted
+               mode always deep-scans and writes its own log. Rejected by the
+               API rather than shown as an applied-but-ignored switch. -->
 
           <div class="flex gap-3 mt-2 flex-wrap">
             <Button variant="primary" disabled={tdAnalyzing} onclick={analyzeTestDisk}>
@@ -557,13 +588,11 @@
                   <option value="None">{$t('rescue.whole_disk')}</option>
                 </select>
               </div>
-              <div class={formGroup}>
-                <label class={formLabel} for="rescue-pr-maxsize">{$t('rescue.max_file_size')}</label>
-                <input id="rescue-pr-maxsize" class={inpSel} type="number" bind:value={prMaxSize} min="0" />
-              </div>
-              <div class="flex gap-4 mb-4 flex-wrap">
-                <label data-testid="rescue-checkbox" class={checkboxLabel}><input type="checkbox" class="w-4 h-4" bind:checked={prKeepBroken} /> {$t('rescue.keep_broken')}</label>
-              </div>
+              <!-- No "max file size" input and no "keep broken files" switch:
+                   neither has an equivalent in PhotoRec's scripted /cmd
+                   grammar (the only mode that works headless). Both were
+                   accepted by the API and had no effect, so they are gone
+                   rather than kept as switches that change nothing. -->
               <div class={formGroup}>
                 <span class={formLabel}>{$t('rescue.file_types')}</span>
                 <div class="flex flex-wrap gap-2 mt-2">
@@ -583,7 +612,14 @@
           </Button>
 
           {#if prRunning}
-            <div class="mt-4"><Alert variant="info">{$t('rescue.photorec_running')}</Alert></div>
+            <div class="mt-4">
+              <Alert variant="info">{$t('rescue.photorec_running')}</Alert>
+              <div class="mt-3">
+                <Button variant="danger" disabled={prCancelPending} onclick={cancelPhotoRec}>
+                  <IconCircleX size={16} /> {$t('rescue.cancel_recovery')}
+                </Button>
+              </div>
+            </div>
           {/if}
         </SectionCard>
 

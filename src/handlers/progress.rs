@@ -33,7 +33,7 @@
 
 use crate::handlers::admin_guard::require_auth;
 use crate::handlers::AppState;
-use crate::sse::PROGRESS_MANAGER;
+use crate::sse::{CancelOutcome, PROGRESS_MANAGER};
 use crate::utils::ResponseHelper;
 use axum::{
     extract::{Path, State},
@@ -149,7 +149,14 @@ pub async fn handle_get_job_status(
     }
 }
 
-/// Cancel/remove a job
+/// Cancel a job — and actually stop it.
+///
+/// `DELETE /api/progress/{job_id}`. The job's producer registers a
+/// cancellation hook (see [`crate::sse::ProgressManager::register_cancel_hook`]);
+/// running it is what stops the real work. Before 2026-10-21 this handler only
+/// dropped the job from the tracking map and answered "Job cancelled" — a
+/// `sudo ddrescue` clone, a `photorec` carve or a `backup` kept running with no
+/// way to stop it from the UI, while the activity feed showed it gone.
 pub async fn handle_cancel_job(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -159,6 +166,17 @@ pub async fn handle_cancel_job(
         return response;
     }
 
-    PROGRESS_MANAGER.remove_job(&job_id);
-    ResponseHelper::json_success("Job cancelled".to_string())
+    match PROGRESS_MANAGER.cancel_job(&job_id) {
+        CancelOutcome::HookRan => ResponseHelper::json_success(serde_json::json!({
+            "job_id": job_id,
+            "cancelled": true,
+            "message": "Cancellation requested — the running operation is being stopped"
+        })),
+        CancelOutcome::NoHook => ResponseHelper::json_success(serde_json::json!({
+            "job_id": job_id,
+            "cancelled": true,
+            "message": "Job cancelled"
+        })),
+        CancelOutcome::NotFound => ResponseHelper::json_error(format!("Job not found: {}", job_id)),
+    }
 }
