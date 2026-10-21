@@ -451,15 +451,31 @@ Representative endpoints:
 | GET | `/docker/containers` | admin |
 | GET | `/docker/containers/running` | admin |
 | GET | `/docker/images` | admin |
-| PUT | `/docker/containers/{name}/start\|stop\|restart` | admin |
-| GET | `/docker/containers/{name}/logs` | admin |
+| PUT | `/docker/containers/{name}/start\|stop\|restart\|pause\|unpause` | admin |
+| PUT | `/docker/containers/{name}/rename` | admin | body `{name}`; `ComposeManager`-style name validation |
+| POST | `/docker/containers/{name}/kill` | admin | body `{signal?}` — whitelisted (`ALLOWED_SIGNALS`), unknown ⇒ SIGKILL |
+| POST | `/docker/containers/{name}/update` | admin | body `{memory_limit?, cpu_limit?, restart_policy?}` — in place, no recreate |
+| POST | `/docker/containers/{name}/recreate` | admin | pull + rebuild from `inspect`, rename-rollback on failure |
+| POST | `/docker/containers/{name}/exec` | admin | body `{command: string[], timeout_secs?}` → `{stdout, stderr, exit_code}` |
+| GET | `/docker/containers/{name}/inspect` | admin | `ContainerDetail`: state, limits, mounts, ports, networks, env, labels, compose ids |
+| GET | `/docker/containers/{name}/logs` | admin | merged stdout+stderr, `?tail=` (1–5000), `?timestamps=` |
+| POST | `/docker/containers/{name}/logs/ticket` | admin | single-use 30 s ticket for the SSE stream (EventSource can't send the token header) |
+| GET | `/docker/containers/{name}/logs/stream` | ticket | SSE `log` / `end` events; 401 on missing, expired or mismatched ticket |
 | POST | `/docker/containers` | admin |
 | DELETE | `/docker/containers/{name}` | admin |
 | POST | `/docker/images/pull` | admin |
+| POST | `/docker/images/build` | admin | body `{context, dockerfile?, tag, no_cache?, pull?, build_args?}`; context through `PathGuard` |
 | DELETE | `/docker/images/{image_id}` | admin |
 | GET | `/docker/hub/search` | admin |
+| GET/POST | `/docker/volumes` | admin | list (driver, mountpoint, `in_use`, `used_by`) / create `{name, driver?}` |
+| DELETE | `/docker/volumes/{name}` | admin | `?force=` for a volume still attached to a container |
+| GET | `/docker/system/df` | admin | `docker system df` rows + totals |
+| POST | `/docker/prune` | admin | body `{target, all?}`; target ∈ `images\|volumes\|containers\|networks\|builders\|system`, anything else rejected **before** the daemon is called |
+| GET | `/docker/registries` | admin | signed-in hosts only (`auths` keys of `~/.docker/config.json`) |
+| POST | `/docker/registries/login\|logout` | admin | login uses `--password-stdin` |
+| GET/PUT | `/docker/daemon/config` | admin | read / validated write of `daemon.json` (+ `systemctl restart docker`) |
 | GET/POST/DELETE | `/docker/networks` (+ `/{name}`, `/prune`, `/connect`, `/disconnect`) | admin |
-| GET/POST/PUT/DELETE | `/docker/compose/projects` (+ `/{name}/config\|start\|stop\|restart\|services`) | admin |
+| GET/POST/PUT/DELETE | `/docker/compose/projects` (+ `/{name}/config\|start\|stop\|restart\|update\|services`) | admin | `update` = `compose pull` + `up -d` |
 | GET | `/docker/catalog` | auth | manifest-driven app list (15 built-in packages + community stores) + `installed`/`installed_port` |
 | GET | `/docker/catalog/{id}/icon` · `/gallery/{n}` | auth | package icon / screenshot (`id` is namespaced `<store>:<app>`, URL-encoded) |
 | POST | `/docker/catalog/{id}/install` | admin | renders the package's compose template into a project, starts it, writes `.install.toml`, starts the per-app proxy. Body `{port?, alternatives?, environment?}`; hard-gates compatibility, settings and dependencies |

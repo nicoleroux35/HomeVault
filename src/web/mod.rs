@@ -65,9 +65,9 @@ use crate::handlers::{
     },
     compose::{
         handle_compose_available, handle_compose_create, handle_compose_delete, handle_compose_get,
-        handle_compose_get_config, handle_compose_list, handle_compose_restart,
-        handle_compose_services, handle_compose_start, handle_compose_stop, handle_compose_update,
-        handle_compose_validate,
+        handle_compose_get_config, handle_compose_list, handle_compose_pull,
+        handle_compose_restart, handle_compose_services, handle_compose_start, handle_compose_stop,
+        handle_compose_update, handle_compose_validate,
     },
     dashboard::{
         handle_add_widget, handle_cpu_temperature, handle_dashboard_data, handle_disk_io_data,
@@ -77,15 +77,24 @@ use crate::handlers::{
         handle_update_widget_preference, handle_widget_data,
     },
     docker::{
-        handle_docker_available, handle_docker_container_create, handle_docker_container_logs,
-        handle_docker_container_remove, handle_docker_container_restart,
-        handle_docker_container_start, handle_docker_container_stop, handle_docker_containers_list,
-        handle_docker_containers_running, handle_docker_daemon_logs, handle_docker_daemon_start,
-        handle_docker_hub_search, handle_docker_image_pull, handle_docker_image_remove,
+        handle_docker_available, handle_docker_container_create, handle_docker_container_exec,
+        handle_docker_container_inspect, handle_docker_container_kill,
+        handle_docker_container_logs, handle_docker_container_logs_stream,
+        handle_docker_container_logs_ticket, handle_docker_container_pause,
+        handle_docker_container_recreate, handle_docker_container_remove,
+        handle_docker_container_rename, handle_docker_container_restart,
+        handle_docker_container_start, handle_docker_container_stop,
+        handle_docker_container_unpause, handle_docker_container_update,
+        handle_docker_containers_list, handle_docker_containers_running,
+        handle_docker_daemon_config_get, handle_docker_daemon_config_put,
+        handle_docker_daemon_logs, handle_docker_daemon_start, handle_docker_hub_search,
+        handle_docker_image_build, handle_docker_image_pull, handle_docker_image_remove,
         handle_docker_images_list, handle_docker_info, handle_docker_network_connect,
         handle_docker_network_create, handle_docker_network_disconnect, handle_docker_network_get,
         handle_docker_network_prune, handle_docker_network_remove, handle_docker_networks_list,
-        handle_docker_port_check,
+        handle_docker_port_check, handle_docker_prune, handle_docker_registry_list,
+        handle_docker_registry_login, handle_docker_registry_logout, handle_docker_system_df,
+        handle_docker_volume_create, handle_docker_volume_remove, handle_docker_volumes_list,
     },
     docker_catalog::{
         handle_catalog_gallery, handle_catalog_icon, handle_catalog_install,
@@ -713,8 +722,74 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/docker/available", get(handle_docker_available))
         .route("/api/docker/daemon/start", post(handle_docker_daemon_start))
         .route("/api/docker/daemon/logs", get(handle_docker_daemon_logs))
+        .route(
+            "/api/docker/daemon/config",
+            get(handle_docker_daemon_config_get).put(handle_docker_daemon_config_put),
+        )
         .route("/api/docker/port-check", get(handle_docker_port_check))
         .route("/api/docker/hub/search", get(handle_docker_hub_search))
+        // Container detail, extra lifecycle actions, exec, live logs
+        .route(
+            "/api/docker/containers/{name}/inspect",
+            get(handle_docker_container_inspect),
+        )
+        .route(
+            "/api/docker/containers/{name}/pause",
+            axum::routing::put(handle_docker_container_pause),
+        )
+        .route(
+            "/api/docker/containers/{name}/unpause",
+            axum::routing::put(handle_docker_container_unpause),
+        )
+        .route(
+            "/api/docker/containers/{name}/kill",
+            post(handle_docker_container_kill),
+        )
+        .route(
+            "/api/docker/containers/{name}/rename",
+            axum::routing::put(handle_docker_container_rename),
+        )
+        .route(
+            "/api/docker/containers/{name}/update",
+            post(handle_docker_container_update),
+        )
+        .route(
+            "/api/docker/containers/{name}/recreate",
+            post(handle_docker_container_recreate),
+        )
+        .route(
+            "/api/docker/containers/{name}/exec",
+            post(handle_docker_container_exec),
+        )
+        .route(
+            "/api/docker/containers/{name}/logs/ticket",
+            post(handle_docker_container_logs_ticket),
+        )
+        .route(
+            "/api/docker/containers/{name}/logs/stream",
+            get(handle_docker_container_logs_stream),
+        )
+        // Volumes, disk usage, prune, builds, registries
+        .route(
+            "/api/docker/volumes",
+            get(handle_docker_volumes_list).post(handle_docker_volume_create),
+        )
+        .route(
+            "/api/docker/volumes/{name}",
+            delete(handle_docker_volume_remove),
+        )
+        .route("/api/docker/system/df", get(handle_docker_system_df))
+        .route("/api/docker/prune", post(handle_docker_prune))
+        .route("/api/docker/images/build", post(handle_docker_image_build))
+        .route("/api/docker/registries", get(handle_docker_registry_list))
+        .route(
+            "/api/docker/registries/login",
+            post(handle_docker_registry_login),
+        )
+        .route(
+            "/api/docker/registries/logout",
+            post(handle_docker_registry_logout),
+        )
         // Docker Networks
         .route("/api/docker/networks", get(handle_docker_networks_list))
         .route(
@@ -772,6 +847,10 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route(
             "/api/docker/compose/projects/{name}/services",
             get(handle_compose_services),
+        )
+        .route(
+            "/api/docker/compose/projects/{name}/update",
+            post(handle_compose_pull),
         )
         .route(
             "/api/docker/compose/available",

@@ -20,11 +20,22 @@
  */
 
 //! Docker engine service wrapping the docker CLI (containers, images,
-//! networks, daemon control).
+//! networks, volumes, builds, registry credentials, daemon config).
 
 use serde::{Deserialize, Serialize};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 use thiserror::Error;
+
+/// Ceiling for a Docker CLI call that should answer quickly (inspect, ps,
+/// start, stop, rm, network ops). Without it a wedged daemon (a stuck
+/// `dockerd`, an NFS-backed graph driver) would block a request forever.
+pub const SHORT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Ceiling for operations that legitimately take minutes: image pull, build,
+/// `compose up`, `system prune`. Still bounded — an unbounded CLI call is a
+/// hung request and a leaked process.
+pub const LONG_TIMEOUT: Duration = Duration::from_secs(900);
 
 /// All parameters required to create and run a new Docker container.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +122,111 @@ pub enum DockerError {
     ContainerNotFound(String),
     #[error("Command failed: {0}")]
     CommandFailed(String),
+    /// The CLI did not answer within its budget and was killed. Reported
+    /// separately from `CommandFailed` so the UI can say "timed out" instead
+    /// of echoing an empty stderr.
+    #[error("Docker command timed out after {0}s")]
+    Timeout(u64),
+}
+
+/// Run a `docker` command with a hard timeout, capturing both streams.
+///
+/// `std::process::Command::output()` has no timeout at all: a daemon that
+/// stops answering hangs the calling thread indefinitely. Every Docker call in
+/// this module goes through here so the worst case is a bounded failure.
+pub fn run_docker(args: &[&str], timeout: Duration) -> Result<Output, DockerError> {
+    let mut cmd = Command::new("docker");
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    run_command(cmd, timeout)
+}
+
+/// Spawn `cmd`, drain stdout/stderr on two threads, and kill it when
+/// `timeout` elapses. Returns the captured [`Output`].
+pub fn run_command(mut cmd: Command, timeout: Duration) -> Result<Output, DockerError> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = cmd.spawn()?;
+    wait_with_timeout(child, timeout)
+}
+
+/// Same as [`run_command`], but feeds `stdin_data` to the child. Used by
+/// `docker login --password-stdin` and `sudo tee`, which deliberately keep the
+/// secret off the command line (visible in `/proc/<pid>/cmdline` to every
+/// local user).
+pub fn run_command_with_stdin(
+    mut cmd: Command,
+    stdin_data: &str,
+    timeout: Duration,
+) -> Result<Output, DockerError> {
+    use std::io::Write;
+
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    if let Some(mut pipe) = child.stdin.take() {
+        let data = stdin_data.as_bytes().to_vec();
+        // Writing from a thread keeps a large payload from deadlocking
+        // against a child that fills its own stdout before reading stdin.
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(&data);
+        });
+    }
+    wait_with_timeout(child, timeout)
+}
+
+/// Poll `child` until it exits or `timeout` elapses (then SIGKILL it), while
+/// two threads drain its piped streams.
+fn wait_with_timeout(
+    mut child: std::process::Child,
+    timeout: Duration,
+) -> Result<Output, DockerError> {
+    use std::io::Read;
+
+    let mut child_out = child.stdout.take();
+    let mut child_err = child.stderr.take();
+
+    let out_h = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(s) = child_out.as_mut() {
+            let _ = s.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let err_h = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(s) = child_err.as_mut() {
+            let _ = s.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait()? {
+            Some(status) => break status,
+            None => {
+                if Instant::now() >= deadline {
+                    // SIGKILL: `docker` only forwards SIGTERM to the engine,
+                    // which may itself be the thing that is stuck.
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(DockerError::Timeout(timeout.as_secs()));
+                }
+                std::thread::sleep(Duration::from_millis(40));
+            }
+        }
+    };
+
+    Ok(Output {
+        status,
+        stdout: out_h.join().unwrap_or_default(),
+        stderr: err_h.join().unwrap_or_default(),
+    })
 }
 
 /// A Docker container with runtime stats (memory, CPU) and update availability.
@@ -239,9 +355,7 @@ pub struct DockerService;
 impl DockerService {
     /// Return `true` if the `docker info` command succeeds.
     pub fn is_available() -> bool {
-        Command::new("docker")
-            .args(["info"])
-            .output()
+        run_docker(&["info"], SHORT_TIMEOUT)
             .map(|o| o.status.success())
             .unwrap_or(false)
     }
@@ -253,14 +367,15 @@ impl DockerService {
     /// so callers that want the list to appear instantly (the Docker page's
     /// first paint) pass `false` and fill the stats in afterwards.
     pub fn get_containers(include_stats: bool) -> Result<Vec<Container>, DockerError> {
-        let output = Command::new("docker")
-            .args([
+        let output = run_docker(
+            &[
                 "ps",
                 "-a",
                 "--format",
                 "{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.State}}|{{.CreatedAt}}|{{.Ports}}|{{.Label \"com.docker.compose.project\"}}",
-            ])
-            .output()?;
+            ],
+            SHORT_TIMEOUT,
+        )?;
 
         if !output.status.success() {
             return Err(DockerError::CommandFailed(
@@ -363,14 +478,15 @@ impl DockerService {
     /// (memory, CPU, cumulative network I/O, cumulative block I/O).
     fn get_container_stats(
     ) -> Result<std::collections::HashMap<String, ContainerStats>, DockerError> {
-        let output = Command::new("docker")
-            .args([
+        let output = run_docker(
+            &[
                 "stats",
                 "--no-stream",
                 "--format",
                 "{{.ID}}|{{.MemUsage}}|{{.CPUPerc}}|{{.NetIO}}|{{.BlockIO}}",
-            ])
-            .output()?;
+            ],
+            SHORT_TIMEOUT,
+        )?;
 
         let mut stats = std::collections::HashMap::new();
 
@@ -482,9 +598,10 @@ impl DockerService {
 
     /// Return the set of all locally cached image `repository:tag` strings.
     fn get_local_image_tags() -> Result<std::collections::HashSet<String>, DockerError> {
-        let output = Command::new("docker")
-            .args(["images", "--format", "{{.Repository}}:{{.Tag}}"])
-            .output()?;
+        let output = run_docker(
+            &["images", "--format", "{{.Repository}}:{{.Tag}}"],
+            SHORT_TIMEOUT,
+        )?;
 
         let mut tags = std::collections::HashSet::new();
         if output.status.success() {
@@ -525,13 +642,14 @@ impl DockerService {
 
     /// List only running containers with stats.
     pub fn get_running_containers() -> Result<Vec<Container>, DockerError> {
-        let output = Command::new("docker")
-            .args([
+        let output = run_docker(
+            &[
                 "ps",
                 "--format",
                 "{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.State}}|{{.CreatedAt}}|{{.Ports}}|{{.Label \"com.docker.compose.project\"}}",
-            ])
-            .output()?;
+            ],
+            SHORT_TIMEOUT,
+        )?;
 
         if !output.status.success() {
             return Err(DockerError::CommandFailed(
@@ -588,7 +706,7 @@ impl DockerService {
 
     /// Return the full `docker inspect` JSON for a container.
     pub fn get_container_info(name: &str) -> Result<String, DockerError> {
-        let output = Command::new("docker").args(["inspect", name]).output()?;
+        let output = run_docker(&["inspect", name], SHORT_TIMEOUT)?;
 
         if !output.status.success() {
             return Err(DockerError::ContainerNotFound(name.to_string()));
@@ -598,17 +716,59 @@ impl DockerService {
     }
 
     /// Return the last `lines` of log output from a container.
+    ///
+    /// `docker logs` writes the container's stdout to *stdout* and its stderr
+    /// to *stderr*; a container that logs on stderr (most daemons) used to
+    /// come back with an empty log view. Both streams are returned, stdout
+    /// first, so nothing is silently dropped.
     pub fn get_container_logs(name: &str, lines: u32) -> Result<String, DockerError> {
-        let output = Command::new("docker")
-            .args(["logs", "--tail", &lines.to_string(), name])
-            .output()?;
+        let output = Self::get_container_logs_full(name, lines, false, false)?;
+        Ok(output)
+    }
 
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    /// Full log read: bounded `tail`, optional timestamps, optional
+    /// stderr-only view. Both streams are merged (stdout then stderr) and
+    /// trailing newlines normalised.
+    pub fn get_container_logs_full(
+        name: &str,
+        lines: u32,
+        timestamps: bool,
+        stderr_only: bool,
+    ) -> Result<String, DockerError> {
+        let tail = lines.to_string();
+        let mut args = vec!["logs", "--tail", tail.as_str()];
+        if timestamps {
+            args.push("--timestamps");
+        }
+        if stderr_only {
+            args.push("--stderr-only");
+        } else {
+            // Keep both streams: `docker logs` without a stream flag already
+            // emits both, so nothing extra is needed here.
+        }
+        args.push(name);
+
+        let output = run_docker(&args, SHORT_TIMEOUT)?;
+        if !output.status.success() {
+            return Err(DockerError::CommandFailed(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+
+        let mut merged = String::from_utf8_lossy(&output.stdout).to_string();
+        let err = String::from_utf8_lossy(&output.stderr);
+        if !err.trim().is_empty() {
+            if !merged.is_empty() && !merged.ends_with('\n') {
+                merged.push('\n');
+            }
+            merged.push_str(&err);
+        }
+        Ok(merged)
     }
 
     /// Start a stopped container by name.
     pub fn start_container(name: &str) -> Result<(), DockerError> {
-        let output = Command::new("docker").args(["start", name]).output()?;
+        let output = run_docker(&["start", name], SHORT_TIMEOUT)?;
 
         if !output.status.success() {
             return Err(DockerError::CommandFailed(
@@ -621,7 +781,7 @@ impl DockerService {
 
     /// Stop a running container by name.
     pub fn stop_container(name: &str) -> Result<(), DockerError> {
-        let output = Command::new("docker").args(["stop", name]).output()?;
+        let output = run_docker(&["stop", name], SHORT_TIMEOUT)?;
 
         if !output.status.success() {
             return Err(DockerError::CommandFailed(
@@ -634,7 +794,7 @@ impl DockerService {
 
     /// Restart a container by name.
     pub fn restart_container(name: &str) -> Result<(), DockerError> {
-        let output = Command::new("docker").args(["restart", name]).output()?;
+        let output = run_docker(&["restart", name], SHORT_TIMEOUT)?;
 
         if !output.status.success() {
             return Err(DockerError::CommandFailed(
@@ -647,13 +807,14 @@ impl DockerService {
 
     /// List all locally cached Docker images.
     pub fn get_images() -> Result<Vec<Image>, DockerError> {
-        let output = Command::new("docker")
-            .args([
+        let output = run_docker(
+            &[
                 "images",
                 "--format",
                 "{{.ID}}|{{.Repository}}|{{.Tag}}|{{.Size}}|{{.CreatedAt}}",
-            ])
-            .output()?;
+            ],
+            SHORT_TIMEOUT,
+        )?;
 
         if !output.status.success() {
             return Err(DockerError::CommandFailed(
@@ -681,9 +842,10 @@ impl DockerService {
 
     /// Return daemon information (version, OS, container/image counts).
     pub fn get_docker_info() -> Result<DockerInfo, DockerError> {
-        let output = Command::new("docker")
-            .args(["info", "--format", "{{.ServerVersion}}|{{.Architecture}}|{{.OSType}}|{{.Containers}}|{{.ContainersRunning}}|{{.ContainersPaused}}|{{.ContainersStopped}}|{{.Images}}"])
-            .output()?;
+        let output = run_docker(
+            &["info", "--format", "{{.ServerVersion}}|{{.Architecture}}|{{.OSType}}|{{.Containers}}|{{.ContainersRunning}}|{{.ContainersPaused}}|{{.ContainersStopped}}|{{.Images}}"],
+            SHORT_TIMEOUT,
+        )?;
 
         if !output.status.success() {
             return Err(DockerError::CommandFailed(
@@ -708,9 +870,10 @@ impl DockerService {
 
     /// Return the Docker server version string.
     pub fn get_docker_version() -> Result<String, DockerError> {
-        let output = Command::new("docker")
-            .args(["version", "--format", "{{.Server.Version}}"])
-            .output()?;
+        let output = run_docker(
+            &["version", "--format", "{{.Server.Version}}"],
+            SHORT_TIMEOUT,
+        )?;
 
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -845,7 +1008,8 @@ impl DockerService {
             args.extend(words);
         }
 
-        let output = Command::new("docker").args(&args).output()?;
+        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let output = run_docker(&refs, LONG_TIMEOUT)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -863,7 +1027,8 @@ impl DockerService {
         }
         args.push(name.to_string());
 
-        let output = Command::new("docker").args(&args).output()?;
+        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let output = run_docker(&arg_refs, SHORT_TIMEOUT)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -875,9 +1040,8 @@ impl DockerService {
 
     /// Pull a Docker image from the configured registry.
     pub fn pull_image(image: &str, tag: &str) -> Result<(), DockerError> {
-        let output = Command::new("docker")
-            .args(["pull", &format!("{}:{}", image, tag)])
-            .output()?;
+        let reference = format!("{}:{}", image, tag);
+        let output = run_docker(&["pull", &reference], LONG_TIMEOUT)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -895,7 +1059,8 @@ impl DockerService {
         }
         args.push(image_id.to_string());
 
-        let output = Command::new("docker").args(&args).output()?;
+        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let output = run_docker(&arg_refs, SHORT_TIMEOUT)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -961,14 +1126,15 @@ impl DockerService {
 
     /// Get networks a container is connected to via `docker inspect`.
     fn get_container_networks(container_id: &str) -> Vec<String> {
-        let output = Command::new("docker")
-            .args([
+        let output = run_docker(
+            &[
                 "inspect",
                 "--format",
                 "{{.NetworkSettings.Networks}}",
                 container_id,
-            ])
-            .output();
+            ],
+            SHORT_TIMEOUT,
+        );
 
         match output {
             Ok(o) if o.status.success() => {
@@ -1032,10 +1198,10 @@ impl DockerService {
     /// only, no stats).
     fn published_host_ports() -> std::collections::HashMap<u16, String> {
         let mut map = std::collections::HashMap::new();
-        let Ok(out) = Command::new("docker")
-            .args(["ps", "-a", "--format", "{{.Names}}|{{.Ports}}"])
-            .output()
-        else {
+        let Ok(out) = run_docker(
+            &["ps", "-a", "--format", "{{.Names}}|{{.Ports}}"],
+            SHORT_TIMEOUT,
+        ) else {
             return map;
         };
         if !out.status.success() {
@@ -1108,16 +1274,25 @@ impl DockerService {
     /// grants (see `configure_sudoers`). Enabling first makes the daemon survive
     /// a reboot; starting is what actually brings it up now.
     pub fn start_daemon() -> Result<(), DockerError> {
-        let enable = Command::new("sudo")
-            .args(["systemctl", "enable", "docker"])
-            .output();
         // `enable` failing (e.g. already enabled) is not fatal — only `start`
         // determines success.
-        let _ = enable;
+        let _ = run_command(
+            {
+                let mut c = Command::new("sudo");
+                c.args(["systemctl", "enable", "docker"]);
+                c
+            },
+            SHORT_TIMEOUT,
+        );
 
-        let output = Command::new("sudo")
-            .args(["systemctl", "start", "docker"])
-            .output()?;
+        let output = run_command(
+            {
+                let mut c = Command::new("sudo");
+                c.args(["systemctl", "start", "docker"]);
+                c
+            },
+            LONG_TIMEOUT,
+        )?;
 
         if !output.status.success() {
             return Err(DockerError::CommandFailed(
@@ -1132,16 +1307,15 @@ impl DockerService {
     /// the daemon is down. `journalctl` is already granted to `homevault` via the
     /// System Journal sudoers rule, so this needs no new grant.
     pub fn get_daemon_logs(lines: u32) -> Result<String, DockerError> {
-        let output = Command::new("sudo")
-            .args([
-                "journalctl",
-                "-u",
-                "docker",
-                "--no-pager",
-                "-n",
-                &lines.to_string(),
-            ])
-            .output()?;
+        let n = lines.to_string();
+        let output = run_command(
+            {
+                let mut c = Command::new("sudo");
+                c.args(["journalctl", "-u", "docker", "--no-pager", "-n", n.as_str()]);
+                c
+            },
+            SHORT_TIMEOUT,
+        )?;
 
         if !output.status.success() {
             return Err(DockerError::CommandFailed(
@@ -1172,14 +1346,15 @@ pub struct DockerNetwork {
 
 /// List all Docker networks.
 pub fn get_networks() -> Result<Vec<DockerNetwork>, DockerError> {
-    let output = Command::new("docker")
-        .args([
+    let output = run_docker(
+        &[
             "network",
             "ls",
             "--format",
             "{{.ID}}|{{.Name}}|{{.Driver}}|{{.Scope}}",
-        ])
-        .output()?;
+        ],
+        SHORT_TIMEOUT,
+    )?;
 
     if !output.status.success() {
         return Err(DockerError::CommandFailed(
@@ -1217,15 +1392,16 @@ pub fn get_networks() -> Result<Vec<DockerNetwork>, DockerError> {
 
 /// Get a single Docker network by name or ID with full details.
 pub fn get_network(name: &str) -> Result<DockerNetwork, DockerError> {
-    let output = Command::new("docker")
-        .args([
+    let output = run_docker(
+        &[
             "network",
             "inspect",
             name,
             "--format",
             "{{.ID}}|{{.Name}}|{{.Driver}}|{{.Scope}}|{{.Internal}}",
-        ])
-        .output()?;
+        ],
+        SHORT_TIMEOUT,
+    )?;
 
     if !output.status.success() {
         return Err(DockerError::CommandFailed(
@@ -1263,15 +1439,16 @@ pub fn get_network(name: &str) -> Result<DockerNetwork, DockerError> {
 
 /// Get container names connected to a network via `docker network inspect`.
 fn get_network_containers(network_id: &str) -> Vec<String> {
-    let output = Command::new("docker")
-        .args([
+    let output = run_docker(
+        &[
             "network",
             "inspect",
             network_id,
             "--format",
             "{{range $k, $v := .Containers}}{{$k}} {{end}}",
-        ])
-        .output();
+        ],
+        SHORT_TIMEOUT,
+    );
 
     match output {
         Ok(o) if o.status.success() => {
@@ -1282,9 +1459,7 @@ fn get_network_containers(network_id: &str) -> Vec<String> {
             // Get container names from the IDs
             raw.split_whitespace()
                 .filter_map(|id| {
-                    let out = Command::new("docker")
-                        .args(["inspect", "--format", "{{.Name}}", id])
-                        .output()
+                    let out = run_docker(&["inspect", "--format", "{{.Name}}", id], SHORT_TIMEOUT)
                         .ok()?;
                     if out.status.success() {
                         let name = String::from_utf8_lossy(&out.stdout)
@@ -1304,15 +1479,16 @@ fn get_network_containers(network_id: &str) -> Vec<String> {
 
 /// Get IPAM info (subnet, gateway, internal) for a network.
 fn get_network_ipam(network_id: &str) -> (Option<String>, Option<String>, bool) {
-    let output = Command::new("docker")
-        .args([
+    let output = run_docker(
+        &[
             "network",
             "inspect",
             network_id,
             "--format",
             "{{(index .IPAM.Config 0).Subnet}}|{{(index .IPAM.Config 0).Gateway}}|{{.Internal}}",
-        ])
-        .output();
+        ],
+        SHORT_TIMEOUT,
+    );
 
     match output {
         Ok(o) if o.status.success() => {
@@ -1368,7 +1544,8 @@ pub fn create_network(
 
     args.push(name.to_string());
 
-    let output = Command::new("docker").args(&args).output()?;
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let output = run_docker(&arg_refs, SHORT_TIMEOUT)?;
 
     if !output.status.success() {
         return Err(DockerError::CommandFailed(
@@ -1381,9 +1558,7 @@ pub fn create_network(
 
 /// Remove a Docker network by name or ID.
 pub fn remove_network(name: &str) -> Result<(), DockerError> {
-    let output = Command::new("docker")
-        .args(["network", "rm", name])
-        .output()?;
+    let output = run_docker(&["network", "rm", name], SHORT_TIMEOUT)?;
 
     if !output.status.success() {
         return Err(DockerError::CommandFailed(
@@ -1396,9 +1571,7 @@ pub fn remove_network(name: &str) -> Result<(), DockerError> {
 
 /// Connect a container to a network.
 pub fn connect_container_to_network(container: &str, network: &str) -> Result<(), DockerError> {
-    let output = Command::new("docker")
-        .args(["network", "connect", network, container])
-        .output()?;
+    let output = run_docker(&["network", "connect", network, container], SHORT_TIMEOUT)?;
 
     if !output.status.success() {
         return Err(DockerError::CommandFailed(
@@ -1414,9 +1587,10 @@ pub fn disconnect_container_from_network(
     container: &str,
     network: &str,
 ) -> Result<(), DockerError> {
-    let output = Command::new("docker")
-        .args(["network", "disconnect", network, container])
-        .output()?;
+    let output = run_docker(
+        &["network", "disconnect", network, container],
+        SHORT_TIMEOUT,
+    )?;
 
     if !output.status.success() {
         return Err(DockerError::CommandFailed(
@@ -1425,6 +1599,1200 @@ pub fn disconnect_container_from_network(
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Volumes
+// ---------------------------------------------------------------------------
+
+/// A Docker named volume, with the containers currently mounting it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Volume {
+    pub name: String,
+    pub driver: String,
+    pub scope: String,
+    pub mountpoint: String,
+    /// `true` when at least one container (running or stopped) mounts it —
+    /// Docker refuses to remove those without `--force`.
+    pub in_use: bool,
+    /// Names of the containers mounting it (empty when unused).
+    pub used_by: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Disk usage / prune
+// ---------------------------------------------------------------------------
+
+/// One row of `docker system df`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiskUsageRow {
+    /// `Images`, `Containers`, `Local Volumes`, `Build Cache`.
+    pub kind: String,
+    pub total: u64,
+    pub active: u64,
+    pub size: String,
+    pub reclaimable: String,
+}
+
+/// Parsed `docker system df` summary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiskUsage {
+    pub rows: Vec<DiskUsageRow>,
+    pub total_size: String,
+    pub total_reclaimable: String,
+}
+
+/// What a prune operation targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PruneTarget {
+    /// Dangling images (`-a` also removes unused tagged images).
+    Images,
+    Volumes,
+    Containers,
+    Networks,
+    Builders,
+    /// `docker system prune` — stopped containers, unused networks, dangling
+    /// images, build cache. `-a` widens it to unused images and (with
+    /// `--volumes`) anonymous volumes.
+    System,
+}
+
+impl PruneTarget {
+    /// Parse the wire value. Unknown values are rejected rather than silently
+    /// mapping to a destructive default.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "images" => Some(Self::Images),
+            "volumes" => Some(Self::Volumes),
+            "containers" => Some(Self::Containers),
+            "networks" => Some(Self::Networks),
+            "builders" => Some(Self::Builders),
+            "system" => Some(Self::System),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Images => "images",
+            Self::Volumes => "volumes",
+            Self::Containers => "containers",
+            Self::Networks => "networks",
+            Self::Builders => "builders",
+            Self::System => "system",
+        }
+    }
+}
+
+/// Outcome of a prune run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PruneReport {
+    pub target: String,
+    /// Space freed, as Docker prints it (e.g. `"1.2GB"`), when available.
+    pub reclaimed: String,
+    /// Full CLI output, for the "details" disclosure in the UI.
+    pub message: String,
+}
+
+// ---------------------------------------------------------------------------
+// Container detail (parsed `docker inspect`)
+// ---------------------------------------------------------------------------
+
+/// A mount attached to a container (bind, volume or tmpfs).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerMount {
+    /// `bind`, `volume` or `tmpfs`.
+    pub kind: String,
+    pub source: String,
+    pub destination: String,
+    pub read_only: bool,
+    /// Volume name, for `kind == "volume"`.
+    pub name: Option<String>,
+}
+
+/// Everything the container detail panel shows, parsed from `docker inspect`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerDetail {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub image_id: String,
+    /// Image digest (`sha256:…`) when the daemon reports one.
+    pub image_digest: Option<String>,
+    pub created: String,
+    pub state: String,
+    pub status: String,
+    pub exit_code: Option<i64>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub restart_count: i64,
+    pub pid: Option<i64>,
+    pub command: Vec<String>,
+    pub entrypoint: Vec<String>,
+    pub working_dir: String,
+    pub hostname: String,
+    pub user: String,
+    pub restart_policy: String,
+    pub privileged: bool,
+    /// Memory limit in bytes (`0` when unlimited).
+    pub memory_limit: Option<u64>,
+    pub nano_cpus: Option<i64>,
+    pub env: Vec<String>,
+    pub labels: Vec<(String, String)>,
+    pub mounts: Vec<ContainerMount>,
+    pub ports: Vec<PortMapping>,
+    pub networks: Vec<String>,
+    pub ip_address: Option<String>,
+    /// `healthy`, `unhealthy`, `starting`, or `None` when no healthcheck.
+    pub health: Option<String>,
+    pub log_driver: Option<String>,
+    pub log_path: Option<String>,
+    pub compose_project: Option<String>,
+    pub compose_service: Option<String>,
+}
+
+/// Result of a non-interactive `docker exec`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecResult {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
+}
+
+/// Parameters for building an image from a Dockerfile.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildImageRequest {
+    /// Host directory used as the build context. Must exist.
+    pub context: String,
+    /// Dockerfile name or path, relative to the context (default
+    /// `Dockerfile`).
+    #[serde(default)]
+    pub dockerfile: Option<String>,
+    /// `name:tag` to tag the built image with.
+    pub tag: String,
+    #[serde(default)]
+    pub no_cache: bool,
+    /// Always attempt to pull a newer base image.
+    #[serde(default)]
+    pub pull: bool,
+    #[serde(default)]
+    pub build_args: Vec<EnvVar>,
+}
+
+// ---------------------------------------------------------------------------
+// Log-stream tickets
+// ---------------------------------------------------------------------------
+
+/// A redeemed log-stream ticket: the exact parameters the admin asked for, so
+/// the SSE endpoint never trusts a query string for them.
+#[derive(Debug, Clone)]
+pub struct LogTicket {
+    pub container: String,
+    pub tail: u32,
+    pub follow: bool,
+    pub timestamps: bool,
+}
+
+/// How long a log ticket stays valid. Short on purpose: it is redeemed by the
+/// `EventSource` created immediately after the ticket response.
+const LOG_TICKET_TTL: Duration = Duration::from_secs(30);
+
+static LOG_TICKETS: once_cell::sync::Lazy<
+    parking_lot::RwLock<std::collections::HashMap<String, (LogTicket, Instant)>>,
+> = once_cell::sync::Lazy::new(|| parking_lot::RwLock::new(std::collections::HashMap::new()));
+
+/// Mint a single-use ticket for the container log SSE stream.
+///
+/// `EventSource` cannot send the `X-Session-Token` header, so the frontend
+/// exchanges its session for this ticket over a normal authenticated request —
+/// the same pattern as the notifications and explorer watchers. The session
+/// token never travels in a URL.
+pub fn issue_log_ticket(container: &str, tail: u32, follow: bool, timestamps: bool) -> String {
+    let ticket = uuid::Uuid::new_v4().to_string();
+    let now = Instant::now();
+    let mut tickets = LOG_TICKETS.write();
+    tickets.retain(|_, (_, issued)| now.duration_since(*issued) < LOG_TICKET_TTL);
+    tickets.insert(
+        ticket.clone(),
+        (
+            LogTicket {
+                container: container.to_string(),
+                tail,
+                follow,
+                timestamps,
+            },
+            now,
+        ),
+    );
+    ticket
+}
+
+/// Redeem a log ticket. Single use, expires after [`LOG_TICKET_TTL`].
+pub fn consume_log_ticket(ticket: &str) -> Option<LogTicket> {
+    let (entry, issued) = LOG_TICKETS.write().remove(ticket)?;
+    (issued.elapsed() < LOG_TICKET_TTL).then_some(entry)
+}
+
+// ---------------------------------------------------------------------------
+// Extended operations
+// ---------------------------------------------------------------------------
+
+impl DockerService {
+    // ── Volumes ────────────────────────────────────────────────────────────
+
+    /// List named volumes and the containers mounting them.
+    pub fn list_volumes() -> Result<Vec<Volume>, DockerError> {
+        let output = run_docker(
+            &[
+                "volume",
+                "ls",
+                "--format",
+                "{{.Name}}|{{.Driver}}|{{.Scope}}|{{.Mountpoint}}",
+            ],
+            SHORT_TIMEOUT,
+        )?;
+
+        if !output.status.success() {
+            return Err(DockerError::CommandFailed(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+
+        // One `docker ps` call gives every container's mounts; deriving the
+        // volume → container map from it avoids an inspect per volume.
+        let usage = Self::volume_usage();
+
+        let mut volumes = Vec::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let parts: Vec<&str> = line.split('|').collect();
+            if parts.len() < 4 {
+                continue;
+            }
+            let name = parts[0].trim().to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let used_by = usage.get(&name).cloned().unwrap_or_default();
+            volumes.push(Volume {
+                in_use: !used_by.is_empty(),
+                used_by,
+                name,
+                driver: parts[1].trim().to_string(),
+                scope: parts[2].trim().to_string(),
+                mountpoint: parts[3].trim().to_string(),
+            });
+        }
+        volumes.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(volumes)
+    }
+
+    /// Map volume name → container names mounting it, from
+    /// `docker ps -a --format '{{.Names}}|{{.Mounts}}'`.
+    fn volume_usage() -> std::collections::HashMap<String, Vec<String>> {
+        let mut map: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        let Ok(out) = run_docker(
+            &["ps", "-a", "--format", "{{.Names}}|{{.Mounts}}"],
+            SHORT_TIMEOUT,
+        ) else {
+            return map;
+        };
+        if !out.status.success() {
+            return map;
+        }
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let Some((name, mounts)) = line.split_once('|') else {
+                continue;
+            };
+            for entry in mounts.split(',') {
+                // Each entry looks like `myvol` or `myvol:/data` or a bind
+                // path. A named volume has no `/` in its first token.
+                let first = entry.trim().split(':').next().unwrap_or("").trim();
+                if first.is_empty() || first.contains('/') {
+                    continue;
+                }
+                map.entry(first.to_string())
+                    .or_default()
+                    .push(name.trim().to_string());
+            }
+        }
+        map
+    }
+
+    /// Create a named volume. `name` is validated by the handler; `driver`
+    /// defaults to `local`.
+    pub fn create_volume(
+        name: &str,
+        driver: Option<&str>,
+        labels: &[(String, String)],
+    ) -> Result<(), DockerError> {
+        let mut args: Vec<String> = vec!["volume".into(), "create".into()];
+        if let Some(d) = driver.filter(|d| !d.is_empty() && *d != "local") {
+            args.push("--driver".into());
+            args.push(d.to_string());
+        }
+        for (k, v) in labels {
+            args.push("--label".into());
+            args.push(format!("{}={}", k, v));
+        }
+        args.push(name.to_string());
+        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+        let output = run_docker(&refs, SHORT_TIMEOUT)?;
+        if !output.status.success() {
+            return Err(DockerError::CommandFailed(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Remove a named volume. `force` allows removing one still in use.
+    pub fn remove_volume(name: &str, force: bool) -> Result<(), DockerError> {
+        let mut args = vec!["volume", "rm"];
+        if force {
+            args.push("-f");
+        }
+        args.push(name);
+        let output = run_docker(&args, SHORT_TIMEOUT)?;
+        if !output.status.success() {
+            return Err(DockerError::CommandFailed(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    // ── Prune / disk usage ─────────────────────────────────────────────────
+
+    /// Parse `docker system df` into structured rows.
+    ///
+    /// The table is fixed-width and `Local Volumes` / `Build Cache` contain a
+    /// space, so the type is matched by prefix and the remaining columns are
+    /// read from the right (size and reclaimable may themselves be `1.2GB
+    /// (66%)`). A row that doesn't parse is skipped rather than guessed at.
+    pub fn parse_system_df(stdout: &str) -> DiskUsage {
+        let mut rows = Vec::new();
+        let mut total_size = String::new();
+        let mut total_reclaimable = String::new();
+
+        for line in stdout.lines() {
+            let line = line.trim_end();
+            if line.trim().is_empty() {
+                continue;
+            }
+            let kind = if line.starts_with("Images") {
+                "Images"
+            } else if line.starts_with("Containers") {
+                "Containers"
+            } else if line.starts_with("Local Volumes") {
+                "Local Volumes"
+            } else if line.starts_with("Build Cache") {
+                "Build Cache"
+            } else {
+                continue;
+            };
+
+            let rest = line[kind.len()..].trim();
+            // `<total> <active> <size> <reclaimable>` — reclaimable may carry
+            // a trailing percentage in parentheses.
+            let tokens: Vec<&str> = rest.split_whitespace().collect();
+            if tokens.len() < 4 {
+                continue;
+            }
+            let total = tokens[0].parse::<u64>().unwrap_or(0);
+            let active = tokens[1].parse::<u64>().unwrap_or(0);
+            let size = tokens[2].to_string();
+            let mut reclaimable = tokens[3].to_string();
+            if tokens.len() > 4 {
+                reclaimable.push(' ');
+                reclaimable.push_str(&tokens[4..].join(" "));
+            }
+
+            if kind == "Images" {
+                total_size = size.clone();
+            }
+            if kind == "Images" {
+                total_reclaimable = reclaimable.clone();
+            }
+            rows.push(DiskUsageRow {
+                kind: kind.to_string(),
+                total,
+                active,
+                size,
+                reclaimable,
+            });
+        }
+
+        DiskUsage {
+            rows,
+            total_size,
+            total_reclaimable,
+        }
+    }
+
+    /// `docker system df`, parsed.
+    pub fn disk_usage() -> Result<DiskUsage, DockerError> {
+        let output = run_docker(&["system", "df"], SHORT_TIMEOUT)?;
+        if !output.status.success() {
+            return Err(DockerError::CommandFailed(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+        Ok(Self::parse_system_df(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
+    }
+
+    /// Reclaim space. `all` widens images (unused tagged ones) and system
+    /// (unused images + anonymous volumes).
+    pub fn prune(target: PruneTarget, all: bool) -> Result<PruneReport, DockerError> {
+        let mut args: Vec<String> = match target {
+            PruneTarget::Images => vec!["image".into(), "prune".into()],
+            PruneTarget::Volumes => vec!["volume".into(), "prune".into()],
+            PruneTarget::Containers => vec!["container".into(), "prune".into()],
+            PruneTarget::Networks => vec!["network".into(), "prune".into()],
+            PruneTarget::Builders => vec!["builder".into(), "prune".into()],
+            PruneTarget::System => vec!["system".into(), "prune".into()],
+        };
+        args.push("-f".into());
+        if all && matches!(target, PruneTarget::Images | PruneTarget::System) {
+            args.push("-a".into());
+        }
+        if all && matches!(target, PruneTarget::System) {
+            args.push("--volumes".into());
+        }
+        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+        let output = run_docker(&refs, LONG_TIMEOUT)?;
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if !output.status.success() {
+            return Err(DockerError::CommandFailed(if stderr.is_empty() {
+                stdout
+            } else {
+                stderr
+            }));
+        }
+
+        Ok(PruneReport {
+            target: target.as_str().to_string(),
+            reclaimed: Self::parse_reclaimed(&stdout).unwrap_or_default(),
+            message: stdout,
+        })
+    }
+
+    /// Pull `Total reclaimed space: 1.2GB` out of a prune's output.
+    ///
+    /// `docker builder prune` is the odd one out: it prints a table whose last
+    /// line is `Total:\t12.29kB` instead of the sentence every other prune
+    /// command emits, so that shape is handled too.
+    fn parse_reclaimed(stdout: &str) -> Option<String> {
+        if let Some(size) = stdout
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("Total reclaimed space:"))
+        {
+            return Some(size.trim().to_string());
+        }
+        stdout.lines().find_map(|l| {
+            let l = l.trim();
+            let rest = l.strip_prefix("Total:")?;
+            // Guard against a bare header line with no size.
+            rest.split_whitespace().last().map(|s| s.to_string())
+        })
+    }
+
+    // ── Container lifecycle extras ─────────────────────────────────────────
+
+    /// Freeze a running container (`docker pause`).
+    pub fn pause_container(name: &str) -> Result<(), DockerError> {
+        Self::expect_ok(run_docker(&["pause", name], SHORT_TIMEOUT)?)
+    }
+
+    /// Resume a paused container (`docker unpause`).
+    pub fn unpause_container(name: &str) -> Result<(), DockerError> {
+        Self::expect_ok(run_docker(&["unpause", name], SHORT_TIMEOUT)?)
+    }
+
+    /// Send a signal (default SIGKILL) to a container.
+    pub fn kill_container(name: &str, signal: Option<&str>) -> Result<(), DockerError> {
+        let mut args = vec!["kill"];
+        if let Some(sig) = signal.filter(|s| !s.is_empty()) {
+            args.push("--signal");
+            args.push(sig);
+        }
+        args.push(name);
+        Self::expect_ok(run_docker(&args, SHORT_TIMEOUT)?)
+    }
+
+    /// Rename a container.
+    pub fn rename_container(name: &str, new_name: &str) -> Result<(), DockerError> {
+        Self::expect_ok(run_docker(&["rename", name, new_name], SHORT_TIMEOUT)?)
+    }
+
+    /// Change a running/stopped container's resource limits and restart
+    /// policy in place (`docker update`) — no recreation, no data loss.
+    pub fn update_container(
+        name: &str,
+        memory: Option<&str>,
+        cpus: Option<&str>,
+        restart_policy: Option<&str>,
+    ) -> Result<(), DockerError> {
+        let mut args = vec!["update"];
+        let mut touched = false;
+        if let Some(m) = memory.filter(|m| !m.trim().is_empty()) {
+            args.push("--memory");
+            args.push(m.trim());
+            touched = true;
+        }
+        if let Some(c) = cpus.filter(|c| !c.trim().is_empty()) {
+            args.push("--cpus");
+            args.push(c.trim());
+            touched = true;
+        }
+        if let Some(p) = restart_policy.filter(|p| !p.trim().is_empty()) {
+            if !matches!(p, "no" | "on-failure" | "always" | "unless-stopped") {
+                return Err(DockerError::CommandFailed(format!(
+                    "Unsupported restart policy: {}",
+                    p
+                )));
+            }
+            args.push("--restart");
+            args.push(p);
+            touched = true;
+        }
+        if !touched {
+            return Err(DockerError::CommandFailed(
+                "Nothing to update: provide memory, cpus or a restart policy".to_string(),
+            ));
+        }
+        args.push(name);
+        Self::expect_ok(run_docker(&args, SHORT_TIMEOUT)?)
+    }
+
+    /// Map a successful `docker` [`Output`] to `Ok(())`, else the stderr text.
+    fn expect_ok(output: Output) -> Result<(), DockerError> {
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            Err(DockerError::CommandFailed(if stderr.is_empty() {
+                "docker command failed".to_string()
+            } else {
+                stderr
+            }))
+        }
+    }
+
+    // ── Inspect ────────────────────────────────────────────────────────────
+
+    /// Read and parse `docker inspect` into a [`ContainerDetail`].
+    pub fn get_container_detail(name: &str) -> Result<ContainerDetail, DockerError> {
+        let raw = Self::get_container_info(name)?;
+        Self::parse_container_detail(&raw)
+    }
+
+    /// Parse the JSON array `docker inspect` emits (it always returns an
+    /// array, even for a single container).
+    pub fn parse_container_detail(raw: &str) -> Result<ContainerDetail, DockerError> {
+        let value: serde_json::Value = serde_json::from_str(raw).map_err(|e| {
+            DockerError::CommandFailed(format!("Failed to parse container inspect: {}", e))
+        })?;
+        let obj = match &value {
+            serde_json::Value::Array(arr) => arr.first().cloned().unwrap_or_default(),
+            other => other.clone(),
+        };
+        if !obj.is_object() {
+            return Err(DockerError::ContainerNotFound(
+                "inspect returned no container".to_string(),
+            ));
+        }
+
+        let s = |ptr: &str| -> Option<String> {
+            obj.pointer(ptr)
+                .and_then(|v| v.as_str())
+                .map(|v| v.to_string())
+        };
+        let str_list = |ptr: &str| -> Vec<String> {
+            obj.pointer(ptr)
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(|x| x.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let num = |ptr: &str| -> Option<i64> { obj.pointer(ptr).and_then(|v| v.as_i64()) };
+
+        let env = str_list("/Config/Env");
+        let labels: Vec<(String, String)> = obj
+            .pointer("/Config/Labels")
+            .and_then(|v| v.as_object())
+            .map(|m| {
+                let mut out: Vec<(String, String)> = m
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+                    .collect();
+                out.sort_by(|a, b| a.0.cmp(&b.0));
+                out
+            })
+            .unwrap_or_default();
+
+        let mounts = obj
+            .pointer("/Mounts")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .map(|m| ContainerMount {
+                        kind: m
+                            .get("Type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        source: m
+                            .get("Source")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        destination: m
+                            .get("Destination")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        read_only: m
+                            .get("RW")
+                            .and_then(|v| v.as_bool())
+                            .map(|rw| !rw)
+                            .unwrap_or(false),
+                        name: m
+                            .get("Name")
+                            .and_then(|v| v.as_str())
+                            .filter(|n| !n.is_empty())
+                            .map(|n| n.to_string()),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let networks: Vec<String> = obj
+            .pointer("/NetworkSettings/Networks")
+            .and_then(|v| v.as_object())
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default();
+        let ip_address = obj
+            .pointer("/NetworkSettings/Networks")
+            .and_then(|v| v.as_object())
+            .and_then(|m| {
+                m.values().find_map(|n| {
+                    n.get("IPAddress")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
+                })
+            });
+
+        let ports: Vec<PortMapping> = obj
+            .pointer("/HostConfig/PortBindings")
+            .and_then(|v| v.as_object())
+            .map(|m| {
+                let mut out = Vec::new();
+                for (container_spec, binds) in m {
+                    let (cport, proto) = container_spec
+                        .split_once('/')
+                        .unwrap_or((container_spec.as_str(), "tcp"));
+                    let Ok(container_port) = cport.parse::<u16>() else {
+                        continue;
+                    };
+                    let Some(binds) = binds.as_array() else {
+                        continue;
+                    };
+                    for b in binds {
+                        let host = b
+                            .get("HostPort")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .trim();
+                        if let Ok(host_port) = host.parse::<u16>() {
+                            if !out.iter().any(|p: &PortMapping| {
+                                p.host_port == host_port
+                                    && p.container_port == container_port
+                                    && p.protocol == proto
+                            }) {
+                                out.push(PortMapping {
+                                    host_port,
+                                    container_port,
+                                    protocol: proto.to_string(),
+                                });
+                            }
+                        }
+                    }
+                }
+                out
+            })
+            .unwrap_or_default();
+
+        let name = s("/Name")
+            .map(|n| n.trim_start_matches('/').to_string())
+            .unwrap_or_default();
+
+        Ok(ContainerDetail {
+            id: s("/Id").unwrap_or_default(),
+            name,
+            image: s("/Config/Image").unwrap_or_default(),
+            image_id: s("/Image").unwrap_or_default(),
+            image_digest: s("/Config/Image")
+                .filter(|i| i.contains('@'))
+                .map(|i| i.split('@').nth(1).unwrap_or("").to_string()),
+            created: s("/Created").unwrap_or_default(),
+            state: s("/State/Status").unwrap_or_default(),
+            status: s("/State/Status").unwrap_or_default(),
+            exit_code: num("/State/ExitCode"),
+            started_at: s("/State/StartedAt"),
+            finished_at: s("/State/FinishedAt"),
+            restart_count: num("/RestartCount").unwrap_or(0),
+            pid: num("/State/Pid"),
+            command: str_list("/Config/Cmd"),
+            entrypoint: str_list("/Config/Entrypoint"),
+            working_dir: s("/Config/WorkingDir").unwrap_or_default(),
+            hostname: s("/Config/Hostname").unwrap_or_default(),
+            user: s("/Config/User").unwrap_or_default(),
+            restart_policy: s("/HostConfig/RestartPolicy/Name").unwrap_or_else(|| "no".to_string()),
+            privileged: obj
+                .pointer("/HostConfig/Privileged")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            memory_limit: num("/HostConfig/Memory").map(|m| m as u64),
+            nano_cpus: num("/HostConfig/NanoCpus"),
+            env,
+            labels,
+            mounts,
+            ports,
+            networks,
+            ip_address,
+            health: s("/State/Health/Status"),
+            log_driver: s("/HostConfig/LogConfig/Type"),
+            log_path: s("/LogPath"),
+            compose_project: obj
+                .pointer("/Config/Labels/com.docker.compose.project")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            compose_service: obj
+                .pointer("/Config/Labels/com.docker.compose.service")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+        })
+    }
+
+    // ── Image update / recreate ────────────────────────────────────────────
+
+    /// Rebuild the `docker run` argument list for an existing container from
+    /// its `docker inspect` JSON, so it can be recreated on a newer image
+    /// without the user re-entering anything.
+    ///
+    /// Deliberately replayed: image, name, env, published ports, mounts,
+    /// restart policy, network(s), command/entrypoint, working dir, hostname,
+    /// user, privileged, memory/CPU limits, DNS. Deliberately *not* replayed:
+    /// runtime state (`State.*`), and HomeVault-own labels are dropped while
+    /// `com.docker.compose.*` labels are dropped too (the container is no
+    /// longer the compose one; compose would otherwise adopt it).
+    pub fn run_args_from_inspect(raw: &str) -> Result<Vec<String>, DockerError> {
+        let detail = Self::parse_container_detail(raw)?;
+        if detail.image.is_empty() {
+            return Err(DockerError::CommandFailed(
+                "Container has no image reference".to_string(),
+            ));
+        }
+
+        let mut args: Vec<String> = vec!["run".into(), "-d".into()];
+        args.push("--name".into());
+        args.push(detail.name.clone());
+
+        for port in &detail.ports {
+            args.push("-p".into());
+            args.push(format!(
+                "{}:{}/{}",
+                port.host_port, port.container_port, port.protocol
+            ));
+        }
+
+        for mount in &detail.mounts {
+            let spec = match mount.kind.as_str() {
+                "volume" => {
+                    let src = mount
+                        .name
+                        .clone()
+                        .filter(|n| !n.is_empty())
+                        .unwrap_or_else(|| mount.source.clone());
+                    format!("{}:{}", src, mount.destination)
+                }
+                "tmpfs" => continue,
+                _ => format!("{}:{}", mount.source, mount.destination),
+            };
+            args.push("-v".into());
+            args.push(if mount.read_only {
+                format!("{}:ro", spec)
+            } else {
+                spec
+            });
+        }
+
+        for entry in &detail.env {
+            args.push("-e".into());
+            args.push(entry.clone());
+        }
+
+        if detail.restart_policy != "no" {
+            args.push("--restart".into());
+            args.push(detail.restart_policy.clone());
+        }
+        if !detail.working_dir.is_empty() {
+            args.push("-w".into());
+            args.push(detail.working_dir.clone());
+        }
+        if !detail.hostname.is_empty() {
+            args.push("-h".into());
+            args.push(detail.hostname.clone());
+        }
+        if !detail.user.is_empty() {
+            args.push("-u".into());
+            args.push(detail.user.clone());
+        }
+        if detail.privileged {
+            args.push("--privileged".into());
+        }
+        if let Some(mem) = detail.memory_limit.filter(|m| *m > 0) {
+            args.push("-m".into());
+            args.push(mem.to_string());
+        }
+        if let Some(nano) = detail.nano_cpus.filter(|n| *n > 0) {
+            args.push("--cpus".into());
+            args.push(format!("{:.2}", nano as f64 / 1_000_000_000.0));
+        }
+
+        // `docker inspect` reports the *effective* network; `bridge` is the
+        // default and passing it explicitly is harmless but noisy.
+        for net in &detail.networks {
+            if net != "bridge" {
+                args.push("--network".into());
+                args.push(net.clone());
+            }
+        }
+
+        for label in &detail.labels {
+            if label.0.starts_with("com.docker.compose.") {
+                continue;
+            }
+            args.push("--label".into());
+            args.push(format!("{}={}", label.0, label.1));
+        }
+
+        // `--entrypoint` must precede the image. It takes a single string, so
+        // it is only replayed when the container's entrypoint is a single
+        // argument — otherwise the image's own entrypoint is reused, which is
+        // what a container created from the same image has anyway.
+        if detail.entrypoint.len() == 1 {
+            args.push("--entrypoint".into());
+            args.push(detail.entrypoint[0].clone());
+        }
+
+        args.push(detail.image.clone());
+        for cmd in &detail.command {
+            args.push(cmd.clone());
+        }
+
+        Ok(args)
+    }
+
+    /// Pull the container's image and recreate the container from it,
+    /// preserving every setting. Returns the new container id (stdout of
+    /// `docker run`).
+    ///
+    /// The old container is renamed first and only removed once the new one
+    /// started; on failure it is renamed back, so a failed update never
+    /// leaves the user without a container.
+    pub fn recreate_container(name: &str) -> Result<String, DockerError> {
+        let raw = Self::get_container_info(name)?;
+        let detail = Self::parse_container_detail(&raw)?;
+
+        // 1. Pull first: a failed pull must not touch the running container.
+        let image_ref = detail.image.clone();
+        let pull = run_docker(&["pull", &image_ref], LONG_TIMEOUT)?;
+        if !pull.status.success() {
+            return Err(DockerError::CommandFailed(format!(
+                "Pull failed: {}",
+                String::from_utf8_lossy(&pull.stderr).trim()
+            )));
+        }
+
+        // 2. Rebuild the run arguments from the pre-pull inspect (same spec).
+        let args = Self::run_args_from_inspect(&raw)?;
+
+        // 3. Park the old container under a temporary name.
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let parked = format!("{}-hv-old-{}", name, stamp);
+        Self::expect_ok(run_docker(&["rename", name, &parked], SHORT_TIMEOUT)?)?;
+
+        // 4. Start the replacement.
+        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        match run_docker(&refs, LONG_TIMEOUT) {
+            Ok(out) if out.status.success() => {
+                // 5. Success: drop the parked container (best effort — a
+                // failure here leaves a stopped leftover, not a broken app).
+                let _ = run_docker(&["rm", "-f", &parked], SHORT_TIMEOUT);
+                Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+            }
+            Ok(out) => {
+                let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                // Roll back: the user must keep a working container.
+                let _ = run_docker(&["rename", &parked, name], SHORT_TIMEOUT);
+                Err(DockerError::CommandFailed(format!(
+                    "Recreate failed: {}",
+                    if err.is_empty() {
+                        "docker run failed"
+                    } else {
+                        &err
+                    }
+                )))
+            }
+            Err(e) => {
+                let _ = run_docker(&["rename", &parked, name], SHORT_TIMEOUT);
+                Err(e)
+            }
+        }
+    }
+
+    // ── Logs (streaming) ───────────────────────────────────────────────────
+
+    /// Build the `docker logs` command used by the SSE log follower.
+    ///
+    /// Returned as a [`Command`] (not run here) so the caller can spawn it and
+    /// read line by line; `run_docker` buffers, which is the opposite of what
+    /// a live tail needs.
+    pub fn logs_command(name: &str, lines: u32, follow: bool, timestamps: bool) -> Command {
+        let mut cmd = Command::new("docker");
+        cmd.arg("logs").arg("--tail").arg(lines.to_string());
+        if follow {
+            cmd.arg("--follow");
+        }
+        if timestamps {
+            cmd.arg("--timestamps");
+        }
+        cmd.arg(name)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd
+    }
+
+    // ── Exec ───────────────────────────────────────────────────────────────
+
+    /// Run a command inside a running container (`docker exec`, no TTY) and
+    /// return its output. Admin-only at the handler level.
+    pub fn exec_in_container(
+        name: &str,
+        command: &[String],
+        timeout: Duration,
+    ) -> Result<ExecResult, DockerError> {
+        if command.is_empty() {
+            return Err(DockerError::CommandFailed("No command given".to_string()));
+        }
+        let mut args: Vec<String> = vec!["exec".into(), name.to_string()];
+        args.extend(command.iter().cloned());
+        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+        // A non-zero exit is a normal result (the command ran and failed), not
+        // a transport error: report its code instead of raising.
+        match run_docker(&refs, timeout) {
+            Ok(out) => Ok(ExecResult {
+                stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+                stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+                exit_code: out.status.code().unwrap_or(-1),
+            }),
+            Err(DockerError::Timeout(secs)) => Err(DockerError::Timeout(secs)),
+            Err(e) => Err(e),
+        }
+    }
+
+    // ── Image build ────────────────────────────────────────────────────────
+
+    /// `docker build` a context directory. Returns the build log.
+    pub fn build_image(req: &BuildImageRequest) -> Result<String, DockerError> {
+        if req.tag.trim().is_empty() {
+            return Err(DockerError::CommandFailed(
+                "Image tag is required".to_string(),
+            ));
+        }
+        let context = std::path::Path::new(&req.context);
+        if !context.is_dir() {
+            return Err(DockerError::CommandFailed(format!(
+                "Build context is not a directory: {}",
+                req.context
+            )));
+        }
+
+        let mut args: Vec<String> = vec!["build".into(), "-t".into(), req.tag.trim().to_string()];
+        if let Some(df) = req.dockerfile.as_deref().filter(|d| !d.trim().is_empty()) {
+            args.push("-f".into());
+            args.push(df.trim().to_string());
+        }
+        if req.no_cache {
+            args.push("--no-cache".into());
+        }
+        if req.pull {
+            args.push("--pull".into());
+        }
+        for a in &req.build_args {
+            args.push("--build-arg".into());
+            args.push(format!("{}={}", a.key, a.value));
+        }
+        args.push(req.context.clone());
+        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+        let output = run_docker(&refs, LONG_TIMEOUT)?;
+        let log = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if !output.status.success() {
+            return Err(DockerError::CommandFailed(if log.trim().is_empty() {
+                "docker build failed".to_string()
+            } else {
+                log
+            }));
+        }
+        Ok(log)
+    }
+
+    // ── Registries ─────────────────────────────────────────────────────────
+
+    /// `docker login` with the password on stdin (never on the command line).
+    pub fn registry_login(
+        registry: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<(), DockerError> {
+        if username.trim().is_empty() {
+            return Err(DockerError::CommandFailed(
+                "Username is required".to_string(),
+            ));
+        }
+        let registry = registry.trim();
+        let mut cmd = Command::new("docker");
+        cmd.arg("login");
+        if !registry.is_empty() {
+            cmd.arg(registry);
+        }
+        cmd.arg("--username").arg(username);
+        cmd.arg("--password-stdin");
+
+        let out = run_command_with_stdin(cmd, password, SHORT_TIMEOUT)?;
+        if !out.status.success() {
+            return Err(DockerError::CommandFailed(
+                String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `docker logout`.
+    pub fn registry_logout(registry: &str) -> Result<(), DockerError> {
+        let registry = registry.trim();
+        let args: Vec<&str> = if registry.is_empty() {
+            vec!["logout"]
+        } else {
+            vec!["logout", registry]
+        };
+        Self::expect_ok(run_docker(&args, SHORT_TIMEOUT)?)
+    }
+
+    /// Registries currently holding credentials, read from
+    /// `~/.docker/config.json` (`auths` keys). Never returns the credentials
+    /// themselves.
+    pub fn registry_list() -> Vec<String> {
+        let path = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/root"))
+            .join(".docker/config.json");
+        let Ok(raw) = std::fs::read_to_string(path) else {
+            return Vec::new();
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            return Vec::new();
+        };
+        let mut out: Vec<String> = value
+            .pointer("/auths")
+            .and_then(|v| v.as_object())
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default();
+        out.sort();
+        out
+    }
+
+    // ── Daemon configuration ───────────────────────────────────────────────
+
+    /// Path of the daemon configuration file.
+    pub fn daemon_config_path() -> std::path::PathBuf {
+        std::path::PathBuf::from("/etc/docker/daemon.json")
+    }
+
+    /// Current `daemon.json` (empty string when absent).
+    pub fn read_daemon_config() -> Result<String, DockerError> {
+        match std::fs::read_to_string(Self::daemon_config_path()) {
+            Ok(s) => Ok(s),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+            Err(e) => Err(DockerError::Io(e)),
+        }
+    }
+
+    /// Validate `daemon.json` content: it must be a JSON object. This runs
+    /// before writing, because a malformed file makes `dockerd` refuse to
+    /// start — i.e. writing blindly can take Docker down.
+    pub fn validate_daemon_config(raw: &str) -> Result<(), DockerError> {
+        let value: serde_json::Value = serde_json::from_str(raw)
+            .map_err(|e| DockerError::CommandFailed(format!("Invalid JSON: {}", e)))?;
+        if !value.is_object() {
+            return Err(DockerError::CommandFailed(
+                "daemon.json must be a JSON object".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Write `daemon.json` (through `sudo tee`, the service runs as root) and
+    /// restart the daemon so it takes effect. Returns the restart output.
+    pub fn write_daemon_config(raw: &str) -> Result<String, DockerError> {
+        Self::validate_daemon_config(raw)?;
+
+        let mut cmd = Command::new("sudo");
+        cmd.args(["tee", "/etc/docker/daemon.json"]);
+        let out = run_command_with_stdin(cmd, raw, SHORT_TIMEOUT)?;
+        if !out.status.success() {
+            return Err(DockerError::CommandFailed(
+                String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            ));
+        }
+
+        let restart = run_command(
+            {
+                let mut c = Command::new("sudo");
+                c.args(["systemctl", "restart", "docker"]);
+                c
+            },
+            LONG_TIMEOUT,
+        )?;
+        if !restart.status.success() {
+            return Err(DockerError::CommandFailed(format!(
+                "Configuration saved, but restarting Docker failed: {}",
+                String::from_utf8_lossy(&restart.stderr).trim()
+            )));
+        }
+        Ok("Configuration saved and Docker restarted".to_string())
+    }
 }
 
 #[cfg(test)]
@@ -1524,5 +2892,215 @@ mod tests {
         // BlockIO is frequently "0B / 0B".
         assert_eq!(DockerService::parse_io_pair("0B / 0B"), (Some(0), Some(0)));
         assert_eq!(DockerService::parse_io_pair(""), (None, None));
+    }
+
+    // ── Prune targets ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_prune_target_roundtrip_and_rejects_unknown() {
+        for t in [
+            PruneTarget::Images,
+            PruneTarget::Volumes,
+            PruneTarget::Containers,
+            PruneTarget::Networks,
+            PruneTarget::Builders,
+            PruneTarget::System,
+        ] {
+            assert_eq!(PruneTarget::parse(t.as_str()), Some(t));
+        }
+        // An unknown target must never fall back to a destructive default.
+        assert_eq!(PruneTarget::parse("everything"), None);
+        assert_eq!(PruneTarget::parse(""), None);
+    }
+
+    #[test]
+    fn test_parse_reclaimed() {
+        let out = "Deleted Volumes:\nmyvol\n\nTotal reclaimed space: 1.2GB\n";
+        assert_eq!(
+            DockerService::parse_reclaimed(out).as_deref(),
+            Some("1.2GB")
+        );
+        assert_eq!(DockerService::parse_reclaimed("nothing deleted"), None);
+        // `docker builder prune` reports a table ending in `Total:\t<size>`
+        // instead of the "Total reclaimed space:" sentence.
+        let builders = "ID\t\t\t\tRECLAIMABLE\tSIZE\t\tLAST ACCESSED\n\
+                        h15j3fd8a6ewc92iv2m57exc7*\ttrue\t8.192kB\t8 days ago\n\
+                        Total:\t12.29kB";
+        assert_eq!(
+            DockerService::parse_reclaimed(builders).as_deref(),
+            Some("12.29kB")
+        );
+        // A header-only table must not yield a bogus size.
+        assert_eq!(DockerService::parse_reclaimed("Total:"), None);
+    }
+
+    // ── `docker system df` ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_system_df_real_output() {
+        // Verbatim shape of `docker system df` (Docker 24+).
+        let out = "\
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          5         2         1.234GB   800.5MB (64%)
+Containers      3         1         12.3MB    0B (0%)
+Local Volumes   2         1         40MB      20MB (50%)
+Build Cache     0         0         0B        0B
+";
+        let df = DockerService::parse_system_df(out);
+        assert_eq!(df.rows.len(), 4);
+
+        let images = &df.rows[0];
+        assert_eq!(images.kind, "Images");
+        assert_eq!(images.total, 5);
+        assert_eq!(images.active, 2);
+        assert_eq!(images.size, "1.234GB");
+        assert_eq!(images.reclaimable, "800.5MB (64%)");
+
+        // The two-word kinds must not be mistaken for a generic row.
+        assert_eq!(df.rows[2].kind, "Local Volumes");
+        assert_eq!(df.rows[3].kind, "Build Cache");
+        assert_eq!(df.total_size, "1.234GB");
+        assert_eq!(df.total_reclaimable, "800.5MB (64%)");
+    }
+
+    #[test]
+    fn test_parse_system_df_ignores_header_and_junk() {
+        let df = DockerService::parse_system_df("TYPE TOTAL ACTIVE SIZE RECLAIMABLE\nnonsense\n");
+        assert!(df.rows.is_empty());
+        assert!(df.total_size.is_empty());
+    }
+
+    // ── Container inspect ──────────────────────────────────────────────────
+
+    /// Trimmed but structurally faithful `docker inspect` output.
+    const INSPECT_FIXTURE: &str = r#"[{
+      "Id": "abc123",
+      "Created": "2026-10-01T10:00:00Z",
+      "Path": "/init",
+      "Name": "/jellyfin",
+      "Image": "sha256:deadbeef",
+      "LogPath": "/var/lib/docker/containers/abc/abc-json.log",
+      "RestartCount": 2,
+      "State": {"Status": "running", "ExitCode": 0, "Pid": 4242,
+                "StartedAt": "2026-10-01T10:00:05Z", "FinishedAt": "0001-01-01T00:00:00Z",
+                "Health": {"Status": "healthy"}},
+      "Config": {
+        "Hostname": "jellyfin",
+        "User": "1000",
+        "Image": "jellyfin/jellyfin:latest",
+        "Env": ["PUID=1000", "TZ=Europe/Paris"],
+        "Cmd": ["/jellyfin/jellyfin"],
+        "Entrypoint": ["/init"],
+        "WorkingDir": "/config",
+        "Labels": {
+          "com.docker.compose.project": "jellyfin",
+          "com.docker.compose.service": "jellyfin",
+          "org.example.keep": "yes"
+        }
+      },
+      "HostConfig": {
+        "Privileged": false,
+        "Memory": 2147483648,
+        "NanoCpus": 2000000000,
+        "RestartPolicy": {"Name": "unless-stopped"},
+        "LogConfig": {"Type": "json-file"},
+        "PortBindings": {"8096/tcp": [{"HostIp": "0.0.0.0", "HostPort": "8096"}]}
+      },
+      "Mounts": [
+        {"Type": "bind", "Source": "/srv/jf/config", "Destination": "/config", "RW": true},
+        {"Type": "volume", "Name": "jf_cache", "Source": "/var/lib/docker/volumes/jf_cache/_data",
+         "Destination": "/cache", "RW": false}
+      ],
+      "NetworkSettings": {"Networks": {"bridge": {"IPAddress": "172.17.0.2"}}}
+    }]"#;
+
+    #[test]
+    fn test_parse_container_detail_fields() {
+        let d = DockerService::parse_container_detail(INSPECT_FIXTURE).expect("parse");
+
+        assert_eq!(d.id, "abc123");
+        assert_eq!(d.name, "jellyfin", "leading slash must be stripped");
+        assert_eq!(d.image, "jellyfin/jellyfin:latest");
+        assert_eq!(d.state, "running");
+        assert_eq!(d.health.as_deref(), Some("healthy"));
+        assert_eq!(d.restart_count, 2);
+        assert_eq!(d.pid, Some(4242));
+        assert_eq!(d.user, "1000");
+        assert_eq!(d.working_dir, "/config");
+        assert_eq!(d.restart_policy, "unless-stopped");
+        assert_eq!(d.memory_limit, Some(2_147_483_648));
+        assert_eq!(d.nano_cpus, Some(2_000_000_000));
+        assert!(!d.privileged);
+        assert_eq!(d.env, vec!["PUID=1000", "TZ=Europe/Paris"]);
+        assert_eq!(d.compose_project.as_deref(), Some("jellyfin"));
+        assert_eq!(d.compose_service.as_deref(), Some("jellyfin"));
+        assert_eq!(d.networks, vec!["bridge"]);
+        assert_eq!(d.ip_address.as_deref(), Some("172.17.0.2"));
+        assert_eq!(d.ports.len(), 1);
+        assert_eq!(d.ports[0].host_port, 8096);
+        assert_eq!(d.ports[0].container_port, 8096);
+
+        assert_eq!(d.mounts.len(), 2);
+        assert_eq!(d.mounts[0].kind, "bind");
+        assert!(!d.mounts[0].read_only);
+        assert_eq!(d.mounts[1].name.as_deref(), Some("jf_cache"));
+        assert!(d.mounts[1].read_only, "RW:false must mean read-only");
+
+        // Labels are sorted by key.
+        assert_eq!(d.labels[0].0, "com.docker.compose.project");
+        assert!(d.labels.iter().any(|(k, _)| k == "org.example.keep"));
+    }
+
+    #[test]
+    fn test_parse_container_detail_rejects_garbage() {
+        assert!(DockerService::parse_container_detail("not json").is_err());
+        assert!(DockerService::parse_container_detail("[]").is_err());
+        assert!(DockerService::parse_container_detail("null").is_err());
+    }
+
+    #[test]
+    fn test_run_args_from_inspect_replays_settings() {
+        let args = DockerService::run_args_from_inspect(INSPECT_FIXTURE).expect("args");
+
+        assert_eq!(args[0], "run");
+        assert!(args.contains(&"-d".to_string()));
+
+        let joined = args.join(" ");
+        assert!(joined.contains("--name jellyfin"));
+        assert!(joined.contains("-p 8096:8096/tcp"));
+        assert!(joined.contains("-v /srv/jf/config:/config"));
+        // A named volume is replayed by name, not by its host path.
+        assert!(joined.contains("-v jf_cache:/cache:ro"));
+        assert!(joined.contains("-e PUID=1000"));
+        assert!(joined.contains("--restart unless-stopped"));
+        assert!(joined.contains("-w /config"));
+        assert!(joined.contains("-h jellyfin"));
+        assert!(joined.contains("-u 1000"));
+        assert!(joined.contains("-m 2147483648"));
+        assert!(joined.contains("--cpus 2.00"));
+        assert!(joined.contains("--entrypoint /init"));
+
+        // Compose labels are dropped (the container is no longer compose's),
+        // other user labels survive.
+        assert!(!joined.contains("com.docker.compose.project"));
+        assert!(joined.contains("--label org.example.keep=yes"));
+
+        // The image precedes the command.
+        let img = args
+            .iter()
+            .position(|a| a == "jellyfin/jellyfin:latest")
+            .unwrap();
+        let cmd = args.iter().position(|a| a == "/jellyfin/jellyfin").unwrap();
+        assert!(img < cmd, "IMAGE must come before COMMAND: {:?}", args);
+        assert_eq!(cmd, args.len() - 1);
+    }
+
+    #[test]
+    fn test_run_args_from_inspect_skips_default_bridge_network() {
+        let args = DockerService::run_args_from_inspect(INSPECT_FIXTURE).unwrap();
+        assert!(
+            !args.iter().any(|a| a == "--network"),
+            "the default bridge network must not be passed explicitly"
+        );
     }
 }

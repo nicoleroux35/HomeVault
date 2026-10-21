@@ -1,6 +1,6 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-19 — current version: 1.0.0
+Last updated: 2026-10-20 — current version: 1.0.0
 
 ## Current state
 
@@ -10,7 +10,11 @@ encryption/SMART health), RAID (mdadm/ZFS/Btrfs creation), shares
 (SMB/NFS/FTP/WebDAV/SFTP), file explorer, backups (restic), cloud sync
 (rclone), network, security
 (antivirus/anti-ransomware/firewall), web terminal, VPN (WireGuard/
-OpenVPN), downloader (aria2), Syncthing, Docker + application catalog,
+OpenVPN), downloader (aria2), Syncthing, Docker + application catalog
+(volumes, disk-usage reporting and prune, container inspect/exec/pause/
+rename/in-place limits, live log streaming, image builds, private
+registries, `daemon.json` editing, update-to-newest-image — all
+2026-10-20),
 virtual machines (Incus), AI assistant (Ollama + RAG, plus an MCP gateway
 for external agents), health, system journal, transfer quotas, historical
 metrics (1 h / 24 h / 7 d), a generic scheduled-task engine (commands,
@@ -54,6 +58,31 @@ fixed and listed under "Fixed on 2026-10-12" below.
 - Keep auditing "under real conditions" (real backend, no mocks) every
   new page, following the methodology already applied to each guide in
   `docs/guides/` (results in `TESTING.md`).
+
+**Fixed on 2026-10-20 — Docker production-ready:**
+
+The Docker module was audited end to end and every gap closed in one pass:
+**volumes** (list/create/delete, in-use detection), **disk usage**
+(`docker system df`) with **prune** (images / volumes / builders / system —
+unknown targets rejected before the daemon is contacted), **container
+inspect**, **exec**, **pause/unpause**, **kill** (whitelisted signals),
+**rename**, **in-place limit updates**, **update to the newest image**
+(pull + recreate with rename rollback), **live log streaming** over a
+single-use SSE ticket (merged stdout+stderr, tail size, timestamps, follow),
+**image builds** from a path-guarded host folder, **private registries**
+(`--password-stdin`, credentials never read back), a **`daemon.json`
+editor** validated before it is written, and **Compose update**
+(`compose pull` + `up -d`). Two systemic defects went with them: no Docker
+CLI call had a timeout (a wedged daemon parked a Tokio worker forever) and
+every mutation ran on the async runtime (one slow `docker` call stalled all
+concurrent requests) — both fixed by `run_docker`/`wait_with_timeout` and a
+`spawn_blocking` wrapper. Tests: `docker.rs` 9 → 17 unit tests, new
+`tests/docker_integration.rs` (10), `npm run check` 0/0, `npm run build` OK,
+and the E2E suite re-run against a live daemon — **123 passed / 9 skipped /
+0 failed** across firefox + chromium, which itself caught three real UI
+defects (popover menus clipped by the card's `overflow-hidden`, Escape not
+closing them from the trigger, a racy count in test 5.2). See
+`docs/guides/docker.md` → "Production hardening".
 
 **Fixed on 2026-10-12, on explicit request ("we start with #1", then
 "keep going" twice, then "termine"):**
