@@ -64,6 +64,43 @@ fixed and listed under "Fixed on 2026-10-12" below.
   new page, following the methodology already applied to each guide in
   `docs/guides/` (results in `TESTING.md`).
 
+**Fixed on 2026-10-21 — Users/Groups production-ready:**
+
+Deleting an account did not delete the Linux account behind it, and demoting an
+admin did not take its sudo away. Four holes, all closed by the new
+`src/host_accounts.rs` (`HostAccountService`):
+
+1. `DELETE /users/{u}` dropped the row only. A deleted admin kept a working
+   Linux login *and* — admin status is derived from `homevault_admin` — a
+   working HomeVault **admin** login that the next PAM sign-in recreated.
+   `userdel` now runs **before** the row delete (retryable on failure); a
+   PAM-mirrored row whose Linux user still exists is refused, since HomeVault
+   did not create it.
+2. Demotion cleared only `homevault_admin`, leaving `sudo`/`wheel`, and the
+   session kept its `is_admin` snapshot (up to 30 days). All three groups are
+   revoked **before** the role write, the demoted account is signed out, and
+   `get_session` re-derives `is_admin` from the current role.
+3. Locking mirrored nothing to the host (`usermod -L/-U` now does).
+4. A password reset on a PAM-mirrored account did nothing (sentinel hash);
+   `chpasswd` on stdin now follows it.
+
+Guard rails: username gate before any command, system-account refusal
+(`uid < 1000` / `>= 65534`), 20 s timeout on `tokio::process`, `userdel`
+without `-r` (home removal stays the explicit `delete_home_folder` choice).
+
+Groups: members must be existing HomeVault users (each one gets a Linux
+account); blank names and >500 members refused; `DELETE /groups/{name}` purges
+all four display-name references, `share_permissions` included; `GET
+/users/{u}/groups` is admin-or-self; and every `GroupService` call goes through
+`run_group_op` (`spawn_blocking`, 15 s) instead of blocking a Tokio worker.
+
+Tests: `host_accounts` unit 14, `users_integration` 79, `groups_integration`
+38, `groups.rs` unit 9, `users.spec.ts` +5.10b. The six real host effects are
+`#[ignore]`d root-only tests (`tests/login_pam_integration.rs`), not run here —
+no disposable host account. See `docs/guides/users.md` → *Host (Linux) account
+lifecycle*, `docs/guides/groups.md` → *Membership validation and delete
+cleanup*, and `CLAUDE.md` (2026-10-21 addendum).
+
 **Fixed on 2026-10-21 — Rescue production-ready:**
 
 The Rescue app is the one screen allowed to write to raw block devices, and its

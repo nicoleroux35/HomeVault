@@ -146,20 +146,20 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 
 | Method | Path | Auth | Handler |
 |--------|------|------|---------|
-| GET | `/users` | admin | `handle_users_list` |
+| GET | `/users` | admin | `handle_users_list` — every account carries `is_host_account` (`true` = mirrored Linux/PAM account, not HomeVault's to delete) |
 | POST | `/users` | admin | `handle_user_create` |
-| GET | `/users/{username}` | admin | `handle_user_get` |
-| PUT | `/users/{username}` | admin | `handle_user_update` |
+| GET | `/users/{username}` | admin/self | `handle_user_get` — includes `is_host_account` |
+| PUT | `/users/{username}` | admin/self | `handle_user_update` |
 | PUT | `/users/{username}/full` | admin | `handle_user_update_full` |
-| DELETE | `/users/{username}` | admin | `handle_user_delete` (kills PTY sessions; revokes the account's direct share grants — ACL + DB — and purges its SFTP jail) |
-| PUT | `/users/{username}/password` | admin | `handle_user_update_password` — admin-vs-target sets `must_change_password` (owner must change it at first sign-in); self change clears it. A flagged session is limited server-side (`middleware::password_change_guard`) to whoami/logout/its own password change, other calls get `403 password_change_required` |
+| DELETE | `/users/{username}` | admin | `handle_user_delete` — deletes the Linux account first (`userdel`, retryable on failure), then the row; kills PTY sessions, revokes the account's direct share grants (ACL + DB) and purges its SFTP jail. `400` for a PAM-mirrored account whose Linux user still exists (remove it on the host first) |
+| PUT | `/users/{username}/password` | admin/self | `handle_user_update_password` — admin-vs-target sets `must_change_password` (owner must change it at first sign-in); self change clears it. A flagged session is limited server-side (`middleware::password_change_guard`) to whoami/logout/its own password change, other calls get `403 password_change_required` |
 | GET | `/users/{username}/sessions` | admin | `handle_admin_user_sessions` — active sessions of that user, tokens masked to 8 chars + `…` |
 | DELETE | `/users/{username}/sessions` | admin | `handle_admin_revoke_user_sessions` — revoke all of that user's sessions (`{"revoked": n}`) |
 | PUT | `/users/{username}/expiry` | admin | `handle_user_set_expiry` — set (`{"expires_at": "<RFC 3339>"}`, must be future) or clear (`null`) the horizon; enforcement in `AuthService::authenticate` + the session sweep |
-| PUT | `/users/{username}/role` | admin | `handle_user_update_role` |
-| PUT | `/users/{username}/locked` | admin | `handle_user_set_locked` — a **permanent** lock (clears `locked_until`); an automatic lockout instead expires on its own (see `guides/auth.md`) |
+| PUT | `/users/{username}/role` | admin | `handle_user_update_role` — demotion revokes `homevault_admin`/`sudo`/`wheel` **before** the write and signs the account out; promotion provisions the Linux account (best-effort) |
+| PUT | `/users/{username}/locked` | admin | `handle_user_set_locked` — a **permanent** lock (clears `locked_until`), mirrored to the Linux password (`usermod -L/-U`, best-effort); an automatic lockout instead expires on its own (see `guides/auth.md`) |
 | POST | `/users/{username}/2fa/disable` | admin | `handle_admin_disable_2fa` |
-| PUT | `/users/{username}/groups` | admin | `handle_user_update_groups` |
+| PUT | `/users/{username}/groups` | admin | `handle_user_update_groups` — blank names are rejected, unknown groups → `400 "Group '<x>' does not exist"` |
 | GET | `/users/{username}/home` | admin | `handle_user_home_get` (returns `size_bytes`) |
 | PUT | `/users/{username}/home` | admin | `handle_user_home_put` (`{ enabled, disk, size_bytes }`) |
 | DELETE | `/users/{username}/home` | admin | `handle_user_home_delete` |
@@ -172,15 +172,15 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 
 | Method | Path | Auth | Handler |
 |--------|------|------|---------|
-| GET | `/groups` | admin | `handle_groups_list` |
-| POST | `/groups` | admin | `handle_group_create` |
-| GET | `/groups/{name}` | admin | `handle_group_get` |
+| GET | `/groups` | auth | `handle_groups_list` |
+| POST | `/groups` | admin | `handle_group_create` — every member must be an existing HomeVault user (`400 "User '<x>' not found"`), because each one gets a Linux account |
+| GET | `/groups/{name}` | auth | `handle_group_get` |
 | PUT | `/groups/{name}` | admin | `handle_group_update` — `{ name?, description? }`: rename (migrates the mirror, group grants, quotas and ACLs) and/or set the description |
-| DELETE | `/groups/{name}` | admin | `handle_group_delete` |
-| POST | `/groups/{name}/members` | admin | `handle_group_add_member` |
+| DELETE | `/groups/{name}` | admin | `handle_group_delete` — also purges `hv_groups`, transfer quotas, resource grants and `share_permissions` rows keyed on the display name |
+| POST | `/groups/{name}/members` | admin | `handle_group_add_member` — member must be an existing HomeVault user |
 | DELETE | `/groups/{name}/members/{username}` | admin | `handle_group_remove_member` |
 | GET | `/groups/users` | admin | `handle_groups_list_users` |
-| GET | `/users/{username}/groups` | admin | `handle_user_groups` |
+| GET | `/users/{username}/groups` | admin/self | `handle_user_groups` |
 
 The `homevault_admin` system group (the OS admin group) is hidden from ordinary
 group management and cannot be created/deleted through these endpoints

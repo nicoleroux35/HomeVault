@@ -11,18 +11,18 @@ Handlers in `src/handlers/users.rs`; models in `src/handlers/users_models.rs`.
 |----------|------|-------|
 | `GET /users` | admin | list |
 | `POST /users` | admin | create (random password if empty); sets `must_change_password` (the owner replaces it at first sign-in) |
-| `GET /users/{username}` | admin | detail |
-| `PUT /users/{username}` | admin | update |
+| `GET /users/{username}` | admin/self | detail (includes `is_host_account`) |
+| `PUT /users/{username}` | admin/self | update |
 | `PUT /users/{username}/full` | admin | full profile (first/last name) |
-| `DELETE /users/{username}` | admin | delete (kills PTY sessions via `state.pty_manager.kill_session`; also revokes the account's direct share permissions, see Invariants) |
-| `PUT /users/{username}/password` | admin | reset password; targeting someone else re-arms `must_change_password`, a self change clears it |
+| `DELETE /users/{username}` | admin | delete — removes the **Linux account** first (`userdel`, retryable on failure), then the row; kills PTY sessions via `state.pty_manager.kill_session`; revokes the account's direct share permissions (see Invariants) |
+| `PUT /users/{username}/password` | admin/self | reset password; targeting someone else re-arms `must_change_password`, a self change clears it; also sets the Linux password (`chpasswd`, best-effort) |
 | `GET /users/{username}/sessions` | admin | list a user's active sessions; tokens masked to 8 chars + `…` — an admin audits, never hijacks |
 | `DELETE /users/{username}/sessions` | admin | bulk revoke: sign that user out everywhere (their current device included); the user just signs back in |
 | `PUT /users/{username}/expiry` | admin | set (`{"expires_at": "<RFC 3339>"}`) or clear (`null`) the account horizon; a past date is refused |
-| `PUT /users/{username}/role` | admin | change role |
-| `PUT /users/{username}/locked` | admin | lock/unlock — a **permanent** lock (clears `locked_until`); the automatic lockout from failed logins expires by itself |
+| `PUT /users/{username}/role` | admin | change role — see *Host (Linux) account lifecycle* below |
+| `PUT /users/{username}/locked` | admin | lock/unlock — a **permanent** lock (clears `locked_until`) mirrored to the Linux password (`usermod -L/-U`); the automatic lockout from failed logins expires by itself |
 | `POST /users/{username}/2fa/disable` | admin | admin disable 2FA |
-| `PUT /users/{username}/groups` | admin | set group membership |
+| `PUT /users/{username}/groups` | admin | set group membership (blank names rejected, unknown group → 400) |
 | `GET/PUT/DELETE /users/{username}/home` | admin | home folder (enabled + disk + size limit) |
 | `GET /users/{username}/avatar.svg` | auth | SVG avatar |
 | `GET /users/count`, `/users/{username}/exists` | admin | |
@@ -441,12 +441,81 @@ data and pre-existing shape constants (`AVATAR_COLORS`' palette, the
 `switchKnob` shadow, the `w-[46px]` icon tiles, `min-w-[150px]` on disk cards,
 `flex-[0_0_90px]` on the unit selects) — none introduced by this change.
 
+## Host (Linux) account lifecycle (2026-10-21)
+
+A HomeVault account may or may not have a matching Linux account. Both cases
+are now owned by one module, `src/host_accounts.rs` (`HostAccountService`):
+
+| Case | How the row looks | Who owns the credential |
+|------|-------------------|-------------------------|
+| HomeVault account | normal Argon2 `password_hash` | HomeVault; the Linux account is provisioned on demand (admin promotion, group membership, SFTP share) |
+| Host (PAM) account | `password_hash == "!pam-provisioned"`, `is_host_account: true` | the host's `/etc/shadow`; HomeVault only mirrors it |
+
+Before this pass nothing removed or revoked the host half, which produced four
+real holes:
+
+1. **Delete left a working login.** `DELETE /users/{u}` only dropped the row.
+   A deleted admin kept a Linux login *and* — because admin status is derived
+   from `homevault_admin` membership — a working HomeVault **admin** login that
+   the next PAM sign-in silently recreated. The handler now runs `userdel`
+   **before** the row delete, so a refusal (account still logged in, `userdel`
+   lacks privileges) leaves both sides consistent and retryable.
+2. **Demotion left real sudo.** `PUT /users/{u}/role` used to clear only
+   `homevault_admin`; `sudo`/`wheel` stayed. `HostAccountService::revoke_admin`
+   clears all three (`HOST_ADMIN_GROUPS`) **before** the `role_id` write, and
+   `AuthService::update_role` signs the demoted account out — a session keeps
+   the `is_admin` flag it was created with, and `get_session` now re-derives it
+   from the current role on every call.
+3. **Lock left the host password usable.** The DB flag stops a PAM sign-in but
+   not SSH or the web terminal. Lock/unlock now mirrors to
+   `usermod -L` / `-U` (best-effort, logged).
+4. **Password reset did nothing on a host-backed account.** The row's hash is
+   the PAM sentinel, so the old host password kept working. `update_password`
+   now pushes the new secret through `chpasswd` on **stdin** (never argv, which
+   `ps` would expose).
+
+Safety rails, all in `HostAccountService`:
+
+- **Username gate** before any command: `[A-Za-z_][A-Za-z0-9_-]{0,31}`, never a
+  leading `-`, so nothing can be parsed as an option or a path fragment.
+- **System accounts are refused**: `uid < 1000` or `uid >= 65534` (Debian/
+  Ubuntu service accounts, `nobody`) can never be deleted or locked.
+- **A PAM-mirrored row whose Linux account still exists cannot be deleted**
+  (`400`, message names the `userdel` command). HomeVault did not create that
+  account, and dropping only the mirror row would resurrect it at the next
+  sign-in. If the Linux account is already gone, the stale row *can* be
+  removed, so the page stays cleanable.
+- **Time-bounded**: every command runs under a 20 s `HOST_OP_TIMEOUT` via
+  `tokio::process` with `kill_on_drop`, off the async runtime.
+- `userdel` is deliberately **not** given `-r`: home removal follows the
+  explicit `delete_home_folder` choice and the folder HomeVault actually
+  recorded (falling back to `/home/homevault/<user>`).
+
+The frontend shows a **Linux account** badge on mirrored rows and disables the
+Delete button with an explanation (`users.host_account_badge` /
+`users.host_account_hint`, en/fr/de/es).
+
+Live-host verification (needs root, `#[ignore]`d): `tests/login_pam_integration.rs`
+→ `grant_admin_provisions_the_account_and_every_admin_group`,
+`revoke_admin_clears_every_admin_group`, `set_password_rotates_the_host_credential`,
+`set_locked_locks_and_unlocks_the_host_credential`,
+`delete_account_removes_the_linux_account_but_keeps_its_home`,
+`delete_account_refuses_a_system_account`. The decisions around those commands
+(host flags, stale mirror cleanup, home-row cleanup, session revocation on
+demotion, group validation) are pinned without touching the host in
+`tests/users_integration.rs`.
+
 ## Invariants
 
 - The `homevault_admin` group must never be exposed as an ordinary group
   checkbox — a past bug compared a display name to a full system name and never
   matched, leaking sudo. Guard logic lives in `src/groups.rs`.
-- Deleting a user cleans up live terminal sessions (`handle_user_delete`).
+- Deleting a user cleans up live terminal sessions (`handle_user_delete`) and
+  removes its Linux account before the row (see *Host (Linux) account
+  lifecycle*). A PAM-mirrored account whose Linux user still exists is refused.
+- Every host command goes through `HostAccountService`: validated username,
+  system-account guard, 20 s ceiling, `tokio::process` — never a bare
+  `std::process::Command` from a handler.
 - **Deleting a user also revokes the share permissions it holds *directly***
   (`PermissionService::revoke_all_user_permissions`, called by
   `handle_user_delete` before the account row is dropped): the

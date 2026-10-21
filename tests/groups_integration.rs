@@ -958,3 +958,154 @@ async fn test_group_update_does_not_create_a_mirror_row_for_a_missing_group() {
         "no mirror row must be created for a group that does not exist"
     );
 }
+
+// ===========================================================================
+// Membership validation + reference purge (2026-10-21)
+//
+// `create_group` provisions a Linux account for every member, so a member
+// name that is not a HomeVault account would create an unmanaged OS account.
+// The checks below reject it before any host command runs.
+// ===========================================================================
+
+#[tokio::test]
+async fn test_group_create_rejects_a_member_that_is_not_a_homevault_user() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = groups_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/groups",
+        Some(&token),
+        Some(json!({"name": "family", "members": ["ghostmember"]})),
+    )
+    .await;
+    assert_eq!(body["success"], json!(false));
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("User 'ghostmember' not found"),
+        "unexpected message: {:?}",
+        body["message"]
+    );
+}
+
+#[tokio::test]
+async fn test_group_add_member_rejects_a_member_that_is_not_a_homevault_user() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = groups_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/groups/family/members",
+        Some(&token),
+        Some(json!({"username": "ghostmember"})),
+    )
+    .await;
+    assert_eq!(body["success"], json!(false));
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("User 'ghostmember' not found"));
+}
+
+#[tokio::test]
+async fn test_group_create_rejects_a_blank_member_name() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = groups_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/groups",
+        Some(&token),
+        Some(json!({"name": "family", "members": ["  "]})),
+    )
+    .await;
+    assert_eq!(body["success"], json!(false));
+}
+
+#[tokio::test]
+async fn test_purge_group_references_drops_every_display_name_row() {
+    // Everything a rename migrates (see `handle_group_update`) must also be
+    // dropped on delete, or a group re-created with the same display name
+    // inherits the old one's quota, resource grants and share ACLs.
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+
+    let groups = homevault::storage::group_repo::HvGroupRepository::new(state.db.pool());
+    groups
+        .create("family", Some("Household"))
+        .await
+        .expect("mirror");
+
+    let quotas =
+        homevault::storage::transfer_quota_repo::TransferQuotaRepository::new(state.db.pool());
+    quotas
+        .set_limits("group", "family", true, 1024, true, 2048)
+        .await
+        .expect("quota");
+
+    let resources =
+        homevault::storage::resource_share_repo::ResourceShareRepository::new(state.db.pool());
+    resources
+        .upsert_group(
+            "admin1",
+            "family",
+            homevault::storage::resource_share_repo::ResourceKind::App,
+            "jellyfin",
+            homevault::storage::resource_share_repo::ResourcePermission::Read,
+        )
+        .await
+        .expect("resource grant");
+
+    sqlx::query(
+        "INSERT INTO share_permissions
+         (share_name, share_type, grantee_type, grantee_name, permission, recursive, created_at, updated_at)
+         VALUES ('media', 'smb', 'group', 'family', 'read', 1, datetime('now'), datetime('now'))",
+    )
+    .execute(&*state.db.pool())
+    .await
+    .expect("share acl");
+
+    homevault::handlers::groups::purge_group_references(state.db.pool().as_ref(), "family")
+        .await
+        .expect("purge");
+
+    assert!(
+        groups
+            .list_non_system()
+            .await
+            .expect("mirror list")
+            .is_empty(),
+        "hv_groups row must be gone"
+    );
+    assert!(
+        quotas.list("group").await.expect("quota list").is_empty(),
+        "transfer quota must be gone"
+    );
+    assert!(
+        resources
+            .list_groups_all(Some("family"))
+            .await
+            .expect("grants")
+            .is_empty(),
+        "resource grants must be gone"
+    );
+
+    let acl_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM share_permissions WHERE grantee_type = 'group' AND grantee_name = 'family'",
+    )
+    .fetch_one(&*state.db.pool())
+    .await
+    .expect("acl count");
+    assert_eq!(acl_count, 0, "share ACL rows must be gone");
+}
