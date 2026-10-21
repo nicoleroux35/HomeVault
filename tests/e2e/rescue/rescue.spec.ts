@@ -397,6 +397,98 @@ test.describe('3 — Validation', () => {
     );
     expect(status).toBe(400);
   });
+
+  test('3.7 — the ddrescue status endpoint refuses a path outside the rescue directories', async ({
+    page,
+  }) => {
+    // 2026-10-21 fix: `GET /api/rescue/ddrescue/status/{path}` took the raw
+    // URL segment and read it back with the service's own privileges — an
+    // arbitrary-file read (and an existence oracle) behind any admin session.
+    await gotoRescue(page, adminTokens);
+    const results = await page.evaluate(
+      async ({ token }) => {
+        const paths = ['/etc/passwd', '/etc/shadow', '/root/.ssh/id_rsa'];
+        const out: Array<{ path: string; status: number }> = [];
+        for (const p of paths) {
+          const r = await fetch(`/api/rescue/ddrescue/status/${encodeURIComponent(p)}`, {
+            headers: { 'x-session-token': token },
+          });
+          out.push({ path: p, status: r.status });
+        }
+        return out;
+      },
+      { token: adminTokens.token },
+    );
+    for (const { path, status } of results) {
+      expect(status, `${path} must be refused`).toBe(400);
+    }
+  });
+
+  test('3.8 — the server rejects options it cannot honour instead of ignoring them', async ({
+    page,
+  }) => {
+    // 2026-10-21 fix: TestDisk's `deep_search`/`log_path`/`force`, PhotoRec's
+    // `keep_broken`/`max_size` and an unknown mdadm `action` were accepted,
+    // shown as applied in the UI, and never reached the tool.
+    await gotoRescue(page, adminTokens);
+    const statuses = await page.evaluate(
+      async ({ token, csrf }) => {
+        const headers = {
+          'x-session-token': token,
+          'x-csrf-token': csrf,
+          'Content-Type': 'application/json',
+        };
+        const post = async (url: string, body: unknown) =>
+          (await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })).status;
+        return {
+          deepSearch: await post('/api/rescue/testdisk/analyze', { device: '/dev/loop0', deep_search: true }),
+          logPath: await post('/api/rescue/testdisk/analyze', { device: '/dev/loop0', log_path: '/tmp/x.log' }),
+          force: await post('/api/rescue/testdisk/rebuild', { device: '/dev/loop0', force: true }),
+          mdadmAction: await post('/api/rescue/mdadm/repair', { name: 'fake-array', action: 'rm -rf' }),
+          fileTypes: await post('/api/rescue/photorec/recover', {
+            device: '/dev/loop0',
+            output_dir: '/tmp/recovered',
+            file_types: ['jpg,fileopt,everything,enable'],
+          }),
+          partitionType: await post('/api/rescue/photorec/recover', {
+            device: '/dev/loop0',
+            output_dir: '/tmp/recovered',
+            partition_type: 'Amiga',
+          }),
+        };
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf },
+    );
+    expect(statuses).toEqual({
+      deepSearch: 400,
+      logPath: 400,
+      force: 400,
+      mdadmAction: 400,
+      fileTypes: 400,
+      partitionType: 400,
+    });
+  });
+
+  test('3.9 — cancelling an unknown job is a clean 400, never a phantom success', async ({
+    page,
+  }) => {
+    // The generic cancel endpoint used to answer "Job cancelled" for *any* id
+    // while the underlying process kept running; it now reports honestly and
+    // rejects an id nobody ever created.
+    await gotoRescue(page, adminTokens);
+    const result = await page.evaluate(
+      async ({ token, csrf }) => {
+        const r = await fetch('/api/progress/00000000-0000-0000-0000-000000000000', {
+          method: 'DELETE',
+          headers: { 'x-session-token': token, 'x-csrf-token': csrf },
+        });
+        return { status: r.status, body: await r.json() };
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf },
+    );
+    expect(result.status).toBe(400);
+    expect(result.body.success).toBe(false);
+  });
 });
 
 // ===========================================================================
@@ -427,13 +519,18 @@ test.describe('4 — All user interactions', () => {
     await expect(win(page).locator('[data-testid="rescue-advanced"]')).toHaveCount(0);
   });
 
-  test('4.3 — the mode toggle is independent per tab', async ({ page }) => {
+  test('4.3 — the mode toggle is scoped to the tab that has one', async ({ page }) => {
     await gotoRescue(page, adminTokens);
     await win(page).locator('[data-testid="rescue-mode-btn"]', { hasText: 'Advanced' }).first().click();
     await switchTab(page, 'TestDisk');
-    // Switching tabs re-renders a fresh CardHeader for that tab — its own
-    // mode toggle starts back in Simple, independent of ddrescue's.
+    // TestDisk has no advanced block at all: the only two settings it used to
+    // offer (deep scan, custom log path) never reached the tool, so the API
+    // rejects them instead of showing switches that change nothing.
     await expect(win(page).locator('[data-testid="rescue-advanced"]')).toHaveCount(0);
+    await expect(win(page).locator('[data-testid="rescue-mode-btn"]')).toHaveCount(0);
+    // …and ddrescue's own choice is preserved when coming back.
+    await switchTab(page, 'ddrescue');
+    await expect(win(page).locator('[data-testid="rescue-advanced"]')).toHaveCount(1);
   });
 
   test('4.4 — selecting a source device disables it in the destination select', async ({
@@ -483,6 +580,56 @@ test.describe('4 — All user interactions', () => {
       opts.map((o) => (o as HTMLOptionElement).value),
     );
     expect(values.sort()).toEqual(['check', 'repair', 'rewrite']);
+  });
+
+  test('4.8 — a running clone can be cancelled from the UI', async ({ page }) => {
+    // 2026-10-21: a multi-hour ddrescue clone used to have no stop control at
+    // all — the generic DELETE /api/progress/{id} only dropped the job from
+    // the tracking map while the tool kept writing to the disk.
+    await gotoRescue(page, adminTokens);
+    const startBtn = win(page).locator('button', { hasText: 'Start Clone' });
+    const cancelBtn = win(page).locator('button', { hasText: 'Cancel Clone' });
+
+    // No clone running yet → no cancel control offered.
+    await expect(cancelBtn).toHaveCount(0);
+
+    // Intercept the clone request so the test never touches a real device,
+    // and answer with a job id like the backend does.
+    await page.route('**/api/rescue/ddrescue/clone', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: { job_id: 'e2e-cancel-job', sse_url: '/api/progress/e2e-cancel-job', logfile: '/tmp/e2e.log' },
+        }),
+      });
+    });
+    // …and emulate the progress stream so the job stays "running".
+    await page.route('**/api/progress/e2e-cancel-job', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body: 'event: progress\ndata: {"job_id":"e2e-cancel-job","progress":10,"message":"cloning","state":"running"}\n\n',
+      });
+    });
+
+    const options = await win(page).locator('#rescue-dd-source option').all();
+    if (options.length < 3) {
+      test.skip(true, 'needs at least two real block devices to select a pair');
+    }
+    await win(page).locator('#rescue-dd-source').selectOption(await options[1].getAttribute('value') ?? '');
+    const destOptions = await win(page).locator('#rescue-dd-dest option:not([disabled])').all();
+    await win(page).locator('#rescue-dd-dest').selectOption(await destOptions[1].getAttribute('value') ?? '');
+    await startBtn.click();
+
+    await expect(win(page).locator('[data-testid="rescue-progress"]')).toBeVisible();
+    await expect(cancelBtn).toBeVisible();
+    // The cancel control is a real labelled button (not an icon-only control
+    // relying on `title`), so it is reachable by keyboard and screen readers.
+    await expect(cancelBtn).toHaveAttribute('type', 'button');
+    await cancelBtn.focus();
+    await expect(cancelBtn).toBeFocused();
   });
 });
 

@@ -26,11 +26,13 @@
 //! - PhotoRec: Recover deleted files
 //! - mdadm: Diagnose and repair RAID arrays
 
+pub mod jobs;
 pub mod models;
 pub mod service;
 pub mod validator;
 
 // Re-export commonly used types
+pub use jobs::RescueJobHandle;
 pub use models::*;
 pub use service::RescueService;
-pub use validator::SecurityValidator;
+pub use validator::{check_clone_safety, ClonePlan, SecurityValidator};

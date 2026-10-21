@@ -64,6 +64,53 @@ fixed and listed under "Fixed on 2026-10-12" below.
   new page, following the methodology already applied to each guide in
   `docs/guides/` (results in `TESTING.md`).
 
+**Fixed on 2026-10-21 — Rescue production-ready:**
+
+The Rescue app is the one screen allowed to write to raw block devices, and its
+"Cancel" was theatre: `DELETE /api/progress/{job_id}` dropped the job from
+`PROGRESS_MANAGER` and answered "Job cancelled" while `sudo ddrescue` kept
+writing to the destination disk. Nothing observed the request, and the UI had no
+stop control at all — a clone of a failing 4 TB disk could only be aborted by
+killing the server. `ProgressManager` now carries per-job cancellation hooks
+(`register_cancel_hook` / `cancel_job` / `CancelOutcome`, emitting the
+`ProgressState::Cancelled` that already existed and had never been used), and
+`src/rescue/jobs.rs` runs each rescue job in its own process group so a cancel
+SIGTERMs the group (escalating to `SIGKILL` after 10 s) — killing only the
+`sudo` wrapper left the real tool running. A cancelled clone reports *cancelled*
+and keeps its mapfile, so it can be resumed.
+
+`GET /api/rescue/ddrescue/status/{logfile}` took the raw URL segment and read it
+with the service's own privileges: an arbitrary-file read and a file-existence
+oracle behind any admin session. It is now confined to `/tmp`, `/var/tmp` and
+`paths::rescue_dir()`, must be an existing regular file with no symlink in the
+final component, and is capped at 16 MiB. The same non-following and
+component-wise checks (`/tmpfoo` is not inside `/tmp`) guard output paths.
+
+A clone — irreversible — had no safety net: nothing checked that source and
+destination were different devices, that the destination was not mounted or an
+active md/LVM/dm-crypt member (sysfs `holders`, which catches a member disk with
+no mountpoint of its own), or that it was at least as large as the source.
+`check_clone_safety` now does all three, and the protected-device rule no longer
+trusts a hardcoded `sda`/`nvme0n1`/`vda` list: the live root disk is resolved
+through `findmnt /`, and device names are matched partition-aware (`sda1`
+belongs to `sda`; `sdaa` does not).
+
+Finally, options that lied. TestDisk's `deep_search`/`log_path`/`force` and
+PhotoRec's `keep_broken`/`max_size` were accepted, shown as applied, and never
+reached the tool; `mdadm`'s `action` went verbatim into `--action=`;
+`file_types` were spliced into PhotoRec's comma-separated `/cmd` grammar, so
+`"jpg,search"` injected a command. Un-honourable options are now a `400` naming
+the field (and gone from the UI — TestDisk's advanced block went with them), and
+the dead fields were dropped from the model rather than kept as switches that
+change nothing. Every subprocess runs under a timeout, the default mapfile left
+world-writable `/tmp` for the root-owned `rescue/` directory, and PhotoRec's
+recovered tree is `chown -R`'d to the admin who asked for it.
+
+Tests: `rescue` unit 8 → 44, `sse::progress` unit 20 → 26, `lib` 965 → 999,
+`rescue_integration` 28 → 38, `progress_integration` 7 → 8, E2E
+`rescue.spec.ts` 53 → 59. Live-host checks (a real clone, a real cancel, the
+PhotoRec chown) are listed in `TESTING.md` → "Remaining to test as a priority".
+
 **Fixed on 2026-10-21 — Shares production-ready:**
 
 The Shares app was the one screen whose inputs still reached **root-owned**

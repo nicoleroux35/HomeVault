@@ -61,9 +61,9 @@ use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{
     auth::handle_login,
     rescue::{
-        handle_ddrescue_clone, handle_ddrescue_status, handle_mdadm_diagnose, handle_mdadm_repair,
-        handle_photorec_recover, handle_rescue_devices, handle_rescue_tools_available,
-        handle_testdisk_analyze, handle_testdisk_rebuild,
+        handle_ddrescue_clone, handle_ddrescue_mapfile_path, handle_ddrescue_status,
+        handle_mdadm_diagnose, handle_mdadm_repair, handle_photorec_recover, handle_rescue_devices,
+        handle_rescue_tools_available, handle_testdisk_analyze, handle_testdisk_rebuild,
     },
     AppState,
 };
@@ -137,6 +137,10 @@ fn rescue_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/rescue/photorec/recover",
             post(handle_photorec_recover),
+        )
+        .route(
+            "/api/rescue/ddrescue/mapfile",
+            get(handle_ddrescue_mapfile_path),
         )
         .route("/api/rescue/mdadm/diagnose", post(handle_mdadm_diagnose))
         .route("/api/rescue/mdadm/repair", post(handle_mdadm_repair))
@@ -784,4 +788,397 @@ fn urlencoding_lite(s: &str) -> String {
             other => format!("%{:02X}", other as u32),
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// 5. The status endpoint is confined to the rescue directories (2026-10-21)
+// ---------------------------------------------------------------------------
+
+/// `GET /api/rescue/ddrescue/status/{path}` took the raw URL segment and
+/// `read_to_string`'d it — an arbitrary-file read (and a file-existence
+/// oracle) for any admin session. It now has to be a regular file under one of
+/// the allowed rescue directories, with no symlink anywhere in the way.
+#[tokio::test]
+async fn ddrescue_status_refuses_paths_outside_the_rescue_directories() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = rescue_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    for outside in [
+        "/etc/passwd",
+        "/etc/shadow",
+        "/root/.ssh/id_rsa",
+        "/proc/self/environ",
+    ] {
+        let (status, body) = send(
+            &mut router,
+            Method::GET,
+            &format!("/api/rescue/ddrescue/status/{}", urlencoding_lite(outside)),
+            Some(&token),
+            None,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{outside} must be refused: {body}"
+        );
+        assert_eq!(body["success"], json!(false), "{outside}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn ddrescue_status_refuses_a_symlink_to_a_system_file() {
+    // The classic bypass: a link inside /tmp pointing at /etc/shadow. A naive
+    // canonicalize-then-check would *pass* (the canonical path is in /etc and
+    // would be rejected) — but a naive "check the string, then read the path"
+    // would happily read it. Assert the refusal, whichever layer catches it.
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = rescue_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let dir = std::env::temp_dir().join(format!("hv_rescue_e2e_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let link = dir.join("map.log");
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink("/etc/shadow", &link).unwrap();
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        &format!(
+            "/api/rescue/ddrescue/status/{}",
+            urlencoding_lite(link.to_str().unwrap())
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("symbolic link"),
+        "the rejection must name the reason: {body}"
+    );
+}
+
+#[tokio::test]
+async fn ddrescue_status_refuses_a_directory() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = rescue_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        &format!(
+            "/api/rescue/ddrescue/status/{}",
+            urlencoding_lite(std::env::temp_dir().to_str().unwrap())
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn ddrescue_status_reads_a_mapfile_inside_a_rescue_directory() {
+    // The legitimate case still works: a real mapfile in /tmp.
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = rescue_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let mapfile = std::env::temp_dir().join(format!("hv_rescue_ok_{}.log", std::process::id()));
+    std::fs::write(
+        &mapfile,
+        "# current_pos  current_status  current_pass\n\
+         0x00008000     ?               1\n\
+         #      pos        size  status\n\
+         0x00000000  0x00008000  +\n\
+         0x00008000  0x00011000  ?\n",
+    )
+    .unwrap();
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        &format!(
+            "/api/rescue/ddrescue/status/{}",
+            urlencoding_lite(mapfile.to_str().unwrap())
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    std::fs::remove_file(&mapfile).ok();
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["running"], json!(true));
+    assert_eq!(body["data"]["bytes_total"], json!(0x8000 + 0x11000));
+}
+
+#[tokio::test]
+async fn ddrescue_mapfile_directory_is_reported() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = rescue_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/rescue/ddrescue/mapfile",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body["data"]["directory"]
+            .as_str()
+            .is_some_and(|d| d.contains("rescue")),
+        "the default mapfile directory must be reported: {body}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 6. Options that reach a tool's argv are validated (2026-10-21)
+// ---------------------------------------------------------------------------
+
+/// Clone options are turned into argv: a block size ddrescue refuses, or an
+/// absurd retry count, is a 400 naming the field instead of a tool that fails
+/// (or grinds) halfway through a disk clone.
+#[tokio::test]
+async fn ddrescue_clone_rejects_invalid_options_before_starting() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = rescue_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let cases: &[(Value, &str)] = &[
+        (json!(0), "block_size must be between"),
+        (json!(1000), "power of two"),
+        (json!(2_097_152), "block_size must be between"),
+    ];
+    for (value, expected) in cases {
+        let (status, body) = send(
+            &mut router,
+            Method::POST,
+            "/api/rescue/ddrescue/clone",
+            Some(&token),
+            Some(json!({
+                "source": "/dev/loop0",
+                "destination": "/dev/loop1",
+                "block_size": value
+            })),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "block_size {value}: {body}"
+        );
+        assert!(
+            body["message"].as_str().unwrap_or("").contains(expected),
+            "block_size {value}: {body}"
+        );
+    }
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/rescue/ddrescue/clone",
+        Some(&token),
+        Some(json!({
+            "source": "/dev/loop0",
+            "destination": "/dev/loop1",
+            "retry_passes": 999_999
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("retry_passes"),
+        "{body}"
+    );
+}
+
+/// PhotoRec file types are spliced into PhotoRec's **comma-separated** `/cmd`
+/// grammar, so a value with a comma or a keyword injects extra commands. Only
+/// bare lower-case extension identifiers are accepted.
+#[tokio::test]
+async fn photorec_rejects_script_injection_in_file_types() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = rescue_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    for bad in [
+        "jpg,fileopt,everything,enable",
+        "jpg,search",
+        "JPG",
+        "jp g",
+        "../../etc/passwd",
+    ] {
+        let (status, body) = send(
+            &mut router,
+            Method::POST,
+            "/api/rescue/photorec/recover",
+            Some(&token),
+            Some(json!({
+                "device": "/dev/loop0",
+                "output_dir": "/tmp/hv_rescue_injection",
+                "file_types": [bad]
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "file type {bad:?}: {body}");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("invalid file type"),
+            "file type {bad:?}: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn photorec_rejects_an_unknown_partition_type() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = rescue_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/rescue/photorec/recover",
+        Some(&token),
+        Some(json!({
+            "device": "/dev/loop0",
+            "output_dir": "/tmp/hv_rescue_parttype",
+            "partition_type": "Amiga"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("partition_type"),
+        "{body}"
+    );
+}
+
+/// `mdadm --action=` was passed through verbatim from the request body;
+/// anything outside the real sync-action vocabulary is now refused instead of
+/// being handed to mdadm.
+#[tokio::test]
+async fn mdadm_repair_rejects_an_unknown_action() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = rescue_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/rescue/mdadm/repair",
+        Some(&token),
+        Some(json!({"name": "totally-fake-array", "action": "rm -rf"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("unknown mdadm action"),
+        "{body}"
+    );
+}
+
+/// The TestDisk options this integration cannot honour are refused loudly:
+/// they used to be accepted, displayed as applied and never reach the tool.
+#[tokio::test]
+async fn testdisk_rejects_options_it_cannot_honour() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = rescue_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/rescue/testdisk/analyze",
+        Some(&token),
+        Some(json!({"device": "/dev/sda", "deep_search": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("deep_search"),
+        "{body}"
+    );
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/rescue/testdisk/analyze",
+        Some(&token),
+        Some(json!({"device": "/dev/sda", "log_path": "/tmp/testdisk.log"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"].as_str().unwrap_or("").contains("log_path"),
+        "{body}"
+    );
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/rescue/testdisk/rebuild",
+        Some(&token),
+        Some(json!({"device": "/dev/sda", "force": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"].as_str().unwrap_or("").contains("force"),
+        "{body}"
+    );
+
+    // …and the unsupported-option rejection happens *before* the device check,
+    // so an invalid option on a protected device still names the option.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/rescue/testdisk/rebuild",
+        Some(&token),
+        Some(json!({"device": "/dev/zzz_nope", "force": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"].as_str().unwrap_or("").contains("force"),
+        "{body}"
+    );
 }

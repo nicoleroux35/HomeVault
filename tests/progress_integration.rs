@@ -410,3 +410,81 @@ async fn responses_carry_security_headers() {
     assert!(headers.get("referrer-policy").is_some());
     assert!(headers.get("permissions-policy").is_some());
 }
+
+// ---------------------------------------------------------------------------
+// Cancelling a job runs its producer hook (2026-10-21)
+// ---------------------------------------------------------------------------
+
+/// `DELETE /api/progress/{job_id}` used to answer "Job cancelled" after merely
+/// dropping the id from the tracking map: a `sudo ddrescue` clone, a PhotoRec
+/// carve or a backup kept running with no way to stop it from the UI, while
+/// the activity feed showed the job gone. The handler now runs the producer's
+/// registered cancellation hook — which is what actually stops the work — and
+/// answers honestly about which of the three cases happened.
+#[tokio::test]
+async fn cancel_job_runs_the_producer_hook_and_reports_what_happened() {
+    use homevault::sse::progress::{JobType, PROGRESS_MANAGER};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "alice", "Sup3rSecret!!", 2).await;
+    let mut r = progress_router(state);
+    let token = login(&mut r, "alice", "Sup3rSecret!!").await;
+
+    // A real job with a hook that records being called.
+    let hooked = PROGRESS_MANAGER.create_job(JobType::Backup, "start");
+    let fired = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&fired);
+    PROGRESS_MANAGER.register_cancel_hook(
+        &hooked,
+        Box::new(move || flag.store(true, Ordering::SeqCst)),
+    );
+
+    let (status, body) = send(
+        &mut r,
+        Method::DELETE,
+        &format!("/api/progress/{hooked}"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["cancelled"], json!(true));
+    assert!(
+        fired.load(Ordering::SeqCst),
+        "the producer's hook must actually run"
+    );
+    assert_eq!(
+        PROGRESS_MANAGER.get_progress(&hooked).map(|e| e.state),
+        Some(homevault::sse::progress::ProgressState::Cancelled),
+        "the job must be reported as cancelled, not silently dropped"
+    );
+    PROGRESS_MANAGER.remove_job(&hooked);
+
+    // A tracked job with no hook: nothing to stop beyond the tracking entry.
+    let plain = PROGRESS_MANAGER.create_job(JobType::Backup, "start");
+    let (status, body) = send(
+        &mut r,
+        Method::DELETE,
+        &format!("/api/progress/{plain}"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["cancelled"], json!(true));
+    assert!(PROGRESS_MANAGER.get_progress(&plain).is_none());
+
+    // An unknown id is a clean 400 — never a phantom "cancelled".
+    let (status, body) = send(
+        &mut r,
+        Method::DELETE,
+        "/api/progress/00000000-0000-0000-0000-000000000000",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["success"], json!(false));
+}

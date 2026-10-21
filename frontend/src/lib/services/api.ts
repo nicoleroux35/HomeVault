@@ -2503,26 +2503,25 @@ class ApiClient {
     return this.post('/rescue/ddrescue/clone', { source, destination, ...(options || {}) });
   }
 
-  async testdiskAnalyze(device: string, options?: {
-    deep_search?: boolean;
-    log_path?: string;
-  }) {
-    return this.post('/rescue/testdisk/analyze', { device, ...(options || {}) });
+  async testdiskAnalyze(device: string) {
+    // No options: the scripted analyse always deep-scans and writes its own
+    // log, and the API now *rejects* `deep_search`/`log_path` instead of
+    // accepting them and silently ignoring them.
+    return this.post('/rescue/testdisk/analyze', { device });
   }
 
-  async testdiskRebuild(device: string, options?: {
-    deep_search?: boolean;
-    force?: boolean;
-  }) {
-    return this.post('/rescue/testdisk/rebuild', { device, ...(options || {}) });
+  async testdiskRebuild(device: string) {
+    // Same: the partition table is never written back automatically, so there
+    // is no `force` to send — the API rejects it.
+    return this.post('/rescue/testdisk/rebuild', { device });
   }
 
   async photorecRecover(device: string, output_dir: string, options?: {
     file_types?: string[];
-    keep_broken?: boolean;
-    max_size?: number;
     partition_type?: string;
   }) {
+    // `keep_broken` and `max_size` are gone: neither exists in PhotoRec's
+    // scripted /cmd grammar, which is the only mode that works headless.
     return this.post('/rescue/photorec/recover', { device, output_dir, ...(options || {}) });
   }
 
@@ -2536,6 +2535,19 @@ class ApiClient {
     verbose?: boolean;
   }) {
     return this.post('/rescue/mdadm/repair', { name, ...(options || {}) });
+  }
+
+  /** Cancel a running background job for real.
+   *
+   * `DELETE /api/progress/{job_id}` runs the job producer's registered
+   * cancellation hook — for rescue jobs that SIGTERMs the tool's whole
+   * process group, so a multi-hour `ddrescue` clone or a PhotoRec carve can
+   * actually be stopped from the UI. The response says what happened:
+   * `{ job_id, cancelled, message }`, and an unknown id is a 400. */
+  async cancelJob(jobId: string) {
+    return this.delete<{ job_id: string; cancelled: boolean; message: string }>(
+      `/progress/${encodeURIComponent(jobId)}`
+    );
   }
 
   // ==============================================
