@@ -1227,11 +1227,41 @@ impl DiskService {
         // above: only root can mount, and this must keep working if the
         // service is ever run unprivileged (it currently runs as root, but
         // every other privileged call in this module is `sudo`-wrapped).
-        let mount_output = Command::new("sudo")
-            .arg("mount")
-            .args([raid_device, &mount_point])
-            .output()
-            .await?;
+        //
+        // Pools are mounted with the quota options that match their filesystem
+        // (ROADMAP 3.1): a mount without `usrquota` can never enforce the
+        // per-user home limits, and the mount option has to be there *before*
+        // `quotaon`/`quotacheck` can arm accounting. Filesystems that cannot
+        // do per-user quotas (btrfs, exfat, ntfs…) mount exactly as before.
+        // If the quota mount is refused by the kernel, fall back to a plain
+        // mount instead of failing the whole array creation: the UI then
+        // reports "not enforced" with the real reason, which is honest.
+        let quota_options = crate::quota::QuotaService::quota_mount_options(filesystem);
+        let mount = |options: Option<&str>| {
+            let mut cmd = Command::new("sudo");
+            cmd.arg("mount");
+            if let Some(opts) = options {
+                cmd.args(["-o", opts]);
+            }
+            cmd.args([raid_device, &mount_point]);
+            cmd.output()
+        };
+        let mut mount_output = match quota_options {
+            Some(opts) => mount(Some(opts)).await?,
+            None => mount(None).await?,
+        };
+        let mut mounted_with_quota = quota_options.is_some() && mount_output.status.success();
+        if !mount_output.status.success() && quota_options.is_some() {
+            let first_error = String::from_utf8_lossy(&mount_output.stderr).to_string();
+            tracing::warn!(
+                "Mounting '{}' with quota options failed ({}); retrying without them — \
+                 per-user home quotas will not be enforceable on this pool",
+                mount_point,
+                first_error.trim()
+            );
+            mount_output = mount(None).await?;
+            mounted_with_quota = false;
+        }
         if !mount_output.status.success() {
             let stderr = String::from_utf8_lossy(&mount_output.stderr);
             return Err(DiskError::CommandFailed {
@@ -1277,9 +1307,16 @@ impl DiskService {
                 .trim()
                 .to_string();
             if !uuid.is_empty() {
+                // Persist the quota options only when the live mount accepted
+                // them: writing them after a fallback could leave an entry
+                // that fails to mount on the next boot.
+                let fstab_options = match quota_options.filter(|_| mounted_with_quota) {
+                    Some(opts) => format!("defaults,nofail,{opts}"),
+                    None => "defaults,nofail".to_string(),
+                };
                 let fstab_line = format!(
-                    "UUID={} {} {} defaults,nofail 0 2",
-                    uuid, mount_point, filesystem
+                    "UUID={} {} {} {} 0 2",
+                    uuid, mount_point, filesystem, fstab_options
                 );
                 if let Err(e) = Self::append_marked_entry("/etc/fstab", &marker, &fstab_line).await
                 {
@@ -1312,6 +1349,24 @@ impl DiskService {
                     // behavior (entry written, unverified).
                     Err(_) => {}
                 }
+            }
+        }
+
+        // Arm accounting on the live mount right away: `quotaon` state is
+        // volatile and a brand-new array has no quota files yet
+        // (`quotacheck` builds them). Best-effort — a host without
+        // `quota-tools` keeps a perfectly usable pool, and
+        // `QuotaService::inspect` reports the truthful "not enforced" state.
+        if mounted_with_quota {
+            if let Err(e) =
+                crate::quota::QuotaService::activate_mount(filesystem, &mount_point).await
+            {
+                tracing::warn!(
+                    "Quota accounting could not be activated on '{}': {} — home size limits \
+                     on this pool will be reported as not enforced",
+                    mount_point,
+                    e
+                );
             }
         }
 

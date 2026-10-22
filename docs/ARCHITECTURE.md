@@ -119,6 +119,12 @@ Loops spawned in `run()` (`src/web/mod.rs`; line numbers drift, grep for
   [guides/backup-restic.md](./guides/backup-restic.md) → *HomeVault's own
   database*.
 
+**Quota activation on boot** (`quota::QuotaService::activate_all`, one
+`tokio::spawn` in `run()`): runs `sudo -n quotaon -aug` once so a reboot cannot
+silently turn per-user home-directory enforcement off while the stored limits
+still say otherwise. Failure is logged at debug level (a host with no
+quota-enabled mount is the normal case). See [guides/quotas.md](./guides/quotas.md).
+
 **Terminal PTY cleanup**: on graceful shutdown the `shutdown_signal` handler
 calls `pty_manager.cleanup_all()` so shells never outlive the server
 (`src/web/mod.rs`, `shutdown_signal` at the bottom of the file).
@@ -359,10 +365,15 @@ Five steps, in order (`STEP_TOTAL` in the script):
    (`HV_RELEASE_URL` overrides the URL, `HV_RELEASE_SHA256` optionally pins the
    checksum, `HV_RELEASE_TOKEN` authenticates a private-repository release,
    `$1` uses an already-downloaded file), extracts it to
-   `/opt/homevault`, writes the systemd unit and the udiskie automount, and
-   optionally enables HTTPS.
+   `/opt/homevault`, writes the systemd unit and the udiskie automount,
+   optionally enables HTTPS, and arms per-user home-directory quotas on `/home`
+   (`setup_home_quota`: `usrquota` added to the `fstab` line in place, verified
+   with `findmnt --verify --fstab`, rolled back on failure, remounted live, then
+   `quotacheck -cugm -f` + `quotaon -ug`; ZFS is left to its native backend and
+   Btrfs/other filesystems are reported unsupported — never claimed enforced).
 4. **Verification** — re-checks the packages, the service, the HTTP endpoint on
-   `PORT` and that the binary really landed in `/opt/homevault`. For Ollama it
+   `PORT` and that the binary really landed in `/opt/homevault`, plus the four
+   quota tools (`setquota`, `repquota`, `quotaon`, `quotacheck`). For Ollama it
    goes further than presence: the `ollama` unit must be active and
    `http://127.0.0.1:11434/` must answer, since the Chat app needs the
    daemon's API, not just the binary.

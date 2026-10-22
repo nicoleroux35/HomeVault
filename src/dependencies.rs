@@ -120,7 +120,15 @@ fn check_acl() -> bool {
     binary_present("setfacl", "/usr/bin/setfacl")
 }
 fn check_quota() -> bool {
-    binary_present("repquota", "/usr/sbin/repquota")
+    // All four ship in the same `quota` package and HomeVault needs each of
+    // them: `setquota` writes the limit, `repquota` reads it back (no
+    // "enforced" answer is ever produced without it), `quotacheck` builds the
+    // accounting files and `quotaon` arms accounting after a reboot
+    // (`src/quota.rs`, installer's `setup_home_quota`).
+    binary_present("setquota", "/usr/sbin/setquota")
+        && binary_present("repquota", "/usr/sbin/repquota")
+        && binary_present("quotaon", "/usr/sbin/quotaon")
+        && binary_present("quotacheck", "/usr/sbin/quotacheck")
 }
 fn check_cryptsetup() -> bool {
     binary_present("cryptsetup", "/usr/sbin/cryptsetup")
@@ -347,11 +355,11 @@ fn specs() -> Vec<DependencySpec> {
             check_running: None,
         },
         DependencySpec {
-            name: "repquota / setquota",
+            name: "quota tools (setquota / repquota / quotaon / quotacheck)",
             package: "quota",
             category: "Storage",
             required: true,
-            used_by: "Filesystem disk quotas (Groups)",
+            used_by: "Per-user home-folder disk quotas (Users)",
             check_installed: check_quota,
             check_running: None,
         },
@@ -1093,7 +1101,6 @@ mod tests {
         "restic",
         "rocm-smi",
         "sendmail",
-        "setquota",
         "snmpd",
         "snmpwalk",
         "testparm",

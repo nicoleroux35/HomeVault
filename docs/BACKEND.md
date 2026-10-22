@@ -41,7 +41,9 @@ src/
   encryption.rs         LUKS2 encrypt/unlock/lock for standalone devices
   acl.rs                setfacl/getfacl wrappers (sudo)
   sftp.rs               SftpJailService — real second sshd, per-user chroot jails
-  quota.rs              Per-user home-directory disk limit (setquota -u).
+  quota.rs              Per-user home-directory disk limit: backend detection
+                        (VFS setquota/repquota, ZFS userquota@, unsupported),
+                        enforcement + read-back, sudo -n + deadlines.
                         The per-group setquota -g feature was removed 2026-09-09.
   transfer_quota.rs     Per-user/group upload/download caps (Explorer only)
   autostart.rs          Start-on-boot (systemd) state for `homevault.service`
@@ -140,8 +142,10 @@ Notable handlers (see `API.md` for the full map):
   `handlers/snmp.rs`. (`handlers/wallpapers.rs` was removed 2026-09-04 — the
   44 bundled wallpapers are static assets, not an API.)
 - `handlers/user_homes.rs` — per-user home folder: create/enable/disable/delete,
-  disk choice, and the **home-directory size limit** (`setquota -u`, best-effort,
-  see [guides/users.md](./guides/users.md) and [guides/quotas.md](./guides/quotas.md)).
+  disk choice, and the **home-directory size limit** (applied by
+  `quota.rs::QuotaService::apply` and verified by a `repquota`/`zfs get`
+  read-back, exposed by `GET /users/{u}/home`, see
+  [guides/users.md](./guides/users.md) and [guides/quotas.md](./guides/quotas.md)).
 - `handlers/encryption.rs` — standalone LUKS2 volumes (list/create/unlock/lock/delete).
 - `handlers/notifications.rs` — list/unread-count/mark-read/mark-all-read/delete,
   plus the SSE ticket/stream pair (`handlers/notifications.rs`'s
@@ -158,7 +162,7 @@ Notable handlers (see `API.md` for the full map):
   plus its auto-cleanup schedule.
 - `handlers/transfer_quotas.rs` — per-user/group upload/download caps,
   enforced only against File Explorer transfers (distinct from the per-user
-  home-dir `setquota -u` limit in `quota.rs`).
+  home-directory quota in `quota.rs`).
 - `handlers/monitor_layout.rs`, `handlers/weather_location.rs` — per-user
   desktop-monitor position/visibility and the Weather monitor's saved city.
 
@@ -255,9 +259,12 @@ See [Setup Wizard](./guides/setup-wizard.md).
 
 See **Deployment model** in [Architecture](./ARCHITECTURE.md): the process runs
 as root, no `homevault` service account, no generated sudoers file —
-privileged shell-outs stay `sudo`-wrapped, except `quota.rs`'s bare
-`setquota` (deliberate: the process runs as root, documented in
-`src/quota.rs`).
+privileged shell-outs stay `sudo`-wrapped and succeed against the distro
+default root rule. `quota.rs` runs `setquota`/`repquota`/`quotaon`/
+`quotacheck` as `sudo -n` with a deadline, so a lost privilege or a stuck
+`quotacheck` fails fast instead of hanging the request; `configure_sudoers`
+lists a scoped grant for those four tools but is not installed today (kept for
+a future non-root mode).
 
 ## Auth & sessions (`src/auth/`)
 

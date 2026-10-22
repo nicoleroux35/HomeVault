@@ -22,6 +22,7 @@
   import { onMount } from 'svelte';
   import { get } from 'svelte/store';
   import { api } from '$lib/services/api';
+  import type { HomeQuotaState } from '$lib/services/api';
   import { onAppVisible } from '$lib/utils/autoRevalidate';
   import { t, translate, languageStore } from '$lib/stores/i18n';
   import { isAdmin, authStore } from '$lib/stores/auth';
@@ -34,7 +35,7 @@
   import FolderPicker from '$lib/components/theme/FolderPicker.svelte';
   import MemberAccessCard from '$lib/components/users/MemberAccessCard.svelte';
   import type { AvailableHomeDisk } from '$lib/types/api';
-  import { IconSearch, IconPlus, IconMinus, IconLock, IconLockOpen, IconUsers, IconFolder, IconFolderOpen, IconKey, IconTrash, IconCheck, IconX, IconShield, IconShieldOff, IconGauge, IconArrowLeft, IconEye, IconEyeOff, IconLogout, IconDeviceDesktop, IconClock } from '@tabler/icons-svelte';
+  import { IconSearch, IconPlus, IconMinus, IconLock, IconLockOpen, IconUsers, IconFolder, IconFolderOpen, IconKey, IconTrash, IconCheck, IconX, IconShield, IconShieldOff, IconGauge, IconArrowLeft, IconEye, IconEyeOff, IconLogout, IconDeviceDesktop, IconClock, IconAlertTriangle } from '@tabler/icons-svelte';
 
   interface User {
     username: string;
@@ -132,6 +133,14 @@
   let passwordValue = '';
   let passwordShown = false;
   let deleteHomeFolder = false;
+  /**
+   * Live disk-quota state of the selected user's home folder, as read back
+   * from the filesystem by `GET /users/{u}/home`. `null` = not loaded (or no
+   * home folder). Never derived from the form: a limit that was only stored
+   * must not look applied.
+   */
+  let homeQuota: HomeQuotaState | null = null;
+  let loadingHomeQuota = false;
   let quotaForm = {
     uploadEnabled: false, uploadValue: 0, uploadUnit: 'MB' as QuotaUnit,
     downloadEnabled: false, downloadValue: 0, downloadUnit: 'MB' as QuotaUnit,
@@ -534,6 +543,8 @@
     passwordValue = '';
     passwordShown = false;
     deleteHomeFolder = false;
+    homeQuota = null;
+    if (u.home_enabled && u.home_path) void loadHomeQuota(u.username);
     loadQuota(u);
   }
   function selectUser(u: User) { hydrateDetail(u); }
@@ -545,6 +556,43 @@
     errors = {};
     selectedUser = null;
     creating = true;
+  }
+
+  /**
+   * Reads the *real* quota state of a user's home folder (enforced or not,
+   * used bytes, and why). The server verifies it with `repquota`/`zfs get`
+   * before answering, so this is a read-back, never an echo of the saved
+   * value. A failure leaves the block hidden rather than claiming success.
+   */
+  async function loadHomeQuota(username: string) {
+    loadingHomeQuota = true;
+    try {
+      const info = await api.getUserHome(username);
+      homeQuota = info?.quota ?? null;
+    } catch {
+      homeQuota = null;
+    } finally {
+      loadingHomeQuota = false;
+    }
+  }
+
+  /**
+   * i18n key for a backend `reason_code`. The raw English `reason` stays a
+   * last-resort fallback (and the technical detail line), so an unknown code
+   * can never blank the explanation.
+   */
+  function quotaReasonKey(code: string | null | undefined): string | null {
+    switch (code) {
+      case 'not_mounted_with_quota': return 'users.home_quota_reason_not_mounted_with_quota';
+      case 'unsupported_filesystem': return 'users.home_quota_reason_unsupported_filesystem';
+      case 'accounting_inactive': return 'users.home_quota_reason_accounting_inactive';
+      case 'no_entry': return 'users.home_quota_reason_no_entry';
+      case 'limit_mismatch': return 'users.home_quota_reason_limit_mismatch';
+      case 'command_failed': return 'users.home_quota_reason_command_failed';
+      case 'inspect_failed': return 'users.home_quota_reason_inspect_failed';
+      case 'invalid_username': return 'users.home_quota_reason_invalid_username';
+      default: return null;
+    }
   }
 
   async function loadQuota(u: User) {
@@ -684,8 +732,14 @@
       homeForm.home_enabled && homeForm.home_path ? homeForm.home_path : null
     );
     submitting = false;
-    if (res.success) { await refreshAll(); errors = { saved: translate('users.home_saved') }; }
-    else { errors = { action: res.message || res.error || translate('users.home_update_failed') }; }
+    if (res.success) {
+      // refreshAll() re-hydrates the detail pane from the server, which also
+      // re-reads the real quota state (hydrateDetail → loadHomeQuota): the
+      // card flips to "not enforced" with its reason whenever the kernel or
+      // the backing filesystem refused the limit the save just stored.
+      await refreshAll();
+      errors = { saved: translate('users.home_saved') };
+    } else { errors = { action: res.message || res.error || translate('users.home_update_failed') }; }
   }
 
   async function handleDeleteHome() {
@@ -1361,7 +1415,7 @@
             {/snippet}
             {#snippet actions()}
               <div class="flex items-center gap-2">
-                <button type="button" data-testid="users-btn" class={primaryBtn} onclick={saveHome} disabled={submitting}><IconCheck size={16} stroke={2.2} aria-hidden="true" /> {$t('common.save')}</button>
+                <button type="button" data-testid="users-home-save" class={primaryBtn} onclick={saveHome} disabled={submitting}><IconCheck size={16} stroke={2.2} aria-hidden="true" /> {$t('common.save')}</button>
                 <button
                   type="button"
                   data-testid="users-switch"
@@ -1377,7 +1431,42 @@
             <p class={hint}>{$t('users.sheet_home')} · {$t('users.home_small_off')}</p>
             {#if selectedUser.home_enabled && selectedUser.home_path}
               <p class={cn(hint, 'mt-1 break-all font-[family-name:var(--hv-font-mono)]')}>{selectedUser.home_path}</p>
+              {@const q = homeQuota}
+              {#if loadingHomeQuota}
+                <p data-testid="users-home-quota-loading" class={cn(hint, 'mt-2')} role="status">{$t('users.home_quota_checking')}</p>
+              {:else if q}
+                <div
+                  data-testid="users-home-quota"
+                  role="status"
+                  class={cn('mt-2.5 flex flex-col gap-1 px-3 py-2.5 rounded-lg border', q.enforced ? 'border-[var(--hv-success)]/40 bg-[var(--hv-success-bg)]' : 'border-[var(--hv-warning)]/45 bg-[var(--hv-warning-bg)]')}
+                >
+                  <span class={cn('inline-flex items-center gap-1.5 text-c-label font-semibold', q.enforced ? 'text-[var(--hv-success)]' : 'text-[var(--hv-warning)]')}>
+                    {#if q.enforced}
+                      <IconCheck size={14} stroke={2.4} aria-hidden="true" />
+                      {q.limit_bytes
+                        ? $t('users.home_quota_enforced', { size: formatBytes(q.limit_bytes), mount: q.mount_point })
+                        : $t('users.home_quota_accounting_on', { mount: q.mount_point })}
+                    {:else}
+                      <IconAlertTriangle size={14} stroke={2.2} aria-hidden="true" />
+                      {q.limit_bytes
+                        ? $t('users.home_quota_not_enforced', { size: formatBytes(q.limit_bytes) })
+                        : $t('users.home_quota_not_enforced_generic')}
+                    {/if}
+                  </span>
+                  {#if q.used_bytes !== null && q.used_bytes !== undefined}
+                    <span class={hint} data-testid="users-home-quota-used">{$t('users.home_quota_used', { used: formatBytes(q.used_bytes) })}</span>
+                  {/if}
+                  {#if !q.enforced}
+                    {#if quotaReasonKey(q.reason_code)}
+                      <span class={hint}>{translate(quotaReasonKey(q.reason_code)!, { fs: q.filesystem, mount: q.mount_point })}</span>
+                    {:else if q.reason}
+                      <span class={hint}>{q.reason}</span>
+                    {/if}
+                  {/if}
+                </div>
+              {/if}
             {/if}
+            {#if errors.saved}<p data-testid="users-home-saved" class={cn(okTxt, 'm-0 mt-2')} role="status">{errors.saved}</p>{/if}
             {#if homeForm.home_enabled}
               <p class={cn(hint, 'mt-2.5')}>{$t('users.home_disk_or_folder')}</p>
               <div data-testid="users-disk-grid" class="flex flex-wrap gap-2.5 mt-3" role="group" aria-label={$t('users.select_disk')}>

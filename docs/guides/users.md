@@ -70,13 +70,24 @@ Offered for **every role** — the server applies the quota regardless (was role
 - Wire: `home_size_bytes: Option<i64>` on the create body and `PUT .../full`;
   `size_bytes` on `PUT .../home` and the `GET .../home` response. `0`/`null` =
   no limit. Negative → 400. A size larger than the disk's free space → 400.
-- Enforcement: `handlers/user_homes.rs::apply_home_folder` calls
-  `quota::QuotaService::set_user_home_quota` → `setquota -u <user> <kb> <kb> 0 0
-  <mount>`. **Best-effort** — if the filesystem is not mounted with `usrquota`
-  the limit is still recorded and the handler returns a success message saying it
-  could not be enforced. Stored in `user_homes.size_limit_bytes` (migration 032).
+- Enforcement (rewritten 2026-10-22): `handlers/user_homes.rs::apply_home_folder`
+  calls `quota::QuotaService::apply(user, home_path, limit)`, which picks the
+  backend from the **mount that actually holds the folder** (`findmnt`), applies
+  the limit (`setquota -u` for ext2/3/4/xfs/jfs/reiserfs, `zfs set userquota@`
+  for ZFS), then verifies it with a `repquota`/`zfs get` read-back. A limit the
+  kernel did not accept is stored but the handler returns a truthful warning,
+  and the card keeps showing "not enforced". Btrfs and non-POSIX filesystems are
+  reported as unsupported — never as applied. Privileged commands run as
+  `sudo -n` (scoped grant from `src/setup.rs`) under a deadline. Stored in
+  `user_homes.size_limit_bytes` (migration 032).
+- `GET .../home` now also returns a live `quota` object (`enforced`,
+  `filesystem`, `mount_point`, `limit_bytes`, `used_bytes`, `reason_code`,
+  `reason`) read back from the filesystem; `quota` is `null` when the folder is
+  disabled or absent. The detail Home card renders it and localises
+  `reason_code` in all four languages.
 - `api.ts`: `setUserHome(username, enabled, disk, sizeBytes?, path?)`,
-  `updateUserFull({ …, home_path, home_size_bytes })`.
+  `updateUserFull({ …, home_path, home_size_bytes })`, `getUserHome(username)`
+  (`HomeFolderInfo` / `HomeQuotaState`).
 - See [Disk quotas](./quotas.md).
 
 ### Per-member resource access (apps / folders / shares) — 2026-10-16
