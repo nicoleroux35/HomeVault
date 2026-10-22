@@ -66,11 +66,12 @@ use homevault::auth::AuthService;
 use homevault::config::PathGuard;
 use homevault::handlers::settings::{
     handle_all_settings_get, handle_appearance_settings_get, handle_appearance_settings_update,
-    handle_email_settings_get, handle_email_settings_update, handle_get_language,
-    handle_notification_settings_get, handle_notification_settings_update,
+    handle_check_version_now, handle_email_settings_get, handle_email_settings_update,
+    handle_get_language, handle_notification_settings_get, handle_notification_settings_update,
     handle_public_settings_get, handle_set_language, handle_settings_export,
     handle_settings_import, handle_settings_reset, handle_update_settings_get,
-    handle_update_settings_update,
+    handle_update_settings_update, handle_version_info, update_check_attempts, UpdateFrequency,
+    CACHED_UPDATE_RESULT, LAST_UPDATE_CHECK, UPDATE_SETTINGS,
 };
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{auth::handle_login, AppState};
@@ -152,6 +153,11 @@ fn settings_router(state: Arc<AppState>) -> Router {
         .route("/api/settings/export", get(handle_settings_export))
         .route("/api/settings/import", post(handle_settings_import))
         .route("/api/settings/reset", post(handle_settings_reset))
+        .route("/api/settings/version", get(handle_version_info))
+        .route(
+            "/api/settings/version/check",
+            post(handle_check_version_now),
+        )
         .with_state(state)
 }
 
@@ -775,4 +781,322 @@ async fn test_notification_threshold_is_clamped_and_round_trips() {
         got["data"]["alert_threshold"], 100,
         "a u8 threshold above 100 is clamped"
     );
+}
+
+// ===========================================================================
+// ROADMAP 13.1 — the update check is opt-in and enforced server-side
+//
+// The privacy baseline (CLAUDE.md → Compliance, point 1) says HomeVault makes
+// no outbound third-party call the admin did not ask for. These tests pin the
+// three ways it could happen: opening Settings (GET), a saved frequency, and
+// the explicit "Check now" (POST). The update endpoint is redirected to a
+// local listener through `HOMEVAULT_VERSION_CHECK_URL`, so "zero outbound
+// attempts" is measured as zero received requests rather than inferred.
+// ===========================================================================
+
+/// Reset the update-check globals a previous test in this binary may have left
+/// behind (`settings_persistence::reset` restores the frequency but not the
+/// last-check timestamp or the cached answer).
+fn reset_update_check_state() {
+    *UPDATE_SETTINGS.write() = Default::default();
+    *LAST_UPDATE_CHECK.write() = None;
+    *CACHED_UPDATE_RESULT.write() = None;
+}
+
+/// A stand-in for `api.github.com/.../releases/latest` that counts how many
+/// times it is actually called.
+async fn spawn_fake_update_endpoint() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counter = hits.clone();
+    let app = Router::new().route(
+        "/latest",
+        get(move || {
+            let counter = counter.clone();
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                axum::Json(json!({
+                    "tag_name": "v99.0.0",
+                    "published_at": "2026-10-01T00:00:00Z",
+                    "body": "Release notes line"
+                }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind fake update endpoint");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (format!("http://{}/latest", addr), hits)
+}
+
+/// Point the update check at `url` for the duration of the test.
+fn use_update_endpoint(url: &str) {
+    std::env::set_var("HOMEVAULT_VERSION_CHECK_URL", url);
+}
+
+fn clear_update_endpoint() {
+    std::env::remove_var("HOMEVAULT_VERSION_CHECK_URL");
+}
+
+/// Opening Settings must not contact the update endpoint: the default
+/// frequency is `Manual`, so the GET serves the current version only.
+#[tokio::test]
+async fn test_version_info_never_contacts_the_update_endpoint_by_default() {
+    let (state, _tmp, _guard) = setup_state().await;
+    reset_update_check_state();
+    let (url, hits) = spawn_fake_update_endpoint().await;
+    use_update_endpoint(&url);
+
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = settings_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let before = update_check_attempts();
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/version",
+        Some(&token),
+        None,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["data"]["current_version"],
+        json!(env!("CARGO_PKG_VERSION"))
+    );
+    assert_eq!(
+        body["data"]["latest_version"],
+        json!(null),
+        "no check has run, so there is no latest version to report"
+    );
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the default (Manual) frequency must never reach the update endpoint"
+    );
+    assert_eq!(
+        update_check_attempts(),
+        before,
+        "the attempt counter is the invariant's observable form"
+    );
+    assert_eq!(*LAST_UPDATE_CHECK.read(), None);
+
+    clear_update_endpoint();
+}
+
+/// `Disabled` is an even harder no: still zero attempts.
+#[tokio::test]
+async fn test_version_info_never_contacts_the_update_endpoint_when_disabled() {
+    let (state, _tmp, _guard) = setup_state().await;
+    reset_update_check_state();
+    let (url, hits) = spawn_fake_update_endpoint().await;
+    use_update_endpoint(&url);
+
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = settings_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, _) = send(
+        &mut router,
+        Method::PUT,
+        "/api/settings/update",
+        Some(&token),
+        Some(json!({"check_frequency": "disabled"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        UPDATE_SETTINGS.read().check_frequency,
+        Some(UpdateFrequency::Disabled)
+    );
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/version",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["latest_version"], json!(null));
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a Disabled frequency must never reach the update endpoint"
+    );
+    assert_eq!(*LAST_UPDATE_CHECK.read(), None);
+
+    clear_update_endpoint();
+}
+
+/// "Check now" is the explicit path: it forces the call, caches the answer,
+/// and the next plain GET serves that cache without a second call.
+#[tokio::test]
+async fn test_check_now_is_the_only_forced_outbound_path() {
+    let (state, _tmp, _guard) = setup_state().await;
+    reset_update_check_state();
+    let (url, hits) = spawn_fake_update_endpoint().await;
+    use_update_endpoint(&url);
+
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = settings_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let before = update_check_attempts();
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/settings/version/check",
+        Some(&token),
+        None,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["latest_version"], json!("99.0.0"));
+    assert_eq!(body["data"]["up_to_date"], json!(false));
+    assert_eq!(body["data"]["release_date"], json!("2026-10-01T00:00:00Z"));
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(update_check_attempts(), before + 1);
+    assert!(
+        LAST_UPDATE_CHECK.read().is_some(),
+        "the interval starts from the last attempt"
+    );
+
+    // The scheduled gate now has a fresh timestamp, so a plain GET (Manual)
+    // serves the cached answer and makes no second call.
+    let (status, cached) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/version",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cached["data"]["latest_version"], json!("99.0.0"));
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(update_check_attempts(), before + 1);
+
+    clear_update_endpoint();
+}
+
+/// Forcing a third-party call is an admin decision; a plain user cannot do it
+/// (and the request never leaves the process).
+#[tokio::test]
+async fn test_check_now_requires_admin() {
+    let (state, _tmp, _guard) = setup_state().await;
+    reset_update_check_state();
+    let (url, hits) = spawn_fake_update_endpoint().await;
+    use_update_endpoint(&url);
+
+    create_test_user(&state, "bob", "Password123!", 1).await;
+    let mut router = settings_router(state);
+    let token = login(&mut router, "bob", "Password123!").await;
+
+    let before = update_check_attempts();
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/settings/version/check",
+        Some(&token),
+        None,
+    )
+    .await;
+
+    assert!(
+        status.is_client_error() || body["success"] == json!(false),
+        "a non-admin must not be able to force the check: {status} {body}"
+    );
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the refusal happens before any outbound call"
+    );
+    assert_eq!(update_check_attempts(), before);
+
+    clear_update_endpoint();
+}
+
+/// An opted-in schedule fires once its interval has elapsed — and only then.
+#[tokio::test]
+async fn test_a_due_schedule_checks_and_a_fresh_one_does_not() {
+    let (state, _tmp, _guard) = setup_state().await;
+    reset_update_check_state();
+    let (url, hits) = spawn_fake_update_endpoint().await;
+    use_update_endpoint(&url);
+
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = settings_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, _) = send(
+        &mut router,
+        Method::PUT,
+        "/api/settings/update",
+        Some(&token),
+        Some(json!({"check_frequency": "daily"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Never checked → due on the next tick.
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/version",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["latest_version"], json!("99.0.0"));
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // Just checked → not due, served from cache with no second call.
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/version",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"]["latest_version"], json!("99.0.0"));
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a fresh check must not be repeated on the next GET"
+    );
+
+    // Two days later → due again.
+    let two_days_ago = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 2 * 86_400;
+    *LAST_UPDATE_CHECK.write() = Some(two_days_ago);
+    let (_, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/version",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "the daily interval elapsed, so the schedule must check again"
+    );
+
+    clear_update_endpoint();
 }

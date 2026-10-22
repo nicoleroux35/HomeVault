@@ -683,7 +683,19 @@
 
   async function handleCheckUpdate() {
     checkingUpdate = true;
-    await loadVersionInfo();
+    try {
+      // "Check now" is the explicit opt-in: it is the only action that makes
+      // the server contact the update endpoint (POST), whereas the mount-time
+      // load above only reads the cached answer (GET).
+      const response = await api.checkForUpdatesNow();
+      if (response.success && response.data) {
+        versionInfo = response.data;
+      } else {
+        notifySettings(response.error || translate('settings.check_failed'), 'error');
+      }
+    } catch (error) {
+      notifySettings(translate('settings.check_failed'), 'error');
+    }
     checkingUpdate = false;
   }
 
@@ -1152,6 +1164,7 @@
               <div class="settings-version-row flex justify-between text-sm py-1"><span class="text-[var(--hv-settings-label)]">{$t('settings.latest_version')}</span><span class="font-semibold text-[var(--hv-settings-title)]">v{versionInfo.latest_version}{#if !versionInfo.up_to_date}<span class="ml-1 px-1.5 py-0.5 rounded bg-[var(--hv-warning-bg)] text-[var(--hv-warning)] text-micro font-bold uppercase">{$t('settings.update_available_badge')}</span>{/if}</span></div>
             {/if}
             {#if versionInfo.release_date}<div class="settings-version-row flex justify-between text-sm py-1"><span class="text-[var(--hv-settings-label)]">{$t('settings.release_date2')}</span><span class="font-semibold text-[var(--hv-settings-title)]">{versionInfo.release_date}</span></div>{/if}
+            {#if !versionInfo.latest_version}<p data-testid="version-no-check-hint" class="m-0 mt-1 text-xs text-[var(--hv-settings-label)]">{$t('settings.update_auto_hint')}</p>{/if}
             {#if versionInfo.error}<div class="settings-version-row flex items-center gap-1.5 text-xs text-[var(--hv-error)]"><IconAlertTriangle size={16} /> <span>{versionInfo.error}</span></div>{/if}
           </div>
           <div data-testid="settings-card-footer" class={settingsCardFooter}>
