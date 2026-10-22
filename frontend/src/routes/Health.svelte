@@ -20,7 +20,7 @@
   import { api } from '$lib/services/api';
   import { t, translate } from '$lib/stores/i18n';
   import { onAppVisible } from '$lib/utils/autoRevalidate';
-  import { Spinner } from '$lib/components/theme';
+  import { Spinner, Button } from '$lib/components/theme';
   import { PageLayout, EmptyState } from '$lib/components/app';
   import { IconHeart, IconActivity, IconHeartbeat } from '@tabler/icons-svelte';
 
@@ -38,6 +38,11 @@
   let checks: HealthCheck[] = [];
   let loading = true;
   let overallStatus: CheckStatus = 'unknown';
+  // Error branch (item ROADMAP 1.5): `api.healthCheck()` resolves to
+  // `{success:false}` on network failure (and the endpoint itself reports
+  // failures in-body), so any outcome without `data` surfaces as an explicit
+  // error state with a retry — never as the silent "no checks" branch.
+  let errorMessage = '';
 
   // The 9 checks health.rs always runs, in a fixed, sensible display order —
   // `checks` from the API is already in this order, but this also gives each
@@ -73,7 +78,9 @@
     if (response.success && response.data) {
       checks = response.data.checks || [];
       overallStatus = response.data.overall_status || 'unknown';
+      errorMessage = '';
     } else {
+      errorMessage = response.error || translate('health.error_desc');
     }
     loading = false;
   }
@@ -110,6 +117,28 @@
       <Spinner />
       <span>{$t('health.loading')}</span>
     </div>
+  {:else if errorMessage}
+    <EmptyState
+      title={$t('health.error_title')}
+      description={errorMessage}
+      data-testid="health-error"
+    >
+      {#snippet iconSnippet()}
+        <IconHeartbeat size={26} stroke={1.8} />
+      {/snippet}
+      {#snippet action()}
+        <!-- Explicit retry (an error-recovery action, allowed under the
+             no-manual-refresh rule). Focusable, labelled, 44px hit area. -->
+        <Button
+          variant="secondary"
+          class="mt-2"
+          data-testid="health-retry"
+          onclick={() => loadHealth()}
+        >
+          {$t('health.retry')}
+        </Button>
+      {/snippet}
+    </EmptyState>
   {:else if checks.length === 0}
     <EmptyState
       title={$t('health.no_checks_title')}

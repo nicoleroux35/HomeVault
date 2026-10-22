@@ -117,13 +117,19 @@ pub async fn handle_system_disk(
 }
 
 /// Runs all system health checks and returns aggregated results.
+///
+/// `run_all_checks` offloads its subprocess work to `spawn_blocking`
+/// internally — see `src/health.rs`. Handler is un-routed today (kept as a
+/// trap for future route wiring) but the offload contract binds it all the
+/// same.
 #[axum_macros::debug_handler]
 pub async fn handle_health_all(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if let Err(response) = require_auth(&state, &headers).await {
         return response;
     }
 
-    match HealthService::run_all_checks() {
+    let pool = state.db.pool();
+    match HealthService::run_all_checks(&pool).await {
         Ok(health) => ResponseHelper::json_success(health),
         Err(e) => ResponseHelper::json_error(format!("Failed to run health checks: {}", e)),
     }
@@ -140,7 +146,8 @@ pub async fn handle_health_check(
         return response;
     }
 
-    match HealthService::run_check(&name) {
+    let pool = state.db.pool();
+    match HealthService::run_check(&name, &pool).await {
         Ok(check) => ResponseHelper::json_success(check),
         Err(e) => ResponseHelper::json_error(format!("Failed to run health check: {}", e)),
     }
