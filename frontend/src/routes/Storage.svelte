@@ -219,6 +219,15 @@
     created_at: string;
     updated_at: string;
   }
+  interface CacheMoverRunShareLocal {
+    share_name: string;
+    mode: string;
+    status: string;
+    files_moved: number;
+    bytes_moved: number;
+    message: string | null;
+  }
+
   interface CacheMoverRunLocal {
     id: string;
     status: string;
@@ -227,6 +236,7 @@
     files_moved: number;
     bytes_moved: number;
     error_message: string | null;
+    shares: CacheMoverRunShareLocal[];
   }
 
   const CACHE_MODES = ['yes', 'no', 'prefer', 'only'] as const;
@@ -1242,12 +1252,28 @@
               </div>
             {/if}
             {#if cacheRuns.length > 0}
-              <div class="flex flex-col gap-2 mt-3">
+              <div data-testid="storage-cache-runs" class="flex flex-col gap-2 mt-3">
                 {#each cacheRuns.slice(0, 10) as run}
-                  <div class="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)] text-xs">
-                    <span class={cn('px-2 py-0.5 rounded-full font-bold uppercase', run.status === 'success' ? 'bg-[var(--hv-success-bg)] text-[var(--hv-success)]' : run.status === 'failed' ? 'bg-[var(--hv-error-bg)] text-[var(--hv-error)]' : 'bg-[var(--hv-primary-light)] text-[var(--hv-primary)]')}>{run.status}</span>
-                    <span class="text-[var(--hv-shell-text-2)]">{new Date(run.started_at).toLocaleString()}</span>
-                    <span class="ml-auto text-[var(--hv-shell-text-2)]">{run.files_moved} {$t('cache.files')} · {capacityStr(run.bytes_moved)}</span>
+                  <div class="px-3 py-2 rounded-lg bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)] text-xs">
+                    <div class="flex items-center gap-2.5">
+                      <span class={cn('px-2 py-0.5 rounded-full font-bold uppercase', run.status === 'completed' ? 'bg-[var(--hv-success-bg)] text-[var(--hv-success)]' : run.status === 'partial' ? 'bg-[var(--hv-warning-bg)] text-[var(--hv-warning)]' : run.status === 'failed' ? 'bg-[var(--hv-error-bg)] text-[var(--hv-error)]' : 'bg-[var(--hv-primary-light)] text-[var(--hv-primary)]')}>{$t(`cache.run_status_${run.status}`)}</span>
+                      <span class="text-[var(--hv-shell-text-2)]">{new Date(run.started_at).toLocaleString()}</span>
+                      <span class="ml-auto text-[var(--hv-shell-text-2)]">{run.files_moved} {$t('cache.files')} · {capacityStr(run.bytes_moved)}</span>
+                    </div>
+                    {#if run.shares.length > 0}
+                      <ul class="m-0 mt-2 p-0 list-none flex flex-col gap-1" aria-label={$t('cache.run_shares')}>
+                        {#each run.shares as share (share.share_name)}
+                          <li class="flex items-start gap-2">
+                            <span class={cn('mt-0.5 w-1.5 h-1.5 flex-none rounded-full', share.status === 'moved' ? 'bg-[var(--hv-success)]' : share.status === 'failed' ? 'bg-[var(--hv-error)]' : 'bg-[var(--hv-shell-text-2)]')} aria-hidden="true"></span>
+                            <span class="font-semibold text-[var(--hv-shell-text-strong)]">{share.share_name}</span>
+                            <span class="text-[var(--hv-shell-text-2)]">{$t(`cache.share_status_${share.status}`)}</span>
+                            {#if share.message}
+                              <span class="text-[var(--hv-error)]">{share.message}</span>
+                            {/if}
+                          </li>
+                        {/each}
+                      </ul>
+                    {/if}
                   </div>
                 {/each}
               </div>
