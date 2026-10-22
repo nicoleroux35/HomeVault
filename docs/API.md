@@ -161,8 +161,8 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 | PUT | `/users/{username}/locked` | admin | `handle_user_set_locked` — a **permanent** lock (clears `locked_until`), mirrored to the Linux password (`usermod -L/-U`, best-effort); an automatic lockout instead expires on its own (see `guides/auth.md`) |
 | POST | `/users/{username}/2fa/disable` | admin | `handle_admin_disable_2fa` |
 | PUT | `/users/{username}/groups` | admin | `handle_user_update_groups` — blank names are rejected, unknown groups → `400 "Group '<x>' does not exist"` |
-| GET | `/users/{username}/home` | admin | `handle_user_home_get` (returns `size_bytes`) |
-| PUT | `/users/{username}/home` | admin | `handle_user_home_put` (`{ enabled, disk, size_bytes }`) |
+| GET | `/users/{username}/home` | auth | `handle_user_home_get` — stored config (`enabled`, `disk`, `path`, `size_bytes`) **plus a live `quota` object** (`enforced`, `filesystem`, `mount_point`, `limit_bytes`, `used_bytes`, `reason_code`, `reason`) read back from the filesystem via `repquota`/`zfs get`; `quota` is `null` when the folder is disabled or absent |
+| PUT | `/users/{username}/home` | admin | `handle_user_home_put` (`{ enabled, disk, size_bytes, path }`) — applies the limit and verifies it; a limit the kernel refused is stored but reported as not enforced |
 | DELETE | `/users/{username}/home` | admin | `handle_user_home_delete` |
 | GET | `/users/{username}/avatar.svg` | auth | `handle_user_avatar` (SVG) |
 | GET | `/users/count` | admin | `handle_user_count` |
@@ -189,9 +189,13 @@ group management and cannot be created/deleted through these endpoints
 
 **Home-directory size:** `POST /users` and `PUT /users/{u}/full` also accept
 `home_size_bytes: Option<i64>` (`0`/`null` = no limit; negative → 400; larger
-than the disk's free space → 400). It applies a real `setquota -u` quota on the
-home directory (best-effort — recorded even if the FS lacks `usrquota`). See
-[Users](./guides/users.md#home-directory-size-limit-2026-09-08).
+than the disk's free space → 400). It applies a real per-user quota on the
+home directory — `setquota -u` on ext2/3/4/xfs/jfs/reiserfs, `zfs set
+userquota@` on ZFS — through `sudo -n`, and then **verifies it with a
+`repquota`/`zfs get` read-back**: a limit the kernel did not accept is stored
+but reported as not enforced (with a `reason_code`), never as applied. See
+[Users](./guides/users.md#home-directory-size-limit-2026-09-08) and
+[Disk Quotas](./guides/quotas.md).
 
 ## Storage — `storage/*` (auth)
 
@@ -791,9 +795,11 @@ WebSocket requires a single-use ticket (long-lived tokens never appear in URLs).
 
 The per-group filesystem-quota feature (`quotas/*` routes, `handlers/quotas.rs`)
 was **removed 2026-09-09**. The only disk quota left is the **per-user
-home-directory size limit** (`setquota -u`), which has no dedicated endpoint —
-it rides on the Users home-folder calls (`POST /users`, `PUT /users/{u}/full`,
-`PUT /users/{u}/home`). Distinct from **transfer quotas** (per-user/group
+home-directory size limit** (`setquota -u` / `zfs set userquota@`, verified by
+a `repquota`/`zfs get` read-back), which has no dedicated endpoint — it rides
+on the Users home-folder calls (`POST /users`, `PUT /users/{u}/full`,
+`PUT /users/{u}/home`) and its live state is exposed by
+`GET /users/{u}/home`. Distinct from **transfer quotas** (per-user/group
 upload/download caps, `transfer-quotas/*`). See
 [Disk Quotas](./guides/quotas.md).
 

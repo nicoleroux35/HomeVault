@@ -69,6 +69,16 @@ mount step fails, `teardown_failed_array` stops the fresh array and zeroes the
 member superblocks (logging every step) instead of leaving an orphan holding
 the disks busy.
 
+**Per-user quotas are armed at creation time.** `mount_and_persist_raid`
+mounts the new `ext4`/`xfs` array with `QuotaService::quota_mount_options(fs)`
+(`usrquota,grpquota`, or `usrquota` for XFS) so the kernel accounts per-user
+usage from the first write. If that mount fails the array is re-mounted
+plainly (a warning is logged and the home-folder limit is reported as not
+enforced), and the quota options are written to `/etc/fstab` **only** when the
+live mount accepted them — a persisted option the kernel rejected would break
+the next boot. `activate_mount` then runs `quotacheck -cugm -f` + `quotaon -u`
+on the array. See [Disk Quotas](./quotas.md).
+
 Tool failures come back as `DiskError::CommandFailed` with the stderr passed
 through `friendly_tool_error` — known patterns (busy, too small, in use,
 permission…) become a short sentence kept readable in a dialog, and always

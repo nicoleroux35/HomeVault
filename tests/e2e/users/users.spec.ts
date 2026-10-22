@@ -1608,3 +1608,209 @@ test.describe('17 — Resource access', () => {
     expect(res.status()).toBe(400);
   });
 });
+
+// ===========================================================================
+// 18. Home quota state — enforced / not enforced (ROADMAP 3.1 + 3.2)
+// ===========================================================================
+//
+// The card must answer the only question that matters: *is this limit
+// enforced right now?* A third, ambiguous state ("saved" with no verdict) is
+// explicitly not acceptable, so the UI renders exactly two outcomes.
+//
+// Whether a given host can enforce a quota depends on its filesystem being
+// mounted with `usrquota` and on the account existing as a Linux user — neither
+// is under the test's control (and a synthetic E2E account never gets a
+// backing Linux account). The rendering contract is therefore driven by a
+// stubbed `GET /users/{u}/home` payload, which is exactly what the server sends
+// once `QuotaService::inspect` has done its read-back. The real read-back path
+// is covered by `tests/quota_integration.rs` (HTTP + in-memory DB) and the
+// `quota.rs` unit tests.
+
+interface StubQuota {
+  enforced: boolean;
+  filesystem: string;
+  mount_point: string;
+  limit_bytes: number | null;
+  used_bytes: number | null;
+  reason_code: string | null;
+  reason: string | null;
+}
+
+test.describe('18 — Home quota state (enforced / not enforced)', () => {
+  /**
+   * Open a throwaway member's detail pane with the home-folder card pretending
+   * to have a home directory, and answer the quota endpoint with `quota`.
+   *
+   * Two routes are stubbed: the users list (so the card passes its
+   * `home_enabled && home_path` guard) and the home endpoint itself. Everything
+   * else — session, i18n, layout, styling — is the real application.
+   */
+  async function openHomeQuotaCard(page: Page, quota: StubQuota | null, lang?: string) {
+    const username = sharedActive.username;
+    const homePath = `/home/${username}`;
+    const homeSize = 10 * 1024 * 1024 * 1024;
+
+    await page.route('**/api/users', async (route) => {
+      const url = new URL(route.request().url());
+      if (route.request().method() !== 'GET' || url.pathname !== '/api/users') {
+        await route.fallback();
+        return;
+      }
+      const res = await route.fetch();
+      const body = await res.json().catch(() => ({}));
+      for (const u of Array.isArray(body?.data) ? body.data : []) {
+        if (u.username === username) {
+          u.home_enabled = true;
+          u.home_path = homePath;
+          u.home_size_bytes = homeSize;
+        }
+      }
+      await route.fulfill({ response: res, json: body });
+    });
+
+    await page.route(`**/api/users/${username}/home`, async (route) => {
+      const method = route.request().method();
+      if (method === 'PUT') {
+        // The save itself only *stores* the limit; the following GET is what
+        // says whether the kernel accepted it. Answering the PUT with success
+        // while the GET keeps reporting "not enforced" is the exact situation
+        // the card must survive without flipping to a false green.
+        await route.fulfill({ json: { success: true, data: 'Home folder updated' } });
+        return;
+      }
+      if (method !== 'GET') {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        json: {
+          success: true,
+          data: {
+            enabled: true,
+            disk: null,
+            path: homePath,
+            created_at: null,
+            size_bytes: homeSize,
+            quota,
+          },
+        },
+      });
+    });
+
+    await gotoUsers(page, adminTokens, lang);
+    await win(page)
+      .locator('[data-testid="users-tile"]')
+      .filter({ hasText: username })
+      .click();
+    return win(page).locator('[data-testid="users-home-quota"]');
+  }
+
+  const notEnforced: StubQuota = {
+    enforced: false,
+    filesystem: 'ext4',
+    mount_point: '/',
+    limit_bytes: 10 * 1024 * 1024 * 1024,
+    used_bytes: 2 * 1024 * 1024 * 1024,
+    reason_code: 'not_mounted_with_quota',
+    reason:
+      "The ext4 filesystem mounted on / was not mounted with 'usrquota', so the kernel cannot enforce a per-user limit",
+  };
+
+  test('18.1 — a member without a home folder gets no quota claim at all', async () => {
+    // Real server, no stub: the endpoint must not invent a state.
+    const res = await sharedCtx.get(`/api/users/${sharedActive.username}/home`, {
+      headers: adminHeaders,
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body?.data?.enabled).toBe(false);
+    expect(body?.data?.quota).toBeNull();
+  });
+
+  test('18.2 — an unenforced limit renders "NOT enforced" with its reason and usage', async ({ page }) => {
+    const card = await openHomeQuotaCard(page, notEnforced);
+    await expect(card).toBeVisible({ timeout: 10_000 });
+    await expect(card).toContainText('NOT enforced');
+    // The cause is spelled out instead of being left to the admin's guess.
+    await expect(card).toContainText(/not mounted with quota support/i);
+    // The read-back usage is shown — the figure comes from the filesystem.
+    await expect(card.locator('[data-testid="users-home-quota-used"]')).toHaveText(/\d/);
+    // And the card never claims enforcement in the same breath.
+    await expect(card).not.toContainText('enforced on');
+  });
+
+  test('18.3 — an enforced limit renders the positive state and the used bytes', async ({ page }) => {
+    const card = await openHomeQuotaCard(page, {
+      enforced: true,
+      filesystem: 'ext4',
+      mount_point: '/home',
+      limit_bytes: 10 * 1024 * 1024 * 1024,
+      used_bytes: 3 * 1024 * 1024 * 1024,
+      reason_code: null,
+      reason: null,
+    });
+    await expect(card).toBeVisible({ timeout: 10_000 });
+    await expect(card).toContainText('enforced on');
+    await expect(card).not.toContainText('NOT enforced');
+    await expect(card.locator('[data-testid="users-home-quota-used"]')).toHaveText(/\d/);
+  });
+
+  test('18.4 — unlimited home reports accounting, not a phantom limit', async ({ page }) => {
+    const card = await openHomeQuotaCard(page, {
+      enforced: true,
+      filesystem: 'xfs',
+      mount_point: '/home',
+      limit_bytes: null,
+      used_bytes: 7 * 1024 * 1024 * 1024,
+      reason_code: null,
+      reason: null,
+    });
+    await expect(card).toBeVisible({ timeout: 10_000 });
+    await expect(card).toContainText(/No limit/i);
+    await expect(card).not.toContainText(/Limit of/i);
+    await expect(card.locator('[data-testid="users-home-quota-used"]')).toHaveText(/\d/);
+  });
+
+  test('18.5 — an unknown reason code falls back to the server detail, never a blank card', async ({ page }) => {
+    const card = await openHomeQuotaCard(page, {
+      ...notEnforced,
+      reason_code: 'some_future_code',
+      reason: 'Quota subsystem reported a novel failure',
+    });
+    await expect(card).toBeVisible({ timeout: 10_000 });
+    await expect(card).toContainText('NOT enforced');
+    await expect(card).toContainText('Quota subsystem reported a novel failure');
+  });
+
+  test('18.6 — the reason is localised: French card, French explanation', async ({ page }) => {
+    const card = await openHomeQuotaCard(page, notEnforced, 'fr');
+    await expect(card).toBeVisible({ timeout: 10_000 });
+    await expect(card).toContainText(/PAS appliquée/);
+    // The English server sentence must not leak as the primary message: the
+    // card translates `reason_code` and keeps `reason` as a fallback only.
+    await expect(card).not.toContainText('was not mounted with');
+    const text = await win(page).innerText();
+    expect(text).not.toMatch(/\busers\.home_quota_[a-z_]+/i);
+  });
+
+  test('18.7 — used bytes are omitted when the filesystem reports none', async ({ page }) => {
+    const card = await openHomeQuotaCard(page, { ...notEnforced, used_bytes: null });
+    await expect(card).toBeVisible({ timeout: 10_000 });
+    await expect(card).toContainText('NOT enforced');
+    // No fabricated "0 B used" figure when the read-back gave nothing.
+    await expect(card.locator('[data-testid="users-home-quota-used"]')).toHaveCount(0);
+  });
+
+  test('18.8 — saving the folder re-reads the state instead of echoing the form', async ({ page }) => {
+    // An unenforced limit, then a save: the card must stay "NOT enforced"
+    // (the server re-read it) — the old behaviour flipped to a green "saved".
+    const card = await openHomeQuotaCard(page, notEnforced);
+    await expect(card).toContainText('NOT enforced');
+
+    await win(page).locator('[data-testid="users-home-save"]').click();
+    await expect(win(page).locator('[data-testid="users-home-saved"]')).toBeVisible({ timeout: 10_000 });
+    const after = win(page).locator('[data-testid="users-home-quota"]');
+    await expect(after).toBeVisible();
+    await expect(after).toContainText('NOT enforced');
+  });
+});

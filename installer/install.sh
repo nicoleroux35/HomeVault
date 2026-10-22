@@ -1375,6 +1375,133 @@ EOF
     ok "Automatic external-drive mounting configured"
 }
 
+# Enable per-user disk quotas on the filesystem hosting personal home folders
+# (`/home/homevault`), so the Users page's "home folder size" slider actually
+# limits anything (ROADMAP 3.1).
+#
+# Quota enforcement is per filesystem, and it needs three things that cannot be
+# faked from the app later:
+#   1. the mount carries `usrquota,grpquota` — a limit set on a mount without
+#      it is stored by the kernel but never enforced;
+#   2. the fstab entry carries the same options, or the next reboot silently
+#      drops accounting;
+#   3. the quota files exist and accounting is on (`quotacheck` + `quotaon`) —
+#      `quotaon` state is volatile, so `src/quota.rs::activate_all` re-arms it
+#      at every start.
+# Runs on `/` on a stock install (no separate /home), which is the common case;
+# a separate /home array is recognised by `findmnt --target`. Filesystems that
+# cannot do per-user quotas (btrfs, exfat, overlay…) are reported and skipped:
+# the UI then shows the limit as "not enforced" with the reason, never as
+# applied. Best-effort like every other helper here — a host without quota
+# tooling still boots and runs.
+setup_home_quota() {
+    local home_root="/home/homevault"
+    local fstab="/etc/fstab"
+
+    if ! command -v quotaon &> /dev/null || ! command -v quotacheck &> /dev/null; then
+        warn "Disk quotas skipped — quota-tools (quotaon/quotacheck) not installed"
+        return 0
+    fi
+
+    # One field per `findmnt` call: a mount point or source containing a space
+    # would otherwise be split by `read`.
+    local target fstype
+    target=$(findmnt -n -o TARGET --target "$home_root" 2>/dev/null | head -n1)
+    fstype=$(findmnt -n -o FSTYPE --target "$home_root" 2>/dev/null | head -n1)
+    if [[ -z "$target" || -z "$fstype" ]]; then
+        warn "Disk quotas skipped — could not locate the filesystem hosting $home_root"
+        return 0
+    fi
+
+    local want_opts
+    case "$fstype" in
+        ext2|ext3|ext4)
+            want_opts="usrquota,grpquota"
+            ;;
+        xfs)
+            # XFS has no quota files: the mount option alone turns accounting
+            # on, so `quotacheck` must not be run there.
+            want_opts="usrquota"
+            ;;
+        zfs)
+            info "Home folders live on ZFS ($target) — per-user limits use the native userquota property, nothing to enable here"
+            return 0
+            ;;
+        *)
+            info "Home folders live on '$fstype' ($target) — per-user disk quotas are not supported there; the Users page reports any limit as not enforced"
+            return 0
+            ;;
+    esac
+
+    if findmnt -n -o OPTIONS --target "$home_root" 2>/dev/null | grep -q 'usrquota'; then
+        ok "Disk quota accounting already enabled on $target ($fstype)"
+    else
+        info "Enabling disk quota accounting on $target ($fstype)"
+        # Add the options to the fstab line that mounts this filesystem, if it
+        # does not carry them yet. Written through `cat` (not `mv`) so the
+        # file keeps its inode, owner and mode — a replaced /etc/fstab with
+        # the wrong permissions is a boot hazard.
+        cp -f "$fstab" "$fstab.homevault.bak" 2>/dev/null || true
+        awk -v mp="$target" -v want="$want_opts" '
+            /^[[:space:]]*#/ { print; next }
+            NF >= 4 && $2 == mp {
+                u = 0; g = 0; add = ""
+                n = split($4, a, ",")
+                for (i = 1; i <= n; i++) { if (a[i] == "usrquota" || a[i] == "quota") u = 1; if (a[i] == "grpquota") g = 1 }
+                if (!u) add = add ",usrquota"
+                if (want ~ /grpquota/ && !g) add = add ",grpquota"
+                $4 = $4 add
+            }
+            { print }
+        ' "$fstab" > "$fstab.homevault.new" 2>/dev/null
+        if [[ -s "$fstab.homevault.new" ]]; then
+            cat "$fstab.homevault.new" > "$fstab"
+        fi
+        rm -f "$fstab.homevault.new"
+
+        # A malformed fstab breaks the next boot: verify exactly like mount
+        # would, and roll back instead of keeping a broken entry.
+        if ! findmnt --verify --fstab &> /dev/null; then
+            if [[ -f "$fstab.homevault.bak" ]]; then
+                cat "$fstab.homevault.bak" > "$fstab"
+            fi
+            warn "Disk quotas skipped — the edited /etc/fstab failed validation and was rolled back"
+            return 0
+        fi
+        rm -f "$fstab.homevault.bak"
+
+        # Apply on the live mount so quotas work before the next reboot.
+        # Remounting keeps the existing flags (rw, errors=remount-ro…).
+        if ! mount -o "remount,$want_opts" "$target" 2>/dev/null; then
+            warn "Disk quotas skipped — the live remount of $target with $want_opts failed (the fstab entry is ready for the next boot)"
+            return 0
+        fi
+        ok "Quota mount options applied to $target"
+        # No fstab line for this mount (a manually mounted volume, a systemd
+        # .mount unit, a bind…): accounting works now but not after a reboot.
+        if ! findmnt --fstab -n -o OPTIONS --target "$target" 2>/dev/null | grep -q 'usrquota'; then
+            warn "No /etc/fstab entry carries usrquota for $target — quota accounting will be lost on reboot"
+        fi
+    fi
+
+    if [[ "$fstype" != "xfs" ]]; then
+        # Build the quota files once; `-m` avoids the historical read-only
+        # remount and `-f` is required on a mounted filesystem.
+        if [[ ! -f "$target/aquota.user" ]]; then
+            info "Building quota files on $target (one-off scan of existing usage)..."
+            if ! quotacheck -cugm -f "$target" &> /dev/null; then
+                warn "Disk quotas skipped — quotacheck failed on $target"
+                return 0
+            fi
+        fi
+        if ! quotaon -ug "$target" &> /dev/null; then
+            warn "Disk quotas skipped — quotaon failed on $target"
+            return 0
+        fi
+    fi
+    ok "Per-user disk quotas active on $target ($fstype)"
+}
+
 info "Cleaning the apt cache..."
 apt-get clean
 rm -rf /var/lib/apt/lists/*
@@ -1542,6 +1669,10 @@ fi
 
 setup_automount
 
+# Arm per-user home-directory quotas before the service starts, so the first
+# "home folder size" save is enforced instead of silently degrading.
+setup_home_quota
+
 # `restart` (not `enable --now`) unconditionally: on a fresh install the unit
 # isn't running yet, so this just starts it; on a re-run it guarantees the
 # freshly-extracted binary is actually the one running — `enable --now`
@@ -1620,7 +1751,9 @@ check "Linux-user login (python3)"     "command -v python3"
 # aligned with src/dependencies.rs so the report matches what the app probes
 # at runtime (each one degrades in the UI when absent).
 check "ACLs (setfacl)"                 "command -v setfacl"
-check "Disk quotas (repquota)"         "command -v repquota"
+# The home-size slider needs all four tools, not just the reporter: a missing
+# `setquota`/`quotaon` means limits are stored but never enforced.
+check "Disk quotas (quota-tools)"      "command -v repquota && command -v setquota && command -v quotaon && command -v quotacheck"
 check "Disk spindown (hdparm)"         "command -v hdparm"
 check "XFS formatting (mkfs.xfs)"      "command -v mkfs.xfs"
 check "exFAT formatting (mkfs.exfat)"  "command -v mkfs.exfat"

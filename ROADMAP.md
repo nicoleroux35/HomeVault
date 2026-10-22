@@ -38,12 +38,12 @@ An item leaves this file only when its acceptance criteria are met **and**
 
 ## Current state
 
-Twelve areas have had a full "production-ready" pass and are out of scope here:
+The areas that have had a full "production-ready" pass are out of scope here:
 **Docker** (2026-10-20), then **Firewall**, **Backup/restic**, **Users**,
 **Groups**, **Rescue**, **Shares**, **Network**, **VPN** and the **app-proxy
 auth under HTTPS** (all 2026-10-21), and **Health** (2026-10-22) — followed by
-**Health's numbered follow-ups**, the **File Explorer security pass** and the
-**Account / Security pass** (all 2026-10-22, see Done).
+**Health's numbered follow-ups**, the **File Explorer security pass**, the
+**Account / Security pass** and **disk quotas** (all 2026-10-22, see Done).
 
 Everything else is still on its original implementation plus incremental
 feature work. The pattern is consistent: **the screens render, the endpoints
@@ -68,7 +68,6 @@ Two structural facts explain most of the list:
 
 | # | Area | Verdict | Blocking items |
 |---|---|---|---|
-| 3 | Disk quotas (home size) | **P0** | 3 |
 | 4 | AI Assistant / RAG | **P0** | 3 |
 | 6 | Apps Center / app-proxy | **P0** | 3 |
 | 7 | Storage | P1 | 3 |
@@ -97,52 +96,15 @@ Two structural facts explain most of the list:
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **76** (69 per-area + 7 cross-cutting).
+Total open findings: **73** (66 per-area + 7 cross-cutting).
 
-**Suggested order.** The three P0s first (3, 4, 6), then P1 by blast radius —
+**Suggested order.** The two P0s first (4, 6), then P1 by blast radius —
 12.2/12.3 and 13.4 together, since a UTC-only cron with a stored-but-unapplied
 timezone is one defect seen from two screens.
 
 ---
 
 ## P0 — Broken
-
-### 3. Disk quotas (home-directory size) — the slider limits nothing
-
-`src/quota.rs`, `src/handlers/user_homes.rs`.
-
-- [ ] **3.1 — Quotas are never enabled, so `setquota` always fails.**
-      `usrquota`, `grpquota` and `quotaon` appear **nowhere** in `src/` or
-      `installer/` (verified by grep; the only hit is the doc comment at
-      `src/quota.rs:58`). No pool is mounted with `usrquota`, no `quotaon` is
-      ever run, and `installer/install.sh:1623` only checks that the
-      `repquota` binary exists. So `setquota` (`src/quota.rs:67-81`) fails on
-      every save, the code degrades to a warning
-      (`src/handlers/user_homes.rs:311-325`), and the user is told "Home folder
-      saved, but the size limit could not be enforced" — while the slider keeps
-      showing the limit as if it applied.
-      *Acceptance:* either enable the feature end to end (mount option at pool
-      creation + `quotaon` + a check that reports *enforced / not enforced* in
-      the UI), or remove the control and the stored field. A third state is not
-      acceptable.
-- [ ] **3.2 — No read-back, so the UI cannot show reality.** Nothing calls
-      `repquota` / `quota -u`. There is no "used" value and no way to tell
-      whether enforcement is active.
-- [ ] **3.3 — `setquota` runs bare and synchronously.** `src/quota.rs:67` uses
-      `Command::new("setquota")` with no `sudo`, and `setquota` is **not in the
-      sudoers grant at all** (`src/setup.rs:808-942`) — it only works if the
-      service happens to run as root, which contradicts every other privileged
-      call in the codebase. It also blocks the async handler with no timeout.
-
-*Tests:* `quota.rs` has 7 unit tests (pure formatting); there is **no
-integration file** and **zero E2E** — `tests/e2e/quotas/quotas.spec.ts` covers
-the *transfer* quotas, a different feature. Add `tests/quota_integration.rs`
-plus a `users` E2E case that asserts the enforced/not-enforced state.
-
-*Docs:* `docs/guides/quotas.md` (which currently documents the silent
-degradation as if it were acceptable), `docs/guides/users.md`.
-
----
 
 ### 4. AI Assistant / RAG — the knowledge base has no user-facing surface
 
@@ -987,7 +949,7 @@ reuse.
       Chat (`chat.rs:989,1021,1040`), Cache (`handlers/cache.rs:97,165,252,457`),
       Encryption (`handlers/encryption.rs:210,345`), Autostart
       (`handlers/settings.rs:566,595`), Apps Center (`docker_catalog.rs:490,562`),
-      Quota (`quota.rs:67`), Notifications (`notification_engine.rs:345`),
+      Notifications (`notification_engine.rs:345`),
       Antivirus/Power (`handlers/antivirus.rs:50`, `handlers/power.rs:49`),
       Explorer (`explorer.rs:665,2628,2659`), rclone (`rclone.rs:253,932`),
       syncthing (`syncthing.rs:262`), VM (`handlers/vm.rs:318,1341,1382,1577`),
@@ -999,12 +961,12 @@ reuse.
       from a handler's async body. A CI grep (or a clippy lint) would keep it
       that way.
 - [ ] **X.2 — No timeout on subprocesses.** Absent from `disk.rs`, `pools.rs`,
-      `encryption.rs`, `cache.rs`, `snapshots.rs`, `quota.rs`, `rclone.rs`,
+      `encryption.rs`, `cache.rs`, `snapshots.rs`, `rclone.rs`,
       `dashboard.rs`, `health.rs`, `network.rs`, `vpn.rs`, `shares.rs`,
       `explorer.rs`, `journal.rs`. Present only in Docker, Firewall, Restic,
-      Syncthing (and `firewall.rs`'s `UFW_TIMEOUT` is the model). A wedged
-      `zpool`/`mdadm`/`smartctl`/`df` currently blocks a handler or a job
-      forever.
+      Syncthing, disk quotas (2026-10-22) (and `firewall.rs`'s `UFW_TIMEOUT` is
+      the model). A wedged `zpool`/`mdadm`/`smartctl`/`df` currently blocks a
+      handler or a job forever.
 - [ ] **X.3 — Empty `else {}` error handling in the UI.** CloudSync (6),
       Syncthing, Downloader, Health, Journal, Desktop (power),
       NotificationCenter, Dashboard — *Explorer's 11 sites are fixed
@@ -1067,6 +1029,28 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-22 (h)** — Disk quotas — the home-directory size limit now actually
+limits. Every save resolves the backend from the **mount that holds the folder**
+(`findmnt`, not the disk label in the DB), applies the limit (`setquota -u` on
+ext2/3/4/xfs/jfs/reiserfs, `zfs set userquota@<user>` on ZFS) through
+`sudo -n` under a 20 s deadline, then **verifies it with a `repquota`/`zfs get`
+read-back** and reports the read state, so a limit the kernel refused is never
+shown as applied. Eligibility is created, not assumed: RAID/pool mounts take
+`usrquota,grpquota` (persisted to `/etc/fstab` only when the live mount accepted
+them, plain-mount fallback otherwise), the installer edits the `/home` fstab
+line in place, verifies it with `findmnt --verify --fstab`, rolls back on
+failure, remounts, then runs `quotacheck` + `quotaon`, and `activate_all()` runs
+`quotaon -aug` at startup so a reboot cannot silently switch enforcement off.
+Btrfs and non-POSIX filesystems are reported **unsupported**, never "applied".
+`GET /users/{u}/home` carries a live `quota` object (`enforced`, `filesystem`,
+`mount_point`, `limit_bytes`, `used_bytes`, `reason_code`, `reason`) and the
+Users home card renders exactly two outcomes — enforced with usage, or not
+enforced with a localised cause (4 locales) — refilled from a read-back after
+every save instead of echoing the form. Tests: `quota.rs` 2 → 21 unit,
+`tests/quota_integration.rs` (8, new), `users.spec.ts` 82 → 94 (§18)
+(`docs/guides/quotas.md`, `docs/guides/users.md`, `docs/API.md`,
+`docs/BACKEND.md`, `docs/ARCHITECTURE.md`, `docs/guides/raid.md`).
 
 **2026-10-22 (g)** — Scheduled Tasks — the overlap guard can now fire. `Run
 now` built a **fresh empty** running set on every call, so the "already

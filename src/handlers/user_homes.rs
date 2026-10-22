@@ -308,24 +308,38 @@ pub(crate) async fn apply_home_folder(
                     partition.mount_point
                 ));
             }
-            if let Err(e) =
-                QuotaService::set_user_home_quota(username, &partition.mount_point, limit)
-            {
+            let quota = QuotaService::apply(username, &home_path, Some(limit)).await;
+            if !quota.enforced {
+                let reason = quota
+                    .reason
+                    .unwrap_or_else(|| "the filesystem gave no reason".to_string());
                 tracing::warn!(
-                    "Home-dir quota for user '{}' on '{}' could not be enforced: {}",
+                    "Home-dir quota for user '{}' at '{}' is NOT enforced: {}",
                     username,
-                    partition.mount_point,
-                    e
+                    home_path,
+                    reason
                 );
-                warning = Some(
-                    "Home folder saved, but the size limit could not be enforced: the target \
-                     filesystem is not mounted with disk-quota support."
-                        .to_string(),
-                );
+                warning = Some(format!(
+                    "Home folder saved, but the {} size limit is NOT enforced: {}. \
+                     The limit is stored and will be applied as soon as the filesystem \
+                     supports it.",
+                    QuotaService::format_size_kb(QuotaService::bytes_to_quota_kb(limit)),
+                    reason
+                ));
             }
         } else {
-            // Unlimited: best-effort clear of any quota left from a previous limit.
-            let _ = QuotaService::set_user_home_quota(username, &partition.mount_point, 0);
+            // Unlimited: clear any quota left over from a previous limit.
+            // A failure here is not fatal — the folder stays usable and the
+            // stored configuration is unlimited, which is what the UI shows.
+            let cleared = QuotaService::apply(username, &home_path, None).await;
+            if !cleared.enforced {
+                tracing::warn!(
+                    "Could not clear the previous quota for user '{}' at '{}': {:?}",
+                    username,
+                    home_path,
+                    cleared.reason
+                );
+            }
         }
 
         let home = crate::storage::user_home_repo::UserHome {
@@ -381,19 +395,31 @@ pub async fn handle_user_home_get(
 
     let repo = UserHomeRepository::new(state.db.pool());
     match repo.find_by_username(&username).await {
-        Ok(Some(home)) => ResponseHelper::json_success(serde_json::json!({
-            "enabled": home.enabled,
-            "disk": home.disk,
-            "path": home.path,
-            "created_at": home.created_at,
-            "size_bytes": home.size_limit_bytes,
-        })),
+        Ok(Some(home)) => {
+            // Report what the filesystem actually does, not what was requested:
+            // the UI shows `enforced` / `reason` verbatim.
+            let quota = match home.path.as_deref() {
+                Some(path) if home.enabled => {
+                    Some(QuotaService::inspect(&username, path, home.size_limit_bytes).await)
+                }
+                _ => None,
+            };
+            ResponseHelper::json_success(serde_json::json!({
+                "enabled": home.enabled,
+                "disk": home.disk,
+                "path": home.path,
+                "created_at": home.created_at,
+                "size_bytes": home.size_limit_bytes,
+                "quota": quota,
+            }))
+        }
         Ok(None) => ResponseHelper::json_success(serde_json::json!({
             "enabled": false,
             "disk": (),
             "path": (),
             "created_at": (),
-            "size_bytes": ()
+            "size_bytes": (),
+            "quota": ()
         })),
         Err(e) => ResponseHelper::json_error(format!("Failed to get home config: {}", e)),
     }

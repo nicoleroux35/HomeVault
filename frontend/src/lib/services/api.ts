@@ -40,6 +40,43 @@ export interface ActivityTask {
   detail: string | null;
 }
 
+/** What the filesystem actually does about one user's home size limit. */
+export interface HomeQuotaState {
+  /**
+   * True only when the limit (or, with no limit, the accounting) was read
+   * back from the filesystem — never because the save succeeded.
+   */
+  enforced: boolean;
+  /** `ext4`, `xfs`, `zfs`, `btrfs`, … */
+  filesystem: string;
+  /** Mount point (or ZFS dataset) the home folder lives on. */
+  mount_point: string;
+  /** Configured hard limit in bytes; `null` = unlimited. */
+  limit_bytes: number | null;
+  /** Usage reported by the filesystem when accounting is active. */
+  used_bytes: number | null;
+  /**
+   * Stable machine-readable cause (`not_mounted_with_quota`,
+   * `unsupported_filesystem`, `accounting_inactive`, `no_entry`,
+   * `limit_mismatch`, `command_failed`, `inspect_failed`,
+   * `invalid_username`) — the UI localises this.
+   */
+  reason_code: string | null;
+  /** English diagnostic detail — logs and last-resort fallback text. */
+  reason: string | null;
+}
+
+/** `GET /api/users/{username}/home` — the stored config plus the live state. */
+export interface HomeFolderInfo {
+  enabled: boolean;
+  disk: string | null;
+  path: string | null;
+  created_at: string | null;
+  size_bytes: number | null;
+  /** `null` when no home folder is enabled for this user. */
+  quota: HomeQuotaState | null;
+}
+
 /** Progress event received from the server via SSE for long-running jobs. */
 export interface ProgressEvent {
   job_id: string;
@@ -519,6 +556,17 @@ class ApiClient {
       path: path ?? null,
       size_bytes: sizeBytes ?? null,
     });
+  }
+
+  /**
+   * Current home-folder config plus the *real* quota state of the filesystem
+   * hosting it (`enforced`, `used_bytes`, `reason`). The Users page renders
+   * this verbatim: a limit that is stored but not enforced must never look
+   * applied.
+   */
+  async getUserHome(username: string): Promise<HomeFolderInfo> {
+    const res = await this.get(`/users/${username}/home`);
+    return (res?.data ?? res) as HomeFolderInfo;
   }
 
   async deleteUserHome(username: string) {
