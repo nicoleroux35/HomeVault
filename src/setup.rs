@@ -745,6 +745,16 @@ impl SetupService {
         // exactly these two paths) when an upgraded host still has them.
         let exportfs = Self::resolve_bin("exportfs", "/usr/sbin/exportfs");
         let chmod = Self::resolve_bin("chmod", "/usr/bin/chmod");
+        // Per-user home-directory quotas (`src/quota.rs`, ROADMAP 3.1-3.3).
+        // Every quota call runs as `sudo -n` so it keeps working under the
+        // unprivileged `homevault` service account; before this grant the
+        // only "working" case was the service happening to run as root.
+        // `setquota`/`repquota` read-modify the kernel's accounting and
+        // `quotaon`/`quotacheck` arm it — no shell, no arbitrary file write.
+        let setquota = Self::resolve_bin("setquota", "/usr/sbin/setquota");
+        let repquota = Self::resolve_bin("repquota", "/usr/sbin/repquota");
+        let quotaon = Self::resolve_bin("quotaon", "/usr/sbin/quotaon");
+        let quotacheck = Self::resolve_bin("quotacheck", "/usr/sbin/quotacheck");
         let webdav_py = "/usr/local/bin/homevault-webdav.py";
         let webdav_service = "/etc/systemd/system/homevault-webdav.service";
         let smb_conf = "/etc/samba/smb.conf";
@@ -916,6 +926,19 @@ homevault ALL=(root) NOPASSWD: {groupadd} homevault-sftp, {useradd} -M -s /usr/s
 # HomeVault-managed one.
 homevault ALL=(root) NOPASSWD: {groupadd} homevault_*, {groupdel} homevault_*, {usermod_sftp} -a -G homevault_* *, {usermod_sftp} -a -G sudo *, {usermod_sftp} -a -G wheel *, {gpasswd} -d * homevault_*, {useradd} -m -d * -s /bin/bash -G homevault_admin *
 
+# Per-user home-directory quotas (`src/quota.rs`, ROADMAP 3.1-3.3) — the
+# Users page "home folder size" slider only limits anything if these four
+# tools run as root: `setquota` writes the limit, `repquota` reads it back
+# (never report "enforced" without this), `quotacheck` builds the quota files
+# on first use and `quotaon` arms accounting after a reboot (`quotaon -aug`
+# at startup, `src/web/mod.rs`). Scoped to the exact argument shapes
+# `QuotaService` builds: one `setquota -u <user> <soft> <hard> <isoft> <ihard>
+# <mount>` line (sudoers cannot constrain the numeric figures, but `setquota`
+# is quota-only — it can neither run a command nor write an arbitrary file),
+# the `-u` read/arm forms, and the `-aug` all-mounts form. Nothing here is a
+# shell.
+homevault ALL=(root) NOPASSWD: {setquota} -u * * * * * *, {repquota} -u *, {quotaon} -aug, {quotaon} -u *, {quotacheck} -cugm -f *
+
 # Users/Groups group-membership provisioning (`GroupService::ensure_linux_user`,
 # `src/groups.rs`) — most HomeVault accounts are DB-only (no Linux user at
 # all) until promoted to admin or given a home folder, per the comment on
@@ -975,6 +998,10 @@ homevault ALL=(root) NOPASSWD: {systemctl} enable homevault, {systemctl} disable
             systemctl = systemctl,
             exportfs = exportfs,
             chmod = chmod,
+            setquota = setquota,
+            repquota = repquota,
+            quotaon = quotaon,
+            quotacheck = quotacheck,
             webdav_py = webdav_py,
             webdav_service = webdav_service,
             smb_conf = smb_conf,

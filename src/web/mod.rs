@@ -2021,6 +2021,15 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
         });
     }
+    // Quota accounting is volatile kernel state: a reboot clears it while the
+    // stored per-user limits stay in the database. `quotaon -aug` re-arms every
+    // mount `/etc/fstab` declares with `usrquota`/`grpquota`, so a home limit
+    // cannot silently stop being enforced until the next save. Not fatal when
+    // there is nothing to arm (host without quota-tools, no quota mount):
+    // `QuotaService::inspect` tells the UI the truth per user.
+    tokio::spawn(async {
+        crate::quota::QuotaService::activate_all().await;
+    });
     tracing::info!("Background schedulers started (ransomware watcher, backups, cache-tier mover, antivirus, journal cleanup, scheduled tasks, metrics collector)");
 
     if crate::firewall::ufw_available() {
