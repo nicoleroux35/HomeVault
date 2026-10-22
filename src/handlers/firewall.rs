@@ -408,7 +408,11 @@ pub async fn handle_firewall_rule_delete(
         Err(e) => return error_response(e, "Failed to read firewall status"),
     };
 
-    let requested_spec = body.spec.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let requested_spec = body
+        .spec
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let target = match requested_spec {
         Some(spec) => rules.iter().find(|r| r.spec == spec),
         None => {
@@ -449,7 +453,12 @@ pub async fn handle_firewall_rule_delete(
     let description = if rule.port.is_empty() {
         format!("{} (no port)", rule.spec)
     } else {
-        format!("{} {}/{}", rule.action.to_lowercase(), rule.port, rule.protocol)
+        format!(
+            "{} {}/{}",
+            rule.action.to_lowercase(),
+            rule.port,
+            rule.protocol
+        )
     };
     let repo = FirewallRepository::new(state.db.pool());
     let _ = repo
