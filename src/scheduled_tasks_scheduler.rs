@@ -41,9 +41,8 @@ use crate::storage::scheduled_task_repo::{ScheduledTask, ScheduledTaskRepository
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
-use tokio::sync::Mutex;
 
 const POLL_INTERVAL_SECS: u64 = 30;
 /// A scheduled command gets at most 30 minutes; after that it is killed and
@@ -199,24 +198,75 @@ pub fn is_valid_pool_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':'))
 }
 
-/// Guard so a task whose previous run is still going isn't started twice by
-/// overlapping ticks (single process ⇒ in-memory set is sufficient, and the
-/// loop is the only spawner).
-type RunningSet = Arc<Mutex<HashSet<String>>>;
+/// Tasks with a run in progress, process-wide.
+///
+/// One process owns both the scheduler loop and the HTTP handlers, so an
+/// in-memory set is enough — same reasoning as `snapshot_scheduler::RUNNING`
+/// and the cache mover's `MOVER_RUNNING`. It is a `static` (not a value
+/// passed around) precisely because both entry points must share it: a
+/// "Run now" and a scheduler tick that each held their own set could start
+/// the same task twice.
+static RUNNING: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// Why a run was not started, or started and failed.
+#[derive(Debug, PartialEq)]
+pub enum RunTaskError {
+    /// Another run of the same task is still in progress; nothing was
+    /// executed and the task row was left untouched.
+    Busy(String),
+    /// The run was attempted and failed (already recorded on the task).
+    Failed(String),
+}
+
+impl std::fmt::Display for RunTaskError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunTaskError::Busy(m) | RunTaskError::Failed(m) => f.write_str(m),
+        }
+    }
+}
+
+/// Claims one task for the duration of a run. Dropping it releases the
+/// claim, so an early return or a panic can never wedge a task forever.
+/// Only the insert/remove touches the mutex — never across an await.
+#[derive(Debug)]
+struct TaskRunGuard {
+    task_id: String,
+}
+
+impl TaskRunGuard {
+    fn acquire(task_id: &str, task_name: &str) -> Result<Self, RunTaskError> {
+        let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+        if !running.insert(task_id.to_string()) {
+            return Err(RunTaskError::Busy(format!(
+                "Task '{task_name}' is already running"
+            )));
+        }
+        Ok(Self {
+            task_id: task_id.to_string(),
+        })
+    }
+}
+
+impl Drop for TaskRunGuard {
+    fn drop(&mut self) {
+        let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+        running.remove(&self.task_id);
+    }
+}
 
 /// Runs forever. Intended to be `tokio::spawn`ed once at server startup.
 pub async fn run_scheduler_loop(state: Arc<AppState>) {
-    let running: RunningSet = Arc::new(Mutex::new(HashSet::new()));
     let mut interval = tokio::time::interval(Duration::from_secs(POLL_INTERVAL_SECS));
     loop {
         interval.tick().await;
-        if let Err(e) = tick_due(&state, &running).await {
+        if let Err(e) = tick_due(&state).await {
             tracing::warn!("Scheduled-task scheduler tick failed: {}", e);
         }
     }
 }
 
-async fn tick_due(state: &Arc<AppState>, running: &RunningSet) -> Result<(), String> {
+async fn tick_due(state: &Arc<AppState>) -> Result<(), String> {
     let repo = ScheduledTaskRepository::new(state.db.pool());
     let tasks = repo.list_enabled().await.map_err(|e| e.to_string())?;
     let now = Utc::now();
@@ -251,15 +301,15 @@ async fn tick_due(state: &Arc<AppState>, running: &RunningSet) -> Result<(), Str
             .await;
 
         if next <= now {
-            // Skip (don't block) when the previous execution is still going.
-            if running.lock().await.contains(&task.id) {
-                tracing::info!(
+            // Skip (don't block) when the previous execution is still going —
+            // whichever path started it.
+            match TaskRunGuard::acquire(&task.id, &task.name) {
+                Ok(guard) => spawn_execution(state.clone(), task, guard),
+                Err(_) => tracing::info!(
                     "Scheduled task '{}' still running; skipping tick",
                     task.name
-                );
-                continue;
+                ),
             }
-            spawn_execution(state.clone(), running.clone(), task).await;
         }
     }
     Ok(())
@@ -285,31 +335,25 @@ fn reference_time(task: &ScheduledTask) -> DateTime<Utc> {
     parsed.max(earliest)
 }
 
-/// Spawns one execution under the running-set guard, so overlapping ticks
-/// (and a concurrent "Run now") never double-start the same task.
-async fn spawn_execution(state: Arc<AppState>, running: RunningSet, task: ScheduledTask) {
-    running.lock().await.insert(task.id.clone());
+/// Spawns one execution holding the run guard, so overlapping ticks and a
+/// concurrent "Run now" never double-start the same task.
+fn spawn_execution(state: Arc<AppState>, task: ScheduledTask, guard: TaskRunGuard) {
     tokio::spawn(async move {
+        let _guard = guard;
         let result = execute(&state, &task).await;
         if let Err(e) = &result {
             tracing::warn!("Scheduled task '{}' failed: {}", task.name, e);
         }
-        running.lock().await.remove(&task.id);
     });
 }
 
 /// Executes a task now, regardless of its cron — used by the "Run now"
 /// button. Refuses to double-start a task whose previous execution is still
-/// running (same guard as the scheduled path).
-pub async fn run_task_now(state: &Arc<AppState>, task: &ScheduledTask) -> Result<(), String> {
-    let running: RunningSet = Arc::new(Mutex::new(HashSet::new()));
-    if running.lock().await.contains(&task.id) {
-        return Err("Task is already running".to_string());
-    }
-    running.lock().await.insert(task.id.clone());
-    let result = execute(state, task).await;
-    running.lock().await.remove(&task.id);
-    result
+/// running (the same process-wide guard the scheduled path uses, so a
+/// manual run cannot overlap a tick either).
+pub async fn run_task_now(state: &Arc<AppState>, task: &ScheduledTask) -> Result<(), RunTaskError> {
+    let _guard = TaskRunGuard::acquire(&task.id, &task.name)?;
+    execute(state, task).await.map_err(RunTaskError::Failed)
 }
 
 /// Executes one task: opens a run row, performs the validated action, and
@@ -520,6 +564,56 @@ mod tests {
     #[test]
     fn unknown_task_type_is_rejected() {
         assert!(TaskAction::from_parts("rm_rf", "{}").is_err());
+    }
+
+    /// 12.1: one process-wide running set. A second start of the same task is
+    /// refused while the first is in progress — whichever path started it —
+    /// and the claim is released when the run ends (success, failure or
+    /// panic, since the guard is released on drop).
+    #[test]
+    fn a_task_cannot_run_twice_at_once() {
+        let guard = TaskRunGuard::acquire("id-12-1-single-flight", "nightly backup")
+            .expect("the first run takes the claim");
+
+        match TaskRunGuard::acquire("id-12-1-single-flight", "nightly backup") {
+            Err(RunTaskError::Busy(msg)) => assert!(
+                msg.contains("nightly backup") && msg.contains("already running"),
+                "the refusal must name the task: {msg}"
+            ),
+            other => panic!("a concurrent run of the same task must be refused, got {other:?}"),
+        }
+
+        // Another task is unaffected.
+        assert!(TaskRunGuard::acquire("id-12-1-other", "other task").is_ok());
+
+        drop(guard);
+        assert!(
+            TaskRunGuard::acquire("id-12-1-single-flight", "nightly backup").is_ok(),
+            "the claim must be released when the run ends"
+        );
+    }
+
+    /// 12.1: the two entry points share the registry — a manual run must see
+    /// the claim a scheduler tick took, and vice versa. They used to hold
+    /// separate sets, so a "Run now" could overlap a tick (two restic runs
+    /// on the same target).
+    #[test]
+    fn manual_and_scheduled_paths_share_one_registry() {
+        // The tick path claims first; the manual path must see it.
+        let tick_claim = TaskRunGuard::acquire("id-12-1-shared", "shared").expect("tick claim");
+        assert!(matches!(
+            TaskRunGuard::acquire("id-12-1-shared", "shared"),
+            Err(RunTaskError::Busy(_))
+        ));
+        drop(tick_claim);
+
+        // And the other way round.
+        let manual_claim = TaskRunGuard::acquire("id-12-1-shared", "shared").expect("manual claim");
+        assert!(matches!(
+            TaskRunGuard::acquire("id-12-1-shared", "shared"),
+            Err(RunTaskError::Busy(_))
+        ));
+        drop(manual_claim);
     }
 
     #[test]

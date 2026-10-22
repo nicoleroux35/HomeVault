@@ -23,7 +23,7 @@ per feature. Inspiration: OMV's `conf.system.cron.job` unified model.
 | `POST /scheduled-tasks` | admin | create; payload validated **at creation** |
 | `PUT /scheduled-tasks/{id}` | admin | update (also the enable/disable path); resets run summary |
 | `DELETE /scheduled-tasks/{id}` | admin | delete (history goes too) |
-| `POST /scheduled-tasks/{id}/run` | admin | run now, regardless of cron |
+| `POST /scheduled-tasks/{id}/run` | admin | run now, regardless of cron; `409` while a run of that task is in progress |
 | `GET /scheduled-tasks/{id}/runs` | admin | run history, newest first (50) |
 
 ## Task types and payload shapes
@@ -44,8 +44,15 @@ per feature. Inspiration: OMV's `conf.system.cron.job` unified model.
 - **No shell.** `command` requires an absolute, existing, executable path;
   whitespace/metacharacters are rejected; args go through argv (no
   interpolation). Commands run as the server user with a 30-minute timeout.
-- **Overlap guard.** A task whose previous execution is still running is
-  skipped (in-memory running set; the loop is the only spawner).
+- **Overlap guard.** Runs are single-flight across the process: a
+  process-wide `RUNNING` set claims a task under `TaskRunGuard` (released on
+  drop, so a panic or an early return cannot wedge it forever) and **both**
+  entry points acquire it — the scheduler tick and `POST /{id}/run`. A task
+  whose previous execution is still running is skipped by the tick (logged,
+  task row untouched) and refused by "Run now" with `409` and
+  `Task '<name>' is already running`. Two separate sets used to exist, so a
+  manual run could overlap a tick and start two `restic`/`clamscan`/`rsync`
+  on the same target.
 - An unparseable cron is recorded on the task (`last_status='failed'`,
   clear error), not silently dropped.
 - Every endpoint is `require_admin` — tasks execute host actions.
@@ -65,11 +72,15 @@ per feature. Inspiration: OMV's `conf.system.cron.job` unified model.
 
 ## Tests
 
-- Unit: `TaskAction` validation matrix, `reference_time` 8-day cap,
-  repo CRUD/run-history (`scheduled_task_repo.rs`), handler request
-  validation (`handlers/scheduled_tasks.rs`).
+- Unit: `TaskAction` validation matrix, `reference_time` 8-day cap, the
+  single-flight guard (a second claim of the same task is `Busy`, another
+  task is unaffected, the claim is released on drop, and the manual and
+  scheduled paths share one registry), repo CRUD/run-history
+  (`scheduled_task_repo.rs`), handler request validation
+  (`handlers/scheduled_tasks.rs`).
 - Integration: `tests/scheduled_tasks_integration.rs` (CRUD cycle, guards,
-  run-now of `/bin/true`, validation rejections).
+  run-now of `/bin/true`, validation rejections, a concurrent second
+  "Run now" refused with `409` and no extra run row).
 - E2E: `tests/e2e/tasks/tasks.spec.ts` (live server).
 
 ## Related

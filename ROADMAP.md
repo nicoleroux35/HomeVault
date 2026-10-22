@@ -99,7 +99,9 @@ Two structural facts explain most of the list:
 
 Total open findings: **76** (69 per-area + 7 cross-cutting).
 
-**Suggested order.** 12 first (it loses data), then the rest by P1 order.
+**Suggested order.** The three P0s first (3, 4, 6), then P1 by blast radius —
+12.2/12.3 and 13.4 together, since a UTC-only cron with a stored-but-unapplied
+timezone is one defect seen from two screens.
 
 ---
 
@@ -399,18 +401,8 @@ Nothing asserts null-on-failure or elapsed-time-based rates.
 
 ---
 
-### 12. Scheduled Tasks — the overlap guard cannot fire
+### 12. Scheduled Tasks — UTC-only cron, and a bad cron fails every tick
 
-- [ ] **12.1 — `run_task_now` builds a fresh empty `RunningSet` and then tests
-      it.** `src/scheduled_tasks_scheduler.rs:305-309`: the guard can never
-      contain the task, so a manual run started while a tick is executing the
-      same task **double-runs it** — two `restic`/`clamscan`/`rsync` on the same
-      target, i.e. corrupted backups. The doc comment right above (`:288-289`)
-      and `docs/guides/scheduled-tasks.md` both claim the opposite.
-      *Acceptance:* one process-wide running-set shared by both paths; a second
-      start is refused with a clear message. *Tests:* an integration test that
-      starts the same task twice and asserts the second is refused — that single
-      test is what was missing.
 - [ ] **12.2 — Cron is UTC-only, with no timezone and no disclosure.**
       `src/handlers/scheduled_tasks.rs:217,272-286` (8-day cap) evaluates
       against UTC; a user setting "02:00 daily" gets 02:00 UTC. Combined with
@@ -421,16 +413,33 @@ Nothing asserts null-on-failure or elapsed-time-based rates.
 - [ ] **12.3 — An unparseable stored cron generates a failed run every tick.**
       `:229-245`: no backoff, no auto-disable, so the run-history table grows
       without bound and the UI fills with noise.
+- [ ] **12.4 — "Run now" runs inside the HTTP request, so a dropped
+      connection orphans the run.** `handle_task_run_now` awaits
+      `run_task_now` (`src/handlers/scheduled_tasks.rs:177`), which holds the
+      `TaskRunGuard` on the request future; `perform` starts the child with
+      `tokio::process::Command` **without** `kill_on_drop`
+      (`src/scheduled_tasks_scheduler.rs:395-399`). If the client goes away,
+      hyper drops the response future → the guard is released while the child
+      keeps running, so the next start is accepted and the same binary runs
+      twice — the state 12.1 was about. The row also stays `running`
+      (`mark_started` at `:363-364` has no counterpart on drop).
+      *Acceptance:* start the task in a spawned task that owns the guard and
+      answer `202` with the run id (the taskbar/job pattern already used by
+      the Docker and Backup passes), or kill the child on drop and close the
+      row; a status endpoint must then report the outcome. *Tests:* an
+      integration test that drops the response future mid-run and asserts the
+      task is not startable twice.
 
 Also: the frontend splits command arguments on whitespace
 (`Tasks.svelte:166`), so a path containing a space silently becomes two argv
 entries; `toggleEnabled` re-submits the whole task and resets the run summary
 (`:208-225`), so toggling a checkbox loses the displayed last-run output.
 
-*Tests:* `scheduled_tasks_scheduler.rs` **0** unit tests,
-`tests/scheduled_tasks_integration.rs` 5, `tasks.spec.ts` 8.
-*Docs:* `docs/guides/scheduled-tasks.md` (the false overlap claim is part of
-the fix).
+*Tests:* `scheduled_tasks_scheduler.rs` **8** unit tests (two of them the
+overlap guard, added with 12.1), `tests/scheduled_tasks_integration.rs` 6
+(one of them the concurrent-start refusal), `tasks.spec.ts` 8.
+*Docs:* `docs/guides/scheduled-tasks.md` (12.2's UTC-only disclosure),
+`docs/guides/settings.md` (13.4's `timezone`).
 
 ---
 
@@ -1058,6 +1067,22 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-22 (g)** — Scheduled Tasks — the overlap guard can now fire. `Run
+now` built a **fresh empty** running set on every call, so the "already
+running" test could never be true: a manual run started while a scheduler tick
+was executing the same task double-ran it (two `restic`/`clamscan`/`rsync` on
+one target). Both paths now share one process-wide `RUNNING` set behind a
+`TaskRunGuard` released on drop — a panic or an early return cannot wedge a
+task forever — and the guard is claimed before `execute`, so the tick skips
+(logged, row untouched) and `POST /scheduled-tasks/{id}/run` answers `409`
+`Task '<name>' is already running`. Also closed: the doc comment and
+`docs/guides/scheduled-tasks.md` claimed the guard already worked; the guide
+now describes what the code does. Tests: 2 unit (refusal + registry shared by
+both paths, both directions) and 1 integration (a `/bin/sleep 1` run holds the
+task, the concurrent second POST is `409`, exactly one run row, the claim is
+released so the next start succeeds) — the single missing test named by 12.1
+(`docs/guides/scheduled-tasks.md`, `docs/API.md`).
 
 **2026-10-22 (f)** — Snapshot schedules — a run now reports what actually
 happened. A failed prune is a **failed** run (`last_status = "failed"` with the
