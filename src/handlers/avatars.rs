@@ -193,34 +193,3 @@ pub async fn handle_update_my_avatar(
         Err(e) => error_response(e),
     }
 }
-
-/// Helper used by other handlers (e.g. header integration) to grab the raw
-/// SVG bytes for a user without re-rendering.
-pub async fn render_user_avatar(
-    state: &Arc<AppState>,
-    username: &str,
-    size: Option<u32>,
-) -> Result<String, AvatarError> {
-    let user_repo = crate::storage::UserRepository::new(state.db.pool());
-    let stored_seed = match user_repo.find_by_username(username).await {
-        Ok(Some(user)) => user.avatar_seed,
-        _ => String::new(),
-    };
-
-    if stored_seed.is_empty() {
-        avatars::render_for(None, size)
-    } else {
-        avatars::render(&stored_seed, size)
-    }
-}
-
-/// Convenience: return a 404 with a static fallback SVG so callers can keep
-/// embedding `<img src="...">` without conditional JS.
-pub fn missing_avatar_response() -> Response {
-    // The raw string delimiter uses ## to survive `#e5e7eb` inside the
-    // SVG payload (a single `#` would close the string prematurely).
-    let fallback = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="No avatar"><rect width="64" height="64" fill="#e5e7eb"/><circle cx="32" cy="24" r="10" fill="#9ca3af"/><path d="M12 56c0-11 9-20 20-20s20 9 20 20z" fill="#9ca3af"/></svg>"##;
-    let mut response = Response::new(fallback.to_string().into());
-    *response.status_mut() = axum::http::StatusCode::NOT_FOUND;
-    response
-}
