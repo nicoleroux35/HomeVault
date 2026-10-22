@@ -25,6 +25,9 @@
 //!   - PUT  /api/users/{username}/password  (password change — self)
 //!   - POST /api/auth/me/avatar             (avatar regeneration)
 //!   - POST /api/auth/2fa/setup             (generate / verify / disable / status / backup_codes)
+//!   - GET  /api/security/sessions          (own sessions — opaque ids, no live token)
+//!   - POST /api/security/sessions/revoke   (caller-scoped revocation by opaque id)
+//!   - POST /api/security/sessions/revoke-all
 //!
 //! Each test creates a fresh in-memory SQLite database, runs all embedded
 //! migrations, builds a minimal Axum router, and uses `tower::ServiceExt`
@@ -48,6 +51,7 @@ use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{
     auth::{handle_2fa_setup, handle_get_current_user, handle_login},
     avatars::handle_update_my_avatar,
+    security::{handle_get_my_sessions, handle_revoke_all_sessions, handle_revoke_sessions},
     users::{handle_user_update, handle_user_update_password},
     AppState,
 };
@@ -125,6 +129,15 @@ fn account_router(state: Arc<AppState>) -> Router {
             axum::routing::post(handle_update_my_avatar),
         )
         .route("/api/auth/2fa/setup", axum::routing::post(handle_2fa_setup))
+        .route("/api/security/sessions", get(handle_get_my_sessions))
+        .route(
+            "/api/security/sessions/revoke",
+            axum::routing::post(handle_revoke_sessions),
+        )
+        .route(
+            "/api/security/sessions/revoke-all",
+            axum::routing::post(handle_revoke_all_sessions),
+        )
         .with_state(state)
 }
 
@@ -1050,4 +1063,237 @@ async fn test_2fa_verify_without_generate() {
     } else {
         assert!(status.is_client_error());
     }
+}
+
+// ===========================================================================
+// 7. Self-service sessions — opaque ids and caller-scoped revocation
+// (ROADMAP 14.1 / 14.2)
+// ===========================================================================
+
+/// GET /api/security/sessions must identify a session without handing the
+/// client a replayable credential (ROADMAP 14.1).
+#[tokio::test]
+async fn test_my_sessions_never_returns_a_live_session_token() {
+    let (state, _tmp, _lock) = setup_state().await;
+    create_test_user(&state, "sess_owner", "Passw0rd!", 1).await;
+    let mut app = account_router(state);
+
+    let first = login(&mut app, "sess_owner", "Passw0rd!").await;
+    let second = login(&mut app, "sess_owner", "Passw0rd!").await;
+    assert_ne!(first, second, "two logins must mint two sessions");
+
+    let (status, body) = get_json_with_token(&mut app, "/api/security/sessions", &first).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["success"], json!(true));
+    assert_eq!(body["data"]["total"], json!(2), "{body}");
+
+    let sessions = body["data"]["sessions"].as_array().expect("sessions array");
+    assert_eq!(sessions.len(), 2);
+
+    for session in sessions {
+        // The opaque id is a 12-char hex fingerprint, never the token itself.
+        let id = session["id"].as_str().expect("session id");
+        assert_eq!(id.len(), 12, "id must be the short fingerprint: {id}");
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()), "{id}");
+        assert!(
+            session.get("token").is_none(),
+            "the wire shape must not carry a `token` field: {session}"
+        );
+    }
+
+    // The whole payload must not leak either live token — that is what made
+    // the old response a session-hijack primitive.
+    let payload = body.to_string();
+    assert!(
+        !payload.contains(&first),
+        "payload leaks the caller's token"
+    );
+    assert!(
+        !payload.contains(&second),
+        "payload leaks another live token"
+    );
+
+    // Exactly one row is the caller's current session, and it is the one whose
+    // fingerprint matches the token that made the request.
+    let current: Vec<&Value> = sessions
+        .iter()
+        .filter(|s| s["is_current"] == json!(true))
+        .collect();
+    assert_eq!(current.len(), 1, "{body}");
+    assert_eq!(
+        current[0]["id"],
+        json!(homevault::handlers::security::session_public_id(&first))
+    );
+}
+
+/// A token/id belonging to another account can never be revoked through the
+/// self-service endpoint (ROADMAP 14.2).
+#[tokio::test]
+async fn test_revoke_sessions_is_scoped_to_the_caller() {
+    let (state, _tmp, _lock) = setup_state().await;
+    create_test_user(&state, "alice", "Passw0rd!", 1).await;
+    create_test_user(&state, "bob", "Passw0rd!", 1).await;
+    let mut app = account_router(state);
+
+    let alice_current = login(&mut app, "alice", "Passw0rd!").await;
+    let alice_other = login(&mut app, "alice", "Passw0rd!").await;
+    let bob_session = login(&mut app, "bob", "Passw0rd!").await;
+
+    // Bob's live token submitted as an id: no session of Alice's matches it,
+    // so nothing is deleted — and Bob stays signed in.
+    let (status, body) = post_json_with_token(
+        &mut app,
+        "/api/security/sessions/revoke",
+        json!({"ids": [bob_session]}),
+        &alice_current,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["success"], json!(false));
+    let (bob_status, _) = get_json_with_token(&mut app, "/api/auth/me", &bob_session).await;
+    assert_eq!(
+        bob_status,
+        StatusCode::OK,
+        "another user's session must survive a foreign revoke request"
+    );
+
+    // An unknown id is refused the same way.
+    let (status, _) = post_json_with_token(
+        &mut app,
+        "/api/security/sessions/revoke",
+        json!({"ids": ["000000000000"]}),
+        &alice_current,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Alice's own other session resolves and is revoked.
+    let (_, list) = get_json_with_token(&mut app, "/api/security/sessions", &alice_current).await;
+    let other_id = list["data"]["sessions"]
+        .as_array()
+        .expect("sessions")
+        .iter()
+        .find(|s| s["is_current"] == json!(false))
+        .and_then(|s| s["id"].as_str())
+        .expect("Alice's second session id")
+        .to_string();
+
+    let (status, body) = post_json_with_token(
+        &mut app,
+        "/api/security/sessions/revoke",
+        json!({"ids": [other_id]}),
+        &alice_current,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["revoked"], json!(1));
+
+    // The revoked session is dead server-side; the caller's own session and
+    // Bob's session are both untouched.
+    let (dead, _) = get_json_with_token(&mut app, "/api/auth/me", &alice_other).await;
+    assert!(dead.is_client_error(), "revoked session must be rejected");
+    let (alive, _) = get_json_with_token(&mut app, "/api/auth/me", &alice_current).await;
+    assert_eq!(alive, StatusCode::OK);
+    let (bob_status, _) = get_json_with_token(&mut app, "/api/auth/me", &bob_session).await;
+    assert_eq!(bob_status, StatusCode::OK);
+}
+
+/// The current session stays protected: its own id is never revoked, and a
+/// mixed request still deletes only the other sessions (ROADMAP 14.2).
+#[tokio::test]
+async fn test_revoke_sessions_protects_the_current_session() {
+    let (state, _tmp, _lock) = setup_state().await;
+    create_test_user(&state, "carol", "Passw0rd!", 1).await;
+    let mut app = account_router(state);
+
+    let current = login(&mut app, "carol", "Passw0rd!").await;
+    let _other = login(&mut app, "carol", "Passw0rd!").await;
+    let current_id = homevault::handlers::security::session_public_id(&current);
+
+    // Only the current id → refused, nothing deleted.
+    let (status, body) = post_json_with_token(
+        &mut app,
+        "/api/security/sessions/revoke",
+        json!({"ids": [current_id]}),
+        &current,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (alive, _) = get_json_with_token(&mut app, "/api/auth/me", &current).await;
+    assert_eq!(alive, StatusCode::OK, "the current session must survive");
+
+    // Current + another id → only the other one is revoked.
+    let (_, list) = get_json_with_token(&mut app, "/api/security/sessions", &current).await;
+    let other_id = list["data"]["sessions"]
+        .as_array()
+        .expect("sessions")
+        .iter()
+        .find(|s| s["is_current"] == json!(false))
+        .and_then(|s| s["id"].as_str())
+        .expect("second session id")
+        .to_string();
+    let (status, body) = post_json_with_token(
+        &mut app,
+        "/api/security/sessions/revoke",
+        json!({"ids": [current_id, other_id]}),
+        &current,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["revoked"], json!(1));
+    let (_, list) = get_json_with_token(&mut app, "/api/security/sessions", &current).await;
+    assert_eq!(list["data"]["total"], json!(1), "{list}");
+}
+
+/// An empty id list is a validation error, not a silent no-op.
+#[tokio::test]
+async fn test_revoke_sessions_rejects_an_empty_id_list() {
+    let (state, _tmp, _lock) = setup_state().await;
+    create_test_user(&state, "dave", "Passw0rd!", 1).await;
+    let mut app = account_router(state);
+    let token = login(&mut app, "dave", "Passw0rd!").await;
+
+    let (status, body) = post_json_with_token(
+        &mut app,
+        "/api/security/sessions/revoke",
+        json!({"ids": []}),
+        &token,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["success"], json!(false));
+}
+
+/// "Log out all others" stays scoped to the caller's own sessions.
+#[tokio::test]
+async fn test_revoke_all_sessions_stays_scoped_to_the_caller() {
+    let (state, _tmp, _lock) = setup_state().await;
+    create_test_user(&state, "erin", "Passw0rd!", 1).await;
+    create_test_user(&state, "frank", "Passw0rd!", 1).await;
+    let mut app = account_router(state);
+
+    let erin_current = login(&mut app, "erin", "Passw0rd!").await;
+    let erin_other = login(&mut app, "erin", "Passw0rd!").await;
+    let frank_session = login(&mut app, "frank", "Passw0rd!").await;
+
+    let (status, body) = post_json_with_token(
+        &mut app,
+        "/api/security/sessions/revoke-all",
+        json!({}),
+        &erin_current,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["revoked"], json!(1));
+
+    let (alive, _) = get_json_with_token(&mut app, "/api/auth/me", &erin_current).await;
+    assert_eq!(alive, StatusCode::OK);
+    let (dead, _) = get_json_with_token(&mut app, "/api/auth/me", &erin_other).await;
+    assert!(dead.is_client_error());
+    let (frank_status, _) = get_json_with_token(&mut app, "/api/auth/me", &frank_session).await;
+    assert_eq!(
+        frank_status,
+        StatusCode::OK,
+        "revoke-all must never touch another account"
+    );
 }

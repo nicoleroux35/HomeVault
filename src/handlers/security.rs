@@ -24,6 +24,12 @@
 
 //! Security endpoints: own-session list and revocation, login history
 //! (admin or self), and the system-wide active-sessions count (admin).
+//!
+//! The self-service session list never returns a live session token: each
+//! session is identified by an opaque SHA-256 fingerprint (`session_public_id`)
+//! and revocation works exclusively on those ids, resolved against the
+//! *caller's own* sessions — so a token belonging to another user can neither
+//! be handed out again nor used to revoke it (CWE-639 / OWASP A01).
 
 use crate::handlers::AppState;
 use crate::storage::login_attempt_repo::LoginAttemptRepository;
@@ -31,12 +37,29 @@ use crate::storage::session_repo::SessionRepository;
 use crate::utils::ResponseHelper;
 use axum::{extract::State, http::HeaderMap, response::Response};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
-/// A user session with metadata.
+/// Opaque public identifier for a session: a 12-character SHA-256 fingerprint
+/// of its token. Stable for the session's lifetime, unlinkable to the token
+/// (the id cannot be replayed as a credential) and — at 48 bits — practically
+/// collision-free across a single account's handful of concurrent sessions.
+/// The same digest scheme is what `src/mcp.rs` stores for its tokens.
+pub fn session_public_id(token: &str) -> String {
+    let digest = Sha256::digest(token.as_bytes());
+    let mut id = String::with_capacity(12);
+    for byte in digest.iter().take(6) {
+        use std::fmt::Write as _;
+        let _ = write!(id, "{:02x}", byte);
+    }
+    id
+}
+
+/// A user session with metadata. `id` is the opaque public identifier — never
+/// the live token.
 #[derive(Debug, Serialize)]
 pub struct SessionInfo {
-    pub token: String,
+    pub id: String,
     pub ip_address: String,
     pub created_at: String,
     pub expires_at: String,
@@ -50,10 +73,11 @@ pub struct UserSessionsResponse {
     pub total: usize,
 }
 
-/// Body for revoking one or more sessions.
+/// Body for revoking one or more sessions. Carries the opaque public ids
+/// from `GET /security/sessions`, never live tokens.
 #[derive(Debug, Deserialize)]
 pub struct RevokeSessionsRequest {
-    pub tokens: Vec<String>,
+    pub ids: Vec<String>,
 }
 
 /// A single login attempt record.
@@ -100,15 +124,12 @@ pub async fn handle_get_my_sessions(
 
     let session_infos: Vec<SessionInfo> = sessions
         .into_iter()
-        .map(|s| {
-            let token = s.token.clone();
-            SessionInfo {
-                token,
-                ip_address: s.ip_address,
-                created_at: s.created_at.to_rfc3339(),
-                expires_at: s.expires_at.to_rfc3339(),
-                is_current: s.token == session_token,
-            }
+        .map(|s| SessionInfo {
+            id: session_public_id(&s.token),
+            ip_address: s.ip_address,
+            created_at: s.created_at.to_rfc3339(),
+            expires_at: s.expires_at.to_rfc3339(),
+            is_current: s.token == session_token,
         })
         .collect();
 
@@ -119,7 +140,13 @@ pub async fn handle_get_my_sessions(
     })
 }
 
-/// Revoke specific sessions (logout from other devices)
+/// Revoke specific sessions (logout from other devices).
+///
+/// The request carries the opaque ids returned by `GET /security/sessions`.
+/// Each id is resolved **only against the caller's own sessions**, so an id
+/// or token that belongs to another account can never be turned into a
+/// deletion — the cross-account revocation path from the 2026-10-22 audit is
+/// closed at the resolution step, before `delete_many` sees a token.
 pub async fn handle_revoke_sessions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -139,19 +166,36 @@ pub async fn handle_revoke_sessions(
         None => return ResponseHelper::json_unauthorized("Invalid session".to_string()),
     };
 
-    // Prevent revoking current session
-    let tokens_to_revoke: Vec<String> = req
-        .tokens
-        .iter()
-        .filter(|t| *t != session_token)
-        .cloned()
-        .collect();
-
-    if tokens_to_revoke.is_empty() {
+    if req.ids.is_empty() {
         return ResponseHelper::json_error("No sessions to revoke".to_string());
     }
 
     let session_repo = SessionRepository::new(state.db.pool());
+
+    // The candidate set is the caller's own sessions — never the request's
+    // ids mapped to arbitrary rows. The current session stays protected.
+    let own_sessions = match session_repo.find_all_by_username(&username).await {
+        Ok(s) => s,
+        Err(e) => return ResponseHelper::json_error(format!("Failed to fetch sessions: {}", e)),
+    };
+
+    let tokens_to_revoke: Vec<String> = own_sessions
+        .iter()
+        .filter(|s| s.token != session_token)
+        .filter(|s| {
+            let public_id = session_public_id(&s.token);
+            req.ids.iter().any(|id| id == &public_id)
+        })
+        .map(|s| s.token.clone())
+        .collect();
+
+    if tokens_to_revoke.is_empty() {
+        return ResponseHelper::json_error_with_status(
+            axum::http::StatusCode::NOT_FOUND,
+            "No matching session to revoke for your account".to_string(),
+        );
+    }
+
     match session_repo.delete_many(&tokens_to_revoke).await {
         Ok(deleted) => {
             tracing::info!(username = %username, count = deleted, "Sessions revoked");
@@ -347,4 +391,40 @@ pub async fn handle_get_user_login_history(
         attempts: attempt_infos,
         total,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::session_public_id;
+
+    #[test]
+    fn test_session_public_id_is_deterministic() {
+        let token = "b3f1a0c2d4e5f60718293a4b5c6d7e8f";
+        assert_eq!(session_public_id(token), session_public_id(token));
+    }
+
+    #[test]
+    fn test_session_public_id_is_a_short_hex_fingerprint() {
+        let id = session_public_id("some-live-session-token-value");
+        assert_eq!(id.len(), 12);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+        // The id must not embed the token in any readable form.
+        assert!(!id.contains("some-live-session-token-value"));
+    }
+
+    #[test]
+    fn test_session_public_id_differs_for_different_tokens() {
+        assert_ne!(
+            session_public_id("token-aaaaaaaaaaaaaaaa"),
+            session_public_id("token-bbbbbbbbbbbbbbbb")
+        );
+    }
+
+    #[test]
+    fn test_session_public_id_differs_on_a_single_character_change() {
+        assert_ne!(
+            session_public_id("0123456789abcdef0123456789abcdef"),
+            session_public_id("0123456789abcdef0123456789abcdee")
+        );
+    }
 }
