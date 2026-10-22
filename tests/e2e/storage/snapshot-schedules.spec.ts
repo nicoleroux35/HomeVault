@@ -25,9 +25,11 @@
  *   1. Opens the tab; empty state or schedule cards render
  *   2. Creates a schedule through the modal (UI write) for a pool name that
  *      does NOT exist on the host, then deletes it via the confirm dialog
- *   3. Run-now on that non-existent pool records a clean failure (never a
+ *   3. Refuses a second schedule with the same pool and prefix (409 → inline
+ *      modal error), the pair being what identifies a schedule
+ *   4. Run-now on that non-existent pool records a clean failure (never a
  *      crash) — the error is surfaced on the schedule card
- *   4. Validation: an invalid pool name is rejected with an inline error
+ *   5. Validation: an invalid pool name is rejected with an inline error
  *
  * The suite never touches a real pool: "e2e-no-such-pool" fails cleanly at
  * zfs/btrfs time and is cleaned up in afterAll through the admin API.
@@ -113,6 +115,17 @@ test.beforeAll(async ({ playwright }) => {
   const { token, csrf } = await apiLogin(ctx, ADMIN_USER, ADMIN_PASS);
   if (!token) throw new Error(`Could not log in as ${ADMIN_USER} — seed this account first.`);
   adminTokens = { username: ADMIN_USER, password: ADMIN_PASS, token, csrf };
+
+  // Start from a clean slate: (pool, prefix) is unique, so a schedule left
+  // behind by an interrupted run would make the create in 2.1 answer 409.
+  const headers = { 'x-session-token': token, 'x-csrf-token': csrf };
+  const res = await ctx.get(`${BASE}/api/snapshot-schedules`, { headers });
+  const body = await res.json().catch(() => ({}));
+  for (const schedule of body?.data?.schedules ?? []) {
+    if (schedule.pool === POOL) {
+      await ctx.delete(`${BASE}/api/snapshot-schedules/${schedule.id}`, { headers });
+    }
+  }
 });
 
 test.afterAll(async ({ playwright }) => {
@@ -147,6 +160,23 @@ test('2.1 — Create a schedule through the modal', async ({ page }) => {
   const run = row.locator('[data-testid^="snapshots-run-"]').first();
   const testId = await run.getAttribute('data-testid');
   scheduleId = testId ? testId.replace('snapshots-run-', '') : null;
+});
+
+test('2.2 — A second schedule on the same pool and prefix is refused inline', async ({ page }) => {
+  test.skip(!scheduleId, 'schedule not created');
+  await openSnapshotsTab(page, adminTokens);
+  await win(page).locator('[data-testid="snapshots-new-btn"]').click();
+  // Same pool, same prefix as the schedule created in 2.1: the two rows
+  // would prune each other's snapshots, so the API answers 409 and the modal
+  // must say so instead of closing silently.
+  await page.locator('input[placeholder="tank/data"]').first().fill(POOL);
+  await page.locator('[data-testid="snapshots-save-btn"]').click();
+
+  const error = page.locator('[data-testid="snapshots-form-error"]');
+  await expect(error).toBeVisible({ timeout: 10_000 });
+  await expect(error).toContainText('already exists');
+  // The modal stays open with the operator's input intact (no data lost).
+  await expect(page.locator('input[placeholder="tank/data"]').first()).toHaveValue(POOL);
 });
 
 test('3.1 — Run-now on a missing pool records a clean failure on the card', async ({ page }) => {

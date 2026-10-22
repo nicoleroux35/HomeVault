@@ -7,7 +7,8 @@
  * Description:
  *   Scheduled-snapshot endpoints: CRUD for pool snapshot schedules (cron +
  *   GFS retention), run-now, and a pool snapshot listing for the UI. Every
- *   endpoint is admin-only — snapshots are created and *destroyed* here.
+ *   mutation is admin-only — snapshots are created and *destroyed* here; the
+ *   listing is a read and only needs a session (`require_auth`).
  *
  * Dependencies:
  *   - serde (>= 1.0)
@@ -18,18 +19,21 @@
  * =============================================================================
  */
 
-//! Snapshot schedule CRUD + run-now + pool snapshot list (all admin-only).
+//! Snapshot schedule CRUD + run-now (admin) + pool snapshot list (auth).
 
-use crate::handlers::admin_guard::require_admin;
+use crate::handlers::admin_guard::{require_admin, require_auth};
 use crate::handlers::AppState;
+use crate::pools::PoolService;
 use crate::restic_scheduler::compute_next_run;
 use crate::scheduled_tasks_scheduler::is_valid_pool_name;
-use crate::snapshot_scheduler::{run_schedule, GfsPolicy, SNAPSHOT_TIME_FORMAT};
+use crate::snapshot_scheduler::{
+    parse_auto_snapshot_time, run_schedule, GfsPolicy, RunScheduleError,
+};
 use crate::storage::snapshot_schedule_repo::SnapshotScheduleRepository;
 use crate::utils::ResponseHelper;
 use axum::{
     extract::{Path, Query, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     response::Response,
     Json,
 };
@@ -163,6 +167,9 @@ pub async fn handle_snapshot_schedule_create(
         Ok(n) => n,
         Err(resp) => return resp,
     };
+    if let Err(message) = validate_known_pool(req.pool.trim(), &known_pool_names().await) {
+        return ResponseHelper::json_error(message);
+    }
     let repo = SnapshotScheduleRepository::new(state.db.pool());
     match repo
         .create(
@@ -176,6 +183,14 @@ pub async fn handle_snapshot_schedule_create(
         .await
     {
         Ok(schedule) => ResponseHelper::json_success(schedule),
+        Err(e) if is_prefix_conflict(&e) => ResponseHelper::json_error_with_status(
+            StatusCode::CONFLICT,
+            format!(
+                "A schedule for pool '{}' with prefix '{}' already exists",
+                req.pool.trim(),
+                req.prefix.trim()
+            ),
+        ),
         Err(e) => ResponseHelper::json_error(format!("Failed to create schedule: {e}")),
     }
 }
@@ -198,6 +213,9 @@ pub async fn handle_snapshot_schedule_update(
         Ok(n) => n,
         Err(resp) => return resp,
     };
+    if let Err(message) = validate_known_pool(req.pool.trim(), &known_pool_names().await) {
+        return ResponseHelper::json_error(message);
+    }
     match repo
         .update(
             &id,
@@ -215,6 +233,14 @@ pub async fn handle_snapshot_schedule_update(
             Ok(Some(schedule)) => ResponseHelper::json_success(schedule),
             _ => ResponseHelper::json_error("Schedule not found".to_string()),
         },
+        Err(e) if is_prefix_conflict(&e) => ResponseHelper::json_error_with_status(
+            StatusCode::CONFLICT,
+            format!(
+                "A schedule for pool '{}' with prefix '{}' already exists",
+                req.pool.trim(),
+                req.prefix.trim()
+            ),
+        ),
         Err(e) => ResponseHelper::json_error(format!("Failed to update schedule: {e}")),
     }
 }
@@ -253,7 +279,15 @@ pub async fn handle_snapshot_schedule_run_now(
     };
     match run_schedule(&state, &schedule).await {
         Ok(summary) => ResponseHelper::json_success(serde_json::json!({ "summary": summary })),
-        Err(e) => ResponseHelper::json_error(format!("Schedule run failed: {e}")),
+        // The scheduler tick (or another "Run now") already owns this
+        // schedule or its pool: nothing was attempted, so say so instead of
+        // pretending the run happened.
+        Err(RunScheduleError::Busy(message)) => {
+            ResponseHelper::json_error_with_status(StatusCode::CONFLICT, message)
+        }
+        Err(RunScheduleError::Failed(message)) => {
+            ResponseHelper::json_error(format!("Schedule run failed: {message}"))
+        }
     }
 }
 
@@ -268,26 +302,41 @@ pub async fn handle_snapshot_pool_list(
     headers: HeaderMap,
     Query(params): Query<PoolQuery>,
 ) -> Response {
-    if let Err(resp) = require_admin(&state, &headers).await {
+    // A read, like every other Storage read (`require_auth`) — the schedule
+    // mutations below stay admin-only.
+    if let Err(resp) = require_auth(&state, &headers).await {
         return resp;
     }
     if !is_valid_pool_name(&params.pool) {
         return ResponseHelper::json_error(format!("Invalid pool name '{}'", params.pool));
     }
     let pool = params.pool.clone();
+
+    // The prefixes this pool's schedules own: only their snapshots are
+    // auto-managed, so the `auto` badge needs the configured prefixes.
+    let repo = SnapshotScheduleRepository::new(state.db.pool());
+    let prefixes: Vec<String> = repo
+        .list()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| s.pool == pool)
+        .map(|s| s.prefix)
+        .collect();
+
     match tokio::task::spawn_blocking(move || {
         crate::snapshots::SnapshotService::list_snapshots(&pool)
     })
     .await
     {
         Ok(Ok(snapshots)) => {
-            // Tag auto snapshots (those the GFS prefix pattern owns) so the
-            // UI can mark what the schedules manage.
+            // Tag auto snapshots (those a schedule's prefix owns) so the UI
+            // can mark what the schedules manage.
             let enriched: Vec<serde_json::Value> = snapshots
                 .iter()
                 .map(|s| {
                     let bare = s.name.rsplit('@').next().unwrap_or(&s.name);
-                    let auto = parse_auto(bare);
+                    let auto = is_auto_snapshot(bare, &prefixes);
                     serde_json::json!({
                         "name": s.name,
                         "created": s.created,
@@ -304,14 +353,82 @@ pub async fn handle_snapshot_pool_list(
     }
 }
 
-fn parse_auto(bare_name: &str) -> bool {
-    match bare_name.split_once('-') {
-        Some((prefix, rest)) => {
-            rest.len() == 15
-                && rest.as_bytes()[8] == b'-'
-                && chrono::NaiveDateTime::parse_from_str(rest, SNAPSHOT_TIME_FORMAT).is_ok()
-                && !prefix.is_empty()
-        }
-        None => false,
+/// Tags a snapshot as auto-managed when its bare name parses as
+/// `{prefix}-YYYYMMDD-HHMMSS` for **one of the schedules that target this
+/// pool**. The prefix used to be ignored (the name was split on its first
+/// `-`), so a manual snapshot called `mydata-20261021-030000` was badged
+/// `auto` and looked managed by a schedule.
+fn is_auto_snapshot(bare_name: &str, prefixes: &[String]) -> bool {
+    prefixes
+        .iter()
+        .any(|prefix| parse_auto_snapshot_time(bare_name, prefix).is_some())
+}
+
+/// A schedule on a pool the host doesn't have can only fail on every tick,
+/// so it is refused up front. Skipped when the scan reports no pool at all
+/// (neither ZFS nor Btrfs installed, or a fresh install): the check would
+/// reject everything while the run itself reports a clear error.
+fn validate_known_pool(pool: &str, known: &[String]) -> Result<(), String> {
+    if known.is_empty() || known.iter().any(|p| p == pool) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Pool '{pool}' was not found on this host — known pools: {}",
+            known.join(", ")
+        ))
+    }
+}
+
+/// The (pool, prefix) pair is unique (migration 053): two schedules sharing
+/// it would prune each other's snapshots.
+fn is_prefix_conflict(error: &sqlx::Error) -> bool {
+    matches!(error, sqlx::Error::Database(db) if is_prefix_conflict_message(db.message()))
+}
+
+fn is_prefix_conflict_message(message: &str) -> bool {
+    message.contains("UNIQUE constraint failed: snapshot_schedules.pool")
+}
+
+/// Pool names the host currently reports, for the existence check. A scan
+/// failure is not fatal here — the run itself reports the real error.
+async fn known_pool_names() -> Vec<String> {
+    match tokio::task::spawn_blocking(PoolService::scan_pools).await {
+        Ok(Ok(pools)) => pools.into_iter().map(|p| p.name).collect(),
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_badge_requires_one_of_the_pools_own_prefixes() {
+        let prefixes = vec!["hv-auto".to_string(), "weekly".to_string()];
+        assert!(is_auto_snapshot("hv-auto-20261021-030000", &prefixes));
+        assert!(is_auto_snapshot("weekly-20261021-030000", &prefixes));
+        // A manual snapshot that merely looks like a timestamped name is not
+        // schedule-managed (it used to be badged `auto`).
+        assert!(!is_auto_snapshot("mydata-20261021-030000", &prefixes));
+        // No schedule on this pool → nothing is auto-managed.
+        assert!(!is_auto_snapshot("hv-auto-20261021-030000", &[]));
+    }
+
+    #[test]
+    fn pool_existence_is_checked_only_when_pools_are_reported() {
+        let known = vec!["tank".to_string(), "data".to_string()];
+        assert!(validate_known_pool("tank", &known).is_ok());
+        let err = validate_known_pool("tanl", &known).expect_err("a typo must be refused");
+        assert!(err.contains("tanl") && err.contains("tank"), "got {err}");
+        // Nothing to compare against: don't block on an unverifiable name.
+        assert!(validate_known_pool("tanl", &[]).is_ok());
+    }
+
+    #[test]
+    fn a_duplicate_pool_prefix_pair_is_recognised() {
+        assert!(is_prefix_conflict_message(
+            "UNIQUE constraint failed: snapshot_schedules.pool, snapshot_schedules.prefix"
+        ));
+        assert!(!is_prefix_conflict_message("database is locked"));
     }
 }

@@ -272,7 +272,11 @@ async fn check_backup_jobs(state: &Arc<AppState>, engine_state: &Arc<Mutex<Engin
 /// and/or webhook. `event_id` is the per-event toggle the admin can mute
 /// (see `notification_events::EVENT_CATALOG`) — a muted event is not
 /// persisted nor dispatched at all.
-async fn notify(
+///
+/// `pub(crate)` so other background engines (e.g. the snapshot scheduler)
+/// can raise events through the same mute/persist/dispatch path instead of
+/// writing notification rows directly.
+pub(crate) async fn notify(
     state: &Arc<AppState>,
     event_id: &str,
     title: &str,

@@ -8,8 +8,8 @@ anything, and the frontend already had a working bell/badge/panel
 populated — this feature is the missing wire between the two.
 
 **Per-event control (2026-10-13):** every notification the engine raises
-carries a stable **event id** (`backup.jobs`, `app.updates`,
-`health.<check>` — see `src/notification_events.rs::EVENT_CATALOG`); the
+carries a stable **event id** (`backup.jobs`, `snapshot.schedules`,
+`app.updates`, `health.<check>` — see `src/notification_events.rs::EVENT_CATALOG`); the
 admin can mute events individually (`GET/PUT /api/notifications/events/config`,
 admin-only; Settings → Notifications). A muted event is neither persisted
 nor dispatched. Absent toggle = enabled, so the catalog can grow without
@@ -45,6 +45,13 @@ expected shape.
 - `src/storage/notification_repo.rs` — `notifications` table (migration
   `015_notifications.sql`). Broadcast-style (no `user_id` — matches
   `NotificationSettings`/`EmailSettings` already being global, not per-user).
+- **Event sources other than the loop.** `notify()` is `pub(crate)` so a
+  background engine can raise an event through the same mute/persist/dispatch
+  path instead of writing notification rows directly. Current caller:
+  `snapshot_scheduler::record_failure` raises `snapshot.schedules` (severity
+  `error`, category `storage`) **once per outage** — on the transition into
+  failure, so a schedule that keeps failing does not notify every tick (see
+  [Snapshots](./snapshots.md)).
 - `src/handlers/notifications.rs` — list/unread-count/mark-read/mark-all-read/
   delete (see [API Contract](../API.md)), all `require_auth`.
 - `src/email.rs` — `EmailService::send_system_alert` / `send_test_email` now

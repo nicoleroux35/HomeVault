@@ -46,6 +46,11 @@ pub const EVENT_CATALOG: &[NotificationEvent] = &[
         label_key: "notifications.events.backup_jobs",
     },
     NotificationEvent {
+        id: "snapshot.schedules",
+        group: "backup",
+        label_key: "notifications.events.snapshot_schedules",
+    },
+    NotificationEvent {
         id: "app.updates",
         group: "system",
         label_key: "notifications.events.app_updates",

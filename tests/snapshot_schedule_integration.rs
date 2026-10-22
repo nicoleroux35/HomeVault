@@ -47,7 +47,10 @@ use homevault::handlers::snapshot_schedules::{
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::AppState;
 use homevault::middleware::rate_limit::RateLimitState;
+use homevault::snapshot_scheduler::{run_schedule_with, GfsPolicy, RunScheduleError};
+use homevault::snapshots::{SnapError, Snapshot, SnapshotBackend};
 use homevault::storage::models::{ADMIN_ROLE_ID, USER_ROLE_ID};
+use homevault::storage::snapshot_schedule_repo::SnapshotScheduleRepository;
 use homevault::storage::Database;
 use homevault::storage::WidgetRepository;
 
@@ -540,4 +543,171 @@ async fn unknown_schedule_ids_fail_cleanly() {
         StatusCode::OK,
         "delete of an unknown id is idempotent"
     );
+}
+
+// ---------------------------------------------------------------------------
+// ROADMAP item 5: prune-failure accounting, single-flight, duplicate prefixes.
+// ---------------------------------------------------------------------------
+
+/// A backend that creates successfully but cannot list, which is exactly the
+/// case that used to be recorded as a green run (5.1).
+struct PruneFailsBackend {
+    created: Mutex<Vec<String>>,
+}
+
+impl SnapshotBackend for PruneFailsBackend {
+    fn create(&self, name: &str, _recursive: bool) -> Result<(), SnapError> {
+        self.created.lock().unwrap().push(name.to_string());
+        Ok(())
+    }
+
+    fn list(&self) -> Result<Vec<Snapshot>, SnapError> {
+        Err(SnapError::CommandFailed("zfs list exploded".to_string()))
+    }
+
+    fn delete(&self, _name: &str) -> Result<(), SnapError> {
+        Ok(())
+    }
+}
+
+async fn notification_count(state: &AppState) -> i64 {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM notifications WHERE source = 'snapshot_scheduler'",
+    )
+    .fetch_one(&*state.db.pool())
+    .await
+    .expect("count notifications")
+}
+
+#[tokio::test]
+async fn a_failed_prune_is_a_failed_run_and_notifies_only_once() {
+    let (state, _tmp, _guard) = setup_state().await;
+    let repo = SnapshotScheduleRepository::new(state.db.pool());
+    // Unique pool name: the run registry is process-wide and tests run in
+    // parallel.
+    let schedule = repo
+        .create(
+            "pool-prune-fails",
+            "0 */4 * * *",
+            "hv-auto",
+            true,
+            GfsPolicy::default(),
+            None,
+        )
+        .await
+        .expect("create schedule");
+    let backend = Arc::new(PruneFailsBackend {
+        created: Mutex::new(Vec::new()),
+    });
+
+    // The snapshot IS taken, but retention did not run: the pool keeps
+    // filling up, so this must be a failed run, not a success with a note.
+    let err = run_schedule_with(&state, &schedule, backend.clone())
+        .await
+        .expect_err("a prune failure must fail the run");
+    assert!(
+        matches!(err, RunScheduleError::Failed(ref m) if m.contains("prune failed")),
+        "got {err:?}"
+    );
+    assert_eq!(
+        backend.created.lock().unwrap().len(),
+        1,
+        "the snapshot itself was created"
+    );
+
+    let stored = repo.get(&schedule.id).await.unwrap().expect("row");
+    assert_eq!(stored.last_status.as_deref(), Some("failed"));
+    let last_error = stored.last_error.clone().unwrap_or_default();
+    assert!(last_error.contains("prune failed"), "got {last_error}");
+    assert_eq!(
+        notification_count(&state).await,
+        1,
+        "the first failure must reach the notification center"
+    );
+
+    // Still failing on the next tick: the row keeps the error, but the admin
+    // is not notified again for the same outage.
+    let again = run_schedule_with(&state, &stored, backend.clone()).await;
+    assert!(again.is_err());
+    assert_eq!(
+        notification_count(&state).await,
+        1,
+        "a schedule failing every tick must not spam the notification center"
+    );
+}
+
+#[tokio::test]
+async fn a_duplicate_pool_and_prefix_is_refused_with_a_conflict() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    let mut router = schedules_router(state);
+    let admin = login(&mut router, "admin", "AdminPass123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/snapshot-schedules",
+        Some(&admin),
+        Some(valid_schedule()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "first schedule failed: {body}");
+
+    // Same pool + same prefix: the two rows would list and prune the same
+    // snapshots, each deleting what the other just kept (migration 053).
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/snapshot-schedules",
+        Some(&admin),
+        Some(valid_schedule()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "expected 409: {body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("already exists"),
+        "{body}"
+    );
+
+    // Same pool, different prefix: a legitimate second schedule.
+    let mut weekly = valid_schedule();
+    weekly["prefix"] = json!("hv-weekly");
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/snapshot-schedules",
+        Some(&admin),
+        Some(weekly),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "distinct prefix refused: {body}");
+}
+
+#[tokio::test]
+async fn pool_snapshot_list_is_readable_by_any_signed_in_user() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    create_test_user(&state, "user", "UserPass123!", USER_ROLE_ID).await;
+    let mut router = schedules_router(state);
+    let user = login(&mut router, "user", "UserPass123!").await;
+
+    // Reading a pool's snapshots is a read (require_auth); only the schedule
+    // mutations destroy data and stay admin-only.
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/snapshot-schedules/snapshots?pool=tank",
+        Some(&user),
+        None,
+    )
+    .await;
+    assert_ne!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a signed-in user may read snapshots: {body}"
+    );
+    assert_ne!(status, StatusCode::UNAUTHORIZED, "{body}");
 }
