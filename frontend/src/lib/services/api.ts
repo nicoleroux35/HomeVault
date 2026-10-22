@@ -1638,8 +1638,8 @@ class ApiClient {
     return `${window.location.origin}${sharePath}`;
   }
 
-  async getExplorerWatchTicket() {
-    return this.post('/explorer/watch/ticket');
+  async getExplorerWatchTicket(path: string) {
+    return this.post('/explorer/watch/ticket', { path });
   }
 
   getExplorerWatchUrl(ticket: string, path: string) {

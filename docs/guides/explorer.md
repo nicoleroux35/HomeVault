@@ -214,13 +214,18 @@ a misleading half-populated tree.
   the breadcrumb shows the friendly root label + a path relative to it.
 - **Inline text/code editor** in the preview modal (Edit → `<textarea>` → Save
   → `POST /explorer/save`).
-- **Background auto-refresh** — an 8 s poll (`refreshCurrentDir`, a *quiet*
-  re-list) that bails while any modal/upload/search/trash/edit is active. Not
-  real inotify; a `notify`-crate → SSE watcher is the follow-up.
+- **Background auto-refresh** — originally an 8 s poll (`refreshCurrentDir`, a
+  *quiet* re-list that bails while any modal/upload/search/trash/edit is
+  active). The Explorer is now wired to the **live SSE watcher**
+  (`GET /explorer/watch`, see "2026-10-22" below): every `change` event on the
+  browsed directory triggers the same quiet re-list, so the view tracks
+  server-side changes in real time instead of by polling.
 - **Collision handling** — a 4-button prompt on a clash whose choice applies to
   the whole batch (`?strategy=` above).
-- **Favorites / pinned folders** — a toolbar star; stored **per browser in
-  `localStorage`** (`hv-explorer-favorites`), not server-side.
+- **Favorites / pinned folders** — a toolbar star, stored **per user in the
+  database** (`explorer_favorites` via `src/storage/favorite_repo.rs`,
+  `GET|POST|DELETE /explorer/favorites`), not in `localStorage`, so they follow
+  the account across browsers (the same account-purge story as recents).
 - **Safe-eject** external drives (`POST /explorer/eject`, admin).
 - **"Share this folder"** — sets `$lib/stores/explorerShareIntent` and fires a
   `hv-open-app` event; `Desktop.svelte` opens the Shares window and
@@ -275,6 +280,62 @@ a misleading half-populated tree.
   `exfatprogs` (Debian 12+/Ubuntu 23.04+) or `exfat-utils` (older releases);
   `installer/install.sh` installs whichever the host's repositories carry and
   verifies it in Step 4.
+
+## Later features (2026-10-22) — security hardening (ROADMAP item 10)
+
+This pass closed the four blocking File Explorer findings.
+
+- **Extraction is zip-slip-safe** (`POST /explorer/extract`). Members are
+  listed and validated *before* extraction: `tar -tf` / `unzip -Z1` /
+  `7z l -slt` names (in the C locale — a French locale renders hard links as
+  "lien vers…" instead of ` -> `) are rejected if absolute, drive-rooted, or
+  containing a `..` component on either separator; archives containing **symlink
+  members** are refused outright (the listings do not expose link targets, so a
+  symlink cannot be pre-verified). Extraction then runs into a fresh
+  `.hvextract-<uuid>` staging directory inside the destination, the staged tree
+  is **verified confined** (a canonical walk resolves every symlink and refuses
+  anything that resolves below the destination), and only then is the tree moved
+  into the destination with the historical overwrite semantics (directories
+  merge, files replace). A failure at any stage removes the staging tree.
+- **The `.gz` branch streams to disk.** It used to buffer the whole
+  decompressed file in RAM (`gunzip -c` stdout capture); `gunzip`'s stdout is
+  now redirected straight into the output file, and a partial decompression
+  (non-zero exit) is deleted.
+- **The SSE watcher is authorised and can't leak** (`GET /explorer/watch`).
+  `POST /explorer/watch/ticket` takes a body `{ path }`, validates the path
+  through `validate_path_access` against the *calling user's* roots, and mints
+  a ticket bound to **(user, path)** (TTL 15 s, single-use — the old ticket was
+  bound to nothing and could watch any `?path=` the caller typed). The SSE
+  endpoint redeems the ticket only for exactly that path and returns the owning
+  user; events are filtered with a **component-based** `Path::starts_with`
+  (a plain string prefix would leak changes inside `/media/raid2` into a watch
+  on `/media/raid`). A `WatchGuard` (RAII `unwatch_path`) lives inside the SSE
+  stream, so disconnects release the inotify watch instead of accumulating
+  until `max_user_watches` was exhausted.
+- **Resumable upload sessions are owned** (`/upload/session`, `/upload/chunk`,
+  `/upload/complete`, DELETE `/upload/session`). The caller's username is
+  compared to the session owner on every one — a mismatch is 403 — so a user
+  who guesses a `session_id` can no longer append to, finalise, or abort
+  someone else's upload. A **per-user cap** (20 concurrent slots) plus a global
+  ceiling (256) refuse the 21st slot with 429; the TTL prune already kept stale
+  state from accumulating.
+- **Admin delete walks the PathGuard** (`POST /explorer/delete`): even for
+  admins, the path is confined to the allowed roots (previously the raw query
+  string reached `rm -rf`, so `?path=/` was an authenticated recursive delete),
+  and deleting a **browsing root itself** is refused ("this is a browsing root,
+  not an item") — a confirmed click on such a path is either a UI bug or a
+  forged call and the consequence (emptying a whole volume) is not
+  "delete one item".
+- **Archiving can't be argv-injected**: `FileBrowser::compress_items` passes
+  `--` before the member names, so a file literally named `-o` or `-czf` is
+  treated as a file to compress, never as a tool flag.
+- **Every failed action is visible.** The Explorer used to swallow failure
+  branches silently (`else {}`); mkdir, rename, download, extract, chmod,
+  compress, upload, copy/move, trash restore/purge/empty and preview now all
+  report their failure via `dlg.notify` (server message or a translated
+  fallback), including *partial* batch failures ("Moved 2 of 5 items to the
+  trash — the rest failed"), and the resource fetch error path is also
+  reported.
 
 ## Frontend
 
@@ -336,7 +397,18 @@ a misleading half-populated tree.
   file into `/etc`); `favorites` add is path-guarded too.
 - `/explorer/delete` is **admin-only**: it is the irreversible bypass of the
   trash system. Non-admins get 403; the UI never calls it (it trashes), and
-  purge/empty-trash drive `FileBrowser::delete_item` server-side.
+  purge/empty-trash drive `FileBrowser::delete_item` server-side. Even for
+  admins the path passes the PathGuard (delete is confined like every other
+  mutation), and deleting a browsing root itself is refused (see "2026-10-22").
+- **Extraction never trusts member names.** Listing + validation precede every
+  extraction; symlink members are refused; the staged tree is verified confined
+  before it is merged into the destination. Never extract a member an
+  integration test would call evil (`../`, absolute, drive-root).
+- **Watcher tickets are bound to (user, path).** Mint one only after
+  `validate_path_access` succeeds; the SSE endpoint accepts it for that path
+  only, and the inotify reference is released by `WatchGuard` on stream drop.
+- **Upload sessions belong to their owner**; chunk/complete/abort compare the
+  caller to `session.username` and the resumable-slot map is capped per user.
 - The session token is **never** accepted in a URL. Downloads and thumbnails
   are authenticated by short-lived tickets (`src/media_ticket.rs`); the
   `?token=` query param is gone.

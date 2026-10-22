@@ -889,7 +889,11 @@ pub async fn handle_explorer_mkdir(
 /// **Admin-only.** This is the irreversible bypass of the trash system; the
 /// Explorer UI never calls it (the Delete button trashes instead), and the
 /// purge/empty-trash flows call `FileBrowser::delete_item` server-side. It is
-/// kept only as an admin escape hatch.
+/// kept only as an admin escape hatch. Even for admins the path passes the
+/// same `PathGuard` every other filesystem mutation uses (ROADMAP 10.4) —
+/// this used to be `delete_item(&params.path, true)` on the raw query
+/// string, i.e. an authenticated `?path=/` was an unrestricted recursive
+/// delete with no root confinement.
 #[axum_macros::debug_handler]
 pub async fn handle_explorer_delete(
     State(state): State<Arc<AppState>>,
@@ -911,8 +915,28 @@ pub async fn handle_explorer_delete(
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
 
-    let path = params.path.clone();
-    match tokio::task::spawn_blocking(move || FileBrowser::delete_item(&path, true)).await {
+    let path = match state.path_guard.validate(&params.path) {
+        Some(p) => p,
+        None => {
+            return ResponseHelper::json_error(
+                "Access denied: path outside allowed directory".to_string(),
+            )
+        }
+    };
+    // Refusing to delete a browsing root itself — a confirmed click on such a
+    // directory is either a UI bug or a forged call, and the consequence
+    // (emptying a whole volume) is not "delete one item".
+    if state.path_guard.allowed_roots().contains(&path) {
+        return ResponseHelper::json_error(
+            "Refusing to delete: this is a browsing root, not an item".to_string(),
+        );
+    }
+
+    match tokio::task::spawn_blocking(move || {
+        FileBrowser::delete_item(&path.to_string_lossy(), true)
+    })
+    .await
+    {
         Ok(Ok(_)) => ResponseHelper::json_success(
             serde_json::json!({"message": "Item deleted successfully"}),
         ),
@@ -1443,6 +1467,12 @@ use std::time::{Duration, Instant};
 
 const UPLOAD_SESSION_TTL: Duration = Duration::from_secs(30 * 60);
 
+/// ROADMAP 10.3: hard caps on concurrent resumable upload sessions — the TTL
+/// prunes only on touch, so an uncapped map could grow without bound. The
+/// per-user cap stops one account from starving everyone else.
+const MAX_UPLOAD_SESSIONS: usize = 256;
+const MAX_UPLOAD_SESSIONS_PER_USER: usize = 20;
+
 #[derive(Clone)]
 struct UploadSession {
     dir: String,
@@ -1538,6 +1568,25 @@ pub async fn handle_explorer_upload_session_start(
     let Some(filename) = sanitize_upload_filename(&params.filename) else {
         return ResponseHelper::json_error("Rejected upload with unsafe filename".to_string());
     };
+
+    // ROADMAP 10.3: refuse a new slot when the global or per-user cap is hit.
+    {
+        let map = UPLOAD_SESSIONS.lock();
+        let user_sessions = map
+            .values()
+            .filter(|s| s.username == session.username)
+            .count();
+        if map.len() >= MAX_UPLOAD_SESSIONS || user_sessions >= MAX_UPLOAD_SESSIONS_PER_USER {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                axum::Json(serde_json::json!({
+                    "success": false,
+                    "message": "Too many uploads in progress; finish or cancel an upload first"
+                })),
+            )
+                .into_response();
+        }
+    }
     let strategy = crate::browser::CollisionStrategy::parse(params.strategy.as_deref());
     let expected_sha256 = params
         .sha256
@@ -1602,9 +1651,10 @@ pub async fn handle_explorer_upload_chunk(
 ) -> Response {
     prune_upload_sessions();
 
-    if let Err(resp) = crate::handlers::admin_guard::require_auth(&state, &headers).await {
-        return resp;
-    }
+    let caller = match crate::handlers::admin_guard::require_auth(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
 
     let session = {
         let session_map = UPLOAD_SESSIONS.lock();
@@ -1613,6 +1663,15 @@ pub async fn handle_explorer_upload_chunk(
         };
         s
     };
+
+    // ROADMAP 10.3: upload sessions are owned by the account that opened
+    // them — another authenticated user must not be able to append chunks to,
+    // or finalise, someone else's upload (the session_id is the only secret).
+    if session.username != caller {
+        return ResponseHelper::json_forbidden(
+            "This upload session belongs to another user".to_string(),
+        );
+    }
 
     if params.offset != session.offset {
         return (
@@ -1681,9 +1740,10 @@ pub async fn handle_explorer_upload_complete(
 ) -> Response {
     prune_upload_sessions();
 
-    if let Err(resp) = crate::handlers::admin_guard::require_auth(&state, &headers).await {
-        return resp;
-    }
+    let caller = match crate::handlers::admin_guard::require_auth(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
 
     let session = {
         let map = UPLOAD_SESSIONS.lock();
@@ -1696,6 +1756,13 @@ pub async fn handle_explorer_upload_complete(
             }
         }
     };
+
+    // ROADMAP 10.3: same ownership rule as the chunk endpoint.
+    if session.username != caller {
+        return ResponseHelper::json_forbidden(
+            "This upload session belongs to another user".to_string(),
+        );
+    }
 
     if session.offset != session.total_bytes {
         return ResponseHelper::json_error(format!(
@@ -1816,8 +1883,23 @@ pub async fn handle_explorer_upload_session_abort(
     Query(params): Query<UploadSessionIdQuery>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(resp) = crate::handlers::admin_guard::require_auth(&state, &headers).await {
-        return resp;
+    let caller = match crate::handlers::admin_guard::require_auth(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
+    let owner = {
+        let map = UPLOAD_SESSIONS.lock();
+        match map.get(&params.session_id) {
+            Some(s) => s.username.clone(),
+            None => return ResponseHelper::json_error("Upload session not found".to_string()),
+        }
+    };
+    // ROADMAP 10.3: aborting someone else's upload used to be possible with
+    // any authenticated session — the temp file would vanish mid-transfer.
+    if owner != caller {
+        return ResponseHelper::json_forbidden(
+            "This upload session belongs to another user".to_string(),
+        );
     }
     let removed = UPLOAD_SESSIONS.lock().remove(&params.session_id);
     if let Some(session) = removed {
@@ -2193,7 +2275,188 @@ pub async fn handle_explorer_permissions(
     }
 }
 
+// --- archive extraction safety (ROADMAP 10.1) ------------------------------
+
+/// True when the first component of a path is a Windows-style drive root
+/// (`C:`) — an absolute path in Windows syntax, rejected alongside plain
+/// `/absolute` names.
+fn windows_drive_root(first_component: &str) -> bool {
+    let bytes = first_component.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+/// Rejects archive member names that could escape the destination directory
+/// (ROADMAP 10.1): absolute paths on either separator syntax, any `..`
+/// component, and newline/CR names (those would corrupt the line-based
+/// listing parse, so archives containing them are refused instead).
+fn archive_member_is_safe(name: &str) -> bool {
+    if name.is_empty() || name.contains(['\n', '\r', '\0']) {
+        return false;
+    }
+    if name.starts_with('/') || name.starts_with('\\') {
+        return false;
+    }
+    let first = name.split(['/', '\\']).next().unwrap_or("");
+    if windows_drive_root(first) {
+        return false;
+    }
+    name.split(['/', '\\']).all(|component| component != "..")
+}
+
+/// A link target must stay inside the extraction tree: relative (never
+/// absolute) and with no `..` component, so resolving it can never leave the
+/// destination directory.
+fn archive_link_target_is_safe(target: &str) -> bool {
+    if target.is_empty() || target.contains(['\n', '\r', '\0']) {
+        return false;
+    }
+    if target.starts_with('/') || target.starts_with('\\') {
+        return false;
+    }
+    let first = target.split(['/', '\\']).next().unwrap_or("");
+    if windows_drive_root(first) {
+        return false;
+    }
+    target.split(['/', '\\']).all(|component| component != "..")
+}
+
+/// The symlink target encoded in a `tar -tvf` line rendered in the C locale
+/// (`lrwxrwxrwx … name -> target`), when the line describes a symlink member.
+/// Hard links (`h…`, rendered in words like `link to foo`) are not parsed:
+/// a hard link attaches to an existing inode and cannot traverse into a new
+/// path, symlinks can. STRICT: `None` for everything that is not a symlink.
+fn tar_listing_link_target(line: &str) -> Option<&str> {
+    let mode = line.trim_start().chars().next()?;
+    if mode != 'l' {
+        return None;
+    }
+    let arrow = line.rfind(" -> ")?;
+    Some(&line[arrow + 4..])
+}
+
+/// True when a `unzip -Zv` verbose listing contains any member whose Unix
+/// mode string starts with `l` — a symbolic link member. The listing does
+/// not expose link *targets*, so any archive containing one is refused
+/// rather than guessed at.
+fn zip_listing_has_symlink(listing: &str) -> bool {
+    listing
+        .lines()
+        .filter_map(|line| line.split_once("): "))
+        .any(|(_, mode)| mode.trim_start().starts_with('l'))
+}
+
+/// Parses a `7z l -slt` technical listing into member names, and reports
+/// whether any member is a symbolic link (its `Attributes` string starts
+/// with the `l` mode letter). The section before the `----------` separator
+/// describes the archive itself, not its members.
+fn parse_7z_listing(technical: &str) -> (Vec<String>, bool) {
+    let lines: Vec<&str> = technical.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| l.len() >= 4 && l.chars().all(|c| c == '-'))
+        .map_or(lines.len(), |i| i + 1);
+
+    let mut names = Vec::new();
+    let mut has_symlink = false;
+    let mut current_is_symlink = false;
+    let mut started = false;
+    for line in &lines[start..] {
+        if let Some(value) = line.strip_prefix("Path = ") {
+            names.push(value.to_string());
+            current_is_symlink = false;
+            started = true;
+        } else if let Some(attrs) = line.strip_prefix("Attributes = ") {
+            if attrs.trim_start().starts_with('l') {
+                current_is_symlink = true;
+            }
+        } else if line.trim().is_empty() && started {
+            has_symlink |= current_is_symlink;
+            current_is_symlink = false;
+        }
+    }
+    has_symlink |= current_is_symlink;
+    (names, has_symlink)
+}
+
+/// Recursively checks that everything under `dir` stays physically below
+/// `dir` after extraction: symlinks that exist but resolve (directly or via
+/// parents) outside `dir` are reported. Dangling links are harmless and
+/// allowed. Run on a fresh staging directory, this covers exactly the tree
+/// the extractor just created.
+fn verify_extraction_confined(dir: &std::path::Path) -> Result<(), String> {
+    let root = std::fs::canonicalize(dir)
+        .map_err(|e| format!("Failed to resolve extraction directory: {}", e))?;
+    let mut stack = vec![root.clone()];
+    while let Some(current) = stack.pop() {
+        for entry in std::fs::read_dir(&current).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            let file_type = entry.file_type().map_err(|e| e.to_string())?;
+            if file_type.is_symlink() {
+                if let Ok(resolved) = std::fs::canonicalize(&path) {
+                    if !resolved.starts_with(&root) {
+                        return Err(format!(
+                            "Archive tried to escape the destination directory via symbolic link: {}",
+                            path.display()
+                        ));
+                    }
+                }
+                continue;
+            }
+            if file_type.is_dir() {
+                stack.push(path);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Moves one staged extraction entry into the destination tree with the
+/// archive tools' historical overwrite semantics: directories merge (recursing
+/// into subdirectories that already exist), files replace existing files and
+/// symlinks, and an existing directory is never replaced by a plain file.
+fn move_extraction_entry(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    if from.symlink_metadata()?.is_dir() {
+        let existing = std::fs::symlink_metadata(to);
+        if let Ok(meta) = existing {
+            if !meta.is_symlink() && meta.is_dir() {
+                for entry in std::fs::read_dir(from)? {
+                    let entry = entry?;
+                    move_extraction_entry(&entry.path(), &to.join(entry.file_name()))?;
+                }
+                return std::fs::remove_dir(from);
+            }
+            std::fs::remove_file(to)?;
+            return std::fs::rename(from, to);
+        }
+        return std::fs::rename(from, to);
+    }
+    match std::fs::symlink_metadata(to) {
+        Ok(meta) if !meta.is_symlink() && meta.is_dir() => Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "cannot overwrite directory {} with an archive file",
+                to.display()
+            ),
+        )),
+        Ok(_) => {
+            std::fs::remove_file(to)?;
+            std::fs::rename(from, to)
+        }
+        Err(_) => std::fs::rename(from, to),
+    }
+}
+
 /// Extracts an archive (zip, tar, tar.gz, 7z, etc.) to a destination directory.
+///
+/// ROADMAP 10.1 hardening: members are listed and validated *before*
+/// extraction (absolute / `..` / control-character names refused; archives
+/// containing symlink members refused, since listings don't expose their
+/// targets), extraction runs into a fresh staging directory inside the
+/// destination, the staging tree is verified to stay below the destination
+/// (canonical-walk, symlink resolution included), and the `.gz` branch
+/// streams decompression straight to disk instead of buffering the whole
+/// payload in RAM.
 #[axum_macros::debug_handler]
 pub async fn handle_explorer_extract(
     State(state): State<Arc<AppState>>,
@@ -2230,27 +2493,61 @@ pub async fn handle_explorer_extract(
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
 
-    let result = tokio::task::spawn_blocking(move || -> Result<std::process::Output, String> {
-        use std::process::Command;
+    let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        use std::path::Path;
+        use std::process::{Command, Stdio};
 
-        // Determine file type and extract accordingly
-        let file_path = std::path::Path::new(&archive_path);
-        let extension = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let full_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        // Listing subprocesses are parsed line-by-line, so they run in the C
+        // locale — GNU tar renders link members in words otherwise ("lien
+        // vers…" under a French locale breaks the ` -> ` target parse).
+        let listing_command = |tool: &str| {
+            let mut command = Command::new(tool);
+            command
+                .env("LC_ALL", "C")
+                .env("LANG", "C")
+                .stdin(Stdio::null());
+            command
+        };
+
+        let file_path = Path::new(&archive_path);
+        let extension = file_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let full_name = file_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
         let is_tar_gz = full_name.ends_with(".tar.gz") || full_name.ends_with(".tgz");
+
+        #[derive(Clone, Copy, PartialEq)]
+        enum ArchiveKind {
+            Tar,
+            Zip,
+            SevenZip,
+            Gz,
+        }
+        let kind = if is_tar_gz {
+            ArchiveKind::Tar
+        } else {
+            match extension.as_str() {
+                "bz2" | "xz" | "tar" => ArchiveKind::Tar,
+                "zip" => ArchiveKind::Zip,
+                "7z" => ArchiveKind::SevenZip,
+                "gz" => ArchiveKind::Gz,
+                _ => ArchiveKind::Zip, // matches the historical fallback command
+            }
+        };
 
         // The external tool each format needs — checked with `which` first so a
         // missing tool produces a clear message instead of a raw exec error.
-        let required_tool = if is_tar_gz {
-            "tar"
-        } else {
-            match extension {
-                "bz2" | "xz" | "tar" => "tar",
-                "zip" => "unzip",
-                "7z" => "7z",
-                "gz" => "gunzip",
-                _ => "unzip",
-            }
+        let required_tool = match kind {
+            ArchiveKind::Tar => "tar",
+            ArchiveKind::Zip => "unzip",
+            ArchiveKind::SevenZip => "7z",
+            ArchiveKind::Gz => "gunzip",
         };
         if Command::new("which")
             .arg(required_tool)
@@ -2264,88 +2561,233 @@ pub async fn handle_explorer_extract(
             ));
         }
 
-        // Detect format by extension or filename pattern
-        let result = if is_tar_gz {
-            // tar.gz and .tgz
-            Command::new("tar")
-                .arg("-xzf")
-                .arg(&archive_path)
-                .arg("-C")
-                .arg(&destination)
-                .output()
-        } else {
-            match extension {
-                // bz2
-                "bz2" => Command::new("tar")
-                    .arg("-xjf")
-                    .arg(&archive_path)
-                    .arg("-C")
-                    .arg(&destination)
-                    .output(),
-                // xz
-                "xz" => Command::new("tar")
-                    .arg("-xJf")
-                    .arg(&archive_path)
-                    .arg("-C")
-                    .arg(&destination)
-                    .output(),
-                // zip
-                "zip" => Command::new("unzip")
-                    .arg("-o")
-                    .arg(&archive_path)
-                    .arg("-d")
-                    .arg(&destination)
-                    .output(),
-                // 7z
-                "7z" => Command::new("7z")
-                    .arg("x")
-                    .arg(&archive_path)
-                    .arg(format!("-o{}", destination))
-                    .output(),
-                // tar (no compression)
-                "tar" => Command::new("tar")
-                    .arg("-xf")
-                    .arg(&archive_path)
-                    .arg("-C")
-                    .arg(&destination)
-                    .output(),
-                // gzip single file
-                "gz" => {
-                    let stem = file_path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("output");
-                    let output_file = std::path::Path::new(&destination).join(stem);
-                    Command::new("gunzip")
-                        .arg("-c")
-                        .arg(&archive_path)
-                        .output()
-                        .and_then(|out| {
-                            let stdout = out.stdout.clone();
-                            std::fs::write(&output_file, stdout)?;
-                            Ok(std::process::Output {
-                                status: out.status,
-                                stdout: out.stdout,
-                                stderr: out.stderr,
-                            })
-                        })
-                }
-                // Default: try unzip
-                _ => Command::new("unzip")
-                    .arg("-o")
-                    .arg(&archive_path)
-                    .arg("-d")
-                    .arg(&destination)
-                    .output(),
-            }
-        };
+        let archive = Path::new(&archive_path);
+        let destination_path = Path::new(&destination);
 
-        result.map_err(|e| e.to_string())
+        // --- 1. Pre-flight: refuse unsafe archives before extracting anything.
+        let member_error = |name: &str| {
+            format!(
+                "Refusing to extract: member '{}' would escape the destination directory",
+                name
+            )
+        };
+        let link_error =
+            || "Refusing to extract: archive contains a symbolic link, which cannot be safely verified".to_string();
+        match kind {
+            ArchiveKind::Gz => {} // single output file with a known name; no members
+            ArchiveKind::Tar => {
+                let listing = listing_command("tar")
+                    .arg("-tf")
+                    .arg(archive)
+                    .output()
+                    .map_err(|e| e.to_string())?;
+                if !listing.status.success() {
+                    return Err(format!(
+                        "Cannot list archive members: {}",
+                        String::from_utf8_lossy(&listing.stderr).trim()
+                    ));
+                }
+                let listing_text = String::from_utf8_lossy(&listing.stdout);
+                for name in listing_text.lines().filter(|l| !l.is_empty()) {
+                    if !archive_member_is_safe(name) {
+                        return Err(member_error(name));
+                    }
+                }
+                // Same refusal for link members whose *target* escapes.
+                let verbose = listing_command("tar")
+                    .arg("-tvf")
+                    .arg(archive)
+                    .output()
+                    .map_err(|e| e.to_string())?;
+                if verbose.status.success() {
+                    for line in String::from_utf8_lossy(&verbose.stdout).lines() {
+                        if let Some(target) = tar_listing_link_target(line) {
+                            if !archive_link_target_is_safe(target) {
+                                return Err(format!(
+                                    "Refusing to extract: link target '{}' would escape the destination directory",
+                                    target
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            ArchiveKind::Zip => {
+                let listing = listing_command("unzip")
+                    .arg("-Z1")
+                    .arg(archive)
+                    .output()
+                    .map_err(|e| e.to_string())?;
+                if !listing.status.success() {
+                    return Err(format!(
+                        "Cannot list archive members: {}",
+                        String::from_utf8_lossy(&listing.stderr).trim()
+                    ));
+                }
+                let listing_text = String::from_utf8_lossy(&listing.stdout);
+                for name in listing_text.lines().filter(|l| !l.is_empty()) {
+                    if !archive_member_is_safe(name) {
+                        return Err(member_error(name));
+                    }
+                }
+                let verbose = listing_command("unzip")
+                    .arg("-Zv")
+                    .arg(archive)
+                    .output()
+                    .map_err(|e| e.to_string())?;
+                if verbose.status.success() && zip_listing_has_symlink(&String::from_utf8_lossy(&verbose.stdout)) {
+                    return Err(link_error());
+                }
+            }
+            ArchiveKind::SevenZip => {
+                let technical = listing_command("7z")
+                    .arg("l")
+                    .arg("-slt")
+                    .arg(archive)
+                    .output()
+                    .map_err(|e| e.to_string())?;
+                if !technical.status.success() {
+                    return Err(format!(
+                        "Cannot list archive members: {}",
+                        String::from_utf8_lossy(&technical.stderr).trim()
+                    ));
+                }
+                let (names, has_symlink) = parse_7z_listing(&String::from_utf8_lossy(&technical.stdout));
+                if has_symlink {
+                    return Err(link_error());
+                }
+                for name in &names {
+                    if !archive_member_is_safe(name) {
+                        return Err(member_error(name));
+                    }
+                }
+            }
+        }
+
+        // --- 2. Extraction. The .gz branch decompresses straight to disk; the
+        // rest extract into a staging directory inside the destination so the
+        // created tree can be validated as a whole before being moved into
+        // place.
+        if kind == ArchiveKind::Gz {
+            let stem = file_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("output");
+            let out_file = destination_path.join(stem);
+            std::fs::create_dir_all(destination_path).map_err(|e| {
+                format!(
+                    "Failed to create destination directory {}: {}",
+                    destination, e
+                )
+            })?;
+            let sink = std::fs::File::create(&out_file)
+                .map_err(|e| format!("Failed to create output file: {}", e))?;
+            let output = Command::new("gunzip")
+                .arg("-c")
+                .arg(archive)
+                .stdout(Stdio::from(sink))
+                .output()
+                .map_err(|e| e.to_string())?;
+            if !output.status.success() {
+                // Never leave a partial decompression behind.
+                let _ = std::fs::remove_file(&out_file);
+                return Err(format!(
+                    "gunzip failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            return Ok(());
+        }
+
+        std::fs::create_dir_all(destination_path).map_err(|e| {
+            format!(
+                "Failed to create destination directory {}: {}",
+                destination, e
+            )
+        })?;
+        let staging = destination_path.join(format!(".hvextract-{}", uuid::Uuid::new_v4()));
+        if let Err(e) = std::fs::create_dir(&staging) {
+            return Err(format!("Failed to create extraction staging directory: {}", e));
+        }
+
+        let staged = (|| -> Result<(), String> {
+            let extraction = match kind {
+                ArchiveKind::Tar if is_tar_gz || extension == "gz" => Command::new("tar")
+                    .arg("-xzf")
+                    .arg(archive)
+                    .arg("-C")
+                    .arg(&staging)
+                    .output(),
+                ArchiveKind::Tar => match extension.as_str() {
+                    "bz2" => Command::new("tar")
+                        .arg("-xjf")
+                        .arg(archive)
+                        .arg("-C")
+                        .arg(&staging)
+                        .output(),
+                    "xz" => Command::new("tar")
+                        .arg("-xJf")
+                        .arg(archive)
+                        .arg("-C")
+                        .arg(&staging)
+                        .output(),
+                    _ => Command::new("tar")
+                        .arg("-xf")
+                        .arg(archive)
+                        .arg("-C")
+                        .arg(&staging)
+                        .output(),
+                },
+                ArchiveKind::Zip => Command::new("unzip")
+                    .arg("-o")
+                    .arg(archive)
+                    .arg("-d")
+                    .arg(&staging)
+                    .output(),
+                ArchiveKind::SevenZip => Command::new("7z")
+                    .arg("x")
+                    .arg(archive)
+                    .arg(format!("-o{}", staging.display()))
+                    .output(),
+                ArchiveKind::Gz => unreachable!("handled above"),
+            };
+
+            let output = extraction.map_err(|e| e.to_string())?;
+            if !output.status.success() {
+                return Err(format!(
+                    "Extraction failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+
+            // --- 3. Confinement check: every symlink under the staging tree
+            // must resolve below the destination.
+            verify_extraction_confined(&staging)?;
+
+            // --- 4. Merge the verified tree into the destination with the
+            // historical overwrite semantics (dirs merge, files replace).
+            for entry in std::fs::read_dir(&staging).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let target = destination_path.join(entry.file_name());
+                move_extraction_entry(&entry.path(), &target)
+                    .map_err(|e| format!("Failed to move '{}' into place: {}", entry.path().display(), e))?;
+            }
+            std::fs::remove_dir(&staging).map_err(|e| {
+                format!("Failed to clean up extraction staging directory: {}", e)
+            })?;
+            Ok(())
+        })();
+
+        if staged.is_err() {
+            // Never leave a partially-extracted staging tree behind.
+            let _ = std::fs::remove_dir_all(&staging);
+        }
+        staged
     })
     .await;
 
     match result {
-        Ok(Ok(_)) => ResponseHelper::json_success(
+        Ok(Ok(())) => ResponseHelper::json_success(
             serde_json::json!({"message": "Archive extracted successfully"}),
         ),
         Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to extract archive: {}", e)),
@@ -3603,15 +4045,42 @@ pub async fn handle_explorer_favorites_remove(
 
 /// POST /api/explorer/watch/ticket — issue a short-lived, single-use ticket
 /// for the SSE connection (EventSource cannot set custom headers).
+///
+/// The request carries the path to watch; access to it is validated against
+/// the caller's allowed roots *here*, and the ticket is bound to (user,
+/// path) — the SSE endpoint will only open this path with this ticket
+/// (ROADMAP 10.2).
+#[derive(Debug, Deserialize)]
+pub struct WatchTicketRequest {
+    pub path: String,
+}
+
 pub async fn handle_explorer_watch_ticket(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    axum::extract::Json(req): axum::extract::Json<WatchTicketRequest>,
 ) -> impl IntoResponse {
-    if let Err(response) = crate::handlers::admin_guard::require_auth(&state, &headers).await {
-        return response;
+    let session_token = headers
+        .get("x-session-token")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    if session_token.is_empty() {
+        return ResponseHelper::json_error("No session token provided".to_string());
     }
+    let session = match state.auth.get_session(session_token).await {
+        Ok(s) => s,
+        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
+    };
+    let Some(validated) = validate_path_access(&state, &req.path, &session) else {
+        return ResponseHelper::json_error(
+            "Access denied: path outside allowed directory".to_string(),
+        );
+    };
 
-    let ticket = crate::sse::file_watcher::issue_ticket();
+    let ticket = crate::sse::file_watcher::issue_ticket(
+        &session.username,
+        &validated.to_string_lossy(),
+    );
     ResponseHelper::json_success(serde_json::json!({ "ticket": ticket }))
 }
 
@@ -3628,24 +4097,37 @@ pub async fn handle_explorer_watch(Query(query): Query<WatchQuery>) -> Response 
     use std::convert::Infallible;
     use std::time::Duration;
 
-    if !crate::sse::file_watcher::consume_ticket(&query.ticket) {
-        return ResponseHelper::json_error("Invalid or expired ticket".to_string());
+    // ROADMAP 10.2: the ticket only opens the exact path it was minted for,
+    // and the request path must therefore match — no watching arbitrary
+    // locations with one long-lived generic ticket.
+    if crate::sse::file_watcher::consume_ticket(&query.ticket, &query.path).is_none() {
+        return ResponseHelper::json_error("Invalid, expired or mismatched ticket".to_string());
     }
 
     let watch_path = std::path::PathBuf::from(&query.path);
-    crate::sse::file_watcher::watch_path(&watch_path);
+    let watch_guard = crate::sse::file_watcher::watch_path_guarded(&watch_path);
 
     let mut rx = crate::sse::file_watcher::FILE_CHANGE_BUS.subscribe();
-    let path_prefix = watch_path.to_string_lossy().into_owned();
+    let watch_root = watch_path.clone();
 
     let stream = async_stream::stream! {
+        // Released whenever the stream (and with it this generator) is
+        // dropped — client disconnect included — so inotify watches no longer
+        // accumulate.
+        let _guard = watch_guard;
         let mut ticker = tokio::time::interval(Duration::from_secs(30));
         loop {
             tokio::select! {
                 result = rx.recv() => {
                     match result {
                         Ok(change) => {
-                            let relevant = change.paths.iter().any(|p| p.starts_with(&path_prefix));
+                            // Component-based prefix match — a plain string
+                            // prefix would leak changes inside "/media/raid2"
+                            // into a watch on "/media/raid".
+                            let relevant = change
+                                .paths
+                                .iter()
+                                .any(|p| std::path::Path::new(p).starts_with(&watch_root));
                             if !relevant { continue; }
                             let json = serde_json::to_string(&change).unwrap_or_default();
                             yield Ok::<_, Infallible>(Event::default().event("change").data(json));
@@ -4391,5 +4873,162 @@ mod tests {
             parse_range(&headers_with_range("bytes=0-"), 0).is_err(),
             "empty file"
         );
+    }
+
+    // --- archive extraction safety (ROADMAP 10.1) ---
+
+    #[test]
+    fn test_archive_member_is_safe_accepts_normal_names() {
+        assert!(archive_member_is_safe("file.txt"));
+        assert!(archive_member_is_safe("subdir/file.txt"));
+        assert!(archive_member_is_safe("sub/dir/with spaces.txt"));
+        assert!(archive_member_is_safe("./relative.txt"));
+        assert!(archive_member_is_safe("dots...txt"));
+        assert!(archive_member_is_safe("dir/"));
+    }
+
+    #[test]
+    fn test_archive_member_is_safe_rejects_escapes() {
+        assert!(!archive_member_is_safe("../evil"));
+        assert!(!archive_member_is_safe("sub/../../evil"));
+        assert!(!archive_member_is_safe("a/b/..\\..\\evil"));
+        assert!(!archive_member_is_safe("/etc/passwd"));
+        assert!(!archive_member_is_safe("\\etc\\passwd"));
+        assert!(!archive_member_is_safe("C:/evil"));
+        assert!(!archive_member_is_safe("C:\\evil"));
+        assert!(!archive_member_is_safe(""));
+        // Names containing control characters defeat the line-based listing.
+        assert!(!archive_member_is_safe("traversal\n/../../evil"));
+        assert!(!archive_member_is_safe("bad\0name"));
+    }
+
+    #[test]
+    fn test_archive_link_target_is_safe() {
+        assert!(archive_link_target_is_safe("inside/file.txt"));
+        assert!(archive_link_target_is_safe("."));
+        assert!(!archive_link_target_is_safe("../outside"));
+        assert!(!archive_link_target_is_safe("/etc/passwd"));
+        assert!(!archive_link_target_is_safe("C:/evil"));
+        assert!(!archive_link_target_is_safe("a/../../etc/passwd"));
+        assert!(!archive_link_target_is_safe(""));
+    }
+
+    #[test]
+    fn test_tar_listing_link_target_only_from_link_lines() {
+        let symlink =
+            "lrwxrwxrwx nicolas/nicolas   0 2026-01-01 00:00 lk/link -> ../../../../etc/passwd";
+        assert_eq!(
+            tar_listing_link_target(symlink),
+            Some("../../../../etc/passwd")
+        );
+        let hardlink = "hrwxrwxrwx n/n 0 2026-01-01 00:00 b link to a";
+        assert_eq!(tar_listing_link_target(hardlink), None);
+        let plain = "-rw-r--r-- nicolas/nicolas  42 2026-01-01 00:00 file.txt";
+        assert_eq!(tar_listing_link_target(plain), None);
+        assert_eq!(tar_listing_link_target(""), None);
+    }
+
+    #[test]
+    fn test_zip_listing_has_symlink_reads_unix_mode() {
+        let with_link = "Unix file attributes (120777 octal):            lrwxrwxrwx\n";
+        assert!(zip_listing_has_symlink(with_link));
+        let without_link =
+            "Unix file attributes (100644 octal):            -rw-r--r--\nDOS file attributes (00 hex):   DAWN\n";
+        assert!(!zip_listing_has_symlink(without_link));
+        assert!(!zip_listing_has_symlink(
+            "file last modified on (DOS date/time):  2026 Oct 22\n"
+        ));
+        assert!(!zip_listing_has_symlink(""));
+    }
+
+    const SEVENZIP_LISTING: &str = "7-Zip 23.01 : Copyright\n\nListing archive: a.zip\n\n\
+Path = a.zip\nType = zip\n\n----------\nPath = stage\nFolder = +\nAttributes = D drwxrwxr-x\n\n\
+Path = stage/inside/file.txt\nFolder = -\nAttributes =  -rw-rw-r--\n\n\
+Path = stage/inside/link\nFolder = -\nAttributes =  lrwxrwxrwx\n\n";
+
+    #[test]
+    fn test_parse_7z_listing_skips_archive_header_and_flags_links() {
+        let (names, has_symlink) = parse_7z_listing(SEVENZIP_LISTING);
+        assert_eq!(names[0], "stage");
+        assert_eq!(names[2], "stage/inside/link");
+        assert_eq!(names.len(), 3);
+        assert!(has_symlink);
+    }
+
+    #[test]
+    fn test_parse_7z_listing_without_links_or_members() {
+        let (names, has_symlink) = parse_7z_listing("7-Zip header only\n\n----------\n\n");
+        assert!(names.is_empty());
+        assert!(!has_symlink);
+        let (names, has_symlink) =
+            parse_7z_listing("h\n----\nPath = a.txt\nFolder = -\nAttributes = -rw-r--r--\n");
+        assert_eq!(names, vec!["a.txt".to_string()]);
+        assert!(!has_symlink);
+    }
+
+    #[test]
+    fn test_verify_extraction_confined_passes_interior_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("file.txt"), b"hi").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/inner.txt"), b"x").unwrap();
+        // Interior relative symlink is fine.
+        std::os::unix::fs::symlink("file.txt", dir.path().join("sub/alias")).unwrap();
+        assert!(verify_extraction_confined(dir.path()).is_ok());
+    }
+
+    #[test]
+    fn test_verify_extraction_confined_flags_escaping_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        // A link pointing at an existing path outside the staging tree.
+        std::os::unix::fs::symlink(outside.path().join("keep"), dir.path().join("escape")).unwrap();
+        std::fs::write(outside.path().join("keep"), b"x").unwrap();
+        let result = verify_extraction_confined(dir.path());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("symbolic link"));
+    }
+
+    #[test]
+    fn test_move_extraction_entry_merges_and_replaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dest");
+        let staging = dir.path().join("staging");
+        std::fs::create_dir_all(staging.join("subdir")).unwrap();
+        std::fs::create_dir_all(dest.join("subdir")).unwrap();
+        std::fs::write(staging.join("new.txt"), b"new").unwrap();
+        std::fs::write(staging.join("subdir/inner.txt"), b"inner").unwrap();
+        // Existing file in the destination gets replaced by the staged one;
+        // an existing subdirectory gets merged, not wiped.
+        std::fs::write(dest.join("new.txt"), b"old").unwrap();
+        std::fs::write(dest.join("subdir/remember.txt"), b"keep").unwrap();
+
+        move_extraction_entry(&staging.join("new.txt"), &dest.join("new.txt")).unwrap();
+        move_extraction_entry(&staging.join("subdir"), &dest.join("subdir")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dest.join("new.txt")).unwrap(),
+            "new"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.join("subdir/inner.txt")).unwrap(),
+            "inner"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.join("subdir/remember.txt")).unwrap(),
+            "keep"
+        );
+        std::fs::remove_dir_all(&staging).unwrap();
+    }
+
+    #[test]
+    fn test_move_extraction_entry_refuses_file_over_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dest");
+        let staging = dir.path().join("staging");
+        std::fs::create_dir_all(staging.join("d")).unwrap();
+        std::fs::write(staging.join("f"), b"x").unwrap();
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::create_dir_all(dest.join("existing-dir")).unwrap();
+        assert!(move_extraction_entry(&staging.join("f"), &dest.join("existing-dir")).is_err());
     }
 }

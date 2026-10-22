@@ -1021,6 +1021,10 @@ impl FileBrowser {
             Command::new("zip")
                 .arg("-r")
                 .arg(destination)
+                // `--` stops option parsing: a file store-named "-o" or "-czf"
+                // could otherwise be swallowed as a flag (and "-e"... etc.),
+                // i.e. argv injection through a crafted file name.
+                .arg("--")
                 .args(&names)
                 .current_dir(&parent)
                 .output()?
@@ -1030,6 +1034,7 @@ impl FileBrowser {
                 .arg(destination)
                 .arg("-C")
                 .arg(&parent)
+                .arg("--")
                 .args(&names)
                 .output()?
         };

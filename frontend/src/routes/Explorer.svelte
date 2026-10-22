@@ -296,7 +296,7 @@
       watchEventSource = null;
     }
     try {
-      const ticketRes = await api.getExplorerWatchTicket();
+      const ticketRes = await api.getExplorerWatchTicket(path);
       if (!ticketRes.success || !ticketRes.data?.ticket) return;
       watchTicket = ticketRes.data.ticket;
       const url = api.getExplorerWatchUrl(watchTicket, path);
@@ -944,6 +944,7 @@
       newFolderName = '';
       await loadDirectory(currentPath);
     } else {
+      dlg.notify(result.message || result.error || translate('explorer.mkdir_failed'));
     }
   }
 
@@ -964,6 +965,7 @@
       renameTarget = null;
       await loadDirectory(currentPath);
     } else {
+      dlg.notify(result.message || result.error || translate('explorer.rename_failed'));
     }
   }
 
@@ -977,13 +979,23 @@
     if (!(await dlg.ask(msg))) return;
 
     let successCount = 0;
+    let failCount = 0;
     for (const t of targets) {
       const result = await api.trashItem(t.path);
       if (result.success) successCount++;
+      else failCount++;
     }
     if (successCount > 0) {
       selected = new Set();
       await loadDirectory(currentPath);
+    }
+    // Batch delete never fails silently — the user sees what did not move.
+    if (failCount > 0) {
+      dlg.notify(
+        failCount === targets.length
+          ? translate('explorer.delete_failed')
+          : translate('explorer.delete_partial', { done: String(successCount), total: String(targets.length) })
+      );
     }
   }
 
@@ -993,6 +1005,7 @@
     if (result.success && result.data) {
       trashItems = result.data;
     } else {
+      dlg.notify(result.message || result.error || translate('explorer.trash_load_failed'));
     }
     trashLoading = false;
   }
@@ -1011,6 +1024,7 @@
     if (result.success) {
       await loadTrash();
     } else {
+      dlg.notify(result.message || result.error || translate('explorer.restore_failed'));
     }
   }
 
@@ -1020,6 +1034,7 @@
     if (result.success) {
       await loadTrash();
     } else {
+      dlg.notify(result.message || result.error || translate('explorer.purge_failed'));
     }
   }
 
@@ -1030,6 +1045,7 @@
     if (result.success) {
       await loadTrash();
     } else {
+      dlg.notify(result.message || result.error || translate('explorer.empty_trash_failed'));
     }
   }
 
@@ -1039,6 +1055,7 @@
     }
     const result = await api.downloadFile(entry.path, entry.name);
     if (!result.success) {
+      dlg.notify(result.error || translate('explorer.download_failed'));
     }
   }
 
@@ -1055,6 +1072,7 @@
     if (result.success) {
       if (dest === currentPath) await loadDirectory(currentPath);
     } else {
+      dlg.notify(result.message || result.error || translate('explorer.extract_failed'));
     }
     extractTarget = null;
   }
@@ -1086,6 +1104,7 @@
       chmodTarget = null;
       await loadDirectory(currentPath);
     } else {
+      dlg.notify(result.message || result.error || translate('explorer.permission_failed'));
     }
   }
 
@@ -1099,6 +1118,7 @@
       editError = '';
       showPreview = true;
     } else {
+      dlg.notify(result.message || result.error || translate('explorer.preview_unavailable'));
     }
   }
 
@@ -1206,6 +1226,7 @@
     const strategy = await resolveStrategy(items.map(i => i.name), dest);
     if (strategy === null) return; // cancelled at the collision prompt
     let success = 0;
+    let failCount = 0;
     for (const it of items) {
       const targetPath = joinPath(dest, it.name);
       const r = await api.copyItem(it.path, targetPath, strategy);
@@ -1214,7 +1235,15 @@
       } else if (r.success) {
         success++;
       } else {
+        failCount++;
       }
+    }
+    if (failCount > 0) {
+      dlg.notify(
+        failCount === items.length
+          ? translate('explorer.copy_failed')
+          : translate('explorer.copy_partial', { done: String(success), total: String(items.length) })
+      );
     }
     if (success > 0) {
       selected = new Set();
@@ -1228,6 +1257,7 @@
     const strategy = await resolveStrategy(items.map(i => i.name), dest);
     if (strategy === null) return;
     let success = 0;
+    let failCount = 0;
     for (const it of items) {
       const targetPath = joinPath(dest, it.name);
       const r = await api.moveItem(it.path, targetPath, strategy);
@@ -1236,7 +1266,15 @@
       } else if (r.success) {
         success++;
       } else {
+        failCount++;
       }
+    }
+    if (failCount > 0) {
+      dlg.notify(
+        failCount === items.length
+          ? translate('explorer.move_failed')
+          : translate('explorer.move_partial', { done: String(success), total: String(items.length) })
+      );
     }
     if (success > 0) {
       selected = new Set();
@@ -1264,6 +1302,7 @@
       selected = new Set();
       await loadDirectory(currentPath);
     } else {
+      dlg.notify(result.message || result.error || translate('explorer.compress_failed'));
     }
   }
 
@@ -1305,14 +1344,27 @@
     if (strategy === null) return; // cancelled at the collision prompt
     uploading = true;
     uploadProgress = 0;
+    let uploaded = 0;
+    let failedName = '';
     try {
       for (const file of files) {
         const result = await api.uploadFile(dest, file, (loaded: number, total: number) => {
           uploadProgress = total > 0 ? Math.round((loaded / total) * 100) : 0;
         }, strategy);
         if (result.success) {
-        } else {
+          uploaded++;
+        } else if (!failedName) {
+          failedName = file.name;
         }
+      }
+      if (failedName) {
+        // Partial uploads are reported with what succeeded and what failed —
+        // never swallowed.
+        dlg.notify(
+          files.length === 1
+            ? translate('explorer.upload_failed', { name: failedName })
+            : translate('explorer.upload_partial', { done: String(uploaded), total: String(files.length) })
+        );
       }
       if (dest === currentPath) await loadDirectory(currentPath);
     } finally {

@@ -1528,6 +1528,9 @@ check_services = "Dienste"
 check_temperatures = "Temperaturen"
 no_checks_title = "Keine Gesundheitsdaten verfügbar"
 no_checks_desc = "Gesundheitsprüfungen konnten nicht abgerufen werden."
+error_title = "Systemzustand nicht verfügbar"
+error_desc = "Die Gesundheitsprüfungen sind nicht erreichbar. Das Appliance startet möglicherweise neu oder ist nicht erreichbar."
+retry = "Erneut versuchen"
 
 [notifications]
 title = "Benachrichtigungen"
@@ -1887,6 +1890,27 @@ format_drive = "Laufwerk formatieren"
 format_label = "Datenträgername (optional)"
 format_confirm = "Formatieren"
 format_warning = "Alle Daten auf %device% werden gelöscht."
+
+# Aktions-Feedback — jede Explorer-Aktion meldet ihren Fehlschlag sichtbar
+# (ROADMAP 10 „Also in this pass").
+mkdir_failed = "Ordner konnte nicht erstellt werden"
+rename_failed = "Element konnte nicht umbenannt werden"
+delete_failed = "Elemente konnten nicht in den Papierkorb verschoben werden"
+delete_partial = "%done% von %total% Element(en) in den Papierkorb verschoben — der Rest schlug fehl"
+trash_load_failed = "Papierkorb konnte nicht geladen werden"
+restore_failed = "Element konnte nicht wiederhergestellt werden"
+purge_failed = "Element konnte nicht endgültig gelöscht werden"
+empty_trash_failed = "Papierkorb konnte nicht geleert werden"
+download_failed = "Download fehlgeschlagen"
+extract_failed = "Entpacken fehlgeschlagen"
+permission_failed = "Berechtigungen konnten nicht geändert werden"
+compress_failed = "Komprimieren fehlgeschlagen"
+upload_failed = "„%name%“ konnte nicht hochgeladen werden"
+upload_partial = "%done% von %total% Datei(en) hochgeladen — der Rest schlug fehl"
+copy_failed = "Elemente konnten nicht kopiert werden"
+copy_partial = "%done% von %total% Element(en) kopiert — der Rest schlug fehl"
+move_failed = "Elemente konnten nicht verschoben werden"
+move_partial = "%done% von %total% Element(en) verschoben — der Rest schlug fehl"
 
 [folder_picker]
 title = "Ordner auswählen"

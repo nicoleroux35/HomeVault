@@ -90,6 +90,7 @@ use homevault::handlers::explorer::{
     handle_explorer_trash_purge, handle_explorer_trash_restore, handle_explorer_upload,
     handle_explorer_upload_chunk, handle_explorer_upload_complete,
     handle_explorer_upload_session_abort, handle_explorer_upload_session_start,
+    handle_explorer_watch, handle_explorer_watch_ticket,
 };
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{auth::handle_login, AppState};
@@ -238,6 +239,11 @@ fn explorer_router(state: Arc<AppState>) -> Router {
             get(handle_explorer_network_discovery),
         )
         .route("/api/explorer/format", post(handle_explorer_format))
+        .route("/api/explorer/watch", get(handle_explorer_watch))
+        .route(
+            "/api/explorer/watch/ticket",
+            post(handle_explorer_watch_ticket),
+        )
         .with_state(state)
 }
 
@@ -447,6 +453,31 @@ async fn test_json_endpoints_reject_missing_token() {
         (Method::DELETE, "/api/explorer/trash", None),
         (Method::POST, "/api/explorer/trash/restore?id=abc", None),
         (Method::DELETE, "/api/explorer/trash/abc", None),
+        (
+            Method::POST,
+            "/api/explorer/upload/session?path=/tmp/x&filename=a&size=1",
+            None,
+        ),
+        (
+            Method::DELETE,
+            "/api/explorer/upload/session?session_id=abc",
+            None,
+        ),
+        (
+            Method::POST,
+            "/api/explorer/upload/chunk?session_id=abc&offset=0",
+            None,
+        ),
+        (
+            Method::POST,
+            "/api/explorer/upload/complete?session_id=abc",
+            None,
+        ),
+        (
+            Method::POST,
+            "/api/explorer/watch/ticket",
+            Some(json!({"path": "/tmp/x"})),
+        ),
     ];
 
     for (method, uri, body) in cases {
@@ -2446,5 +2477,537 @@ async fn test_format_is_admin_only_and_validates() {
         .await;
         assert_ne!(status, StatusCode::OK, "{body}");
         assert_eq!(body["success"], json!(false), "{body}");
+    }
+}
+
+// ===========================================================================
+// 10. ROADMAP item 10 — extraction safety, watcher tickets, upload ownership,
+//     the admin delete guard
+// ===========================================================================
+
+/// An item whose name starts with `-` must not be swallowed as a flag by the
+/// compression tools (`--` separator) and the archive must really contain it.
+#[tokio::test]
+async fn test_compress_survives_dash_named_files() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "bob", "Password123!").await;
+
+    std::fs::write(h.root.join("-dash-name.txt"), b"dash").unwrap();
+    let archive = h.root.join("bundle-dash.tar.gz");
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/compress",
+        Some(&token),
+        Some(json!({
+            "paths": [p(&h.root, "-dash-name.txt")],
+            "destination": archive.to_string_lossy(),
+            "format": "tar.gz"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["success"], json!(true), "{body}");
+    assert!(archive.exists());
+}
+
+/// POST delete is admin-only and (ROADMAP 10.4) even an admin — who has no
+/// root confinement anywhere else — deletes through the PathGuard here, and
+/// is refused for a *browsing root itself*.
+#[tokio::test]
+async fn test_admin_delete_confined_by_path_guard_and_refuses_roots() {
+    let h = setup().await;
+    create_test_user(&h.state, "admin", "Password123!", 2).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "admin", "Password123!").await;
+
+    // Deleting the browsing root itself is refused, and the root survives.
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        &format!("/api/explorer/delete?path={}", h.root.to_string_lossy()),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], json!(false), "{body}");
+    assert!(
+        body["message"].as_str().unwrap().contains("browsing root"),
+        "{body}"
+    );
+    assert!(h.root.is_dir(), "the browsing root must survive");
+
+    // Doctrine test (deliberately a non-existent absolute path): a regression
+    // back to the unguarded delete would answer "not found"; the guard
+    // rejects it before any filesystem work with the access-denied message.
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/delete?path=/etc/does-not-exist-hv-test",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], json!(false), "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("outside allowed directory"),
+        "the PathGuard must confine the admin delete: {body}"
+    );
+
+    // Normal deletes keep working inside the root.
+    std::fs::write(h.root.join("doomed.txt"), b"bye").unwrap();
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        &format!("/api/explorer/delete?path={}", p(&h.root, "doomed.txt")),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!h.root.join("doomed.txt").exists());
+}
+
+/// (ROADMAP 10.1) An archive whose member names traverse (`../…`) is refused
+/// at the pre-flight listing stage — nothing is written anywhere. The evil
+/// archive is written with `python3 -c` because GNU tar sanitises malicious
+/// member names on the way in (a plain `tar -cf x -C d ../victim` stores
+/// "victim.txt"), so the poison member must be stored by hand.
+#[tokio::test]
+async fn test_extract_refuses_traversal_tar_member() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "bob", "Password123!").await;
+
+    let archive = h.root.join("evil.tar");
+    let script = r#"
+import sys, tarfile, io
+t = tarfile.TarFile(name=sys.argv[1], mode="w")
+info = tarfile.TarInfo("../victim.txt")
+data = b"pwned"
+info.size = len(data)
+t.addfile(info, io.BytesIO(data))
+t.close()
+"#;
+    assert!(craft_zip(script, &archive), "crafting an evil tar failed");
+    // The archive really does carry the traversal name.
+    let listing = std::process::Command::new("tar")
+        .arg("-tf")
+        .arg(&archive)
+        .output()
+        .expect("tar available");
+    assert!(
+        String::from_utf8_lossy(&listing.stdout).contains("../victim.txt"),
+        "crafted archive lacks the traversal member: {listing:?}"
+    );
+
+    std::fs::create_dir_all(h.root.join("out")).unwrap();
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        &format!(
+            "/api/explorer/extract?path={}&destination={}",
+            archive.to_string_lossy(),
+            p(&h.root, "out")
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], json!(false), "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("escape the destination"),
+        "{body}"
+    );
+    // Nothing extracted, nothing escaped.
+    assert!(
+        walkdir(&h.root.join("out")).is_empty(),
+        "the traversal archive must not extract: {status}"
+    );
+    assert!(!h.root.join("victim.txt").exists());
+}
+
+/// Builds an archive with `python3 -c` when available, mirroring the
+/// availability-gated pattern of the PAM suite.
+fn craft_zip(script: &str, target: &Path) -> bool {
+    std::process::Command::new("python3")
+        .args(["-c", script, &target.to_string_lossy()])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// (ROADMAP 10.1) A traversal zip (`../evil.txt` member stored in the archive)
+/// is refused before anything is written.
+#[tokio::test]
+async fn test_extract_refuses_traversal_zip_member() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "bob", "Password123!").await;
+
+    let archive = h.root.join("evil.zip");
+    let script = r#"
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    z.writestr("../evil.txt", "PWNED")
+    z.writestr("ok/harmless.txt", "fine")
+"#;
+    assert!(craft_zip(script, &archive), "crafting an evil zip failed");
+
+    std::fs::create_dir_all(h.root.join("out")).unwrap();
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        &format!(
+            "/api/explorer/extract?path={}&destination={}",
+            archive.to_string_lossy(),
+            p(&h.root, "out")
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], json!(false), "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("escape the destination"),
+        "{body}"
+    );
+    assert!(walkdir(&h.root.join("out")).is_empty());
+}
+
+/// (ROADMAP 10.1) A zip that *contains symlink members* is refused outright:
+/// the listing does not expose the targets, so they cannot be pre-verified.
+#[tokio::test]
+async fn test_extract_refuses_zip_containing_symlink() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "bob", "Password123!").await;
+
+    let archive = h.root.join("link.zip");
+    let script = r#"
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    info = zipfile.ZipInfo("victim-link")
+    info.create_system = 3
+    info.external_attr = (0o120777 << 16)
+    z.writestr(info, "/etc/passwd")
+    z.writestr("ok.txt", "fine")
+"#;
+    assert!(craft_zip(script, &archive), "crafting a symlink zip failed");
+
+    std::fs::create_dir_all(h.root.join("out")).unwrap();
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        &format!(
+            "/api/explorer/extract?path={}&destination={}",
+            archive.to_string_lossy(),
+            p(&h.root, "out")
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], json!(false), "{body}");
+    assert!(
+        body["message"].as_str().unwrap().contains("symbolic link"),
+        "{body}"
+    );
+    assert!(walkdir(&h.root.join("out")).is_empty());
+}
+
+/// (ROADMAP 10.1) The `.gz` single-file branch still extracts correctly — it
+/// now streams decompression straight to disk instead of buffering the whole
+/// payload in RAM.
+#[tokio::test]
+async fn test_extract_gz_streams_to_disk() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "bob", "Password123!").await;
+
+    let payload = b"stream me, do not buffer me".repeat(1024);
+    std::fs::write(h.root.join("big.dat"), &payload).unwrap();
+    let gz = h.root.join("big.dat.gz");
+    let artefact = std::process::Command::new("gzip")
+        .args(["-c", &h.root.join("big.dat").to_string_lossy()])
+        .stdout(std::process::Stdio::from(
+            std::fs::File::create(&gz).unwrap(),
+        ))
+        .output()
+        .expect("gzip available");
+    assert!(artefact.status.success());
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        &format!(
+            "/api/explorer/extract?path={}&destination={}",
+            gz.to_string_lossy(),
+            p(&h.root, "out")
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["success"], json!(true), "{body}");
+    assert_eq!(
+        std::fs::read(h.root.join("out/big.dat")).unwrap(),
+        payload,
+        "streamed contents differ"
+    );
+}
+
+/// (ROADMAP 10.2) Watch tickets are bound to one path: they refuse a
+/// different `?path=` (a valid-looking reuse for an unwatchable directory),
+/// they are single-use, and with the right path they still open an SSE stream.
+#[tokio::test]
+async fn test_watch_ticket_is_bound_to_one_path() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "bob", "Password123!").await;
+
+    std::fs::create_dir_all(h.root.join("browsed")).unwrap();
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/watch/ticket",
+        Some(&token),
+        Some(json!({"path": p(&h.root, "browsed")})),
+    )
+    .await;
+    assert_eq!(body["success"], json!(true), "{body}");
+    let ticket = body["data"]["ticket"].as_str().expect("ticket").to_string();
+
+    // The ticket does NOT open any other path — sibling, child or prefix-nap.
+    for other in ["browsed-other", "browsed/child", "browsedd"] {
+        let (status, body) = send_raw_headers(
+            &mut r,
+            Method::GET,
+            &format!(
+                "/api/explorer/watch?ticket={}&path={}",
+                ticket,
+                p(&h.root, other)
+            ),
+            None,
+            None,
+            &[],
+        )
+        .await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "path {other} must be refused: {body:?}"
+        );
+    }
+
+    // And the matching path does open the stream (headers-only check — the
+    // body is the SSE stream itself, dropped right after the assertion).
+    let uri = format!(
+        "/api/explorer/watch?ticket={}&path={}",
+        ticket,
+        p(&h.root, "browsed")
+    );
+    let resp = ServiceExt::<Req>::ready(&mut r)
+        .await
+        .unwrap()
+        .call(
+            Request::builder()
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        resp.status() == StatusCode::OK
+            && resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.starts_with("text/event-stream")),
+        "a valid ticket for the matching path must stream"
+    );
+    drop(resp);
+
+    // Single use: the consumed ticket is dead, even for the original path.
+    let (status, _) = send_raw_headers(
+        &mut r,
+        Method::GET,
+        &format!(
+            "/api/explorer/watch?ticket={}&path={}",
+            ticket,
+            p(&h.root, "browsed")
+        ),
+        None,
+        None,
+        &[],
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+
+    // A fabricated ticket is refused regardless of path.
+    let (status, _) = send_raw_headers(
+        &mut r,
+        Method::GET,
+        &format!(
+            "/api/explorer/watch?ticket=forge&path={}",
+            p(&h.root, "browsed")
+        ),
+        None,
+        None,
+        &[],
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+}
+
+/// (ROADMAP 10.3) A resumable upload session belongs to the account that
+/// opened it: another user cannot append to, finalise or abort it.
+#[tokio::test]
+async fn test_upload_sessions_belong_to_their_owner() {
+    let h = setup().await;
+    create_test_user(&h.state, "alice", "Password123!", 1).await;
+    create_test_user(&h.state, "eve", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let alice = login(&mut r, "alice", "Password123!").await;
+    let eve = login(&mut r, "eve", "Password123!").await;
+
+    std::fs::create_dir_all(h.root.join("incoming")).unwrap();
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        &format!(
+            "/api/explorer/upload/session?path={}&filename=private.bin&size=5",
+            p(&h.root, "incoming")
+        ),
+        Some(&alice),
+        None,
+    )
+    .await;
+    let sid = body["data"]["session_id"]
+        .as_str()
+        .expect("session_id")
+        .to_string();
+
+    // Eve gets nothing — not the chunk write…
+    let (status, body) = send_chunk(&mut r, &sid, 0, b"hello", Some(&eve)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(
+        std::fs::read(h.root.join("incoming/private.bin")).unwrap_or_default(),
+        b"",
+        "must not write"
+    );
+
+    // …nor the finalise…
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        &format!("/api/explorer/upload/complete?session_id={sid}"),
+        Some(&eve),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    // …nor the abort (session must survive Eve's fiddling).
+    let (status, body) = send(
+        &mut r,
+        Method::DELETE,
+        &format!("/api/explorer/upload/session?session_id={sid}"),
+        Some(&eve),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    // Alice finishes her own upload in one chunk.
+    let (status, body) = send_chunk(&mut r, &sid, 0, b"hello", Some(&alice)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        &format!("/api/explorer/upload/complete?session_id={sid}"),
+        Some(&alice),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        std::fs::read(h.root.join("incoming/private.bin")).unwrap(),
+        b"hello"
+    );
+}
+
+/// (ROADMAP 10.3) Concurrent upload sessions are capped per user — a
+/// client that leaks sessions cannot accumulate server state unboundedly.
+#[tokio::test]
+async fn test_upload_sessions_are_capped_per_user() {
+    let h = setup().await;
+    create_test_user(&h.state, "capped", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "capped", "Password123!").await;
+    std::fs::create_dir_all(h.root.join("incoming")).unwrap();
+
+    let mut sids = Vec::new();
+    for i in 0..20 {
+        let (_, body) = send(
+            &mut r,
+            Method::POST,
+            &format!(
+                "/api/explorer/upload/session?path={}&filename=c{i}.bin&size=1",
+                p(&h.root, "incoming")
+            ),
+            Some(&token),
+            None,
+        )
+        .await;
+        assert_eq!(body["success"], json!(true), "slot {i}: {body}");
+        sids.push(body["data"]["session_id"].as_str().unwrap().to_string());
+    }
+
+    // The 21st slot is capped: the server says so AND creates no session.
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        &format!(
+            "/api/explorer/upload/session?path={}&filename=c21.bin&size=1",
+            p(&h.root, "incoming")
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(body["success"], json!(false), "{body}");
+
+    // Abort everything the test opened (also re-verifies ownership rules).
+    for sid in &sids {
+        let (status, _) = send(
+            &mut r,
+            Method::DELETE,
+            &format!("/api/explorer/upload/session?session_id={sid}"),
+            Some(&token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
     }
 }
