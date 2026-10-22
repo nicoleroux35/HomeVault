@@ -126,10 +126,24 @@ async function seedBrowser(page: Page, tokens: Tokens | null, lang?: string) {
   );
 }
 
+/**
+ * The "What's New" dialog opens once per version. On a fresh scratch instance
+ * it covers the dock and swallows the first click of the run, so dismiss it
+ * before touching the desktop.
+ */
+async function dismissWhatsNew(page: Page) {
+  const modal = page.locator('[data-testid="whats-new-modal"]');
+  if (await modal.isVisible().catch(() => false)) {
+    await page.locator('[data-testid="whats-new-dismiss"]').click().catch(() => {});
+    await modal.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {});
+  }
+}
+
 async function gotoDesktop(page: Page, tokens: Tokens, lang?: string) {
   await seedBrowser(page, tokens, lang);
   await page.goto('/desktop');
   await page.waitForSelector('.hv-user-pill', { timeout: 20_000 });
+  await dismissWhatsNew(page);
   await page
     .addStyleTag({
       content: '[class*="-monitor"]{display:none!important;pointer-events:none!important}',
@@ -283,13 +297,30 @@ test.describe('3 — Validation', () => {
   test('3.2 — cache settings rejects out-of-range knobs', async ({ page }) => {
     await gotoStorage(page, adminTokens);
     for (const [field, val] of [
+      // 0 would mean "drain the cache to nothing" for Prefer shares: the UI
+      // clamps 1-95 and the server must refuse it too.
+      ['min_free_percent', 0],
       ['min_free_percent', 200],
       ['mover_age_days', 99999],
       ['mover_bwlimit', 99999999],
     ] as const) {
       const r = await api(page, adminTokens, 'PUT', '/api/cache/settings', { [field]: val });
-      expect(r.http, field).toBe(400);
+      expect(r.http, `${field}=${val}`).toBe(400);
     }
+  });
+
+  test('3.2b — an empty cache_pool clears the designation', async ({ page }) => {
+    await gotoStorage(page, adminTokens);
+    const r = await api(page, adminTokens, 'PUT', '/api/cache/settings', { cache_pool: '' });
+    expect(r.http).toBe(200);
+    expect(r.success).toBe(true);
+    const cleared = await page.evaluate(async () => {
+      const token = localStorage.getItem('session-token') || '';
+      const res = await fetch('/api/cache/settings', { headers: { 'x-session-token': token } });
+      const body = await res.json().catch(() => ({}));
+      return body?.data?.cache_pool ?? null;
+    });
+    expect(cleared).toBeNull();
   });
 
   test('3.3 — cache share create rejects a bad name and a bad mode', async ({ page }) => {
@@ -579,6 +610,98 @@ test.describe('8 — Edge cases & memory', () => {
       console.log(`[MEM] heap ${base.toFixed(1)} → ${after.toFixed(1)} MB`);
       expect(after - base).toBeLessThan(12);
     }
+  });
+});
+
+// ===========================================================================
+// 12. Cache mover history — per-share outcome rendering (stubbed response)
+// ===========================================================================
+//
+// The per-share rows only exist after a real run, which needs a real cache
+// pool; the scratch host has none. Stub `GET /api/cache/mover/runs` so the
+// rendering path (badge, share names, failure message) is still exercised.
+
+test.describe('12 — Cache mover history', () => {
+  const RUNS = {
+    success: true,
+    data: [
+      {
+        id: 'run-partial',
+        status: 'partial',
+        started_at: '2026-10-22T03:00:00Z',
+        finished_at: '2026-10-22T03:04:00Z',
+        files_moved: 12,
+        bytes_moved: 4096,
+        error_message: 'Shares not moved: backups',
+        shares: [
+          {
+            share_name: 'media',
+            mode: 'yes',
+            status: 'moved',
+            files_moved: 12,
+            bytes_moved: 4096,
+            message: null,
+          },
+          {
+            share_name: 'backups',
+            mode: 'prefer',
+            status: 'failed',
+            files_moved: 0,
+            bytes_moved: 0,
+            message: 'not enough space on /mnt/array: 1.0 GiB to move, 12.0 MiB free',
+          },
+        ],
+      },
+    ],
+  };
+
+  test('12.1 — a partial run names the shares it moved and the one it did not', async ({ page }) => {
+    await page.route('**/api/cache/mover/runs', (route) =>
+      route.fulfill({ status: 200, json: RUNS }),
+    );
+    await gotoStorage(page, adminTokens);
+    await switchTab(page, /cache|caché|zwischenspeicher|caché/i);
+
+    const card = win(page).locator('[data-testid="storage-cache-runs"]').first();
+    await expect(card).toBeVisible({ timeout: 8_000 });
+
+    // The status badge must read "Partial" — the old code compared against
+    // `success` and fell through to the neutral colour for every real status.
+    await expect(card.getByText(/partial/i).first()).toBeVisible();
+
+    // Both shares are listed, with the failure reason on the one that failed.
+    await expect(card.getByText('media', { exact: true })).toBeVisible();
+    await expect(card.getByText('backups', { exact: true })).toBeVisible();
+    await expect(card.getByText(/not enough space on \/mnt\/array/)).toBeVisible();
+    await expect(card.getByText(/moved/).first()).toBeVisible();
+  });
+
+  test('12.2 — a run with no per-share rows still renders', async ({ page }) => {
+    await page.route('**/api/cache/mover/runs', (route) =>
+      route.fulfill({
+        status: 200,
+        json: {
+          success: true,
+          data: [
+            {
+              id: 'run-old',
+              status: 'completed',
+              started_at: '2026-10-21T03:00:00Z',
+              finished_at: '2026-10-21T03:01:00Z',
+              files_moved: 0,
+              bytes_moved: 0,
+              error_message: null,
+              shares: [],
+            },
+          ],
+        },
+      }),
+    );
+    await gotoStorage(page, adminTokens);
+    await switchTab(page, /cache|caché|zwischenspeicher|caché/i);
+
+    const card = win(page).locator('[data-testid="storage-cache-runs"]').first();
+    await expect(card.getByText(/completed/i).first()).toBeVisible();
   });
 });
 

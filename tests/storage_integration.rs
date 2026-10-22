@@ -477,7 +477,9 @@ async fn test_cache_settings_rejects_bad_cron() {
 async fn test_cache_settings_rejects_out_of_range_knobs() {
     let (mut router, token, _tmp, _guard) = admin_router().await;
     for (field, val, needle) in [
-        ("min_free_percent", 200, "between 0 and 100"),
+        // 1-95 since ROADMAP item 2: 0 would drain the cache to nothing.
+        ("min_free_percent", 0, "between 1 and 95"),
+        ("min_free_percent", 200, "between 1 and 95"),
         ("mover_age_days", 99_999, "between 0 and 3650"),
         ("mover_bwlimit", 99_999_999, "10,000,000"),
     ] {
