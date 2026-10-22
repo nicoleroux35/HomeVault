@@ -674,7 +674,10 @@ pub async fn delete_rule(spec: &str) -> Result<(), FirewallError> {
     // look like a rule (verb first, no comment clause) before it becomes
     // `ufw delete …`.
     validate_action(action)?;
-    if tokens.iter().any(|t| *t == "comment" || t.starts_with("--")) {
+    if tokens
+        .iter()
+        .any(|t| *t == "comment" || t.starts_with("--"))
+    {
         return Err(FirewallError::InvalidInput(
             "Rule spec is not a plain ufw rule".to_string(),
         ));
@@ -689,10 +692,7 @@ pub async fn delete_rule(spec: &str) -> Result<(), FirewallError> {
 /// Idempotently (re-)assert the rules that must always be present:
 /// HomeVault's own port and **every** SSH port sshd may listen on. Safe to
 /// call repeatedly (ufw skips duplicate rules rather than erroring).
-pub async fn ensure_mandatory_rules(
-    ssh_ports: &[u16],
-    app_port: u16,
-) -> Result<(), FirewallError> {
+pub async fn ensure_mandatory_rules(ssh_ports: &[u16], app_port: u16) -> Result<(), FirewallError> {
     for port in ssh_ports {
         add_rule(
             &port.to_string(),
@@ -1032,7 +1032,8 @@ mod tests {
 
     #[test]
     fn test_parse_default_policy_reject_incoming() {
-        let verbose = "Status: inactive\nDefault: reject (incoming), allow (outgoing), disabled (routed)\n";
+        let verbose =
+            "Status: inactive\nDefault: reject (incoming), allow (outgoing), disabled (routed)\n";
         let p = parse_default_policy(verbose).unwrap();
         assert_eq!(p.incoming, "reject");
     }
@@ -1059,12 +1060,10 @@ mod tests {
 
     #[test]
     fn test_validate_port_rejects_out_of_range_and_non_numeric() {
-        for bad in ["", "   ", "0", "65536", "-1", "abc", "22/tcp", "22 33", "1:"] {
-            assert!(
-                validate_port(bad).is_err(),
-                "'{}' should be refused",
-                bad
-            );
+        for bad in [
+            "", "   ", "0", "65536", "-1", "abc", "22/tcp", "22 33", "1:",
+        ] {
+            assert!(validate_port(bad).is_err(), "'{}' should be refused", bad);
         }
     }
 
@@ -1127,7 +1126,11 @@ mod tests {
             "fd00::/8",
             " 10.0.0.5 ",
         ] {
-            assert!(validate_source(good).is_ok(), "'{}' should be accepted", good);
+            assert!(
+                validate_source(good).is_ok(),
+                "'{}' should be accepted",
+                good
+            );
         }
     }
 
