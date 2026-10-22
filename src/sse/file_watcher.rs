@@ -56,25 +56,58 @@ pub struct FileChangeEvent {
 pub static FILE_CHANGE_BUS: LazyLock<broadcast::Sender<FileChangeEvent>> =
     LazyLock::new(|| broadcast::channel(CHANNEL_CAPACITY).0);
 
-// --- ticket auth (same pattern as notifications) ---
+// --- ticket auth (same pattern as notifications, bound to user + path) ---
 
-static TICKETS: LazyLock<RwLock<HashMap<String, Instant>>> =
+/// A watch ticket binds the SSE connection to exactly one user and one path.
+/// The browser's `EventSource` cannot send session headers, so the ticket
+/// grants access to this path — and nothing else — until it expires (ROADMAP
+/// 10.2: used to be valid for *any* `?path=` the caller typed).
+#[derive(Debug, Clone)]
+struct WatchTicketInfo {
+    issued_at: Instant,
+    user: String,
+    path: String,
+}
+
+static TICKETS: LazyLock<RwLock<HashMap<String, WatchTicketInfo>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-pub fn issue_ticket() -> String {
+/// Mints a ticket for `user` to watch `path`. The path must already have been
+/// validated against the caller's allowed roots.
+pub fn issue_ticket(user: &str, path: &str) -> String {
     let ticket = uuid::Uuid::new_v4().to_string();
     let now = Instant::now();
     let mut tickets = TICKETS.write();
-    tickets.retain(|_, issued_at| now.duration_since(*issued_at) < TICKET_TTL);
-    tickets.insert(ticket.clone(), now);
+    tickets.retain(|_, info| now.duration_since(info.issued_at) < TICKET_TTL);
+    tickets.insert(
+        ticket.clone(),
+        WatchTicketInfo {
+            issued_at: now,
+            user: user.to_string(),
+            path: path.to_string(),
+        },
+    );
     ticket
 }
 
-pub fn consume_ticket(ticket: &str) -> bool {
-    match TICKETS.write().remove(ticket) {
-        Some(issued_at) => issued_at.elapsed() < TICKET_TTL,
-        None => false,
+/// Redeems the ticket, expecting `path` to match the path the ticket was
+/// minted for. The ticket is consumed only on a valid, non-expired,
+/// path-matching attempt — a *mismatched* path does not burn the ticket
+/// (a stale UI retrying the right path after one typo'd link must still
+/// work), but wrong-path requests are of course still refused.
+pub fn consume_ticket(ticket: &str, path: &str) -> Option<String> {
+    let mut tickets = TICKETS.write();
+    let info = tickets.get(ticket)?;
+    if info.issued_at.elapsed() >= TICKET_TTL {
+        tickets.remove(ticket);
+        return None;
     }
+    if info.path != path {
+        return None;
+    }
+    let user = info.user.clone();
+    tickets.remove(ticket);
+    Some(user)
 }
 
 // --- internal watcher state ---
@@ -155,5 +188,68 @@ pub fn unwatch_path(path: &Path) {
                 let _ = watcher.unwatch(path);
             }
         }
+    }
+}
+
+/// RAII guard holding one inotify watch alive for the lifetime of an SSE
+/// stream. Dropped when the client disconnects and the stream (and hence the
+/// response carrying it) is dropped, so watches are always released —
+/// ROADMAP 10.2: they used to leak permanently once a disconnect happened
+/// mid-browse, until `max_user_watches` was exhausted.
+pub struct WatchGuard(PathBuf);
+
+impl Drop for WatchGuard {
+    fn drop(&mut self) {
+        unwatch_path(&self.0);
+    }
+}
+
+/// Watch `path` (ref-counted) and return the guard that releases it again
+/// when dropped.
+pub fn watch_path_guarded(path: &Path) -> WatchGuard {
+    watch_path(path);
+    WatchGuard(path.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ROADMAP 10.2: a ticket is bound to the exact path it was minted for —
+    /// reusing it for a different `?path=` the caller requests must fail.
+    #[test]
+    fn ticket_is_bound_to_its_path() {
+        let ticket = issue_ticket("alice", "/media/raid/home");
+        assert_eq!(
+            consume_ticket(&ticket, "/media/raid/home").as_deref(),
+            Some("alice")
+        );
+    }
+
+    #[test]
+    fn ticket_rejected_for_other_path() {
+        let ticket = issue_ticket("bob", "/media/raid/home");
+        assert_eq!(consume_ticket(&ticket, "/media/raid"), None);
+        assert_eq!(consume_ticket(&ticket, "/media/raid/home/child"), None);
+        assert_eq!(consume_ticket(&ticket, "/media/raid/homee"), None);
+        // A refused attempt does not burn the ticket.
+        assert_eq!(
+            consume_ticket(&ticket, "/media/raid/home").as_deref(),
+            Some("bob")
+        );
+    }
+
+    #[test]
+    fn ticket_is_single_use() {
+        let ticket = issue_ticket("carol", "/etc");
+        assert_eq!(consume_ticket(&ticket, "/etc").as_deref(), Some("carol"));
+        assert_eq!(consume_ticket(&ticket, "/etc"), None);
+    }
+
+    #[test]
+    fn unknown_and_empty_tickets_are_rejected() {
+        assert_eq!(consume_ticket("not-a-real-ticket", "/etc"), None);
+        assert_eq!(consume_ticket("", "/etc"), None);
+        assert!(!issue_ticket("dave", "/tmp").is_empty());
     }
 }

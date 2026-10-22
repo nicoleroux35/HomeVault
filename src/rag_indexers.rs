@@ -251,7 +251,8 @@ Widgets can be rearranged by drag-and-drop. Monitor panels (Resource, RAID, Secu
 - Create directories, rename, copy, move, delete
 - Search files recursively by name, with an optional fuzzy (approximate spelling) mode
 - Set file/directory permissions (chmod)
-- Compress/extract archives (zip)
+- Compress/extract archives (zip); extraction validates archive members before
+  unpacking and refuses anything that could escape the destination
 - Trash system (soft-delete with restore)
 - Recently visited folders, remembered per account and shared across browsers
 - Favorites / pinned folders
@@ -265,7 +266,10 @@ Widgets can be rearranged by drag-and-drop. Monitor panels (Resource, RAID, Secu
 - Inline text/code editor for quick edits
 - Share a file by a revocable download link (URL + QR code; 'anyone' or 'signed-in' only; default 30-day expiry)
 - Drag a file onto a folder to move it, or drag a rubber-band box to select several at once
-- Background auto-refresh every 8 seconds
+- Live auto-refresh pushed over SSE when files in the browsed directory change
+- Permanent delete is admin-only, path-guard confined, and refuses to delete a
+  browsing root; resumable upload sessions are private to the user who opened
+  them and capped in number
 
 PathGuard restricts non-admin users to their home directory and allowed roots."#.to_string(),
         },
@@ -463,17 +467,18 @@ DNS updates preserve existing search/domains. IPv6 nameservers are appended."#.t
         FeatureDoc {
             id: "health".to_string(),
             title: "System Health Monitoring".to_string(),
-            content: r#"The Health page provides 8 real-time system checks:
-1. Storage: disk usage warnings
-2. Memory: RAM/swap usage
-3. CPU: load average monitoring
-4. Network: interface status
-5. CPU Temperature: thermal warnings
-6. Docker: container health
-7. Backup: last backup freshness
-8. Services: critical service status
+            content: r#"The Health page shows the appliance's 9 built-in health checks, each on its own card plus one overall status strip (the worst individual check wins):
+1. Authentication: performs a real read of the account store in the database; an unreachable or damaged database shows as unknown.
+2. Storage: the appliance's own data directory is readable and writable.
+3. Memory: RAM/swap usage enough to warn on pressure.
+4. Disk Space: per-disk free space via df.
+5. Disk S.M.A.R.T.: per-disk overall health via one sudo smartctl -H probe per disk, cached 10 minutes.
+6. RAID arrays: degraded or failed mdadm arrays raise a warning or error.
+7. Network: link state of every interface, read from /sys/class/net (operstate), not from traffic counters; loopback is always counted as up.
+8. Services: cron, login manager, network manager plus the appliance's own systemd unit, whose name is parsed from the process cgroup; the appliance's own unit failing is unhealthy.
+9. Temperatures: CPU and drive temperature sensors.
 
-Each check returns: healthy, warning, or unhealthy. The overall status is the worst individual check.
+A check that cannot run (a missing binary, an unreadable file, a database that will not answer) degrades to "unknown" on its own card; the other cards still run and the page still answers. The overall verdict uses exactly four values: healthy, warning, unhealthy, unknown. If the page cannot load the data at all it shows an explicit error message with a Retry button instead of pretending to have no data.
 For monitoring, two small public addresses answer without a login: one says the server process is alive, the other says it is actually ready to serve — that second one fails when the database cannot be queried or was found damaged at startup, so an external monitor can take the appliance out of rotation instead of feeding it requests that will fail. Neither reveals anything about the machine."#.to_string(),
         },
         FeatureDoc {

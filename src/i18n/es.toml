@@ -1529,6 +1529,9 @@ check_services = "Servicios"
 check_temperatures = "Temperaturas"
 no_checks_title = "No hay datos de salud disponibles"
 no_checks_desc = "No se pudieron obtener las verificaciones de salud."
+error_title = "Estado de salud no disponible"
+error_desc = "No se puede acceder a las verificaciones de salud. El dispositivo puede estar reiniciándose o no está accesible."
+retry = "Reintentar"
 
 [notifications]
 title = "Notificaciones"
@@ -1888,6 +1891,27 @@ format_drive = "Formatear el disco"
 format_label = "Etiqueta del volumen (opcional)"
 format_confirm = "Formatear"
 format_warning = "Se borrará todo el contenido de %device%."
+
+# Feedback de acciones — cada acción del explorador informa visiblemente de
+# su fallo (ROADMAP 10 «Also in this pass»).
+mkdir_failed = "No se pudo crear la carpeta"
+rename_failed = "No se pudo renombrar el elemento"
+delete_failed = "No se pudo mover los elementos a la papelera"
+delete_partial = "%done% de %total% elemento(s) movidos a la papelera — el resto falló"
+trash_load_failed = "No se pudo cargar la papelera"
+restore_failed = "No se pudo restaurar el elemento"
+purge_failed = "No se pudo eliminar permanentemente el elemento"
+empty_trash_failed = "No se pudo vaciar la papelera"
+download_failed = "La descarga falló"
+extract_failed = "La extracción falló"
+permission_failed = "No se pudieron cambiar los permisos"
+compress_failed = "La compresión falló"
+upload_failed = "No se pudo subir « %name% »"
+upload_partial = "Subidos %done% de %total% archivo(s) — el resto falló"
+copy_failed = "No se pudieron copiar los elementos"
+copy_partial = "Copiados %done% de %total% elemento(s) — el resto falló"
+move_failed = "No se pudieron mover los elementos"
+move_partial = "Movidos %done% de %total% elemento(s) — el resto falló"
 
 [folder_picker]
 title = "Elegir una carpeta"

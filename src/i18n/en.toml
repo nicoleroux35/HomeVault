@@ -1529,6 +1529,9 @@ check_services = "Services"
 check_temperatures = "Temperatures"
 no_checks_title = "No health data available"
 no_checks_desc = "Health checks could not be retrieved."
+error_title = "Health status unavailable"
+error_desc = "The health checks could not be reached. The appliance may be restarting or unreachable."
+retry = "Retry"
 
 [notifications]
 title = "Notifications"
@@ -1888,6 +1891,27 @@ format_drive = "Format drive"
 format_label = "Volume label (optional)"
 format_confirm = "Format"
 format_warning = "Everything on %device% will be erased."
+
+# Action feedback — every explorer action reports its failure visibly
+# (ROADMAP 10 "Also in this pass": silent `else {}` branches).
+mkdir_failed = "Could not create the folder"
+rename_failed = "Could not rename the item"
+delete_failed = "Could not move the item(s) to the trash"
+delete_partial = "Moved %done% of %total% item(s) to the trash — the rest failed"
+trash_load_failed = "Failed to load the trash"
+restore_failed = "Could not restore the item"
+purge_failed = "Could not permanently delete the item"
+empty_trash_failed = "Could not empty the trash"
+download_failed = "Download failed"
+extract_failed = "Extraction failed"
+permission_failed = "Could not change permissions"
+compress_failed = "Compression failed"
+upload_failed = "Could not upload \"%name%\""
+upload_partial = "Uploaded %done% of %total% file(s) — the rest failed"
+copy_failed = "Could not copy the item(s)"
+copy_partial = "Copied %done% of %total% item(s) — the rest failed"
+move_failed = "Could not move the item(s)"
+move_partial = "Moved %done% of %total% item(s) — the rest failed"
 
 [folder_picker]
 title = "Choose a folder"

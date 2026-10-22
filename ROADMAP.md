@@ -1,545 +1,1280 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-21 — current version: 1.0.0
+Last updated: 2026-10-22 — current version: 1.0.0
+
+## How to read this file
+
+This file lists **what is left to do**, nothing else. Everything already fixed
+was moved to the "Done" archive at the bottom (one line each, with a pointer to
+the guide that carries the detail).
+
+Every open item is written so it can be picked up cold:
+
+- **Evidence** — `path:line` proving the defect exists in the current tree.
+- **Findings** — numbered, each independently fixable.
+- **Acceptance** — what must be true for the item to leave this file.
+- **Tests** — what has to be added (the repo rule is that no feature ships
+  without Rust unit + integration + Playwright coverage, see `CLAUDE.md`).
+- **Docs** — which `docs/guides/*.md` must be updated in the same change.
+
+An item leaves this file only when its acceptance criteria are met **and**
+`TESTING.md` reflects the new counts.
+
+### Verdict scale
+
+| Verdict | Meaning |
+|---|---|
+| **P0 — Broken** | The feature does not do what it promises, or it can lose/corrupt user data. A home user hits this on the normal path. |
+| **P1 — Needs work** | The feature works on the happy path but has holes a user, an attacker or a bad day will find. |
+| **P2 — Small gap** | One concrete defect, or maintainability debt with a named trigger. |
+
+> **Method note.** Every item below was found by reading the current code, not
+> by re-reading `CLAUDE.md`. Where a guide claims an invariant, the claim was
+> checked against the implementation — several "documented invariants" turned
+> out to be false (they are listed as findings, and the guide is part of the
+> fix). Line numbers are valid as of the commit that added this revision.
+
+---
 
 ## Current state
 
-HomeVault today covers: dashboard, users/groups (a forced first-sign-in
-password change on admin-chosen passwords, admin-side session audit/revoke,
-per-account expiry horizons, per-member *and* per-group resource access, and
-group rename/description — all 2026-10-20), storage
-(disks/partitions/ZFS-Btrfs-mdadm virtual disks/LUKS2
-encryption/SMART health), RAID (mdadm/ZFS/Btrfs creation), shares
-(SMB/NFS/FTP/WebDAV/SFTP), file explorer, backups (restic), cloud sync
-(rclone), network (interfaces, WiFi, diagnostics, **persisted interface configuration
-applied, verified and rolled back in-session via netplan/ifupdown as of
-2026-10-21**), security
-(antivirus/anti-ransomware/firewall — the firewall exposes the live rule set,
-the **default policy** and an audited change log, with argv validation and a
-verified enable/disable as of 2026-10-21), web terminal, VPN (WireGuard/
-OpenVPN), downloader (aria2), Syncthing, Docker + application catalog
-(volumes, disk-usage reporting and prune, container inspect/exec/pause/
-rename/in-place limits, live log streaming, image builds, private
-registries, `daemon.json` editing, update-to-newest-image — all
-2026-10-20),
-virtual machines (Incus), AI assistant (Ollama + RAG, plus an MCP gateway
-for external agents), health, system journal, transfer quotas, historical
-metrics (1 h / 24 h / 7 d), a generic scheduled-task engine (commands,
-snapshots, SMART tests, power actions), host power management with per-disk
-spindown, snapshot schedules with GFS retention, a notification center with
-per-event toggles and webhook sinks, and a suite of desktop widgets.
+Eleven areas have had a full "production-ready" pass and are out of scope here:
+**Docker** (2026-10-20), then **Firewall**, **Backup/restic**, **Users**,
+**Groups**, **Rescue**, **Shares**, **Network**, **VPN** and the **app-proxy
+auth under HTTPS** (all 2026-10-21), and **Health** (2026-10-22) — followed by
+**Health's numbered follow-ups** and the **File Explorer security pass**
+(both 2026-10-22, see Done).
 
-Every screen listed above has undergone a "real conditions" audit (real
-backend, real session, real browser when possible) documented in
-`TESTING.md` and `docs/guides/`. There are no frozen areas
-(`CLAUDE.md` → "Design system governance"): every page remains editable,
-as long as its tests stay green (Rust + Playwright E2E).
+Everything else is still on its original implementation plus incremental
+feature work. The pattern is consistent: **the screens render, the endpoints
+answer 200, and the tests assert exactly that** — while the invariant the
+screen exists to protect (a quota that limits, a health check that detects, a
+retention that prunes, a cleanup that runs) is not enforced or not tested.
 
-> **Note on this file's reliability:** the first version of this roadmap
-> (2026-07-21, before the verification pass below) had been compiled by
-> re-reading the text of `CLAUDE.md` without re-checking the real code. A
-> second pass the same day showed that **6 of the 7 items listed as
-> "not fixed" were in fact already resolved** in the code (fixes already
-> present but never reflected in the text of `CLAUDE.md`). The
-> corresponding corrections were added as dated addenda directly in
-> `CLAUDE.md`. Lesson learned: always verify against the current code
-> before trusting an audit text, even in this file — see "Process"
-> below.
+Two structural facts explain most of the list:
 
-## Medium priority — incomplete features
+1. The test suites verify *shape* (status codes, `total`, DOM presence), not
+   *behaviour*. None of the P0 defects below is caught by the existing
+   50+ integration tests around the same code.
+2. Blocking work (`std::process::Command`, `std::fs`, `docker compose`) is
+   called straight from `async fn` handlers in a dozen modules, while
+   `mdns.rs`, `journal.rs`, `transfer_quota.rs` and `docker.rs` show the
+   correct `spawn_blocking` shape. It is an inconsistency, not a gap in
+   knowledge.
 
-None at the moment. Re-audited against the code on 2026-10-12 (not against the
-text of `CLAUDE.md` — see "Process"); the three items that pass found are
-fixed and listed under "Fixed on 2026-10-12" below.
+---
 
-## Ideas / backlog
+## Open work — index
 
-- **Consolidate `Docker.svelte` onto `api.ts`.** It drives the whole Docker
-  surface through its own `authedFetch` while `api.ts` exposes 6 Docker methods
-  used by the desktop monitor. The two are **behaviourally identical today**
-  (same session + CSRF headers, checked 2026-10-12 — see
-  `docs/guides/docker.md`), so this is maintainability, not a bug. Deliberately
-  deferred: it means ~50 new wrapper methods and ~100 rewritten call sites,
-  with `docker.spec.ts` (58 tests) as the only net. If taken up, do it one tab
-  at a time, E2E green between each.
-- Keep auditing "under real conditions" (real backend, no mocks) every
-  new page, following the methodology already applied to each guide in
-  `docs/guides/` (results in `TESTING.md`).
+| # | Area | Verdict | Blocking items |
+|---|---|---|---|
+| 2 | Cache tier | **P0** | 3 |
+| 3 | Disk quotas (home size) | **P0** | 3 |
+| 4 | AI Assistant / RAG | **P0** | 3 |
+| 5 | Snapshot schedules | **P0** | 3 |
+| 6 | Apps Center / app-proxy | **P0** | 3 |
+| 7 | Storage | P1 | 3 |
+| 8 | RAID wizard | P1 | 3 |
+| 9 | LUKS2 encryption | P1 | 3 |
+| 10b | File Explorer — residual hardening | P2 | 3 |
+| 11 | Metrics | P1 | 2 |
+| 12 | Scheduled Tasks | P1 | 3 |
+| 13 | Settings — remaining cards | P1 | 5 |
+| 14 | Account / Security | P1 | 2 |
+| 15 | Dashboard / Widgets | P1 | 3 |
+| 16 | Cloud Sync (rclone) | P1 | 3 |
+| 17 | Downloader (aria2) | P1 | 3 |
+| 18 | Syncthing | P1 | 2 |
+| 19 | Virtual Machines (Incus) | P1 | 2 |
+| 20 | System Journal | P1 | 3 |
+| 21 | Notifications | P1 | 3 |
+| 22 | DB backup | P1 | 2 |
+| 23 | Transfer quotas | P1 | 3 |
+| 24 | Server control | P1 | 2 |
+| 25 | Autostart | P1 | 2 |
+| 26 | Wallpapers / Themes | P1 | 2 |
+| 27 | Web shortcuts | P1 | 2 |
+| 28 | Activity taskbar | P2 | 3 |
+| 29 | mDNS | P2 | 2 |
+| 30 | Quotas app | P2 | 1 |
+| 31 | Docker — `api.ts` consolidation | P2 | 1 |
+| — | Cross-cutting (7 systemic) | — | 7 |
 
-**Fixed on 2026-10-21 — Firewall/ufw production-ready:**
+Total open findings: **85** (78 per-area + 7 cross-cutting).
 
-The page let an admin reach a state it could not describe and could not
-safely undo. Seven holes:
+**Suggested order.** 14 → 13.1 → 2 → 12 (the four that either lose
+data, leak data, or violate the privacy baseline), then the rest by P1 order.
 
-1. **Client input was interpolated straight into the `ufw` argv.** `action` is
-   the *verb* of `sudo ufw <action> …`, so `{"action":"delete"}` on the "add
-   rule" endpoint ran `sudo ufw delete …` (`--force`, `reset` and `enable` were
-   equally reachable). `protocol`, `port` and `source` went through as-is: a
-   port of `22/tcp` was concatenated a second time (`22/tcp/tcp`), and
-   `source: "any"` silently turned a "restricted" rule into a global one.
-   `validate_action` / `validate_protocol` / `validate_port` /
-   `validate_source` / `validate_comment` (plus the default-policy pair) now
-   run **before** the `ufw_available()` probe.
-2. **A source-restricted rule could not be deleted, and the global rule with
-   the same port was deleted instead.** `delete_rule_by_spec` rebuilt
-   `delete <action> <port>/<proto>`, which does not match `allow from <cidr> to
-   any port <n> proto <tcp>`. `FirewallRule` carries `spec` — the exact
-   argument string `ufw show added` printed, comment stripped — and the handler
-   passes *that* to `ufw delete`; the client only selects a live rule, it never
-   supplies the command.
-3. **The mandatory-rule protection was bypassable**: the target was looked up
-   ignoring `source`, and a request that matched nothing deleted anyway, so a
-   raw call could remove the SSH/app-port rule. A miss is now a 404, the
-   matched rule's live `is_mandatory` flag a 403.
-4. **Enabling trusted an exit code that lies.** `ufw --force enable` exits 0
-   even when iptables failed to load, so `enabled = true` was recorded on a
-   firewall filtering nothing. `enable_verified` re-reads the live state and,
-   when a mandatory allow rule is missing, turns the firewall back off and
-   explains why.
-5. **Disabling had no confirmation** — the only one-click destructive action on
-   the page, and it opens every port the firewall blocked. It now requires the
-   same `{"confirmed": true}` body as enabling.
-6. **A `Port 2222` in `/etc/ssh/sshd_config.d/*.conf` was invisible**, so the
-   mandatory rule protected port 22 while SSH listened on 2222 — a guaranteed
-   lockout on the first enable. `detect_ssh_ports()` reads the main file **and**
-   the drop-ins.
-7. **Every `ufw` call was a blocking `std::process::Command` in an async
-   handler with no timeout**; `ufw` shells out to `iptables`, which takes the
-   xtables lock. All calls now use `tokio::process::Command` with
-   `kill_on_drop` and a 30 s `UFW_TIMEOUT`.
+---
 
-Also fixed: the rule list mis-parsed interface-scoped rules (`in on eth0`) and
-rules with no port (`allow from 1.2.3.4`) and could read a keyword out of a
-rule's own comment; a duplicate rule was reported and audited as a fresh change
-although ufw skips it and exits 0; `disable` wrote back a cached `ssh_port` of
-0.
+## P0 — Broken
 
-**Added:** the default policy in `GET /firewall/status` (parsed from `ufw status
-verbose`) with a new admin `POST /firewall/default-policy`, a warning in the
-enable preview when the incoming default is `allow` (enabling would filter
-nothing), and `GET /firewall/history` exposing the change log that was recorded
-and never read (`list_change_log` was dead code). The card gains the
-default-policy row and dialog, a "Recent changes" list, one focus-trapped
-confirmation dialog for enable/disable/remove/policy (it was a
-`role="presentation"` div inside a `role="button"` overlay with no focus
-handling), labelled inputs, an `aria-label` per remove button and a
-`role="status"` line for every outcome — failures used to land in an empty
-`else {}`.
+### 2. Cache tier — the mover can fill the array and then delete the sources
 
-Tests: `firewall.rs` 9 → 31, `handlers/firewall.rs` 0 → 2,
-`security_integration.rs` 18 → 25, `security.spec.ts` 30 → 41 `test(` blocks
-(39 → 43 runtime) with a new §5b that mocks the firewall endpoints via
-`page.route`. `cargo test --lib firewall` 31/31,
-`cargo test --test security_integration` 25/25, `security.spec.ts` 35 passed /
-8 skipped / 0 failed (Firefox, scratch server), `npm run check` 0/0,
-`npm run build` OK. No live `ufw` mutation on this host (`sudo -n true` fails,
-so `ufw_available()` is `false`); the signed-off 2026-07-16 enable/disable
-cycle remains the live reference. See `docs/guides/firewall.md`.
+`src/cache.rs`, `src/cache_scheduler.rs`, `src/handlers/cache.rs`.
 
-**Fixed on 2026-10-21 — Backup/restic production-ready:**
+- [ ] **2.1 — No free-space check on the destination before a destructive move.**
+      Every branch of `perform_moves` (`src/cache.rs:215-275`) calls
+      `rsync_move(&src, &dst, true, …)`; `rsync_move` (`:329`) never checks free
+      space on `dst`. Draining a full cache into a nearly-full array fills the
+      array and `--remove-source-files` deletes what was copied, while the files
+      that could not be copied stay on a cache tier that is now the only copy
+      and is out of space. The only `df` is `pool_usage_pct` on the **cache**
+      mount, for the `prefer` heuristic (`:302`).
+      *Acceptance:* the mover refuses (or stops cleanly) when `dst` free space
+      is below the source payload, per share, before any delete.
+- [ ] **2.2 — The first rsync error aborts every remaining share, silently.**
+      Each `CacheMode` arm is `Self::rsync_move(...)?` (`:222-273`): one failing
+      share returns `Err` from `perform_moves`, the run is recorded `failed`,
+      all remaining shares are skipped — while sources for the shares that did
+      run may already be deleted. No per-share result is persisted, so the UI
+      cannot show which shares are now split across tiers.
+      *Acceptance:* per-share outcome persisted and rendered; one failure does
+      not stop the run; the run summary names the shares that failed.
+- [ ] **2.3 — `scan_pools()` (three root subprocesses) is called inline from
+      async handlers and once per share.** `CacheService::pool_mount_point`
+      (`:118-124`) calls `PoolService::scan_pools()` (`sudo zpool list` +
+      `mdadm` + `btrfs` + `df`); it is reached from `:154,191,440` and
+      `refresh_smb_exports` (`:472-477`), and from the handlers at
+      `src/handlers/cache.rs:97,165,252,457` with no `spawn_blocking`.
+      Related: `handle_cache_settings_update` validates against
+      `scan_pools().unwrap_or_default()` (`:97`), so a *failed* scan tells the
+      user "Pool 'x' does not exist" — a wrong, unactionable error.
+      *Acceptance:* one scan per request, off the runtime; scan failure is a
+      distinct error from "pool missing".
 
-The backup page could tell a user their data was safe when it was not, and
-could destroy a repository from a single crafted field. Five holes:
+Also in this pass: `cache_pool: Some("")` cannot clear the designation
+(`handlers/cache.rs:95-128`); `handle_cache_share_update` never validates
+`target_pool` unlike the create path (`:300-343`); `min_free_percent` accepts
+`0` server-side while the UI clamps to 1–95 (`:104`, `Storage.svelte:1221`);
+`cache_scheduler` records `mover_last_run_at` on failure too
+(`cache_scheduler.rs:93`); `MOVER_RUNNING` is process-local, so a restart
+mid-move leaves a run row stuck at `running`.
 
-1. **Backup and restore ran inside the HTTP request.** The endpoint stayed open
-   for the whole run — hours on a multi-TB dataset — the floating island only
-   learned about the job once it had finished (so it showed a *completed*
-   backup from the start), a browser timeout looked like a failed backup, and a
-   Tokio worker was parked for the duration. Both endpoints now answer
-   `{status:"running", job_id, backup_job_id}` immediately and the run continues
-   in a spawned task on `spawn_blocking` (`ResticService::run_restic_op`); every
-   other restic call goes through it too, with a timeout
-   (`RESTIC_QUERY_TIMEOUT` 120 s, `RESTIC_INIT_TIMEOUT` 300 s).
-2. **The progress was fabricated** (5 %, then 90 %). `restic backup --json` is
-   newline-delimited JSON, now read line by line
-   (`create_backup_streaming`): `percent_done` / `bytes_done` drive real SSE
-   progress, mapped to 1–99 % so 100 % waits for the summary.
-3. **A healthy repository was reported broken.** `check_repo` kept any line
-   containing `error`, and `restic check` prints "**no errors were found**" on
-   success — `healthy` was `false` on every healthy repository.
-   `parse_check_output` excludes the sentinel and only counts real error
-   markers.
-4. **`snapshot_id` was an injection vector.** It was passed positionally to
-   `restic forget`, so `{"snapshot_id":"--keep-last=0"}` was parsed as an
-   *option* and forgot every snapshot: a delete request became a full wipe.
-   `validate_snapshot_id` (`[A-Za-z0-9._-]`, no leading `-`), absolute-path
-   validation of sources and restore targets, a strict pre-backup snapshot name
-   (it becomes `/tmp/restic-snap-<name>`), and the other `validate_*` helpers
-   refuse the value before restic is spawned. Repository create/update also
-   refuse an empty name/location/password, a relative source path, an unknown
-   `retention_policy_id`, and `snapshot_create_before_backup` without a pool and
-   an absolute dataset.
-5. **A failed snapshot mount was ignored**: the backup captured an empty mount
-   point, reported success and deleted the snapshot. `SnapshotMount` (RAII)
-   aborts the run.
+*Tests:* `cache.rs` has 13 unit tests, `cache_scheduler.rs` and
+`handlers/cache.rs` have **zero**, there is **no cache integration file** and
+**no cache E2E** (only a cron-validation test at
+`tests/e2e/storage/storage.spec.ts:276`). The entire data-movement path is
+unvalidated end-to-end — `docs/guides/cache.md:164` admits it was never run
+against real hardware. Add a loop-device live pass alongside the fix.
 
-Also fixed: one backup/restore per repository (`RepoRunLock`, shared with the
-scheduler) instead of restic's "repository is already locked" after a full
-scan; **real cancellation** (SIGINT so restic releases its lock, SIGKILL after
-10 s, job ends `cancelled`); the job row is written **before** the run and
-`fail_stale_running_jobs()` closes leftovers at startup; `max_size_gb` is
-finally applied (`plan_keep_last_for_size`, average snapshot size, never 0 and
-never the newest snapshot); retention limits must be > 0, a create needs at
-least one, and only one policy may be `apply_to_all`; `check --read-data` is
-admin; `forget` with no rule is refused up front.
+*Docs:* `docs/guides/cache.md`.
 
-Tests: `restic.rs` 29, `restic_scheduler.rs` 16, `handlers/restic.rs` 6,
-`restic_integration.rs` 24, `backup.spec.ts` 27. `cargo test --lib restic`
-51/51, `cargo test --test restic_integration` 24/24, `npm run check` 0/0,
-`npm run build` OK. The §13 real-restic E2E skips on this host (`restic` is not
-installed). See `docs/guides/backup-restic.md`.
+---
 
-**Fixed on 2026-10-21 — Users/Groups production-ready:**
+### 3. Disk quotas (home-directory size) — the slider limits nothing
 
-Deleting an account did not delete the Linux account behind it, and demoting an
-admin did not take its sudo away. Four holes, all closed by the new
-`src/host_accounts.rs` (`HostAccountService`):
+`src/quota.rs`, `src/handlers/user_homes.rs`.
 
-1. `DELETE /users/{u}` dropped the row only. A deleted admin kept a working
-   Linux login *and* — admin status is derived from `homevault_admin` — a
-   working HomeVault **admin** login that the next PAM sign-in recreated.
-   `userdel` now runs **before** the row delete (retryable on failure); a
-   PAM-mirrored row whose Linux user still exists is refused, since HomeVault
-   did not create it.
-2. Demotion cleared only `homevault_admin`, leaving `sudo`/`wheel`, and the
-   session kept its `is_admin` snapshot (up to 30 days). All three groups are
-   revoked **before** the role write, the demoted account is signed out, and
-   `get_session` re-derives `is_admin` from the current role.
-3. Locking mirrored nothing to the host (`usermod -L/-U` now does).
-4. A password reset on a PAM-mirrored account did nothing (sentinel hash);
-   `chpasswd` on stdin now follows it.
+- [ ] **3.1 — Quotas are never enabled, so `setquota` always fails.**
+      `usrquota`, `grpquota` and `quotaon` appear **nowhere** in `src/` or
+      `installer/` (verified by grep; the only hit is the doc comment at
+      `src/quota.rs:58`). No pool is mounted with `usrquota`, no `quotaon` is
+      ever run, and `installer/install.sh:1623` only checks that the
+      `repquota` binary exists. So `setquota` (`src/quota.rs:67-81`) fails on
+      every save, the code degrades to a warning
+      (`src/handlers/user_homes.rs:311-325`), and the user is told "Home folder
+      saved, but the size limit could not be enforced" — while the slider keeps
+      showing the limit as if it applied.
+      *Acceptance:* either enable the feature end to end (mount option at pool
+      creation + `quotaon` + a check that reports *enforced / not enforced* in
+      the UI), or remove the control and the stored field. A third state is not
+      acceptable.
+- [ ] **3.2 — No read-back, so the UI cannot show reality.** Nothing calls
+      `repquota` / `quota -u`. There is no "used" value and no way to tell
+      whether enforcement is active.
+- [ ] **3.3 — `setquota` runs bare and synchronously.** `src/quota.rs:67` uses
+      `Command::new("setquota")` with no `sudo`, and `setquota` is **not in the
+      sudoers grant at all** (`src/setup.rs:808-942`) — it only works if the
+      service happens to run as root, which contradicts every other privileged
+      call in the codebase. It also blocks the async handler with no timeout.
 
-Guard rails: username gate before any command, system-account refusal
-(`uid < 1000` / `>= 65534`), 20 s timeout on `tokio::process`, `userdel`
-without `-r` (home removal stays the explicit `delete_home_folder` choice).
+*Tests:* `quota.rs` has 7 unit tests (pure formatting); there is **no
+integration file** and **zero E2E** — `tests/e2e/quotas/quotas.spec.ts` covers
+the *transfer* quotas, a different feature. Add `tests/quota_integration.rs`
+plus a `users` E2E case that asserts the enforced/not-enforced state.
 
-Groups: members must be existing HomeVault users (each one gets a Linux
-account); blank names and >500 members refused; `DELETE /groups/{name}` purges
-all four display-name references, `share_permissions` included; `GET
-/users/{u}/groups` is admin-or-self; and every `GroupService` call goes through
-`run_group_op` (`spawn_blocking`, 15 s) instead of blocking a Tokio worker.
+*Docs:* `docs/guides/quotas.md` (which currently documents the silent
+degradation as if it were acceptable), `docs/guides/users.md`.
 
-Tests: `host_accounts` unit 14, `users_integration` 79, `groups_integration`
-38, `groups.rs` unit 9, `users.spec.ts` +5.10b. The six real host effects are
-`#[ignore]`d root-only tests (`tests/login_pam_integration.rs`), not run here —
-no disposable host account. See `docs/guides/users.md` → *Host (Linux) account
-lifecycle*, `docs/guides/groups.md` → *Membership validation and delete
-cleanup*, and `CLAUDE.md` (2026-10-21 addendum).
+---
 
-**Fixed on 2026-10-21 — Rescue production-ready:**
+### 4. AI Assistant / RAG — the knowledge base has no user-facing surface
 
-The Rescue app is the one screen allowed to write to raw block devices, and its
-"Cancel" was theatre: `DELETE /api/progress/{job_id}` dropped the job from
-`PROGRESS_MANAGER` and answered "Job cancelled" while `sudo ddrescue` kept
-writing to the destination disk. Nothing observed the request, and the UI had no
-stop control at all — a clone of a failing 4 TB disk could only be aborted by
-killing the server. `ProgressManager` now carries per-job cancellation hooks
-(`register_cancel_hook` / `cancel_job` / `CancelOutcome`, emitting the
-`ProgressState::Cancelled` that already existed and had never been used), and
-`src/rescue/jobs.rs` runs each rescue job in its own process group so a cancel
-SIGTERMs the group (escalating to `SIGKILL` after 10 s) — killing only the
-`sudo` wrapper left the real tool running. A cancelled clone reports *cancelled*
-and keeps its mapfile, so it can be resumed.
+`src/rag.rs`, `src/rag_indexers.rs`, `src/handlers/rag.rs`,
+`frontend/src/lib/services/api.ts`, `frontend/src/routes/Chat.svelte`.
 
-`GET /api/rescue/ddrescue/status/{logfile}` took the raw URL segment and read it
-with the service's own privileges: an arbitrary-file read and a file-existence
-oracle behind any admin session. It is now confined to `/tmp`, `/var/tmp` and
-`paths::rescue_dir()`, must be an existing regular file with no symlink in the
-final component, and is capped at 16 MiB. The same non-following and
-component-wise checks (`/tmpfoo` is not inside `/tmp`) guard output paths.
+- [ ] **4.1 — RAG is unreachable from the product.**
+      `frontend/src/lib/services/api.ts:2234-2248` is an empty comment block:
+      no `ragStatus` / `ragIndex` / `ragSearch` / `ragDocuments` client method,
+      and no control anywhere in `Chat.svelte` or `Settings.svelte` to trigger
+      indexing or pull `nomic-embed-text`. The `/api/rag/*` endpoints exist and
+      answer, but nothing calls them, so the index stays empty in practice.
+      *Acceptance:* the admin can see index status, trigger a reindex and see
+      progress from the UI; the chat answers "I don't know" only when the index
+      is genuinely empty.
+- [ ] **4.2 — Index integrity is unmaintained.** `clear_source`
+      (`src/rag.rs:285-307`) has **zero callers** → deleted or renamed guides
+      stay indexed forever. `index_all` only logs a warning per failed source
+      (`src/rag_indexers.rs:32-70`) and never removes one. Embedding failures
+      are swallowed and the chunk is stored with a `NULL` embedding
+      (`src/rag.rs:249-255`), i.e. silently unsearchable. Search errors are
+      masked as "no documents found" (`src/handlers/rag.rs:272-284`).
+      *Acceptance:* a reindex reconciles (adds, updates **and** removes);
+      embedding failure fails the run loudly; search distinguishes an error
+      from an empty result.
+- [ ] **4.3 — Blocking subprocess and `/proc` reads on the async runtime.**
+      `detect_gpu()` shells out to `nvidia-smi` / `rocm-smi` with
+      `std::process::Command` inside the async `handle_chat_models_recommend`
+      (`src/handlers/chat.rs:1021,1040`); `src/handlers/chat.rs:989-1003` reads
+      `/proc/meminfo` synchronously. (MCP's Docker call is correctly wrapped at
+      `src/handlers/mcp.rs:588` — use it as the reference.)
 
-A clone — irreversible — had no safety net: nothing checked that source and
-destination were different devices, that the destination was not mounted or an
-active md/LVM/dm-crypt member (sysfs `holders`, which catches a member disk with
-no mountpoint of its own), or that it was at least as large as the source.
-`check_clone_safety` now does all three, and the protected-device rule no longer
-trusts a hardcoded `sda`/`nvme0n1`/`vda` list: the live root disk is resolved
-through `findmnt /`, and device names are matched partition-aware (`sda1`
-belongs to `sda`; `sdaa` does not).
+Also in this pass: full-table cosine scan in the app process per query
+(`src/rag.rs:310-353`); hand-rolled markdown rendered through `{@html}` with no
+sanitizer (`Chat.svelte:228-282`); conversations only in `localStorage`
+(`:81-102`); Ollama availability checked once on mount and never re-polled
+(`:69-79`); French-only error strings in an otherwise i18n'd app
+(`src/handlers/chat.rs:506` and neighbours); `system.reboot` reachable through
+MCP with token permissions as its only guard (`src/handlers/mcp.rs:758-770`).
 
-Finally, options that lied. TestDisk's `deep_search`/`log_path`/`force` and
-PhotoRec's `keep_broken`/`max_size` were accepted, shown as applied, and never
-reached the tool; `mdadm`'s `action` went verbatim into `--action=`;
-`file_types` were spliced into PhotoRec's comma-separated `/cmd` grammar, so
-`"jpg,search"` injected a command. Un-honourable options are now a `400` naming
-the field (and gone from the UI — TestDisk's advanced block went with them), and
-the dead fields were dropped from the model rather than kept as switches that
-change nothing. Every subprocess runs under a timeout, the default mapfile left
-world-writable `/tmp` for the root-owned `rescue/` directory, and PhotoRec's
-recovered tree is `chown -R`'d to the admin who asked for it.
+*Tests:* RAG has 15 unit tests, **no integration file and no E2E**. That is the
+least-covered subsystem in the repo. Add `tests/rag_integration.rs` (index →
+search → reconcile → remove) and a `chat` E2E section for the index controls.
 
-Tests: `rescue` unit 8 → 44, `sse::progress` unit 20 → 26, `lib` 965 → 999,
-`rescue_integration` 28 → 38, `progress_integration` 7 → 8, E2E
-`rescue.spec.ts` 53 → 59. Live-host checks (a real clone, a real cancel, the
-PhotoRec chown) are listed in `TESTING.md` → "Remaining to test as a priority".
+*Docs:* `docs/guides/rag.md` (Document Sources table + the new controls),
+`docs/guides/chat.md`, `docs/guides/mcp.md` (blast radius of the reboot tool).
 
-**Fixed on 2026-10-21 — Shares production-ready:**
+---
 
-The Shares app was the one screen whose inputs still reached **root-owned**
-config files unvalidated, so an admin session (or anything that can reach the
-API) could rewrite system configuration: a share name with a newline forged an
-extra `smb.conf` section (an `include =` directive is root code execution on
-the next Samba reload), a `)` in an NFS option closed the client list and
-fabricated `*(no_root_squash)`, a whitespace in a path shifted `/etc/exports`
-and `/etc/fstab` columns, a multi-line FTP banner appended `anonymous_enable=
-YES`, and the SFTP jail wrote a share path straight into `/etc/fstab`. The
-pass adds one validation layer in `SharesService` (share name/comment/path/NFS
-options, SMB global config, FTP config) that runs before *any* privileged
-write, so every caller is covered — handlers answer `400` naming the field.
-`/etc/exports` now has a single pure parser/generator pair: the enable/disable
-toggle writes (or strips) a `# homevault-nfs-disabled:<name>` tag instead of
-the previous wrong-shape `exportfs -o rw /<name>` / `exportfs -u /<name>`
-no-op that silently reverted on reboot, and delete/update rewrite exactly one
-line — two exports sharing a path basename used to delete each other, they are
-now an explicit `400` listing the colliding paths. Finally the whole module
-left the async runtime: `run_share_op` (spawn_blocking + 30 s timeout) wraps
-every service call, `rebuild_jails` was split into an async DB phase and a
-blocking mount/account phase under a 120 s ceiling. Tests: `shares.rs`
-14 → 34 unit, `sftp.rs` 6 → 9 unit, `shares_integration.rs` 20 → 26
-integration (`cargo test` lib 942 → 965; the three neighbouring share suites
-— `resource_shares`, `share_links`, `api_contract` — plus `users`, `groups`
-and `mdns` re-run green). Docs: `docs/guides/shares.md` gained the validation
-table, the exports-rewrite semantics and the blocking-pool invariants;
-`docs/API.md`'s Shares section documents the validation and the toggle
-semantics. The live-host pass (real SMB/NFS/vsftpd reloads, the disabled
-export surviving a reboot, an ambiguous-basename 400 against a real
-`/etc/exports`) is recorded in `TESTING.md`'s "Remaining to test" list. See
-`CLAUDE.md` (2026-10-21 addendum).
+### 5. Snapshot schedules — a failed prune is recorded as a success
 
-**Fixed on 2026-10-21 — Network production-ready:**
+`src/snapshot_scheduler.rs`, `src/snapshots.rs`,
+`src/handlers/snapshot_schedules.rs`.
 
-The Network screen was the last one whose own headline feature stopped half
-way: `PUT /network/interfaces/{name}/config` persisted the new IP configuration
-(written 2026-10-20) but **never applied it** — runtime and boot state could
-differ by one re-apply cycle, and the admin could not see in the session
-whether the netplan file was loadable and equivalent to the wire. The request
-now runs the production apply-verify-rollback pattern: capture the pre-change
-state → live apply → persist (the write returns the backend *plus a snapshot
-of the previous netplan file*) → `netplan apply` → verify the wire converged
-within a 10 s grace (static address present, default route via the configured
-gateway, static v6 present, interface up — pure verdict `check_live_state_matches`)
-→ on any failure, roll back both halves (previous file restored or ours
-deleted, `netplan apply` again, previous live configuration re-asserted so the
-operator session survives) and answer `success:false` naming what failed.
-Sudoers gained the scoped `netplan apply` / `cat` / `chmod 600` / `rm -f`
-shapes for `/etc/netplan/99-homevault-*.yaml`, and `netplan.io` joined the
-dependency inventory (optional — Debian hosts without it keep ifupdown, which
-deliberately stays write-only/boot-applied). Tests: `network.rs` 43 → 52 unit
-(9 on the verify verdict), `cargo test` full run green (lib 917), docs in
-`docs/guides/network.md` + `docs/API.md`; the live reconcile pass is listed in
-`TESTING.md`'s "remaining to test" (needs a real host). See
-`CLAUDE.md` (2026-10-21 addendum).
+- [ ] **5.1 — A failed prune is a green run.** `src/snapshot_scheduler.rs:296-303`:
+      `repo.mark_finished(&schedule.id, true, &summary)` is called with `true`
+      in **both** arms of the `match` on `prune_result`. GFS retention can be
+      permanently broken (bad permissions, full pool, `zfs destroy` failing)
+      while the UI shows a success row forever and the disk fills with no
+      signal. *Acceptance:* the failure is recorded as a failure and surfaces
+      in the notification center. *Tests:* an integration test that forces
+      `prune_pool` to fail and asserts the run row is not `success`.
+- [ ] **5.2 — No single-flight, so "Run now" can overlap the scheduler.**
+      `run_schedule` is called directly from
+      `handle_snapshot_schedule_run_now` (`handlers/snapshot_schedules.rs:255`)
+      and from `tick_due` (`snapshot_scheduler.rs:243`) with no lock and no
+      "already running" check (contrast the cache mover's `MOVER_RUNNING`).
+      Two concurrent runs create two snapshots with the same second-resolution
+      name, then both prune a set the other is mutating — one can destroy a
+      snapshot the other just decided to keep.
+      *Acceptance:* one run per schedule at a time, refused with a clear
+      message; a per-pool lock covers two schedules on the same pool.
+- [ ] **5.3 — ZFS-first dispatch breaks every Btrfs pool on a mixed host.**
+      `src/snapshots.rs:200-208` (identically `:287-295`, `:341-349`) branches
+      on `check_zfs().is_ok()`, which only tests that the **binary** exists
+      (`:82-95`). On a host with `zfsutils-linux` installed *and* Btrfs pools —
+      exactly what `installer/install.sh` produces when both packages are
+      present — every create/delete/rollback for a Btrfs pool takes the ZFS
+      branch and fails. `docs/guides/snapshots.md:9` describes this as a
+      feature ("ZFS-first / Btrfs-fallback"), which is how it survived.
+      *Acceptance:* the backend is chosen per **pool type**, not per binary
+      availability.
 
-**Fixed on 2026-10-21 — APPS production-ready / app-proxy auth under HTTPS:**
+Also: `parse_auto` ignores the configured prefix — it splits on the first `-`
+and only validates the trailing timestamp, so a *manual* snapshot named
+`mydata-20261021-030000` is badged `auto` and looks managed by a schedule
+(`handlers/snapshot_schedules.rs:290,307-317`); the GFS windows do not match
+their names (hourly = 24 h, daily = 7 d, weekly = 30 d, monthly = 365 d —
+`snapshot_scheduler.rs:63-74`, so "hourly, keep 24" retains at most 24 h while
+"weekly, keep 4" spans 30 d of buckets); a schedule can be
+created on a nonexistent pool (`:158-186`) and then fails silently every tick;
+nothing prevents two schedules on the same pool with the same default prefix,
+although `046_snapshot_schedules.sql:5` claims "one row per (pool, prefix)"
+with **no unique index**; `handle_snapshot_pool_list` is `require_admin` while
+every other Storage read is `require_auth` (`:265-270`).
 
-Apps Center's per-app reverse proxy had one real defect that only hit the
-security-motivated setups: the gate redirected unauthenticated browsers to a
-hard-coded `http://{main_port}/app-auth`, but under an HTTPS deployment the
-`hv_session` cookie carries `Secure` and is never re-sent over plain HTTP —
-the round-trip looped forever and every "require login" app was unusable
-precisely under TLS. The gate's redirect is now TLS-aware
-(`https://{host}:{https_port}/app-auth` while the HTTPS listener is up,
-computed per request), auth-minting redirects carry `Cache-Control:
-no-store`, the login screen honours the flow's `next` parameter (same-origin
-paths only — no open-redirect window), and the app-session store is capped at
-512 live entries with soonest-expiring eviction. `hv_app_session` deliberately
-stays without `Secure` (the proxy listener is plain HTTP even under an HTTPS
-dashboard). `docs/guides/apps-center.md` was rewritten to describe the
-shipped launcher (Docker apps open in a new browser tab; the earlier
-iframe + mixed-content-toast design was never on this path). Tests: 4 new
-unit tests on the location builder, the store-cap test, and an end-to-end
-TLS redirect step in `tests/app_proxy_integration.rs`. See `CLAUDE.md`
-(2026-10-21 addendum) and `CHANGELOG.md` [Unreleased] → Fixed.
+*Tests:* `snapshot_scheduler.rs` has 8 tests, all on the pure GFS selector —
+**no `#[tokio::test]`**, so `run_schedule`/`tick_due` are untested, which is
+exactly why 5.1 survived. `tests/e2e/storage/snapshot-schedules.spec.ts` has 4
+tests.
 
-**Fixed on 2026-10-21 — VPN production-ready:**
+*Docs:* `docs/guides/snapshots.md`.
 
-The VPN module answered three classes of "it looks done but fails in
-production": (a) an OpenVPN start answered "started" while `openvpn --daemon`
-had merely forked — bad credentials or an unreachable endpoint left a daemon
-retrying forever behind a success the admin already saw; (b) an uploaded
-`.ovpn` profile was executed as root with no content check, so the exec-hook
-directives (`up`, `client-connect`, `auth-user-pass-verify`, `script-security
-> 1`, …) were a privilege escalation away from any compromised admin
-session; (c) every VPN status poll and peer provisioning contacted three
-external echo endpoints with no cache. The fix, verified empirically against
-OpenVPN 2.6.19 during this pass: the start is now **start → verify →
-rollback** — per-connection log + `--cd /etc/openvpn` (`--daemon` chdir()s to
-`/`, and the client-side `--status` file carries no connection state — both
-behaviours were confirmed on a live 2.6.19 client, not read from docs), a
-10 s / 250 ms poll for the `Initialization Sequence Completed` marker, kill +
-log-derived error message on timeout or fatal, idempotence when already
-running, credentials kept only while the connection exists
-(`/etc/openvpn/openvpn-<name>.auth`, 0600, deleted on stop/delete — never
-`/run`, which the service cannot write); the profile deny list is enforced in
-the engine and at the handler (400 naming the directive, 409 on replacing a
-running profile); `ensure_wireguard_server` verifies `wg0` came up after
-`wg-quick up`; all VPN mutation handlers run through `spawn_blocking`; and
-`discover_public_ip` is cached (`PublicIpCache`, 15 min positive / 60 s
-negative TTL, injected-instant unit tests). Frontend: per-card connecting
-spinner on the OpenVPN start (`vpn.connecting` ×4 locales). `docs/guides/
-vpn.md` rewritten — the previous text still described the pre-roadwarrior
-`/wireguard/keygen` + `/{name}/start` endpoints — and `docs/API.md` lists the
-real routes. Tests: `vpn.rs` unit 14 → 29, `vpn_integration.rs` 22 → 25; the
-real tunnel pass (WireGuard handshake from a phone, an OpenVPN auth failure
-watched through the verify) is recorded in `TESTING.md`'s "Remaining to
-test" list. See `CLAUDE.md` (2026-10-21 addendum).
+---
 
-**Fixed on 2026-10-20 — Docker production-ready:**
+### 6. Apps Center / app-proxy — blocking installs, a global logout, an open redirect
 
-The Docker module was audited end to end and every gap closed in one pass:
-**volumes** (list/create/delete, in-use detection), **disk usage**
-(`docker system df`) with **prune** (images / volumes / builders / system —
-unknown targets rejected before the daemon is contacted), **container
-inspect**, **exec**, **pause/unpause**, **kill** (whitelisted signals),
-**rename**, **in-place limit updates**, **update to the newest image**
-(pull + recreate with rename rollback), **live log streaming** over a
-single-use SSE ticket (merged stdout+stderr, tail size, timestamps, follow),
-**image builds** from a path-guarded host folder, **private registries**
-(`--password-stdin`, credentials never read back), a **`daemon.json`
-editor** validated before it is written, and **Compose update**
-(`compose pull` + `up -d`). Two systemic defects went with them: no Docker
-CLI call had a timeout (a wedged daemon parked a Tokio worker forever) and
-every mutation ran on the async runtime (one slow `docker` call stalled all
-concurrent requests) — both fixed by `run_docker`/`wait_with_timeout` and a
-`spawn_blocking` wrapper. Tests: `docker.rs` 9 → 17 unit tests, new
-`tests/docker_integration.rs` (10), `npm run check` 0/0, `npm run build` OK,
-and the E2E suite re-run against a live daemon — **123 passed / 9 skipped /
-0 failed** across firefox + chromium, which itself caught three real UI
-defects (popover menus clipped by the card's `overflow-hidden`, Escape not
-closing them from the trigger, a racy count in test 5.2). See
-`docs/guides/docker.md` → "Production hardening".
+`src/handlers/docker_catalog.rs`, `src/app_proxy/mod.rs`,
+`src/handlers/app_auth.rs`.
 
-**Fixed on 2026-10-12, on explicit request ("we start with #1", then
-"keep going" twice, then "termine"):**
+- [ ] **6.1 — `docker compose up -d` runs on the async runtime.**
+      `src/handlers/docker_catalog.rs:490` calls `ComposeManager::start_project`
+      (synchronous, `LONG_TIMEOUT`, pulls images — `src/compose.rs:349-369`)
+      directly from the async install handler with no `spawn_blocking`; same at
+      `:562` for `stop_project` in uninstall. A first install pins a runtime
+      worker for minutes; concurrent installs starve the runtime. The job is
+      already created for the taskbar at `:484` — only the offload is missing.
+- [ ] **6.2 — Stopping one app logs users out of every app.**
+      `src/app_proxy/mod.rs:128`: `stop()` calls `app_auth::APP_AUTH.revoke_all()`
+      unconditionally, so uninstalling or restarting app A invalidates the
+      sessions of apps B..Z and every user must re-authenticate everywhere.
+      *Acceptance:* revocation is scoped to the proxy being stopped.
+- [ ] **6.3 — Open redirect built from the `Host` header.**
+      `src/handlers/app_auth.rs:118-123` takes `Host`, strips the port and
+      builds `http://{host}:{proxy_port}/` as the `Location` for a response that
+      has just minted an auth cookie. A forged `Host` (or any proxy in front)
+      sends that cookie's redirect to an attacker-controlled host.
+      *Acceptance:* the redirect target is derived from server config, never
+      from a request header.
 
-- **Deleting a user left its share permissions behind (real bug, security
-  relevant).** `handle_user_delete` (`src/handlers/users.rs`) only walked the
-  user's effective permissions to log `"Revoking permission for user …"` —
-  neither the POSIX ACL nor the `share_permissions` row was ever removed.
-  Since the table keys a grantee by **name only** (no foreign key to
-  `users`), the rows outlived the account: recreating a username silently
-  inherited the deleted user's access, and the log claimed a revoke that
-  never happened. Fixed by
-  `PermissionService::revoke_all_user_permissions` (ACLs best-effort +
-  `delete_for_grantee("user", …)`), called from the handler before the
-  account row is dropped. Group grants stay: the account was already removed
-  from its groups, and those rows belong to the remaining members.
-  Regression test
-  `test_user_delete_revokes_its_direct_share_permissions_only`
-  (`tests/users_integration.rs`, 60 → **61**), **verified to fail on the old
-  code** (`git stash`: `left: 2, right: 0`).
-- **`ProgressManager::get_progress` returned a placeholder** —
-  `GET /api/progress/{job_id}/status` reported `Running` / 0 % /
-  `"Waiting..."` for a job at 87 %, for a completed job and for a failed one.
-  Fixed to return the stored `last_event` (same snapshot as the activity feed
-  and the SSE stream); unknown/removed id → `None`/400. 5 new unit tests.
-- **`JobType::Custom` could not be serialized at all** (found by the
-  integration test written for the item above). `#[serde(tag = "type")]`
-  cannot tag a `Custom(String)` newtype variant, so `handle_progress_sse`'s
-  `to_string(&event).unwrap_or_default()` sent an **empty** `data:` line for
-  every feature job (Explorer copy/move, Docker install, antivirus, RAG, VM,
-  rescue, cloud sync, Ollama pull): the client's `JSON.parse` threw, no
-  `progress`/`done` callback fired, and `Explorer.svelte`'s `watchJob`
-  therefore resolved **false** for a copy that had succeeded — frozen progress
-  bar, directory listing never refreshed. `GET /api/progress/jobs` panicked
-  for as long as such a job was tracked (the taskbar was spared: the activity
-  handler maps `JobType` to a slug and never serializes the enum). Fixed with
-  **adjacent** tagging (`content = "name"`): built-in kinds keep their exact
-  previous shape, feature jobs become
-  `{"type":"custom","name":"…"}`. 4 new unit tests + 1 integration test;
-  both fixes verified to fail on the old code.
-- **Doc corrections found by the same audit** (the code was already right):
-  `docs/guides/shares.md` still listed as "reported not fixed" the recursive
-  grant failing and the "rw" option lacking the execute bit — both fixed in
-  the code long ago (`set_default_acl`'s `-d -m` order, execute forced on a
-  directory); and `docs/guides/chat.md` claimed
-  `handle_chat_models_recommend` had no session check, which it now has.
-- **Cloud Sync read and wrote a file it never parsed.**
-  `handle_get_config` / `_save_config` / `_add_remote` / `_delete_remote`
-  hardcoded `/etc/rclone.conf` while `parse_rclone_config()` honoured the
-  `RCLONE_CONFIG` override: an admin whose config lives elsewhere got a
-  remote list and a Settings editor describing **two different files**, and
-  saving failed with `Permission denied` against the root-owned default.
-  Fixed with one resolver, `rclone_config_path()`, used by the parser and by
-  all four handlers. `handlers/rclone.rs` unit tests 11 → **14**,
-  `tests/rclone_integration.rs` 14 → **17** — the full
-  `add_remote → list → delete_remote` cycle and the `.backup.<ts>` sibling
-  now run for real against a tempdir-selected config, which the hardcoded
-  path made impossible. Verified to fail on the old code (`Failed to read
-  config /etc/rclone.conf: No such file or directory`, `Failed to save
-  config: Permission denied`).
-- **The RAG knowledge base was missing 25 of the 45 indexable guides.** The
-  rule "a new feature gets a `FeatureDoc` + a `rag.md` Document Sources row"
-  was prose only and had never been applied retroactively, so
-  `src/rag_indexers.rs` carried 20 entries against 46 guide files — the
-  assistant answered "I don't know" about Syncthing, the downloader,
-  notifications, the desktop shell, LUKS encryption, RAID, the cache tier,
-  widgets and a dozen more shipped features. All 45 are indexed now, and the
-  coverage is **enforced by a test** (`test_every_guide_has_a_feature_doc`
-  enumerates `docs/guides/` and reconciles it with `FEATURE_GUIDES` in both
-  directions), so the drift cannot come back silently. The old
-  `test_feature_docs_are_nonempty` asserted a count on a hardcoded list
-  unrelated to the shipped vector, which is why it never caught anything.
-- **The 3 `manual_contains` clippy warnings in `src/dependencies.rs`**
-  (`iter().any(|have| *have == want)` → `contains(&want)`), left by the
-  install.sh refactor. CI runs `cargo clippy --all-targets -- -D warnings`, so
-  they were a hard CI failure rather than a style note.
+Also: the proxy binds `0.0.0.0` (`src/app_proxy/mod.rs:159`) with plain HTTP and
+only the app-auth cookie in front; `proxy-config` ignores the `bool` returned by
+`set_auth_required` and reports success (`docker_catalog.rs:868-871`), so the UI
+says "auth required" while the running proxy still serves unauthenticated;
+`write_install_marker` discards its `Result` (`:128-137`), so a read-only apps
+dir produces installs that look successful but do not persist; sync `std::fs`
+on the async path (`:474,496,100`).
 
-**Resolved since the first version of this file (verified 2026-07-21)**
+*Tests:* `handlers/docker_catalog.rs` has **0** unit tests;
+`tests/app_proxy_integration.rs` has 2. Add integration coverage for the
+revoke scope and the redirect target.
 
-For the record — these items were listed as "not fixed" in the previous
-version of this roadmap and turned out to be already resolved upon
-verification:
+*Docs:* `docs/guides/apps-center.md` ("Known tradeoffs" gains the real list),
+`docs/guides/docker.md`.
 
-- Session flaw on `handle_group_add_member` (Groups) — already fixed,
-  validates the session for every caller.
-- `PermissionService::grant_permission` in recursive mode — already fixed
-  (`setfacl -d -m` argument order).
-- "rw" option without the execute bit on shares — already fixed
-  (execution forced on directories).
-- UPS/SNMP without a UI — already resolved, `UpsCard.svelte`/
-  `SnmpCard.svelte` exist and are mounted in `Settings.svelte`.
-- Orphaned old Settings implementation — the files
-  (`SettingsLayout.svelte`, etc.) no longer exist at all.
-- Dead HTML handlers in `dashboard.rs` — the functions themselves have
-  been removed.
+---
 
-**Fixed on 2026-07-21, on explicit request ("fix the 3 items"):**
+## P1 — Needs work
 
-- **Desktop shell i18n** — the ~19 app names/descriptions
-  (`appDefs`/`apps` in `Desktop.svelte`) and the global search index now
-  go through dedicated keys `desktop.app_<id>_name`/`_desc` (4
-  languages), following the scheme already established for the Docker
-  catalog and the widgets. The "AI Assistant" entry in search, the only
-  one that had remained in plain French while the rest was in English
-  (the exact "EN/FR mix" bug described in `CLAUDE.md`), is fixed as
-  well.
-- **Transfer quotas overview** — new "All quotas" button in the header
-  of the Users page, opening a modal listing all configured quotas (users
-  and groups) via `api.listTransferQuotas()` (new method, reads the
-  already existing list endpoint). Verified live: real quota configured
-  for a user, displayed correctly in the table.
-- **Minor cleanup** — the dead i18n keys (`two_factor`,
-  `backup_codes*`, old `general`/`email`/`network`/`about` labels)
-  removed from the 4 TOML files. The `security` key of that same group
-  was **kept**: verification showed it is actually used by
-  `Settings.svelte` as the label of the "Security" category of its own
-  sidebar menu — so it was not dead, contrary to what `CLAUDE.md`
-  suggested.
+### 7. Storage — the sudoers grant is the weakest link
+
+- [ ] **7.1 — Unscoped sudoers grants for the most destructive binaries.**
+      `src/setup.rs:864` grants `zpool`, `zfs`, `mkfs_btrfs`, `mkfs_ext4`,
+      `mkfs_xfs`, `mount`, `umount`, `wipefs`, `btrfs`, `cryptsetup`, `blkid`,
+      `mkdir`, `rmdir`, `tee` **with no argument restriction** — any
+      attacker-controlled string reaching an argv (see 10.1, 17.1) becomes
+      `mkfs.ext4 /dev/sda`, `zfs destroy -r tank` or `tee /etc/shadow` as root.
+      The very next lines show the pattern that should have been used:
+      `findmnt --verify --fstab` (`:870`) and `tee {smb_conf}` (`:895`) are
+      scoped to exact argument shapes.
+      *Acceptance:* every grant in that block is scoped to the argument shapes
+      the code actually runs, exactly like the Shares and autostart grants.
+- [ ] **7.2 — mdadm scrub in Storage can never work.** `src/handlers/storage.rs:609-614`
+      runs `sudo bash -c "echo check > /sys/block/{md}/md/sync_action"`; `bash`
+      is not in the sudoers grant and the write needs root, so "Scrub" on an
+      mdadm virtual disk always fails with a confusing sudo prompt.
+      `src/pools.rs:526-536` already documents this exact failure ("always
+      failed with EACCES … confirmed live") and removed its copy; the dead one
+      is still here. *Acceptance:* one implementation, using the same
+      `sudo tee` path the rest of the codebase uses.
+- [ ] **7.3 — `delete_raid` ignores a failed unmount, then zeroes superblocks.**
+      `src/disk.rs:1676-1680` does `let _ = Command::new("sudo").arg("umount")…`
+      and proceeds to `mdadm --stop` + `--zero-superblock` on every member.
+      Irreversible, guarded only by a UI `ConfirmDialog`
+      (`Storage.svelte:508`) — no typed confirmation, no dry run. It is also
+      still routed at `src/web/mod.rs:952` although `docs/guides/raid.md:3-8`
+      says "RAID never lists or destroys anything".
+      *Acceptance:* unmount failure aborts; the confirmation names the array and
+      requires typing its name; doc and route agree.
+
+Also: `mount_disk` / `unmount_disk` / removable variants use bare `mount`/`umount`
+with no `sudo`, and `mount_disk` / `unmount_disk` ignore the exit status entirely
+(`src/disk.rs:526,540,564-575`) — a mount that the kernel refused is reported as
+success, and removable-media mount cannot work as the service user at all; `create_zfs_pool` runs `zpool create -f` without `sudo`
+(`:1623-1628`) — guaranteed failure, plus `-f` over devices that may belong to
+an exported pool; `format_device` accepts `ntfs` → `mkfs.ntfs` (`:1577-1581`),
+which is neither in the sudoers grant nor in the RAID wizard's validated set;
+`list_removable_disks` parses `lsblk` with `split_whitespace()`
+(`:450-471`), so a LABEL containing a space shifts every column (the exact bug
+class `docs/guides/storage.md:139-145` says was fixed elsewhere by moving to
+`lsblk -P`); `is_removable_transport` treats `ata|sata|scsi|nvme` as removable
+(`:497-502`), so **every internal SATA/NVMe disk shows up as "removable
+media"**; `get_smart_details` reads `parts[9]`, which breaks on attribute names
+containing spaces; `get_smart_test_status` invents an ETA as
+`progress_pct * 2 / 10` (`:2424`); `mount_and_persist_raid` ignores a failed
+`mdadm.conf` append (`:1266-1270`) so the array silently does not reassemble
+after reboot, while the fstab write right after it *is* verified and rolled
+back; no command timeout anywhere in `disk.rs`/`pools.rs`.
+
+*Tests:* `disk.rs` 19+6, `pools.rs` 33, `handlers/storage.rs` 5 (0 async);
+`tests/e2e/storage/storage.spec.ts` 34, with the LUKS and scrub blocks
+env-gated behind `STORAGE_E2E_LOOP=1`.
+
+*Docs:* `docs/guides/storage.md` (`:13` still says `lsblk -l`; `:107` admits ZFS
+advanced-pool creation was not live-tested; `:160` Btrfs rollback unsupported).
+
+---
+
+### 8. RAID wizard — a failed format destroys every listed device
+
+- [ ] **8.1 — `teardown_failed_array` zeroes the superblock of *all* members.**
+      `src/disk.rs:1176-1201`: after `mdadm --stop`, it runs
+      `--zero-superblock` for every device in the **request**, with no
+      confirmation and no check that those are the devices *this* create
+      actually assembled. A device claimed concurrently — or one that belonged
+      to an existing exported array — loses its metadata as a side effect of an
+      unrelated formatting error.
+      *Acceptance:* teardown only touches devices this job assembled, and only
+      after verifying the array identity.
+- [ ] **8.2 — `wait_for_array_ready` gives up after 20 s and continues anyway.**
+      `src/disk.rs:1112-1166`: 40 polls × 500 ms, then "Not ready within 20 s:
+      mdadm create already succeeded, so continue anyway" — and `mkfs` + `mount`
+      run against a still-initialising device. Combined with 8.1, this is the
+      realistic path to "RAID creation destroyed my disks".
+- [ ] **8.3 — No command timeouts.** `mdadm --create`, `mkfs.*`, `mount`,
+      `blkid`, `update-initramfs`/`dracut` are all `.output().await` with no
+      deadline, so a hung job holds `CREATE_LOCK` forever and every later create
+      answers "already running" with no way out short of a service restart.
+
+Also: `raid10` with a missing member is refused while `raid5/6` allow it
+(inconsistent degraded-create policy in `validate_virtual_disk_request`); the
+ZFS branch passes `-f` (`:1513`); the wizard's filesystem list and
+`format_device`'s accepted list have already drifted (`ntfs`).
+
+*Tests:* `tests/raid_integration.rs` has 5 tests, **all** auth-gate and
+validation — **nothing covers the create path**. The only lifecycle coverage is
+opt-in E2E (`tests/e2e/raid/raid.spec.ts` `13.x`, gated on `RAID_E2E_DEVICES`).
+*Docs:* `docs/guides/raid.md` has no "not tested" section, which overstates
+readiness — add one.
+
+---
+
+### 9. LUKS2 encryption — a multi-minute operation inside an HTTP request
+
+- [ ] **9.1 — Create runs `luksFormat` + `mkfs` + `mount` synchronously.**
+      `src/handlers/encryption.rs:174-196`: no `spawn_blocking`, no job, no
+      progress. `luksFormat` alone can take minutes on a multi-TB device. The
+      browser or gateway times out long before the disk is done, the user
+      retries, and the retry hits "device is mapped". The RAID wizard already
+      solved this shape with a tracked job — copy it.
+- [ ] **9.2 — Delete erases key slots without verifying the volume is unmounted.**
+      `src/handlers/encryption.rs:339-345`: `let _ = unmount(); let _ = close();
+      erase();`. A busy mount → `cryptsetup erase` succeeds anyway → **the key
+      material is gone while the filesystem is still mounted and being written
+      to**. Unrecoverable at the next remount.
+      *Acceptance:* erase refuses unless unmount and close both succeeded.
+- [ ] **9.3 — Unlock has no rollback.** `:265-273`: `open()` succeeds, `mount()`
+      fails, and the handler returns "Unlocked but failed to mount". The mapper
+      stays open, the DB still says locked (`is_open` drives the UI), and the
+      next attempt fails with "already mapped" with no button to fix it.
+      Creation does roll back (`:177-198`) — the inconsistency is the bug.
+
+Also: **no passphrase rotation at all** — `encryption::change_passphrase`
+(`src/encryption.rs:208`) has zero callers and there is no endpoint or UI, so a
+user who suspects a leak cannot rotate without a shell; the passphrase minimum
+is 8 characters with no strength check (`handlers/encryption.rs:127`);
+`handle_encryption_lock` ignores the unmount error and closes anyway (`:300`);
+`write_file_as_root` `.unwrap()`s the child's stdin (`src/encryption.rs:259`);
+`append_fstab_entry`/`remove_fstab_entry` are sync `std::fs` + `Command` called
+from an async handler (`:272-320`, used at `handlers/encryption.rs:210,345`);
+`handle_encryption_list` spawns one `sudo cryptsetup status` **per volume** on
+every page load (`:88`); delete's `wipefs -a` is best-effort (`:238`), so a
+failure leaves the device permanently unusable through the UI.
+
+*Tests:* `handlers/encryption.rs` **0** tests, `encryption.rs` 2, no integration
+file; the only E2E is `storage.spec.ts:13.1`, gated behind
+`STORAGE_E2E_LOOP=1`. **Zero default coverage of create/unlock/lock/delete.**
+
+*Docs:* `docs/guides/encryption.md` — remove the false claim that
+`luksChangeKey` is used (`:13`), document the missing rotation.
+
+---
+
+### 11. Metrics — failures are persisted as zeros
+
+- [ ] **11.1 — A failed `/proc` read is stored as `0.0`, and the schema forbids
+      gaps.** `src/metrics.rs:316-317,340` use `.unwrap_or(0.0)` for memory,
+      load and CPU; migration `044_metrics_history.sql` declares every column
+      `NOT NULL`, so a transient read failure writes a plausible-looking 0 %
+      sample into the chart and gaps cannot be represented at all. This
+      contradicts `docs/guides/metrics.md:32` ("gaps are visible as gaps, never
+      interpolated").
+      *Acceptance:* nullable columns + `None` on failure + the chart already
+      draws null points.
+- [ ] **11.2 — Rates divide by a constant 60 s.** `src/metrics.rs:320-323` uses
+      `SAMPLE_INTERVAL_SECS` regardless of real elapsed time, and the loop uses
+      `interval.tick()` with the default `MissedTickBehavior::Burst`
+      (`:263-277`), so after a suspend or a stall it fires back-to-back samples
+      that collide in the same minute bucket and are `INSERT OR REPLACE`d
+      (`:335-337`) — under-reported throughput plus silently dropped data.
+
+Also: three redundant `/proc` reads per tick (`:312,331`); `GET /metrics/latest`
+returns HTTP 400 "No metrics collected yet" on a fresh install, which is a
+normal first-boot state reported as a client error; `Metrics.svelte:67-71` does
+not cancel an in-flight range request, so a slow `24h` response can overwrite a
+newer `1h`; the empty-state heuristic only checks `cpu`/`mem` (`:174`), so a
+temp-only dataset renders "no data".
+
+*Tests:* `metrics.rs` 5, `handlers/metrics.rs` **0**, integration 5, E2E 4.
+Nothing asserts null-on-failure or elapsed-time-based rates.
+*Docs:* `docs/guides/metrics.md`.
+
+---
+
+### 12. Scheduled Tasks — the overlap guard cannot fire
+
+- [ ] **12.1 — `run_task_now` builds a fresh empty `RunningSet` and then tests
+      it.** `src/scheduled_tasks_scheduler.rs:305-309`: the guard can never
+      contain the task, so a manual run started while a tick is executing the
+      same task **double-runs it** — two `restic`/`clamscan`/`rsync` on the same
+      target, i.e. corrupted backups. The doc comment right above (`:288-289`)
+      and `docs/guides/scheduled-tasks.md` both claim the opposite.
+      *Acceptance:* one process-wide running-set shared by both paths; a second
+      start is refused with a clear message. *Tests:* an integration test that
+      starts the same task twice and asserts the second is refused — that single
+      test is what was missing.
+- [ ] **12.2 — Cron is UTC-only, with no timezone and no disclosure.**
+      `src/handlers/scheduled_tasks.rs:217,272-286` (8-day cap) evaluates
+      against UTC; a user setting "02:00 daily" gets 02:00 UTC. Combined with
+      13.4 (the `timezone` setting is stored and never applied), scheduling is
+      unpredictable in the UI.
+      *Acceptance:* a timezone per task or a clearly labelled UTC mode, plus the
+      setting from 13.4 actually applied.
+- [ ] **12.3 — An unparseable stored cron generates a failed run every tick.**
+      `:229-245`: no backoff, no auto-disable, so the run-history table grows
+      without bound and the UI fills with noise.
+
+Also: the frontend splits command arguments on whitespace
+(`Tasks.svelte:166`), so a path containing a space silently becomes two argv
+entries; `toggleEnabled` re-submits the whole task and resets the run summary
+(`:208-225`), so toggling a checkbox loses the displayed last-run output.
+
+*Tests:* `scheduled_tasks_scheduler.rs` **0** unit tests,
+`tests/scheduled_tasks_integration.rs` 5, `tasks.spec.ts` 8.
+*Docs:* `docs/guides/scheduled-tasks.md` (the false overlap claim is part of
+the fix).
+
+---
+
+### 13. Settings — the remaining cards
+
+- [ ] **13.1 — The update check calls GitHub on every Settings open, ignoring the
+      privacy setting.** `loadVersionInfo()` runs unconditionally in `onMount`
+      (`frontend/src/routes/Settings.svelte:335,435-441`) →
+      `GET /settings/version` → an unconditional outbound call
+      (`src/handlers/settings.rs:920-966`). `should_check_for_updates()`
+      (`:891`) and `CACHED_UPDATE_RESULT` (`:335`) have **zero readers**
+      (verified by grep — definitions only). `UpdateFrequency::Manual` and
+      `Disabled` are therefore decorative, contradicting the doc comment at
+      `:59-64` and `docs/guides/settings.md:33`. This is a **privacy-baseline
+      violation** (`CLAUDE.md` → Compliance, point 1): an outbound third-party
+      call that the admin believes is off.
+      *Acceptance:* no outbound call unless the admin pressed "Check now" or
+      opted into a schedule; the setting is enforced server-side, not in the UI.
+      *Tests:* integration test asserting zero outbound attempts with
+      `Manual`/`Disabled`.
+- [ ] **13.2 — `restart_nut()` cannot succeed.** `src/ups.rs:517-521` runs
+      `systemctl restart nut-driver-enumerator.service nut-server`, but the
+      sudoers grant (`src/setup.rs:877-888`) whitelists specific verbs/units and
+      contains **no `nut-*` entry**. UPS config saves report success while the
+      daemon never reloads. Related: `get_ups_status` / `get_ups_variables` /
+      `get_ups_variable` (`src/ups.rs:116,135,151`) pass the request `name`
+      straight into the `upsc` argv — `validate_ups_name` exists (`:327`) but is
+      only used by add/delete config (`:343,505`).
+- [ ] **13.3 — Email SMTP settings are silently ignored.** `smtp_server`, `port`,
+      `username`, `password`, `use_tls` are persisted
+      (`src/handlers/settings.rs:643-661`) but `EmailService` only passes
+      `--from` to msmtp (`src/email.rs:236-244`); credentials must be
+      pre-configured in msmtp's own file. The primary notification channel does
+      not honour what the admin configured. Also `is_email_configured()` shells
+      `which` three times per call (`:385-401`).
+      *Acceptance:* either drive msmtp from the saved settings (or a real SMTP
+      client) or remove the fields and say so.
+- [ ] **13.4 — `timezone` is stored and never applied; language is not
+      persisted.** `GeneralSettings.timezone` (`handlers/settings.rs:451-452`)
+      is written to `settings.json`; nothing runs `timedatectl` or writes
+      `/etc/localtime`. `handle_set_language` mutates only the in-process locale
+      (`:376`) and `save_all_settings` has no language field, so the choice
+      reverts to `en` on restart.
+- [ ] **13.5 — Dead and half-wired settings.** `scan_archives` (antivirus) is
+      persisted (`handlers/antivirus.rs:81,109`;
+      `storage/antivirus_repo.rs:34,117-131`) but `run_clamscan` never reads it
+      and always passes `-r` without `--scan-archive`
+      (`src/antivirus.rs:229-236`) — the toggle does nothing. SNMP `version` is
+      write-only: `run_walk` hardcodes `2c` (`src/snmp.rs:189`) and
+      `handle_snmp_interfaces` accepts `iface` and never uses it
+      (`:154-159`). `settings_persistence::reset()` (`:257-270`) covers
+      general/email/update/notification/appearance/AI/SNMP/TLS only — antivirus,
+      ransomware, disk spindown, DB-backup settings and `ups.conf` all survive a
+      "Reset to Defaults".
+
+Also in this pass: `quarantine_dir` is unvalidated and interpolated into the
+clamscan argv (`src/antivirus.rs:234`) with no `path_guard` check, unlike
+`scheduled_scan_path` (`handlers/antivirus.rs:94-99`); `clamscan_available()` /
+`definitions_status()` / `spindown_tool_available()` run `Command` inline in
+async handlers (`antivirus.rs:78-117` called from
+`handlers/antivirus.rs:50`, `antivirus_scheduler.rs:53`;
+`handlers/power.rs:49-63`); `webhook_url` is unvalidated and the engine builds a
+fresh `reqwest::Client::new()` with no timeout per dispatch
+(`src/notification_engine.rs:362-365`); settings import re-serialises through
+`serde_json::to_string` with no schema version and no per-field validation
+(`handlers/settings.rs:1285-1327`).
+
+*Tests:* every defect above lives in a module with **zero unit tests**
+(`email.rs`, `notification_engine.rs`, `handlers/antivirus.rs`,
+`antivirus_scheduler.rs`, `handlers/power.rs`, `autostart.rs`).
+*Docs:* `docs/guides/antivirus.md`, `docs/guides/settings.md`,
+`docs/guides/notifications.md`.
+
+---
+
+### 14. Account / Security — session tokens are handed to the client
+
+- [ ] **14.1 — The self-service session list returns full session tokens.**
+      `src/handlers/security.rs:104-111` maps `token: s.token.clone()` — the
+      whole bearer token — into the JSON, while the admin view masks it to 8
+      characters (`src/handlers/users.rs:596-605`). The token lands in the DOM,
+      in devtools, in any client-side log and in any XSS on the page: a
+      session-hijack primitive handed to the account page.
+      *Acceptance:* the response carries an opaque id or a masked token, never
+      the secret. *Tests:* integration test asserting the token is absent from
+      the payload.
+- [ ] **14.2 — `handle_revoke_sessions` is not scoped to the caller.**
+      `src/handlers/security.rs:137-148` resolves `username` and then never
+      uses it — it only filters out the caller's own token before
+      `delete_many`. Any authenticated user who learns another user's token can
+      revoke it, which turns 14.1 into a cross-account DoS. The dead variable is
+      the tell that the scope check was intended and dropped.
+      *Acceptance:* the delete is restricted to sessions belonging to the
+      caller. *Tests:* integration test with a second user's token.
+
+Also: `handle_avatar_preview` is unauthenticated and seed-driven
+(`src/handlers/avatars.rs:97-112`); `render_user_avatar` (`:199`) and
+`missing_avatar_response` (`:219`) have **no callers** — either the upload path
+is half-wired or a feature was removed without cleanup, worth confirming because
+it may mean uploaded avatars are never rendered; `docs/guides/avatars.md:24`
+claims avatars are cached and there is no cache
+(`idRandomization` makes every response byte-different).
+
+*Tests:* 25 + 25 integration tests, 41 + 75 E2E — yet **none of the 50
+integration tests catches 14.1 or 14.2**, because they assert status codes and
+`total`, not response shape or cross-user behaviour.
+*Docs:* `docs/guides/account.md` has **no** sessions or login-history section at
+all while the screen renders both cards; `docs/guides/security.md:56` documents
+`/security/login-history/{username}` as admin-only while the code also allows
+self (`src/handlers/security.rs:322`).
+
+---
+
+### 15. Dashboard / Widgets — global state, expired sessions, fabricated data
+
+- [ ] **15.1 — Widget CRUD is global and unscoped.** `handle_add_widget` /
+      `handle_remove_widget` / `handle_reorder_widgets`
+      (`src/handlers/dashboard.rs:228-281`) only call `require_auth`: no
+      ownership check, no admin check, and `username: None` is hardcoded at
+      `:246`, so widgets are never attributed. Any authenticated household user
+      can delete or reorder every widget on the appliance. `handle_add_widget`
+      also accepts `id/wtype/title/size/row/col` with no validation.
+      Related: `handle_widget_preferences` (`:2274-2283,2328-2337`) hand-rolls
+      `SELECT username FROM sessions WHERE token = ?` with **no `expires_at`
+      predicate**, so an expired token still reads and writes preferences.
+      Both are also wrong on the wire: `json_error` is
+      `StatusCode::BAD_REQUEST` (`src/utils/response.rs:87-93`), so a missing or
+      invalid session comes back as **400**, not 401, and every client that
+      branches on the status mis-reads an auth failure as a validation error.
+      And `monitor_layout` stores the client's `layout_json` verbatim
+      (`src/handlers/monitor_layout.rs:83-91`) — no parse, no schema, no size
+      cap.
+      *Acceptance:* widgets and layouts are per-user; every handler uses
+      `require_auth`; the layout blob is validated and bounded.
+- [ ] **15.2 — Untimed subprocess fan-out every 5 s.** `handle_server_details`
+      is correctly offloaded (`:1439`), but `build_server_details` itself runs
+      `nvidia-smi` (`:1798`), `rocm-smi` (`:1844`), `ip -json addr` (`:1994`),
+      `lsblk` (`:2147`), **one `sudo smartctl -A` per disk** (`:2159`),
+      `sensors` (`:2195`) and `dpkg-query` (`:1686`) with no timeout;
+      `get_disk_health` adds three subprocesses per disk per call
+      (`:815-918`); the browser re-fires every 5 s (`Dashboard.svelte:134`)
+      with no `document.hidden` guard. A hung NFS mount or a spinning disk makes
+      requests pile up.
+      *Acceptance:* timeouts on every command, a shorter poll or SSE, and no
+      polling while the tab is hidden.
+- [ ] **15.3 — Fabricated values are presented as measurements.**
+      `error_score = 10` hardcoded into the health score (`:983`);
+      `has_server_update: false` hardcoded in both the cached and the live
+      branch (`src/handlers/widgets.rs:320,347`);
+      `"last test 2 last checked"` printed literally and a static `UP TO DATE`
+      badge (`Dashboard.svelte:545,488`); `healthHint` always says "ok"
+      regardless of score (`:168`); `GET /dashboard/widget/{id}` knows only
+      `cpu`/`memory`/`uptime` and answers `memory` with the literal string
+      `"/proc/meminfo"` instead of a value (`:186-223`).
+      *Acceptance:* nothing shown as a measurement is a constant.
+      Related: `PREV_STATS` is keyed on the literal `"cpu"` (`widgets.rs:117-123`)
+      and `PREV_NETWORK_STATS` is shared too (`:194,235-240`), so two clients
+      polling concurrently consume each other's delta and see 0 % or garbage;
+      `total_idle - prev_idle` is an unchecked subtraction (`:127`).
+
+Also: the dashboard emits `"critical"` (`src/handlers/dashboard.rs:530,683,1159,1226`)
+while the documented vocabulary is `healthy|warning|unhealthy|unknown`
+(`Health.svelte:29` declares exactly those four), and the value is then dropped:
+`Dashboard.svelte:163` derives `healthStatus` and nothing reads it, because
+`healthHint` is the constant `dashboard.health_hint_ok` (`:168`). CPU % is
+`load1 / cores * 100`
+(`:564`), which can exceed 100 %, while `src/metrics.rs:167` computes real
+`/proc/stat` deltas — two contradicting numbers in one product; the Docker card
+polls an admin-only endpoint every 5 s from every viewer
+(`AppUsageBreakdown.svelte:174` vs `handlers/docker.rs:107`), so non-admins
+issue a failing request every 5 s; `AppUsageBreakdown.svelte:159` uninstalls
+with `force` behind a generic confirmation; `widgetData.ts:114-120` still routes
+`app-update`/`server-update`, removed 2026-07-18; `monitorStore.ts:220-231`
+overwrites local state on every login.
+
+*Tests:* `monitor_layout.rs` **0** unit tests; nothing covers widget ownership
+or session expiry. `TESTING.md` claims 37 Dashboard E2E tests, the spec has 41.
+*Docs:* `docs/guides/dashboard.md`, `docs/guides/widgets.md`.
+
+---
+
+### 16. Cloud Sync (rclone) — no timeout, no shutdown cleanup, credentials at rest
+
+- [ ] **16.1 — No timeout on any transfer, mount or unmount.**
+      `src/handlers/rclone.rs:1119-1124,1389-1394,410,422,1434,1440,950,1002`:
+      `sync`/`copy`/`fusermount -u`/`umount` await `.output()` forever. A stalled
+      remote wedges the handler task and the job row stays `running`
+      indefinitely.
+- [ ] **16.2 — No shutdown cleanup.** The shutdown hook only cleans terminal
+      PTYs (`src/web/mod.rs:2290`) — no rclone unmount, so stale FUSE mounts and
+      orphaned processes survive a restart.
+- [ ] **16.3 — Config written without restrictive permissions, and mounts are
+      fire-and-forget.** The config is written with no `0600`
+      (`:1510`) although remotes carry credentials; `mount` builds argv from an
+      unvalidated `remote`/`mount_point` (`:950-971`) and calls `spawn()` without
+      retaining the handle, so the app cannot report a failure or unmount it
+      later; remote deletion is string surgery on the file rather than a parsed
+      edit (`:1631-1648`).
+
+Also: blocking `std::fs` on the async runtime (`:253-257,932`); the UI swallows
+six failures (`CloudSync.svelte:234-346`) and derives job status from
+`response.success` rather than the job state (`:322`); the mount point is
+hardcoded to `/mnt/rclone/<name>` (`:260`); `local` remotes are filtered out of
+the UI although the backend supports them (`:410`); **no scheduler exists** —
+jobs only run when clicked.
+
+*Tests:* 15 unit, 17 integration (which state explicitly at
+`tests/rclone_integration.rs:31` that **no test performs a real transfer or
+mount**, so 16.1–16.3 are untested by construction), 24 E2E.
+*Docs:* `docs/guides/cloud-sync.md`.
+
+---
+
+### 17. Downloader (aria2) — unvalidated input reaches the RPC
+
+- [ ] **17.1 — `uri`, `dir` and `out` reach aria2 unvalidated.**
+      `src/handlers/downloader.rs:389-423` passes them straight into the RPC
+      options: `dir`/`out` give arbitrary file write (traversal), `uri` accepts
+      any scheme including `file://` (SSRF + local read). This is also what
+      turns 7.1 into root, since aria2 writes as the service user.
+      *Acceptance:* scheme allowlist, paths confined to a configured download
+      root, `out` sanitised.
+- [ ] **17.2 — No RPC timeout and no `--rpc-secret`.** `aria2_rpc` builds
+      `reqwest::Client::new()` with no timeout (`:150-186`), and aria2 is
+      launched without `--rpc-secret` (`:208-244`) — any local process can drive
+      the RPC port and write files. A fixed 500 ms sleep replaces a health poll,
+      so the first request after start can fail.
+- [ ] **17.3 — The child is never reaped, and downloads land in `/tmp`.**
+      `status` only checks `child.is_some()` (`:246-266`), so a crashed aria2
+      reports "running"; nothing kills it on app shutdown (`src/web/mod.rs:2290`);
+      the default directory is `/tmp/aria2-downloads`, never cleaned, so a NAS
+      appliance loses its downloads on reboot.
+
+Also: the UI auto-starts aria2 on mount with no consent
+(`Downloader.svelte:73-91`), pause/unpause/remove failures are not surfaced
+(`:146-165`), and `role="button"` wraps a container with nested controls
+(`:306`).
+
+*Tests:* 15 unit, 8 integration, 40 E2E (the best-covered UI in the repo — yet
+17.1 has no test). *Docs:* `docs/guides/downloader.md`.
+
+---
+
+### 18. Syncthing — it is a monitor, not a manager
+
+- [ ] **18.1 — Folders and devices cannot be added or removed.** There is no
+      route and no UI control for either (`Syncthing.svelte:165-193` is the
+      entire action surface; `api.ts:1854-1883`). A user cannot onboard a new
+      share or peer from HomeVault at all.
+      *Acceptance:* add/remove folder and device, with validation and the same
+      admin bar as the rest of the app.
+- [ ] **18.2 — A malformed API key panics the handler, and TLS verification is
+      off.** `HeaderValue::from_str(&key).unwrap()` (`src/handlers/syncthing.rs:294`)
+      crashes the task instead of returning 4xx/5xx; `danger_accept_invalid_certs(true)`
+      is set unconditionally (`:281-298`).
+
+Also: blocking config discovery on the async runtime (`:251-266`); an N+1
+`db/status?folder=` round-trip per folder on every poll (`:479-538`, deliberate
+— Syncthing has no bulk call); UI failure branches empty
+(`Syncthing.svelte:165-193`). The HTTP client does have a real 10 s timeout
+(`:281-298`) — the only one of the four network apps with a bound.
+
+*Tests:* 11 unit, 5 integration, 21 E2E. *Docs:* `docs/guides/syncthing.md`.
+
+---
+
+### 19. Virtual Machines (Incus) — every create fails at 45 s
+
+- [ ] **19.1 — The 45 s transport timeout kills the 900 s create wait.**
+      `src/incus.rs:653-668` wraps **every** `request_json` in a 45 s
+      `tokio::time::timeout`, including
+      `wait_for_operation(op, CREATE_WAIT_SECS)` — and `CREATE_WAIT_SECS` is
+      **900** (`src/handlers/vm.rs:81`). Incus holds `/wait?timeout=900` open for
+      the whole operation, so the client aborts at 45 s with
+      "Incus did not respond in time" while the daemon keeps creating the
+      instance: a user-visible false failure plus an orphaned instance and a
+      duplicate on retry. The comment at `:654-656` says the long wait is
+      `wait_for_operation` "which has its own `?timeout=`" — the wrapper does not
+      know that.
+      *Acceptance:* the transport timeout is per-call (short for reads, the
+      operation timeout for `/wait`), and a timed-out wait reports "still
+      running" with the operation id rather than a failure.
+- [ ] **19.2 — Blocking filesystem and socket work on the async runtime, and a
+      racy port allocation.** `std::fs` and `TcpListener::bind` are called
+      inside `async fn`s: display-port probing/binding
+      (`src/handlers/vm.rs:318-328,1341-1359,1382-1408,1577`), plus
+      `swtpm_available()` / `ovmf_secureboot_available()`. The probe
+      `5900+N` for N in `20..=119` with a 60 s reservation is a
+      check-then-bind TOCTOU, so two concurrent creates can pick the same port.
+
+Also: sync responses are mis-mapped — `operation_id` returns `""`
+(`src/incus.rs:765-771`) and `wait_for_operation` treats a non-200 as
+`IncusError::Operation` (`:547-573`), so a successful synchronous create can be
+reported as failed; the screen relay is a raw TCP pipe with no framing or
+heartbeat (`handlers/vm.rs:1253-1318`); an ISO download runs to completion
+before the 10 MB floor is checked (`:1411-1554`).
+
+*Tests:* 24 integration, **0 unit** in `handlers/vm.rs` and `incus.rs`, 44 E2E.
+*Docs:* `docs/guides/vm.md` documents none of the timeout, the port range or the
+ISO floor.
+
+---
+
+### 20. System Journal — any user can read `/var/log/auth.log`
+
+- [ ] **20.1 — Reads are `require_auth`, so a non-admin reads host auth logs.**
+      `src/handlers/journal.rs:162` (`entries`) and `:112` (`sources`) accept
+      any session, and the text-source branch runs
+      `sudo tail -n <limit> /var/log/auth.log` (`:500-501`, whitelist at
+      `:584-593`). The app sits in the launcher unconditionally
+      (`frontend/src/routes/Desktop.svelte:1060`) with no admin gate, so this is
+      reachable by a normal household user. The module comment (`:30-37`)
+      justifies the read level; it contradicts the least-privilege rule.
+      *Acceptance:* host sources are admin-only (the `app` source may stay
+      session-level, since the process owns those files); the tile is hidden for
+      non-admins.
+- [ ] **20.2 — Search runs after the line limit.** `-n{limit}` truncates first
+      (`:492`), then the substring filter runs per line (`:527-531`), so
+      searching a rare term returns 0 entries with no paging and no hint.
+      `read_app_log_entries` has the same shape (`:365-381`) and reads each log
+      file **whole** with `read_to_string` (`:359`) — no size cap.
+- [ ] **20.3 — A failed cleanup records itself as done.**
+      `src/journal_cleanup_scheduler.rs:81-96`: on `Err(e)` it logs and then
+      unconditionally calls `repo.set_last_cleanup(&now)`, so the failure is not
+      retried until a full `interval_days` later.
+
+Also: `sudo journalctl` and `sudo tail` have no timeout and no concurrency cap
+(the blocking work *is* correctly inside `spawn_blocking` at `:171`); `-u{unit}`
+is built from unvalidated input (`:486` — not injection, but a raw `journalctl`
+stderr surfaces to the user); `clear_app_logs` returns on the first failure
+(`:323,326`), leaving partial state; `read_app_log_entries` uses
+`read_to_string(...).unwrap_or_default()` (`:359`), so permission-denied is
+indistinguishable from empty; `Journal.svelte` renders a failed load as the
+empty state (`:148-151,132-135`) and shows the Clear button to every user
+(`:231`) although the endpoint is admin-only, guaranteeing a 403.
+
+*Tests:* 9 unit, 11 integration, 27 E2E. `journal_cleanup_scheduler.rs` has **0**.
+*Docs:* `docs/guides/journal.md:78-83` is stale — it describes clearing as
+unlinking the active log, while the code now truncates in place
+(`journal.rs:308-324`) precisely so new events keep appearing.
+
+---
+
+### 21. Notifications — blocking email in the loop, no per-user state
+
+- [ ] **21.1 — Blocking email send and an untimed webhook inside the async
+      engine.** `src/notification_engine.rs:345` calls
+      `EmailService::send_system_alert`, which shells out with
+      `std::process::Command` + `wait_with_timeout` (`src/email.rs:181-253`), on
+      the runtime with no `spawn_blocking`; `:362-365` builds a fresh
+      `reqwest::Client::new()` per dispatch with no timeout. A slow MTA or a
+      black-holed webhook stalls the notification loop.
+- [ ] **21.2 — There is no per-user read state, although the code says there is.**
+      `src/storage/notification_repo.rs:10,19` claim it, but `read_at` is a
+      single global column (`sqlx/migrations/015_notifications.sql:13`) and
+      `mark_read`/`mark_all_read` (`:112,122`) have no user predicate — one
+      admin clicking "mark all read" clears the badge for every account.
+      `mark_read`/`delete` are `require_auth` with no owner
+      (`src/handlers/notifications.rs:72,86,105`), so any user can delete the
+      alert trail.
+      *Acceptance:* either per-user state (a join table) or a documented,
+      correctly labelled global feed — not the current half-and-half.
+- [ ] **21.3 — No pagination, and "clear all" is N unawaited DELETEs.**
+      `list_recent(50)` hard-caps (`handlers/notifications.rs:49`,
+      `notification_repo.rs:94`); older alerts are unreachable and the clear loop
+      only clears the visible 50. `NotificationCenter.svelte:111-113` fires one
+      request per id, unawaited and unchecked, and `:96,102,107` fire mark-read
+      and delete with no error handling while the store updates optimistically
+      (`stores/notifications.ts:163`) — a failure looks like a success until the
+      next poll.
+
+*Tests:* `notification_engine.rs` **0**, `handlers/notifications.rs` **0**,
+integration 18, no dedicated E2E.
+*Docs:* `docs/guides/notifications.md` (`:125` already documents the
+in-memory dedup reset as accepted debt — keep, but fix 21.1–21.3).
+
+---
+
+### 22. DB backup — the documented serialisation does not hold
+
+- [ ] **22.1 — A new `DbBackupService` per request means two concurrent
+      `VACUUM INTO`s.** `src/handlers/db_backup.rs:49,62,91` construct a fresh
+      service, and `running` is a per-instance `Arc<Mutex<()>>`
+      (`src/db_backup.rs:113,121`); the scheduler spawns its own
+      `DbBackupService::new(db.clone())` (`src/web/mod.rs:1971`). A manual click
+      during a scheduled snapshot therefore runs both — exactly what
+      `docs/guides/backup-restic.md:43` promises cannot happen.
+      *Acceptance:* one process-wide lock (or one service in `AppState`).
+- [ ] **22.2 — `last_error` is hardcoded `None`, and prune can eat the
+      pre-migration restore point.** `src/db_backup.rs:292` reports "no error"
+      for every failure (unwritable dir, disk full), so the status card can
+      never show a failed snapshot. `prune` keeps the newest `retain` by name
+      with no marker filter (`:261-283`), so a forced
+      `homevault-<ts>.pre-migration.db` (`:361`) can be pruned like any other.
+
+Also: blocking `std::fs` in async fns (`:178,222,229,236,241,270`) and sync
+`status()`/`list()` called straight from the async handler
+(`handlers/db_backup.rs:49-50`).
+
+*Tests:* 5 unit, 12 integration, no E2E. *Docs:* `docs/guides/backup-restic.md`.
+
+---
+
+### 23. Transfer quotas — fail-open, lifetime counters, and a client-side admin gate
+
+- [ ] **23.1 — A DB error disables every cap silently.**
+      `src/handlers/explorer.rs:1041-1047,1143,1203-1212,1639-1643` treat a
+      quota-load error as "no quota" (`unwrap_or_default`). A transient DB
+      failure lets every transfer through.
+      *Acceptance:* fail **closed** with a clear error, or fail open with a
+      loud log and a UI warning — but decided, not accidental.
+- [ ] **23.2 — Counters are lifetime, not periodic.**
+      `sqlx/migrations/022_transfer_quotas.sql:15,18` are plain accumulators;
+      `record_usage` only ever adds (`src/transfer_quota.rs:195-207`) and there
+      is no period column and no scheduler job to reset them. "100 GB/month" is
+      really "100 GB ever": once hit, the user is blocked until an admin edits
+      the row by hand.
+      *Acceptance:* a period (day/week/month) with a reset job, or rename the
+      feature to what it does.
+- [ ] **23.3 — Any user can read any subject's usage.**
+      `src/handlers/transfer_quotas.rs:54,84` are `require_auth`, so
+      `GET /transfer-quotas/user/<someone-else>` returns their limits **and
+      consumed bytes**. The admin gate exists only in `Quotas.svelte:104-108`,
+      which `docs/guides/transfer-quotas.md:100-103` treats as the enforcement
+      boundary. It is not one.
+
+Also: group membership is resolved by shelling `id -nG` per request
+(`src/transfer_quota.rs:136`, correctly inside `spawn_blocking` but still a fork
+per transfer); `QUOTA_LOCKS` never removes entries (`:272-291`); `bytes as i64`
+(`:207`) is unchecked; **enforcement covers File Explorer only** — SMB/NFS/FTP/
+WebDAV/SFTP are not metered or capped regardless of configuration
+(`docs/guides/transfer-quotas.md:14-20`, accurate).
+
+*Tests:* `transfer_quota.rs` 9, `handlers/transfer_quotas.rs` **0**,
+`tests/quotas_integration.rs` was **deleted** 2026-09-09, E2E 36 `test(` / 38
+runtime (on the read-only app, not on the engine). *Docs:*
+`docs/guides/transfer-quotas.md`.
+
+---
+
+### 24. Server control — the user cannot tell success from refusal
+
+- [ ] **24.1 — Empty success and error branches in the power flow.**
+      `frontend/src/routes/Desktop.svelte:1224-1234`:
+      `if (response.success) { } else { }` for **both** restart and shutdown.
+      On failure the modal closes and nothing happens; a rejected command is
+      indistinguishable from a slow one. `docs/guides/server-control.md:25-26`
+      already specifies the intended behaviour ("redirect to login or show a
+      'server unavailable' state") — the code does not implement it.
+- [ ] **24.2 — Two divergent privilege paths for the same button.**
+      `src/handlers/system.rs:68,128` run `shutdown -r now` / `shutdown -h now`
+      via `tokio::process::Command` with **no `sudo`**, while
+      `src/power.rs:151-165` runs `sudo systemctl reboot`. On a box where the
+      service user cannot call `shutdown`, one endpoint fails and the other
+      works. `/api/server/restart` and `/api/power/reboot` are duplicates; the UI
+      uses one, so the other is an untested second path.
+
+*Tests:* `handlers/system.rs` **0** unit, `power_integration.rs` 4,
+`settings/power.spec.ts` 4. *Docs:* `docs/guides/server-control.md`,
+`docs/guides/power.md`.
+
+---
+
+### 25. Autostart — a blocking `systemctl` in an async handler, with the error thrown away
+
+- [ ] **25.1 — `is_enabled()` / `set_enabled()` run on the runtime.**
+      `src/handlers/settings.rs:566,595` call `std::process::Command`
+      (`src/autostart.rs:34-56`) with no `spawn_blocking`; `sudo systemctl
+      enable` can block for seconds on sudo PAM or a systemd job. Contrast
+      `mdns.rs:449` and `transfer_quota.rs:136`, which wrap correctly.
+- [ ] **25.2 — The real error is discarded.** `handlers/settings.rs:595+` maps
+      any `Err` to `settings.autostart_update_failed`, throwing away the stderr
+      that `set_enabled` carefully returns (`autostart.rs:50-52`), so
+      "polkit refused" and "unit not found" are indistinguishable.
+
+*Tests:* `src/autostart.rs` has **0 tests** and the sudo/`systemctl` argv shape
+is untested; the only E2E is the staged-then-saved behaviour
+(`tests/e2e/settings/settings.spec.ts:518`).
+*Docs:* `docs/guides/settings.md`.
+
+---
+
+### 26. Wallpapers / Themes — a non-admin never receives the server appearance
+
+- [ ] **26.1 — Hydration calls an admin-only endpoint.** `App.svelte:39` calls
+      `api.getAllSettings()`, whose handler is admin-only
+      (`src/handlers/settings.rs:1189-1191`). For a non-admin the call fails, the
+      `catch` swallows it (`App.svelte:54-56`), and the desktop silently keeps
+      that browser's `localStorage` values — two users on one appliance see
+      different wallpapers with no explanation. `PUT /settings/appearance` is
+      also admin-only (`:1106`), so a non-admin cannot change their own accent.
+      *Acceptance:* a non-admin-readable appearance endpoint (or per-user
+      appearance), consumed by the boot hydration.
+- [ ] **26.2 — `theme` and `density` are persisted no-ops.** Written and
+      round-tripped (`handlers/settings.rs:1111,1120,1163,1166`) but nothing
+      consumes them — `grep -r "data-theme\|data-density" frontend/src` returns
+      **zero** hits. A user can save a "theme" that changes nothing.
+      *Acceptance:* wire them, or delete the fields and the round-trip.
+
+Also: the wallpaper is stored as a JSON string inside the settings blob
+(`:1115`) and both readers parse with a `try/catch` fallback
+(`Settings.svelte:392-405`, `App.svelte:45-52`), so one malformed value silently
+resets the user's wallpaper instead of reporting corruption.
+*Docs:* `docs/guides/wallpapers.md`, `docs/guides/settings.md`.
+
+---
+
+### 27. Web shortcuts — the 512 KB cap does not bound anything
+
+- [ ] **27.1 — The body is fully buffered before the cap applies.**
+      `src/handlers/shortcuts.rs:376-387` does `resp.bytes().await` and only then
+      truncates to `MAX_BODY_BYTES`; a multi-GB response is fully materialised
+      first. The 10 s timeout (`:58,319`) is the only real bound.
+      *Acceptance:* a streaming reader that stops at the cap.
+- [ ] **27.2 — One redirect hop, and a DNS-rebinding window.**
+      `fetch_following_one_redirect` handles exactly one hop (`:355-370`), so a
+      second redirect returns the redirect body as "the page" and metadata
+      silently comes back empty on common CDN/short-link chains.
+      `resolve_public` (`:134-157`) validates the resolved IPs but reqwest
+      re-resolves at connect time, so a hostile DNS answer that changes between
+      check and connect reaches an internal address.
+      *Acceptance:* follow the chain with per-hop validation, and pin the
+      connection to the validated IP.
+
+Also: a new `reqwest::Client` per request (`:316-325`), losing connection-pool
+reuse.
+*Tests:* 7 unit, 3 integration, 8 E2E. *Docs:* `docs/guides/shortcuts.md`.
+
+---
+
+## P2 — Small gaps
+
+### 10b. File Explorer — residual hardening (non-blocking leftovers of the closed item 10)
+
+- [ ] **10.5 — `validate_path_access` returns the raw path for admins and
+      `PathGuard::validate` accepts a non-existent final component**
+      (`src/handlers/explorer.rs`, `src/config/explorer_config.rs:259`), so the
+      last component of an admin path is never canonicalised — a symlink
+      planted after validation escapes the root (TOCTOU).
+      *Acceptance:* the final component is resolved or re-validated after the
+      fact for admin paths.
+- [ ] **10.6 — Upload chunks are fully buffered.** `/upload/chunk` takes the
+      whole chunk as an in-memory `Bytes` body and the global body limit is
+      10 GiB (`src/web/mod.rs:1764`), so a single huge chunk is still a
+      RAM spike. *Acceptance:* streamed body writes capped by the session's
+      `total_size`.
+- [ ] **10.7 — `SHARE_SEMAPHORE.acquire_owned().await.unwrap()` can panic**
+      (`src/handlers/share_links.rs:463`) if the semaphore is closed.
+      *Acceptance:* a mapped error, not an unwrap.
+
+---
+
+### 28. Activity taskbar
+
+- [ ] **28.1 — No backoff on poll failure.** `activityStore.ts:44,83` polls
+      every 2000 ms unconditionally, so a failing backend is hit 30×/min per open
+      desktop. Add exponential backoff.
+- [ ] **28.2 — Failed jobs vanish instead of showing a failure row.**
+      `src/handlers/activity.rs:82` surfaces only `Pending | Running`, so a job
+      that failed one second ago disappears (it only reaches the bell).
+- [ ] **28.3 — Phase 2, documented.** Syncthing folder sync and Storage
+      operations (mdadm resync, `zpool`/`btrfs` scrub, `luksFormat`, RAID
+      rebuild) need a poller turning live system state into synthetic jobs, plus
+      a live-hardware pass (`docs/guides/activity.md:99-108`). A
+      `/api/activity/stream` could replace the poll.
+
+### 29. mDNS
+
+- [ ] **29.1 — `unpublish()` is dead code.** `src/mdns.rs:431` has no caller, so
+      disabling mDNS leaves the Avahi service file and the host-name override on
+      disk. Wire it into the settings path.
+- [ ] **29.2 — `systemctl restart avahi-daemon` on any hostname change**
+      (`:411`) briefly drops every other Avahi advertisement on the host
+      (printers, shares). A reload would do.
+
+### 30. Quotas app
+
+- [ ] **30.1 — The admin gate is client-side only.** `Quotas.svelte:104-108`
+      redirects non-admins, but `GET /transfer-quotas/{type}` is `require_auth`
+      — same root cause as 23.3; fixing 23.3 fixes this.
+
+### 31. Docker — `api.ts` consolidation (maintainability)
+
+- [ ] **31.1 — `Docker.svelte` drives the whole surface through its own
+      `authedFetch`** while `api.ts` exposes 6 Docker methods used by the desktop
+      monitor. The two are behaviourally identical today (same session + CSRF
+      headers, checked 2026-10-12), so this is debt, not a bug. ~50 new wrapper
+      methods and ~100 rewritten call sites, with `docker.spec.ts` (58 tests) as
+      the only net. If taken up: one tab at a time, E2E green between each.
+
+---
+
+## Cross-cutting — fix once, unblocks many
+
+- [ ] **X.1 — Blocking work on the async runtime.** `std::process::Command`,
+      `std::fs` and `docker compose` are called straight from `async fn` in:
+      Health (`web/mod.rs:322`), Dashboard (`dashboard.rs:1686,1798,1844,1994,2147,2159,2195`),
+      Chat (`chat.rs:989,1021,1040`), Cache (`handlers/cache.rs:97,165,252,457`),
+      Encryption (`handlers/encryption.rs:210,345`), Autostart
+      (`handlers/settings.rs:566,595`), Apps Center (`docker_catalog.rs:490,562`),
+      Quota (`quota.rs:67`), Notifications (`notification_engine.rs:345`),
+      Antivirus/Power (`handlers/antivirus.rs:50`, `handlers/power.rs:49`),
+      Explorer (`explorer.rs:665,2628,2659`), rclone (`rclone.rs:253,932`),
+      syncthing (`syncthing.rs:262`), VM (`handlers/vm.rs:318,1341,1382,1577`),
+      DB backup (`db_backup.rs:178,222,229,236,241,270`).
+      **Reference implementations already in the tree:** `src/mdns.rs:449`,
+      `src/handlers/journal.rs:171`, `src/transfer_quota.rs:136`,
+      `src/handlers/docker.rs`, `src/handlers/mcp.rs:588`.
+      *Acceptance:* zero `std::process::Command` / blocking `std::fs` reachable
+      from a handler's async body. A CI grep (or a clippy lint) would keep it
+      that way.
+- [ ] **X.2 — No timeout on subprocesses.** Absent from `disk.rs`, `pools.rs`,
+      `encryption.rs`, `cache.rs`, `snapshots.rs`, `quota.rs`, `rclone.rs`,
+      `dashboard.rs`, `health.rs`, `network.rs`, `vpn.rs`, `shares.rs`,
+      `explorer.rs`, `journal.rs`. Present only in Docker, Firewall, Restic,
+      Syncthing (and `firewall.rs`'s `UFW_TIMEOUT` is the model). A wedged
+      `zpool`/`mdadm`/`smartctl`/`df` currently blocks a handler or a job
+      forever.
+- [ ] **X.3 — Empty `else {}` error handling in the UI.** CloudSync (6),
+      Syncthing, Downloader, Health, Journal, Desktop (power),
+      NotificationCenter, Dashboard — *Explorer's 11 sites are fixed
+      (2026-10-22, `dlg.notify` + partial-batch messages)*. Direct violation of
+      simplicity rule 5 ("every action gives visible feedback"). A shared
+      `notifyError()` helper already exists (`Settings.svelte` uses
+      `notifySettings`) — use it.
+- [ ] **X.4 — Documented invariants the code does not enforce.** DB-backup
+      serialisation (`backup-restic.md:43`), the scheduled-task overlap guard
+      (`scheduled-tasks.md`), "RAID never destroys" (`raid.md:3` vs
+      `web/mod.rs:952`), `luksChangeKey` as a used command (`encryption.md:13`,
+      zero callers), the update check being opt-in (`settings.md:33`), the
+      single-flight cache mover (`cache.md`), per-user notification read state
+      (`notification_repo.rs:10`), "one row per (pool, prefix)"
+      (`046_snapshot_schedules.sql:5`, no unique index), metrics gaps
+      (`metrics.md:32`). Each is part of the corresponding item above; this line
+      exists so the pattern is not lost.
+- [ ] **X.5 — `TESTING.md` counts drift where the specs grew.** The Dashboard row
+      states "37 runtime tests, recounted on 2026-09-14 via
+      `grep -cE '^\s*test\('`"; the same grep on the spec today returns **41**.
+      Re-count with `npx playwright test --list --project=firefox` (the
+      reference count) and the documented `grep`, never by estimation, and keep
+      the dual figure (runtime vs `grep`) whenever a responsive loop makes them
+      differ — as the Quotas row correctly does (38 runtime / 36 `test(`).
+- [ ] **X.6 — Tests verify shape, not behaviour.** None of the P0 defects is
+      caught by the 50+ integration tests around the same code, because they
+      assert status codes and `total`. For each item above, the "Tests" line
+      names the assertion that would have caught it — add that one first.
+- [ ] **X.7 — Two hand-rolled auth checks bypass `require_auth`.**
+      `dashboard.rs:2274,2328` (no `expires_at`), and the whole
+      `handlers/security.rs` session surface trusts the caller's own token as the
+      scope (14.1/14.2). Audit every handler that reads `x-session-token`
+      manually instead of going through `admin_guard`.
+
+---
 
 ## Process
 
-- Any change to an audited screen must keep its tests green
-  (Rust + Playwright E2E) — see `CLAUDE.md` → "Design system
-  governance".
-- New verification reports go into dated addenda in `CLAUDE.md`, not into
-  a separate file (the "Keep the repository clean" rule at the top of
-  `CLAUDE.md`).
-- **Before adding an item to this file from the text of `CLAUDE.md`,
-  verify against the current code (direct reading of the file concerned,
-  not just `grep`/memory) that it is still relevant** — that is precisely
-  what was skipped during the first version of this file and what produced
-  a roadmap that was 85% wrong.
+- Any change to a screen must keep its tests green (Rust + Playwright E2E) —
+  see `CLAUDE.md` → "Design system governance". No page is frozen.
+- New verification reports go into dated addenda in `CLAUDE.md` (or the relevant
+  `docs/guides/` file), not into a separate root file — see `CLAUDE.md` →
+  "Keep the repository clean".
+- **Before adding an item to this file, verify it against the current code** —
+  read the file, do not infer from `CLAUDE.md`, from a guide, or from memory.
+  A guide that states an invariant is not evidence that the code enforces it
+  (several were false: see X.4). Every item above cites a `path:line` that was
+  read in the tree at the revision named at the top of this file; re-check the
+  line before quoting it.
 - This file must be updated on every bug found-but-not-fixed or incomplete
-  feature identified during a future audit, and purged of the items that
-  end up being fixed or abandoned.
+  feature identified during a future audit, and purged of items that get fixed
+  (move the line to "Done" with the date and the guide that carries the detail).
+- Order of work: P0 first (data loss, data leak, privacy baseline), then P1 by
+  blast radius, then P2. Within an app, always fix X.1/X.2 (offload + timeout)
+  before the feature-level findings — they are what turn a defect into an
+  outage.
+
+---
+
+## Done
+
+One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-22 (b)** — File Explorer — the four blocking findings closed: zip-slip
+proof extraction (pre-flight member validation in the C locale, symlink-member
+archives refused, staging dir + confinement verification before merge, `.gz`
+streamed to disk), the SSE watcher authorised (tickets bound to user + path,
+component-prefix event filter, RAII watch release), resumable upload sessions
+owned and capped (403 cross-user, 429 above 20 per user / 256 global), admin
+delete confined by the PathGuard and refusing a browsing root — plus the `--`
+argv guard in `compress_items`, the eleven silent `else {}` failure branches
+reported via `dlg.notify` (19 i18n keys ×4 locales), and the stale guide claims
+corrected. Non-blocking residuals tracked as **10b** (TOCTOU admin-path
+canonicalisation, chunk RAM buffering, `SHARE_SEMAPHORE` unwrap)
+(`docs/guides/explorer.md`, `docs/API.md`).
+
+**2026-10-22** — Health: off-runtime checks (`run_all_checks`/`run_check`
+async + self-offloading), one shared sudo-wrapped `smartctl` helper used by
+Health / Dashboard / Storage, real account-store check, the appliance's own
+systemd unit derived from the cgroup and monitored, link state from
+`operstate`, per-check partial degradation + explicit error/retry state in
+the UI (`docs/guides/health.md`).
+
+**2026-10-21 — nine production-ready passes**
+
+| Area | What changed | Detail |
+|---|---|---|
+| Firewall / ufw | argv validation, spec-based delete, verified enable, default policy + change history | `docs/guides/firewall.md` |
+| Backup / restic | backup and restore became background jobs with real streaming progress, argv validation | `docs/guides/backup-restic.md` |
+| Users / Groups | host account lifecycle, member validation, forced first-sign-in change, session audit | `docs/guides/users.md`, `docs/guides/groups.md` |
+| Rescue | real cancellation, confined reads, clone safety net | `docs/guides/rescue.md` |
+| Shares | config-injection guards on every field, line-exact NFS exports, blocking pool | `docs/guides/shares.md` |
+| Network | persisted config applied, verified and rolled back via netplan/ifupdown | `docs/guides/network.md` |
+| APPS / app-proxy | app-proxy auth survives HTTPS deployments | `docs/guides/apps-center.md` |
+| VPN | OpenVPN start, profile deny list, cached public IP | `docs/guides/vpn.md` |
+| Docker (2026-10-20) | volumes, prune, inspect/exec/pause/rename, live logs, builds, registries, `daemon.json`, update-to-newest | `docs/guides/docker.md` |
+
+**2026-10-19** — RAID creation hardened and wired to the background-job system
+(20 findings, `docs/guides/raid.md`); 9th health check (`raid_arrays`).
+
+**2026-10-13 (c)** — OMV-inspired priority-1 features: Scheduled Tasks, Metrics,
+host Power + disk spindown, per-event notification toggles + webhook sinks,
+snapshot schedules with GFS retention (migrations 043–046).
+
+**2026-10-12** — user deletion revoking share permissions; `get_progress`
+placeholder; `JobType::Custom` serialization; Cloud Sync config path;
+RAG guide coverage enforced by test; three `manual_contains` clippy warnings.
+
+**2026-09-07 → 2026-09-14** — the live "real host conditions" passes (Firewall,
+Shares/SFTP, RAID/Storage, System journal, Rescue, LUKS, Network), transfers v2
+(HTTP `Range`, short-lived tickets, resumable chunked upload, quota locks,
+`PathGuard`, trash, rate-limited share links), and the desktop chrome / topbar /
+app-window alignment to the approved mockups.
+
+**Earlier** — the 2026-07-21 and 2026-09-05/06 passes. Full history:
+`CHANGELOG.md`, `TESTING.md`, and the dated addenda in `CLAUDE.md`.
