@@ -997,7 +997,7 @@ power actions). See [guides/scheduled-tasks.md](./guides/scheduled-tasks.md).
 | POST | `/scheduled-tasks` | admin | `handle_task_create` — payload validated at creation |
 | PUT | `/scheduled-tasks/{id}` | admin | `handle_task_update` (also enable/disable) |
 | DELETE | `/scheduled-tasks/{id}` | admin | `handle_task_delete` |
-| POST | `/scheduled-tasks/{id}/run` | admin | `handle_task_run_now` — runs regardless of cron |
+| POST | `/scheduled-tasks/{id}/run` | admin | `handle_task_run_now` — runs regardless of cron; `409` when a run of the same task is already in progress (process-wide single-flight guard shared with the scheduler tick) |
 | GET | `/scheduled-tasks/{id}/runs` | admin | `handle_task_runs` — 50 newest |
 
 ## Metrics history — `metrics/*` (auth)

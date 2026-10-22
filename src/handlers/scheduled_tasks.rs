@@ -23,12 +23,12 @@
 
 use crate::handlers::admin_guard::require_admin;
 use crate::handlers::AppState;
-use crate::scheduled_tasks_scheduler::TaskAction;
+use crate::scheduled_tasks_scheduler::{RunTaskError, TaskAction};
 use crate::storage::scheduled_task_repo::ScheduledTaskRepository;
 use crate::utils::ResponseHelper;
 use axum::{
     extract::{Path, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     response::Response,
     Json,
 };
@@ -179,7 +179,12 @@ pub async fn handle_task_run_now(
             Ok(Some(t)) => ResponseHelper::json_success(t),
             _ => ResponseHelper::json_success(serde_json::json!({ "started": true })),
         },
-        Err(e) => ResponseHelper::json_error(format!("Task failed: {e}")),
+        // A run of this task is still in progress (scheduled tick or another
+        // "Run now"): nothing was executed, so the row is untouched.
+        Err(RunTaskError::Busy(msg)) => {
+            ResponseHelper::json_error_with_status(StatusCode::CONFLICT, msg)
+        }
+        Err(RunTaskError::Failed(e)) => ResponseHelper::json_error(format!("Task failed: {e}")),
     }
 }
 
