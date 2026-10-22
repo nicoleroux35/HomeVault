@@ -148,11 +148,24 @@ async function seedBrowser(page: Page, tokens: Tokens, lang = 'en') {
   );
 }
 
+/** Fresh installs (and a fresh scratch instance in CI) show the once-per-version
+ *  "What's New" modal on the first desktop load; its overlay intercepts the dock
+ *  click, so the FIRST test of a run timed out on `settings-page` while every
+ *  later test passed. Same helper as the power/mcp/metrics/account specs. */
+async function dismissWhatsNew(page: Page) {
+  const modal = page.locator('[data-testid="whats-new-modal"]');
+  if (await modal.isVisible().catch(() => false)) {
+    await page.locator('[data-testid="whats-new-dismiss"]').click().catch(() => {});
+    await modal.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {});
+  }
+}
+
 async function gotoDesktop(page: Page, tokens: Tokens, lang = 'en') {
   await seedBrowser(page, tokens, lang);
   await page.goto('/desktop');
   await page.waitForSelector('.hv-user-pill', { timeout: 20_000 });
   await page.locator('.hv-dock').waitFor({ state: 'visible', timeout: 10_000 });
+  await dismissWhatsNew(page);
   // A fresh account defaults every desktop monitor widget to visible; each is
   // position:fixed and floats over the whole screen. Hide them so they never
   // intercept clicks meant for the Settings window or the dock.
@@ -900,14 +913,48 @@ test.describe('8 — Updates', () => {
     await expect(set(page).locator('.settings-version-row').first()).toContainText(/v\d+\.\d+/);
   });
 
-  test('8.3 — "Check for updates" hits GET /api/settings/version', async ({ page }) => {
+  test('8.3 — "Check for updates" POSTs /api/settings/version/check', async ({ page }) => {
     await openSettings(page, admin);
     await openCategory(page, 'updates');
+    // The button is the explicit opt-in: it must hit the POST route, not the
+    // read-only GET that the mount already performs.
     const [resp] = await Promise.all([
-      page.waitForResponse((r) => r.url().includes('/api/settings/version'), { timeout: 15_000 }),
+      page.waitForResponse(
+        (r) => r.url().includes('/api/settings/version/check'),
+        { timeout: 15_000 },
+      ),
       set(page).locator('[data-testid="settings-card-footer"] .settings-btn').click(),
     ]);
-    expect(resp.request().method()).toBe('GET');
+    expect(resp.request().method()).toBe('POST');
+  });
+
+  test('8.4 — opening Settings never forces an update check', async ({ page }) => {
+    // Privacy baseline (CLAUDE.md → Compliance, point 1): mounting the
+    // screen must not contact the update endpoint on its own. The mount reads
+    // the cached answer (GET); only "Check for updates" (POST) forces one.
+    const seen: string[] = [];
+    await page.route('**/api/settings/version**', async (route) => {
+      const req = route.request();
+      seen.push(`${req.method()} ${new URL(req.url()).pathname}`);
+      await route.continue();
+    });
+
+    await openSettings(page, admin);
+    await openCategory(page, 'updates');
+    await expect(set(page).locator('.settings-version-box')).toBeVisible();
+    // Give a late mount-time request time to land before asserting.
+    await page.waitForTimeout(700);
+
+    expect(
+      seen.filter((s) => s.includes('/version/check')),
+      'no forced check on mount',
+    ).toEqual([]);
+    expect(
+      seen.some((s) => s === 'GET /api/settings/version'),
+      'the mount reads the cached version info',
+    ).toBe(true);
+
+    await page.unroute('**/api/settings/version**');
   });
 });
 

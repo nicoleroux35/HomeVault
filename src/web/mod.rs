@@ -205,13 +205,13 @@ use crate::handlers::{
     },
     settings::{
         handle_all_settings_get, handle_appearance_settings_get, handle_appearance_settings_update,
-        handle_autostart_get, handle_autostart_update, handle_email_settings_get,
-        handle_email_settings_update, handle_email_test, handle_general_settings_get,
-        handle_general_settings_update, handle_get_language, handle_get_translations,
-        handle_notification_settings_get, handle_notification_settings_update,
-        handle_public_settings_get, handle_set_language, handle_settings_export,
-        handle_settings_import, handle_settings_reset, handle_update_settings_get,
-        handle_update_settings_update, handle_version_info,
+        handle_autostart_get, handle_autostart_update, handle_check_version_now,
+        handle_email_settings_get, handle_email_settings_update, handle_email_test,
+        handle_general_settings_get, handle_general_settings_update, handle_get_language,
+        handle_get_translations, handle_notification_settings_get,
+        handle_notification_settings_update, handle_public_settings_get, handle_set_language,
+        handle_settings_export, handle_settings_import, handle_settings_reset,
+        handle_update_settings_get, handle_update_settings_update, handle_version_info,
     },
     share_links::{
         handle_share_link_create, handle_share_link_delete, handle_share_link_download,
@@ -529,8 +529,14 @@ pub fn create_app(state: AppStateArc) -> Router {
         // Settings - update checks
         .route("/api/settings/update", get(handle_update_settings_get))
         .route("/api/settings/update", put(handle_update_settings_update))
-        // Settings - version info
+        // Settings - version info. The GET never contacts the update endpoint
+        // unless the admin's saved frequency says a check is due; the POST is
+        // the explicit "Check now" action (admin only).
         .route("/api/settings/version", get(handle_version_info))
+        .route(
+            "/api/settings/version/check",
+            axum::routing::post(handle_check_version_now),
+        )
         // Settings - built-in HTTPS/TLS (admin-only; applies after a restart)
         .route(
             "/api/settings/tls",

@@ -86,7 +86,8 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 | GET/PUT | `/settings/notifications` | auth / admin | |
 | GET/PUT | `/settings/appearance` | auth / admin | theme, wallpaper, accent, density |
 | GET/PUT | `/settings/update` | auth / admin | update-check frequency |
-| GET | `/settings/version` | auth | current version info |
+| GET | `/settings/version` | auth | current version + last cached check (never forces an outbound call) |
+| POST | `/settings/version/check` | admin | "Check now" — the only path that forces the outbound update check |
 | GET | `/settings/export` | admin | JSON dump |
 | POST | `/settings/import` | admin | JSON import |
 | POST | `/settings/reset` | admin | reset to defaults |
