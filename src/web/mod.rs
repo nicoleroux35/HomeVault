@@ -319,7 +319,8 @@ pub async fn handle_health_endpoint(
         }));
     }
 
-    let health = HealthService::run_all_checks();
+    let pool = state.db.pool();
+    let health = HealthService::run_all_checks(&pool).await;
 
     // Get CPU and memory usage from /proc
     let cpu_usage = get_cpu_usage();

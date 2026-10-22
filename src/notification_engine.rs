@@ -140,14 +140,13 @@ async fn check_app_updates(state: &Arc<AppState>, engine_state: &Arc<Mutex<Engin
 }
 
 async fn check_health(state: &Arc<AppState>, engine_state: &Arc<Mutex<EngineState>>) {
-    let checks = match tokio::task::spawn_blocking(HealthService::run_all_checks).await {
-        Ok(Ok(health)) => health.checks,
-        Ok(Err(e)) => {
-            tracing::warn!("Notification engine: health check run failed: {}", e);
-            return;
-        }
+    // `run_all_checks` offloads its subprocess work to `spawn_blocking`
+    // internally — it must not be re-wrapped here.
+    let pool = state.db.pool();
+    let checks = match HealthService::run_all_checks(&pool).await {
+        Ok(health) => health.checks,
         Err(e) => {
-            tracing::warn!("Notification engine: health check task panicked: {}", e);
+            tracing::warn!("Notification engine: health check run failed: {}", e);
             return;
         }
     };

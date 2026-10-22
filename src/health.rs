@@ -6,16 +6,29 @@
  * Version       : 1.0.0
  *
  * Description:
- *   System health checks: a registry of named checks (disk usage via df,
- *   block devices via lsblk, per-disk SMART overall health via smartctl,
- *   systemd service states) executed on demand and aggregated for the
- *   dashboard and the notification engine.
+ *   System health checks: a registry of named checks (DB-backed
+ *   authentication, storage dir, memory via /proc, disk usage via df, disk
+ *   SMART, block devices via lsblk, mdadm array states, link states from
+ *   /sys, systemd service states, temperatures), executed on demand and
+ *   aggregated for the dashboard and the notification engine.
+ *
+ *   Two contracts that callers rely on:
+ *   - **Nothing shells out on the async runtime here** — `run_all_checks` /
+ *     `run_check` await their system subprocess work on
+ *     `spawn_blocking` themselves (only the authentication check touches the
+ *     async database pool directly). A hung `smartctl` can slow the answer
+ *     but can never park a Tokio worker (item ROADMAP 1.1).
+ *   - **A failed check degrades to `Unknown`, never an overall error** — one
+ *     unreadable file or missing binary yields a per-check `Unknown` result;
+ *     the remaining checks still run and the rest of the payload is served
+ *     (item ROADMAP 1.5, "partial results").
  *
  * Dependencies:
- *   - once_cell, parking_lot (>= 0.12), serde (>= 1.0)
+ *   - once_cell, parking_lot (>= 0.12), serde (>= 1.0), sqlx (async pool read)
  *
  * Usage:
- *   handlers/storage.rs (health endpoints) and notification_engine.rs.
+ *   handlers/storage.rs (health endpoints), web/mod.rs (`GET /api/health`)
+ *   and notification_engine.rs.
  * =============================================================================
  */
 
@@ -24,6 +37,7 @@
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 use std::process::Command;
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -42,6 +56,8 @@ static DISK_SMART_CACHE: Lazy<Mutex<Option<(Instant, HealthCheckResult)>>> =
 pub enum HealthError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Database error: {0}")]
+    Db(#[from] sqlx::Error),
     #[error("Parse error: {0}")]
     Parse(String),
     #[error("Service not found: {0}")]
@@ -101,18 +117,39 @@ pub struct HealthService;
 
 impl HealthService {
     /// Run all built-in health checks and return an aggregated result.
-    pub fn run_all_checks() -> Result<SystemHealth, HealthError> {
-        let checks = vec![
-            Self::check_authentication()?,
-            Self::check_storage()?,
-            Self::check_memory()?,
-            Self::check_disk_space()?,
-            Self::check_disk_smart()?,
-            Self::check_raid_arrays()?,
-            Self::check_network_interfaces()?,
-            Self::check_systemd_services()?,
-            Self::check_temperatures()?,
-        ];
+    ///
+    /// Async by design: the eight system checks (df, lsblk, smartctl, mdadm,
+    /// systemctl, /proc + /sys reads) are offloaded to `spawn_blocking` inside
+    /// this function, and `check_authentication` awaits the database pool on
+    /// the async runtime where it belongs. Callers simply `.await` it — do not
+    /// re-wrap this call in blocking offloading, it would be redundant.
+    ///
+    /// Every check degrades independently: a check that errors (unreadable
+    /// file, missing binary, unreachable DB) becomes an `Unknown` entry named
+    /// after its slot, and the remaining checks still run. The aggregate is
+    /// always complete (all nine slots present); a hard `Err` is reserved for
+    /// the aggregate genuinely failing (e.g. the check task panicking).
+    pub async fn run_all_checks(pool: &SqlitePool) -> Result<SystemHealth, HealthError> {
+        let authentication = Self::check_authentication(pool).await;
+
+        let system_checks = tokio::task::spawn_blocking(move || {
+            vec![
+                Self::degrade("storage", Self::check_storage()),
+                Self::degrade("memory", Self::check_memory()),
+                Self::degrade("disk_space", Self::check_disk_space()),
+                Self::degrade("disk_smart", Self::check_disk_smart()),
+                Self::degrade("raid_arrays", Self::check_raid_arrays()),
+                Self::degrade("network", Self::check_network_interfaces()),
+                Self::degrade("services", Self::check_systemd_services()),
+                Self::degrade("temperatures", Self::check_temperatures()),
+            ]
+        })
+        .await
+        .map_err(|e| HealthError::Parse(format!("health check task failed: {e}")))?;
+
+        let mut checks = Vec::with_capacity(system_checks.len() + 1);
+        checks.push(Self::degrade("authentication", authentication));
+        checks.extend(system_checks);
 
         let overall_status = Self::determine_overall_status(&checks);
 
@@ -125,9 +162,30 @@ impl HealthService {
     }
 
     /// Run a single health check by name.
-    pub fn run_check(name: &str) -> Result<HealthCheckResult, HealthError> {
+    ///
+    /// Same contracts as [`run_all_checks`]: off-runtime for the system
+    /// checks, direct DB read for `authentication`. A failed check returns
+    /// its raw error here (the single-check handler maps it to a failed
+    /// JSON body); only [`run_all_checks`] owes the UI the degraded
+    /// nine-slot contract.
+    pub async fn run_check(
+        name: &str,
+        pool: &SqlitePool,
+    ) -> Result<HealthCheckResult, HealthError> {
+        if name == "authentication" {
+            return Self::check_authentication(pool).await;
+        }
+
+        let name = name.to_string();
+        tokio::task::spawn_blocking(move || Self::run_system_check(&name))
+            .await
+            .map_err(|e| HealthError::Parse(format!("health check task failed: {e}")))?
+    }
+
+    /// The synchronous dispatcher for the eight DB-free checks
+    /// (everything except `authentication`). Runs on the blocking pool only.
+    fn run_system_check(name: &str) -> Result<HealthCheckResult, HealthError> {
         match name {
-            "authentication" => Self::check_authentication(),
             "storage" => Self::check_storage(),
             "memory" => Self::check_memory(),
             "disk_space" => Self::check_disk_space(),
@@ -140,12 +198,42 @@ impl HealthService {
         }
     }
 
-    pub fn check_authentication() -> Result<HealthCheckResult, HealthError> {
+    /// Turn a failed check into a well-formed `Unknown` result, preserving
+    /// the slot name and carrying the failure in the human message. This is
+    /// what makes a single broken check unable to blank `/api/health`.
+    fn degrade(name: &str, result: Result<HealthCheckResult, HealthError>) -> HealthCheckResult {
+        match result {
+            Ok(result) => result,
+            Err(e) => HealthCheckResult {
+                name: name.to_string(),
+                status: HealthStatus::Unknown,
+                message: format!("Check unavailable: {}", e),
+                details: None,
+                timestamp: chrono::Utc::now(),
+            },
+        }
+    }
+
+    /// Real database probe of the account / session store (item ROADMAP 1.3).
+    ///
+    /// Answers whether the database-backed authentication store can actually
+    /// answer a query (the account table). A corrupt / unreachable database
+    /// surfaces here as an error — degraded to `Unknown` by the caller —
+    /// instead of a hardcoded "operational". Only a scalar count is read:
+    /// this endpoint is household-readable, so no tokens, usernames or
+    /// session material may appear here.
+    pub async fn check_authentication(pool: &SqlitePool) -> Result<HealthCheckResult, HealthError> {
+        let accounts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+            .fetch_one(pool)
+            .await?;
+
         Ok(HealthCheckResult {
             name: "authentication".to_string(),
             status: HealthStatus::Healthy,
-            message: "Authentication system operational".to_string(),
-            details: None,
+            message: "Authentication store reachable".to_string(),
+            details: Some(serde_json::json!({
+                "accounts": accounts,
+            })),
             timestamp: chrono::Utc::now(),
         })
     }
@@ -435,7 +523,11 @@ impl HealthService {
 
             let device = format!("/dev/{}", parts[0]);
 
-            let output = Command::new("smartctl").args(["-H", &device]).output();
+            // `smartctl` needs root on `660 root:disk` devices; the shared
+            // helper (src/smart.rs) carries the sudoers-granted argv shape
+            // (item ROADMAP 1.2). Running this whole function is the job of
+            // `spawn_blocking` in run_all_checks/run_check.
+            let output = crate::smart::std_command(&device, &["-H"]).output();
 
             if let Ok(out) = output {
                 let stdout = String::from_utf8_lossy(&out.stdout);
@@ -473,26 +565,58 @@ impl HealthService {
         })
     }
 
+    /// Network health: the **link state**, not the counters (item ROADMAP
+    /// 1.4). The previous implementation inferred "up" from rx/tx activity in
+    /// `/proc/net/dev`, which flagged a correctly configured but idle
+    /// interface as down and kept calling a pulled cable "up" while stale
+    /// counters survived. The link state now comes from
+    /// `/sys/class/net/<iface>/operstate` (`up`/`down`/`unknown`/…, the same
+    /// source `ip link` reports); `lo` is special-cased as up (its operstate
+    /// is always `unknown`). The traffic counters are still reported in the
+    /// details, they no longer decide the verdict.
     pub fn check_network_interfaces() -> Result<HealthCheckResult, HealthError> {
-        let output = std::fs::read_to_string("/proc/net/dev")?;
+        // Traffic counters per interface, read for detail display only.
+        let counters = std::fs::read_to_string("/proc/net/dev")
+            .map(|content| {
+                let mut map = std::collections::HashMap::new();
+                for line in content.lines().skip(2) {
+                    let Some((name, stats)) = line.split_once(':') else {
+                        continue;
+                    };
+                    let stats: Vec<&str> = stats.split_whitespace().collect();
+                    let rx_bytes: u64 = stats.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+                    let tx_bytes: u64 = stats.get(8).and_then(|s| s.parse().ok()).unwrap_or(0);
+                    map.insert(name.trim().to_string(), (rx_bytes, tx_bytes));
+                }
+                map
+            })
+            .unwrap_or_default();
 
         let mut interfaces = Vec::new();
         let mut up_count = 0;
         let mut down_count = 0;
 
-        for line in output.lines().skip(2) {
-            let parts: Vec<&str> = line.split(':').collect();
-            if parts.len() < 2 {
+        let entries = std::fs::read_dir("/sys/class/net")?;
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let operstate = std::fs::read_to_string(entry.path().join("operstate"))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            let is_loopback = name == "lo";
+            let is_up = link_is_up(&operstate, is_loopback);
+
+            if is_loopback {
+                // Loopback is always operationally there; it must never
+                // satisfy the "some interface is active" verdict alone.
+                interfaces.push(serde_json::json!({
+                    "name": name,
+                    "up": is_up,
+                    "operstate": operstate,
+                    "loopback": true,
+                }));
                 continue;
             }
-
-            let name = parts[0].trim().to_string();
-            let stats: Vec<&str> = parts[1].split_whitespace().collect();
-
-            let rx_bytes: u64 = stats.first().and_then(|s| s.parse().ok()).unwrap_or(0);
-            let tx_bytes: u64 = stats.get(8).and_then(|s| s.parse().ok()).unwrap_or(0);
-
-            let is_up = rx_bytes > 0 || tx_bytes > 0;
 
             if is_up {
                 up_count += 1;
@@ -500,9 +624,11 @@ impl HealthService {
                 down_count += 1;
             }
 
+            let (rx_bytes, tx_bytes) = counters.get(&name).copied().unwrap_or((0, 0));
             interfaces.push(serde_json::json!({
                 "name": name,
                 "up": is_up,
+                "operstate": operstate,
                 "rx_bytes": rx_bytes,
                 "tx_bytes": tx_bytes
             }));
@@ -513,10 +639,15 @@ impl HealthService {
                 HealthStatus::Healthy,
                 format!("{} interfaces up, {} down", up_count, down_count),
             )
-        } else {
+        } else if down_count > 0 {
             (
                 HealthStatus::Warning,
                 "No active network interfaces".to_string(),
+            )
+        } else {
+            (
+                HealthStatus::Unknown,
+                "No non-loopback network interfaces".to_string(),
             )
         };
 
@@ -529,17 +660,21 @@ impl HealthService {
         })
     }
 
+    /// Services health. The appliance's own unit is **derived**, not
+    /// hardcoded (item ROADMAP 1.3): the cgroup path of the current process
+    /// under systemd is `…/system.slice/<unit>.service`, so the check covers
+    /// whatever name the service was installed under. If the process is not
+    /// running inside a systemd unit (a dev checkout, a container) the own
+    /// unit is simply not checked instead of misreporting `inactive`.
     pub fn check_systemd_services() -> Result<HealthCheckResult, HealthError> {
-        let services = vec![
-            "cron.service",
-            "systemd-logind.service",
-            "network-manager.service",
-        ];
+        let own_unit = parse_cgroup_unit(&std::fs::read_to_string("/proc/self/cgroup")?);
+        let services = service_names(own_unit.as_deref());
 
         let mut running = Vec::new();
         let mut failed = Vec::new();
+        let mut own_service_failed = None;
 
-        for service in services {
+        for service in &services {
             let output = Command::new("systemctl")
                 .args(["is-active", service])
                 .output();
@@ -549,12 +684,22 @@ impl HealthService {
                 if status == "active" {
                     running.push(service.replace(".service", ""));
                 } else if status == "failed" {
+                    if Some(service.as_str()) == own_unit.as_deref() {
+                        own_service_failed = Some(service.clone());
+                    }
                     failed.push(service.replace(".service", ""));
                 }
             }
         }
 
-        let (status, message) = if !failed.is_empty() {
+        // The appliance's own unit failing while we are still running is the
+        // unlock-restart-loop shape: that is not a warning, it is broken.
+        let (status, message) = if own_service_failed.is_some() {
+            (
+                HealthStatus::Unhealthy,
+                format!("Failed: {}", failed.join(", ")),
+            )
+        } else if !failed.is_empty() {
             (
                 HealthStatus::Warning,
                 format!("Failed: {}", failed.join(", ")),
@@ -572,7 +717,8 @@ impl HealthService {
             message,
             details: Some(serde_json::json!({
                 "running": running,
-                "failed": failed
+                "failed": failed,
+                "own_unit": own_unit,
             })),
             timestamp: chrono::Utc::now(),
         })
@@ -632,7 +778,7 @@ impl HealthService {
         })
     }
 
-    fn determine_overall_status(checks: &[HealthCheckResult]) -> HealthStatus {
+    pub fn determine_overall_status(checks: &[HealthCheckResult]) -> HealthStatus {
         if checks.iter().any(|c| c.status == HealthStatus::Unhealthy) {
             HealthStatus::Unhealthy
         } else if checks.iter().any(|c| c.status == HealthStatus::Warning) {
@@ -643,6 +789,45 @@ impl HealthService {
             HealthStatus::Unknown
         }
     }
+}
+
+/// The monitored service list: the infrastructure services HomeVault runs
+/// on, plus the appliance's own (derived) unit.
+fn service_names(own_unit: Option<&str>) -> Vec<String> {
+    let mut services: Vec<String> = vec![
+        "cron.service".into(),
+        "systemd-logind.service".into(),
+        "network-manager.service".into(),
+    ];
+    if let Some(own) = own_unit {
+        if !services.iter().any(|s| s == own) {
+            services.push(own.to_string());
+        }
+    }
+    services
+}
+
+/// Decide a check's link state from its `operstate`, pure and unit-tested.
+///
+/// `lo` and `tun*`-style devices report `unknown` because they have no
+/// carrier to report — loopback is always treated as up. Every other state
+/// (`down`, `lowerlayerdown`, `unknown`, empty/unreadable) is **not** up;
+/// none of them may ever be inferred from idle traffic counters again.
+fn link_is_up(operstate: &str, is_loopback: bool) -> bool {
+    if is_loopback {
+        return true;
+    }
+    operstate == "up"
+}
+
+/// Extract the systemd unit the current process runs under from
+/// `/proc/self/cgroup` (v2: `0::/system.slice/homevault.service`). Returns
+/// `None` when the process is not running inside a `.service` unit.
+fn parse_cgroup_unit(cgroup: &str) -> Option<String> {
+    cgroup.lines().find_map(|line| {
+        let last = line.rsplit('/').next()?;
+        last.ends_with(".service").then(|| last.to_string())
+    })
 }
 
 #[cfg(test)]
@@ -740,75 +925,141 @@ mod tests {
         }
     }
 
-    // -- run_all_checks / run_check ------------------------------------------
+    // -- partial-results contract (item ROADMAP 1.5) ---------------------------
 
     #[test]
-    fn test_run_all_checks_returns_the_nine_checks_in_order() {
-        let _g = env_guard();
-        let health = HealthService::run_all_checks().expect("run_all_checks");
-        let names: Vec<&str> = health.checks.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(
-            names,
-            vec![
-                "authentication",
-                "storage",
-                "memory",
-                "disk_space",
-                "disk_smart",
-                "raid_arrays",
-                "network",
-                "services",
-                "temperatures",
-            ]
-        );
-        // Every check carries a non-empty human message.
-        for c in &health.checks {
-            assert!(!c.message.trim().is_empty(), "empty message for {}", c.name);
-        }
-        // The aggregate matches the per-check precedence.
-        assert_eq!(
-            health.overall_status,
-            HealthService::determine_overall_status(&health.checks)
-        );
-        assert!(health.alerts.is_empty());
+    fn test_degrade_passes_a_successful_check_through_unchanged() {
+        let ok = check(HealthStatus::Healthy);
+        // A passing check keeps its own name and message; the slot name is
+        // only applied to the degraded fallback.
+        let passed = HealthService::degrade("memory", Ok(ok.clone()));
+        assert_eq!(passed.name, ok.name);
+        assert_eq!(passed.status, ok.status);
+        assert_eq!(passed.message, ok.message);
+        assert_eq!(passed.status, HealthStatus::Healthy);
     }
 
     #[test]
-    fn test_run_check_authentication_is_always_healthy() {
-        let c = HealthService::run_check("authentication").unwrap();
-        assert_eq!(c.name, "authentication");
-        assert_eq!(c.status, HealthStatus::Healthy);
+    fn test_degrade_turns_a_failure_into_an_unknown_slot_with_its_name() {
+        let failed = HealthService::degrade(
+            "disk_space",
+            Err(HealthError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no such file or directory",
+            ))),
+        );
+        assert_eq!(failed.name, "disk_space");
+        assert_eq!(failed.status, HealthStatus::Unknown);
+        assert!(!failed.message.trim().is_empty());
+        // The failure reason must be visible: "Check unavailable: <error>".
+        assert!(
+            failed.message.contains("Check unavailable"),
+            "message: {}",
+            failed.message
+        );
     }
 
+    // -- run_system_check: the known names still dispatch ------------------
+
     #[test]
-    fn test_run_check_rejects_an_unknown_name() {
-        let err = HealthService::run_check("does-not-exist").unwrap_err();
+    fn test_run_system_check_rejects_an_unknown_name() {
+        let err = HealthService::run_system_check("does-not-exist").unwrap_err();
         assert!(matches!(err, HealthError::Parse(_)));
     }
 
+    // -- run_all_checks / run_check DB paths → tests/health_integration.rs --
+
+    // -- link state (item ROADMAP 1.4) --------------------------------------
+
     #[test]
-    fn test_run_check_dispatches_every_known_name() {
-        let _g = env_guard();
-        // `run_check`'s match arm name ("network"/"services") and the
-        // resulting `HealthCheckResult.name` deliberately differ for two
-        // checks — assert each arm resolves without error.
-        for (arm, result_name) in [
-            ("authentication", "authentication"),
-            ("storage", "storage"),
-            ("memory", "memory"),
-            ("disk_space", "disk_space"),
-            ("disk_smart", "disk_smart"),
-            ("raid_arrays", "raid_arrays"),
-            ("network", "network"),
-            ("services", "services"),
-            ("temperatures", "temperatures"),
-        ] {
-            let c = HealthService::run_check(arm).unwrap_or_else(|e| panic!("{arm}: {e}"));
-            assert_eq!(c.name, result_name);
-        }
+    fn test_link_is_up_follows_operstate_not_counters() {
+        // A real link states report.
+        assert!(link_is_up("up", false));
+        assert!(!link_is_up("down", false));
+        // A dormant / lower-state link is not up either.
+        assert!(!link_is_up("lowerlayerdown", false));
+        // An unreadable operstate must never count as up.
+        assert!(!link_is_up("", false));
+        // unknown-without-carrier is not up for a physical interface…
+        assert!(!link_is_up("unknown", false));
+        // …but loopback is always operationally there.
+        assert!(link_is_up("unknown", true));
+        assert!(link_is_up("up", true));
     }
 
-    // -- individual checks -------------------------------------------------
+    #[test]
+    fn test_check_network_interfaces_lists_loopback_and_reports_operstate() {
+        let c = HealthService::check_network_interfaces().unwrap();
+        assert_eq!(c.name, "network");
+        let ifaces = c.details.unwrap()["interfaces"].as_array().unwrap().clone();
+        let names: Vec<String> = ifaces
+            .iter()
+            .filter_map(|i| i["name"].as_str().map(String::from))
+            .collect();
+        assert!(names.iter().any(|n| n == "lo"), "no loopback in {names:?}");
+        // Every interface entry carries its operstate — the source of truth
+        // this check now uses — and loopback is flagged as such.
+        for i in &ifaces {
+            assert!(i["operstate"].is_string(), "no operstate: {i}");
+        }
+        let lo = ifaces.iter().find(|i| i["name"] == "lo").unwrap();
+        assert_eq!(lo["loopback"], serde_json::json!(true));
+        let _ = names;
+    }
+
+    // -- derived own service unit (item ROADMAP 1.3) ------------------------
+
+    #[test]
+    fn test_parse_cgroup_unit_reads_the_slice_path() {
+        let unit = parse_cgroup_unit("0::/system.slice/homevault.service\n");
+        assert_eq!(unit.as_deref(), Some("homevault.service"));
+    }
+
+    #[test]
+    fn test_parse_cgroup_unit_ignores_non_service_units() {
+        // A dev checkout or a container is not a systemd service — the own
+        // unit must be absent rather than guessed.
+        assert_eq!(parse_cgroup_unit("0::/\n"), None);
+        assert_eq!(parse_cgroup_unit("0::/docker/"), None);
+        assert_eq!(parse_cgroup_unit("0::/docker/abc123\n"), None);
+    }
+
+    #[test]
+    fn test_parse_cgroup_unit_accepts_any_slice_depth() {
+        assert_eq!(
+            parse_cgroup_unit(
+                "2::/user.slice/user-1000.slice/user@1000.service/app.slice/xyz.service\n"
+            )
+            .as_deref(),
+            Some("xyz.service")
+        );
+    }
+
+    #[test]
+    fn test_service_names_include_the_derived_own_unit_without_duplicates() {
+        let with_own = service_names(Some("homevault.service"));
+        assert_eq!(
+            with_own,
+            vec![
+                "cron.service".to_string(),
+                "systemd-logind.service".to_string(),
+                "network-manager.service".to_string(),
+                "homevault.service".to_string(),
+            ]
+        );
+        // An own unit already covered by the base list is not added twice.
+        let deduped = service_names(Some("cron.service"));
+        assert_eq!(
+            deduped,
+            vec![
+                "cron.service".to_string(),
+                "systemd-logind.service".to_string(),
+                "network-manager.service".to_string(),
+            ]
+        );
+    }
+
+    // -- individual checks (DB paths → tests/health_integration.rs) ---------
 
     #[test]
     fn test_check_storage_healthy_when_data_dir_exists_warning_otherwise() {
@@ -856,19 +1107,5 @@ mod tests {
         assert!(total > 0);
         assert!(used <= total && avail <= total);
         assert_eq!(used + avail, total);
-    }
-
-    #[test]
-    fn test_check_network_interfaces_always_lists_loopback() {
-        let c = HealthService::check_network_interfaces().unwrap();
-        assert_eq!(c.name, "network");
-        let ifaces = c.details.unwrap();
-        let names: Vec<String> = ifaces["interfaces"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|i| i["name"].as_str().unwrap().to_string())
-            .collect();
-        assert!(names.iter().any(|n| n == "lo"), "no loopback in {names:?}");
     }
 }

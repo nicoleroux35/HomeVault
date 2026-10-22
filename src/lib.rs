@@ -77,6 +77,7 @@ pub mod rescue;
 pub mod restic;
 pub mod restic_scheduler;
 pub mod scheduled_tasks_scheduler;
+pub mod smart;
 pub mod snapshot_scheduler;
 pub mod transfer_quota;
 
