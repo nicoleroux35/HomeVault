@@ -4077,10 +4077,8 @@ pub async fn handle_explorer_watch_ticket(
         );
     };
 
-    let ticket = crate::sse::file_watcher::issue_ticket(
-        &session.username,
-        &validated.to_string_lossy(),
-    );
+    let ticket =
+        crate::sse::file_watcher::issue_ticket(&session.username, &validated.to_string_lossy());
     ResponseHelper::json_success(serde_json::json!({ "ticket": ticket }))
 }
 
