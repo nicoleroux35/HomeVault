@@ -38,12 +38,12 @@ An item leaves this file only when its acceptance criteria are met **and**
 
 ## Current state
 
-Eleven areas have had a full "production-ready" pass and are out of scope here:
+Twelve areas have had a full "production-ready" pass and are out of scope here:
 **Docker** (2026-10-20), then **Firewall**, **Backup/restic**, **Users**,
 **Groups**, **Rescue**, **Shares**, **Network**, **VPN** and the **app-proxy
 auth under HTTPS** (all 2026-10-21), and **Health** (2026-10-22) — followed by
-**Health's numbered follow-ups** and the **File Explorer security pass**
-(both 2026-10-22, see Done).
+**Health's numbered follow-ups**, the **File Explorer security pass** and the
+**Account / Security pass** (all 2026-10-22, see Done).
 
 Everything else is still on its original implementation plus incremental
 feature work. The pattern is consistent: **the screens render, the endpoints
@@ -68,10 +68,8 @@ Two structural facts explain most of the list:
 
 | # | Area | Verdict | Blocking items |
 |---|---|---|---|
-| 2 | Cache tier | **P0** | 3 |
 | 3 | Disk quotas (home size) | **P0** | 3 |
 | 4 | AI Assistant / RAG | **P0** | 3 |
-| 5 | Snapshot schedules | **P0** | 3 |
 | 6 | Apps Center / app-proxy | **P0** | 3 |
 | 7 | Storage | P1 | 3 |
 | 8 | RAID wizard | P1 | 3 |
@@ -79,8 +77,7 @@ Two structural facts explain most of the list:
 | 10b | File Explorer — residual hardening | P2 | 3 |
 | 11 | Metrics | P1 | 2 |
 | 12 | Scheduled Tasks | P1 | 3 |
-| 13 | Settings — remaining cards | P1 | 5 |
-| 14 | Account / Security | P1 | 2 |
+| 13 | Settings — remaining cards | P1 | 4 |
 | 15 | Dashboard / Widgets | P1 | 3 |
 | 16 | Cloud Sync (rclone) | P1 | 3 |
 | 17 | Downloader (aria2) | P1 | 3 |
@@ -100,67 +97,13 @@ Two structural facts explain most of the list:
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **85** (78 per-area + 7 cross-cutting).
+Total open findings: **76** (69 per-area + 7 cross-cutting).
 
-**Suggested order.** 14 → 13.1 → 2 → 12 (the four that either lose
-data, leak data, or violate the privacy baseline), then the rest by P1 order.
+**Suggested order.** 12 first (it loses data), then the rest by P1 order.
 
 ---
 
 ## P0 — Broken
-
-### 2. Cache tier — the mover can fill the array and then delete the sources
-
-`src/cache.rs`, `src/cache_scheduler.rs`, `src/handlers/cache.rs`.
-
-- [ ] **2.1 — No free-space check on the destination before a destructive move.**
-      Every branch of `perform_moves` (`src/cache.rs:215-275`) calls
-      `rsync_move(&src, &dst, true, …)`; `rsync_move` (`:329`) never checks free
-      space on `dst`. Draining a full cache into a nearly-full array fills the
-      array and `--remove-source-files` deletes what was copied, while the files
-      that could not be copied stay on a cache tier that is now the only copy
-      and is out of space. The only `df` is `pool_usage_pct` on the **cache**
-      mount, for the `prefer` heuristic (`:302`).
-      *Acceptance:* the mover refuses (or stops cleanly) when `dst` free space
-      is below the source payload, per share, before any delete.
-- [ ] **2.2 — The first rsync error aborts every remaining share, silently.**
-      Each `CacheMode` arm is `Self::rsync_move(...)?` (`:222-273`): one failing
-      share returns `Err` from `perform_moves`, the run is recorded `failed`,
-      all remaining shares are skipped — while sources for the shares that did
-      run may already be deleted. No per-share result is persisted, so the UI
-      cannot show which shares are now split across tiers.
-      *Acceptance:* per-share outcome persisted and rendered; one failure does
-      not stop the run; the run summary names the shares that failed.
-- [ ] **2.3 — `scan_pools()` (three root subprocesses) is called inline from
-      async handlers and once per share.** `CacheService::pool_mount_point`
-      (`:118-124`) calls `PoolService::scan_pools()` (`sudo zpool list` +
-      `mdadm` + `btrfs` + `df`); it is reached from `:154,191,440` and
-      `refresh_smb_exports` (`:472-477`), and from the handlers at
-      `src/handlers/cache.rs:97,165,252,457` with no `spawn_blocking`.
-      Related: `handle_cache_settings_update` validates against
-      `scan_pools().unwrap_or_default()` (`:97`), so a *failed* scan tells the
-      user "Pool 'x' does not exist" — a wrong, unactionable error.
-      *Acceptance:* one scan per request, off the runtime; scan failure is a
-      distinct error from "pool missing".
-
-Also in this pass: `cache_pool: Some("")` cannot clear the designation
-(`handlers/cache.rs:95-128`); `handle_cache_share_update` never validates
-`target_pool` unlike the create path (`:300-343`); `min_free_percent` accepts
-`0` server-side while the UI clamps to 1–95 (`:104`, `Storage.svelte:1221`);
-`cache_scheduler` records `mover_last_run_at` on failure too
-(`cache_scheduler.rs:93`); `MOVER_RUNNING` is process-local, so a restart
-mid-move leaves a run row stuck at `running`.
-
-*Tests:* `cache.rs` has 13 unit tests, `cache_scheduler.rs` and
-`handlers/cache.rs` have **zero**, there is **no cache integration file** and
-**no cache E2E** (only a cron-validation test at
-`tests/e2e/storage/storage.spec.ts:276`). The entire data-movement path is
-unvalidated end-to-end — `docs/guides/cache.md:164` admits it was never run
-against real hardware. Add a loop-device live pass alongside the fix.
-
-*Docs:* `docs/guides/cache.md`.
-
----
 
 ### 3. Disk quotas (home-directory size) — the slider limits nothing
 
@@ -244,62 +187,6 @@ search → reconcile → remove) and a `chat` E2E section for the index controls
 
 *Docs:* `docs/guides/rag.md` (Document Sources table + the new controls),
 `docs/guides/chat.md`, `docs/guides/mcp.md` (blast radius of the reboot tool).
-
----
-
-### 5. Snapshot schedules — a failed prune is recorded as a success
-
-`src/snapshot_scheduler.rs`, `src/snapshots.rs`,
-`src/handlers/snapshot_schedules.rs`.
-
-- [ ] **5.1 — A failed prune is a green run.** `src/snapshot_scheduler.rs:296-303`:
-      `repo.mark_finished(&schedule.id, true, &summary)` is called with `true`
-      in **both** arms of the `match` on `prune_result`. GFS retention can be
-      permanently broken (bad permissions, full pool, `zfs destroy` failing)
-      while the UI shows a success row forever and the disk fills with no
-      signal. *Acceptance:* the failure is recorded as a failure and surfaces
-      in the notification center. *Tests:* an integration test that forces
-      `prune_pool` to fail and asserts the run row is not `success`.
-- [ ] **5.2 — No single-flight, so "Run now" can overlap the scheduler.**
-      `run_schedule` is called directly from
-      `handle_snapshot_schedule_run_now` (`handlers/snapshot_schedules.rs:255`)
-      and from `tick_due` (`snapshot_scheduler.rs:243`) with no lock and no
-      "already running" check (contrast the cache mover's `MOVER_RUNNING`).
-      Two concurrent runs create two snapshots with the same second-resolution
-      name, then both prune a set the other is mutating — one can destroy a
-      snapshot the other just decided to keep.
-      *Acceptance:* one run per schedule at a time, refused with a clear
-      message; a per-pool lock covers two schedules on the same pool.
-- [ ] **5.3 — ZFS-first dispatch breaks every Btrfs pool on a mixed host.**
-      `src/snapshots.rs:200-208` (identically `:287-295`, `:341-349`) branches
-      on `check_zfs().is_ok()`, which only tests that the **binary** exists
-      (`:82-95`). On a host with `zfsutils-linux` installed *and* Btrfs pools —
-      exactly what `installer/install.sh` produces when both packages are
-      present — every create/delete/rollback for a Btrfs pool takes the ZFS
-      branch and fails. `docs/guides/snapshots.md:9` describes this as a
-      feature ("ZFS-first / Btrfs-fallback"), which is how it survived.
-      *Acceptance:* the backend is chosen per **pool type**, not per binary
-      availability.
-
-Also: `parse_auto` ignores the configured prefix — it splits on the first `-`
-and only validates the trailing timestamp, so a *manual* snapshot named
-`mydata-20261021-030000` is badged `auto` and looks managed by a schedule
-(`handlers/snapshot_schedules.rs:290,307-317`); the GFS windows do not match
-their names (hourly = 24 h, daily = 7 d, weekly = 30 d, monthly = 365 d —
-`snapshot_scheduler.rs:63-74`, so "hourly, keep 24" retains at most 24 h while
-"weekly, keep 4" spans 30 d of buckets); a schedule can be
-created on a nonexistent pool (`:158-186`) and then fails silently every tick;
-nothing prevents two schedules on the same pool with the same default prefix,
-although `046_snapshot_schedules.sql:5` claims "one row per (pool, prefix)"
-with **no unique index**; `handle_snapshot_pool_list` is `require_admin` while
-every other Storage read is `require_auth` (`:265-270`).
-
-*Tests:* `snapshot_scheduler.rs` has 8 tests, all on the pure GFS selector —
-**no `#[tokio::test]`**, so `run_schedule`/`tick_due` are untested, which is
-exactly why 5.1 survived. `tests/e2e/storage/snapshot-schedules.spec.ts` has 4
-tests.
-
-*Docs:* `docs/guides/snapshots.md`.
 
 ---
 
@@ -549,21 +436,6 @@ the fix).
 
 ### 13. Settings — the remaining cards
 
-- [ ] **13.1 — The update check calls GitHub on every Settings open, ignoring the
-      privacy setting.** `loadVersionInfo()` runs unconditionally in `onMount`
-      (`frontend/src/routes/Settings.svelte:335,435-441`) →
-      `GET /settings/version` → an unconditional outbound call
-      (`src/handlers/settings.rs:920-966`). `should_check_for_updates()`
-      (`:891`) and `CACHED_UPDATE_RESULT` (`:335`) have **zero readers**
-      (verified by grep — definitions only). `UpdateFrequency::Manual` and
-      `Disabled` are therefore decorative, contradicting the doc comment at
-      `:59-64` and `docs/guides/settings.md:33`. This is a **privacy-baseline
-      violation** (`CLAUDE.md` → Compliance, point 1): an outbound third-party
-      call that the admin believes is off.
-      *Acceptance:* no outbound call unless the admin pressed "Check now" or
-      opted into a schedule; the setting is enforced server-side, not in the UI.
-      *Tests:* integration test asserting zero outbound attempts with
-      `Manual`/`Disabled`.
 - [ ] **13.2 — `restart_nut()` cannot succeed.** `src/ups.rs:517-521` runs
       `systemctl restart nut-driver-enumerator.service nut-server`, but the
       sudoers grant (`src/setup.rs:877-888`) whitelists specific verbs/units and
@@ -616,44 +488,6 @@ fresh `reqwest::Client::new()` with no timeout per dispatch
 `antivirus_scheduler.rs`, `handlers/power.rs`, `autostart.rs`).
 *Docs:* `docs/guides/antivirus.md`, `docs/guides/settings.md`,
 `docs/guides/notifications.md`.
-
----
-
-### 14. Account / Security — session tokens are handed to the client
-
-- [ ] **14.1 — The self-service session list returns full session tokens.**
-      `src/handlers/security.rs:104-111` maps `token: s.token.clone()` — the
-      whole bearer token — into the JSON, while the admin view masks it to 8
-      characters (`src/handlers/users.rs:596-605`). The token lands in the DOM,
-      in devtools, in any client-side log and in any XSS on the page: a
-      session-hijack primitive handed to the account page.
-      *Acceptance:* the response carries an opaque id or a masked token, never
-      the secret. *Tests:* integration test asserting the token is absent from
-      the payload.
-- [ ] **14.2 — `handle_revoke_sessions` is not scoped to the caller.**
-      `src/handlers/security.rs:137-148` resolves `username` and then never
-      uses it — it only filters out the caller's own token before
-      `delete_many`. Any authenticated user who learns another user's token can
-      revoke it, which turns 14.1 into a cross-account DoS. The dead variable is
-      the tell that the scope check was intended and dropped.
-      *Acceptance:* the delete is restricted to sessions belonging to the
-      caller. *Tests:* integration test with a second user's token.
-
-Also: `handle_avatar_preview` is unauthenticated and seed-driven
-(`src/handlers/avatars.rs:97-112`); `render_user_avatar` (`:199`) and
-`missing_avatar_response` (`:219`) have **no callers** — either the upload path
-is half-wired or a feature was removed without cleanup, worth confirming because
-it may mean uploaded avatars are never rendered; `docs/guides/avatars.md:24`
-claims avatars are cached and there is no cache
-(`idRandomization` makes every response byte-different).
-
-*Tests:* 25 + 25 integration tests, 41 + 75 E2E — yet **none of the 50
-integration tests catches 14.1 or 14.2**, because they assert status codes and
-`total`, not response shape or cross-user behaviour.
-*Docs:* `docs/guides/account.md` has **no** sessions or login-history section at
-all while the screen renders both cards; `docs/guides/security.md:56` documents
-`/security/login-history/{username}` as admin-only while the code also allows
-self (`src/handlers/security.rs:322`).
 
 ---
 
@@ -1224,6 +1058,52 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-22 (f)** — Snapshot schedules — a run now reports what actually
+happened. A failed prune is a **failed** run (`last_status = "failed"` with the
+reason, plus one `snapshot.schedules` notification per outage, not per tick)
+instead of a green row while the pool fills up. Runs are single-flight per
+schedule **and** per pool (`RunGuard` over a process-wide registry, released on
+drop), so a "Run now" cannot overlap a scheduler tick — refused with `409` and
+the row untouched. The backend is chosen per **pool** (`SnapshotService::kind_for`
+over `PoolService::scan_pools`; mdadm arrays resolved by the filesystem on top)
+instead of "is the `zfs` binary installed", which sent every Btrfs pool down the
+ZFS branch on a mixed host. Also closed: GFS tier windows derive from the
+configured counts (`keep × period`, clamped monotonic) so "keep 48 hourly" and
+"keep 8 weekly" mean what they say; the `auto` badge requires one of the pool's
+own schedule prefixes (a manual `mydata-20261021-030000` is no longer tagged
+`auto`); a schedule on a nonexistent pool is refused at create/update;
+`(pool, prefix)` is unique (migration `053_snapshot_schedule_unique_prefix.sql`,
+`409` on conflict); `GET /snapshot-schedules/snapshots` is `require_auth` like
+every other Storage read; and the Storage Snapshots tab surfaces a refused or
+failed run instead of ignoring the response (`docs/guides/snapshots.md`,
+`docs/guides/notifications.md`, `docs/API.md`).
+
+**2026-10-22 (e)** — Cache tier — the mover can no longer fill the array and
+then delete its sources: a destructive move first proves the destination can
+hold the payload (`find`-sized, `df`-checked, age filter applied; refusal means
+rsync never runs, so nothing is deleted), every share yields a persisted
+per-share outcome (`cache_mover_run_shares`, migration 052) and one failure no
+longer aborts the run (status `completed | partial | failed`, the summary names
+the shares that were not moved), and pool mounts are resolved by one
+`PoolMounts::scan` per run/request with the scan on the blocking pool and a
+distinct "failed to scan pools" error. Also closed: `cache_pool: ""` clears the
+designation, share update validates `target_pool`, `min_free_percent` is 1–95
+server-side, a failed scheduled run no longer advances `mover_last_run_at`
+(15-min retry backoff), and a restart closes the stale `running` row
+(`docs/guides/cache.md`, `docs/API.md`).
+
+**2026-10-22 (d)** — Settings — the update check is opt-in and enforced
+server-side: `Manual`/`Disabled` never contact the update endpoint, an opted-in
+schedule fires once per interval, and only the new admin
+`POST /settings/version/check` forces a check (`docs/guides/settings.md`).
+
+**2026-10-22 (c)** — Account / Security — self-service session list no longer
+returns live session tokens (opaque 12-hex SHA-256 `id`), revocation is
+caller-scoped (ids resolve only against `find_all_by_username(caller)`; a
+foreign id/token is a 404), the current session stays protected, and the two
+caller-less avatar helpers were deleted (`docs/guides/security.md`,
+`docs/guides/account.md`, `docs/guides/avatars.md`).
 
 **2026-10-22 (b)** — File Explorer — the four blocking findings closed: zip-slip
 proof extraction (pre-flight member validation in the C locale, symlink-member
