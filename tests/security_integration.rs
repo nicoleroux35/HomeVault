@@ -994,8 +994,14 @@ async fn test_firewall_rule_add_rejects_malformed_protocol_port_and_source() {
         (json!({"port": "443", "source": "any"}), "source"),
         (json!({"port": "443", "source": "1.2.3.4/33"}), "source"),
     ] {
-        let (status, body) =
-            send(&mut r, Method::POST, "/api/firewall/rules", Some(&token), Some(payload)).await;
+        let (status, body) = send(
+            &mut r,
+            Method::POST,
+            "/api/firewall/rules",
+            Some(&token),
+            Some(payload),
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         let message = body["message"].as_str().unwrap_or("").to_lowercase();
         assert!(
@@ -1042,8 +1048,14 @@ async fn test_firewall_default_policy_validates_before_probing_ufw() {
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
 
     for (payload, expected) in [
-        (json!({"direction": "forward", "policy": "deny"}), "direction"),
-        (json!({"direction": "incoming", "policy": "disabled"}), "policy"),
+        (
+            json!({"direction": "forward", "policy": "deny"}),
+            "direction",
+        ),
+        (
+            json!({"direction": "incoming", "policy": "disabled"}),
+            "policy",
+        ),
     ] {
         let (status, body) = send(
             &mut r,
