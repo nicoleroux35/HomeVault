@@ -141,6 +141,8 @@
   } = { id: null, pool: '', cron: '0 */4 * * *', prefix: 'hv-auto', recursive: true,
         gfs_hourly: 24, gfs_daily: 7, gfs_weekly: 4, gfs_monthly: 12, gfs_yearly: 1, enabled: true };
   let snapFormError = '';
+  /** Last "run now" failure, shown above the schedule list. */
+  let snapActionError = '';
   let snapBusyId = '';
   let snapViewPool = '';
   let snapViewRows: PoolSnapshotRow[] = [];
@@ -313,9 +315,16 @@
 
   async function runSnapNow(row: SnapshotScheduleRow) {
     snapBusyId = row.id;
+    snapActionError = '';
     try {
-      await api.runSnapshotScheduleNow(row.id);
+      const res = await api.runSnapshotScheduleNow(row.id);
+      // The run can be refused (409: a tick or another admin already owns
+      // this pool) or fail — the response used to be ignored entirely, so
+      // the button looked like it worked.
+      if (!res.success) { snapActionError = res.message || $t('storage.snapshots.run_failed'); }
       await loadSnapshotSchedules();
+    } catch {
+      snapActionError = $t('storage.snapshots.run_failed');
     } finally {
       snapBusyId = '';
     }
@@ -1325,6 +1334,12 @@
               <IconPlus size={16} stroke={2} /> {$t('storage.snapshots.new')}
             </Button>
           </div>
+
+          {#if snapActionError}
+            <div data-testid="snapshots-action-error">
+              <Alert variant="error">{snapActionError}</Alert>
+            </div>
+          {/if}
 
           {#if !snapSchedulesLoaded}
             <EmptyState title={$t('storage.analyzing_devices')} />

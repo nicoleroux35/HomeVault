@@ -1024,7 +1024,7 @@ See [guides/power.md](./guides/power.md).
 | PUT | `/power/spindown` | admin | `handle_power_spindown_set` — `{ device, apm_level?, spindown_minutes? }`, applied immediately |
 | POST | `/power/spindown/apply` | admin | `handle_power_spindown_apply` — re-apply all saved settings |
 
-## Snapshot schedules — `snapshot-schedules/*` (admin)
+## Snapshot schedules — `snapshot-schedules/*`
 
 Cron-driven pool snapshots with GFS retention. See
 [guides/snapshots.md](./guides/snapshots.md).
@@ -1036,7 +1036,20 @@ Cron-driven pool snapshots with GFS retention. See
 | PUT | `/snapshot-schedules/{id}` | admin | `handle_snapshot_schedule_update` |
 | DELETE | `/snapshot-schedules/{id}` | admin | `handle_snapshot_schedule_delete` — snapshots are kept |
 | POST | `/snapshot-schedules/{id}/run` | admin | `handle_snapshot_schedule_run_now` — create + GFS prune now |
-| GET | `/snapshot-schedules/snapshots?pool=` | admin | `handle_snapshot_pool_list` — pool snapshots, `auto` tags the schedules' own prefix |
+| GET | `/snapshot-schedules/snapshots?pool=` | auth | `handle_snapshot_pool_list` — pool snapshots, `auto` tags the schedules' own prefix |
+
+- `GET …/snapshots` is a **read** (`require_auth`): it only lists names.
+  Everything that mutates or destroys stays `require_admin`.
+- **409 Conflict** — `POST`/`PUT` when another schedule already owns the
+  same `(pool, prefix)` pair (unique index, migration 053), and `POST
+  …/{id}/run` when a run already holds that schedule or its pool
+  (single-flight; nothing was attempted, the row is untouched).
+- **400** — `POST`/`PUT` for a pool the host does not report (skipped when
+  the host reports no pool at all), plus the usual cron/prefix/pool-name
+  validation.
+- A run whose prune fails is recorded as `last_status: "failed"` with the
+  reason in `last_error`, and raises one `snapshot.schedules` notification
+  per outage.
 
 ## Health endpoint detail
 

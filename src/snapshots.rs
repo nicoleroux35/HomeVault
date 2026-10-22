@@ -6,20 +6,22 @@
  * Version       : 1.0.0
  *
  * Description:
- *   ZFS snapshot management for storage pools and datasets: create, list,
- *   rollback and destroy snapshots through the zfs CLI (sudo-scoped),
- *   feeding the Storage and Snapshots apps.
+ *   ZFS/Btrfs snapshot management for storage pools and datasets: create,
+ *   list, rollback and destroy snapshots through the zfs/btrfs CLI
+ *   (sudo-scoped), feeding the Storage and Snapshots apps. The backend is
+ *   chosen per **pool** (`SnapshotService::kind_for`), never from which
+ *   binary happens to be installed.
  *
  * Dependencies:
  *   - serde (>= 1.0), thiserror (>= 2)
  *
  * Usage:
- *   handlers/storage.rs / handlers/explorer.rs snapshot endpoints (see
- *   docs/guides/snapshots.md).
+ *   handlers/storage.rs / handlers/explorer.rs snapshot endpoints and the
+ *   scheduled-snapshot engine (see docs/guides/snapshots.md).
  * =============================================================================
  */
 
-//! ZFS snapshot management (create/list/rollback/destroy) for pools.
+//! ZFS/Btrfs snapshot management (create/list/rollback/destroy) for pools.
 
 use serde::{Deserialize, Serialize};
 use std::process::Command;
@@ -39,6 +41,15 @@ pub enum SnapError {
     NotFound(String),
     #[error("Permission denied")]
     PermissionDenied,
+    #[error("{0}")]
+    Unsupported(String),
+}
+
+/// The on-disk snapshot technology of a **pool** (never of the host).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotKind {
+    Zfs,
+    Btrfs,
 }
 
 /// A single filesystem snapshot (ZFS or Btrfs).
@@ -71,68 +82,101 @@ pub struct CreateSnapshotRequest {
     pub recursive: bool,
 }
 
+/// The pool snapshot operations one scheduled run needs: create, list and
+/// delete. Production code goes through [`PoolBackend`]; tests inject a fake
+/// so a failing prune is reachable without a real pool.
+pub trait SnapshotBackend: Send + Sync {
+    fn create(&self, name: &str, recursive: bool) -> Result<(), SnapError>;
+    fn list(&self) -> Result<Vec<Snapshot>, SnapError>;
+    fn delete(&self, name: &str) -> Result<(), SnapError>;
+}
+
+/// The real backend: one pool, resolved to its own technology **once** (a
+/// single `PoolService::scan_pools`), then reused by every call — a prune
+/// deletes several snapshots and must not rescan the host each time.
+pub struct PoolBackend {
+    pool: String,
+    kind: SnapshotKind,
+}
+
+impl PoolBackend {
+    pub fn new(pool: &str) -> Result<Self, SnapError> {
+        Ok(Self {
+            pool: pool.to_string(),
+            kind: SnapshotService::kind_for(pool)?,
+        })
+    }
+}
+
+impl SnapshotBackend for PoolBackend {
+    fn create(&self, name: &str, recursive: bool) -> Result<(), SnapError> {
+        SnapshotService::create_snapshot_of(self.kind, &self.pool, name, None, recursive)
+    }
+
+    fn list(&self) -> Result<Vec<Snapshot>, SnapError> {
+        SnapshotService::list_snapshots_of(self.kind, &self.pool)
+    }
+
+    fn delete(&self, name: &str) -> Result<(), SnapError> {
+        SnapshotService::delete_snapshot_of(self.kind, &self.pool, name)
+    }
+}
+
 /// Service for creating, listing, deleting, and rolling back ZFS/Btrfs snapshots.
 pub struct SnapshotService;
 
 impl SnapshotService {
-    pub fn is_available() -> bool {
-        Self::check_zfs().is_ok() || Self::check_btrfs().is_ok()
-    }
-
-    fn check_zfs() -> Result<(), SnapError> {
-        let output = Command::new("sudo").arg("zfs").args(["--version"]).output();
-
-        match output {
-            Ok(out) => {
-                if out.status.success() {
-                    info!(
-                        "ZFS available: {}",
-                        String::from_utf8_lossy(&out.stdout).trim()
-                    );
-                    Ok(())
-                } else {
-                    Err(SnapError::CommandFailed("ZFS not available".to_string()))
-                }
+    /// The backend this **pool** needs, from its own technology. Never from
+    /// which binary is installed: `zfsutils-linux` and `btrfs-progs` are
+    /// usually both present (`installer/install.sh`), so "the `zfs` binary
+    /// exists" says nothing about this pool — that test sent every Btrfs
+    /// pool down the ZFS branch and made create/delete/rollback fail.
+    pub fn kind_for(pool: &str) -> Result<SnapshotKind, SnapError> {
+        let pools = crate::pools::PoolService::scan_pools()
+            .map_err(|e| SnapError::CommandFailed(format!("Failed to scan pools: {e}")))?;
+        // A ZFS dataset path (`tank/data`) names its pool by the first
+        // component, so walk up until a known pool matches.
+        let mut candidate = pool;
+        loop {
+            if let Some(info) = pools.iter().find(|p| p.name == candidate) {
+                return Self::kind_of_pool(info);
             }
-            Err(_) => Err(SnapError::CommandFailed(
-                "zfs command not found".to_string(),
-            )),
+            match candidate.rsplit_once('/') {
+                Some((parent, _)) if !parent.is_empty() => candidate = parent,
+                _ => return Err(SnapError::PoolNotFound(pool.to_string())),
+            }
         }
     }
 
-    fn check_btrfs() -> Result<(), SnapError> {
-        let output = Command::new("sudo")
-            .arg("btrfs")
-            .args(["--version"])
-            .output();
-
-        match output {
-            Ok(out) => {
-                if out.status.success() {
-                    info!(
-                        "Btrfs available: {}",
-                        String::from_utf8_lossy(&out.stdout).trim()
-                    );
-                    Ok(())
-                } else {
-                    Err(SnapError::CommandFailed("Btrfs not available".to_string()))
+    fn kind_of_pool(info: &crate::pools::PoolInfo) -> Result<SnapshotKind, SnapError> {
+        match info.pool_type {
+            crate::pools::PoolType::Zfs => Ok(SnapshotKind::Zfs),
+            crate::pools::PoolType::Btrfs => Ok(SnapshotKind::Btrfs),
+            // An mdadm array (or an unidentified pool) says nothing about
+            // the filesystem on top of it: only a Btrfs-formatted array can
+            // be snapshotted, and a ZFS one is reported by `zpool` anyway.
+            crate::pools::PoolType::Mdadm | crate::pools::PoolType::Unknown => {
+                match info.mount_point.as_deref().and_then(mount_fstype).as_deref() {
+                    Some("btrfs") => Ok(SnapshotKind::Btrfs),
+                    Some("zfs") => Ok(SnapshotKind::Zfs),
+                    _ => Err(SnapError::Unsupported(format!(
+                        "Pool '{}' is not formatted with ZFS or Btrfs — it has no snapshots to manage",
+                        info.name
+                    ))),
                 }
             }
-            Err(_) => Err(SnapError::CommandFailed(
-                "btrfs command not found".to_string(),
-            )),
         }
     }
 
     pub fn list_snapshots(pool: &str) -> Result<Vec<Snapshot>, SnapError> {
-        if Self::check_zfs().is_ok() {
-            Self::list_zfs_snapshots(pool)
-        } else if Self::check_btrfs().is_ok() {
-            Self::list_btrfs_snapshots(pool)
-        } else {
-            Err(SnapError::CommandFailed(
-                "No snapshot support available".to_string(),
-            ))
+        Self::list_snapshots_of(Self::kind_for(pool)?, pool)
+    }
+
+    /// Lists snapshots with an already-resolved backend (see [`PoolBackend`]).
+    pub fn list_snapshots_of(kind: SnapshotKind, pool: &str) -> Result<Vec<Snapshot>, SnapError> {
+        match kind {
+            SnapshotKind::Zfs => Self::list_zfs_snapshots(pool),
+            SnapshotKind::Btrfs => Self::list_btrfs_snapshots(pool),
         }
     }
 
@@ -197,14 +241,20 @@ impl SnapshotService {
         dataset: Option<&str>,
         recursive: bool,
     ) -> Result<(), SnapError> {
-        if Self::check_zfs().is_ok() {
-            Self::create_zfs_snapshot(pool, name, dataset, recursive)
-        } else if Self::check_btrfs().is_ok() {
-            Self::create_btrfs_snapshot(pool, name, dataset)
-        } else {
-            Err(SnapError::CommandFailed(
-                "No snapshot support available".to_string(),
-            ))
+        Self::create_snapshot_of(Self::kind_for(pool)?, pool, name, dataset, recursive)
+    }
+
+    /// Creates a snapshot with an already-resolved backend.
+    pub fn create_snapshot_of(
+        kind: SnapshotKind,
+        pool: &str,
+        name: &str,
+        dataset: Option<&str>,
+        recursive: bool,
+    ) -> Result<(), SnapError> {
+        match kind {
+            SnapshotKind::Zfs => Self::create_zfs_snapshot(pool, name, dataset, recursive),
+            SnapshotKind::Btrfs => Self::create_btrfs_snapshot(pool, name, dataset),
         }
     }
 
@@ -284,14 +334,14 @@ impl SnapshotService {
     }
 
     pub fn delete_snapshot(pool: &str, name: &str) -> Result<(), SnapError> {
-        if Self::check_zfs().is_ok() {
-            Self::delete_zfs_snapshot(pool, name)
-        } else if Self::check_btrfs().is_ok() {
-            Self::delete_btrfs_snapshot(pool, name)
-        } else {
-            Err(SnapError::CommandFailed(
-                "No snapshot support available".to_string(),
-            ))
+        Self::delete_snapshot_of(Self::kind_for(pool)?, pool, name)
+    }
+
+    /// Deletes a snapshot with an already-resolved backend.
+    pub fn delete_snapshot_of(kind: SnapshotKind, pool: &str, name: &str) -> Result<(), SnapError> {
+        match kind {
+            SnapshotKind::Zfs => Self::delete_zfs_snapshot(pool, name),
+            SnapshotKind::Btrfs => Self::delete_btrfs_snapshot(pool, name),
         }
     }
 
@@ -339,14 +389,9 @@ impl SnapshotService {
     }
 
     pub fn rollback_snapshot(pool: &str, name: &str) -> Result<(), SnapError> {
-        if Self::check_zfs().is_ok() {
-            Self::rollback_zfs_snapshot(pool, name)
-        } else if Self::check_btrfs().is_ok() {
-            Self::rollback_btrfs_snapshot(pool, name)
-        } else {
-            Err(SnapError::CommandFailed(
-                "No snapshot support available".to_string(),
-            ))
+        match Self::kind_for(pool)? {
+            SnapshotKind::Zfs => Self::rollback_zfs_snapshot(pool, name),
+            SnapshotKind::Btrfs => Self::rollback_btrfs_snapshot(pool, name),
         }
     }
 
@@ -393,12 +438,11 @@ impl SnapshotService {
     }
 
     pub fn get_snapshot_info(pool: &str, name: &str) -> Result<Snapshot, SnapError> {
-        if Self::check_zfs().is_ok() {
-            Self::get_zfs_snapshot_info(pool, name)
-        } else {
-            Err(SnapError::CommandFailed(
+        match Self::kind_for(pool)? {
+            SnapshotKind::Zfs => Self::get_zfs_snapshot_info(pool, name),
+            SnapshotKind::Btrfs => Err(SnapError::Unsupported(
                 "Only ZFS supported for detailed info".to_string(),
-            ))
+            )),
         }
     }
 
@@ -430,6 +474,19 @@ impl SnapshotService {
         let output = String::from_utf8_lossy(&output.stdout);
         parse_zfs_snapshot_properties(pool, name, &output)
     }
+}
+
+/// Filesystem type mounted at `mount_point`, straight from `/proc/mounts`
+/// — no privileges, no subprocess.
+fn mount_fstype(mount_point: &str) -> Option<String> {
+    let mounts = std::fs::read_to_string("/proc/mounts").ok()?;
+    mounts.lines().find_map(|line| {
+        let mut parts = line.split_whitespace();
+        let _device = parts.next()?;
+        let mount = parts.next()?;
+        let fstype = parts.next()?;
+        (mount == mount_point).then(|| fstype.to_string())
+    })
 }
 
 fn parse_zfs_snapshots(pool: &str, output: &str) -> Result<Vec<Snapshot>, SnapError> {
@@ -575,6 +632,7 @@ impl Default for SnapshotService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pools::{PoolInfo, PoolType};
 
     #[test]
     fn test_parse_size() {
@@ -582,5 +640,62 @@ mod tests {
         assert_eq!(parse_size("1M").unwrap(), 1024 * 1024);
         assert_eq!(parse_size("1G").unwrap(), 1024 * 1024 * 1024);
         assert!(parse_size("invalid").is_err());
+    }
+
+    fn pool(name: &str, pool_type: PoolType, mount_point: Option<&str>) -> PoolInfo {
+        PoolInfo {
+            name: name.to_string(),
+            pool_type,
+            size_bytes: 0,
+            used_bytes: 0,
+            available_bytes: 0,
+            health: "online".to_string(),
+            device_count: 1,
+            mount_point: mount_point.map(str::to_string),
+            raid_profile: None,
+        }
+    }
+
+    /// 5.3: the backend follows the *pool's* technology. A host with both
+    /// `zfs` and `btrfs` installed (what `installer/install.sh` produces)
+    /// used to send every Btrfs pool down the ZFS branch.
+    #[test]
+    fn backend_follows_the_pool_type_not_the_installed_binaries() {
+        assert_eq!(
+            SnapshotService::kind_of_pool(&pool("tank", PoolType::Zfs, Some("/tank"))).unwrap(),
+            SnapshotKind::Zfs
+        );
+        assert_eq!(
+            SnapshotService::kind_of_pool(&pool("data", PoolType::Btrfs, Some("/mnt/data")))
+                .unwrap(),
+            SnapshotKind::Btrfs
+        );
+    }
+
+    /// An mdadm array is not a filesystem: only a Btrfs-formatted one can be
+    /// snapshotted, and anything else gets a clear error instead of a doomed
+    /// `zfs snapshot`.
+    #[test]
+    fn mdadm_pools_are_resolved_by_the_filesystem_on_top() {
+        let unmounted = pool("/dev/md0", PoolType::Mdadm, None);
+        assert!(matches!(
+            SnapshotService::kind_of_pool(&unmounted),
+            Err(SnapError::Unsupported(_))
+        ));
+
+        // A mount point that isn't in /proc/mounts can't be classified
+        // either — no silent ZFS attempt.
+        let unknown_fs = pool("/dev/md1", PoolType::Mdadm, Some("/nonexistent-hv-mount"));
+        assert!(matches!(
+            SnapshotService::kind_of_pool(&unknown_fs),
+            Err(SnapError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn mount_fstype_reads_proc_mounts() {
+        // `/` is always mounted; an invented path never is.
+        assert!(mount_fstype("/").is_some());
+        assert!(mount_fstype("/nonexistent-hv-mount").is_none());
     }
 }
