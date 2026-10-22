@@ -895,6 +895,18 @@ Read endpoints `auth`; settings/share/mover mutations `admin`. See
 | POST | `/cache/mover/run` | admin |
 | GET | `/cache/mover/runs` | auth |
 
+`PUT /cache/settings` validates `mover_cron` (5 fields), `min_free_percent`
+(1–95), `mover_age_days` (≤3650), `mover_bwlimit` (≤10,000,000 KB/s) and
+`cache_pool` (must exist). Sending `cache_pool: null` **or** `cache_pool: ""`
+clears the designation; omitting the field leaves it untouched. Share create
+and update both validate `target_pool` (exists, not the cache pool).
+
+`GET /cache/mover/runs` returns the last 50 runs, each with
+`shares: [{ share_name, mode, status, files_moved, bytes_moved, message }]`
+(`status` = `moved | skipped | failed`). Run `status` is
+`completed | partial | failed | running` — `partial` means some shares moved
+and some did not; `error_message` then names the ones that did not.
+
 ## System Journal — `journal/*`
 
 Read endpoints `auth`; clear-logs and cleanup-settings writes `admin`. See

@@ -2842,6 +2842,15 @@ export interface CacheShare {
   updated_at: string;
 }
 
+export interface CacheMoverRunShare {
+  share_name: string;
+  mode: string;
+  status: 'moved' | 'skipped' | 'failed';
+  files_moved: number;
+  bytes_moved: number;
+  message: string | null;
+}
+
 export interface CacheMoverRun {
   id: string;
   status: string;
@@ -2850,6 +2859,7 @@ export interface CacheMoverRun {
   files_moved: number;
   bytes_moved: number;
   error_message: string | null;
+  shares: CacheMoverRunShare[];
 }
 
 // ── Antivirus (ClamAV) ──

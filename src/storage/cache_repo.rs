@@ -80,6 +80,32 @@ pub struct CacheMoverRun {
     pub files_moved: u64,
     pub bytes_moved: u64,
     pub error_message: Option<String>,
+    /// Per-share outcome, in processing order. Empty for runs recorded before
+    /// migration 052.
+    #[serde(default)]
+    pub shares: Vec<CacheMoverRunShare>,
+}
+
+/// One share's outcome inside a mover run.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CacheMoverRunShare {
+    pub share_name: String,
+    pub mode: String,
+    pub status: String,
+    pub files_moved: u64,
+    pub bytes_moved: u64,
+    pub message: Option<String>,
+}
+
+/// A per-share outcome about to be written for a run.
+#[derive(Debug, Clone)]
+pub struct ShareOutcomeRecord {
+    pub share_name: String,
+    pub mode: String,
+    pub status: String,
+    pub files_moved: u64,
+    pub bytes_moved: u64,
+    pub message: Option<String>,
 }
 
 pub struct CacheRepository {
@@ -221,8 +247,10 @@ impl CacheRepository {
         .execute(self.pool.as_ref())
         .await?;
         Ok(Some(CacheShare {
+            cache_mode: final_mode.to_string(),
+            target_pool: final_target.to_string(),
             enabled: final_enabled,
-            updated_at: Utc::now().to_rfc3339(),
+            updated_at: now,
             ..share
         }))
     }
@@ -242,7 +270,78 @@ impl CacheRepository {
         .bind(limit as i64)
         .fetch_all(self.pool.as_ref())
         .await?;
-        Ok(rows.into_iter().map(|r| r.into_model()).collect())
+
+        // One extra query for the per-share rows of exactly these runs (no
+        // N+1): the same `LIMIT` selects them, ordered for grouping.
+        let share_rows = sqlx::query_as::<_, CacheMoverRunShareRow>(
+            "SELECT run_id, share_name, mode, status, files_moved, bytes_moved, message
+             FROM cache_mover_run_shares
+             WHERE run_id IN (
+                 SELECT id FROM cache_mover_runs ORDER BY started_at DESC LIMIT ?
+             )
+             ORDER BY run_id, share_name",
+        )
+        .bind(limit as i64)
+        .fetch_all(self.pool.as_ref())
+        .await?;
+
+        let mut by_run: std::collections::HashMap<String, Vec<CacheMoverRunShare>> =
+            std::collections::HashMap::new();
+        for row in share_rows {
+            let run_id = row.run_id.clone();
+            by_run.entry(run_id).or_default().push(row.into_model());
+        }
+
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let mut run = r.into_model();
+                run.shares = by_run.remove(&run.id).unwrap_or_default();
+                run
+            })
+            .collect())
+    }
+
+    /// Record the per-share outcome of a run.
+    pub async fn record_run_shares(
+        &self,
+        run_id: &str,
+        shares: &[ShareOutcomeRecord],
+    ) -> Result<(), sqlx::Error> {
+        for share in shares {
+            sqlx::query(
+                "INSERT OR REPLACE INTO cache_mover_run_shares
+                 (run_id, share_name, mode, status, files_moved, bytes_moved, message)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(run_id)
+            .bind(&share.share_name)
+            .bind(&share.mode)
+            .bind(&share.status)
+            .bind(share.files_moved as i64)
+            .bind(share.bytes_moved as i64)
+            .bind(share.message.as_deref())
+            .execute(self.pool.as_ref())
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Close out rows left on `running` by a previous process.
+    ///
+    /// The single-flight guard is process-local, so a restart in the middle of
+    /// a move leaves its row `running` forever. The caller only invokes this
+    /// while holding that guard, which proves nothing is actually running.
+    pub async fn fail_stale_runs(&self, message: &str) -> Result<u64, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE cache_mover_runs SET status = 'failed', finished_at = ?, error_message = ? WHERE status = 'running'",
+        )
+        .bind(&now)
+        .bind(message)
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected())
     }
 
     pub async fn create_run(&self, status: &str) -> Result<String, sqlx::Error> {
@@ -354,6 +453,31 @@ impl CacheMoverRunRow {
             files_moved: self.files_moved.max(0) as u64,
             bytes_moved: self.bytes_moved.max(0) as u64,
             error_message: self.error_message,
+            shares: Vec::new(),
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct CacheMoverRunShareRow {
+    run_id: String,
+    share_name: String,
+    mode: String,
+    status: String,
+    files_moved: i64,
+    bytes_moved: i64,
+    message: Option<String>,
+}
+
+impl CacheMoverRunShareRow {
+    fn into_model(self) -> CacheMoverRunShare {
+        CacheMoverRunShare {
+            share_name: self.share_name,
+            mode: self.mode,
+            status: self.status,
+            files_moved: self.files_moved.max(0) as u64,
+            bytes_moved: self.bytes_moved.max(0) as u64,
+            message: self.message,
         }
     }
 }

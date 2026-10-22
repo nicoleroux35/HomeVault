@@ -19,21 +19,33 @@ Migration `sqlx/migrations/016_cache.sql` adds three tables:
   `cache_mode`, `target_pool`, `enabled`, `created_at`, `updated_at`.
 - `cache_mover_runs` — mover run history: `id`, `status`, `started_at`,
   `finished_at`, `files_moved`, `bytes_moved`, `error_message`.
+- `cache_mover_run_shares` (migration
+  `sqlx/migrations/052_cache_mover_run_shares.sql`) — one row per enabled share
+  per run: `run_id`, `share_name`, `mode`, `status`
+  (`moved | skipped | failed`), `files_moved`, `bytes_moved`, `message`,
+  primary key `(run_id, share_name)`. A run row alone cannot say *which* shares
+  are now split across the two tiers.
 
 `sqlx/migrations/017_cache_mover_tuning.sql` adds the three `mover_*` tuning
 columns to `cache_settings`.
 
 Storage layer `src/storage/cache_repo.rs` (`CacheRepository`): `get_settings`,
 `save_settings`, `set_mover_last_run`, `list_shares`, `get_share`,
-`create_share`, `update_share`, `delete_share`, `list_runs`, `create_run`,
-`update_run`. Pool mounts are resolved through `PoolService::scan_pools`
-(`src/pools.rs`), exactly like the rest of the Storage area.
+`create_share`, `update_share`, `delete_share`, `list_runs` (which loads the
+per-share rows of exactly the returned runs in one extra query — no N+1),
+`create_run`, `update_run`, `record_run_shares`, `fail_stale_runs`. Pool mounts
+are resolved once per run/request through `PoolMounts::scan` (one
+`PoolService::scan_pools` call, `src/pools.rs`), exactly like the rest of the
+Storage area.
 
 Core logic `src/cache.rs` (`CacheService`):
 
 - `CacheMode` enum — `Yes | No | Prefer | Only`, serialized as
   `yes | no | prefer | only`.
-- `pool_mount_point` resolves a pool name to its real mount.
+- `PoolMounts` — pool name → mount point, built from **one** pool scan per
+  mover run or per request. `PoolMounts::scan()` returning `Err` is a *scan*
+  failure, which is a different condition from "this pool does not exist"
+  (a missing key in the map); handlers must not collapse the two.
 - `active_path` returns the live location of a share's data given its
   mode (cache mount vs. target mount).
 - `perform_moves` walks every enabled share and applies the mode's
@@ -45,8 +57,20 @@ Core logic `src/cache.rs` (`CacheService`):
    verifies every block and `--remove-source-files` only removes files it
    successfully transferred; exit code 24 ("vanished source files" — a benign
    race where a file was deleted after rsync built its list) is treated as
-   success so it doesn't fail an otherwise-complete run. Mode
-   semantics (in `perform_moves`):
+   success so it doesn't fail an otherwise-complete run.
+
+   **Free-space gate (before any delete).** Because `--remove-source-files`
+   deletes each file once it has been copied, a destructive move first proves
+   the destination can hold the payload: `ensure_destination_has_room` sums the
+   apparent size of the files that would move (`find -type f -mtime … -printf
+   '%s\n'`, the same age filter `rsync` uses) and compares it with the free
+   bytes on `dst` (`df -B1`). If the destination cannot hold it — or `df` cannot
+   be read at all — the share fails with an explicit message and **rsync never
+   runs**, so nothing is deleted. `mover_excludes` is deliberately *not*
+   subtracted: over-estimating the payload is the safe direction. With an age
+   filter that selects nothing, the rsync round-trip is skipped entirely.
+
+   Mode semantics (in `move_share`, called per share by `perform_moves`):
   - `No` — data lives on the array; anything left on the cache is moved back
     to the array.
   - `Yes` — write to cache; moved to the array and the cache copy is removed.
@@ -55,20 +79,33 @@ Core logic `src/cache.rs` (`CacheService`):
   - `Prefer` — keep on cache, but once free space on the cache drops to/below
     `min_free_percent` (i.e. `pool_usage_pct(cache) >= 100 - min_free_percent`,
     threshold read via `df -B1`), move to the array.
-- `run_mover` is the async entry point: loads settings + shares,
-  records a `cache_mover_runs` row, runs `perform_moves` (in a blocking task,
-  emitting live SSE progress per share when a `job_id` is supplied), updates the
-  row to `completed`/`failed` (and `set_mover_last_run`), re-points every
-  enabled cache share's SMB export to its new active path
+- `perform_moves` never aborts on a share: it returns a `MoverResult`
+  (`files_moved`, `bytes_moved`, `shares_processed`, `shares: Vec<ShareOutcome>`).
+  A share that cannot be moved becomes a `Failed` outcome with a message and the
+  run continues with the next share. `MoverResult::status()` derives the run
+  status: `completed` (nothing failed), `partial` (some moved, some failed),
+  `failed` (every attempted share failed). `failed_shares()` names them for the
+  run summary.
+- `run_mover` is the async entry point: claims the process-local single-flight
+  guard, closes out any `running` row left by a previous process
+  (`fail_stale_runs` — holding the guard proves nothing is in flight), loads
+  settings + shares, records a `cache_mover_runs` row, runs **one** pool scan
+  plus `perform_moves` in a blocking task (emitting live SSE progress per share
+  when a `job_id` is supplied), persists the per-share outcomes
+  (`record_run_shares`), updates the row to `completed`/`partial`/`failed`,
+  re-points every enabled cache share's SMB export to its new active path
   (`refresh_smb_exports`, so network clients keep seeing the data after a move),
   records a system notification (`notify_mover` → `NotificationRepository`,
-  category `cache`), and marks the SSE job done/failed. It never leaves a run
-  stuck on `running`.
+  category `cache`, naming the shares that were not moved), and marks the SSE
+  job done. It never leaves a run stuck on `running`.
 
 Scheduler `src/cache_scheduler.rs` (`run_scheduler_loop`): polls every 30s;
 when the next cron tick is due **and** `mover_enabled`, it invokes
-`run_mover`. Mirrors the Restic scheduler pattern — a failed run still
-reschedules. Spawned once at startup in `src/web/mod.rs`.
+`run_mover`. Only a successful run advances `mover_last_run_at`: a failed one is
+retried, not skipped until the next cron occurrence. To keep that retry from
+spinning every 30 s, a process-local failure timestamp (`LAST_FAILED_AT`) holds
+the next attempt off for `FAILED_RETRY_SECS` (15 min); a restart clears it.
+Spawned once at startup in `src/web/mod.rs`.
 
 | Endpoint | Auth | Notes |
 |----------|------|-------|
@@ -104,7 +141,11 @@ check.
    - **Cache** tab — config card (`saveCacheSettings`), mover control
      (`runMover`, with live SSE progress bar), shares table + create
      modal (`openCacheShareModal`, `createCacheShare`,
-     `updateShareMode`, `deleteCacheShare`).
+     `updateShareMode`, `deleteCacheShare`). The run history shows one row per
+     run (status badge `completed | partial | failed | running`, date, files and
+     bytes) with the per-share outcome underneath — each share's name, its
+     `moved | skipped | failed` status and, on failure, the reason (e.g. the
+     destination's free space).
    - `loadCachePoolDesignation` keeps the Pools-tab badge in sync
      without loading the full cache tab.
 - `frontend/src/lib/services/api.ts`:
@@ -114,7 +155,8 @@ check.
   `runCacheMover` (returns a `job_id` for live SSE progress via
   `subscribeToProgress`), `getCacheMoverRuns`. Types
   `CacheSettings` (now includes `mover_age_days`, `mover_excludes`,
-  `mover_bwlimit`), `CachePoolInfo`, `CacheShare`, `CacheMoverRun`.
+  `mover_bwlimit`), `CachePoolInfo`, `CacheShare`, `CacheMoverRun` (with
+  `shares: CacheMoverRunShare[]`).
 
 ## i18n
 
@@ -122,7 +164,8 @@ All strings under `[cache]` in `src/i18n/{en,fr,de,es}.toml`. Key groups:
 cache-tab chrome (`tab`, `title`, `subtitle`), configuration (`cache_pool_*`,
 `mover_*`, `min_free_*`, `mover_age_label`, `mover_excludes_label`,
 `mover_bwlimit_label`, `save_config`), mover (`run_mover`, `mover_started`,
-`mover_hint`), shares (`add_share`, `share_name`, `mode`, `target_pool`,
+`mover_hint`), run history (`run_shares`, `run_status_*`,
+`share_status_*`), shares (`add_share`, `share_name`, `mode`, `target_pool`,
 `mode_yes/no/prefer/only`), and cache-disk management in the Pools tab
 (`create_cache_disk`, `set_as_cache`, `unset_cache`, `badge`, `is_cache_hint`,
 `as_cache_option`, `delete_is_cache`, `created_as_cache`, `set_failed`,
@@ -138,15 +181,24 @@ on completion/failure, reusing the shared `NotificationRepository`.
   separate "cache disk" entity. Creating/removing the cache disk is
   create/delete of a normal pool plus setting/clearing this field. The Pools
   tab is the only supported place to create or remove it.
-- `updateCacheSettings({ cache_pool: null })` clears the designation; sending
-  an empty/whitespace string does **not** (the handler only validates
-  non-empty values, `src/handlers/cache.rs`). The frontend always sends
-  `null` to clear.
-- The mover validates that the cache pool and each share's `target_pool` both
-  exist (`PoolService::scan_pools`) and that `target_pool != cache_pool`
-  (`src/handlers/cache.rs`). It shells out to `rsync` and `df`, so it is
-  CPU/IO-bound — run it off the request path (it already is: `run_mover` is the
-  scheduler/endpoint target, not inline in a hot path).
+- `updateCacheSettings({ cache_pool: null })` **and** `cache_pool: ""` (or
+  whitespace) both clear the designation; omitting the field leaves it
+  untouched (`normalize_pool_field`, `src/handlers/cache.rs`). An empty string
+  used to become an empty pool name that then failed validation, so only
+  `null` could clear it. The frontend sends `null`.
+- `min_free_percent` is validated server-side to **1–95** (the UI has always
+  clamped it that way); `0` would mean "drain the cache to nothing" for
+  `Prefer` shares.
+- The handlers validate the cache pool and each share's `target_pool`
+  (`validate_target_pool`: non-empty, exists, `!= cache_pool`) on **both**
+  create and update. The update path used to accept any string, leaving a share
+  the mover could never move. Pool scans go through `scan_pools_async`
+  (`tokio::task::spawn_blocking`): the scan shells out to `zpool`/`mdadm`/
+  `btrfs`/`df`, so running it inline parked a runtime worker, and the old
+  `unwrap_or_default()` reported a failed scan as "that pool does not exist".
+- The mover shells out to `rsync`, `find` and `df`, so it is CPU/IO-bound — run
+  it off the request path (`run_mover` is the scheduler/endpoint target, never
+  inline in a hot path).
 - Creating a cache share also creates/updates a matching SMB export
   (`create_or_update_smb_export`, `src/handlers/cache.rs`) so the data is
   reachable over the network at its active path. After a mover run,
@@ -161,10 +213,16 @@ on completion/failure, reusing the shared `NotificationRepository`.
 - `svelte-check` is clean for the cache code (remaining `Storage.svelte`
   warnings are the pre-existing lucide icon `Component` typing false positives
   that affect every tab icon across the app).
-- Backend `cargo check` passes. Live mover execution, cron scheduling, and the
-  create/designate/remove-cache-disk flows in the Pools tab were not run
-  against real hardware in this pass — the rsync/`df` logic and the
-  pool-create/delete paths reuse the already-verified Storage machinery.
+- Backend `cargo check` passes. The mover's data-movement path (`perform_moves`
+  → `move_share` → `rsync_move`) **is** exercised by unit tests against real
+  temporary directories with real `rsync`/`find`/`df`: a normal move, an empty
+  share (skipped), an unmounted target (failed, source untouched), a failing
+  share followed by a succeeding one (partial), and a destination too small for
+  the payload (refused, nothing deleted, nothing written). `tests/cache_integration.rs`
+  covers the API validation, the `cache_pool` clearing path, the per-share
+  history round-trip and the stale-`running` reconciliation. Cron scheduling and
+  the create/designate/remove-cache-disk flows in the Pools tab were still not
+  run against real pools/hardware.
 
 ## Related
 
