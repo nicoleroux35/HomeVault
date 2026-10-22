@@ -26,9 +26,11 @@
  *
  * It has exactly one backend call — `api.healthCheck()` → `GET /api/health`
  * (never cached) — and renders one card per built-in check from
- * `src/health.rs` (always 8: authentication, storage, memory, disk_space,
- * disk_smart, raid_arrays, network, services, temperatures), plus an overall-status
- * badge in the header.
+ * `src/health.rs` (always 9: authentication, storage, memory, disk_space,
+ * disk_smart, raid_arrays, network, services, temperatures), plus an
+ * overall-status strip at the top of the body. A failed call surfaces an
+ * explicit error state (`data-testid="health-error"`) with a Retry button —
+ * never the empty state and never a silent blank window.
  *
  * **This suite is entirely read-only.** The screen's only action is the
  * "Refresh" button, which just re-runs the one GET. Endpoint auth / payload
@@ -513,7 +515,7 @@ test.describe('10 — Keyboard', () => {
 // ===========================================================================
 
 test.describe('11 — Edge cases', () => {
-  test('11.1 — a failing /api/health surfaces the empty state, not a blank window', async ({
+  test('11.1 — a failing /api/health surfaces the error state with a retry, not a blank window', async ({
     page,
   }) => {
     await seedBrowser(page, adminTokens);
@@ -526,10 +528,12 @@ test.describe('11 — Edge cases', () => {
     await page.locator('.hv-dock-item[aria-label="Applications"]').click();
     await page.locator('.lp-card[title="Health"]').click();
     await page.waitForSelector('[data-testid="health-page"]', { timeout: 15_000 });
-    // `loading` clears; with no checks the empty-state block shows
-    // (data-testid="health-empty" only exists in the empty branch) plus zero
-    // cards.
-    await expect(win(page).locator('[data-testid="health-empty"]')).toBeVisible({ timeout: 15_000 });
+    // `loading` clears; a failure now shows the explicit error state
+    // (data-testid="health-error", ROADMAP 1.5) with a retry button — not
+    // the "no checks" empty state, never a blank window.
+    await expect(win(page).locator('[data-testid="health-error"]')).toBeVisible({ timeout: 15_000 });
+    await expect(win(page).locator('[data-testid="health-retry"]')).toBeVisible();
+    await expect(win(page).locator('[data-testid="health-empty"]')).toHaveCount(0);
     await expect(win(page).locator('[data-testid="health-card"]')).toHaveCount(0);
     // The loading state itself is gone (the window is not stuck loading).
     await expect(win(page).locator('[data-testid="health-loading"]')).toHaveCount(0);
@@ -549,6 +553,32 @@ test.describe('11 — Edge cases', () => {
     await page.waitForSelector('[data-testid="health-page"]', { timeout: 15_000 });
     await page.waitForTimeout(1000);
     expect(errors, errors.join('\n')).toEqual([]);
+  });
+
+  test('11.3 — the error state retries against the real backend and recovers', async ({ page }) => {
+    await seedBrowser(page, adminTokens);
+    await page.route('**/api/health*', (route) => route.fulfill({ status: 500, body: '{}' }));
+    await page.goto('/desktop', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('.hv-user-pill', { timeout: 20_000 });
+    await page
+      .addStyleTag({ content: '[class*="-monitor"]{display:none!important}' })
+      .catch(() => {});
+    await page.locator('.hv-dock-item[aria-label="Applications"]').click();
+    await page.locator('.lp-card[title="Health"]').click();
+    await page.waitForSelector('[data-testid="health-page"]', { timeout: 15_000 });
+    await expect(win(page).locator('[data-testid="health-error"]')).toBeVisible({ timeout: 15_000 });
+
+    // Stop simulating the outage; the retry hits the real backend and the
+    // real nine checks render.
+    await page.unroute('**/api/health*');
+    await win(page).locator('[data-testid="health-retry"]').click();
+    await expect(win(page).locator('[data-testid="health-error"]')).toHaveCount(0, {
+      timeout: 15_000,
+    });
+    await expect(win(page).locator('[data-testid="health-card"]')).toHaveCount(EXPECTED_CHECKS, {
+      timeout: 15_000,
+    });
+    await expect(win(page).locator('[data-testid="health-overall"]')).toBeVisible();
   });
 });
 

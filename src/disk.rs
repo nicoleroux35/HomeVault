@@ -577,10 +577,8 @@ impl DiskService {
     /// Retrieve SMART attribute values and overall health via `smartctl`.
     /// Returns `(status, read_errors, write_errors, bad_sectors)`.
     async fn get_smart_details(device_name: &str) -> (String, u64, u64, u64) {
-        let output = Command::new("smartctl")
-            .args(["-A", &format!("/dev/{}", device_name)])
-            .output()
-            .await;
+        let device = format!("/dev/{}", device_name);
+        let output = crate::smart::tokio_command(&device, &["-A"]).output().await;
 
         if output.is_err() {
             return ("Unknown".to_string(), 0, 0, 0);
@@ -617,11 +615,7 @@ impl DiskService {
         }
 
         // Get overall health status
-        if let Ok(health_output) = Command::new("smartctl")
-            .args(["-H", &format!("/dev/{}", device_name)])
-            .output()
-            .await
-        {
+        if let Ok(health_output) = crate::smart::tokio_command(&device, &["-H"]).output().await {
             let health_stdout = String::from_utf8_lossy(&health_output.stdout);
             if health_stdout.contains("PASSED") || health_stdout.contains("OK") {
                 status = "Healthy".to_string();
@@ -635,8 +629,8 @@ impl DiskService {
 
     /// Read the disk temperature from SMART attribute `Temperature_Celsius` or `Airflow_Temperature_Cel`.
     async fn get_disk_temperature(device_name: &str) -> Result<f64, DiskError> {
-        let output = Command::new("smartctl")
-            .args(["-A", &format!("/dev/{}", device_name)])
+        let device = format!("/dev/{}", device_name);
+        let output = crate::smart::tokio_command(&device, &["-A"])
             .output()
             .await?;
 
@@ -1896,10 +1890,7 @@ impl DiskService {
     /// the device reports nothing intelligible. Used by the wizard's disk
     /// step so a failing disk surfaces before it enters a new array.
     async fn get_smart_status(device_name: &str) -> String {
-        match Command::new("sudo")
-            .arg("smartctl")
-            .arg("-H")
-            .arg(format!("/dev/{}", device_name))
+        match crate::smart::tokio_command(&format!("/dev/{}", device_name), &["-H"])
             .output()
             .await
         {
@@ -2289,11 +2280,7 @@ impl DiskService {
     /// Check SMART capabilities for a device via `smartctl -c`.
     pub async fn get_smart_capabilities(device_name: &str) -> SmartCapabilities {
         let device = format!("/dev/{}", device_name);
-        let output = Command::new("sudo")
-            .arg("smartctl")
-            .args(["-c", &device])
-            .output()
-            .await;
+        let output = crate::smart::tokio_command(&device, &["-c"]).output().await;
 
         let stdout = match output {
             Ok(o) => {
@@ -2348,9 +2335,7 @@ impl DiskService {
         };
 
         let device = format!("/dev/{}", device_name);
-        let output = Command::new("sudo")
-            .arg("smartctl")
-            .args(["-t", flag, &device])
+        let output = crate::smart::tokio_command(&device, &["-t", flag])
             .output()
             .await?;
 
@@ -2371,9 +2356,7 @@ impl DiskService {
     /// Get the current (or last completed) SMART self-test status via `smartctl -l selftest`.
     pub async fn get_smart_test_status(device_name: &str) -> SmartTestStatus {
         let device = format!("/dev/{}", device_name);
-        let output = Command::new("sudo")
-            .arg("smartctl")
-            .args(["-l", "selftest", &device])
+        let output = crate::smart::tokio_command(&device, &["-l", "selftest"])
             .output()
             .await;
 
@@ -2444,11 +2427,7 @@ impl DiskService {
     /// Resolve remaining SMART test minutes from `smartctl -c` output for a known test type.
     pub async fn get_smart_test_remaining(device_name: &str) -> u32 {
         let device = format!("/dev/{}", device_name);
-        let output = Command::new("sudo")
-            .arg("smartctl")
-            .args(["-c", &device])
-            .output()
-            .await;
+        let output = crate::smart::tokio_command(&device, &["-c"]).output().await;
 
         let stdout = match output {
             Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),

@@ -24,8 +24,9 @@ expected shape.
   spawned once in `web/mod.rs::run()` (same `tokio::spawn` + 60s
   `tokio::time::interval` pattern as `restic_scheduler::run_scheduler_loop`).
   Each tick:
-  1. Calls the existing `HealthService::run_all_checks()` (`src/health.rs`,
-     via `spawn_blocking` since it shells out synchronously) and compares each
+  1. Calls the existing `HealthService::run_all_checks(&pool)` (`src/health.rs`,
+     async — the service self-offloads the system checks to `spawn_blocking`
+     internally, so the engine must NOT re-wrap the call) and compares each
      check's status against an in-memory set of "currently open problems" to
      detect **transitions** (a check turning `Warning`/`Unhealthy`, or
      recovering) — so the same ongoing problem doesn't re-notify every minute.

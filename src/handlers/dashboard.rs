@@ -812,10 +812,7 @@ async fn run_smartctl(
     args: &[&str],
     is_usable: impl Fn(&str) -> bool,
 ) -> Option<String> {
-    let output = Command::new("sudo")
-        .arg("smartctl")
-        .args(args)
-        .arg(device)
+    let output = crate::smart::tokio_command(device, args)
         .output()
         .await
         .ok()?;
@@ -830,11 +827,9 @@ async fn run_smartctl(
         // bridge; retry with the common SAT (SCSI-ATA Translation) override
         // before giving up. Native SATA/NVMe devices already returned above
         // and never reach this branch.
-        if let Ok(sat_output) = Command::new("sudo")
-            .arg("smartctl")
-            .args(args)
-            .args(["-d", "sat"])
-            .arg(device)
+        let mut sat_args: Vec<&str> = args.to_vec();
+        sat_args.extend(["-d", "sat"]);
+        if let Ok(sat_output) = crate::smart::tokio_command(device, &sat_args)
             .output()
             .await
         {
@@ -2155,10 +2150,9 @@ fn get_drive_temperatures() -> Vec<TempItem> {
                 continue;
             }
             // Needs root the same way get_smart_status/get_smart_temperature
-            // above do — see setup.rs::configure_sudoers' smartctl grant.
-            if let Ok(smart) = std::process::Command::new("sudo")
-                .args(["smartctl", "-A", &format!("/dev/{}", dev)])
-                .output()
+            // above do — the shared helper carries the sudoers-granted argv
+            // shape; see src/smart.rs.
+            if let Ok(smart) = crate::smart::std_command(&format!("/dev/{}", dev), &["-A"]).output()
             {
                 let smart_out = String::from_utf8_lossy(&smart.stdout);
                 for smart_line in smart_out.lines() {

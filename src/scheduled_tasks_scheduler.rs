@@ -397,10 +397,12 @@ async fn perform(action: &TaskAction) -> Result<String, String> {
             let device = device.clone();
             let test_type = test_type.clone();
             tokio::task::spawn_blocking(move || {
-                let output = std::process::Command::new("sudo")
-                    .args(["smartctl", "-t", &test_type, &format!("/dev/{device}")])
-                    .output()
-                    .map_err(|e| format!("smartctl not available: {e}"))?;
+                let output = crate::smart::std_command(
+                    &format!("/dev/{device}"),
+                    &["-t", test_type.as_str()],
+                )
+                .output()
+                .map_err(|e| format!("smartctl not available: {e}"))?;
                 // smartctl exits with a bitmask; bits 0-2 cover CLI/device
                 // errors. Health-report bits (4 = SMART failing, 8 = self-test
                 // logged failures) are about the *disk*, not about whether the

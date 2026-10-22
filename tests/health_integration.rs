@@ -385,3 +385,146 @@ async fn test_health_response_leaks_no_credential() {
     // No password hash / session material echoed back.
     assert!(!raw.contains("$argon2"));
 }
+
+// ---------------------------------------------------------------------------
+// 4. Partial-results contract + the real authentication check (ROADMAP item 1)
+// ---------------------------------------------------------------------------
+
+use homevault::health::{HealthError, HealthService, HealthStatus};
+
+#[tokio::test]
+async fn test_all_checks_run_in_order_authentication_first() {
+    let (state, _tmp, _guard) = setup_state().await;
+    let pool = state.db.pool();
+    let health = HealthService::run_all_checks(&pool)
+        .await
+        .expect("run_all_checks");
+    let names: Vec<&str> = health.checks.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, EXPECTED_CHECKS.to_vec());
+    // Every check carries a non-empty human message.
+    for c in &health.checks {
+        assert!(!c.message.trim().is_empty(), "empty message for {}", c.name);
+    }
+    // The aggregate matches the per-check precedence.
+    assert_eq!(
+        health.overall_status,
+        HealthService::determine_overall_status(&health.checks)
+    );
+    assert!(health.alerts.is_empty());
+}
+
+#[tokio::test]
+async fn test_run_check_dispatches_every_known_arm() {
+    let (state, _tmp, _guard) = setup_state().await;
+    let pool = state.db.pool();
+    // `run_check`'s match arm name ("network"/"services") and the resulting
+    // `HealthCheckResult.name` deliberately differ for two checks — assert
+    // each arm resolves without error (all sanity-safe reads here).
+    for (arm, result_name) in EXPECTED_CHECKS.iter().map(|n| (*n, *n)) {
+        let c = HealthService::run_check(arm, &pool)
+            .await
+            .unwrap_or_else(|e| panic!("{arm}: {e}"));
+        assert_eq!(c.name, result_name);
+    }
+}
+
+#[tokio::test]
+async fn test_authentication_check_is_a_real_database_read() {
+    // (ROADMAP 1.3) `check_authentication` used to be a hardcoded Healthy +
+    // "operational" message probing nothing. It now reads the account store.
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", 1).await;
+    let pool = state.db.pool();
+    let c = HealthService::check_authentication(&pool).await.unwrap();
+    assert_eq!(c.name, "authentication");
+    assert_eq!(c.status, HealthStatus::Healthy);
+    // A real account count, not a fabricated string.
+    assert!(c.details.unwrap()["accounts"].is_i64());
+}
+
+#[tokio::test]
+async fn test_an_unreadable_check_degrades_to_unknown_not_a_failure() {
+    // (ROADMAP 1.5) One broken dependency (here: the account table) must
+    // turn that single check into an `Unknown` slot — the remaining eight
+    // checks still run and the aggregate still answers.
+    let (state, _tmp, _guard) = setup_state().await;
+    let pool = state.db.pool();
+    // Park the table (rename keeps the rest of the schema valid while the
+    // `users` name disappears).
+    sqlx::query("ALTER TABLE users RENAME TO users_parked")
+        .execute(&*pool)
+        .await
+        .expect("park users table");
+
+    // The check itself reports the failure as an error (its caller degrades).
+    let err = HealthService::check_authentication(&pool)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, HealthError::Db(_)));
+
+    // …while the full run still succeeds and carries all nine slots.
+    let health = HealthService::run_all_checks(&pool)
+        .await
+        .expect("degraded run must not Err");
+    assert_eq!(health.checks.len(), EXPECTED_CHECKS.len());
+    let degraded = health
+        .checks
+        .iter()
+        .find(|c| c.name == "authentication")
+        .expect("authentication slot present");
+    assert_eq!(degraded.status, HealthStatus::Unknown);
+    assert!(
+        degraded.message.contains("Check unavailable"),
+        "message: {}",
+        degraded.message
+    );
+
+    // The other checks are unaffected — at least storage is still reported
+    // with a concrete verdict, not a degradation.
+    let storage = health.checks.iter().find(|c| c.name == "storage").unwrap();
+    assert_ne!(storage.status, HealthStatus::Unknown);
+    // ...and the aggregate is derived normally (unknown + others is valid).
+    assert_eq!(
+        health.overall_status,
+        HealthService::determine_overall_status(&health.checks)
+    );
+}
+
+#[tokio::test]
+async fn test_an_unreadable_check_keeps_the_endpoint_answer_well_formed() {
+    // Same scenario through the mounted handler, session token validated
+    // *before* the table is parked so the auth guard stays reachable: still
+    // `success: true`, all nine checks present, one `unknown` — never a
+    // blank or failed payload.
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", 1).await;
+    let mut router = health_router(state.clone());
+    let token = login(&mut router, "u", "Password123!").await;
+
+    let pool = state.db.pool();
+    sqlx::query("ALTER TABLE users RENAME TO users_parked")
+        .execute(&*pool)
+        .await
+        .expect("park users table");
+
+    let (_, body) = send(&mut router, Method::GET, "/api/health", Some(&token), None).await;
+    assert_eq!(body["success"], json!(true), "body: {body}");
+    let checks = body["data"]["checks"].as_array().expect("checks array");
+    assert_eq!(checks.len(), EXPECTED_CHECKS.len());
+    let auth = checks
+        .iter()
+        .find(|c| c["name"] == "authentication")
+        .unwrap();
+    assert_eq!(auth["status"], json!("unknown"));
+    assert!(!auth["message"].as_str().unwrap_or("").trim().is_empty());
+    // The aggregate mirrors the worst check, computed from the degraded slot.
+    assert_eq!(
+        body["data"]["overall_status"].as_str().unwrap(),
+        expected_overall(
+            &checks
+                .iter()
+                .filter_map(|c| c["status"].as_str())
+                .collect::<Vec<&str>>()
+        )
+    );
+}
