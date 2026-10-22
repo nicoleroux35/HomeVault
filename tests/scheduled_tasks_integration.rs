@@ -496,6 +496,100 @@ async fn run_now_executes_a_safe_command_and_records_history() {
 }
 
 #[tokio::test]
+async fn run_now_is_single_flight_against_itself() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    let mut router = tasks_router(state.clone());
+    let admin = login(&mut router, "admin", "AdminPass123!").await;
+
+    // A command that outlives the second request by a comfortable margin.
+    let task = json!({
+        "name": "slow task", "task_type": "command", "cron": "0 0 1 1 *",
+        "payload": {"command": "/bin/sleep", "args": ["1"]}
+    });
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/scheduled-tasks",
+        Some(&admin),
+        Some(task),
+    )
+    .await;
+    let id = body["data"]["id"].as_str().expect("id").to_string();
+
+    // First "Run now" in the background: it holds the task for ~1 s.
+    let mut first_router = tasks_router(state.clone());
+    let first_token = admin.clone();
+    let first_id = id.clone();
+    let first = tokio::spawn(async move {
+        send(
+            &mut first_router,
+            Method::POST,
+            &format!("/api/scheduled-tasks/{first_id}/run"),
+            Some(&first_token),
+            None,
+        )
+        .await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // 12.1: the second start is refused — nothing runs, the row is untouched.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        &format!("/api/scheduled-tasks/{id}/run"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a concurrent run must be refused: {body}"
+    );
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("already running"),
+        "the refusal must say why: {body}"
+    );
+
+    // The refused call did not create a run row of its own.
+    let (status, _) = first.await.expect("join the first run");
+    assert_eq!(status, StatusCode::OK, "the first run must complete");
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        &format!("/api/scheduled-tasks/{id}/runs"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(
+        body["data"]["runs"].as_array().expect("runs").len(),
+        1,
+        "one start, one run row"
+    );
+
+    // The claim is released when the run ends, so the next start is accepted.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        &format!("/api/scheduled-tasks/{id}/run"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the claim must be released after the run: {body}"
+    );
+}
+
+#[tokio::test]
 async fn update_and_delete_of_unknown_id_fail_cleanly() {
     let (state, _tmp, _guard) = setup_state().await;
     create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
