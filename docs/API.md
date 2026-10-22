@@ -247,31 +247,31 @@ the passphrase through this API. See [guides/encryption.md](./guides/encryption.
 | GET | `/explorer/search` | auth | `?path=&query=&max_results=` |
 | GET | `/explorer/disks` | auth | `handle_explorer_disks` — mounted volumes grouped `system\|internal\|raid\|external\|cloud\|network`; per entry `mount_point`/`filesystem`/`size_bytes`/`used_bytes` + optional `label`/`vendor`/`model`/`serial` |
 | POST | `/explorer/mkdir` | auth | `?path=` |
-| POST | `/explorer/delete` | **admin** | `?path=` — permanent; internal use only now, see `/explorer/trash` |
+| POST | `/explorer/delete` | **admin** | `?path=` — permanent; internal use only now, see `/explorer/trash`. Even for admins the path passes the PathGuard, and deleting a browsing root itself is refused |
 | POST | `/explorer/rename` | auth | `?path=&new_name=` — **both** paths are path-guard validated |
 | POST | `/explorer/save` | auth | `handle_explorer_save` — inline text/code editor, atomic temp-file + rename, 5 MB cap |
 | POST | `/explorer/copy` | auth | `?source=&destination=&strategy=overwrite\|keep_both\|skip`; directories return `{job_id, sse_url}`; every file is SHA-256 verified end-to-end |
 | POST | `/explorer/move` | auth | `?source=&destination=&strategy=`; same job pattern; source deleted only after a verified copy |
 | GET/POST | `/explorer/permissions` | auth | `?path=&mode=` — read/set POSIX mode |
 | GET | `/explorer/preview` | auth | text/image preview; `previewable: false` for non-text binaries |
-| POST | `/explorer/extract` | auth | `?path=&destination=` |
-| POST | `/explorer/compress` | auth | JSON body `{ paths: string[], destination, format? }` |
+| POST | `/explorer/extract` | auth | `?path=&destination=` — members listed + validated pre-flight (no absolute names, no `..`, no symlink members), extracts into a staging dir verified confined below the destination, `.gz` decompresses straight to disk |
+| POST | `/explorer/compress` | auth | JSON body `{ paths: string[], destination, format? }` — `--` separator before the member names (no argv injection) |
 | GET | `/explorer/download` | auth \| ticket | raw file download; `?ticket=` (single-use, from `/explorer/download-ticket`) *or* `x-session-token` header — **never** the session token in a URL; HTTP `Range` (206), `X-Content-Sha256` digest header for files ≤ 64 MB; 429 if the transfer quota is exhausted |
 | POST | `/explorer/download-ticket` | auth | `?path=` — mint a single-use 60 s download ticket (checks path + download quota) |
 | GET | `/explorer/thumbnail` | auth \| ticket | image thumbnail; `?ticket=` (multi-use, directory-scoped) or session header |
 | POST | `/explorer/thumbnail-ticket` | auth | `?path=` — mint a multi-use 5 min thumbnail ticket for a directory |
 | POST | `/explorer/upload` | auth | multipart `file` + `?path=` + `?strategy=`; `fsync`'d before success; SHA-256 in `checksums[]`, `skipped[]` for `strategy=skip`; optional `X-Expected-Sha256` header (single-file) |
-| POST | `/explorer/upload/session` | auth | `?path=&filename=&size=` — open a resumable upload session |
-| DELETE | `/explorer/upload/session` | auth | `?session_id=` — abort a resumable upload, remove the partial temp file |
-| POST | `/explorer/upload/chunk` | auth | raw body + `?session_id=&offset=` — write one chunk at the server's authoritative offset (409 + current offset on mismatch) |
-| POST | `/explorer/upload/complete` | auth | `?session_id=` — fsync + SHA-256 + atomic rename into place, then debit the quota |
+| POST | `/explorer/upload/session` | auth | `?path=&filename=&size=` — open a resumable upload session; owned by the calling user; capped per user (20) and globally (256), 429 beyond |
+| DELETE | `/explorer/upload/session` | auth | `?session_id=` — abort a resumable upload, remove the partial temp file; 403 unless the session belongs to the caller |
+| POST | `/explorer/upload/chunk` | auth | raw body + `?session_id=&offset=` — write one chunk at the server's authoritative offset (409 + current offset on mismatch); 403 unless the session belongs to the caller |
+| POST | `/explorer/upload/complete` | auth | `?session_id=` — fsync + SHA-256 + atomic rename into place, then debit the quota; 403 unless the session belongs to the caller |
 | POST/GET/DELETE | `/explorer/trash` | auth | `?path=` (POST) — move to trash / list trash / empty trash |
 | POST | `/explorer/trash/restore` | auth | `?id=` (cross-device EXDEV fallback) |
 | DELETE | `/explorer/trash/{id}` | auth | permanently delete one trashed item |
 | POST | `/explorer/format` | admin | `{ device, fstype, label? }` — format a block device as `ext4` or `exfat` (`mkfs.*` under `sudo`); `fstype` allow-list and the device validated against the available-disk list **before** any `mkfs` runs |
 | GET | `/explorer/history` | auth | `?path=` — **Rewind**: the ZFS snapshot timeline covering that file/folder, oldest→newest, each with a read-only `snapshot_path` under `.zfs/snapshot/`; empty outside ZFS |
-| POST | `/explorer/watch/ticket` | auth | `?path=` — mint a single-use ticket for the filesystem-watcher SSE connection (EventSource cannot set custom headers) |
-| GET | `/explorer/watch` | auth \| ticket | `?ticket=&path=` — SSE stream (`change` events filtered to the watched directory + `heartbeat` every 30 s) |
+| POST | `/explorer/watch/ticket` | auth | JSON body `{ path }` — validates the path against the caller's roots, mints a single-use 15 s ticket **bound to (user, path)** for the filesystem-watcher SSE connection (EventSource cannot set custom headers) |
+| GET | `/explorer/watch` | auth \| ticket | `?ticket=&path=` — SSE stream; the ticket only opens the **exact path it was minted for** (otherwise refused), `change` events are filtered component-based to the watched directory + `heartbeat` every 30 s; the inotify watch is released when the stream drops |
 | GET | `/explorer/snapshots` | auth | `?path=` — lists ZFS snapshots covering that path with a `browse_path` under `.zfs/snapshot/…` (read-only browsing) |
 | POST | `/explorer/eject` | admin | `?path=<mount>` — safe-eject a removable drive (guarded to removable block devices only) |
 | GET | `/explorer/shares` | auth | list the caller's "share by link" links |
@@ -1027,12 +1027,15 @@ Cron-driven pool snapshots with GFS retention. See
 
 ## Health endpoint detail
 
-`GET /health` (`handle_health_endpoint`, `src/web/mod.rs:222`) requires a
-valid session, runs `HealthService::run_all_checks()` (9 checks —
+`GET /health` (`handle_health_endpoint`, `src/web/mod.rs`) requires a valid
+session, awaits `HealthService::run_all_checks(&pool)` (9 checks —
 authentication, storage, memory, disk_space, disk_smart, **raid_arrays**,
 network, services, temperatures; `raid_arrays` reports degraded/failed mdadm
 arrays as a warning/error and raises `health.raid_arrays` notifications), and
-reads CPU/memory from `/proc/stat` and `/proc/meminfo`. Returns
+reads CPU/memory from `/proc/stat` and `/proc/meminfo`. The checks run on
+`spawn_blocking` inside `HealthService` (no subprocess on the async runtime)
+and degrade independently — a failing check becomes an `unknown` slot, so a
+single broken dependency can never blank the payload. Returns
 `{ success, data: { checks[], overall_status, cpu_usage, memory_usage } }` —
 note the field names are `checks`/`overall_status`, not `metrics`/`overall`.
 See [Health](./guides/health.md).

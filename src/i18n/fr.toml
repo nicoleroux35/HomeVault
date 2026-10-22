@@ -1528,6 +1528,9 @@ check_services = "Services"
 check_temperatures = "Températures"
 no_checks_title = "Aucune donnée de santé disponible"
 no_checks_desc = "Impossible de récupérer les vérifications de santé."
+error_title = "État de santé indisponible"
+error_desc = "Les vérifications de santé sont injoignables. L'appliance redémarre peut-être ou est injoignable."
+retry = "Réessayer"
 
 [notifications]
 title = "Notifications"
@@ -1887,6 +1890,27 @@ format_drive = "Formater le disque"
 format_label = "Nom du volume (optionnel)"
 format_confirm = "Formater"
 format_warning = "Tout le contenu de %device% sera effacé."
+
+# Retour d'action — chaque action de l'explorateur signale visuellement son
+# échec (ROADMAP 10 « Also in this pass »).
+mkdir_failed = "Impossible de créer le dossier"
+rename_failed = "Impossible de renommer l'élément"
+delete_failed = "Impossible de déplacer les éléments dans la corbeille"
+delete_partial = "%done% élément(s) sur %total% déplacés dans la corbeille — le reste a échoué"
+trash_load_failed = "Impossible de charger la corbeille"
+restore_failed = "Impossible de restaurer l'élément"
+purge_failed = "Impossible de supprimer définitivement l'élément"
+empty_trash_failed = "Impossible de vider la corbeille"
+download_failed = "Le téléchargement a échoué"
+extract_failed = "L'extraction a échoué"
+permission_failed = "Impossible de modifier les permissions"
+compress_failed = "La compression a échoué"
+upload_failed = "Impossible d'envoyer « %name% »"
+upload_partial = "%done% fichier(s) envoyés sur %total% — le reste a échoué"
+copy_failed = "Impossible de copier les éléments"
+copy_partial = "%done% élément(s) copiés sur %total% — le reste a échoué"
+move_failed = "Impossible de déplacer les éléments"
+move_partial = "%done% élément(s) déplacés sur %total% — le reste a échoué"
 
 [folder_picker]
 title = "Choisir un dossier"
