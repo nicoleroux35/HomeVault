@@ -1151,6 +1151,66 @@ test.describe('14 — Security', () => {
     });
     expect(status).toBeGreaterThanOrEqual(400);
   });
+
+  test('14.6 — the session list carries opaque ids, never a live token', async ({ page }) => {
+    const who = await createAccount(sharedCtx, adminHeaders, { fullname: 'temp' });
+    try {
+      // A second live session for the same account (another device).
+      const second = await apiLogin(sharedCtx, who.username, who.password);
+      expect(second.token).not.toEqual('');
+
+      const listRes = await sharedCtx.get('/api/security/sessions', {
+        headers: { 'x-session-token': who.token },
+      });
+      const listBody = await listRes.json();
+      const sessions: any[] = listBody?.data?.sessions ?? [];
+      expect(sessions.length).toBeGreaterThanOrEqual(2);
+
+      // Every row is a 12-char hex fingerprint; no `token` field exists, and
+      // neither live token appears anywhere in the payload.
+      for (const s of sessions) {
+        expect(s.token).toBeUndefined();
+        expect(s.id).toMatch(/^[0-9a-f]{12}$/);
+      }
+      const payload = JSON.stringify(listBody);
+      expect(payload).not.toContain(who.token);
+      expect(payload).not.toContain(second.token);
+
+      // The rendered window lists both devices and leaks neither token.
+      await gotoAccount(page, who);
+      await expect(acc(page).locator('[data-testid="session-row"]')).toHaveCount(2);
+      const rendered = await acc(page).locator('[data-testid="sessions-list"]').innerText();
+      expect(rendered).not.toContain(who.token);
+      expect(rendered).not.toContain(second.token);
+
+      // Revoking by the opaque id kills only that session.
+      const otherId = sessions.find((s) => !s.is_current)?.id;
+      expect(otherId, 'a non-current session id must exist').toBeTruthy();
+      const revokeRes = await sharedCtx.post('/api/security/sessions/revoke', {
+        headers: { 'x-session-token': who.token, 'x-csrf-token': who.csrf },
+        data: { ids: [otherId] },
+      });
+      expect(revokeRes.ok()).toBeTruthy();
+
+      const dead = await sharedCtx.get('/api/auth/me', {
+        headers: { 'x-session-token': second.token },
+      });
+      expect(dead.status()).toBeGreaterThanOrEqual(400);
+      const alive = await sharedCtx.get('/api/auth/me', {
+        headers: { 'x-session-token': who.token },
+      });
+      expect(alive.status()).toBe(200);
+
+      // Another account's live token submitted as an id is refused.
+      const foreign = await sharedCtx.post('/api/security/sessions/revoke', {
+        headers: { 'x-session-token': who.token, 'x-csrf-token': who.csrf },
+        data: { ids: [adminHeaders['x-session-token']] },
+      });
+      expect(foreign.status()).toBe(404);
+    } finally {
+      await deleteAccount(sharedCtx, adminHeaders, who.username);
+    }
+  });
 });
 
 // ===========================================================================

@@ -946,12 +946,15 @@ class ApiClient {
   // 2FA
 
   // Sessions management
+
   async getMySessions() {
     return this.get('/security/sessions', { cache: false });
   }
 
-  async revokeSessions(tokens: string[]) {
-    return this.post('/security/sessions/revoke', { tokens });
+  /** Revoke sessions by their opaque public id (`SessionInfo.id`), never a
+   *  live token — the server resolves ids against the caller's own sessions. */
+  async revokeSessions(ids: string[]) {
+    return this.post('/security/sessions/revoke', { ids });
   }
 
   async revokeAllSessions() {

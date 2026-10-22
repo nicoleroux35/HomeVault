@@ -276,8 +276,10 @@
   }
 
   // Active sessions + recent sign-in history (self-service session management)
+  // `id` is an opaque server-side fingerprint — the API never hands out a live
+  // session token.
   interface SessionInfo {
-    token: string;
+    id: string;
     ip_address: string;
     created_at: string;
     expires_at: string;
@@ -328,14 +330,14 @@
     }
   }
 
-  async function revokeSession(token: string) {
+  async function revokeSession(id: string) {
     sessionsError = '';
     sessionsNotice = '';
     sessionsBusy = true;
-    const res = await api.revokeSessions([token]);
+    const res = await api.revokeSessions([id]);
     sessionsBusy = false;
     if (res.success) {
-      sessions = sessions.filter(s => s.token !== token);
+      sessions = sessions.filter(s => s.id !== id);
       sessionsNotice = translate('account.revoke_success');
     } else {
       sessionsError = res.message || res.error || translate('account.session_action_failed');
@@ -592,7 +594,7 @@
             <p data-testid="sessions-empty" class="m-0 text-c-label text-[var(--hv-shell-text-3)]">{$t('account.sessions_empty')}</p>
           {:else}
             <ul data-testid="sessions-list" class="list-none m-0 p-0 flex flex-col gap-2">
-              {#each sessions as s (s.token)}
+              {#each sessions as s (s.id)}
                 <li data-testid="session-row" class="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
                   <span class="flex-none grid place-items-center w-11 h-11 rounded-lg bg-[var(--hv-shell-border)] text-[var(--hv-shell-text-2)]">
                     {#if s.is_current}<IconDeviceMobile size={20} stroke={1.9} />{:else}<IconDeviceDesktop size={20} stroke={1.9} />{/if}
@@ -612,7 +614,7 @@
                     <button
                       data-testid="session-revoke"
                       class="hv-ic flex-none grid place-items-center w-[30px] h-[30px] p-0 rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer transition-colors hover:text-[var(--hv-error-text)] focus-visible:outline-none focus-visible:shadow-[var(--hv-focus-ring)] disabled:opacity-50 disabled:cursor-default"
-                      onclick={() => revokeSession(s.token)}
+                      onclick={() => revokeSession(s.id)}
                       disabled={sessionsBusy}
                       aria-label={$t('account.revoke_device')}
                     >

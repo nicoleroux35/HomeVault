@@ -1,7 +1,8 @@
 # Security (sessions & login history)
 
 **Purpose:** Let a user review/revoke their own sessions and review login history
-(admin-only per-user history).
+(admin-only global history; per-user history is available to an admin or to the
+account owner).
 
 ## Content Security Policy (2026-10-17)
 
@@ -49,12 +50,33 @@ Handlers in `src/handlers/security.rs`.
 
 | Endpoint | Auth | Notes |
 |----------|------|-------|
-| `GET /security/sessions` | auth | current user's sessions |
-| `POST /security/sessions/revoke` | auth | revoke specific tokens (`{ tokens: [] }`) |
-| `POST /security/sessions/revoke-all` | auth | revoke every session for the user |
+| `GET /security/sessions` | auth | current user's sessions, each identified by an **opaque id** (`SessionInfo.id`) — the response never carries a live session token |
+| `POST /security/sessions/revoke` | auth | revoke sessions by opaque id (`{ ids: [] }`); ids resolve **only** against the caller's own sessions, so a foreign id/token is a 404 and deletes nothing |
+| `POST /security/sessions/revoke-all` | auth | revoke every session for the caller except the current one (caller-scoped by construction) |
 | `GET /security/login-history` | admin | global login history — each row is **truthful**: the real `success` flag (failures stay, they are security-relevant) and the HTTP `User-Agent`; per-user failure counters only count `success = 0`, `clear_attempts` never purges successful logins |
-| `GET /security/login-history/{username}` | admin | per-user history (same truthful success/user-agent per row) |
+| `GET /security/login-history/{username}` | admin or self | per-user history (same truthful success/user-agent per row); a non-admin may only read their own |
 | `GET /security/active-sessions-count` | admin | distinct users with a currently valid session, system-wide (not the caller's own sessions) — powers the desktop "Active Sessions" monitor widget |
+
+### Session identifiers (2026-10-22)
+
+`session_public_id(token)` (`src/handlers/security.rs`) is a 12-character
+SHA-256 fingerprint of the session token. It is what `GET /security/sessions`
+returns and what `POST /security/sessions/revoke` accepts:
+
+- **Never the token.** The old response mapped `token: s.token.clone()`, which
+  put a replayable bearer token into the DOM, devtools, any client-side log and
+  any XSS on the account page. The admin view already masked its tokens
+  (`handlers/users.rs::mask_session_token`); the self-service view now returns
+  no token at all.
+- **Ownership is enforced at resolution, not at deletion.** The revoke handler
+  loads `find_all_by_username(caller)` and keeps only the sessions whose public
+  id matches the request. A token/id belonging to another account is not in the
+  candidate set, so it cannot be revoked even if the attacker knows it
+  (CWE-639). A request that resolves nothing answers **404** ("No matching
+  session to revoke for your account"), an empty `ids` array answers **400**.
+- **The current session stays protected.** Its own id never resolves (it is
+  filtered before deletion); "log out everything else" is the dedicated
+  `revoke-all` endpoint.
 
 ## Frontend
 
@@ -71,9 +93,18 @@ Handlers in `src/handlers/security.rs`.
 
 ## Invariants
 
-- Revoking sessions invalidates the corresponding `X-Session-Token`s server-side;
-  after `revoke-all` the current client must log in again.
-- Login history is admin-only (per-user history requires admin).
+- Revoking a session invalidates that `X-Session-Token` server-side immediately.
+  `revoke-all` keeps the caller's **current** session alive — it signs out the
+  *other* devices only, so the current client does not need to log in again.
+- **No live session token is ever returned by the self-service API** — only the
+  opaque id from `session_public_id`. Guard:
+  `account_integration.rs::test_my_sessions_never_returns_a_live_session_token`.
+- **Revocation is caller-scoped.** `POST /security/sessions/revoke` resolves the
+  submitted ids against the caller's own sessions only; a foreign token/id is a
+  404 and leaves the other account signed in. Guard:
+  `account_integration.rs::test_revoke_sessions_is_scoped_to_the_caller`.
+- Login history: the global view is admin-only; per-user history is admin **or**
+  the account owner (`handle_get_user_login_history`).
 - `getActiveSessionsCount` counts **distinct usernames** with a
   non-expired session (`SessionRepository::count_distinct_active_users`),
   not raw session rows — one user open in several tabs/devices still
