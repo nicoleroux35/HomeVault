@@ -852,8 +852,17 @@ class ApiClient {
     return this.put('/settings/update', data);
   }
 
+  /** Read the version info. The server only contacts the update endpoint
+   *  here when the admin's saved frequency says a check is due — opening
+   *  Settings is never an outbound call by itself. */
   async checkForUpdates() {
     return this.get('/settings/version', { cache: false });
+  }
+
+  /** The explicit "Check now" action — the only path that forces an outbound
+   *  call, whatever the saved frequency (admin only, server-enforced). */
+  async checkForUpdatesNow() {
+    return this.post('/settings/version/check');
   }
 
   // Language

@@ -42,6 +42,7 @@ use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -55,6 +56,33 @@ pub struct TranslationsQuery {
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const VERSION_CHECK_URL: &str = "https://api.github.com/repos/homevault/homevault/releases/latest";
+
+/// Environment override for the update-check endpoint.
+///
+/// It exists for two reasons: the privacy invariant ("no outbound call unless
+/// the admin opted in") can be tested against a listener the test controls
+/// instead of the real GitHub API, and an offline or mirrored install can
+/// point the check at a reachable host. Unset (or empty) = the public API.
+const VERSION_CHECK_URL_ENV: &str = "HOMEVAULT_VERSION_CHECK_URL";
+
+fn version_check_url() -> String {
+    std::env::var(VERSION_CHECK_URL_ENV)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| VERSION_CHECK_URL.to_string())
+}
+
+/// Outbound update-check requests this process has **attempted** (success or
+/// failure). Incremented immediately before the HTTP call, so it is the
+/// observable form of the "no third-party call without consent" rule: with
+/// `Manual` / `Disabled` it must never move.
+static UPDATE_CHECK_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+
+/// How many outbound update checks this process has attempted.
+pub fn update_check_attempts() -> u64 {
+    UPDATE_CHECK_ATTEMPTS.load(Ordering::Relaxed)
+}
 
 /// How often to check for application updates.
 ///
@@ -840,6 +868,10 @@ pub async fn handle_update_settings_get(
 
 /// Performs a version check on GitHub API.
 async fn fetch_latest_version() -> Result<UpdateCheckResult, String> {
+    // Counted before any I/O: a failed attempt is still an attempt, and the
+    // privacy invariant is about *contacting* the third party at all.
+    UPDATE_CHECK_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .user_agent("HomeVault/Server")
@@ -847,7 +879,7 @@ async fn fetch_latest_version() -> Result<UpdateCheckResult, String> {
         .map_err(|e| e.to_string())?;
 
     let resp = client
-        .get(VERSION_CHECK_URL)
+        .get(version_check_url())
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -887,40 +919,93 @@ async fn fetch_latest_version() -> Result<UpdateCheckResult, String> {
     })
 }
 
-/// Checks if an automatic update check should be performed.
-pub fn should_check_for_updates() -> bool {
-    let settings = UPDATE_SETTINGS.read();
-
-    if settings.check_frequency == Some(UpdateFrequency::Disabled) {
+/// Decides whether a *scheduled* check is due — pure, so the matrix is unit
+/// tested without touching the process-global settings or the network.
+///
+/// `None` (never configured) is treated exactly like `Manual`: an absent
+/// preference is not consent. `Manual` and `Disabled` have no interval, so a
+/// timer never fires for them; the only way to contact the update endpoint in
+/// those modes is the explicit "Check now" action.
+fn is_check_due(frequency: Option<UpdateFrequency>, last_check: Option<u64>, now: u64) -> bool {
+    let Some(frequency) = frequency else {
         return false;
-    }
-
-    let last_check = LAST_UPDATE_CHECK.read();
-    let Some(frequency) = &settings.check_frequency else {
-        return true;
     };
-
     let Some(interval) = frequency.as_seconds() else {
         return false;
     };
 
-    match *last_check {
+    match last_check {
         None => true,
-        Some(ts) => {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            now - ts >= interval
-        }
+        Some(ts) => now.saturating_sub(ts) >= interval,
     }
 }
 
-/// Gets version info and checks for updates.
+/// Checks if an automatic update check should be performed.
+///
+/// This is the server-side gate for the privacy setting: `Manual` and
+/// `Disabled` answer `false` unconditionally, and an opted-in schedule only
+/// answers `true` once its interval has elapsed. It is enforced here, not in
+/// the UI, so a client that calls the endpoint cannot talk HomeVault into
+/// contacting GitHub.
+pub fn should_check_for_updates() -> bool {
+    let settings = UPDATE_SETTINGS.read();
+    let frequency = settings.check_frequency;
+    drop(settings);
+
+    let last_check = *LAST_UPDATE_CHECK.read();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    is_check_due(frequency, last_check, now)
+}
+
+/// Records that a check just ran, so the schedule interval starts from now
+/// (a *failed* attempt counts too — otherwise a blocked GitHub would be
+/// retried on every Settings open).
+fn mark_update_check_attempted() {
+    *LAST_UPDATE_CHECK.write() = Some(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    );
+}
+
+/// The version payload with no fresh answer: the version we run, nothing more.
+fn bare_version_info() -> UpdateCheckResult {
+    UpdateCheckResult {
+        current_version: CURRENT_VERSION.to_string(),
+        latest_version: None,
+        up_to_date: true,
+        release_date: None,
+        release_notes: None,
+        error: None,
+    }
+}
+
+/// Gets version info. Contacts the update endpoint **only** when the admin's
+/// saved frequency says a scheduled check is due; otherwise it serves the last
+/// cached answer (or the bare current version). Opening Settings is therefore
+/// never an outbound call by itself.
 pub async fn handle_version_info(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
+    serve_version_info(state, headers, false).await
+}
+
+/// "Check now" — the explicit admin action, and the only path that forces an
+/// outbound call regardless of the saved frequency.
+pub async fn handle_check_version_now(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    serve_version_info(state, headers, true).await
+}
+
+async fn serve_version_info(state: Arc<AppState>, headers: HeaderMap, force: bool) -> Response {
     let session_token = headers
         .get("x-session-token")
         .and_then(|h| h.to_str().ok())
@@ -930,37 +1015,48 @@ pub async fn handle_version_info(
         return ResponseHelper::json_error("No session token provided".to_string());
     }
 
-    match state.auth.get_session(session_token).await {
-        Ok(_) => {}
+    let session = match state.auth.get_session(session_token).await {
+        Ok(session) => session,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
-    }
-
-    let mut result = UpdateCheckResult {
-        current_version: CURRENT_VERSION.to_string(),
-        latest_version: None,
-        up_to_date: true,
-        release_date: None,
-        release_notes: None,
-        error: None,
     };
 
-    match fetch_latest_version().await {
-        Ok(fetched) => {
-            result = fetched;
-
-            *LAST_UPDATE_CHECK.write() = Some(
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0),
-            );
-            *CACHED_UPDATE_RESULT.write() = Some(result.clone());
-        }
-        Err(e) => {
-            tracing::warn!("Version check failed: {}", e);
-            result.error = Some("Could not check for updates".to_string());
-        }
+    // Forcing a third-party call is an admin decision; reading the cached
+    // answer stays available to any signed-in user (the desktop footer shows
+    // the running version).
+    if force && !session.is_admin {
+        return ResponseHelper::json_error("Admin access required".to_string());
     }
+
+    if force || should_check_for_updates() {
+        return match fetch_latest_version().await {
+            Ok(fetched) => {
+                mark_update_check_attempted();
+                *CACHED_UPDATE_RESULT.write() = Some(fetched.clone());
+                ResponseHelper::json_success(&fetched)
+            }
+            Err(e) => {
+                tracing::warn!("Version check failed: {}", e);
+                mark_update_check_attempted();
+                let mut result = bare_version_info();
+                result.error = Some("Could not check for updates".to_string());
+                ResponseHelper::json_success(&result)
+            }
+        };
+    }
+
+    // No check due: serve the cache, refreshed against the version we are
+    // actually running (a cached answer must not claim an old current
+    // version after an upgrade).
+    let mut result = CACHED_UPDATE_RESULT
+        .read()
+        .clone()
+        .unwrap_or_else(bare_version_info);
+    result.current_version = CURRENT_VERSION.to_string();
+    result.up_to_date = match result.latest_version.as_deref() {
+        Some(latest) => !is_newer_version(latest, CURRENT_VERSION),
+        None => true,
+    };
+    result.error = None;
 
     ResponseHelper::json_success(&result)
 }
@@ -1483,6 +1579,63 @@ mod tests {
             serde_json::from_str::<UpdateFrequency>("\"weekly\"").unwrap(),
             UpdateFrequency::Weekly
         );
+    }
+
+    // -- the scheduled-check gate (ROADMAP 13.1) ---------------------
+
+    #[test]
+    fn test_no_scheduled_check_without_an_opted_in_frequency() {
+        // Manual and Disabled both have no interval: the timer never fires,
+        // whatever the last-check timestamp says. This is the server-side
+        // half of the privacy baseline — the UI cannot talk the server into
+        // an outbound call.
+        let now = 1_800_000_000;
+        assert!(!is_check_due(Some(UpdateFrequency::Manual), None, now));
+        assert!(!is_check_due(
+            Some(UpdateFrequency::Manual),
+            Some(now - 10 * 86_400),
+            now
+        ));
+        assert!(!is_check_due(Some(UpdateFrequency::Disabled), None, now));
+        assert!(!is_check_due(
+            Some(UpdateFrequency::Disabled),
+            Some(now - 10 * 86_400),
+            now
+        ));
+        // An absent preference is not consent either.
+        assert!(!is_check_due(None, None, now));
+        assert!(!is_check_due(None, Some(now - 10 * 86_400), now));
+    }
+
+    #[test]
+    fn test_an_opted_in_schedule_fires_only_once_its_interval_elapsed() {
+        let now = 1_800_000_000;
+        // Never checked → due on the next tick.
+        assert!(is_check_due(Some(UpdateFrequency::Daily), None, now));
+        // Just checked → not due.
+        assert!(!is_check_due(Some(UpdateFrequency::Daily), Some(now), now));
+        assert!(!is_check_due(
+            Some(UpdateFrequency::Daily),
+            Some(now - 86_399),
+            now
+        ));
+        // Exactly one interval later → due.
+        assert!(is_check_due(
+            Some(UpdateFrequency::Daily),
+            Some(now - 86_400),
+            now
+        ));
+        assert!(is_check_due(
+            Some(UpdateFrequency::Weekly),
+            Some(now - 604_800),
+            now
+        ));
+        // A clock that went backwards must not fire the timer.
+        assert!(!is_check_due(
+            Some(UpdateFrequency::Daily),
+            Some(now + 5_000),
+            now
+        ));
     }
 
     #[test]

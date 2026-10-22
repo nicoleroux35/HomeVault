@@ -31,7 +31,8 @@ Handlers in `src/handlers/settings.rs`. Persistence via
 | `GET/PUT /settings/notifications` | auth / admin | alert email, threshold, `webhook_url`/`webhook_enabled` (new) |
 | `GET/PUT /settings/appearance` | auth / admin | theme, wallpaper (one of the 44 bundled — no upload), accent, density (accent/density fields still round-trip but have no UI) |
 | `GET/PUT /settings/update` | auth / admin | update-check frequency — **default `Manual`** since 2026-09-07 (G2: no automatic outbound call to GitHub) |
-| `GET /settings/version` | auth | current version |
+| `GET /settings/version` | auth | current version + last **cached** check. Contacts the update endpoint only when the saved frequency says a scheduled check is due — opening Settings is never an outbound call by itself |
+| `POST /settings/version/check` | admin | "Check now": the only path that **forces** an outbound check, whatever the saved frequency |
 | `GET /settings/export` | admin | JSON dump |
 | `POST /settings/import` | admin | JSON import |
 | `POST /settings/reset` | admin | reset to defaults |
@@ -349,6 +350,21 @@ screen:
 
 - `/settings/public` is the only settings endpoint callable without a session
   (used by the login page to know server name/language/theme).
+- **The update check is opt-in and enforced server-side** (`CLAUDE.md` →
+  Compliance, point 1). `is_check_due` (`handlers/settings.rs`) is the single
+  gate: `Manual`, `Disabled` and an absent preference never contact the update
+  endpoint, an opted-in schedule contacts it once its interval has elapsed, and
+  only `POST /settings/version/check` (admin) forces a check. The mount-time
+  `GET /settings/version` serves the cached answer, so opening the screen is not
+  a third-party call. A failed attempt still stamps the interval (otherwise a
+  blocked GitHub would be retried on every open). Guards:
+  `settings_core_integration.rs::test_version_info_never_contacts_the_update_endpoint_by_default`
+  / `…_when_disabled` / `test_check_now_is_the_only_forced_outbound_path` /
+  `test_a_due_schedule_checks_and_a_fresh_one_does_not` /
+  `test_check_now_requires_admin`, unit `handlers::settings::tests::test_no_scheduled_check_without_an_opted_in_frequency`,
+  E2E 8.3/8.4. `update_check_attempts()` exposes the attempt counter so "zero
+  outbound attempts" is measured, not assumed; `HOMEVAULT_VERSION_CHECK_URL`
+  redirects the check (tests, offline/mirrored installs).
 - One Save button for the whole screen — see **Save button** above; the
   initial load must never PUT/POST. (The sub-cards' *action* buttons — a UFW
   enable, a cert swap, a ClamAV quarantine delete — are immediate by design
