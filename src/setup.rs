@@ -634,9 +634,16 @@ impl SetupService {
         let wg = Self::resolve_bin("wg", "/usr/bin/wg");
         let wg_quick = Self::resolve_bin("wg-quick", "/usr/bin/wg-quick");
         let openvpn = Self::resolve_bin("openvpn", "/usr/sbin/openvpn");
-        let pkill = Self::resolve_bin("pkill", "/usr/bin/pkill");
+        // `kill` signals the root-owned openvpn process the VPN page started
+        // (src/vpn.rs). `pkill` used to be resolved and granted here too, but
+        // nothing in the tree ever ran it: the grant was dropped rather than
+        // kept as an unused root capability (ROADMAP 7.4).
         let kill = Self::resolve_bin("kill", "/usr/bin/kill");
         let ip = Self::resolve_bin("ip", "/sbin/ip");
+        // DHCP renew/release goes through `ip_sudo("dhclient")` in
+        // src/network.rs. It had no grant at all, so a DHCP interface could
+        // never be renewed as the unprivileged service account.
+        let dhclient = Self::resolve_bin("dhclient", "/usr/sbin/dhclient");
         let ufw = Self::resolve_bin("ufw", "/usr/sbin/ufw");
         let mdadm = Self::resolve_bin("mdadm", "/usr/sbin/mdadm");
         let wpa_cli = Self::resolve_bin("wpa_cli", "/usr/sbin/wpa_cli");
@@ -662,6 +669,11 @@ impl SetupService {
         let mkfs_btrfs = Self::resolve_bin("mkfs.btrfs", "/sbin/mkfs.btrfs");
         let mkfs_ext4 = Self::resolve_bin("mkfs.ext4", "/sbin/mkfs.ext4");
         let mkfs_xfs = Self::resolve_bin("mkfs.xfs", "/sbin/mkfs.xfs");
+        // Explorer's "format as exFAT" (`src/handlers/explorer.rs`) needs the
+        // same root as the other mkfs tools; it was already a tracked
+        // dependency (`src/dependencies.rs`) but had no grant at all, so the
+        // action always failed with a sudo prompt.
+        let mkfs_exfat = Self::resolve_bin("mkfs.exfat", "/usr/sbin/mkfs.exfat");
         let mount_bin = Self::resolve_bin("mount", "/usr/bin/mount");
         let umount_bin = Self::resolve_bin("umount", "/usr/bin/umount");
         let wipefs = Self::resolve_bin("wipefs", "/usr/sbin/wipefs");
@@ -766,8 +778,10 @@ impl SetupService {
         // every user granted access to an SFTP share (regular HomeVault
         // users are DB-only otherwise), the same way
         // `sync_admin_user_to_group` already does for promoted admins. The
-        // `mount`/`umount`/`mkdir`/`rmdir`/`tee` grants it also needs are
-        // already covered, unscoped, by the Storage pools grant just above.
+        // `mount`/`umount`/`mkdir`/`rmdir` grants it also needs are the
+        // path-scoped ones of the Storage block below — `/var/lib/
+        // homevault-sftp/*` is one of the roots they cover (ROADMAP 7.1),
+        // so the jail reconciliation does not widen them.
         // `useradd`/`usermod`/`gpasswd` are deliberately scoped to the exact
         // arguments `src/sftp.rs` runs, not the bare binaries — unscoped,
         // `usermod`/`gpasswd` could add/remove any user from any group
@@ -809,6 +823,55 @@ impl SetupService {
         // pattern as the `useradd`/`groupadd` grants above.
         let hostnamectl = Self::resolve_bin("hostnamectl", "/usr/bin/hostnamectl");
 
+        // Storage/RAID/LUKS grants, rendered from the table below so they stay
+        // scoped to the argument shapes the code actually runs (ROADMAP 7.1)
+        // and can be asserted on without touching /etc (see `mod tests`).
+        let storage = StorageBins {
+            zpool: &zpool,
+            zfs: &zfs,
+            btrfs: &btrfs,
+            blkid: &blkid,
+            mkfs_btrfs: &mkfs_btrfs,
+            mkfs_ext4: &mkfs_ext4,
+            mkfs_xfs: &mkfs_xfs,
+            mkfs_exfat: &mkfs_exfat,
+            wipefs: &wipefs,
+            cryptsetup: &cryptsetup,
+            mount: &mount_bin,
+            umount: &umount_bin,
+            mkdir: &mkdir,
+            rmdir: &rmdir,
+            tee: &tee,
+        };
+        let storage_pools = sudoers_line(&storage.pool_grants());
+        let storage_filesystems = sudoers_line(&storage.filesystem_grants());
+        let storage_mounts = sudoers_line(&storage.mount_grants());
+        let storage_config = sudoers_line(&storage.config_grants());
+
+        // VPN, network, firewall, RAID/rescue and read-only diagnostics —
+        // the rest of the host-privileged surface, rendered from a table for
+        // the same reason as the Storage block (ROADMAP 7.4).
+        let host = HostBins {
+            wg: &wg,
+            wg_quick: &wg_quick,
+            openvpn: &openvpn,
+            kill: &kill,
+            ip: &ip,
+            dhclient: &dhclient,
+            netplan: &netplan,
+            wpa_cli: &wpa_cli,
+            ufw: &ufw,
+            mdadm: &mdadm,
+            smartctl: &smartctl,
+            journalctl: &journalctl,
+            tail: &tail,
+        };
+        let vpn_grants = sudoers_line(&host.vpn_grants());
+        let network_grants = sudoers_line(&host.network_grants());
+        let firewall_grants = sudoers_line(&host.firewall_grants());
+        let raid_grants = sudoers_line(&host.raid_grants());
+        let diagnostics_grants = sudoers_line(&host.diagnostics_grants());
+
         let sudoers_content = format!(
             r#"# HomeVault sudoers configuration
 # Grant full administrative privileges to homevault_admin group members
@@ -823,23 +886,55 @@ homevault ALL=(%homevault_admin) NOPASSWD: /usr/bin/sudo -u * -i
 
 # VPN management - the unprivileged homevault service delegates privileged
 # network operations (interface creation, tunnels, stopping root-owned
-# openvpn processes, and reading WireGuard state) to root via passwordless sudo.
-# ufw (firewall management) is delegated the same way; clamscan/freshclam
-# (antivirus) are deliberately NOT here since they run unprivileged as the
-# homevault user against paths it already owns. mdadm needs root even for
-# read-only --detail (confirmed live: fails with "must be super-user"
-# otherwise), used by both the RAID page and Rescue's mdadm diagnose/repair.
-homevault ALL=(root) NOPASSWD: {wg}, {wg_quick}, {openvpn}, {pkill}, {kill}, {ip}, {ufw}, {mdadm}, {wpa_cli}, {netplan} apply
+# openvpn processes, and reading WireGuard state) to root via passwordless
+# sudo. clamscan/freshclam (antivirus) are deliberately NOT here since they
+# run unprivileged as the homevault user against paths it already owns.
+#
+# Every entry is scoped to the exact argv shape src/vpn.rs builds (ROADMAP
+# 7.4): `wg` only shows/sets the one hardcoded interface (`WG_INTERFACE`),
+# `wg-quick` only brings that interface up, and `openvpn` only starts a
+# config HomeVault wrote itself under /etc/openvpn.
+#
+# `kill` keeps a variable pid (`-TERM <pid>`): sudoers cannot express "only a
+# pid this process just resolved through pgrep", and a signal-only tool is
+# the same class of accepted residual as `chpasswd` below. The signal is
+# pinned to TERM and the pid is validated numeric by the caller.
+{vpn_grants}
+
+# Interface control - `ip` is scoped per object (addr/route/link) so a
+# compromised argv can still rewrite addresses and routes but cannot reach
+# `ip netns`/`ip tunnel`/`ip rule`. `dhclient` renews/releases the DHCP lease
+# of a managed interface (it had no grant at all before, so a DHCP interface
+# could never be renewed as the service account), `netplan apply` persists
+# it, and wpa_cli gets one entry per subcommand src/network.rs runs - never
+# `-i * *`, which would delegate every wpa_cli command including `terminate`.
+{network_grants}
+
+# Firewall management (`src/firewall.rs`) - `ufw` per subcommand. `delete`
+# keeps a variable tail because it takes the live rule spec that `ufw show
+# added` printed, and `--version` is the installed-check.
+{firewall_grants}
 
 # Network persistence files — `/etc/netplan/99-homevault-<if>.yaml` are
-# written through the unscoped `tee` grant above and end up root-owned; the
-# persistence layer must also (a) snapshot our previous file before
-# overwriting it (`cat`, the apply-verify-rollback source), (b) re-assert
-# netplan's own 600 mode after every `tee`/`chmod` follow-up, and (c) delete
-# the file during a rollback when no previous version existed (`rm -f`).
-# All three shapes stay scoped to the HomeVault-owned file name prefix —
-# nothing else under /etc/netplan (or anywhere else) is touched.
+# written through the `tee` grant in the host-config block below and end up
+# root-owned; the persistence layer must also (a) snapshot our previous file
+# before overwriting it (`cat`, the apply-verify-rollback source), (b)
+# re-assert netplan's own 600 mode after every `tee`/`chmod` follow-up, and
+# (c) delete the file during a rollback when no previous version existed
+# (`rm -f`). All three shapes stay scoped to the HomeVault-owned file name
+# prefix — nothing else under /etc/netplan (or anywhere else) is touched.
 homevault ALL=(root) NOPASSWD: {chmod} 600 /etc/netplan/99-homevault-*.yaml, {rm} -f /etc/netplan/99-homevault-*.yaml, {cat} /etc/netplan/99-homevault-*.yaml
+
+# Host config writes outside the Shares and Storage blocks — `/etc/resolv.conf`
+# (src/network.rs), the netplan/ifupdown file HomeVault owns, avahi's daemon
+# config + service definition (src/mdns.rs), Docker's daemon.json
+# (src/docker.rs) and the per-policy cpufreq `scaling_governor` knobs
+# (src/power.rs) are all root-owned, so they are written through `sudo tee`.
+# Scoped to those exact paths (ROADMAP 7.1): the Storage `tee` grant used to
+# cover them implicitly, and an unscoped `tee` would let homevault overwrite
+# any file on the host as root, /etc/shadow included. The trailing `rm -f` is
+# the same file the mdns module writes: unpublishing the service removes it.
+homevault ALL=(root) NOPASSWD: {tee} /etc/resolv.conf, {tee} /etc/netplan/99-homevault-*.yaml, {tee} /etc/network/interfaces.d/homevault-*, {tee} /etc/avahi/avahi-daemon.conf, {tee} /etc/avahi/services/homevault.service, {tee} /etc/docker/daemon.json, {tee} /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor, {tee} /proc/sys/net/ipv6/conf/*/*, {rm} -f /etc/avahi/services/homevault.service
 
 # WireGuard server boot persistence — the roadwarrior server+peer feature in
 # src/vpn.rs enables the packaged `wg-quick@wg0` systemd unit the first time
@@ -862,26 +957,64 @@ homevault ALL=(root) NOPASSWD: {systemctl} enable wg-quick@wg0, {systemctl} star
 # tee/cat/chmod/test binaries.
 homevault ALL=(root) NOPASSWD: {tee} /etc/wireguard/wg0.conf, {tee} -a /etc/wireguard/wg0.conf, {cat} /etc/wireguard/wg0.conf, {chmod} 600 /etc/wireguard/wg0.conf, {test_bin} -e /etc/wireguard/wg0.conf
 
-# Dashboard/Health disk S.M.A.R.T. status — read-only diagnostic reads of
-# each block device's health/temperature attributes; needs root the same
-# way mdadm --examine does above.
-homevault ALL=(root) NOPASSWD: {smartctl}
+# Read-only diagnostics - `smartctl` (Dashboard/Health disk health,
+# temperature and self-test state), `journalctl` (System Journal viewer) and
+# `tail` (the whitelisted /var/log text sources, see
+# src/handlers/journal.rs::text_log_path). `smartctl` is scoped to the six
+# flag shapes the call sites pass, with the device confined to /dev, so it
+# cannot be turned into a general root file reader; `tail` is confined to the
+# four files that whitelist can return (ROADMAP 7.4).
+{diagnostics_grants}
 
-# Storage pools (ZFS/Btrfs create/delete/scrub) and LUKS2 disk encryption —
-# same reasoning as mdadm above: mkfs/mount/wipefs/cryptsetup on a real
-# block device need root regardless of the calling process's own group
-# memberships.
-homevault ALL=(root) NOPASSWD: {zpool}, {zfs}, {mkfs_btrfs}, {mkfs_ext4}, {mkfs_xfs}, {mount_bin}, {umount_bin}, {wipefs}, {btrfs}, {cryptsetup}, {blkid}, {mkdir}, {rmdir}, {tee}
+# Storage pools (ZFS/Btrfs create/delete/scrub), filesystems and LUKS2 disk
+# encryption — same reasoning as the `mdadm` grant below: mkfs/mount/wipefs/
+# cryptsetup on a real block device need root regardless of the calling
+# process's own group memberships. Every grant below is scoped to the
+# subcommand / argument shape the code actually runs (ROADMAP 7.1) — the
+# previous single line granted these fourteen binaries with *no* argument
+# restriction, which turned any attacker-controlled string reaching an argv
+# into `mkfs.ext4 /dev/sda`, `zfs destroy -r tank` or `tee /etc/shadow` as
+# root.
+#
+# Pool/dataset management: `zpool` and `zfs` are scoped per subcommand (the
+# pool name and options after it stay variable — sudoers cannot constrain
+# them, and they are the feature), `btrfs` per subcommand group, and `blkid`
+# to the single read-only UUID lookup pools/disk.rs run.
+{storage_pools}
+
+# Filesystems and encryption: the exact flag shapes src/disk.rs,
+# src/pools.rs and src/handlers/explorer.rs pass (ext4/xfs are always forced,
+# btrfs always `-f` with optional `-d`/`-m`/`-L`, exFAT either bare or with
+# `-n <label>`), and `cryptsetup` per subcommand.
+{storage_filesystems}
+
+# Mount points: everything the appliance mounts lives under /mnt (pools,
+# RAID, encrypted volumes), under the SFTP jail root (`mount --bind` of each
+# shared folder) or on removable media; `mkdir`/`rmdir` are confined to those
+# same roots plus HomeVault's own /etc/homevault, so neither can create or
+# remove a directory anywhere else on the host.
+{storage_mounts}
+
+# The only files written through `sudo tee` by the Storage features:
+# /etc/fstab (pool/array/volume persistence) and /etc/mdadm/mdadm.conf
+# (array assembly at boot).
+{storage_config}
+
+# RAID arrays and Rescue - mdadm needs root even for read-only `--detail`
+# (confirmed live: fails with "must be super-user" otherwise), used by the
+# RAID page, Storage's array creation/teardown and Rescue's mdadm
+# diagnose/repair. Scoped per mdadm mode (`--detail`, `--examine`, `--create`,
+# `--stop`, `--zero-superblock`, `--manage`, `--grow`, and both spellings of
+# `--action`, since `--action=repair` is a single argv element): the device
+# and the mode's own options stay variable because sudoers cannot constrain a
+# variable-length prefix, but no grant reaches another mdadm mode.
+{raid_grants}
 
 # RAID boot persistence — see the comment above where findmnt/update-initramfs
 # are resolved: fstab validation (read-only) + initramfs regeneration so the
 # new mdadm.conf entry actually assembles at boot. Scoped to exactly the
 # subcommand shapes DiskService::mount_and_persist_raid runs.
 homevault ALL=(root) NOPASSWD: {findmnt} --verify --fstab, {update_initramfs} -u, {dracut} -f
-
-# System Journal viewer — read-only access to journald and a whitelisted set
-# of /var/log text files (see src/handlers/journal.rs for the whitelist).
-homevault ALL=(root) NOPASSWD: {journalctl}, {tail}
 
 # Shares page service control — scoped to the exact smbd/nfs-server/vsftpd/
 # homevault-sftp commands src/shares.rs runs, not the whole systemctl binary
@@ -902,7 +1035,7 @@ homevault ALL=(root) NOPASSWD: {systemctl} start docker, {systemctl} enable dock
 # files rather than the whole `tee` binary. The two `rm -f` grants exist only
 # to retire the legacy generated WebDAV service, and are scoped to those two
 # exact paths.
-homevault ALL=(root) NOPASSWD: {tee} {smb_conf}, {tee} -a {smb_conf}, {tee} {vsftpd_conf}, {tee} {exports}, {tee} -a {exports}, {exportfs}, {rm} -f {webdav_py}, {rm} -f {webdav_service}
+homevault ALL=(root) NOPASSWD: {tee} {smb_conf}, {tee} -a {smb_conf}, {tee} {vsftpd_conf}, {tee} {exports}, {tee} -a {exports}, {exportfs} -ra, {rm} -f {webdav_py}, {rm} -f {webdav_service}
 
 # SFTP — see the comment above where `groupadd`/`useradd`/`usermod_sftp`/
 # `gpasswd` are resolved for why these are scoped to exact arguments.
@@ -964,37 +1097,21 @@ homevault ALL=(root) NOPASSWD: {hostnamectl} set-hostname *
 # which could otherwise enable/disable/start/stop any unit on the host.
 homevault ALL=(root) NOPASSWD: {systemctl} enable homevault, {systemctl} disable homevault
 "#,
-            wg = wg,
-            wg_quick = wg_quick,
-            openvpn = openvpn,
-            pkill = pkill,
-            kill = kill,
-            ip = ip,
-            ufw = ufw,
-            mdadm = mdadm,
-            wpa_cli = wpa_cli,
-            smartctl = smartctl,
-            zpool = zpool,
-            zfs = zfs,
-            mkfs_btrfs = mkfs_btrfs,
-            mkfs_ext4 = mkfs_ext4,
-            mkfs_xfs = mkfs_xfs,
-            mount_bin = mount_bin,
-            umount_bin = umount_bin,
-            wipefs = wipefs,
-            btrfs = btrfs,
-            cryptsetup = cryptsetup,
-            blkid = blkid,
-            mkdir = mkdir,
-            rmdir = rmdir,
+            vpn_grants = vpn_grants,
+            network_grants = network_grants,
+            firewall_grants = firewall_grants,
+            raid_grants = raid_grants,
+            diagnostics_grants = diagnostics_grants,
+            storage_pools = storage_pools,
+            storage_filesystems = storage_filesystems,
+            storage_mounts = storage_mounts,
+            storage_config = storage_config,
             tee = tee,
             findmnt = findmnt,
             update_initramfs = update_initramfs,
             dracut = dracut,
             cat = cat,
             test_bin = test_bin,
-            journalctl = journalctl,
-            tail = tail,
             systemctl = systemctl,
             exportfs = exportfs,
             chmod = chmod,
@@ -1063,10 +1180,279 @@ homevault ALL=(root) NOPASSWD: {systemctl} enable homevault, {systemctl} disable
     }
 }
 
+// ---------------------------------------------------------------------------
+// Storage / filesystem / LUKS sudoers grants (ROADMAP 7.1)
+// ---------------------------------------------------------------------------
+
+/// The resolved binaries the Storage, filesystem and LUKS features run as
+/// root, kept as one table so the sudoers block is rendered from it — and can
+/// be asserted on in `mod tests` without writing to `/etc`.
+struct StorageBins<'a> {
+    zpool: &'a str,
+    zfs: &'a str,
+    btrfs: &'a str,
+    blkid: &'a str,
+    mkfs_btrfs: &'a str,
+    mkfs_ext4: &'a str,
+    mkfs_xfs: &'a str,
+    mkfs_exfat: &'a str,
+    wipefs: &'a str,
+    cryptsetup: &'a str,
+    mount: &'a str,
+    umount: &'a str,
+    mkdir: &'a str,
+    rmdir: &'a str,
+    tee: &'a str,
+}
+
+impl StorageBins<'_> {
+    /// Pool/dataset management: one grant per subcommand the code runs, so a
+    /// compromised argv can only reach `zpool create`/`zfs snapshot`/…, never
+    /// an arbitrary subcommand of those binaries.
+    ///
+    /// The pool name and the options after the subcommand stay variable:
+    /// sudoers cannot constrain a variable-length prefix (`zpool create -f
+    /// -m <mp> -O k=v … <name> <layout> <devices…>`), and they are the
+    /// feature itself. Everything that *can* be fixed is.
+    fn pool_grants(&self) -> Vec<String> {
+        vec![
+            grant(self.zpool, "create *"),
+            grant(self.zpool, "destroy *"),
+            // Bare `import` lists importable pools; the two-argument form
+            // imports (and optionally renames) one.
+            grant(self.zpool, "import"),
+            grant(self.zpool, "import *"),
+            grant(self.zpool, "list *"),
+            grant(self.zpool, "scrub *"),
+            grant(self.zpool, "status *"),
+            grant(self.zfs, "destroy *"),
+            grant(self.zfs, "get *"),
+            grant(self.zfs, "list *"),
+            grant(self.zfs, "rollback *"),
+            grant(self.zfs, "set *"),
+            grant(self.zfs, "snapshot *"),
+            grant(self.zfs, "userspace *"),
+            grant(self.btrfs, "filesystem *"),
+            grant(self.btrfs, "scrub *"),
+            grant(self.btrfs, "subvolume *"),
+            // Read-only UUID lookup (`-s UUID -o value <device>`).
+            grant(self.blkid, "-s UUID -o value *"),
+        ]
+    }
+
+    /// Filesystem creation and LUKS: the exact flag shapes the callers pass
+    /// (`mkfs.ext4 -F …`, `mkfs.xfs -f …`, `mkfs.btrfs -f …`, `wipefs -a …`)
+    /// and one grant per `cryptsetup` subcommand.
+    fn filesystem_grants(&self) -> Vec<String> {
+        vec![
+            grant(self.mkfs_btrfs, "-f *"),
+            grant(self.mkfs_ext4, "-F *"),
+            // Explorer formats removable media as exFAT either bare or with a
+            // validated `-n <label>`; both target a `/dev/…` block device.
+            grant(self.mkfs_exfat, "/dev/*"),
+            grant(self.mkfs_exfat, "-n * /dev/*"),
+            grant(self.mkfs_xfs, "-f *"),
+            grant(self.wipefs, "-a *"),
+            grant(self.cryptsetup, "close *"),
+            grant(self.cryptsetup, "erase *"),
+            grant(self.cryptsetup, "luksChangeKey *"),
+            grant(self.cryptsetup, "luksFormat *"),
+            grant(self.cryptsetup, "luksUUID *"),
+            grant(self.cryptsetup, "open *"),
+            grant(self.cryptsetup, "status *"),
+        ]
+    }
+
+    /// Mount points and their directories. Every mount the appliance makes
+    /// targets `/mnt/…` (pools, RAID arrays, encrypted volumes), a
+    /// `/media`-style removable-media root, or an SFTP jail under
+    /// `/var/lib/homevault-sftp`; `mkdir`/`rmdir` are confined to the same
+    /// roots plus HomeVault's own `/etc/homevault`.
+    fn mount_grants(&self) -> Vec<String> {
+        vec![
+            grant(self.mkdir, "-p /etc/homevault"),
+            grant(self.mkdir, "-p /mnt/*"),
+            grant(self.mkdir, "-p /media/*"),
+            grant(self.mkdir, "-p /run/media/*"),
+            grant(self.mkdir, "-p /var/lib/homevault-sftp/*"),
+            // `mount [-o <opts>] <device|--bind src> <target>`: the device /
+            // source stays variable, the target is what gets confined.
+            grant(self.mount, "* /mnt/*"),
+            grant(self.mount, "* /media/*"),
+            grant(self.mount, "* /run/media/*"),
+            grant(self.mount, "* /var/lib/homevault-sftp/*"),
+            grant(self.rmdir, "/mnt/*"),
+            grant(self.rmdir, "/var/lib/homevault-sftp/*"),
+            // `umount` also takes a device path (the kernel-side double check
+            // in `delete_raid`), and unmounting is not a privilege escalation
+            // by itself — the paths still stay inside the appliance's roots.
+            grant(self.umount, "/dev/*"),
+            grant(self.umount, "/mnt/*"),
+            grant(self.umount, "/media/*"),
+            grant(self.umount, "/run/media/*"),
+            grant(self.umount, "/var/lib/homevault-sftp/*"),
+        ]
+    }
+
+    /// The only two files the Storage features write as root.
+    fn config_grants(&self) -> Vec<String> {
+        vec![
+            grant(self.tee, "/etc/fstab"),
+            grant(self.tee, "/etc/mdadm/mdadm.conf"),
+        ]
+    }
+}
+
+/// The rest of the host-privileged surface — VPN, interface control, firewall,
+/// RAID/rescue `mdadm` and read-only diagnostics. Same table shape as
+/// [`StorageBins`], for the same reason: the sudoers block is rendered from
+/// it and every entry is asserted on in `mod tests` (ROADMAP 7.4).
+struct HostBins<'a> {
+    wg: &'a str,
+    wg_quick: &'a str,
+    openvpn: &'a str,
+    kill: &'a str,
+    ip: &'a str,
+    dhclient: &'a str,
+    netplan: &'a str,
+    wpa_cli: &'a str,
+    ufw: &'a str,
+    mdadm: &'a str,
+    smartctl: &'a str,
+    journalctl: &'a str,
+    tail: &'a str,
+}
+
+impl HostBins<'_> {
+    /// WireGuard/OpenVPN. `wg` only touches the hardcoded `wg0`
+    /// (`src/vpn.rs::WG_INTERFACE`), and `openvpn` only starts a config
+    /// HomeVault wrote under `/etc/openvpn`, with the log file it derives from
+    /// that config's name — including the optional `--auth-user-pass` tail.
+    fn vpn_grants(&self) -> Vec<String> {
+        vec![
+            grant(self.wg, "show wg0"),
+            grant(self.wg, "show wg0 dump"),
+            grant(self.wg, "set wg0 *"),
+            grant(self.wg_quick, "up wg0"),
+            grant(
+                self.openvpn,
+                "--config /etc/openvpn/*.ovpn --cd /etc/openvpn --log /etc/openvpn/*.log --daemon",
+            ),
+            grant(
+                self.openvpn,
+                "--config /etc/openvpn/*.ovpn --cd /etc/openvpn --log /etc/openvpn/*.log --daemon --auth-user-pass /etc/openvpn/*.auth",
+            ),
+            // The signal is pinned; the pid cannot be (see the sudoers comment).
+            grant(self.kill, "-TERM *"),
+        ]
+    }
+
+    /// `ip` per object rather than per binary (never `ip netns`/`ip tunnel`),
+    /// the DHCP lease tools, `netplan apply`, and one entry per `wpa_cli`
+    /// subcommand src/network.rs runs.
+    fn network_grants(&self) -> Vec<String> {
+        vec![
+            grant(self.ip, "addr *"),
+            grant(self.ip, "-4 addr *"),
+            grant(self.ip, "-4 route *"),
+            grant(self.ip, "-6 addr *"),
+            grant(self.ip, "-6 route *"),
+            grant(self.ip, "link *"),
+            grant(self.dhclient, "*"),
+            grant(self.netplan, "apply"),
+            grant(self.wpa_cli, "-i * list_networks"),
+            grant(self.wpa_cli, "-i * status"),
+            grant(self.wpa_cli, "-i * scan"),
+            grant(self.wpa_cli, "-i * scan_results"),
+            grant(self.wpa_cli, "-i * add_network"),
+            grant(self.wpa_cli, "-i * set_network *"),
+            grant(self.wpa_cli, "-i * enable_network *"),
+            grant(self.wpa_cli, "-i * select_network *"),
+            grant(self.wpa_cli, "-i * save_config"),
+            grant(self.wpa_cli, "-i * remove_network *"),
+        ]
+    }
+
+    /// `ufw` per subcommand. `delete` keeps a variable tail because it takes
+    /// the live rule spec `ufw show added` printed.
+    fn firewall_grants(&self) -> Vec<String> {
+        vec![
+            grant(self.ufw, "--version"),
+            grant(self.ufw, "status *"),
+            grant(self.ufw, "show *"),
+            grant(self.ufw, "allow *"),
+            grant(self.ufw, "deny *"),
+            grant(self.ufw, "limit *"),
+            grant(self.ufw, "reject *"),
+            grant(self.ufw, "delete *"),
+            grant(self.ufw, "--force enable"),
+            grant(self.ufw, "disable"),
+            grant(self.ufw, "default * *"),
+        ]
+    }
+
+    /// `mdadm` per mode — the device and the mode's own options stay variable
+    /// (sudoers cannot constrain a variable-length prefix), but no grant
+    /// reaches another mdadm mode. Both `--action` spellings exist in the
+    /// tree: `--action check <dev>` (handlers/storage.rs) and
+    /// `--action=repair <dev>` (rescue/service.rs), where the `=` makes it a
+    /// single argv element.
+    fn raid_grants(&self) -> Vec<String> {
+        vec![
+            grant(self.mdadm, "--detail *"),
+            grant(self.mdadm, "--examine *"),
+            grant(self.mdadm, "--create *"),
+            grant(self.mdadm, "--stop *"),
+            grant(self.mdadm, "--zero-superblock *"),
+            grant(self.mdadm, "--manage *"),
+            grant(self.mdadm, "--grow *"),
+            grant(self.mdadm, "--action *"),
+            grant(self.mdadm, "--action=*"),
+        ]
+    }
+
+    /// Read-only diagnostics: `smartctl` flag shapes with the device confined
+    /// to `/dev`, the journald read, and the four `/var/log` files
+    /// `text_log_path` can return.
+    fn diagnostics_grants(&self) -> Vec<String> {
+        vec![
+            grant(self.smartctl, "-H /dev/*"),
+            grant(self.smartctl, "-A /dev/*"),
+            grant(self.smartctl, "-c /dev/*"),
+            grant(self.smartctl, "-t * /dev/*"),
+            grant(self.smartctl, "-l * /dev/*"),
+            // USB bridges need the `-d sat` override, so the flag prefix stays
+            // variable but the trailing device does not.
+            grant(self.smartctl, "-d * /dev/*"),
+            grant(
+                self.journalctl,
+                "--no-pager --output=json --quiet * --output-fields=__REALTIME_TIMESTAMP\\,_SYSTEMD_UNIT\\,PRIORITY\\,_PID\\,MESSAGE",
+            ),
+            grant(self.tail, "-n * /var/log/syslog"),
+            grant(self.tail, "-n * /var/log/auth.log"),
+            grant(self.tail, "-n * /var/log/kern.log"),
+            grant(self.tail, "-n * /var/log/daemon.log"),
+        ]
+    }
+}
+
+/// Renders one `homevault ALL=(root) NOPASSWD: …` line from grant strings that
+/// already carry their argument pattern.
+fn sudoers_line(grants: &[String]) -> String {
+    format!("homevault ALL=(root) NOPASSWD: {}", grants.join(", "))
+}
+
+/// One sudoers command entry: the binary plus its argument pattern. Never
+/// called with an empty pattern — a bare binary grant is what ROADMAP 7.1
+/// removed.
+fn grant(bin: &str, args: &str) -> String {
+    debug_assert!(!args.is_empty(), "sudoers grant for '{bin}' has no args");
+    format!("{bin} {args}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
     // =====================================================================
     // validate_username
     // =====================================================================
@@ -1594,5 +1980,525 @@ mod tests {
             SetupService::RESERVED_USERNAMES.len() >= 8,
             "Expected at least 8 reserved usernames"
         );
+    }
+
+    // =====================================================================
+    // Storage sudoers grants (ROADMAP 7.1)
+    // =====================================================================
+
+    /// The storage grant table with stand-in paths, so the rendered entries
+    /// can be asserted on without resolving anything on the host.
+    fn storage_bins() -> StorageBins<'static> {
+        StorageBins {
+            zpool: "/usr/sbin/zpool",
+            zfs: "/usr/sbin/zfs",
+            btrfs: "/usr/bin/btrfs",
+            blkid: "/usr/sbin/blkid",
+            mkfs_btrfs: "/sbin/mkfs.btrfs",
+            mkfs_ext4: "/sbin/mkfs.ext4",
+            mkfs_xfs: "/sbin/mkfs.xfs",
+            mkfs_exfat: "/usr/sbin/mkfs.exfat",
+            wipefs: "/usr/sbin/wipefs",
+            cryptsetup: "/usr/sbin/cryptsetup",
+            mount: "/usr/bin/mount",
+            umount: "/usr/bin/umount",
+            mkdir: "/usr/bin/mkdir",
+            rmdir: "/usr/bin/rmdir",
+            tee: "/usr/bin/tee",
+        }
+    }
+
+    fn all_storage_grants() -> Vec<String> {
+        let bins = storage_bins();
+        let mut all = bins.pool_grants();
+        all.extend(bins.filesystem_grants());
+        all.extend(bins.mount_grants());
+        all.extend(bins.config_grants());
+        all
+    }
+
+    #[test]
+    fn test_no_storage_grant_is_a_bare_binary() {
+        // The regression this pins: the block used to read
+        // `NOPASSWD: {zpool}, {zfs}, …` with no argument restriction, so any
+        // argv reaching one of these binaries ran as root.
+        for entry in all_storage_grants() {
+            let (bin, args) = entry
+                .split_once(' ')
+                .unwrap_or_else(|| panic!("bare sudoers grant: '{entry}'"));
+            assert!(bin.starts_with('/'), "'{entry}' does not name a path");
+            assert!(!args.trim().is_empty(), "'{entry}' has no argument scope");
+        }
+    }
+
+    #[test]
+    fn test_no_storage_grant_reaches_a_shell() {
+        // A `bash -c`/`sh -c` grant would undo every other scope here.
+        for entry in all_storage_grants() {
+            assert!(!entry.contains("bash"), "{entry}");
+            assert!(!entry.contains("sh -c"), "{entry}");
+            assert!(!entry.contains(" -c "), "{entry}");
+        }
+    }
+
+    #[test]
+    fn test_zpool_and_zfs_grants_are_per_subcommand() {
+        let bins = storage_bins();
+        let grants = bins.pool_grants();
+
+        for sub in [
+            "create *",
+            "destroy *",
+            "import",
+            "import *",
+            "list *",
+            "scrub *",
+            "status *",
+        ] {
+            assert!(
+                grants.contains(&format!("/usr/sbin/zpool {sub}")),
+                "missing zpool {sub}"
+            );
+        }
+        for sub in [
+            "destroy *",
+            "get *",
+            "list *",
+            "rollback *",
+            "set *",
+            "snapshot *",
+            "userspace *",
+        ] {
+            assert!(
+                grants.contains(&format!("/usr/sbin/zfs {sub}")),
+                "missing zfs {sub}"
+            );
+        }
+        for sub in ["filesystem *", "scrub *", "subvolume *"] {
+            assert!(
+                grants.contains(&format!("/usr/bin/btrfs {sub}")),
+                "missing btrfs {sub}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_blkid_is_read_only_uuid_lookup_only() {
+        let grants = storage_bins().pool_grants();
+        assert!(grants.contains(&"/usr/sbin/blkid -s UUID -o value *".to_string()));
+        assert_eq!(
+            grants.iter().filter(|g| g.contains("blkid")).count(),
+            1,
+            "blkid should have exactly one scoped grant"
+        );
+    }
+
+    #[test]
+    fn test_mkfs_grants_match_the_flags_the_code_passes() {
+        let grants = storage_bins().filesystem_grants();
+        assert!(grants.contains(&"/sbin/mkfs.ext4 -F *".to_string()));
+        assert!(grants.contains(&"/sbin/mkfs.xfs -f *".to_string()));
+        assert!(grants.contains(&"/sbin/mkfs.btrfs -f *".to_string()));
+        assert!(grants.contains(&"/usr/sbin/wipefs -a *".to_string()));
+    }
+
+    #[test]
+    fn test_exfat_format_is_granted_for_explorer() {
+        // `src/handlers/explorer.rs` formats removable media as exFAT; the
+        // binary was tracked by `dependencies.rs` but had no grant at all.
+        let grants = storage_bins().filesystem_grants();
+        assert!(grants.contains(&"/usr/sbin/mkfs.exfat /dev/*".to_string()));
+        assert!(grants.contains(&"/usr/sbin/mkfs.exfat -n * /dev/*".to_string()));
+    }
+
+    #[test]
+    fn test_cryptsetup_grants_are_per_subcommand() {
+        let grants = storage_bins().filesystem_grants();
+        for sub in [
+            "close *",
+            "erase *",
+            "luksChangeKey *",
+            "luksFormat *",
+            "luksUUID *",
+            "open *",
+            "status *",
+        ] {
+            assert!(
+                grants.contains(&format!("/usr/sbin/cryptsetup {sub}")),
+                "missing cryptsetup {sub}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_mount_grants_confine_the_target_directory() {
+        let grants = storage_bins().mount_grants();
+        // The target (last argument) is what gets confined, for both the
+        // `-o <opts> <dev> <target>` and `--bind <src> <target>` shapes.
+        assert!(grants.contains(&"/usr/bin/mount * /mnt/*".to_string()));
+        assert!(grants.contains(&"/usr/bin/mount * /var/lib/homevault-sftp/*".to_string()));
+        assert!(grants.contains(&"/usr/bin/umount /mnt/*".to_string()));
+        assert!(grants.contains(&"/usr/bin/umount /var/lib/homevault-sftp/*".to_string()));
+        // No unbounded `umount *` / `mount *` entry slipped in.
+        assert!(!grants.iter().any(|g| g.ends_with("mount *")));
+    }
+
+    #[test]
+    fn test_mkdir_and_rmdir_stay_inside_the_appliance_roots() {
+        let grants = storage_bins().mount_grants();
+        assert!(grants.contains(&"/usr/bin/mkdir -p /mnt/*".to_string()));
+        assert!(grants.contains(&"/usr/bin/mkdir -p /etc/homevault".to_string()));
+        assert!(grants.contains(&"/usr/bin/rmdir /mnt/*".to_string()));
+        // Never `mkdir -p *` / `rmdir *`: that could create or remove any
+        // directory on the host.
+        assert!(!grants.contains(&"/usr/bin/mkdir -p *".to_string()));
+        assert!(!grants.contains(&"/usr/bin/rmdir *".to_string()));
+    }
+
+    #[test]
+    fn test_storage_tee_is_confined_to_the_two_persisted_files() {
+        let grants = storage_bins().config_grants();
+        assert_eq!(
+            grants,
+            vec![
+                "/usr/bin/tee /etc/fstab".to_string(),
+                "/usr/bin/tee /etc/mdadm/mdadm.conf".to_string(),
+            ],
+            "the Storage tee grant must not be able to write any other file"
+        );
+    }
+
+    #[test]
+    fn test_sudoers_line_prefixes_every_grant_with_the_service_user() {
+        let line = sudoers_line(&["/usr/bin/tee /etc/fstab".to_string()]);
+        assert_eq!(
+            line,
+            "homevault ALL=(root) NOPASSWD: /usr/bin/tee /etc/fstab"
+        );
+        assert!(!line.contains("ALL=(ALL)"));
+    }
+
+    #[test]
+    fn test_every_storage_binary_is_represented() {
+        // All fifteen binaries the Storage/LUKS features resolve must show up
+        // at least once, otherwise scoping silently dropped a feature.
+        let grants = all_storage_grants().join("\n");
+        for bin in [
+            "/usr/sbin/zpool",
+            "/usr/sbin/zfs",
+            "/usr/bin/btrfs",
+            "/usr/sbin/blkid",
+            "/sbin/mkfs.btrfs",
+            "/sbin/mkfs.ext4",
+            "/sbin/mkfs.xfs",
+            "/usr/sbin/mkfs.exfat",
+            "/usr/sbin/wipefs",
+            "/usr/sbin/cryptsetup",
+            "/usr/bin/mount",
+            "/usr/bin/umount",
+            "/usr/bin/mkdir",
+            "/usr/bin/rmdir",
+            "/usr/bin/tee",
+        ] {
+            assert!(grants.contains(bin), "no grant for {bin}");
+        }
+    }
+
+    // -- Host grants: VPN, network, firewall, RAID, diagnostics (7.4) ------
+
+    fn host_bins() -> HostBins<'static> {
+        HostBins {
+            wg: "/usr/bin/wg",
+            wg_quick: "/usr/bin/wg-quick",
+            openvpn: "/usr/sbin/openvpn",
+            kill: "/usr/bin/kill",
+            ip: "/sbin/ip",
+            dhclient: "/usr/sbin/dhclient",
+            netplan: "/usr/bin/netplan",
+            wpa_cli: "/usr/sbin/wpa_cli",
+            ufw: "/usr/sbin/ufw",
+            mdadm: "/usr/sbin/mdadm",
+            smartctl: "/usr/sbin/smartctl",
+            journalctl: "/usr/bin/journalctl",
+            tail: "/usr/bin/tail",
+        }
+    }
+
+    fn all_host_grants() -> Vec<String> {
+        let bins = host_bins();
+        let mut all = bins.vpn_grants();
+        all.extend(bins.network_grants());
+        all.extend(bins.firewall_grants());
+        all.extend(bins.raid_grants());
+        all.extend(bins.diagnostics_grants());
+        all
+    }
+
+    #[test]
+    fn test_no_host_grant_is_a_bare_binary() {
+        // The regression this pins: the old network line granted wg,
+        // wg-quick, openvpn, pkill, kill, ip, ufw, mdadm, wpa_cli and
+        // smartctl/journalctl/tail with *no* argument restriction at all.
+        for entry in all_host_grants() {
+            let (bin, args) = entry
+                .split_once(' ')
+                .unwrap_or_else(|| panic!("bare sudoers grant: '{entry}'"));
+            assert!(bin.starts_with('/'), "'{entry}' does not name a path");
+            assert!(!args.trim().is_empty(), "'{entry}' has no argument scope");
+        }
+    }
+
+    #[test]
+    fn test_no_host_grant_reaches_a_shell() {
+        for entry in all_host_grants() {
+            assert!(!entry.contains("bash"), "{entry}");
+            assert!(!entry.contains("sh -c"), "{entry}");
+            assert!(!entry.contains("/bin/sh"), "{entry}");
+            assert!(!entry.contains("/bin/dash"), "{entry}");
+        }
+    }
+
+    #[test]
+    fn test_pkill_is_not_granted_anywhere() {
+        // `pkill` was resolved and granted but nothing in the tree ever ran
+        // it — an unused root capability, dropped rather than scoped.
+        for entry in all_host_grants() {
+            assert!(!entry.contains("pkill"), "{entry}");
+        }
+    }
+
+    #[test]
+    fn test_vpn_grants_pin_the_wireguard_interface() {
+        let grants = host_bins().vpn_grants();
+        let wg: Vec<&String> = grants
+            .iter()
+            .filter(|g| g.starts_with("/usr/bin/wg "))
+            .collect();
+        assert!(!wg.is_empty(), "wg must be granted");
+        for grant in wg {
+            assert!(
+                grant.contains("wg0"),
+                "'{grant}' must name the hardcoded wg0 interface"
+            );
+        }
+        assert!(
+            grants.iter().any(|g| g == "/usr/bin/wg-quick up wg0"),
+            "wg-quick must only be able to bring wg0 up"
+        );
+        // The signal is pinned; a bare `kill *` would accept any signal.
+        assert!(
+            grants.iter().any(|g| g == "/usr/bin/kill -TERM *"),
+            "kill must be granted with an explicit -TERM"
+        );
+        assert!(!grants.iter().any(|g| g == "/usr/bin/kill *"));
+    }
+
+    #[test]
+    fn test_openvpn_grants_pin_the_config_directory_and_the_tail() {
+        let grants = host_bins().vpn_grants();
+        let openvpn: Vec<&String> = grants
+            .iter()
+            .filter(|g| g.starts_with("/usr/sbin/openvpn "))
+            .collect();
+        assert_eq!(
+            openvpn.len(),
+            2,
+            "one grant without and one with --auth-user-pass"
+        );
+        for grant in &openvpn {
+            assert!(
+                grant.contains("--config /etc/openvpn/*.ovpn"),
+                "'{grant}' must confine the config to /etc/openvpn"
+            );
+            assert!(
+                grant.contains("--log /etc/openvpn/*.log"),
+                "'{grant}' must confine the log to /etc/openvpn"
+            );
+            assert!(
+                grant.ends_with("--daemon")
+                    || grant.ends_with("--auth-user-pass /etc/openvpn/*.auth"),
+                "'{grant}' must end on a fixed tail"
+            );
+        }
+    }
+
+    #[test]
+    fn test_network_grants_cover_dhclient_and_never_grant_netns() {
+        let grants = host_bins().network_grants();
+        // DHCP renew/release had no grant at all before this change.
+        assert!(
+            grants.iter().any(|g| g.starts_with("/usr/sbin/dhclient ")),
+            "dhclient must be granted"
+        );
+        for grant in &grants {
+            assert!(!grant.contains("netns"), "{grant}");
+            assert!(!grant.contains("tunnel"), "{grant}");
+            assert!(!grant.contains("rule"), "{grant}");
+        }
+        // `ip` stays scoped per object.
+        for grant in grants.iter().filter(|g| g.starts_with("/sbin/ip ")) {
+            let args = grant.trim_start_matches("/sbin/ip ");
+            assert!(
+                [
+                    "addr ",
+                    "-4 addr ",
+                    "-4 route ",
+                    "-6 addr ",
+                    "-6 route ",
+                    "link "
+                ]
+                .iter()
+                .any(|prefix| args.starts_with(prefix)),
+                "'{grant}' is not one of the ip object shapes the code runs"
+            );
+        }
+    }
+
+    #[test]
+    fn test_wpa_cli_grants_are_per_subcommand() {
+        let grants = host_bins().network_grants();
+        let wpa: Vec<&String> = grants
+            .iter()
+            .filter(|g| g.starts_with("/usr/sbin/wpa_cli "))
+            .collect();
+        assert!(!wpa.is_empty(), "wpa_cli must be granted");
+        for grant in &wpa {
+            // `-i * *` would delegate every wpa_cli command, `terminate`
+            // included; each grant must name its subcommand.
+            let args = grant.trim_start_matches("/usr/sbin/wpa_cli -i * ");
+            assert!(!args.trim().is_empty(), "'{grant}' names no subcommand");
+            assert!(!grant.contains("terminate"), "{grant}");
+        }
+    }
+
+    #[test]
+    fn test_firewall_grants_are_per_subcommand() {
+        let grants = host_bins().firewall_grants();
+        for sub in [
+            "--version",
+            "status *",
+            "show *",
+            "allow *",
+            "deny *",
+            "limit *",
+            "reject *",
+            "delete *",
+            "--force enable",
+            "disable",
+            "default * *",
+        ] {
+            let expected = format!("/usr/sbin/ufw {sub}");
+            assert!(grants.contains(&expected), "missing ufw grant: {expected}");
+        }
+        // `reset` and `reload` are not used by src/firewall.rs and would be a
+        // wider capability than the page needs.
+        for grant in &grants {
+            assert!(!grant.contains("reset"), "{grant}");
+            assert!(!grant.contains("reload"), "{grant}");
+        }
+    }
+
+    #[test]
+    fn test_mdadm_grants_cover_both_action_spellings() {
+        let grants = host_bins().raid_grants();
+        for sub in [
+            "--detail *",
+            "--examine *",
+            "--create *",
+            "--stop *",
+            "--zero-superblock *",
+            "--manage *",
+            "--grow *",
+            "--action *",
+        ] {
+            let expected = format!("/usr/sbin/mdadm {sub}");
+            assert!(
+                grants.contains(&expected),
+                "missing mdadm grant: {expected}"
+            );
+        }
+        // `--action=repair <dev>` is one argv element in rescue/service.rs, so
+        // the space form alone would deny it.
+        assert!(
+            grants.iter().any(|g| g == "/usr/sbin/mdadm --action=*"),
+            "the --action=<mode> spelling must be granted too"
+        );
+    }
+
+    #[test]
+    fn test_diagnostics_grants_confine_smartctl_and_tail() {
+        let grants = host_bins().diagnostics_grants();
+        for grant in grants
+            .iter()
+            .filter(|g| g.starts_with("/usr/sbin/smartctl "))
+        {
+            assert!(
+                grant.ends_with("/dev/*"),
+                "'{grant}' must end on a device under /dev"
+            );
+        }
+        let tails: Vec<&String> = grants
+            .iter()
+            .filter(|g| g.starts_with("/usr/bin/tail "))
+            .collect();
+        assert_eq!(tails.len(), 4, "one grant per whitelisted log source");
+        for grant in tails {
+            assert!(
+                [
+                    "/var/log/syslog",
+                    "/var/log/auth.log",
+                    "/var/log/kern.log",
+                    "/var/log/daemon.log"
+                ]
+                .iter()
+                .any(|path| grant.ends_with(path)),
+                "'{grant}' is outside the text_log_path whitelist"
+            );
+        }
+        // The journald read is pinned to the flags and field list the viewer
+        // actually asks for.
+        assert!(
+            grants
+                .iter()
+                .any(|g| g.contains("--output-fields=__REALTIME_TIMESTAMP")),
+            "the journalctl grant must pin the output fields"
+        );
+    }
+
+    #[test]
+    fn test_no_grant_contains_an_unescaped_comma() {
+        // A comma separates sudoers command entries: an argument containing
+        // one (`--output-fields=__REALTIME_TIMESTAMP,_SYSTEMD_UNIT,…`) would
+        // silently split the grant in two and make `visudo -c` reject the
+        // whole file. sudoers' escape for a literal comma is `\,`.
+        for entry in all_storage_grants().into_iter().chain(all_host_grants()) {
+            let unescaped = entry.replace("\\,", "");
+            assert!(
+                !unescaped.contains(','),
+                "'{entry}' has an unescaped comma, which sudoers reads as a command separator"
+            );
+        }
+    }
+
+    #[test]
+    fn test_every_host_binary_is_represented() {
+        let grants = all_host_grants().join("\n");
+        for bin in [
+            "/usr/bin/wg",
+            "/usr/bin/wg-quick",
+            "/usr/sbin/openvpn",
+            "/usr/bin/kill",
+            "/sbin/ip",
+            "/usr/sbin/dhclient",
+            "/usr/bin/netplan",
+            "/usr/sbin/wpa_cli",
+            "/usr/sbin/ufw",
+            "/usr/sbin/mdadm",
+            "/usr/sbin/smartctl",
+            "/usr/bin/journalctl",
+            "/usr/bin/tail",
+        ] {
+            assert!(grants.contains(bin), "no grant for {bin}");
+        }
     }
 }

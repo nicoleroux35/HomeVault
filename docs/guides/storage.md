@@ -10,7 +10,9 @@ pinned; the invariants below still bind.
 ## Backend
 
 Handlers in `src/handlers/storage.rs` (non-RAID parts). Disk enumeration in
-`src/disk.rs` (`DiskService::list_partitions` uses `lsblk -l`). Pool
+`src/disk.rs` (`DiskService::list_partitions` and
+`list_removable_disks` both parse `lsblk -P` key/value pairs — never a
+whitespace-split table). Pool
 scanning/creation in `src/pools.rs` (`PoolService`); snapshot logic in
 `src/snapshots.rs` (`SnapshotService`, consumed by the restic flows — the
 standalone `/snapshots/*` HTTP endpoints were removed, see
@@ -20,11 +22,11 @@ standalone `/snapshots/*` HTTP endpoints were removed, see
 |----------|------|-------|
 | `GET /storage/disks` | auth | physical disks |
 | `GET /storage/removable` | auth | removable media |
-| `GET /storage/partitions` | auth | `lsblk -l` parse |
+| `GET /storage/partitions` | auth | `lsblk -P` parse |
 | `GET /storage/available-home-disks` | auth | home-folder disk picker (with free/total bytes) |
 | `GET /storage/virtual-disks` | auth | **all** virtual disks — mdadm + ZFS + Btrfs (`PoolService::scan_pools`, mdadm `/dev/md/x` normalised to `x`) |
-| `DELETE /storage/virtual-disks/{name}` | admin | destroy — dispatches: mdadm → `DiskService::delete_raid`, ZFS/Btrfs → `PoolService::delete_pool` |
-| `POST /storage/virtual-disks/{name}/scrub` | admin | verify — ZFS/Btrfs → `PoolService::start_scrub`; mdadm → `echo check > /sys/block/mdX/md/sync_action` |
+| `DELETE /storage/virtual-disks/{name}` | admin | destroy — dispatches: mdadm → `DiskService::delete_raid`, ZFS/Btrfs → `PoolService::delete_pool`. **Refuses to go on when unmount fails** (see "Destroying is unmount-gated" below) |
+| `POST /storage/virtual-disks/{name}/scrub` | admin | verify — ZFS/Btrfs → `PoolService::start_scrub`; mdadm → `sudo mdadm --action check <array>` |
 | `POST /storage/virtual-disks/{name}/grow` | admin | mdadm only: `{ device }` (a free whole disk) → `DiskService::grow_raid` (`mdadm --add` then `--grow --raid-devices N+1`); raid0/raid10 and ZFS/Btrfs refused; the reshape runs in the background. UI: the "Add disk" modal in Storage's Virtual-disks tab (see [RAID](./raid.md)) |
 | `GET /storage/virtual-disks/{name}/scrub` | auth | current scrub / consistency-check status (ZFS `scan:` line, Btrfs `Status:` line, mdadm `sync_action`) + `in_progress` |
 | `GET /storage/importable-pools` | auth | "foreign" pools present on attached disks but not imported (ZFS `zpool import`, Btrfs `btrfs filesystem show` minus mounted UUIDs) |
@@ -55,7 +57,13 @@ The split was **reversed**: the RAID app is creation-only, and Storage's
 - `GET|DELETE /api/storage/virtual-disks[/{name}]` + `POST .../{name}/scrub`
   (new handlers in `src/handlers/storage.rs`) are additive and **dispatch by
   type at the handler level**: mdadm → `DiskService::delete_raid` /
-  `sync_action`; ZFS/Btrfs → `PoolService`.
+  `mdadm --action check`; ZFS/Btrfs → `PoolService`.
+- `DELETE /api/storage/raid/{name}` is **gone** (2026-10-23). It was a second,
+  untyped destroy path left over from the pre-inversion layout: nothing in the
+  UI called it, it bypassed the Storage flow, and it contradicted
+  `docs/guides/raid.md` ("RAID never lists or destroys anything"). Destroying
+  a virtual disk has exactly one entry point, `DELETE
+  /api/storage/virtual-disks/{name}`, which resolves the technology first.
 - `pools.rs`'s internal `delete_pool` / `start_scrub` **still reject
   `PoolType::Mdadm`** — the new handlers just never call them for mdadm. So
   `pools.rs` and its tests are unchanged; the reversal lives entirely in
@@ -97,8 +105,9 @@ still binding:
   surfaced in the create-pool UI as a tooltip, not silent.
 - **Deleting** a Btrfs pool is a real, unrecoverable disk wipe (`wipefs -a` on
   every member device after unmount, since Btrfs has no separate
-  "pool"/"filesystem" — the pool *is* the filesystem). The UI requires typing
-  the pool name to confirm.
+  "pool"/"filesystem" — the pool *is* the filesystem). Destruction goes
+  through the unified Storage "Virtual disks" card, which requires typing the
+  disk name to confirm (see Invariants).
 - **Verified live** (loop-device-backed Btrfs raid1 pool, real `mount`/`/etc/fstab`
   entries, confirmed removed byte-for-byte after delete): create → list →
   device listing → snapshot create/list/delete → scrub start/status → pool
@@ -115,6 +124,8 @@ still binding:
   **Virtual disks**, Pools, Removable, Encryption. The Virtual-disks tab shows
   kind/profile badges, a health pill, Verify/Rebuild + Destroy per card; the
   Pools tab keeps the native-ZFS/Btrfs create-pool modal + scrub + snapshots.
+  **Destroy** is a typed confirmation (the disk name has to be typed) and the
+  backend refuses to destroy an array it could not unmount.
   Re-skinned to the mono house style 2026-09-07 (E2E hooks `.storage-page`,
   `.storage-stats .storage-stat-card` ×4, `.storage-disk-grid`, 6 `.hv-winhdr-tab`).
 - **Storage health (2026-10-17):** each virtual-disk card gained a **Check
@@ -169,6 +180,83 @@ still binding:
   `write_file_as_root` (`sudo tee`). A 2026-07-17 audit found that on a real
   deployment no pool or encrypted volume survived a reboot because the raw
   `fs::write`/bare `mount` calls silently no-oped for a non-root process.
+- **The sudoers grants are scoped (2026-10-23).** The Storage/LUKS block in
+  `SetupService::configure_sudoers` used to grant `zpool`, `zfs`, `mkfs.btrfs`/
+  `ext4`/`xfs`, `mount`, `umount`, `wipefs`, `btrfs`, `cryptsetup`, `blkid`,
+  `mkdir`, `rmdir` and `tee` **with no argument restriction** — any
+  attacker-controlled string reaching an argv became `mkfs.ext4 /dev/sda`,
+  `zfs destroy -r tank` or `tee /etc/shadow` as root. The block is now
+  rendered from one table (`StorageBins` → `pool_grants` /
+  `filesystem_grants` / `mount_grants` / `config_grants`), every entry
+  carrying its scope:
+  - per subcommand: `zpool create|destroy|import|list|scrub|status`,
+    `zfs destroy|get|list|rollback|set|snapshot|userspace`,
+    `btrfs filesystem|scrub|subvolume`, `cryptsetup close|erase|
+    luksChangeKey|luksFormat|luksUUID|open|status`;
+  - per flag shape: `mkfs.ext4 -F …`, `mkfs.xfs -f …`, `mkfs.btrfs -f …`,
+    `mkfs.exfat [-n <label>] /dev/…`, `wipefs -a …`,
+    `blkid -s UUID -o value …`;
+  - per path: `mount [-o <opts>] … /mnt/*`, `umount /mnt/*`,
+    `mkdir -p /mnt/*`, `rmdir /mnt/*`, `tee /etc/fstab`,
+    `tee /etc/mdadm/mdadm.conf`.
+  The SFTP jail root (`/var/lib/homevault-sftp/…`) and removable media
+  (`/media`, `/run/media`) keep the `mount`/`umount`/`mkdir`/`rmdir` grants
+  they were relying on implicitly through that block, and the other modules
+  that had been covered by its `tee` — `/etc/resolv.conf`, the
+  netplan/ifupdown file, avahi's config + service (plus the `rm -f` that
+  unpublishes it), Docker's `daemon.json`, the cpufreq governor and
+  `/proc/sys/net/ipv6/conf/*/*` — now have their own exact-path grant, so
+  nothing broke. `mkfs.exfat` (Explorer's "format as
+  exFAT") was already a tracked dependency but had **no** grant at all; it is
+  covered now. What sudoers cannot constrain is stated in place: the pool
+  name and the options after a `zpool`/`zfs` subcommand stay variable, because
+  they are the feature. `src/setup.rs`'s tests pin the rendered table (no
+  grant may be a bare binary or reach a shell), and the call sites that never
+  matched a real privileged shape were fixed in the same pass (next bullet,
+  ROADMAP 7.4).
+- **The residual call sites are fixed (2026-10-23, ROADMAP 7.4).** Four
+  helpers (`mount_disk`, `unmount_disk` and their removable-media twins) ran a
+  bare `mount`/`umount` and the two non-removable ones discarded the exit
+  status, so a kernel refusal was reported as success; they had **no caller**
+  anywhere in `src/` or `tests/`, so they were deleted rather than fixed.
+  `create_zfs_pool` now runs `sudo zpool create` **without `-f`** — a device
+  that already carries a pool signature (including an exported pool) is a
+  conflict to surface, not to overwrite — and `format_device` lost its
+  `ntfs` → `mkfs.ntfs` arm, which no grant sanctioned and no wizard accepted;
+  it now fails as an unsupported filesystem. `list_removable_disks` parses
+  `lsblk -P` through `parse_lsblk_pairs`, so a label containing a space no
+  longer shifts every column (the old table split also turned an empty
+  MOUNTPOINT/LABEL/UUID into a missing column), and
+  `is_removable_transport` only accepts `usb`/`firewire`/`sd`/`mmc` — the
+  `ata`/`sata`/`scsi`/`nvme` entries made **every internal disk** appear under
+  "removable media". SMART rows are read through one parser
+  (`parse_smart_attribute`) anchored on the TYPE column (`Pre-fail`/`Old_age`)
+  instead of `parts[9]` (which is WHEN_FAILED as soon as the name spans two
+  tokens, i.e. a failing drive read as clean), so both a two-token name and a
+  `38 (Min/Max 20/45)` RAW_VALUE read correctly,
+  and `get_smart_test_status` reports the drive's own advertised duration for
+  that test kind (`smartctl -c`) scaled by the percent left, instead of the
+  invented `pct * 2 / 10`. Every remaining `zpool`/`btrfs`/`mdadm` read goes
+  through `sudo` now (`handlers/dashboard.rs` and `disk.rs::detect_disk_role`
+  plus both `gather_device_facts` paths): a bare read made `zfs_member`/
+  `btrfs_member` always false, so a ZFS or Btrfs member could be offered as a
+  free disk for a new array. `detect_disk_role` also passes a `/dev/<name>`
+  vdev path to `zpool status`, since a bare device name never matched.
+- **Destroying is unmount-gated (2026-10-23).** `DiskService::delete_raid`
+  resolves every mount point backed by the array from `/proc/mounts` (the
+  canonical kernel node, the `/dev/md/<name>` symlink and a `UUID=…` source
+  all match), unmounts each one and **aborts on the first failure** — before
+  `mdadm --stop`, before the `mdadm.conf`/`fstab` cleanup, before any
+  `--zero-superblock`. A second, kernel-side `umount <device>` check only
+  tolerates the "not mounted" outcome. The previous code was
+  `let _ = umount`, so a busy mount went on to lose its members' superblocks
+  while the filesystem was still mounted and being written to (unrecoverable
+  at the next remount).
+- **The destroy confirmation is typed.** Storage's Virtual-disks tab asks for
+  the disk name (`ConfirmDialog` `requireText`, `dlg.ask(msg, { requireText })`)
+  and keeps the danger button disabled until it matches exactly — every file
+  on the disk is lost and the member superblocks are erased, so the generic
+  yes/no confirmation is not enough.
 - `handle_encryption_create` gates `req.device` against
   `DiskService::get_available_devices()` — a past hole let an admin luksFormat
   the boot disk. `encryption::erase` runs a trailing `wipefs -a` so a deleted

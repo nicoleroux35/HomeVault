@@ -54,8 +54,23 @@ export interface ConfirmDialogState {
   message: string;
   danger: boolean;
   mode: 'confirm' | 'alert';
-  /** Ask a yes/no question; resolves `true` when the user confirms. */
-  ask(msg: string, opts?: { danger?: boolean }): Promise<boolean>;
+  /**
+   * When non-empty, the dialog renders a text field and the confirm button
+   * stays disabled until the user types this exact string — the typed
+   * confirmation reserved for irreversible actions (destroying a virtual
+   * disk, wiping a device).
+   */
+  requireText: string;
+  /** What the user has typed into the confirmation field. */
+  typed: string;
+  /**
+   * Ask a yes/no question; resolves `true` when the user confirms.
+   *
+   * `requireText` turns the dialog into a typed confirmation: pass the name
+   * of the thing about to be destroyed, and the confirm button only enables
+   * once it has been typed exactly.
+   */
+  ask(msg: string, opts?: { danger?: boolean; requireText?: string }): Promise<boolean>;
   /** Show a single-OK notice (replaces `alert()`). */
   notify(msg: string): void;
   /** Close the dialog and (for confirm mode) resolve the pending promise. */
@@ -68,14 +83,21 @@ export function createConfirmState(): ConfirmDialogState {
     message: '',
     danger: true,
     mode: 'confirm' as 'confirm' | 'alert',
+    requireText: '',
+    typed: '',
   });
   let resolve: ((value: boolean) => void) | null = null;
 
   /** Ask a yes/no question; resolves `true` when the user confirms. */
-  function ask(msg: string, opts: { danger?: boolean } = {}): Promise<boolean> {
+  function ask(
+    msg: string,
+    opts: { danger?: boolean; requireText?: string } = {},
+  ): Promise<boolean> {
     state.message = msg;
     state.danger = opts.danger ?? true;
     state.mode = 'confirm';
+    state.requireText = opts.requireText ?? '';
+    state.typed = '';
     state.open = true;
     return new Promise<boolean>((res) => {
       resolve = res;
@@ -87,6 +109,8 @@ export function createConfirmState(): ConfirmDialogState {
     state.message = msg;
     state.danger = false;
     state.mode = 'alert';
+    state.requireText = '';
+    state.typed = '';
     state.open = true;
   }
 

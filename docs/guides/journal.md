@@ -84,7 +84,13 @@ day-interval due-check, per explicit design choice.
 - A new text-log source must be gated by `Path::exists()` (never
   unconditionally listed) and must have its reader binary (`tail`) covered
   by the sudoers grant, or it fails with a permission/not-found error the
-  moment a user picks it.
+  moment a user picks it. That grant is now per file (ROADMAP 7.4):
+  `tail -n * /var/log/{syslog,auth.log,kern.log,daemon.log}` — one entry per
+  name `text_log_path` can return, so adding a source means adding its
+  grant. The journald read is pinned to the exact shape the viewer runs
+  (`journalctl --no-pager --output=json --quiet … --output-fields=…`), which
+  is why the `--output-fields` list is not optional: dropping or reordering
+  a field breaks the sudoers match.
 - The `[journal]` i18n table must never be declared twice across the 4
   locale files — TOML doesn't allow a duplicate table header, and it will
   crash the server at startup the same way a stray `;` inside a SQL

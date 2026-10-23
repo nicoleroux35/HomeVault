@@ -207,7 +207,11 @@ forces `LC_ALL=C` + `LANGUAGE=""` so status parsing is locale-independent).
 Since 2026-09-04 the process runs as **root** and no sudoers file is generated
 (`configure_sudoers()` is dead code — see
 [Architecture § Deployment model](../ARCHITECTURE.md#deployment-model-runs-as-root));
-the `sudo` wrappers stay for a possible future non-root mode.
+the `sudo` wrappers stay for a possible future non-root mode. That future
+policy is scoped per subcommand (ROADMAP 7.4): `ufw --version` (the
+installed-check), `status *`, `show *`, `allow|deny|limit|reject *`,
+`delete *` (the tail is the live rule spec `ufw show added` printed),
+`--force enable`, `disable` and `default * *` — never `reset` or `reload`.
 `installer/install.sh` installs `ufw` via the
 existing `install_optional` helper — non-fatal if declined;
 `ufw_available()` degrades the UI to "not installed" rather than

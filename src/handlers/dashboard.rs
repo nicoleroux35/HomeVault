@@ -827,8 +827,14 @@ async fn run_smartctl(
         // bridge; retry with the common SAT (SCSI-ATA Translation) override
         // before giving up. Native SATA/NVMe devices already returned above
         // and never reach this branch.
-        let mut sat_args: Vec<&str> = args.to_vec();
-        sat_args.extend(["-d", "sat"]);
+        //
+        // `-d sat` goes *first* so the whole argv keeps the shape the sudoers
+        // grant pins (`smartctl -d * /dev/*`): appended after `-A`, the retry
+        // was `smartctl -A -d sat /dev/…`, which no grant matched and which
+        // therefore failed with a sudo denial on every USB bridge
+        // (ROADMAP 7.4).
+        let mut sat_args: Vec<&str> = vec!["-d", "sat"];
+        sat_args.extend(args);
         if let Ok(sat_output) = crate::smart::tokio_command(device, &sat_args)
             .output()
             .await
@@ -850,9 +856,12 @@ async fn run_smartctl(
 async fn detect_disk_role(device_name: &str) -> String {
     let device = format!("/dev/{}", device_name);
 
-    // Check if part of RAID
-    if let Ok(output) = Command::new("mdadm")
-        .args(["--examine", &device])
+    // Check if part of RAID. `mdadm --examine` needs root even for this
+    // read-only probe ("must be super-user" otherwise), so a bare call
+    // silently failed and every array member was reported as a plain disk
+    // (ROADMAP 7.4).
+    if let Ok(output) = Command::new("sudo")
+        .args(["mdadm", "--examine", &device])
         .output()
         .await
     {
@@ -862,9 +871,9 @@ async fn detect_disk_role(device_name: &str) -> String {
         }
     }
 
-    // Check if part of ZFS
-    if let Ok(output) = Command::new("zpool")
-        .args(["status", &device])
+    // Check if part of ZFS — same `sudo` reason as `mdadm --examine` above.
+    if let Ok(output) = Command::new("sudo")
+        .args(["zpool", "status", &device])
         .output()
         .await
     {
@@ -1128,9 +1137,12 @@ async fn get_raid_volumes() -> Vec<StorageVolume> {
         }
     }
 
-    // Check for ZFS pools
-    if let Ok(output) = Command::new("zpool")
-        .args(["list", "-H", "-p"])
+    // Check for ZFS pools. `sudo` for the same reason every Storage call
+    // needs it: `zpool` opens `/dev` nodes that are `660 root:disk`, and the
+    // service account is not in the `disk` group — without it this read
+    // silently reported "no pool" on a host that has one (ROADMAP 7.4).
+    if let Ok(output) = Command::new("sudo")
+        .args(["zpool", "list", "-H", "-p"])
         .output()
         .await
     {
@@ -1176,16 +1188,10 @@ async fn get_raid_volumes() -> Vec<StorageVolume> {
         }
     }
 
-    // Check for btrfs RAID
-    if let Ok(output) = Command::new("btrfs")
-        .args(["filesystem", "show"])
-        .output()
-        .await
-    {
-        if output.status.success() {
-            let _stdout = String::from_utf8_lossy(&output.stdout);
-        }
-    }
+    // Btrfs volumes are reported by the pool listing (`btrfs filesystem
+    // show` here returned nothing usable — the parsed stdout was discarded
+    // unconditionally), so the dead read is gone rather than left running
+    // `btrfs` as root for no output.
 
     volumes
 }

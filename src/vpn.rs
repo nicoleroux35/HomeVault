@@ -929,8 +929,10 @@ pub fn stop_openvpn_connection(name: &str) -> Result<(), String> {
                 continue;
             }
             // The openvpn process runs as root, so the unprivileged
-            // homevault service must delegate the kill to sudo.
-            let _ = Command::new("sudo").args(["kill", pid]).output();
+            // homevault service must delegate the kill to sudo. The signal is
+            // explicit (`-TERM`) because the sudoers grant is pinned to it —
+            // see `configure_sudoers()`.
+            let _ = Command::new("sudo").args(["kill", "-TERM", pid]).output();
         }
     }
 
