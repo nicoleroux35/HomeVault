@@ -53,6 +53,10 @@
     downloadLimitBytes: number;
     downloadUsedBytes: number;
     updatedAt: string;
+    /** ROADMAP 23.2 — `lifetime` | `day` | `week` | `month`. */
+    period: string;
+    /** When the counters next reset (RFC3339); `null` for a lifetime quota. */
+    periodResetsAt: string | null;
   }
 
   let rows: QuotaRow[] = [];
@@ -92,6 +96,29 @@
       return new Intl.DateTimeFormat(get(languageStore), { dateStyle: 'medium', timeStyle: 'short' }).format(d);
     } catch {
       return iso.slice(0, 16).replace('T', ' ');
+    }
+  }
+
+  // The counting window, in plain language. An unknown value (a row written
+  // by a newer backend) falls back to the raw string rather than a wrong label.
+  const PERIOD_KEYS: Record<string, string> = {
+    lifetime: 'quotas.period_lifetime',
+    day: 'quotas.period_day',
+    week: 'quotas.period_week',
+    month: 'quotas.period_month',
+  };
+  function periodLabel(period: string): string {
+    const key = PERIOD_KEYS[period];
+    return key ? get(t)(key) : period;
+  }
+  function formatResetDate(iso: string | null): string {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    try {
+      return new Intl.DateTimeFormat(get(languageStore), { dateStyle: 'medium' }).format(d);
+    } catch {
+      return iso.slice(0, 10);
     }
   }
 
@@ -135,6 +162,8 @@
           downloadLimitBytes: q.download_limit_bytes,
           downloadUsedBytes: q.download_used_bytes,
           updatedAt: q.updated_at,
+          period: q.period || 'lifetime',
+          periodResetsAt: q.period_resets_at || null,
         }));
       rows = [...toRows('user', userRes.data), ...toRows('group', groupRes.data)]
         .sort((a, b) => a.subjectType.localeCompare(b.subjectType) || a.subjectName.localeCompare(b.subjectName));
@@ -236,6 +265,9 @@
             <span class="flex flex-col gap-0.5 min-w-0">
               <span class="font-[family-name:var(--hv-font-mono)] text-c-base font-semibold text-[var(--hv-shell-text-strong)] truncate">{row.subjectName}</span>
               <span class="text-c-xs text-[var(--hv-shell-text)] truncate">{$t('quotas.updated', { date: formatDate(row.updatedAt) })}</span>
+              <span data-testid="quotas-period" class="text-c-xs text-[var(--hv-shell-text-2)] truncate">
+                {periodLabel(row.period)}{#if row.periodResetsAt} · {$t('quotas.resets_on', { date: formatResetDate(row.periodResetsAt) })}{/if}
+              </span>
             </span>
           {:else if column.id === 'upload'}
             <span class="flex flex-col gap-1.5 min-w-[150px]">

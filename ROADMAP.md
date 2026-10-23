@@ -47,9 +47,10 @@ auth under HTTPS** (all 2026-10-21), and **Health** (2026-10-22) — followed by
 (all 2026-10-22), and on 2026-10-23 **Storage's sudoers scoping + residual call
 sites**, **Apps Center / app-proxy**, the **RAID wizard's create path**,
 **LUKS2 encryption**, the **System Journal's privilege + read semantics**,
-**Downloader**, **Syncthing's REST client**, **Virtual Machines (Incus)** and
+**Downloader**, **Syncthing's REST client**, **Virtual Machines (Incus)**,
 **Scheduled Tasks** — timezone-aware cron, pausing an unrunnable task, and
-"Run now" off the request (see Done).
+"Run now" off the request — and **Transfer quotas** — failing closed, a
+calendar counting period, and an admin-gated read (see Done).
 
 Everything else is still on its original implementation plus incremental
 feature work. The pattern is consistent: **the screens render, the endpoints
@@ -83,19 +84,18 @@ Two structural facts explain most of the list:
 | 18 | Syncthing | P1 | 1 |
 | 21 | Notifications | P1 | 3 |
 | 22 | DB backup | P1 | 2 |
-| 23 | Transfer quotas | P1 | 3 |
 | 24 | Server control | P1 | 2 |
 | 25 | Autostart | P1 | 2 |
 | 26 | Wallpapers / Themes | P1 | 2 |
 | 27 | Web shortcuts | P1 | 2 |
 | 28 | Activity taskbar | P2 | 3 |
 | 29 | mDNS | P2 | 2 |
-| 30 | Quotas app | P2 | 1 |
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | 32 | Virtual Machines — residual | P2 | 2 |
+| 33 | Transfer quotas — residual | P2 | 1 |
 | — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **48** (41 per-area + 7 cross-cutting).
+Total open findings: **45** (38 per-area + 7 cross-cutting).
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
@@ -114,9 +114,15 @@ work left the async runtime. **12 (Scheduled Tasks) closed on 2026-10-23**,
 together with 13.4's timezone half: a cron now runs in its task's own IANA
 timezone (blank = the appliance zone, applied to the host with `timedatectl`),
 an unparseable one pauses the task instead of retrying every 30 s, and "Run
-now" answers `202` while the run continues outside the request. Next: **23
-(transfer quotas)** — its check fails open, which is the last P1 that lets a
-request through when the guard itself cannot answer.
+now" answers `202` while the run continues outside the request. **23 (Transfer
+quotas) closed on 2026-10-23**, and with it 30.1: the guard now fails **closed**
+(a quota that cannot be loaded refuses the transfer with `503`), the counters
+are counted over a real calendar day/week/month window settled at check time
+*and* by a reset loop, and both read endpoints enforce self-or-admin instead of
+trusting a screen-side redirect. That was the last P1 that let a request
+through when the guard itself could not answer. Next: **11 (Metrics)** — a
+failed collection is still persisted as a zero, so a broken sensor and an idle
+disk look identical on every chart.
 
 ---
 
@@ -405,43 +411,6 @@ Also: blocking `std::fs` in async fns (`:178,222,229,236,241,270`) and sync
 
 ---
 
-### 23. Transfer quotas — fail-open, lifetime counters, and a client-side admin gate
-
-- [ ] **23.1 — A DB error disables every cap silently.**
-      `src/handlers/explorer.rs:1041-1047,1143,1203-1212,1639-1643` treat a
-      quota-load error as "no quota" (`unwrap_or_default`). A transient DB
-      failure lets every transfer through.
-      *Acceptance:* fail **closed** with a clear error, or fail open with a
-      loud log and a UI warning — but decided, not accidental.
-- [ ] **23.2 — Counters are lifetime, not periodic.**
-      `sqlx/migrations/022_transfer_quotas.sql:15,18` are plain accumulators;
-      `record_usage` only ever adds (`src/transfer_quota.rs:195-207`) and there
-      is no period column and no scheduler job to reset them. "100 GB/month" is
-      really "100 GB ever": once hit, the user is blocked until an admin edits
-      the row by hand.
-      *Acceptance:* a period (day/week/month) with a reset job, or rename the
-      feature to what it does.
-- [ ] **23.3 — Any user can read any subject's usage.**
-      `src/handlers/transfer_quotas.rs:54,84` are `require_auth`, so
-      `GET /transfer-quotas/user/<someone-else>` returns their limits **and
-      consumed bytes**. The admin gate exists only in `Quotas.svelte:104-108`,
-      which `docs/guides/transfer-quotas.md:100-103` treats as the enforcement
-      boundary. It is not one.
-
-Also: group membership is resolved by shelling `id -nG` per request
-(`src/transfer_quota.rs:136`, correctly inside `spawn_blocking` but still a fork
-per transfer); `QUOTA_LOCKS` never removes entries (`:272-291`); `bytes as i64`
-(`:207`) is unchecked; **enforcement covers File Explorer only** — SMB/NFS/FTP/
-WebDAV/SFTP are not metered or capped regardless of configuration
-(`docs/guides/transfer-quotas.md:14-20`, accurate).
-
-*Tests:* `transfer_quota.rs` 9, `handlers/transfer_quotas.rs` **0**,
-`tests/quotas_integration.rs` was **deleted** 2026-09-09, E2E 36 `test(` / 38
-runtime (on the read-only app, not on the engine). *Docs:*
-`docs/guides/transfer-quotas.md`.
-
----
-
 ### 24. Server control — the user cannot tell success from refusal
 
 - [ ] **24.1 — Empty success and error branches in the power flow.**
@@ -577,12 +546,6 @@ reuse.
       (`:411`) briefly drops every other Avahi advertisement on the host
       (printers, shares). A reload would do.
 
-### 30. Quotas app
-
-- [ ] **30.1 — The admin gate is client-side only.** `Quotas.svelte:104-108`
-      redirects non-admins, but `GET /transfer-quotas/{type}` is `require_auth`
-      — same root cause as 23.3; fixing 23.3 fixes this.
-
 ### 31. Docker — `api.ts` consolidation (maintainability)
 
 - [ ] **31.1 — `Docker.svelte` drives the whole surface through its own
@@ -608,6 +571,19 @@ reuse.
       runs on the blocking pool (2026-10-23) but not *before* the bytes land.
       *Acceptance:* stop the stream as soon as the declared length is below the
       floor, and cap the body at a sane ISO size.
+
+### 33. Transfer quotas — residual (leftover of the closed item 23)
+
+- [ ] **33.1 — Group membership costs one `id -nG` fork per quota check.**
+      `load_applicable` (`src/transfer_quota.rs`) resolves the caller's groups
+      through `GroupService::get_user_groups` on every check — and the
+      resumable-upload path re-checks per chunk, so a 1 GB upload in 8 MB
+      chunks forks ~128 times. It is correctly inside `spawn_blocking` (never
+      on the runtime), so this is throughput debt, not a stall. *Acceptance:* a
+      short-TTL (a few seconds) in-process cache keyed on the username, with
+      the bounded staleness documented — the trade is a freshly added group
+      quota taking up to one TTL to apply, which must be stated in
+      `docs/guides/transfer-quotas.md`.
 
 ---
 
@@ -703,6 +679,65 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-23 (m)** — Transfer quotas — the guard now fails closed, the counters
+count a real calendar window, and reads are scoped in the handler instead of the
+screen. **23.1 (a DB error disabled every cap):** all six File Explorer quota
+loads (download, download-ticket, the legacy multipart `/upload`, resumable
+`/upload/session`, `/upload/chunk`, `/upload/complete`) go through one
+`load_quotas_or_refuse`
+(`src/handlers/explorer.rs`); a load error answers **`503`** with
+`transfer_quota::unavailable_message(...)` instead of being swallowed into an
+empty quota list — "the database could not tell me" is no longer read as "this
+subject has no quota". A source-level unit test
+(`test_no_quota_load_bypasses_the_fail_closed_gate`) pins the invariant that the
+only two calls to `applicable_*_quotas` in that file are inside the helper.
+**23.2 (lifetime counters):** migration
+`055_transfer_quota_period.sql` adds `period` (`lifetime` default — no behaviour
+change for an existing row — `day`, `week`, `month`) and `period_started_at`.
+Windows are **calendar** windows in the appliance timezone
+(`transfer_quota::appliance_timezone()`, Settings → General): midnight, Monday
+00:00, the 1st at 00:00 — so "100 GB/month" resets on the 1st, not 30 days after
+the first upload, and a DST shift keeps the local midnight
+(`local_midnight` probes for a zone whose 00:00 does not exist instead of
+panicking). Two paths close a window and agree by construction because both go
+through `window_containing`: the **enforcement path** settles a stale row the
+moment any transfer consults it (`settle_window` → `reset_window`; the common
+case writes nothing), and a **reset loop** (`run_reset_loop`, 60 s,
+`MissedTickBehavior::Skip`, spawned in `src/web/mod.rs`) keeps the screens
+honest — so a stopped scheduler can delay the *display* of a reset, never the
+reset itself. Changing a row's `period` zeroes both counters (a `CASE` in
+`set_limits`), because billing lifetime history against a newly chosen monthly
+cap would instantly block the subject; editing only a limit keeps the counters.
+`period_resets_at` is computed for the wire and never stored.
+**23.3 (any user could read any subject's usage):** the list endpoint is now
+`require_admin` and the single-subject `GET` is **self-or-admin**
+(`subject_type = user` **and** caller = `subject_name`, else admin) — which also
+closes **30.1**, whose client-side-only gate was the same root cause. **Also:**
+`bytes as i64` is replaced by a saturating `bytes_to_i64` and `check_quota`
+compares in `u128` (a `u64` above `i64::MAX` used to wrap negative and pass the
+check), usage counters are floored with `MAX(0, …)` so a refund landing after a
+window reset cannot go negative, `QUOTA_LOCKS` prunes the mutexes no transfer
+holds (`Arc::strong_count > 1`) instead of growing for the life of the process,
+and `set_limits` takes one `QuotaLimits` value rather than seven positional
+arguments. **Frontend:** a *Counting period* select in the Users and Groups
+quota cards (`users-quota-period` / `groups-quota-period`) with a "Resets on …"
+line, and the period + reset date on every Quotas row (`quotas-period`); 8 new
+`[quotas]` keys in all four locales. Tests: `transfer_quota.rs` 9 → **25**
+(period parsing matrix, day/week/month windows, December rollover, Paris vs UTC,
+DST boundary, elapsed-window matrix, reset instant, saturation), the repo
+`0` → **9** (period round-trip, period change zeroes and a limit edit does not,
+`reset_window`, `reset_expired` scope, floor at zero), `handlers/explorer.rs`
+**+1** source guard, `tests/quotas_integration.rs` **recreated** (deleted
+2026-09-09) with **15** tests (auth scoping, unknown period refused, period
+round-trip, counters on a period change, an elapsed window settled by the guard
+with no scheduler, the reset pass, delete → default), `quotas.spec.ts` 35 → **40**
+(`test(`: the period/reset line, the API-supplied instants, a lifetime row
+without a reset, a member refused the list and another user's quota, a member
+reading their own). Written on 2026-10-23; **not run yet** (per instruction).
+`docs/guides/transfer-quotas.md` gained *Counting periods* and *Fail closed*,
+plus a *Known debt* section for the residual `id -nG` fork (now **33.1**);
+`docs/API.md` documents the new auth columns, the `period` field and the `503`.
 
 **2026-10-23 (l)** — Scheduled Tasks — the cron now runs in a real timezone, an
 unrunnable task is paused instead of failing every tick, and "Run now" no longer

@@ -359,6 +359,43 @@ impl<S> Drop for QuotaRefundStream<S> {
     }
 }
 
+/// Loads the transfer quotas that apply to `username` in one direction,
+/// answering `Err(response)` when the guard itself cannot answer.
+///
+/// **Fails closed** (ROADMAP 23.1). Every call site used to swallow a
+/// quota-load error into an empty list — i.e. "the database could not tell me"
+/// was read as "this subject has no quota" — so a transient DB failure
+/// silently disabled every cap in the product. A cap that cannot be verified
+/// is now a refused transfer with a message that says so, not an unlimited one.
+// `Response` is axum's canonical error type; boxing it would ripple through
+// every call site for no real benefit, so allow the lint here.
+#[allow(clippy::result_large_err)]
+async fn load_quotas_or_refuse(
+    state: &AppState,
+    username: &str,
+    upload: bool,
+) -> Result<Vec<crate::transfer_quota::ApplicableQuota>, Response> {
+    let loaded = if upload {
+        crate::transfer_quota::applicable_upload_quotas(state.db.pool(), username).await
+    } else {
+        crate::transfer_quota::applicable_download_quotas(state.db.pool(), username).await
+    };
+    match loaded {
+        Ok(quotas) => Ok(quotas),
+        Err(e) => {
+            tracing::error!(
+                "Transfer quota check failed for '{}' ({}); refusing the transfer",
+                username,
+                e
+            );
+            Err(ResponseHelper::json_error_with_status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                crate::transfer_quota::unavailable_message(&e),
+            ))
+        }
+    }
+}
+
 /// Starts a background job that copies a directory tree while reporting
 /// progress over the existing SSE progress system (`src/sse/progress.rs`),
 /// the same `job_id`/`tokio::spawn`/`ProgressEmitter` pattern already used
@@ -1060,15 +1097,12 @@ pub async fn handle_explorer_download(
     // 4. Transfer quota: load, lock the subject(s), check, then reserve. The
     //    lock is held by the response stream so a concurrent transfer can't
     //    race the reservation; the reservation is refunded if the client
-    //    disconnects before the body is fully consumed.
-    let download_quotas =
-        match crate::transfer_quota::applicable_download_quotas(state.db.pool(), &username).await {
-            Ok(q) => q,
-            Err(e) => {
-                tracing::warn!("Failed to load download quota for '{}': {}", username, e);
-                Vec::new()
-            }
-        };
+    //    disconnects before the body is fully consumed. A quota that cannot be
+    //    loaded refuses the download (fail closed, ROADMAP 23.1).
+    let download_quotas = match load_quotas_or_refuse(&state, &username, false).await {
+        Ok(q) => q,
+        Err(resp) => return resp,
+    };
     let guard = crate::transfer_quota::acquire_quota_locks(&download_quotas).await;
     if let Err(exceeded) = crate::transfer_quota::check_quota(&download_quotas, send_len) {
         return (StatusCode::TOO_MANY_REQUESTS, exceeded.to_string()).into_response();
@@ -1163,10 +1197,11 @@ pub async fn handle_explorer_download_ticket(
     }
 
     let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    let quotas =
-        crate::transfer_quota::applicable_download_quotas(state.db.pool(), &session.username)
-            .await
-            .unwrap_or_default();
+    // A quota that cannot be loaded refuses the ticket (fail closed).
+    let quotas = match load_quotas_or_refuse(&state, &session.username, false).await {
+        Ok(q) => q,
+        Err(resp) => return resp,
+    };
     let _guard = crate::transfer_quota::acquire_quota_locks(&quotas).await;
     if let Err(exceeded) = crate::transfer_quota::check_quota(&quotas, size) {
         return (StatusCode::TOO_MANY_REQUESTS, exceeded.to_string()).into_response();
@@ -1223,20 +1258,11 @@ pub async fn handle_explorer_upload(
     // the limit before the first check would otherwise fire again. The
     // per-subject lock is held for the whole request so two concurrent
     // uploads of the same subject can't both pass a check on stale usage.
-    let upload_quotas =
-        match crate::transfer_quota::applicable_upload_quotas(state.db.pool(), &session.username)
-            .await
-        {
-            Ok(q) => q,
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to load upload quota for '{}': {}",
-                    session.username,
-                    e
-                );
-                Vec::new()
-            }
-        };
+    // A quota that cannot be loaded refuses the upload (fail closed).
+    let upload_quotas = match load_quotas_or_refuse(&state, &session.username, true).await {
+        Ok(q) => q,
+        Err(resp) => return resp,
+    };
     let _quota_guard = crate::transfer_quota::acquire_quota_locks(&upload_quotas).await;
     if let Err(exceeded) = crate::transfer_quota::check_quota(&upload_quotas, 0) {
         return ResponseHelper::json_error(exceeded.to_string());
@@ -1594,21 +1620,12 @@ pub async fn handle_explorer_upload_session_start(
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty());
 
-    // Quota: reject an over-limit file before creating anything.
-    let upload_quotas =
-        match crate::transfer_quota::applicable_upload_quotas(state.db.pool(), &session.username)
-            .await
-        {
-            Ok(q) => q,
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to load upload quota for '{}': {}",
-                    session.username,
-                    e
-                );
-                Vec::new()
-            }
-        };
+    // Quota: reject an over-limit file before creating anything. Fail closed:
+    // a guard that cannot answer must not open a slot.
+    let upload_quotas = match load_quotas_or_refuse(&state, &session.username, true).await {
+        Ok(q) => q,
+        Err(resp) => return resp,
+    };
     let _guard = crate::transfer_quota::acquire_quota_locks(&upload_quotas).await;
     if let Err(exceeded) = crate::transfer_quota::check_quota(&upload_quotas, params.size) {
         return (StatusCode::TOO_MANY_REQUESTS, exceeded.to_string()).into_response();
@@ -1693,11 +1710,12 @@ pub async fn handle_explorer_upload_chunk(
     }
 
     // Per-chunk quota re-check against current (possibly updated by other
-    // completed transfers) usage.
-    let upload_quotas =
-        crate::transfer_quota::applicable_upload_quotas(state.db.pool(), &session.username)
-            .await
-            .unwrap_or_default();
+    // completed transfers) usage. Fail closed: a guard that cannot answer
+    // stops the upload instead of letting it through unmetered.
+    let upload_quotas = match load_quotas_or_refuse(&state, &session.username, true).await {
+        Ok(q) => q,
+        Err(resp) => return resp,
+    };
     let _guard = crate::transfer_quota::acquire_quota_locks(&upload_quotas).await;
     if let Err(exceeded) = crate::transfer_quota::check_quota(&upload_quotas, session.total_bytes) {
         return (StatusCode::TOO_MANY_REQUESTS, exceeded.to_string()).into_response();
@@ -1771,10 +1789,12 @@ pub async fn handle_explorer_upload_complete(
         ));
     }
 
-    let upload_quotas =
-        crate::transfer_quota::applicable_upload_quotas(state.db.pool(), &session.username)
-            .await
-            .unwrap_or_default();
+    // Fail closed: a guard that cannot answer refuses the completion rather
+    // than renaming an unmetered file into place.
+    let upload_quotas = match load_quotas_or_refuse(&state, &session.username, true).await {
+        Ok(q) => q,
+        Err(resp) => return resp,
+    };
     let guard = crate::transfer_quota::acquire_quota_locks(&upload_quotas).await;
     if let Err(exceeded) = crate::transfer_quota::check_quota(&upload_quotas, session.total_bytes) {
         return (StatusCode::TOO_MANY_REQUESTS, exceeded.to_string()).into_response();
@@ -5028,5 +5048,30 @@ Path = stage/inside/link\nFolder = -\nAttributes =  lrwxrwxrwx\n\n";
         std::fs::create_dir_all(&dest).unwrap();
         std::fs::create_dir_all(dest.join("existing-dir")).unwrap();
         assert!(move_extraction_entry(&staging.join("f"), &dest.join("existing-dir")).is_err());
+    }
+
+    /// ROADMAP 23.1 — fail closed, guarded at the source level.
+    ///
+    /// The regression this protects against cannot be reached from a unit test
+    /// (it needs a database that fails mid-request), so the invariant is
+    /// asserted where it is actually enforced: every quota load in this file
+    /// goes through `load_quotas_or_refuse`, which turns a load error into a
+    /// `503`. The six call sites used to swallow it into `Vec::new()` /
+    /// `unwrap_or_default()`, which reads as "this subject has no quota" and
+    /// silently disabled every cap.
+    #[test]
+    fn test_no_quota_load_bypasses_the_fail_closed_gate() {
+        let src = include_str!("explorer.rs");
+        // `concat!` keeps the search pattern out of this file's own source, so
+        // the assertion cannot count itself.
+        let loads = src
+            .matches(concat!("crate::transfer_quota::", "applicable_"))
+            .count();
+        assert_eq!(
+            loads, 2,
+            "quota loads must only happen inside `load_quotas_or_refuse` \
+             (found {loads} call sites) — a direct call that handles the error \
+             itself can silently fall back to an unlimited transfer"
+        );
     }
 }

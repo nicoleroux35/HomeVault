@@ -2,7 +2,7 @@
  * File          : transfer_quota.rs
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Last modified : 23/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
@@ -37,16 +37,34 @@
 //! those that apply must have room, and a successful transfer debits usage
 //! against all of them. This matches common "personal cap + shared team
 //! cap" semantics.
+//!
+//! ## Counting periods (ROADMAP 23.2)
+//!
+//! A quota is counted in a [`Period`]: `lifetime` (the default — the counters
+//! never reset), or a **calendar** window in the appliance timezone (`day` =
+//! midnight to midnight, `week` = Monday 00:00, `month` = the 1st at 00:00).
+//! A calendar window is what a home user means by "100 GB/month": it resets on
+//! the 1st, not 30 days after their first upload.
+//!
+//! The window is opened at [`current_window_start`] when the period is saved,
+//! and closed by two paths that agree by construction because they share
+//! [`window_containing`]: the enforcement path ([`settle_window`], which zeroes
+//! a stale row the moment it is consulted) and [`run_reset_loop`] (which keeps
+//! the Quotas/Users screens honest even when nobody transfers). Enforcement
+//! never depends on the loop having run: a stopped scheduler delays the
+//! *display* of the reset, never the reset itself.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::LazyLock;
 
+use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Utc};
+use chrono_tz::Tz;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::groups::GroupService;
-use crate::storage::transfer_quota_repo::TransferQuotaRepository;
+use crate::storage::transfer_quota_repo::{TransferQuota, TransferQuotaRepository};
 
 /// One quota that applies to the current transfer (the user's own, or one
 /// of their groups').
@@ -77,6 +95,205 @@ impl std::fmt::Display for QuotaExceeded {
     }
 }
 
+/// The window a quota's counters are counted in.
+///
+/// `Lifetime` is the default and preserves the behaviour every existing row
+/// had before ROADMAP 23.2: the counters only ever grow, until an admin edits
+/// the row. The three others are calendar windows — see the module docs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Period {
+    Lifetime,
+    Day,
+    Week,
+    Month,
+}
+
+impl Period {
+    /// Every accepted value, in the order the UI offers them.
+    pub const ALL: [Period; 4] = [Period::Lifetime, Period::Day, Period::Week, Period::Month];
+
+    /// The value stored in `transfer_quotas.period` and sent over the wire.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Period::Lifetime => "lifetime",
+            Period::Day => "day",
+            Period::Week => "week",
+            Period::Month => "month",
+        }
+    }
+
+    /// The single validation gate for a stored or submitted period. The name
+    /// is trimmed and lower-cased first, and an unknown value is a **named
+    /// error** listing the accepted ones — never a silent fall back to
+    /// `lifetime`, which would quietly turn "per month" into "for ever".
+    pub fn parse(value: &str) -> Result<Period, String> {
+        let normalised = value.trim().to_ascii_lowercase();
+        Period::ALL
+            .into_iter()
+            .find(|p| p.as_str() == normalised)
+            .ok_or_else(|| {
+                format!(
+                    "period must be one of: {}",
+                    Period::ALL.map(Period::as_str).join(", ")
+                )
+            })
+    }
+}
+
+/// Converts a local midnight to the absolute instant it happens at in `tz`.
+///
+/// A local midnight does not always exist: zones that shift their clocks at
+/// 00:00 (America/Santiago, Asia/Tehran, …) skip straight to 01:00 on the
+/// spring-forward day, and `from_local_datetime` answers `None`. Probing the
+/// next two hours and falling back to the UTC reading keeps a quota window
+/// from ever panicking on one calendar day a year.
+fn local_midnight(tz: Tz, date: NaiveDate) -> DateTime<Utc> {
+    let naive = date
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight is a valid time of day");
+    for hours in 0..3 {
+        let candidate = naive + chrono::Duration::hours(hours);
+        if let Some(dt) = tz.from_local_datetime(&candidate).earliest() {
+            return dt.with_timezone(&Utc);
+        }
+    }
+    naive.and_utc()
+}
+
+/// The calendar window that contains `at`, as `(start, end)` where `end` is
+/// the start of the *next* window (so `start <= at < end`).
+///
+/// `None` for [`Period::Lifetime`], which has no window. Both the reset loop
+/// and the enforcement path go through this one function, which is why they
+/// can never disagree about when a window ends.
+pub fn window_containing(
+    at: DateTime<Utc>,
+    period: Period,
+    tz: Tz,
+) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    let today = at.with_timezone(&tz).date_naive();
+    let (start_date, end_date) = match period {
+        Period::Lifetime => return None,
+        Period::Day => (today, today.succ_opt()?),
+        Period::Week => {
+            // Monday-first, the ISO week the UI shows: `num_days_from_monday`
+            // is 0 on Monday, so this lands on the current week's Monday.
+            let monday = today - chrono::Duration::days(i64::from(today.weekday().num_days_from_monday()));
+            (monday, monday.checked_add_days(chrono::Days::new(7))?)
+        }
+        Period::Month => (
+            NaiveDate::from_ymd_opt(today.year(), today.month(), 1)?,
+            if today.month() == 12 {
+                NaiveDate::from_ymd_opt(today.year() + 1, 1, 1)?
+            } else {
+                NaiveDate::from_ymd_opt(today.year(), today.month() + 1, 1)?
+            },
+        ),
+    };
+    Some((local_midnight(tz, start_date), local_midnight(tz, end_date)))
+}
+
+/// The instant the window currently containing `now` opened. `now` itself for
+/// [`Period::Lifetime`] (there is no window to open).
+pub fn current_window_start(now: DateTime<Utc>, period: Period, tz: Tz) -> DateTime<Utc> {
+    window_containing(now, period, tz)
+        .map(|(start, _)| start)
+        .unwrap_or(now)
+}
+
+/// Whether a stored window start is behind the window `now` falls in — i.e.
+/// the counters it belongs to must be zeroed before they are trusted.
+///
+/// `None` (a row written before migration 055, or a lifetime row that just
+/// gained a period) counts as elapsed: the window is opened on first sight.
+/// An unparseable timestamp counts as elapsed too — a hand-edited row must
+/// not be able to freeze a counter for ever.
+pub fn window_elapsed(
+    stored_start: Option<&str>,
+    now: DateTime<Utc>,
+    period: Period,
+    tz: Tz,
+) -> bool {
+    let Some((current_start, _)) = window_containing(now, period, tz) else {
+        return false; // lifetime: nothing ever resets
+    };
+    let Some(stored) = stored_start
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&Utc))
+    else {
+        return true;
+    };
+    stored < current_start
+}
+
+/// When the counters of `quota` will next reset, as an RFC3339 instant —
+/// `None` for a lifetime quota. Computed for the wire (the storage layer never
+/// writes it); a row whose stored window is already stale reports the end of
+/// the *current* window, never a date in the past.
+pub fn resets_at(
+    period: &str,
+    period_started_at: Option<&str>,
+    now: DateTime<Utc>,
+    tz: Tz,
+) -> Option<String> {
+    let period = Period::parse(period).ok()?;
+    let stored = period_started_at
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&Utc));
+    let anchor = match stored {
+        Some(start) if !window_elapsed(Some(&start.to_rfc3339()), now, period, tz) => start,
+        _ => now,
+    };
+    window_containing(anchor, period, tz).map(|(_, end)| end.to_rfc3339())
+}
+
+/// The appliance timezone (Settings → General, `UTC` when unset or invalid).
+/// Pure in-memory read — safe to call from the enforcement path.
+pub fn appliance_timezone() -> Tz {
+    crate::scheduled_tasks_scheduler::parse_timezone(&crate::handlers::settings::effective_timezone())
+        .unwrap_or(chrono_tz::UTC)
+}
+
+/// Fills `period_resets_at` on a row about to be serialised to the UI.
+pub fn fill_resets_at(quota: &mut TransferQuota, now: DateTime<Utc>, tz: Tz) {
+    quota.period_resets_at = resets_at(
+        &quota.period,
+        quota.period_started_at.as_deref(),
+        now,
+        tz,
+    );
+}
+
+/// Brings one stored row's window up to date before its counters are trusted:
+/// when the window it was counted in has elapsed, both counters are zeroed in
+/// the database and in the returned row, and the window is re-opened at the
+/// current calendar boundary.
+///
+/// The common case writes nothing at all — the staleness check is pure.
+async fn settle_window(
+    repo: &TransferQuotaRepository,
+    mut quota: TransferQuota,
+    now: DateTime<Utc>,
+    tz: Tz,
+) -> Result<TransferQuota, String> {
+    let period = Period::parse(&quota.period).unwrap_or(Period::Lifetime);
+    if !window_elapsed(quota.period_started_at.as_deref(), now, period, tz) {
+        return Ok(quota);
+    }
+    let new_start = current_window_start(now, period, tz).to_rfc3339();
+    repo.reset_window(&quota.subject_type, &quota.subject_name, &new_start)
+        .await
+        .map_err(|e| format!("Failed to reset an elapsed quota window: {e}"))?;
+    quota.upload_used_bytes = 0;
+    quota.download_used_bytes = 0;
+    quota.period_started_at = Some(new_start);
+    Ok(quota)
+}
+
 /// Load every *enabled* upload quota that applies to `username`: their own
 /// (if configured) plus every group they belong to that has one. Group
 /// membership is resolved via `id -nG`, the same mechanism
@@ -97,6 +314,32 @@ pub async fn applicable_download_quotas(
     load_applicable(pool, username, false).await
 }
 
+/// The one sentence every caller uses when the guard itself cannot answer.
+/// Identical wording in every File Explorer path on purpose: the user sees
+/// one behaviour, and the log line carries the technical detail.
+pub fn unavailable_message(detail: &str) -> String {
+    format!(
+        "Transfer quotas could not be checked, so this transfer was refused ({detail}). Try again in a moment."
+    )
+}
+
+/// Reads the enabled limits out of a stored row for one direction.
+fn direction(quota: &TransferQuota, upload: bool) -> (bool, i64, i64) {
+    if upload {
+        (
+            quota.upload_enabled,
+            quota.upload_limit_bytes,
+            quota.upload_used_bytes,
+        )
+    } else {
+        (
+            quota.download_enabled,
+            quota.download_limit_bytes,
+            quota.download_used_bytes,
+        )
+    }
+}
+
 async fn load_applicable(
     pool: Arc<sqlx::SqlitePool>,
     username: &str,
@@ -104,24 +347,17 @@ async fn load_applicable(
 ) -> Result<Vec<ApplicableQuota>, String> {
     let repo = TransferQuotaRepository::new(pool);
     let mut applicable = Vec::new();
+    // One instant and one zone for the whole check, so the user's own row and
+    // every group row are settled against the same window.
+    let now = Utc::now();
+    let tz = appliance_timezone();
 
     let user_quota = repo
         .get("user", username)
         .await
         .map_err(|e| format!("Failed to load user quota: {}", e))?;
-    let (enabled, limit, used) = if upload {
-        (
-            user_quota.upload_enabled,
-            user_quota.upload_limit_bytes,
-            user_quota.upload_used_bytes,
-        )
-    } else {
-        (
-            user_quota.download_enabled,
-            user_quota.download_limit_bytes,
-            user_quota.download_used_bytes,
-        )
-    };
+    let user_quota = settle_window(&repo, user_quota, now, tz).await?;
+    let (enabled, limit, used) = direction(&user_quota, upload);
     if enabled {
         applicable.push(ApplicableQuota {
             subject_type: "user",
@@ -143,19 +379,8 @@ async fn load_applicable(
             .get("group", &group_name)
             .await
             .map_err(|e| format!("Failed to load group quota for '{}': {}", group_name, e))?;
-        let (enabled, limit, used) = if upload {
-            (
-                group_quota.upload_enabled,
-                group_quota.upload_limit_bytes,
-                group_quota.upload_used_bytes,
-            )
-        } else {
-            (
-                group_quota.download_enabled,
-                group_quota.download_limit_bytes,
-                group_quota.download_used_bytes,
-            )
-        };
+        let group_quota = settle_window(&repo, group_quota, now, tz).await?;
+        let (enabled, limit, used) = direction(&group_quota, upload);
         if enabled {
             applicable.push(ApplicableQuota {
                 subject_type: "group",
@@ -190,6 +415,13 @@ pub fn check_quota(quotas: &[ApplicableQuota], additional_bytes: u64) -> Result<
     Ok(())
 }
 
+/// `bytes` as an `i64`, saturating instead of wrapping. A `u64` above
+/// `i64::MAX` used to become a *negative* debit, which silently *increased*
+/// the remaining allowance of the subject it was charged to.
+fn bytes_to_i64(bytes: u64) -> i64 {
+    i64::try_from(bytes).unwrap_or(i64::MAX)
+}
+
 /// Record `bytes` of usage against every applicable quota (called once a
 /// transfer actually completes — never for a rejected or aborted one).
 pub async fn record_usage(
@@ -202,12 +434,13 @@ pub async fn record_usage(
         return;
     }
     let repo = TransferQuotaRepository::new(pool);
+    let delta = bytes_to_i64(bytes);
     for q in quotas {
         let result = if upload {
-            repo.add_upload_usage(q.subject_type, &q.subject_name, bytes as i64)
+            repo.add_upload_usage(q.subject_type, &q.subject_name, delta)
                 .await
         } else {
-            repo.add_download_usage(q.subject_type, &q.subject_name, bytes as i64)
+            repo.add_download_usage(q.subject_type, &q.subject_name, delta)
                 .await
         };
         if let Err(e) = result {
@@ -225,6 +458,9 @@ pub async fn record_usage(
 /// before it completes. Mirrors [`record_usage`] but subtracts instead of
 /// adds, so a client that disconnects mid-transfer is not left charged for
 /// bytes it never received.
+///
+/// The counter is floored at 0 by the repository: a refund that arrives after
+/// its window has been reset must not push the new window's usage negative.
 pub async fn refund_usage(
     pool: Arc<sqlx::SqlitePool>,
     quotas: &[ApplicableQuota],
@@ -235,8 +471,8 @@ pub async fn refund_usage(
         return;
     }
     let repo = TransferQuotaRepository::new(pool);
+    let delta = -bytes_to_i64(bytes);
     for q in quotas {
-        let delta = -(bytes as i64);
         let result = if upload {
             repo.add_upload_usage(q.subject_type, &q.subject_name, delta)
                 .await
@@ -283,6 +519,17 @@ pub async fn acquire_quota_locks(quotas: &[ApplicableQuota]) -> QuotaLockGuard {
     keys.sort();
     keys.dedup();
 
+    {
+        // Drop the mutexes nobody holds any more — one entry per subject that
+        // ever transferred used to accumulate for the life of the process.
+        // `strong_count == 1` means the map is the only owner: a key that is
+        // held by a transfer (or already cloned by another `acquire`) counts
+        // at least twice and is kept, so a subject can never end up with two
+        // live mutexes.
+        let mut map = QUOTA_LOCKS.lock();
+        map.retain(|_, lock| Arc::strong_count(lock) > 1);
+    }
+
     let mut guards = Vec::with_capacity(keys.len());
     for key in keys {
         let lock = {
@@ -296,9 +543,58 @@ pub async fn acquire_quota_locks(quotas: &[ApplicableQuota]) -> QuotaLockGuard {
     QuotaLockGuard { _guards: guards }
 }
 
+/// How often [`run_reset_loop`] re-opens elapsed windows. A minute is well
+/// below the shortest period (a day), and the loop writes only when a row is
+/// actually stale, so an idle appliance does no work here.
+const RESET_POLL_SECS: u64 = 60;
+
+/// Zeroes the counters of every row whose counting window has elapsed, for
+/// every period. Returns how many rows were reset.
+pub async fn reset_expired_periods(
+    pool: Arc<sqlx::SqlitePool>,
+    now: DateTime<Utc>,
+    tz: Tz,
+) -> Result<u64, sqlx::Error> {
+    let repo = TransferQuotaRepository::new(pool);
+    let mut total = 0u64;
+    for period in [Period::Day, Period::Week, Period::Month] {
+        // The cutoff is the start of the window `now` falls in: any row whose
+        // window opened earlier belongs to a previous period, however many
+        // periods ago it was (an appliance off for a month still resets once).
+        let boundary = current_window_start(now, period, tz).to_rfc3339();
+        total += repo
+            .reset_expired(period.as_str(), &boundary, &boundary)
+            .await?;
+    }
+    Ok(total)
+}
+
+/// Background loop that keeps the stored counters in their current window even
+/// when nobody transfers, so the Quotas and Users screens show a reset that
+/// actually happened.
+///
+/// Enforcement does **not** depend on this loop: `load_applicable` settles a
+/// stale row itself. A stopped scheduler can therefore only delay what the
+/// screens display, never let a transfer through.
+pub async fn run_reset_loop(pool: Arc<sqlx::SqlitePool>) {
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(RESET_POLL_SECS));
+    // `Burst` would fire every missed tick back-to-back after a suspend, and
+    // each of those would run a write pass for nothing.
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        ticker.tick().await;
+        match reset_expired_periods(pool.clone(), Utc::now(), appliance_timezone()).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!("Transfer quota windows reset for {} row(s)", n),
+            Err(e) => tracing::warn!("Transfer quota reset pass failed: {}", e),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     fn q(name: &str, limit: i64, used: i64) -> ApplicableQuota {
         ApplicableQuota {
@@ -391,5 +687,187 @@ mod tests {
         assert!(s.contains("group"));
         assert!(s.contains("team"));
         assert!(s.contains("42"));
+    }
+
+    // --- ROADMAP 23.2: counting periods -------------------------------------
+
+    #[test]
+    fn test_period_parse_accepts_the_four_documented_values() {
+        assert_eq!(Period::parse("lifetime").unwrap(), Period::Lifetime);
+        assert_eq!(Period::parse("day").unwrap(), Period::Day);
+        assert_eq!(Period::parse("week").unwrap(), Period::Week);
+        assert_eq!(Period::parse("month").unwrap(), Period::Month);
+        // Tolerant of what a client or an admin hand-edits into the column.
+        assert_eq!(Period::parse("  MONTH ").unwrap(), Period::Month);
+    }
+
+    #[test]
+    fn test_period_parse_refuses_unknown_values_with_a_named_error() {
+        for bad in ["", "   ", "yearly", "30d", "lifetime2"] {
+            let err = Period::parse(bad).unwrap_err();
+            assert!(
+                err.contains("lifetime") && err.contains("day") && err.contains("month"),
+                "the error must list the accepted values, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_period_round_trips_through_its_wire_name() {
+        for period in Period::ALL {
+            assert_eq!(Period::parse(period.as_str()).unwrap(), period);
+        }
+    }
+
+    #[test]
+    fn test_window_containing_is_none_for_a_lifetime_quota() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 23, 14, 30, 0).unwrap();
+        assert_eq!(window_containing(now, Period::Lifetime, chrono_tz::UTC), None);
+        assert!(!window_elapsed(None, now, Period::Lifetime, chrono_tz::UTC));
+        assert_eq!(resets_at("lifetime", None, now, chrono_tz::UTC), None);
+    }
+
+    #[test]
+    fn test_day_window_is_midnight_to_midnight() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 23, 14, 30, 0).unwrap();
+        let (start, end) = window_containing(now, Period::Day, chrono_tz::UTC).unwrap();
+        assert_eq!(start, Utc.with_ymd_and_hms(2026, 10, 23, 0, 0, 0).unwrap());
+        assert_eq!(end, Utc.with_ymd_and_hms(2026, 10, 24, 0, 0, 0).unwrap());
+        assert!(start <= now && now < end);
+    }
+
+    #[test]
+    fn test_week_window_starts_on_monday() {
+        // 2026-10-23 is a Friday; its ISO week opened on Monday the 19th.
+        let now = Utc.with_ymd_and_hms(2026, 10, 23, 14, 30, 0).unwrap();
+        let (start, end) = window_containing(now, Period::Week, chrono_tz::UTC).unwrap();
+        assert_eq!(start, Utc.with_ymd_and_hms(2026, 10, 19, 0, 0, 0).unwrap());
+        assert_eq!(end, Utc.with_ymd_and_hms(2026, 10, 26, 0, 0, 0).unwrap());
+
+        // A Monday is its own window start, not the previous Monday's end.
+        let monday = Utc.with_ymd_and_hms(2026, 10, 19, 0, 0, 0).unwrap();
+        assert_eq!(window_containing(monday, Period::Week, chrono_tz::UTC).unwrap().0, monday);
+    }
+
+    #[test]
+    fn test_month_window_starts_on_the_first() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 23, 14, 30, 0).unwrap();
+        let (start, end) = window_containing(now, Period::Month, chrono_tz::UTC).unwrap();
+        assert_eq!(start, Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap());
+        assert_eq!(end, Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn test_month_window_rolls_the_year_over_in_december() {
+        let now = Utc.with_ymd_and_hms(2026, 12, 31, 23, 59, 59).unwrap();
+        let (start, end) = window_containing(now, Period::Month, chrono_tz::UTC).unwrap();
+        assert_eq!(start, Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap());
+        assert_eq!(end, Utc.with_ymd_and_hms(2027, 1, 1, 0, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn test_windows_follow_the_appliance_timezone_not_utc() {
+        let tz = chrono_tz::Europe::Paris;
+        // 2026-10-31 23:30 UTC is already 1 November in Paris (CET, +01:00),
+        // so a monthly quota has rolled over even though UTC says October.
+        let now = Utc.with_ymd_and_hms(2026, 10, 31, 23, 30, 0).unwrap();
+        let (start, _) = window_containing(now, Period::Month, tz).unwrap();
+        assert_eq!(start, Utc.with_ymd_and_hms(2026, 10, 31, 23, 0, 0).unwrap());
+        // The same instant is still October in UTC.
+        let (utc_start, _) = window_containing(now, Period::Month, chrono_tz::UTC).unwrap();
+        assert_eq!(utc_start, Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn test_a_window_boundary_across_a_dst_change_keeps_the_local_midnight() {
+        // Europe/Paris leaves summer time on 2026-10-25: midnight on the 26th
+        // is 23:00 UTC the day before, not 22:00.
+        let tz = chrono_tz::Europe::Paris;
+        let now = Utc.with_ymd_and_hms(2026, 10, 26, 12, 0, 0).unwrap();
+        let (start, end) = window_containing(now, Period::Day, tz).unwrap();
+        assert_eq!(start, Utc.with_ymd_and_hms(2026, 10, 25, 23, 0, 0).unwrap());
+        assert_eq!(end, Utc.with_ymd_and_hms(2026, 10, 26, 23, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn test_window_elapsed_compares_against_the_current_window_start() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 23, 14, 30, 0).unwrap();
+        let utc = chrono_tz::UTC;
+        // A window opened yesterday is over.
+        assert!(window_elapsed(
+            Some("2026-10-22T00:00:00+00:00"),
+            now,
+            Period::Day,
+            utc
+        ));
+        // One opened today is the current one.
+        assert!(!window_elapsed(
+            Some("2026-10-23T00:00:00+00:00"),
+            now,
+            Period::Day,
+            utc
+        ));
+        // Never opened, or unreadable: the window must be opened now.
+        assert!(window_elapsed(None, now, Period::Day, utc));
+        assert!(window_elapsed(Some(""), now, Period::Day, utc));
+        assert!(window_elapsed(Some("not a timestamp"), now, Period::Day, utc));
+    }
+
+    #[test]
+    fn test_a_month_old_row_is_elapsed_however_long_it_sat_idle() {
+        // The appliance was off for three months: one reset pass must be
+        // enough, and it must land on the current calendar window.
+        let now = Utc.with_ymd_and_hms(2026, 10, 23, 14, 30, 0).unwrap();
+        let tz = chrono_tz::UTC;
+        assert!(window_elapsed(
+            Some("2026-07-04T00:00:00+00:00"),
+            now,
+            Period::Month,
+            tz
+        ));
+        assert_eq!(
+            current_window_start(now, Period::Month, tz),
+            Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_resets_at_reports_the_end_of_the_current_window() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 23, 14, 30, 0).unwrap();
+        let utc = chrono_tz::UTC;
+        assert_eq!(
+            resets_at("month", Some("2026-10-01T00:00:00+00:00"), now, utc).unwrap(),
+            "2026-11-01T00:00:00+00:00"
+        );
+        // A stale stored window reports the *current* window's end, never a
+        // date in the past (which would read as "resets yesterday").
+        assert_eq!(
+            resets_at("month", Some("2026-08-01T00:00:00+00:00"), now, utc).unwrap(),
+            "2026-11-01T00:00:00+00:00"
+        );
+    }
+
+    #[test]
+    fn test_fill_resets_at_leaves_a_lifetime_row_alone() {
+        let mut quota = TransferQuota::default_for("user", "alice");
+        let now = Utc.with_ymd_and_hms(2026, 10, 23, 14, 30, 0).unwrap();
+        fill_resets_at(&mut quota, now, chrono_tz::UTC);
+        assert_eq!(quota.period_resets_at, None);
+    }
+
+    #[test]
+    fn test_bytes_to_i64_saturates_instead_of_going_negative() {
+        assert_eq!(bytes_to_i64(0), 0);
+        assert_eq!(bytes_to_i64(4_096), 4_096);
+        assert_eq!(bytes_to_i64(u64::MAX), i64::MAX);
+        // The whole point: the saturated value stays positive, so it debits.
+        assert!(bytes_to_i64(u64::MAX) > 0);
+    }
+
+    #[test]
+    fn test_unavailable_message_names_the_transfer_and_the_reason() {
+        let msg = unavailable_message("database is locked");
+        assert!(msg.contains("refused"), "{msg}");
+        assert!(msg.contains("database is locked"), "{msg}");
     }
 }

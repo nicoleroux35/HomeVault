@@ -1,8 +1,9 @@
 # Transfer Quotas
 
 **Purpose:** Admin-configurable upload/download byte caps per user or per
-group (value + unit of MB/TB/PB, or disabled), enforced against real File
-Explorer transfers. Settable from the Users and Groups pages.
+group (value + unit of MB/TB/PB, or disabled), counted over a lifetime or a
+calendar **day / week / month** window, enforced against real File Explorer
+transfers. Settable from the Users and Groups pages.
 
 This is **distinct from two other, unrelated systems** in this codebase:
 the filesystem disk-space quota in [Disk Quotas](./quotas.md)
@@ -19,36 +20,107 @@ from this codebase, so a share transfer is **not** metered or capped by this
 feature at all, regardless of what's configured. Do not describe this
 feature as covering shares.
 
+## Counting periods (ROADMAP 23.2, 2026-10-23)
+
+Before 2026-10-23 the two counters were plain lifetime accumulators, so
+"100 GB/month" really meant "100 GB ever": once the cap was reached the
+subject stayed blocked until an admin edited the row by hand. A quota now
+carries a **period**:
+
+| `period` | Window |
+|----------|--------|
+| `lifetime` (default) | never resets — the historical behaviour, and what every pre-existing row got |
+| `day` | midnight → midnight |
+| `week` | Monday 00:00 → next Monday 00:00 (ISO week) |
+| `month` | the 1st at 00:00 → the 1st of the next month |
+
+Windows are **calendar** windows in the appliance timezone (Settings →
+General, `transfer_quota::appliance_timezone()`), not fixed durations: a
+monthly quota resets on the 1st, not 30 days after the first upload. The
+stored `period_started_at` is the instant the current window opened;
+`period_resets_at` is computed for the API/UI and never stored.
+
+Two paths close a window, and they agree by construction because both go
+through `window_containing`:
+
+- **Enforcement settles it** (`settle_window`, called from `load_applicable`):
+  a row whose window elapsed is zeroed in the database and re-opened at the
+  current calendar boundary the moment any transfer consults it. The common
+  case writes nothing — the staleness check is pure.
+- **A background loop** (`run_reset_loop`, spawned in `src/web/mod.rs`, every
+  60 s with `MissedTickBehavior::Skip`) keeps the Quotas/Users screens honest
+  when nobody transfers.
+
+Enforcement therefore **never depends on the loop having run**: a stopped
+scheduler delays the *display* of a reset, never the reset itself.
+
+Changing a saved row's `period` zeroes both counters (`set_limits` does it in
+SQL), because billing lifetime history against a newly chosen monthly cap
+would immediately block the subject. Editing a *limit* on the same period
+keeps the counters — raising a cap must not wipe what was already
+transferred.
+
+## Fail closed (ROADMAP 23.1, 2026-10-23)
+
+Every File Explorer quota check goes through one helper,
+`load_quotas_or_refuse` in `src/handlers/explorer.rs`, for all six call sites
+(download, download-ticket, the legacy multipart `/upload`, and the resumable
+session start / chunk / complete trio).
+When the guard itself cannot answer — a database error, an unresolvable
+membership lookup — the transfer is **refused** with HTTP `503` and
+`transfer_quota::unavailable_message(...)`.
+
+The previous behaviour was the opposite: the error was swallowed into an empty
+quota list, i.e. "the database could not tell me" was read as "this subject
+has no quota", so a transient failure silently disabled every cap in the
+product. A cap that cannot be verified is a refused transfer, not an
+unlimited one. The `503` is deliberate rather than `403`: the caller did
+nothing wrong and retrying a moment later succeeds.
+
 ## Backend
 
 - `src/transfer_quota.rs` — `applicable_upload_quotas`/
   `applicable_download_quotas` (a user's own quota **and** every group they
-  belong to, each resolved independently), `check_quota` (rejects if any
-  applicable quota would be exceeded), `record_usage` (debits after a transfer
-  lands), `refund_usage` (undoes a reservation on an abandoned download), and
-  `acquire_quota_locks` (per-subject in-process locks that serialise a
-  transfer's check-then-debit against every concurrent transfer of the same
-  subject — without them two parallel transfers could both pass the "would
-  exceed?" check on stale usage and then both debit past the cap).
+  belong to, each resolved independently and each settled against its current
+  window), `check_quota` (rejects if any applicable quota would be exceeded),
+  `record_usage` (debits after a transfer lands), `refund_usage` (undoes a
+  reservation on an abandoned download), `acquire_quota_locks` (per-subject
+  in-process locks that serialise a transfer's check-then-debit against every
+  concurrent transfer of the same subject — without them two parallel
+  transfers could both pass the "would exceed?" check on stale usage and then
+  both debit past the cap), plus the period machinery: `Period`,
+  `window_containing`, `current_window_start`, `window_elapsed`, `resets_at`,
+  `settle_window`, `reset_expired_periods`, `run_reset_loop`.
 - `src/storage/transfer_quota_repo.rs` — `TransferQuotaRepository`: `get`,
-  `list`, `set_limits`, `delete`, `add_upload_usage`, `add_download_usage`.
-  One row per `(subject_type, subject_name)` pair in the `transfer_quotas`
-  table (migration `sqlx/migrations/022_transfer_quotas.sql`), created on
-  first save. Has no `rename()` method — one was added preemptively during
-  the original build but neither Users nor Groups has a rename feature, so
-  it was removed as dead code; don't re-add it without a real caller.
-- `src/handlers/transfer_quotas.rs` — all handlers. `require_auth` for
-  reads, `require_admin` for writes/deletes — a regular user can read their
-  own quota but not grant themselves unlimited allowance.
-- `src/handlers/explorer.rs` — the quota check in `handle_explorer_download`
+  `list`, `set_limits`, `delete`, `reset_window`, `reset_expired`,
+  `add_upload_usage`, `add_download_usage`. One row per
+  `(subject_type, subject_name)` pair in the `transfer_quotas` table
+  (migration `sqlx/migrations/022_transfer_quotas.sql`, extended by
+  `055_transfer_quota_period.sql` with `period` + `period_started_at`),
+  created on first save. `set_limits` takes one `QuotaLimits` value rather
+  than seven positional arguments (`QuotaLimits::lifetime(...)` is the
+  convenience constructor for callers that don't care about periods). Has no
+  `rename()` method — one was added preemptively during the original build but
+  neither Users nor Groups has a rename feature, so it was removed as dead
+  code; don't re-add it without a real caller.
+- `src/handlers/transfer_quotas.rs` — all handlers. Reads are **self-or-admin**
+  (see the API table), writes/deletes are `require_admin`. The `period` field
+  is validated by `Period::parse`; an unknown value is a named error listing
+  the accepted ones, never a silent fallback to `lifetime`. Like the rest of
+  the module it answers HTTP 200 with `{"success":false,"error":…}` — the
+  *authorisation* failures are the real status codes (`403`), because those
+  come from `require_admin`/`require_auth` before the handler body runs.
+- `src/handlers/explorer.rs` — `load_quotas_or_refuse` (the fail-closed gate),
+  the quota check in `handle_explorer_download`
   (a **reservation** of the bytes about to be streamed, made under the
   subject lock; the stream wrapper refunds it if the client disconnects
   before the body completes, so an aborted download is never left charged),
-  the per-chunk check inside `handle_explorer_upload`'s write loop (not just
-  once at the start), and the resumable-upload endpoints (`/upload/session`,
-  `/upload/chunk`, `/upload/complete`) which re-check the declared size at
-  session start, per chunk, and again under the lock at completion just
-  before the debit.
+  the same reservation in the download-ticket handler (the ticket is issued
+  only if the size would fit), the per-chunk check inside
+  `handle_explorer_upload`'s write loop (not just once at the start), and the
+  resumable-upload endpoints (`/upload/session`, `/upload/chunk`,
+  `/upload/complete`) which re-check the declared size at session start, per
+  chunk, and again under the lock at completion just before the debit.
 - `src/handlers/users.rs`/`src/handlers/groups.rs` — `handle_user_delete`/
   `handle_group_delete` each delete the subject's `transfer_quotas` row in
   their success branch, after the underlying user/group deletion actually
@@ -59,19 +131,24 @@ feature as covering shares.
 
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
-| GET | `/transfer-quotas/{subject_type}` | auth | list every configured quota for every user or every group (consumed by the read-only **Quotas** app's two parallel calls and by the Users overview modal — see below) |
-| GET | `/transfer-quotas/{subject_type}/{subject_name}` | auth | one subject's quota |
-| PUT | `/transfer-quotas/{subject_type}/{subject_name}` | admin | set limits |
+| GET | `/transfer-quotas/{subject_type}` | **admin** | list every configured quota for every user or every group (consumed by the read-only **Quotas** app's two parallel calls and by the Users overview modal — see below). Admin-only since ROADMAP 23.3: the payload carries every subject's limits *and* consumed bytes, and the gate used to live only in the screen |
+| GET | `/transfer-quotas/{subject_type}/{subject_name}` | **self or admin** | one subject's quota. "Self" means `subject_type = user` and the caller *is* `subject_name`; anything else — another user, any group — needs an admin |
+| PUT | `/transfer-quotas/{subject_type}/{subject_name}` | admin | set limits **and** `period` (`lifetime`\|`day`\|`week`\|`month`, defaults to `lifetime` when the field is absent) |
 | DELETE | `/transfer-quotas/{subject_type}/{subject_name}` | admin | remove |
 
-`subject_type` ∈ {`user`, `group`}.
+`subject_type` ∈ {`user`, `group`}. A row serialises `period`,
+`period_started_at` and the computed `period_resets_at` (absent for a
+lifetime quota).
 
 ## Frontend
 
 - `frontend/src/routes/Users.svelte` — `quotaForm`/`quotaUsage`,
   `startQuota`/`handleQuota`, the quota sub-view markup (menu item
-  "Transfer quotas").
-- `frontend/src/routes/Groups.svelte` — the same pattern, for groups.
+  "Transfer quotas"), plus the **Counting period** select
+  (`data-testid="users-quota-period"`) and the "Resets on …" line
+  (`users-quota-resets`).
+- `frontend/src/routes/Groups.svelte` — the same pattern, for groups
+  (`groups-quota-period` / `groups-quota-resets`).
 - `frontend/src/routes/Explorer.svelte` — `handleDownload` calls
   `api.downloadFile()`, which first mints a **download ticket**
   (`POST /explorer/download-ticket`) — the server checks the caller's quota
@@ -98,10 +175,13 @@ dedicated destination of the Users rail's **Quota view** button, and it fronts
   `Desktop.svelte`'s `handleOpenAppRequest`. `openApp()` therefore stays the
   single owner of the app icon/colour/dedup logic.
 - **No new endpoint.** It calls `api.listTransferQuotas('user')` and
-  `('group')` (`GET /transfer-quotas/{subject_type}`, `require_auth`) in
-  parallel, exactly as the Users overview modal does. The screen is
-  nonetheless admin-gated like Users — least privilege is the default.
-- Rows: subject type, subject name, last-updated, and one column per direction
+  `('group')` (`GET /transfer-quotas/{subject_type}`, **admin-only** since
+  ROADMAP 23.3) in parallel, exactly as the Users overview modal does. The
+  screen still redirects non-admins — but that redirect is a courtesy now, not
+  the boundary: the endpoint enforces it.
+- Rows: subject type, subject name, last-updated, the counting period
+  (`data-testid="quotas-period"`, with its "resets on …" date when the quota
+  is not a lifetime one), and one column per direction
   (upload, download). A direction with `*_enabled === false` reads
   **Unlimited**; otherwise it shows `used of limit` plus a real progress bar
   fed by `*_used_bytes` — the figure the Users overview modal ignores.
@@ -128,10 +208,16 @@ dedicated destination of the Users rail's **Quota view** button, and it fronts
   seeded `used/limit` progress bar (50 Mo / 100 Mo → `aria-valuenow="50"`) plus
   *Unlimited* on a disabled direction, and the **Manage in Users** hand-off
   (`hv-open-app`) reaching the Users window without leaving `/desktop` or
-  closing Quotas. The suite is read-only — it seeds and restores its single
-  quota row through the admin API in `beforeAll`/`afterAll`, never through the
-  UI. No dead selector needed fixing: the spec targets `data-testid` and was
+  closing Quotas. The suite never edits through the UI — it seeds and restores
+  its own rows through the admin API in `beforeAll`/`afterAll`. No dead
+  selector needed fixing: the spec targets `data-testid` and was
   written after the 2026-09-12 Appliance migration.
+  **+2026-10-23 (ROADMAP 23):** 38 → **40** `test(`. §15 renders the counting
+  period and its reset date per row, re-reads the period/instants from the API,
+  checks a lifetime row carries no reset, and asserts the read scoping at the
+  API level (a member is refused the list and another user's quota, and can
+  still read their own). The seed row became a **monthly** quota so §15 has a
+  window to show; `afterAll` restores the period too. Written, not run.
 
 ## Invariants
 
@@ -147,9 +233,37 @@ dedicated destination of the Users rail's **Quota view** button, and it fronts
   never debited. Downloads *reserve* the bytes at stream start under the
   per-subject lock and `refund_usage` if the client disconnects early, so a
   completed transfer records exactly its size and an abandoned one nets out.
+  Usage counters are floored at 0 in SQL (`MAX(0, …)`) so a refund landing
+  after its window was reset cannot make the new window negative.
 - Check-then-debit for a subject is serialised by `acquire_quota_locks`
   (held for the duration of the transfer). Don't revert to a bare
-  read-then-write, or concurrent transfers can overshoot the cap.
+  read-then-write, or concurrent transfers can overshoot the cap. The lock
+  map prunes entries no transfer holds (`Arc::strong_count > 1`), so one
+  mutex per subject does not accumulate for the life of the process.
+- A quota load failure is a **refused transfer** (`503`), never an empty
+  quota list. Do not reintroduce `unwrap_or_default()`/`Vec::new()` on a
+  `applicable_*_quotas` error: that reads "the guard could not answer" as
+  "no cap configured" and silently disables every quota in the product. The
+  unit test `test_no_quota_load_bypasses_the_fail_closed_gate` guards this by
+  asserting the only two calls to `applicable_*_quotas` in `explorer.rs` are
+  inside `load_quotas_or_refuse`.
+- `bytes as i64` must never be used on a transfer size. Sizes go through
+  `bytes_to_i64` (saturating), and `check_quota` compares in `u128`: a plain
+  cast turned any value above `i64::MAX` negative and silently passed the
+  check.
+- Reads are scoped in the **handler**, not in the screen. `GET
+  /transfer-quotas/{subject_type}` is admin-only and the single-subject GET is
+  self-or-admin; Quotas.svelte's non-admin redirect is a courtesy, not the
+  boundary.
+
+## Known debt
+
+- **Group membership costs one `id -nG` fork per quota check** — and therefore
+  per chunk of a resumable upload. It is correctly offloaded with
+  `spawn_blocking`, so it never blocks the runtime, but a short-TTL in-process
+  cache would remove the fork entirely. Tracked as ROADMAP item 33.1; left
+  alone here because a cache introduces a bounded staleness window on group
+  membership, which is a separate behaviour decision.
 
 ## Related
 

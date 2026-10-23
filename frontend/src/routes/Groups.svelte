@@ -38,6 +38,16 @@
   }
 
   type QuotaUnit = 'MB' | 'TB' | 'PB';
+  type QuotaPeriod = 'lifetime' | 'day' | 'week' | 'month';
+
+  // ROADMAP 23.2 — the window the transfer counters are counted in. Same
+  // order and wording as the Users card and the Quotas screen.
+  const QUOTA_PERIODS: { id: QuotaPeriod; label: string }[] = [
+    { id: 'lifetime', label: 'quotas.period_lifetime' },
+    { id: 'day', label: 'quotas.period_day' },
+    { id: 'week', label: 'quotas.period_week' },
+    { id: 'month', label: 'quotas.period_month' },
+  ];
 
   const QUOTA_UNIT_BYTES: Record<QuotaUnit, number> = {
     MB: 1024 * 1024,
@@ -80,8 +90,11 @@
   let quotaForm = {
     uploadEnabled: false, uploadValue: 0, uploadUnit: 'MB' as QuotaUnit,
     downloadEnabled: false, downloadValue: 0, downloadUnit: 'MB' as QuotaUnit,
+    period: 'lifetime' as QuotaPeriod,
   };
   let quotaUsage = { uploadUsedBytes: 0, downloadUsedBytes: 0 };
+  /** The period and reset instant of the *saved* row — never of the form. */
+  let quotaSaved = { period: 'lifetime' as QuotaPeriod, resetsAt: null as string | null };
   let loadingQuota = false;
   const dlg = createConfirmState();
 
@@ -105,6 +118,19 @@
     if (bytes > 0 && bytes % QUOTA_UNIT_BYTES.PB === 0) return { value: bytes / QUOTA_UNIT_BYTES.PB, unit: 'PB' };
     if (bytes > 0 && bytes % QUOTA_UNIT_BYTES.TB === 0) return { value: bytes / QUOTA_UNIT_BYTES.TB, unit: 'TB' };
     return { value: Math.round(bytes / QUOTA_UNIT_BYTES.MB), unit: 'MB' };
+  }
+  // Locale-aware date, used for the "resets on …" line only.
+  function formatResetDate(iso: string): string {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '—';
+    try {
+      return d.toLocaleString(document.documentElement.lang || undefined, {
+        day: 'numeric', month: 'short', year: 'numeric',
+      });
+    } catch {
+      return iso.slice(0, 10);
+    }
   }
   function quotaBarPct(usedBytes: number, value: number, unit: QuotaUnit): number {
     const limit = Math.max(0, Math.round(value)) * QUOTA_UNIT_BYTES[unit];
@@ -243,14 +269,18 @@
     if (res.success && res.data) {
       const up = bytesToQuotaValue(res.data.upload_limit_bytes);
       const down = bytesToQuotaValue(res.data.download_limit_bytes);
+      const period = (res.data.period || 'lifetime') as QuotaPeriod;
       quotaForm = {
         uploadEnabled: res.data.upload_enabled, uploadValue: up.value, uploadUnit: up.unit,
         downloadEnabled: res.data.download_enabled, downloadValue: down.value, downloadUnit: down.unit,
+        period,
       };
       quotaUsage = { uploadUsedBytes: res.data.upload_used_bytes || 0, downloadUsedBytes: res.data.download_used_bytes || 0 };
+      quotaSaved = { period, resetsAt: res.data.period_resets_at || null };
     } else {
-      quotaForm = { uploadEnabled: false, uploadValue: 0, uploadUnit: 'MB', downloadEnabled: false, downloadValue: 0, downloadUnit: 'MB' };
+      quotaForm = { uploadEnabled: false, uploadValue: 0, uploadUnit: 'MB', downloadEnabled: false, downloadValue: 0, downloadUnit: 'MB', period: 'lifetime' };
       quotaUsage = { uploadUsedBytes: 0, downloadUsedBytes: 0 };
+      quotaSaved = { period: 'lifetime', resetsAt: null };
     }
   }
 
@@ -371,10 +401,16 @@
       upload_limit_bytes: Math.max(0, Math.round(quotaForm.uploadValue)) * QUOTA_UNIT_BYTES[quotaForm.uploadUnit],
       download_enabled: quotaForm.downloadEnabled,
       download_limit_bytes: Math.max(0, Math.round(quotaForm.downloadValue)) * QUOTA_UNIT_BYTES[quotaForm.downloadUnit],
+      period: quotaForm.period,
     });
     submitting = false;
-    if (res.success) { errors = { quotaOk: translate('groups.quota_updated') }; }
-    else { errors = { action: res.message || res.error || translate('groups.quota_update_failed') }; }
+    if (res.success) {
+      errors = { quotaOk: translate('groups.quota_updated') };
+      // Re-read the row so the reset date shown is the one the server saved.
+      await loadQuota(selectedGroup);
+    } else {
+      errors = { action: res.message || res.error || translate('groups.quota_update_failed') };
+    }
   }
 
   async function handleDelete() {
@@ -789,6 +825,21 @@
                 <p data-testid="groups-hint" class="text-c-label text-[var(--hv-shell-text)] mt-2">{$t('groups.quota_used', { used: formatBytes(quotaUsage.downloadUsedBytes) })}</p>
               {/if}
             </div>
+
+            <div class="py-3 border-t border-[var(--hv-shell-border-soft)] flex items-center gap-3 flex-wrap">
+              <div class="min-w-0 flex-1">
+                <label for="g-period" class="block text-sm font-semibold text-[var(--hv-shell-text-strong)]">{$t('quotas.period_label')}</label>
+                <small class="text-c-xs text-[var(--hv-shell-text)]">{$t('quotas.period_hint')}</small>
+              </div>
+              <select id="g-period" data-testid="groups-quota-period" class={cn(inp, 'flex-[0_0_180px]')} bind:value={quotaForm.period}>
+                {#each QUOTA_PERIODS as p (p.id)}<option value={p.id}>{$t(p.label)}</option>{/each}
+              </select>
+            </div>
+            {#if quotaForm.period !== 'lifetime' && quotaForm.period === quotaSaved.period && quotaSaved.resetsAt}
+              <p data-testid="groups-quota-resets" class="text-c-label text-[var(--hv-shell-text)]">{$t('quotas.resets_on', { date: formatResetDate(quotaSaved.resetsAt) })}</p>
+            {:else if quotaForm.period !== quotaSaved.period}
+              <p data-testid="groups-quota-resets" class="text-c-label text-[var(--hv-shell-text)]">{$t('quotas.period_change_resets')}</p>
+            {/if}
 
             {#if errors.quotaOk}<span data-testid="groups-ok" class="text-xs text-[var(--hv-success)]">{errors.quotaOk}</span>{/if}
             <Button variant="primary" size="sm" fullWidth class="mt-3" onclick={saveQuota} disabled={submitting}>

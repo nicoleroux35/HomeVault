@@ -822,14 +822,28 @@ test.describe('5 — Profile / role / groups / quota / delete flows', () => {
     expect(members).toContain(who.username);
   });
 
-  test('5.8 — enabling upload quota saves and appears in the overview', async ({ page }) => {
+  test('5.8 — enabling upload quota saves, with a counting period, and appears in the overview', async ({ page }) => {
     await gotoUsers(page, adminTokens);
     await win(page).locator('[data-testid="users-tile"]', { hasText: who.username }).click();
     const uploadRow = win(page).locator('[data-testid="users-quota-block"]').first();
     await uploadRow.locator('[data-testid="users-switch"]').click();
     await uploadRow.locator('input[type="number"]').fill('5');
+    // A quota that has never been saved is a lifetime one: no reset line.
+    await expect(win(page).locator('[data-testid="users-quota-resets"]')).toHaveCount(0);
+
+    // ROADMAP 23.2 — choosing a monthly window and saving announces the next
+    // reset, and the server really stored the period (the row is re-read).
+    await win(page).locator('[data-testid="users-quota-period"]').selectOption('month');
     await win(page).getByRole('button', { name: 'Save', exact: true }).last().click();
     await expect(win(page).locator('[data-testid="users-ok"]')).toHaveText('Transfer quotas saved', { timeout: 8_000 });
+    const resets = win(page).locator('[data-testid="users-quota-resets"]');
+    await expect(resets).toHaveCount(1);
+    await expect(resets).toContainText(/resets on|remise à zéro/i);
+    const stored = await ctx.get(
+      `/api/transfer-quotas/user/${encodeURIComponent(who.username)}`,
+      { headers: adminHeaders },
+    );
+    expect((await stored.json())?.data?.period).toBe('month');
 
     await win(page).getByRole('button', { name: 'All quotas' }).click();
     await expect(page.locator('[data-slot="dialog-content"]')).toContainText(who.username, { timeout: 8_000 });

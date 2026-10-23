@@ -549,17 +549,24 @@ test.describe('5 — Members / quota / delete flows', () => {
     ).toContainText('2 member(s)', { timeout: 8_000 });
   });
 
-  test('5.6 — enabling upload quota saves and appears in the group', async ({ page }) => {
+  test('5.6 — enabling upload quota saves, with a counting period, and appears in the group', async ({ page }) => {
     await gotoGroups(page, adminTokens);
     await win(page).locator('[data-testid="groups-row"]', { hasText: groupName }).click();
     const uploadRow = win(page).locator('[data-testid="groups-quota-block"]').first();
     await uploadRow.locator('[data-testid="groups-switch"]').click();
     await uploadRow.locator('input[type="number"]').fill('10');
+    // ROADMAP 23.2 — a weekly window announces its next reset on save.
+    await win(page).locator('[data-testid="groups-quota-period"]').selectOption('week');
     await win(page).getByRole('button', { name: 'Save', exact: true }).last().click();
     await expect(win(page).locator('[data-testid="groups-ok"]')).toHaveText('Transfer quotas saved', { timeout: 8_000 });
+    const resets = win(page).locator('[data-testid="groups-quota-resets"]');
+    await expect(resets).toHaveCount(1);
+    await expect(resets).toContainText(/resets on|remise à zéro/i);
 
     const q = await ctx.get(`/api/transfer-quotas/group/${encodeURIComponent(groupName)}`, { headers: adminHeaders });
-    expect((await q.json())?.data?.upload_enabled).toBe(true);
+    const data = (await q.json())?.data;
+    expect(data?.upload_enabled).toBe(true);
+    expect(data?.period).toBe('week');
   });
 
   test('5.7 — deleting an empty group removes it from the list', async ({ page }) => {

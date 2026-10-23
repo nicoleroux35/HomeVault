@@ -1090,7 +1090,9 @@ async fn test_download_blocked_when_quota_exceeded() {
 
     // A 5-byte download cap for bob.
     homevault::storage::transfer_quota_repo::TransferQuotaRepository::new(h.state.db.pool())
-        .set_limits("user", "bob", false, 0, true, 5)
+        .set_limits(homevault::storage::transfer_quota_repo::QuotaLimits::lifetime(
+            "user", "bob", false, 0, true, 5,
+        ))
         .await
         .expect("set quota");
 
@@ -1121,7 +1123,14 @@ async fn test_download_allowed_under_quota_and_records_usage() {
 
     let repo =
         homevault::storage::transfer_quota_repo::TransferQuotaRepository::new(h.state.db.pool());
-    repo.set_limits("user", "bob", false, 0, true, 1_000_000)
+    repo.set_limits(homevault::storage::transfer_quota_repo::QuotaLimits::lifetime(
+        "user",
+        "bob",
+        false,
+        0,
+        true,
+        1_000_000,
+    ))
         .await
         .expect("set quota");
 
@@ -1150,7 +1159,9 @@ async fn test_upload_blocked_when_quota_exceeded() {
     create_test_user(&h.state, "bob", "Password123!", 1).await;
 
     homevault::storage::transfer_quota_repo::TransferQuotaRepository::new(h.state.db.pool())
-        .set_limits("user", "bob", true, 8, false, 0)
+        .set_limits(homevault::storage::transfer_quota_repo::QuotaLimits::lifetime(
+            "user", "bob", true, 8, false, 0,
+        ))
         .await
         .expect("set quota");
 
