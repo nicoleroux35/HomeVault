@@ -927,15 +927,26 @@ and some did not; `error_message` then names the ones that did not.
 
 ## System Journal — `journal/*`
 
-Read endpoints `auth`; clear-logs and cleanup-settings writes `admin`. See
-[System Journal](./guides/journal.md).
+The `app` source is session-level; **every host source is `admin`** — that is
+the whole `/var/log/auth.log` surface (account names, source addresses, sudo
+attempts), so it is gated per source, not per screen. `GET /journal/sources`
+only advertises what the caller may read. Clear-logs and cleanup-settings
+writes are `admin`. See [System Journal](./guides/journal.md).
 
 | Method | Path | Auth |
 |--------|------|------|
-| GET | `/journal/sources` | auth |
-| GET | `/journal/entries` | auth |
+| GET | `/journal/sources` | auth (lists `app`; adds `system` + the `/var/log` files for an admin) |
+| GET | `/journal/entries` | auth for `?source=app`, admin for `system`/`syslog`/`auth`/`kern`/`daemon` (403 otherwise) |
 | DELETE | `/journal/clear` | admin |
 | GET/PUT | `/journal/cleanup-settings` | auth / admin |
+
+`GET /journal/entries` answers
+`{ "success": true, "data": [ … ], "meta": { "scanned": 200, "limit": 200, "search_truncated": false } }`.
+`search_truncated` is `true` when a search filter filled the bounded scan
+window (`limit × 20`, at most 10 000 lines), i.e. older matching entries exist
+beyond what was examined — the screen says so instead of showing a short list.
+An unknown `source` is a `400`, and a `unit` containing anything but letters,
+digits, `.`, `-`, `_`, `@` and `:` is a `400` naming the accepted characters.
 
 ## Transfer quotas — `transfer-quotas/*`
 

@@ -253,6 +253,37 @@ test.describe('3 — Filters', () => {
     await win(page).locator('#jr-search').press('Enter');
     await expect.poll(() => hit, { timeout: 8000 }).toBe(true);
   });
+
+  test('3.3 — a bounded search says so instead of showing a short list', async ({ page }) => {
+    await openJournal(page, adminTokens);
+    // The backend searches a bounded window (ROADMAP 20.2). When it fills up
+    // it reports `meta.search_truncated`, and the screen must say that older
+    // matches exist rather than presenting an unexplained short list.
+    await page.route('**/api/journal/entries*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: [
+            {
+              timestamp: '2026-07-17T10:00:00Z',
+              unit: 'homevault::x',
+              priority: 6,
+              priority_text: 'info',
+              pid: null,
+              message: 'one match',
+            },
+          ],
+          meta: { scanned: 200, limit: 10, search_truncated: true },
+        }),
+      });
+    });
+    await win(page).locator('#jr-search').fill('needle');
+    await win(page).locator('[data-testid="journal-apply"]').click();
+    await expect(page.locator('[data-testid="journal-search-truncated"]')).toBeVisible();
+    await expect(win(page).locator('[data-testid="journal-list"]')).toBeVisible();
+  });
 });
 
 // ===========================================================================
@@ -361,6 +392,32 @@ test.describe('8 — Accessibility', () => {
     });
     expect(dupes).toEqual([]);
   });
+
+  test('8.3 — a failed read is an error with a retry, never the empty state', async ({ page }) => {
+    await openJournal(page, adminTokens);
+    // A failed load used to render as "no log entries match the current
+    // filters", which is indistinguishable from an empty log (ROADMAP 20's
+    // "failed load rendered as the empty state").
+    await page.route('**/api/journal/entries*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: false, error: 'Permission denied: /data/logs' }),
+      });
+    });
+    await win(page).locator('[data-testid="journal-apply"]').click();
+
+    const err = page.locator('[data-testid="journal-error"]');
+    await expect(err).toBeVisible();
+    await expect(err).toContainText('Permission denied');
+    await expect(page.locator('[data-testid="journal-empty"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="journal-retry"]')).toBeVisible();
+
+    // Retry goes back to the real endpoint and the list returns.
+    await page.unroute('**/api/journal/entries*');
+    await page.locator('[data-testid="journal-retry"]').click();
+    await expect(page.locator('[data-testid="journal-list"]')).toBeVisible();
+  });
 });
 
 // ===========================================================================
@@ -422,6 +479,73 @@ test.describe('10 — Security', () => {
     expect(page.url()).not.toMatch(/token|password|secret/i);
     const dump = await page.evaluate(() => JSON.stringify(localStorage));
     expect(dump).not.toContain(ADMIN_PASS);
+  });
+
+  test('10.4 — a non-admin session cannot read host logs and is not offered the app', async ({
+    page,
+    playwright,
+  }) => {
+    const ctx = await newCtx(playwright);
+    const adminHeaders = {
+      'x-session-token': adminTokens.token,
+      'x-csrf-token': adminTokens.csrf,
+    };
+    const uname = `jrviewer${Date.now().toString(36)}`;
+    const created = await ctx.post('/api/users', {
+      headers: adminHeaders,
+      data: {
+        username: uname,
+        password: 'Viewer12345!',
+        fullname: 'V',
+        email: '',
+        role_id: 1,
+        groups: [],
+        home_enabled: false,
+      },
+    });
+    if (!created.ok()) {
+      await ctx.dispose();
+      test.skip(true, `could not create non-admin user (${created.status()})`);
+      return;
+    }
+    try {
+      // The account was created with an admin-chosen password, so the session
+      // is gated by `password_change_guard` until the owner picks their own;
+      // clear it first so the refusals below come from the journal gate and
+      // not from the password gate.
+      const first = await apiLogin(ctx, uname, 'Viewer12345!');
+      const changed = await ctx.put(`/api/users/${uname}/password`, {
+        headers: { 'x-session-token': first.token, 'x-csrf-token': first.csrf },
+        data: { current_password: 'Viewer12345!', new_password: 'Viewer67890!' },
+      });
+      expect(changed.ok(), `password change (${changed.status()})`).toBe(true);
+      const { token, csrf } = await apiLogin(ctx, uname, 'Viewer67890!');
+      const h = { 'x-session-token': token, 'x-csrf-token': csrf };
+
+      // `/var/log/auth.log` lists every account name, source address and sudo
+      // attempt on the box (ROADMAP 20.1) — a non-admin session is refused
+      // before anything is read.
+      for (const source of ['auth', 'system', 'syslog']) {
+        const res = await ctx.get(`/api/journal/entries?source=${source}`, { headers: h });
+        expect(res.status(), source).toBe(403);
+      }
+      // Its own application log stays readable.
+      const own = await ctx.get('/api/journal/entries?source=app', { headers: h });
+      expect(own.status()).toBe(200);
+      // And the source list never advertises what it cannot read.
+      const listed = await (await ctx.get('/api/journal/sources', { headers: h })).json();
+      expect(listed.data.map((s: { id: string }) => s.id)).toEqual(['app']);
+
+      // The launcher does not offer the tile either, so a non-admin never
+      // lands on a screen whose every host source answers 403.
+      await gotoDesktop(page, { username: uname, password: 'Viewer67890!', token, csrf }, 'en');
+      await page.locator('.hv-dock-item[aria-label="Applications"]').click();
+      await expect(page.locator('.lp-card').first()).toBeVisible();
+      await expect(page.locator('.lp-card[title="System Journal"]')).toHaveCount(0);
+    } finally {
+      await ctx.delete(`/api/users/${uname}`, { headers: adminHeaders }).catch(() => {});
+      await ctx.dispose();
+    }
   });
 });
 

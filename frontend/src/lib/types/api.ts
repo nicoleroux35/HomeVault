@@ -25,6 +25,13 @@ export interface ApiResponse<T = any> {
   data?: T;
   error?: string;
   message?: string;
+  /**
+   * Optional per-endpoint metadata about the payload rather than its content
+   * — today only `GET /api/journal/entries` uses it (`scanned`, `limit`,
+   * `search_truncated`) so the screen can say when a search only covered a
+   * bounded window instead of showing a short list with no explanation.
+   */
+  meta?: Record<string, any>;
 }
 
 // ── Auth ────────────────────────────────────────────────────────────────────
