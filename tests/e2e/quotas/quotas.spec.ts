@@ -2,7 +2,7 @@
  * File          : quotas.spec.ts
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Last modified : 23/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
@@ -36,8 +36,11 @@
  * state in `afterAll`. It never writes through the UI.
  *
  * Endpoint auth / payload shape are covered by
- * `tests/explorer_integration.rs` (quota guards) + the `transfer_quota.rs`
- * unit tests; this suite covers the screen only.
+ * `tests/quotas_integration.rs` (transfer-quota API, counting periods, the
+ * self-or-admin read rule) + the `transfer_quota.rs` unit tests; this suite
+ * covers the screen, and section 15 additionally asserts the two API-level
+ * facts the screen cannot show (the period/reset instants it renders, and
+ * that a member is refused the list endpoint and another user's quota).
  *
  * Run (all):    npx playwright test tests/e2e/quotas/quotas.spec.ts --project=firefox
  * Run (single): npx playwright test tests/e2e/quotas/quotas.spec.ts -g "1.1"
@@ -150,6 +153,10 @@ const SEED = {
   subjectType: 'user' as const,
   subjectName: ADMIN_USER,
   uploadLimitBytes: 104_857_600, // 100 MiB — drives the aria-valuenow math.
+  // ROADMAP 23.2 — a monthly window, so the row renders its period and the
+  // "resets on …" line. Section 15 asserts both; the reset date itself is
+  // whatever the appliance timezone computes, never a hard-coded day.
+  period: 'month' as const,
 };
 
 let adminTokens: Tokens;
@@ -182,6 +189,7 @@ test.beforeAll(async ({ playwright }) => {
         upload_limit_bytes: SEED.uploadLimitBytes,
         download_enabled: false,
         download_limit_bytes: 0,
+        period: SEED.period,
       },
     },
   );
@@ -212,6 +220,9 @@ test.afterAll(async ({ playwright }) => {
           upload_limit_bytes: priorSeedStatus.quota.upload_limit_bytes || 0,
           download_enabled: !!priorSeedStatus.quota.download_enabled,
           download_limit_bytes: priorSeedStatus.quota.download_limit_bytes || 0,
+          // Restore the counting period too: omitting it would silently turn a
+          // periodic row back into a lifetime one (the field defaults to it).
+          period: priorSeedStatus.quota.period || 'lifetime',
         },
       },
     );
@@ -737,5 +748,136 @@ test.describe('14 — Memory regression', () => {
     const after = await win(page).evaluate((root) => root.querySelectorAll('*').length);
     // The window is recreated cleanly each time — allow only modest growth.
     expect(after).toBeLessThan(before + 60);
+  });
+});
+// ===========================================================================
+// 15. Counting period (ROADMAP 23.2) and read scoping (ROADMAP 23.3)
+// ===========================================================================
+
+test.describe('15 — Counting period and read scoping', () => {
+  const MEMBER_PASS = 'QuotasTest0Key';
+  let memberCtx: APIRequestContext;
+  let memberName = '';
+  let memberToken = '';
+
+  test.beforeAll(async ({ playwright }) => {
+    memberName = `qta${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`;
+    memberCtx = await newCtx(playwright);
+    const headers = { 'x-session-token': adminTokens.token, 'x-csrf-token': adminTokens.csrf };
+    const created = await memberCtx.post('/api/users', {
+      headers,
+      data: {
+        username: memberName,
+        password: MEMBER_PASS,
+        fullname: 'Quota Member',
+        email: '',
+        role_id: 1,
+      },
+    });
+    const createdBody = await created.json().catch(() => ({}));
+    expect(
+      createdBody?.success,
+      `member creation must succeed: ${JSON.stringify(createdBody)}`,
+    ).toBe(true);
+    const login = await apiLogin(memberCtx, memberName, MEMBER_PASS);
+    memberToken = login.token;
+    expect(memberToken, 'the created member must be able to log in').toBeTruthy();
+  });
+
+  test.afterAll(async () => {
+    if (!memberCtx) return;
+    await memberCtx
+      .delete(`/api/users/${memberName}`, {
+        headers: { 'x-session-token': adminTokens.token, 'x-csrf-token': adminTokens.csrf },
+      })
+      .catch(() => {});
+    await memberCtx.dispose().catch(() => {});
+  });
+
+  test('15.1 — the seeded row shows its counting period and next reset', async ({ page }) => {
+    await openQuotas(page, adminTokens);
+    const row = win(page).locator('table tbody tr', { hasText: SEED.subjectName });
+    const period = row.locator('[data-testid="quotas-period"]');
+    await expect(period).toHaveCount(1);
+    const text = (await period.innerText()).trim();
+    // A translated label, never the raw i18n key, plus the reset date.
+    expect(text).not.toContain('quotas.');
+    expect(text.toLowerCase()).toMatch(/month|mois|monat|mes/);
+    expect(text).toMatch(/\d{4}/);
+  });
+
+  test('15.2 — the period and reset instant come from the API', async ({ page }) => {
+    await openQuotas(page, adminTokens);
+    const rows = await page.evaluate(async () => {
+      const headers = { 'x-session-token': localStorage.getItem('session-token') || '' };
+      const r = await fetch('/api/transfer-quotas/user', { headers });
+      return (await r.json()).data || [];
+    });
+    const row = rows.find((q: any) => q.subject_name === SEED.subjectName);
+    expect(row?.period, 'the seed must round-trip its period').toBe(SEED.period);
+    expect(row?.period_started_at, 'a periodic row has an open window').toBeTruthy();
+    expect(row?.period_resets_at, 'a periodic row announces its next reset').toBeTruthy();
+    expect(Date.parse(row.period_resets_at)).toBeGreaterThan(Date.parse(row.period_started_at));
+  });
+
+  test('15.3 — a lifetime quota announces no reset date', async ({ playwright }) => {
+    const ctx = await newCtx(playwright);
+    const headers = { 'x-session-token': adminTokens.token, 'x-csrf-token': adminTokens.csrf };
+    const subject = `${memberName}_life`;
+    try {
+      const put = await ctx.put(
+        `/api/transfer-quotas/group/${encodeURIComponent(subject)}`,
+        {
+          headers: { ...headers, 'content-type': 'application/json' },
+          data: {
+            upload_enabled: true,
+            upload_limit_bytes: 1024,
+            download_enabled: false,
+            download_limit_bytes: 0,
+            period: 'lifetime',
+          },
+        },
+      );
+      expect((await put.json()).success).toBe(true);
+
+      const read = await ctx.get(`/api/transfer-quotas/group/${encodeURIComponent(subject)}`, {
+        headers,
+      });
+      const body = await read.json().catch(() => ({}));
+      expect(body?.data?.period).toBe('lifetime');
+      expect(body?.data?.period_resets_at ?? null).toBeNull();
+    } finally {
+      await ctx
+        .delete(`/api/transfer-quotas/group/${encodeURIComponent(subject)}`, { headers })
+        .catch(() => {});
+      await ctx.dispose();
+    }
+  });
+
+  test("15.4 — a member is refused the quota list and another user's quota", async () => {
+    // ROADMAP 23.3 — the admin gate used to live only in this screen.
+    const list = await memberCtx.get('/api/transfer-quotas/user', {
+      headers: { 'x-session-token': memberToken },
+    });
+    expect(list.status()).toBe(403);
+
+    const other = await memberCtx.get(
+      `/api/transfer-quotas/user/${encodeURIComponent(ADMIN_USER)}`,
+      { headers: { 'x-session-token': memberToken } },
+    );
+    expect(other.status()).toBe(403);
+    const body = await other.json().catch(() => ({}));
+    expect(body?.data ?? null, 'a refused read must not leak a payload').toBeNull();
+  });
+
+  test('15.5 — a member can still read their own quota', async () => {
+    const own = await memberCtx.get(
+      `/api/transfer-quotas/user/${encodeURIComponent(memberName)}`,
+      { headers: { 'x-session-token': memberToken } },
+    );
+    expect(own.status()).toBe(200);
+    const body = await own.json().catch(() => ({}));
+    expect(body?.success).toBe(true);
+    expect(body?.data?.subject_name).toBe(memberName);
   });
 });

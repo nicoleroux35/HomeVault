@@ -2015,7 +2015,14 @@ class ApiClient {
   async setTransferQuota(
     subjectType: 'user' | 'group',
     subjectName: string,
-    body: { upload_enabled: boolean; upload_limit_bytes: number; download_enabled: boolean; download_limit_bytes: number }
+    body: {
+      upload_enabled: boolean;
+      upload_limit_bytes: number;
+      download_enabled: boolean;
+      download_limit_bytes: number;
+      /** ROADMAP 23.2 — the window the counters are counted in. */
+      period: 'lifetime' | 'day' | 'week' | 'month';
+    }
   ) {
     return this.put(`/transfer-quotas/${subjectType}/${encodeURIComponent(subjectName)}`, body);
   }
