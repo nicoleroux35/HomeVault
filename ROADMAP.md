@@ -750,13 +750,18 @@ argument). Written on 2026-10-23; **not run yet** (per instruction), so the
 counts above are the test functions added, not a green run.
 `docs/guides/scheduled-tasks.md` gained *Timezones* and the rewritten
 invariants; `docs/guides/settings.md` documents the applied timezone;
-`docs/API.md` the new routes and the `202`. **The Settings picker followed:**
-it rendered a hardcoded 14-zone shortlist while the backend accepted any IANA
-name, so an admin in Lisbon or Casablanca could not pick their zone at all. It
-now renders `GET /settings/timezones` — every region-prefixed name `chrono-tz`
-ships plus `UTC`, sorted, grouped by region — and keeps an unlisted value
-(a legacy alias set through the API) as its own option so the field can never
-silently rewrite the setting.
+`docs/API.md` the new routes and the `202`. **Both timezone pickers followed:**
+the Settings card rendered a hardcoded 14-zone shortlist while the backend
+accepted any IANA name, so an admin in Lisbon or Casablanca could not pick their
+zone at all; it now renders `GET /settings/timezones` — every region-prefixed
+name `chrono-tz` ships plus `UTC`, sorted, grouped by region. The task form was
+worse in the other direction: a free-text field with a `Europe/Paris`
+placeholder, where a typo only surfaced on save and the valid names were
+invisible. It is now the same grouped picker (with "Server timezone" = the empty
+value, which the API reads as `NULL`), rendering the same list through
+`frontend/src/lib/utils/timezones.ts` so the two cannot drift apart again; both
+keep an unlisted value (a legacy alias set through the API) as its own option so
+a select can never silently display, and then save, a different zone.
 
 **2026-10-23 (k)** — Virtual Machines (Incus) — a wait now gets the operation's
 own budget, an expired wait is "still running" instead of a failure, and no

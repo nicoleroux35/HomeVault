@@ -115,9 +115,17 @@ in: `0 2 * * *` is 00:00 UTC in July and 01:00 UTC in January for
 
 - `frontend/src/routes/Tasks.svelte` (app id `tasks`, "Scheduled Tasks"):
   task table (name, type, cron + zone, enabled, last status, next run),
-  create / edit modal with a per-type payload form and a **Timezone** field
-  (blank = follow the server), runs drawer per task, "Run now" button, delete
-  with confirm.
+  create / edit modal with a per-type payload form and a **Timezone** picker,
+  runs drawer per task, "Run now" button, delete with confirm.
+- The timezone picker offers the **whole IANA database** — `GET
+  /settings/timezones`, the same list and the same `$lib/utils/timezones`
+  grouping the Settings General card renders (regions as `<optgroup>`, `UTC`
+  first), with "Server timezone" as the first entry = the empty value. It was
+  a free-text field with a `Europe/Paris` placeholder: a typo only surfaced on
+  save, and nothing told the admin which names were valid. A value the list
+  does not hold (a legacy alias set through the API, or a list still loading)
+  is rendered as its own option so the select can never silently display — and
+  then save — a different zone.
 - "Run now" shows a "started" notification and polls the list (3 s, at most
   10 attempts, paused while the tab is hidden) until the row leaves
   `running` — bounded, so a 30-minute command cannot turn the screen into a
