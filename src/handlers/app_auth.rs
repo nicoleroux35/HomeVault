@@ -108,19 +108,27 @@ pub async fn handle_app_auth(
         return (StatusCode::NOT_FOUND, "No running app proxy for this app").into_response();
     };
 
-    let token = APP_AUTH.mint(&username);
+    let token = APP_AUTH.mint(&username, &query.app);
 
-    // Preserve the host the browser used; swap to the proxy port. The proxy
-    // listener is plain HTTP by design even when the dashboard runs HTTPS:
-    // the browser followed a top-level navigation here, and HTTPS→HTTP
-    // top-level navigation is allowed (it is not mixed content — only
-    // embedded subresources are).
-    let host = headers
-        .get(axum::http::header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .map(|h| h.split(':').next().unwrap_or(h).to_string())
-        .unwrap_or_else(|| "localhost".to_string());
-    let location = format!("http://{host}:{}/", info.proxy_port);
+    // Preserve the host the browser used — but only when it is one of this
+    // appliance's own names. The redirect carries a freshly minted auth
+    // cookie, so its target is derived from server state (see
+    // `app_proxy::origin`), never from the request's `Host` header as-is: a
+    // forged header would otherwise make this an open redirect.
+    //
+    // The proxy listener is plain HTTP by design even when the dashboard runs
+    // HTTPS: the browser followed a top-level navigation here, and
+    // HTTPS→HTTP top-level navigation is allowed (it is not mixed content —
+    // only embedded subresources are).
+    let host = crate::app_proxy::origin::resolve_redirect_host(
+        headers
+            .get(axum::http::header::HOST)
+            .and_then(|v| v.to_str().ok()),
+    );
+    let location = format!(
+        "http://{}/",
+        crate::app_proxy::origin::authority(&host, info.proxy_port)
+    );
 
     let resp = redirect(&location);
     attach_app_session(resp, &token)

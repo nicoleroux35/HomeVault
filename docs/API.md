@@ -532,7 +532,7 @@ Representative endpoints:
 | GET | `/docker/catalog/{id}/install-review` | auth | pre-install review: dependency plan (satisfiers, providers, selection), declared environment, compatibility verdict |
 | GET | `/docker/catalog/{id}/logs?tail=N` | auth | tails the installed app's compose logs (1–2000, default 200) |
 | DELETE | `/docker/catalog/{id}` | admin | stops + removes the project, stops the proxy |
-| POST | `/docker/catalog/{id}/proxy` | admin | toggle the per-app session-cookie auth gate |
+| POST | `/docker/catalog/{id}/proxy` | admin | toggle the per-app session-cookie auth gate — `{ auth_required, applied }` (`applied: false` = proxy not running, value saved for its next start; an unpersistable marker is an error) |
 | GET | `/docker/catalog/updates` · POST `/docker/catalog/{id}/update` | admin | registry-digest update detection (read-only) / `compose pull` + re-render + `up -d` |
 | POST | `/docker/catalog/update-all` | admin | sequential update queue over every pending update → `{updated[], failed[]}` |
 | GET/POST/DELETE | `/docker/stores` (+ `/{id}/sync`) | admin | community catalog git repos |

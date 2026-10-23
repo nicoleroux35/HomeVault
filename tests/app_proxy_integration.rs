@@ -32,7 +32,11 @@
 //!   cookies survive;
 //! - the gate redirect following the TLS entry (`https://{host}:8443`) when
 //!   the HTTPS listener is active, because `hv_session` is `Secure` there and
-//!   plain-HTTP targets would loop the round-trip.
+//!   plain-HTTP targets would loop the round-trip;
+//! - a forged `Host` header never reaching the redirect (`Location` built from
+//!   the appliance's own identity — ROADMAP 6.3);
+//! - an app session being a per-app grant, and stopping one app revoking only
+//!   that app's sessions (ROADMAP 6.2).
 //!
 //! One `#[tokio::test]` on purpose — `APP_PROXY` is a process-global whose
 //! main port is set once, and `tls::TLS_ACTIVE` is a process-global too, so a
@@ -148,7 +152,7 @@ async fn test_app_proxy_end_to_end() {
     assert_eq!(resp.status(), reqwest::StatusCode::FOUND);
 
     // 4. An app-proxy-scoped session lets the request through.
-    let app_token = APP_AUTH.mint("bob");
+    let app_token = APP_AUTH.mint("bob", "test:echo");
     let resp = client
         .get(format!("{base}/ping"))
         .header("cookie", format!("hv_app_session={app_token}"))
@@ -216,5 +220,73 @@ async fn test_app_proxy_end_to_end() {
     assert_eq!(location, "https://127.0.0.1:8443/app-auth?app=test%3Aecho");
     assert_eq!(cache_control.as_deref(), Some("no-store"));
 
+    // 8. ROADMAP 6.3 — a forged `Host` never reaches the `Location` header:
+    //    the gate resolves the main origin from the server's own identity.
+    let resp = client
+        .get(format!("{base}/ping"))
+        .header("host", "evil.example")
+        .send()
+        .await
+        .unwrap();
+    let location = resp
+        .headers()
+        .get("location")
+        .map(|v| v.to_str().unwrap().to_string())
+        .unwrap_or_default();
+    assert_eq!(resp.status(), reqwest::StatusCode::FOUND);
+    assert!(
+        !location.contains("evil.example"),
+        "forged Host reached the redirect: {location}"
+    );
+    assert!(
+        location.contains("/app-auth?app=test%3Aecho"),
+        "got: {location}"
+    );
+
+    // 9. ROADMAP 6.2 — an app session is a per-app grant: the token minted for
+    //    `test:echo` must not open another app's proxy.
+    let other_port = APP_PROXY
+        .start("test:other", backend_port, true, None)
+        .await
+        .expect("second proxy starts");
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let other_base = format!("http://127.0.0.1:{other_port}");
+    let resp = client
+        .get(format!("{other_base}/ping"))
+        .header("cookie", format!("hv_app_session={app_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::FOUND,
+        "a session minted for test:echo opened test:other"
+    );
+
+    // 10. ROADMAP 6.2 — stopping one app revokes that app's sessions only.
+    //     Before the fix `stop()` called `revoke_all()` and signed every other
+    //     app out; a household then had to re-authenticate everywhere.
+    let other_token = APP_AUTH.mint("bob", "test:other");
+    let resp = client
+        .get(format!("{other_base}/ping"))
+        .header("cookie", format!("hv_app_session={other_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
     APP_PROXY.stop("test:echo").await;
+    let resp = client
+        .get(format!("{other_base}/ping"))
+        .header("cookie", format!("hv_app_session={other_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::OK,
+        "stopping test:echo revoked test:other's session"
+    );
+
+    APP_PROXY.stop("test:other").await;
 }
