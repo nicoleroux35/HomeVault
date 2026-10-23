@@ -33,11 +33,14 @@
  *   - drives the read-only inventory for real (safe — `lsblk` etc.),
  *   - exercises the mutating endpoints only up to a **clean rejection**
  *     (400/401/403, never a 500/panic) for missing/again non-admin
- *     sessions and invalid input,
- *   - and runs a genuine LUKS create→verify→delete lifecycle **only** when
- *     an operator opts in with `STORAGE_E2E_LOOP=1` AND passwordless
+ *     sessions and invalid input — including the passphrase policy (12
+ *     characters, no wordlist entry, not the volume label),
+ *   - and runs a genuine LUKS create→verify→rotate→delete lifecycle **only**
+ *     when an operator opts in with `STORAGE_E2E_LOOP=1` AND passwordless
  *     `sudo` is available (it builds its own throwaway loopback file, never
- *     touches real hardware, and always tears down in a `finally`).
+ *     touches real hardware, and always tears down in a `finally`). Creation
+ *     is a tracked job: the test follows `/api/progress/{id}/status` and then
+ *     finds the volume by label, since the request answers `{ job_id }`.
  *
  * Mutating requests pass the CSRF middleware, so the in-page `fetch`
  * helpers send `x-session-token` + `x-csrf-token` (captured in beforeAll).
@@ -351,13 +354,28 @@ test.describe('3 — Validation', () => {
     expect(del.http).toBe(400);
   });
 
-  test('3.5 — encryption create rejects short passphrase / bad fs / bad label', async ({ page }) => {
+  test('3.5 — encryption create rejects a weak passphrase / bad fs / bad label', async ({ page }) => {
     await gotoStorage(page, adminTokens);
-    const base = { device: '/dev/hv-nonexistent', filesystem: 'ext4', label: 'vault', passphrase: 'abcdefgh' };
+    const base = {
+      device: '/dev/hv-nonexistent',
+      filesystem: 'ext4',
+      label: 'vault',
+      passphrase: 'correct-horse-battery',
+    };
 
+    // 12 characters is the documented floor (it used to be 8, with no
+    // strength check at all).
     const short = await api(page, adminTokens, 'POST', '/api/encryption/volumes', { ...base, passphrase: 'short' });
     expect(short.http).toBe(400);
-    expect(short.message).toMatch(/8 characters/i);
+    expect(short.message).toMatch(/12 characters/i);
+
+    // Long enough, but the first thing a wordlist tries.
+    const common = await api(page, adminTokens, 'POST', '/api/encryption/volumes', {
+      ...base,
+      passphrase: 'password1234',
+    });
+    expect(common.http).toBe(400);
+    expect(common.message).toMatch(/too common/i);
 
     const fs = await api(page, adminTokens, 'POST', '/api/encryption/volumes', { ...base, filesystem: 'ntfs' });
     expect(fs.http).toBe(400);
@@ -366,6 +384,13 @@ test.describe('3 — Validation', () => {
     const label = await api(page, adminTokens, 'POST', '/api/encryption/volumes', { ...base, label: 'bad/label' });
     expect(label.http).toBe(400);
     expect(label.message).toMatch(/invalid label/i);
+
+    // A compliant payload clears the policy and stops at the device gate —
+    // which runs before any privileged command, so nothing is formatted.
+    const device = await api(page, adminTokens, 'POST', '/api/encryption/volumes', base);
+    expect(device.http).toBe(400);
+    expect(device.message).toMatch(/not an available/i);
+    expect(device.message).not.toMatch(/passphrase/i);
   });
 
   test('3.6 — encryption delete without confirmation is rejected', async ({ page }) => {
@@ -385,10 +410,21 @@ test.describe('3 — Validation', () => {
     await gotoStorage(page, adminTokens);
     const id = '11111111-2222-3333-4444-555555555555';
     const unlock = await api(page, adminTokens, 'POST', `/api/encryption/volumes/${id}/unlock`, {
-      passphrase: 'abcdefgh',
+      passphrase: 'correct-horse-battery',
     });
     expect(unlock.http).toBe(400);
     expect(unlock.message).toMatch(/not found/i);
+  });
+
+  test('3.8 — encryption passphrase rotation reports an unknown volume', async ({ page }) => {
+    await gotoStorage(page, adminTokens);
+    const id = '99999999-8888-7777-6666-555555555555';
+    const r = await api(page, adminTokens, 'POST', `/api/encryption/volumes/${id}/passphrase`, {
+      old_passphrase: 'correct-horse-battery',
+      new_passphrase: 'a-longer-replacement-1',
+    });
+    expect(r.http).toBe(400);
+    expect(r.message).toMatch(/not found/i);
   });
 });
 
@@ -444,7 +480,13 @@ test.describe('4 — Security', () => {
         ['put', '/api/cache/settings', { mover_enabled: true }],
         ['post', '/api/cache/shares', { name: 'x', cache_mode: 'yes', target_pool: 'p' }],
         ['post', '/api/cache/mover/run', {}],
-        ['post', '/api/encryption/volumes', { device: '/dev/x', filesystem: 'ext4', label: 'l', passphrase: 'abcdefgh' }],
+        ['post', '/api/encryption/volumes', { device: '/dev/x', filesystem: 'ext4', label: 'l', passphrase: 'correct-horse-battery' }],
+        [
+          'post',
+          '/api/encryption/volumes/00000000-0000-0000-0000-000000000000/passphrase',
+          { old_passphrase: 'correct-horse-battery', new_passphrase: 'a-longer-replacement-1' },
+        ],
+        ['delete', '/api/encryption/volumes/00000000-0000-0000-0000-000000000000', { confirm: true }],
       ] as const) {
         const r = await (ctx as any)[method](path, { headers: h, data });
         expect(r.status(), `${method} ${path}`).toBe(403);
@@ -712,7 +754,7 @@ test.describe('12 — Cache mover history', () => {
 test.describe('13 — Real LUKS lifecycle (opt-in)', () => {
   test.skip(!RUN_LOOP, 'set STORAGE_E2E_LOOP=1 to run the real loop-device LUKS lifecycle');
 
-  test('13.1 — create → verify listed → delete a LUKS volume on a throwaway loop device', async ({
+  test('13.1 — create → verify listed → rotate passphrase → delete a LUKS volume on a throwaway loop device', async ({
     page,
     playwright,
   }) => {
@@ -727,22 +769,77 @@ test.describe('13 — Real LUKS lifecycle (opt-in)', () => {
     const ctx = await newCtx(playwright);
     const h = { 'x-session-token': adminTokens.token, 'x-csrf-token': adminTokens.csrf };
     const label = `e2eluks${Date.now().toString(36)}`;
+    const passphrase = 'e2e-passphrase-123';
+    const rotated = 'e2e-passphrase-456';
     let volumeId: string | null = null;
 
     try {
+      // Create answers `{ job_id }` — formatting a real device takes minutes,
+      // so the work runs in a tracked job (ROADMAP 9.1). Follow it to the end.
       const create = await ctx.post('/api/encryption/volumes', {
         headers: h,
-        data: { device: dev, filesystem: 'ext4', label, passphrase: 'e2e-passphrase-123' },
+        data: { device: dev, filesystem: 'ext4', label, passphrase },
       });
       const body = await create.json().catch(() => ({}));
-      if (!body?.success) {
+      if (!body?.success || !body?.data?.job_id) {
         test.skip(true, `create failed (${create.status()}): ${body?.message || body?.error}`);
       }
-      volumeId = body?.data?.id ?? null;
+      const jobId = body.data.job_id as string;
+      expect(body.data.id, 'create must not return the volume synchronously').toBeUndefined();
+
+      // Poll the job until it completes, then find the volume by label.
+      const deadline = Date.now() + 180_000;
+      let failed = '';
+      while (Date.now() < deadline) {
+        const job = await ctx.get(`/api/progress/${jobId}/status`, { headers: h });
+        const state = await job.json().catch(() => ({}));
+        const status = String(state?.data?.state ?? '').toLowerCase();
+        if (status === 'failed' || status === 'cancelled') {
+          failed = state?.data?.message || status;
+          break;
+        }
+        const listed = await ctx.get('/api/encryption/volumes', { headers: h });
+        const listedBody = await listed.json().catch(() => ({}));
+        const found = (listedBody?.data ?? []).find((v: any) => v.label === label);
+        if (found) {
+          volumeId = found.id;
+          break;
+        }
+        if (status === 'completed') break;
+        await page.waitForTimeout(1000);
+      }
+      if (!volumeId) {
+        test.skip(true, `the create job did not produce a volume: ${failed || 'timed out'}`);
+      }
 
       await gotoStorage(page, adminTokens);
       await switchTab(page, /encrypt|chiffr|verschl|cifrad/i);
       await expect(win(page).getByText(label, { exact: false })).toBeVisible({ timeout: 10_000 });
+
+      // Rotate the passphrase, then prove the new one is the one that works:
+      // `luksChangeKey` + a `--test-passphrase` proof server-side.
+      const rotate = await ctx.post(`/api/encryption/volumes/${volumeId}/passphrase`, {
+        headers: h,
+        data: { old_passphrase: passphrase, new_passphrase: rotated },
+      });
+      expect(rotate.status(), 'the rotation must be accepted').toBe(200);
+
+      // The old passphrase must now be refused (the volume is still mounted,
+      // so this is a lock → unlock round trip with the wrong one).
+      const lock = await ctx.post(`/api/encryption/volumes/${volumeId}/lock`, { headers: h });
+      expect([200, 400]).toContain(lock.status());
+      if (lock.ok()) {
+        const stale = await ctx.post(`/api/encryption/volumes/${volumeId}/unlock`, {
+          headers: h,
+          data: { passphrase },
+        });
+        expect(stale.status(), 'the rotated-away passphrase must not unlock').toBe(400);
+        const fresh = await ctx.post(`/api/encryption/volumes/${volumeId}/unlock`, {
+          headers: h,
+          data: { passphrase: rotated },
+        });
+        expect(fresh.status(), 'the new passphrase must unlock').toBe(200);
+      }
     } finally {
       if (volumeId) {
         const del = await ctx.delete(`/api/encryption/volumes/${volumeId}`, {

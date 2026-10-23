@@ -235,12 +235,21 @@ the passphrase through this API. See [guides/encryption.md](./guides/encryption.
 
 | Method | Path | Auth | Handler |
 |--------|------|------|---------|
-| GET | `/encryption/volumes` | auth | `handle_encryption_list` (includes live locked/unlocked status) |
+| GET | `/encryption/volumes` | auth | `handle_encryption_list` (includes live locked/unlocked status, probed concurrently) |
 | GET | `/encryption/available-devices` | auth | `handle_encryption_available_devices` |
-| POST | `/encryption/volumes` | admin | `handle_encryption_create` (`{ device, filesystem, label, passphrase }`) |
-| POST | `/encryption/volumes/{id}/unlock` | admin | `handle_encryption_unlock` (`{ passphrase }`) |
-| POST | `/encryption/volumes/{id}/lock` | admin | `handle_encryption_lock` |
-| DELETE | `/encryption/volumes/{id}` | admin | `handle_encryption_delete` (`{ confirm: true }`, erases LUKS key slots) |
+| POST | `/encryption/volumes` | admin | `handle_encryption_create` (`{ device, filesystem, label, passphrase }`) → **`{ job_id }`**, the work runs in a tracked job (`encryption_create`); validation failures still answer 400 synchronously |
+| POST | `/encryption/volumes/{id}/unlock` | admin | `handle_encryption_unlock` (`{ passphrase }`; a failed mount rolls the mapper back) |
+| POST | `/encryption/volumes/{id}/lock` | admin | `handle_encryption_lock` (a failed unmount is reported, not ignored) |
+| POST | `/encryption/volumes/{id}/passphrase` | admin | `handle_encryption_change_passphrase` (`{ old_passphrase, new_passphrase }`, new one must clear the policy and differ) |
+| DELETE | `/encryption/volumes/{id}` | admin | `handle_encryption_delete` (`{ confirm: true }`, erases LUKS key slots — **refused** unless the volume is verified unmounted and closed; answers `data.warnings[]` for cleanup problems) |
+
+**Passphrase policy** for new passphrases (create + rotation): at least 12
+characters, at least four distinct ones, not a wordlist entry, not the volume
+label. Unlock is exempt so pre-existing volumes stay usable.
+
+**Deletion is gated** (ROADMAP 9.2): `umount` → `cryptsetup close` → re-verify
+`/proc/self/mounts` and `cryptsetup status` → `cryptsetup erase` → `wipefs -a`.
+Any refusal answers 400 and keeps the metadata row.
 
 ## Explorer — `explorer/*` (auth)
 

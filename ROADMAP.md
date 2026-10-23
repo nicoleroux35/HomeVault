@@ -45,8 +45,8 @@ auth under HTTPS** (all 2026-10-21), and **Health** (2026-10-22) — followed by
 **Health's numbered follow-ups**, the **File Explorer security pass**, the
 **Account / Security pass**, **disk quotas** and the **AI Assistant / RAG pass**
 (all 2026-10-22), and on 2026-10-23 **Storage's sudoers scoping + residual call
-sites**, **Apps Center / app-proxy** and the **RAID wizard's create path** (see
-Done).
+sites**, **Apps Center / app-proxy**, the **RAID wizard's create path** and
+**LUKS2 encryption** (see Done).
 
 Everything else is still on its original implementation plus incremental
 feature work. The pattern is consistent: **the screens render, the endpoints
@@ -72,7 +72,6 @@ Two structural facts explain most of the list:
 
 | # | Area | Verdict | Blocking items |
 |---|---|---|---|
-| 9 | LUKS2 encryption | P1 | 3 |
 | 10b | File Explorer — residual hardening | P2 | 3 |
 | 11 | Metrics | P1 | 2 |
 | 12 | Scheduled Tasks | P1 | 3 |
@@ -96,14 +95,16 @@ Two structural facts explain most of the list:
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **61** (54 per-area + 7 cross-cutting).
+Total open findings: **58** (51 per-area + 7 cross-cutting).
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23. P1 now goes by blast radius, and 12.2/12.3 and 13.4 go
 together, since a UTC-only cron with a stored-but-unapplied timezone is one
-defect seen from two screens. **9 (LUKS2) is next**: 9.2 erases key material
-while the volume can still be mounted, which is the same class of
-unrecoverable loss as 8.1.
+defect seen from two screens. **9 (LUKS2) was closed on 2026-10-23.** Next:
+**20.1 (System Journal)** — a non-admin session can read the host's
+`/var/log/auth.log`, i.e. every username, source address and sudo attempt on
+the box: it is the remaining P1 whose blast radius is a data leak rather than a
+broken feature.
 
 ---
 
@@ -115,47 +116,6 @@ None. Item 6 (Apps Center / app-proxy) was closed on 2026-10-23 — see
 ---
 
 ## P1 — Needs work
-
-### 9. LUKS2 encryption — a multi-minute operation inside an HTTP request
-
-- [ ] **9.1 — Create runs `luksFormat` + `mkfs` + `mount` synchronously.**
-      `src/handlers/encryption.rs:174-196`: no `spawn_blocking`, no job, no
-      progress. `luksFormat` alone can take minutes on a multi-TB device. The
-      browser or gateway times out long before the disk is done, the user
-      retries, and the retry hits "device is mapped". The RAID wizard already
-      solved this shape with a tracked job — copy it.
-- [ ] **9.2 — Delete erases key slots without verifying the volume is unmounted.**
-      `src/handlers/encryption.rs:339-345`: `let _ = unmount(); let _ = close();
-      erase();`. A busy mount → `cryptsetup erase` succeeds anyway → **the key
-      material is gone while the filesystem is still mounted and being written
-      to**. Unrecoverable at the next remount.
-      *Acceptance:* erase refuses unless unmount and close both succeeded.
-- [ ] **9.3 — Unlock has no rollback.** `:265-273`: `open()` succeeds, `mount()`
-      fails, and the handler returns "Unlocked but failed to mount". The mapper
-      stays open, the DB still says locked (`is_open` drives the UI), and the
-      next attempt fails with "already mapped" with no button to fix it.
-      Creation does roll back (`:177-198`) — the inconsistency is the bug.
-
-Also: **no passphrase rotation at all** — `encryption::change_passphrase`
-(`src/encryption.rs:208`) has zero callers and there is no endpoint or UI, so a
-user who suspects a leak cannot rotate without a shell; the passphrase minimum
-is 8 characters with no strength check (`handlers/encryption.rs:127`);
-`handle_encryption_lock` ignores the unmount error and closes anyway (`:300`);
-`write_file_as_root` `.unwrap()`s the child's stdin (`src/encryption.rs:259`);
-`append_fstab_entry`/`remove_fstab_entry` are sync `std::fs` + `Command` called
-from an async handler (`:272-320`, used at `handlers/encryption.rs:210,345`);
-`handle_encryption_list` spawns one `sudo cryptsetup status` **per volume** on
-every page load (`:88`); delete's `wipefs -a` is best-effort (`:238`), so a
-failure leaves the device permanently unusable through the UI.
-
-*Tests:* `handlers/encryption.rs` **0** tests, `encryption.rs` 2, no integration
-file; the only E2E is `storage.spec.ts:13.1`, gated behind
-`STORAGE_E2E_LOOP=1`. **Zero default coverage of create/unlock/lock/delete.**
-
-*Docs:* `docs/guides/encryption.md` — remove the false claim that
-`luksChangeKey` is used (`:13`), document the missing rotation.
-
----
 
 ### 11. Metrics — failures are persisted as zeros
 
@@ -803,8 +763,7 @@ reuse.
 - [ ] **X.4 — Documented invariants the code does not enforce.** DB-backup
       serialisation (`backup-restic.md:43`), the scheduled-task overlap guard
       (`scheduled-tasks.md`), "RAID never destroys" (`raid.md:3` vs
-      `web/mod.rs:952`), `luksChangeKey` as a used command (`encryption.md:13`,
-      zero callers), the update check being opt-in (`settings.md:33`), the
+      `web/mod.rs:952`), the update check being opt-in (`settings.md:33`), the
       single-flight cache mover (`cache.md`), per-user notification read state
       (`notification_repo.rs:10`), "one row per (pool, prefix)"
       (`046_snapshot_schedules.sql:5`, no unique index), metrics gaps
@@ -855,6 +814,63 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-23 (g)** — LUKS2 encryption — the three ways it could destroy data or
+wedge itself are gone, and the two operations that did not exist exist.
+**9.2 (erase gate):** `DELETE /encryption/volumes/{id}` no longer runs
+`let _ = unmount(); let _ = close(); erase();`. It unmounts (a failure answers
+400 and stops), closes the mapper if `cryptsetup status` says it is open, then
+**re-verifies** the state from the kernel's own view — `/proc/self/mounts`
+(parsed by `is_mounted_in`, with `\040`-style octal escapes decoded and the
+mount point matched as a whole field, so `/mnt/encrypted/vault2` cannot satisfy
+`/mnt/encrypted/vault`) and `cryptsetup status` — and only then erases;
+`erase_gate(mounted, open)` is the single decision, and an unreadable
+`/proc/self/mounts` fails **closed** (refuses the erase). Every refusal keeps
+the metadata row, so the volume stays listed and fixable. **9.3 (unlock
+rollback):** a successful `open()` followed by a failed `mount()` now closes the
+mapper again; when even that fails the message names the mapper and the
+`sudo cryptsetup close` line to run (`unlock_failure_message` has both
+branches under test). **9.1 (create is a job):** `POST /encryption/volumes`
+validates synchronously (passphrase policy, filesystem allow-list, label,
+duplicate label, then the device gate — nothing privileged runs on a refusal)
+and answers `{ job_id }`; the work runs as `Custom("encryption_create")` with
+milestones 5/30/45/70/80/88/95 %, serialized behind one `VOLUME_LOCK`. A
+failure after `luksFormat` rolls the container back (unmount → close → erase)
+so the device returns to the available pool instead of being stuck "in use"
+with no metadata row, and a rollback step that fails is named in the error
+rather than swallowed. `format_and_open` was split into `format_luks` + `open`
+so the job knows whether a container exists before deciding to erase. Also
+closed in the same block: **passphrase rotation** exists —
+`POST /encryption/volumes/{id}/passphrase` + `encryption::change_passphrase`,
+which sends the three lines `luksChangeKey` actually prompts for
+(`change_key_stdin`; the old shape sent one, so every call would have failed on
+"Passphrases do not match") and then proves the new passphrase with
+`cryptsetup open --test-passphrase`, refusing a no-op rotation; **passphrase
+policy** `MIN_PASSPHRASE_LEN = 12` + no wordlist entry + no label reuse + at
+least four distinct characters, applied to new passphrases only so existing
+volumes stay unlockable; **lock** reports the unmount failure instead of
+closing anyway; `write_file_as_root` no longer `.unwrap()`s the child's stdin;
+the fstab edits are async and their pure halves (`with_marked_entry` /
+`without_marked_entry`) are unit-tested; the list probes each volume's status
+**concurrently** instead of serially; and `wipefs -a`'s failure is reported
+(`EraseOutcome.warning`) instead of leaving the device permanently unusable
+through the UI with no explanation. Every privileged call is bounded
+(`run_timed` with `kill_on_drop`: format 900 s, open/`luksChangeKey` 180 s,
+close 120 s, erase/`wipefs` 600 s, status 15 s, UUID 30 s, mount 120 s, fstab
+60 s). The progress stream now replays a job's last known event on subscribe, so
+a create job that fails before the modal connects (a refused `sudo`, a missing
+tool) still delivers its reason instead of leaving the panel on its bar. Tests
+(`src/encryption.rs` 2 → **24**, `handlers/encryption.rs` 0 →
+**6**, new `tests/encryption_integration.rs` **15**, `progress_integration.rs`
+8 → **9** (the SSE replay), `storage_integration.rs`
+updated to the new policy, `storage.spec.ts` +2 cases and the opt-in 13.1
+rewritten to follow the job and prove the rotated passphrase);
+`docs/guides/encryption.md` rewritten (job, gate, rollback, rotation, policy,
+deadline table, and the false "`luksChangeKey` has no caller" claim removed),
+`docs/API.md` gained the rotation route and the `{ job_id }`/`warnings`
+contracts. **Not run** (per instruction): everything above compiles
+(`cargo check --all-targets`, `npm run check` clean) but no unit, integration
+or E2E suite was executed.
 
 **2026-10-23 (f)** — RAID wizard — a failed setup can no longer destroy a
 device it never assembled. **8.1:** `teardown_failed_array` now decides from an
