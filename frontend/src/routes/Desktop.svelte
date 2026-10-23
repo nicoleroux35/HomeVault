@@ -1281,6 +1281,17 @@
     if (resourcePollMounted) startResourcePollers(resourcePollMs);
   }
 
+  // Notifications feed loader — hoisted to the top level so the
+  // NotificationCenter panel can call it (`onRefresh`) after a clear-all, as
+  // well as being the 30s-poll entry point below. Each call replaces the
+  // first page and resets the pagination window (ROADMAP 21.3).
+  async function loadNotifications() {
+    const result = await api.getNotifications(50, 0);
+    if (result.success && result.data) {
+      notificationsStore.setFromServer(result.data);
+    }
+  }
+
   onMount(() => {
     const timeInterval = setInterval(() => {
       now = Date.now();
@@ -1343,13 +1354,8 @@
     loadHealthData();
     const healthInterval = setInterval(loadHealthData, 15000);
 
-    // Notifications polling
-    async function loadNotifications() {
-      const result = await api.getNotifications();
-      if (result.success && result.data) {
-        notificationsStore.setFromServer(result.data);
-      }
-    }
+    // Notifications polling — the bell panel's feed is paginated (ROADMAP
+    // 21.3): each poll replaces the first page and resets the window.
     loadNotifications();
     const notificationsInterval = setInterval(loadNotifications, 30000);
 
@@ -1830,7 +1836,7 @@
             <span class="hv-notification-badge">{$notificationsStore.unreadCount > 99 ? '99+' : $notificationsStore.unreadCount}</span>
           {/if}
         </button>
-        <NotificationCenter isOpen={showNotifications} />
+        <NotificationCenter isOpen={showNotifications} onRefresh={loadNotifications} />
       </div>
 
       <!-- Power — stays LAST (section 15.3 pins that order). The accessible

@@ -878,16 +878,20 @@ upload/download caps, `transfer-quotas/*`). See
 ## Notifications — `notifications/*` (`auth`)
 
 Broadcast-style system notifications (health alerts, backup results), populated
-by the background engine in `src/notification_engine.rs`. See
+by the background engine in `src/notification_engine.rs`. Read state is
+**per user** (ROADMAP 21.2): the feed is shared, but each account's unread
+view lives in the `notification_reads` join table, so marking read only ever
+affects the caller. Deleting the shared feed is admin-only. See
 [guides/notifications.md](./guides/notifications.md).
 
 | Method | Path | Auth | Handler |
 |--------|------|------|---------|
-| GET | `/notifications` | auth | `handle_notifications_list` (50 most recent) |
-| GET | `/notifications/unread-count` | auth | `handle_notifications_unread_count` |
-| POST | `/notifications/read-all` | auth | `handle_notifications_mark_all_read` |
-| POST | `/notifications/{id}/read` | auth | `handle_notification_mark_read` |
-| DELETE | `/notifications/{id}` | auth | `handle_notification_delete` |
+| GET | `/notifications?limit=&offset=` | auth | `handle_notifications_list` — paginated (limit clamped to ≤200, default 50), newest first, caller's `read_at` resolved; answers `{ notifications, total, limit, offset }` |
+| GET | `/notifications/unread-count` | auth | `handle_notifications_unread_count` — the **caller's** badge count |
+| POST | `/notifications/read-all` | auth | `handle_notifications_mark_all_read` — caller only |
+| POST | `/notifications/{id}/read` | auth | `handle_notification_mark_read` — caller only; `404` on an unknown id |
+| DELETE | `/notifications/{id}` | admin | `handle_notification_delete` — `404` on an unknown id |
+| DELETE | `/notifications` | admin | `handle_notifications_clear_all` — bulk clear (ROADMAP 21.3), answers `{ deleted }` |
 | GET | `/notifications/events/config` | admin | `handle_notification_events_config_get` — event catalog + per-event state + `webhook_format` |
 | PUT | `/notifications/events/config` | admin | `handle_notification_events_config_update` — `{ events?: {id: bool}, webhook_format?: "generic"\|"slack"\|"discord" }` |
 

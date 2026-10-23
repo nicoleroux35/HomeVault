@@ -2,15 +2,17 @@
  * File          : notifications.ts
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 28/09/2026 by Nicolas Le Roux
+ * Last modified : 23/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
  *   Client-side notification list for the bell panel: replaces its contents
  *   from the 30 s poll, accepts live SSE pushes keyed by the real server id
  *   (so the next poll recognizes them instead of duplicating), mints ids
- *   for client-local entries, caps the list at 50 and keeps the unread
- *   counter consistent through every mutation.
+ *   for client-local entries, and tracks the server-side pagination state
+ *   (`total`/`offset`/`hasMore`) so the panel can load older rows
+ *   (ROADMAP 21.3). Mutations are confirmed by the caller before they reach
+ *   the store — the store itself stays a pure state holder.
  *
  * Dependencies:
  *   - svelte (>= 5)
@@ -33,11 +35,6 @@ export interface Notification {
   read: boolean;
 }
 
-interface NotificationsState {
-  notifications: Notification[];
-  unreadCount: number;
-}
-
 /** Shape of a notification row as returned by `GET /api/notifications`. */
 export interface ServerNotification {
   id: string;
@@ -50,9 +47,32 @@ export interface ServerNotification {
   read_at: string | null;
 }
 
+/** The paginated envelope `GET /api/notifications` answers with (ROADMAP 21.3). */
+export interface NotificationsPage {
+  notifications: ServerNotification[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+interface NotificationsState {
+  notifications: Notification[];
+  unreadCount: number;
+  /** Server-side total feed size, for the "load older" affordance. */
+  total: number;
+  /** Offset the currently-loaded window starts at (0 = newest page loaded). */
+  offset: number;
+  hasMore: boolean;
+  loadingOlder: boolean;
+}
+
 const initialState: NotificationsState = {
   notifications: [],
-  unreadCount: 0
+  unreadCount: 0,
+  total: 0,
+  offset: 0,
+  hasMore: false,
+  loadingOlder: false,
 };
 
 function severityToType(severity: string): Notification['type'] {
@@ -64,29 +84,71 @@ function severityToType(severity: string): Notification['type'] {
   }
 }
 
+function rowsToNotifications(rows: ServerNotification[]): Notification[] {
+  return rows.map(r => ({
+    id: r.id,
+    title: r.title,
+    message: r.message,
+    type: severityToType(r.severity),
+    timestamp: new Date(r.created_at),
+    read: r.read_at !== null
+  }));
+}
+
+/** Safety ceiling for client-local rows only (SSE pushes, `add`): the
+   server feed is unbounded and paginated, so loaded pages must never evict
+   each other, but a long-lived session should not accumulate forever. */
+const CLIENT_CAP = 500;
+
+function capped(items: Notification[]): Notification[] {
+  return items.slice(0, CLIENT_CAP);
+}
+
 function createNotificationsStore() {
   const { subscribe, update, set } = writable<NotificationsState>(initialState);
 
   return {
     subscribe,
 
-    /** Replace the store contents with rows fetched from the backend, preserving server ids. */
-    setFromServer(rows: ServerNotification[]) {
-      const notifications: Notification[] = rows.map(r => ({
-        id: r.id,
-        title: r.title,
-        message: r.message,
-        type: severityToType(r.severity),
-        timestamp: new Date(r.created_at),
-        read: r.read_at !== null
-      }));
+    /**
+     * Replace the store contents with the first page fetched from the
+     * backend, preserving server ids. Resets the pagination window.
+     */
+    setFromServer(page: NotificationsPage) {
+      const notifications = rowsToNotifications(page.notifications);
       set({
         notifications,
-        unreadCount: notifications.filter(n => !n.read).length
+        unreadCount: notifications.filter(n => !n.read).length,
+        total: page.total,
+        offset: page.offset,
+        hasMore: page.offset + page.notifications.length < page.total,
+        loadingOlder: false,
       });
     },
 
-    /** Push a new notification. The list is capped at 50 items to avoid memory bloat. */
+    /**
+     * Append an older page fetched through the "load older" button.
+     * Dedupes by id (a row may have been pushed live since the first page)
+     * and advances the window.
+     */
+    appendFromServer(page: NotificationsPage) {
+      update(state => {
+        const merged = rowsToNotifications(page.notifications);
+        const existing = new Set(state.notifications.map(n => n.id));
+        const fresh = merged.filter(n => !existing.has(n.id));
+        const notifications = capped([...state.notifications, ...fresh]);
+        return {
+          notifications,
+          unreadCount: notifications.filter(n => !n.read).length,
+          total: page.total,
+          offset: page.offset,
+          hasMore: page.offset + page.notifications.length < page.total,
+          loadingOlder: false,
+        };
+      });
+    },
+
+    /** Push a new notification (client-local event feedback, Settings etc.). */
     add(notification: Omit<Notification, 'id' | 'timestamp' | 'read'>) {
       update(state => {
         const newNotif: Notification = {
@@ -97,7 +159,8 @@ function createNotificationsStore() {
         };
 
         return {
-          notifications: [newNotif, ...state.notifications].slice(0, 50),
+          ...state,
+          notifications: capped([newNotif, ...state.notifications]),
           unreadCount: state.unreadCount + 1
         };
       });
@@ -122,7 +185,8 @@ function createNotificationsStore() {
           read: row.read_at !== null
         };
         return {
-          notifications: [notif, ...state.notifications].slice(0, 50),
+          ...state,
+          notifications: capped([notif, ...state.notifications]),
           unreadCount: state.unreadCount + (notif.read ? 0 : 1)
         };
       });
@@ -153,6 +217,7 @@ function createNotificationsStore() {
         const unreadDelta = notification && !notification.read ? 1 : 0;
 
         return {
+          ...state,
           notifications: state.notifications.filter(n => n.id !== id),
           unreadCount: Math.max(0, state.unreadCount - unreadDelta)
         };
@@ -161,8 +226,13 @@ function createNotificationsStore() {
 
     /** Dismiss every notification at once. */
     clear() {
-      update(() => initialState);
-    }
+      set({ ...initialState });
+    },
+
+    /** Marks an older-page fetch as in flight (disables the button). */
+    setLoadingOlder(loading: boolean) {
+      update(state => ({ ...state, loadingOlder: loading }));
+    },
   };
 }
 

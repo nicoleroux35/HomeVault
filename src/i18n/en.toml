@@ -1589,6 +1589,9 @@ filter_error = "Error"
 search_placeholder = "Search notifications"
 unread_only = "Unread only"
 no_match = "No notifications match the current filters"
+load_older = "Load older"
+loading_older = "Loading…"
+action_failed = "This action could not be completed. Try again."
 
 [whats_new]
 title = "What's new"
