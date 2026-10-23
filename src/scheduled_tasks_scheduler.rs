@@ -23,8 +23,9 @@
 //!
 //! Structural sibling of `restic_scheduler`/`antivirus_scheduler`: polls
 //! every [`POLL_INTERVAL_SECS`], computes the next run from each task's cron
-//! (the already-tested `compute_next_run`), and spawns executions so one
-//! long command can never delay the other tasks' ticks.
+//! **in that task's timezone** ([`next_run_at`], over the shared
+//! `restic_scheduler::parse_schedule`), and spawns executions so one long
+//! command can never delay the other tasks' ticks.
 //!
 //! Security posture: every payload is validated **at creation time** by
 //! [`TaskAction::from_parts`] (the handler refuses anything that doesn't
@@ -35,12 +36,13 @@
 
 use crate::handlers::AppState;
 use crate::power::{host_power_action, PowerAction};
-use crate::restic_scheduler::compute_next_run;
 use crate::snapshots::SnapshotService;
 use crate::storage::scheduled_task_repo::{ScheduledTask, ScheduledTaskRepository};
 use chrono::{DateTime, Utc};
+use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::str::FromStr;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
@@ -198,6 +200,54 @@ pub fn is_valid_pool_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':'))
 }
 
+/// Parses an IANA timezone name (`Europe/Paris`) into the zone a cron is
+/// evaluated in.
+///
+/// This is the single gate every timezone value passes through: the HTTP
+/// handler rejects an unknown name before it is stored, and the scheduler
+/// re-validates at run time so a hand-edited row can never make the engine
+/// silently fall back to UTC. The name is canonicalised (`europe/paris` →
+/// `Europe/Paris`), which is what gets persisted.
+pub fn parse_timezone(name: &str) -> Result<Tz, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Timezone must not be empty".to_string());
+    }
+    Tz::from_str(trimmed).map_err(|_| {
+        format!("Unknown timezone '{trimmed}' — use an IANA name such as 'Europe/Paris'")
+    })
+}
+
+/// The next occurrence of `cron`, evaluated **in `timezone`** and returned as
+/// an absolute UTC instant.
+///
+/// A cron expression is only meaningful with the zone it is evaluated in
+/// (ROADMAP 12.2): `0 2 * * *` in `Europe/Paris` is 00:00 or 01:00 UTC
+/// depending on the season, and that shift is exactly what a fixed offset gets
+/// wrong twice a year. `timezone` is the task's own zone when it has one;
+/// `None` follows the appliance zone (`server_timezone`), which is what
+/// `handlers::settings::effective_timezone()` returns.
+///
+/// An unknown task zone is an **error**, not a silent UTC fallback: the task
+/// is then paused with a readable reason (see [`pause_unrunnable`]) instead of
+/// firing at the wrong hour for months.
+pub fn next_run_at(
+    cron: &str,
+    timezone: Option<&str>,
+    server_timezone: &str,
+    after: DateTime<Utc>,
+) -> Result<Option<DateTime<Utc>>, String> {
+    let schedule = crate::restic_scheduler::parse_schedule(cron)?;
+    let zone = match timezone.map(str::trim).filter(|z| !z.is_empty()) {
+        Some(name) => parse_timezone(name)?,
+        None => parse_timezone(server_timezone).unwrap_or(chrono_tz::UTC),
+    };
+    Ok(schedule
+        .after(&after.with_timezone(&zone))
+        .next()
+        .map(|d| d.with_timezone(&Utc)))
+}
+
 /// Tasks with a run in progress, process-wide.
 ///
 /// One process owns both the scheduler loop and the HTTP handlers, so an
@@ -257,6 +307,17 @@ impl Drop for TaskRunGuard {
 
 /// Runs forever. Intended to be `tokio::spawn`ed once at server startup.
 pub async fn run_scheduler_loop(state: Arc<AppState>) {
+    // A run row is written before its execution starts, so anything still
+    // `running` here belongs to a process that is gone (crash, restart,
+    // `systemctl stop` during a run). Close those first — otherwise the screen
+    // shows "Running" for ever and the history keeps a phantom run.
+    let repo = ScheduledTaskRepository::new(state.db.pool());
+    match repo.close_interrupted_runs().await {
+        Ok(0) => {}
+        Ok(n) => tracing::warn!("Closed {n} scheduled-task run(s) interrupted by a restart"),
+        Err(e) => tracing::warn!("Could not close interrupted scheduled-task runs: {e}"),
+    }
+
     let mut interval = tokio::time::interval(Duration::from_secs(POLL_INTERVAL_SECS));
     loop {
         interval.tick().await;
@@ -270,27 +331,24 @@ async fn tick_due(state: &Arc<AppState>) -> Result<(), String> {
     let repo = ScheduledTaskRepository::new(state.db.pool());
     let tasks = repo.list_enabled().await.map_err(|e| e.to_string())?;
     let now = Utc::now();
+    // Read once per tick, not once per task: it is the zone every task
+    // without its own `timezone` is evaluated in (ROADMAP 12.2).
+    let server_timezone = crate::handlers::settings::effective_timezone();
 
     for task in tasks {
         // A task that has never run is due when its cron first fires after
         // creation; a task that has run is due when the next occurrence
-        // computed from its last run has passed. An unparseable cron is
-        // reported on the task rather than logged-and-forgotten.
-        let next = match compute_next_run(&task.cron, reference_time(&task)) {
+        // computed from its last run has passed. A cron (or timezone) that
+        // cannot be parsed pauses the task instead of retrying every tick
+        // (ROADMAP 12.3).
+        let next = match next_run_at(
+            &task.cron,
+            task.timezone.as_deref(),
+            &server_timezone,
+            reference_time(&task),
+        ) {
             Err(reason) => {
-                let run = repo.mark_started(&task.id).await.unwrap_or_default();
-                let _ = repo
-                    .mark_finished(
-                        &task.id,
-                        &run,
-                        false,
-                        Some(&format!(
-                            "Invalid cron expression '{}': {}",
-                            task.cron, reason
-                        )),
-                        None,
-                    )
-                    .await;
+                pause_unrunnable(&repo, &task, &reason).await;
                 continue;
             }
             Ok(next) => next,
@@ -313,6 +371,35 @@ async fn tick_due(state: &Arc<AppState>) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// A task whose stored cron (or timezone) cannot be parsed is **paused**, not
+/// retried: the tick used to record a failed run every 30 s for ever, so the
+/// history table grew without bound and the screen filled with noise
+/// (ROADMAP 12.3).
+///
+/// One failed run is recorded first, so the run-history drawer explains what
+/// happened and when, then the task is disabled with the same sentence on its
+/// row. The admin fixes the expression and re-enables it — no data is lost.
+async fn pause_unrunnable(repo: &ScheduledTaskRepository, task: &ScheduledTask, reason: &str) {
+    // Covers both halves: a cron the parser refuses and a zone the database
+    // does not know (`next_run_at` reports which).
+    let message = format!(
+        "Invalid schedule for cron '{}': {reason}. The task has been paused.",
+        task.cron
+    );
+    if let Ok(run_id) = repo.mark_started(&task.id).await {
+        let _ = repo
+            .mark_finished(&task.id, &run_id, false, Some(&message), None)
+            .await;
+    }
+    if let Err(e) = repo.pause_with_error(&task.id, &message).await {
+        tracing::warn!(
+            "Scheduled task '{}' could not be paused after an invalid schedule: {e}",
+            task.name
+        );
+    }
+    tracing::warn!("Scheduled task '{}' paused: {message}", task.name);
 }
 
 /// The moment the next-occurrence computation starts from: the last run for
@@ -340,31 +427,67 @@ fn reference_time(task: &ScheduledTask) -> DateTime<Utc> {
 fn spawn_execution(state: Arc<AppState>, task: ScheduledTask, guard: TaskRunGuard) {
     tokio::spawn(async move {
         let _guard = guard;
-        let result = execute(&state, &task).await;
-        if let Err(e) = &result {
-            tracing::warn!("Scheduled task '{}' failed: {}", task.name, e);
+        let repo = ScheduledTaskRepository::new(state.db.pool());
+        match repo.mark_started(&task.id).await {
+            Ok(run_id) => finish_run(&state, &task, &run_id).await,
+            Err(e) => tracing::warn!("Scheduled task '{}' could not open a run: {e}", task.name),
         }
     });
 }
 
-/// Executes a task now, regardless of its cron — used by the "Run now"
-/// button. Refuses to double-start a task whose previous execution is still
-/// running (the same process-wide guard the scheduled path uses, so a
-/// manual run cannot overlap a tick either).
-pub async fn run_task_now(state: &Arc<AppState>, task: &ScheduledTask) -> Result<(), RunTaskError> {
-    let _guard = TaskRunGuard::acquire(&task.id, &task.name)?;
-    execute(state, task).await.map_err(RunTaskError::Failed)
+/// A run that has been claimed and opened: the HTTP handler answers with this
+/// and the execution continues on its own.
+#[derive(Debug, Clone, Serialize)]
+pub struct StartedRun {
+    pub run_id: String,
+    pub task_id: String,
+    pub status: &'static str,
 }
 
-/// Executes one task: opens a run row, performs the validated action, and
-/// records the outcome (output tail or error) on both the task and the run.
-async fn execute(state: &Arc<AppState>, task: &ScheduledTask) -> Result<(), String> {
+/// Starts a task **outside the request** (ROADMAP 12.4).
+///
+/// The run used to be awaited inside `handle_task_run_now`, with the
+/// `TaskRunGuard` living on the request future: if the client went away, hyper
+/// dropped that future, the guard was released while the child kept running,
+/// and the next start was accepted — the same task running twice. Here the
+/// guard is moved into the spawned task that owns the execution, so the claim
+/// lives exactly as long as the run does, and the request returns as soon as
+/// the run row exists.
+///
+/// The run row is opened **before** returning, so the caller can poll it and
+/// the screen shows `running` immediately.
+pub async fn start_task_run(
+    state: &Arc<AppState>,
+    task: &ScheduledTask,
+) -> Result<StartedRun, RunTaskError> {
+    let guard = TaskRunGuard::acquire(&task.id, &task.name)?;
     let repo = ScheduledTaskRepository::new(state.db.pool());
     let run_id = repo
         .mark_started(&task.id)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| RunTaskError::Failed(format!("Could not open a run: {e}")))?;
 
+    let task_id = task.id.clone();
+    let state = state.clone();
+    let task = task.clone();
+    let spawned_run_id = run_id.clone();
+    tokio::spawn(async move {
+        // The claim is released when the execution ends, success or not.
+        let _guard = guard;
+        finish_run(&state, &task, &spawned_run_id).await;
+    });
+
+    Ok(StartedRun {
+        run_id,
+        task_id,
+        status: "running",
+    })
+}
+
+/// Executes one already-opened run and records the outcome (output tail or
+/// error) on both the task and the run row.
+async fn finish_run(state: &Arc<AppState>, task: &ScheduledTask, run_id: &str) {
+    let repo = ScheduledTaskRepository::new(state.db.pool());
     let result = match TaskAction::from_parts(&task.task_type, &task.payload) {
         // Re-validate at run time: a row written directly into the DB by
         // some other path still goes through the same validators.
@@ -375,15 +498,14 @@ async fn execute(state: &Arc<AppState>, task: &ScheduledTask) -> Result<(), Stri
     match result {
         Ok(output) => {
             let _ = repo
-                .mark_finished(&task.id, &run_id, true, None, Some(&output))
+                .mark_finished(&task.id, run_id, true, None, Some(&output))
                 .await;
-            Ok(())
         }
         Err(e) => {
+            tracing::warn!("Scheduled task '{}' failed: {}", task.name, e);
             let _ = repo
-                .mark_finished(&task.id, &run_id, false, Some(&e), None)
+                .mark_finished(&task.id, run_id, false, Some(&e), None)
                 .await;
-            Err(e)
         }
     }
 }
@@ -396,7 +518,11 @@ async fn perform(action: &TaskAction) -> Result<String, String> {
             cmd.args(args)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
+                .stderr(std::process::Stdio::piped())
+                // If the runtime shuts down mid-run, the child dies with it
+                // instead of outliving the server (the run row is closed as
+                // interrupted on the next start).
+                .kill_on_drop(true);
             let child = cmd
                 .spawn()
                 .map_err(|e| format!("Failed to start {command}: {e}"))?;
@@ -626,6 +752,7 @@ mod tests {
             cron: "* * * * *".into(),
             payload: "{}".into(),
             enabled: true,
+            timezone: None,
             last_run_at: Some(old.clone()),
             last_status: None,
             last_error: None,
@@ -638,5 +765,126 @@ mod tests {
             reference > Utc::now() - chrono::Duration::days(9),
             "a stale last_run_at must be capped so past crons don't fire immediately"
         );
+    }
+
+    fn at(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    /// 12.2: a timezone name is validated, trimmed and canonicalised — the
+    /// value that gets persisted is the one the zone database knows.
+    #[test]
+    fn parse_timezone_accepts_iana_names_only() {
+        assert_eq!(
+            parse_timezone(" Europe/Paris ").unwrap().name(),
+            "Europe/Paris",
+            "surrounding whitespace must not make a valid zone invalid"
+        );
+        assert_eq!(parse_timezone("UTC").unwrap().name(), "UTC");
+        assert!(parse_timezone("Europe/Nowhere").is_err());
+        assert!(parse_timezone("+02:00").is_err(), "offsets are not zones");
+        assert!(parse_timezone("").is_err());
+        assert!(parse_timezone("   ").is_err());
+    }
+
+    /// 12.2: `0 2 * * *` means 02:00 **in the task's zone**. The two cases
+    /// below are the same wall-clock hour in Paris, six months apart — a fixed
+    /// offset would return the same UTC instant for both.
+    #[test]
+    fn a_cron_is_evaluated_in_the_tasks_timezone() {
+        // Winter: Paris is UTC+1, so 02:00 local is 01:00 UTC.
+        let winter = next_run_at(
+            "0 2 * * *",
+            Some("Europe/Paris"),
+            "UTC",
+            at("2026-01-10T12:00:00Z"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(winter, at("2026-01-11T01:00:00Z"));
+
+        // Summer: Paris is UTC+2, so 02:00 local is 00:00 UTC.
+        let summer = next_run_at(
+            "0 2 * * *",
+            Some("Europe/Paris"),
+            "UTC",
+            at("2026-07-10T12:00:00Z"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(summer, at("2026-07-11T00:00:00Z"));
+
+        // Without its own zone the task follows the appliance timezone.
+        let server_zone = next_run_at(
+            "0 2 * * *",
+            None,
+            "Europe/Paris",
+            at("2026-01-10T12:00:00Z"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            server_zone, winter,
+            "no per-task zone must mean the appliance zone, not UTC"
+        );
+
+        // An explicit UTC task is unaffected by the appliance zone.
+        let utc = next_run_at(
+            "0 2 * * *",
+            Some("UTC"),
+            "Europe/Paris",
+            at("2026-01-10T12:00:00Z"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(utc, at("2026-01-11T02:00:00Z"));
+    }
+
+    /// 12.2/12.3: an unusable schedule is an error the caller can pause the
+    /// task with — never a silent UTC fallback that fires at the wrong hour.
+    #[test]
+    fn an_unknown_timezone_or_cron_is_an_error() {
+        let err = next_run_at(
+            "0 2 * * *",
+            Some("Mars/Olympus"),
+            "UTC",
+            at("2026-01-10T12:00:00Z"),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("Mars/Olympus"),
+            "the reason must name it: {err}"
+        );
+
+        assert!(next_run_at("not a cron", None, "UTC", at("2026-01-10T12:00:00Z")).is_err());
+
+        // An appliance zone that cannot be parsed falls back to UTC rather
+        // than failing every task (the setting is validated on write, so this
+        // is only reachable through a hand-edited settings file).
+        let fallback = next_run_at(
+            "0 2 * * *",
+            None,
+            "Nowhere/Special",
+            at("2026-01-10T12:00:00Z"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(fallback, at("2026-01-11T02:00:00Z"));
+    }
+
+    /// 12.2: the day-of-week normalisation the restic scheduler relies on also
+    /// applies here — "every Monday 03:00" in Paris is Monday, not Sunday.
+    #[test]
+    fn weekday_normalisation_survives_the_timezone_hop() {
+        // 2026-01-10 is a Saturday; the next Monday 03:00 Paris = 02:00 UTC.
+        let next = next_run_at(
+            "0 3 * * 1",
+            Some("Europe/Paris"),
+            "UTC",
+            at("2026-01-10T12:00:00Z"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(next, at("2026-01-12T02:00:00Z"));
     }
 }

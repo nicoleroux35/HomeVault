@@ -44,6 +44,7 @@
     setSavedLanguage,
     notices,
     clearHostnameNotice,
+    clearTimezoneNotice,
     type SettingsGroup
   } from '$lib/stores/settingsDraft.svelte';
   import SettingsSaveButton from '$lib/components/settings/SettingsSaveButton.svelte';
@@ -959,6 +960,11 @@
           {#if notices.hostname}
             <div class="py-3 border-b-[1.45px] border-[var(--hv-settings-hairline)]">
               <Alert variant="warning" dismissible ondismiss={clearHostnameNotice}>{notices.hostname}</Alert>
+            </div>
+          {/if}
+          {#if notices.timezone}
+            <div class="py-3 border-b-[1.45px] border-[var(--hv-settings-hairline)]">
+              <Alert variant="warning" dismissible ondismiss={clearTimezoneNotice}>{notices.timezone}</Alert>
             </div>
           {/if}
           <div class={settingsRow}>

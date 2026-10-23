@@ -32,6 +32,7 @@ use crate::storage::json::JsonStorage;
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 /// Global settings persistence manager
 static SETTINGS_PERSISTENCE: Lazy<RwLock<Option<SettingsPersistence>>> =
@@ -287,6 +288,26 @@ pub fn init_persistence(data_directory: String) {
 
             // Apply loaded settings to the static handlers
             apply_loaded_settings(&loaded_settings);
+
+            // ROADMAP 13.4: a fresh install has no persisted timezone, and the
+            // compiled-in default ("UTC") would then contradict the host's own
+            // zone — and the scheduled-task engine, which evaluates every cron
+            // against this value. Seed it from the host once; from then on the
+            // setting is authoritative (the settings screen applies it with
+            // `timedatectl`, so the two agree).
+            if loaded_settings
+                .general
+                .as_ref()
+                .and_then(|g| g.timezone.as_deref())
+                .map(str::trim)
+                .filter(|tz| !tz.is_empty())
+                .is_none()
+            {
+                let host_zone = crate::handlers::settings::system_timezone();
+                if chrono_tz::Tz::from_str(&host_zone).is_ok() {
+                    crate::handlers::settings::GENERAL_SETTINGS.write().timezone = Some(host_zone);
+                }
+            }
         } else {
             return;
         }
