@@ -206,7 +206,14 @@ test('2.3 — A task keeps the timezone it was created with', async ({ page }) =
   await page.locator('#taskName').fill(name);
   await page.locator('#taskPool').fill('e2e-pool');
   await page.locator('#taskCron').fill('0 3 * * *');
-  await page.locator('#taskTimezone').fill('Europe/Paris');
+  // The field is a picker over the server's IANA list (the same one Settings
+  // renders), not free text — so a zone it offers is always a zone the API
+  // accepts. "Server timezone" (the empty value) is its first option.
+  const tz = page.locator('#taskTimezone');
+  await expect(tz.locator('option[value="Europe/Lisbon"]')).toHaveCount(1, { timeout: 10_000 });
+  await expect(tz.locator('optgroup')).not.toHaveCount(0);
+  await tz.selectOption('Europe/Paris');
+  await expect(tz).toHaveValue('Europe/Paris');
   await page.locator('[data-testid="tasks-save-btn"]').click();
 
   const row = win(page).locator('[data-testid="tasks-list"] table tbody tr', { hasText: name });
