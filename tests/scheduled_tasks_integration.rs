@@ -38,8 +38,8 @@ use tower::{Service, ServiceExt};
 use homevault::auth::AuthService;
 use homevault::config::PathGuard;
 use homevault::handlers::scheduled_tasks::{
-    handle_task_create, handle_task_delete, handle_task_run_now, handle_task_runs,
-    handle_task_update, handle_tasks_list,
+    handle_task_create, handle_task_delete, handle_task_get, handle_task_run_now, handle_task_runs,
+    handle_task_set_enabled, handle_task_update, handle_tasks_list,
 };
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::AppState;
@@ -103,15 +103,17 @@ fn tasks_router(state: Arc<AppState>) -> Router {
         )
         .route(
             "/api/scheduled-tasks/{id}",
-            axum::routing::put(handle_task_update),
-        )
-        .route(
-            "/api/scheduled-tasks/{id}",
-            axum::routing::delete(handle_task_delete),
+            get(handle_task_get)
+                .put(handle_task_update)
+                .delete(handle_task_delete),
         )
         .route(
             "/api/scheduled-tasks/{id}/run",
             axum::routing::post(handle_task_run_now),
+        )
+        .route(
+            "/api/scheduled-tasks/{id}/enabled",
+            axum::routing::post(handle_task_set_enabled),
         )
         .route("/api/scheduled-tasks/{id}/runs", get(handle_task_runs))
         .with_state(state)
@@ -177,6 +179,29 @@ async fn login(router: &mut Router, username: &str, password: &str) -> String {
     )
     .await;
     body["data"]["token"].as_str().expect("token").to_string()
+}
+
+/// 12.4: "Run now" answers `202` and the execution continues on its own, so a
+/// test waits for the row to leave `running` instead of reading the response.
+/// Bounded, so a regression shows up as a failing assertion, not a hung suite.
+async fn wait_for_run_to_finish(router: &mut Router, token: &str, id: &str) -> Value {
+    for _ in 0..100 {
+        let (status, body) = send(
+            router,
+            Method::GET,
+            &format!("/api/scheduled-tasks/{id}"),
+            Some(token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "task status read failed: {body}");
+        let status = body["data"]["last_status"].as_str().unwrap_or_default();
+        if status != "running" && !status.is_empty() {
+            return body["data"].clone();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("the run did not finish within 5 s");
 }
 
 fn valid_task() -> Value {
@@ -413,7 +438,7 @@ async fn validation_rejects_bad_cron_payload_and_type() {
 }
 
 #[tokio::test]
-async fn run_now_executes_a_safe_command_and_records_history() {
+async fn run_now_answers_202_and_records_history() {
     let (state, _tmp, _guard) = setup_state().await;
     create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
     let mut router = tasks_router(state.clone());
@@ -434,6 +459,8 @@ async fn run_now_executes_a_safe_command_and_records_history() {
     .await;
     let id = body["data"]["id"].as_str().expect("id").to_string();
 
+    // 12.4: the answer is 202 with the run id, not a 200 held until the run
+    // ends — the execution owns the guard on its own task.
     let (status, body) = send(
         &mut router,
         Method::POST,
@@ -442,8 +469,19 @@ async fn run_now_executes_a_safe_command_and_records_history() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "run now failed: {body}");
-    assert_eq!(body["data"]["last_status"], "success");
+    assert_eq!(status, StatusCode::ACCEPTED, "run now must accept: {body}");
+    assert_eq!(body["data"]["status"], "running");
+    assert_eq!(body["data"]["task_id"], id);
+    assert!(
+        body["data"]["run_id"]
+            .as_str()
+            .is_some_and(|r| !r.is_empty()),
+        "the caller needs a run id to follow: {body}"
+    );
+
+    // The status endpoint reports the outcome.
+    let task = wait_for_run_to_finish(&mut router, &admin, &id).await;
+    assert_eq!(task["last_status"], "success");
 
     let (_, body) = send(
         &mut router,
@@ -457,7 +495,8 @@ async fn run_now_executes_a_safe_command_and_records_history() {
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0]["status"], "success");
 
-    // A failing command records a failed run with the message.
+    // A failing command is a *run* failure, not a request failure: the start
+    // is accepted and the failure lands on the row + history.
     let task = json!({
         "name": "false task", "task_type": "command", "cron": "0 0 1 1 *",
         "payload": {"command": "/bin/false", "args": []}
@@ -481,8 +520,17 @@ async fn run_now_executes_a_safe_command_and_records_history() {
     .await;
     assert_eq!(
         status,
-        StatusCode::BAD_REQUEST,
-        "failed run surfaces the error: {body}"
+        StatusCode::ACCEPTED,
+        "a command that will fail still starts: {body}"
+    );
+    let task = wait_for_run_to_finish(&mut router, &admin, &id).await;
+    assert_eq!(task["last_status"], "failed");
+    assert!(
+        task["last_error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("exited with 1"),
+        "the failure reason lands on the task: {task}"
     );
     let (_, body) = send(
         &mut router,
@@ -517,22 +565,17 @@ async fn run_now_is_single_flight_against_itself() {
     .await;
     let id = body["data"]["id"].as_str().expect("id").to_string();
 
-    // First "Run now" in the background: it holds the task for ~1 s.
-    let mut first_router = tasks_router(state.clone());
-    let first_token = admin.clone();
-    let first_id = id.clone();
-    let first = tokio::spawn(async move {
-        send(
-            &mut first_router,
-            Method::POST,
-            &format!("/api/scheduled-tasks/{first_id}/run"),
-            Some(&first_token),
-            None,
-        )
-        .await
-    });
-
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // 12.4: the start returns immediately, but the claim is already taken —
+    // it lives with the spawned execution, not with the response future.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        &format!("/api/scheduled-tasks/{id}/run"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "first start: {body}");
 
     // 12.1: the second start is refused — nothing runs, the row is untouched.
     let (status, body) = send(
@@ -556,9 +599,9 @@ async fn run_now_is_single_flight_against_itself() {
         "the refusal must say why: {body}"
     );
 
-    // The refused call did not create a run row of its own.
-    let (status, _) = first.await.expect("join the first run");
-    assert_eq!(status, StatusCode::OK, "the first run must complete");
+    // One start, one run row — the refused call wrote nothing.
+    let task = wait_for_run_to_finish(&mut router, &admin, &id).await;
+    assert_eq!(task["last_status"], "success");
     let (_, body) = send(
         &mut router,
         Method::GET,
@@ -584,9 +627,11 @@ async fn run_now_is_single_flight_against_itself() {
     .await;
     assert_eq!(
         status,
-        StatusCode::OK,
+        StatusCode::ACCEPTED,
         "the claim must be released after the run: {body}"
     );
+    // Drain it so the suite does not end with a run still in flight.
+    wait_for_run_to_finish(&mut router, &admin, &id).await;
 }
 
 #[tokio::test]
@@ -630,4 +675,168 @@ async fn update_and_delete_of_unknown_id_fail_cleanly() {
         StatusCode::OK,
         "empty history is valid for unknown ids"
     );
+}
+
+#[tokio::test]
+async fn timezone_is_validated_and_stored_per_task() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    let mut router = tasks_router(state.clone());
+    let admin = login(&mut router, "admin", "AdminPass123!").await;
+
+    // 12.2: an IANA zone is accepted and canonicalised.
+    let mut task = valid_task();
+    task["timezone"] = json!("europe/paris");
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/scheduled-tasks",
+        Some(&admin),
+        Some(task),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create failed: {body}");
+    let id = body["data"]["id"].as_str().expect("id").to_string();
+    assert_eq!(
+        body["data"]["timezone"], "Europe/Paris",
+        "the stored value is the canonical IANA name"
+    );
+    assert!(body["data"]["next_run_at"].is_string());
+
+    // The row comes back with its zone on every read.
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        &format!("/api/scheduled-tasks/{id}"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["timezone"], "Europe/Paris");
+
+    // An unknown zone is refused with a reason naming it, and nothing is
+    // stored.
+    let mut bad = valid_task();
+    bad["name"] = json!("bad zone");
+    bad["timezone"] = json!("Europe/Nowhere");
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/scheduled-tasks",
+        Some(&admin),
+        Some(bad),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Europe/Nowhere"),
+        "the refusal must name the value: {body}"
+    );
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/scheduled-tasks",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(
+        body["data"]["tasks"].as_array().expect("tasks").len(),
+        1,
+        "the refused task must not be created"
+    );
+
+    // Blank / omitted means "follow the appliance timezone".
+    let mut server_zone = valid_task();
+    server_zone["name"] = json!("server zone");
+    server_zone["timezone"] = json!("");
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/scheduled-tasks",
+        Some(&admin),
+        Some(server_zone),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body["data"]["timezone"].is_null(),
+        "an empty zone is stored as NULL: {body}"
+    );
+}
+
+#[tokio::test]
+async fn enable_toggle_keeps_the_run_summary() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    let mut router = tasks_router(state.clone());
+    let admin = login(&mut router, "admin", "AdminPass123!").await;
+
+    let task = json!({
+        "name": "toggle task", "task_type": "command", "cron": "0 0 1 1 *",
+        "payload": {"command": "/bin/true", "args": []}
+    });
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/scheduled-tasks",
+        Some(&admin),
+        Some(task),
+    )
+    .await;
+    let id = body["data"]["id"].as_str().expect("id").to_string();
+
+    send(
+        &mut router,
+        Method::POST,
+        &format!("/api/scheduled-tasks/{id}/run"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    let run = wait_for_run_to_finish(&mut router, &admin, &id).await;
+    assert_eq!(run["last_status"], "success");
+
+    // Pausing must not re-submit the task: the last-run summary survives.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        &format!("/api/scheduled-tasks/{id}/enabled"),
+        Some(&admin),
+        Some(json!({"enabled": false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "pause failed: {body}");
+    assert_eq!(body["data"]["enabled"], false);
+    assert_eq!(
+        body["data"]["last_status"], "success",
+        "toggling used to reset the run summary"
+    );
+    assert!(body["data"]["last_run_at"].is_string());
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        &format!("/api/scheduled-tasks/{id}/enabled"),
+        Some(&admin),
+        Some(json!({"enabled": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "resume failed: {body}");
+    assert_eq!(body["data"]["enabled"], true);
+
+    // Unknown id stays a clean 400 envelope.
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/scheduled-tasks/nope/enabled",
+        Some(&admin),
+        Some(json!({"enabled": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }

@@ -1205,23 +1205,36 @@ class ApiClient {
   }
 
   async createScheduledTask(task: {
-    name: string; task_type: string; cron: string; payload: Record<string, unknown>; enabled: boolean;
+    name: string; task_type: string; cron: string; payload: Record<string, unknown>;
+    enabled: boolean; timezone?: string | null;
   }) {
     return this.post<ScheduledTask>('/scheduled-tasks', task);
   }
 
   async updateScheduledTask(id: string, task: {
-    name: string; task_type: string; cron: string; payload: Record<string, unknown>; enabled: boolean;
+    name: string; task_type: string; cron: string; payload: Record<string, unknown>;
+    enabled: boolean; timezone?: string | null;
   }) {
     return this.put<ScheduledTask>(`/scheduled-tasks/${encodeURIComponent(id)}`, task);
+  }
+
+  /** Enable/disable only — a full PUT would reset the run summary. */
+  async setScheduledTaskEnabled(id: string, enabled: boolean) {
+    return this.post<ScheduledTask>(`/scheduled-tasks/${encodeURIComponent(id)}/enabled`, { enabled });
   }
 
   async deleteScheduledTask(id: string) {
     return this.delete(`/scheduled-tasks/${encodeURIComponent(id)}`);
   }
 
+  /** Starts a run and returns its id: the execution continues on the server
+   *  (ROADMAP 12.4), so the caller polls `GET /scheduled-tasks` (the row's
+   *  `last_status`) or `GET /scheduled-tasks/{id}/runs` for the outcome. */
   async runScheduledTaskNow(id: string) {
-    return this.post<ScheduledTask>(`/scheduled-tasks/${encodeURIComponent(id)}/run`, {});
+    return this.post<{ run_id: string; task_id: string; status: string }>(
+      `/scheduled-tasks/${encodeURIComponent(id)}/run`,
+      {},
+    );
   }
 
   async getScheduledTaskRuns(id: string) {
@@ -3071,6 +3084,8 @@ export interface ScheduledTask {
   cron: string;
   payload: string;
   enabled: boolean;
+  /** IANA zone the cron is evaluated in; `null` = the appliance timezone. */
+  timezone: string | null;
   last_run_at: string | null;
   last_status: string | null;
   last_error: string | null;

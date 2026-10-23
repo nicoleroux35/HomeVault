@@ -42,6 +42,7 @@ use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -211,6 +212,62 @@ fn sanitize_hostname(name: &str) -> String {
 fn apply_system_hostname(new_hostname: &str) -> Result<(), String> {
     let output = std::process::Command::new("sudo")
         .args(["hostnamectl", "set-hostname", new_hostname])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+/// The host's own timezone, read from `/etc/timezone` (Debian family) or the
+/// `zoneinfo/` suffix of the `/etc/localtime` symlink. Empty when neither is
+/// readable.
+///
+/// Blocking file reads: called at startup (to seed the setting on a fresh
+/// install) and from the Dashboard's already-offloaded server-details builder,
+/// never from a handler's async body.
+pub fn system_timezone() -> String {
+    let tz = std::fs::read_to_string("/etc/timezone")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if !tz.is_empty() {
+        return tz;
+    }
+    if let Ok(target) = std::fs::read_link("/etc/localtime") {
+        let s = target.to_string_lossy();
+        if let Some(idx) = s.find("zoneinfo/") {
+            return s[idx + "zoneinfo/".len()..].to_string();
+        }
+    }
+    String::new()
+}
+
+/// The appliance timezone everything else reads: the persisted General
+/// setting when it names a valid IANA zone, `UTC` otherwise.
+///
+/// ROADMAP 12.2/13.4: this is the single value the scheduled-task engine
+/// evaluates a task's cron in when the task has no zone of its own. It is a
+/// pure in-memory read (no `/etc` access on a hot path — `tick_due` calls it
+/// every 30 s), which is why `init_persistence` seeds the setting from the
+/// host on a fresh install and `handle_general_settings_update` applies it to
+/// the host with `timedatectl`.
+pub fn effective_timezone() -> String {
+    if let Some(tz) = GENERAL_SETTINGS.read().timezone.as_deref() {
+        if chrono_tz::Tz::from_str(tz.trim()).is_ok() {
+            return tz.trim().to_string();
+        }
+    }
+    "UTC".to_string()
+}
+
+/// Applies the timezone as the real OS timezone via `timedatectl`
+/// (`homevault` has a scoped sudoers grant for exactly
+/// `timedatectl set-timezone *`). Needs root.
+fn apply_system_timezone(timezone: &str) -> Result<(), String> {
+    let output = std::process::Command::new("sudo")
+        .args(["timedatectl", "set-timezone", timezone])
         .output()
         .map_err(|e| e.to_string())?;
     if output.status.success() {
@@ -472,14 +529,33 @@ pub async fn handle_general_settings_update(
         return ResponseHelper::json_error("Admin access required".to_string());
     }
 
-    let mut settings = GENERAL_SETTINGS.write();
-    if let Some(server_name) = &req.server_name {
-        settings.server_name = Some(server_name.clone());
+    // The timezone is validated **before** anything is persisted or applied:
+    // an unknown zone used to be stored verbatim and read by nothing, so the
+    // admin had no way to tell it apart from a working one (ROADMAP 13.4).
+    if let Some(timezone) = req.timezone.as_deref() {
+        let trimmed = timezone.trim();
+        if trimmed.is_empty() {
+            return ResponseHelper::json_error("Timezone must not be empty".to_string());
+        }
+        if let Err(e) = chrono_tz::Tz::from_str(trimmed) {
+            return ResponseHelper::json_error(format!(
+                "Unknown timezone '{}' ({e}) — use an IANA name such as 'Europe/Paris'",
+                trimmed
+            ));
+        }
     }
-    if let Some(timezone) = &req.timezone {
-        settings.timezone = Some(timezone.clone());
+
+    // Scoped block, not a `drop()`: the guard is `!Send`, and the async fn
+    // must not carry it across the `spawn_blocking` await below.
+    {
+        let mut settings = GENERAL_SETTINGS.write();
+        if let Some(server_name) = &req.server_name {
+            settings.server_name = Some(server_name.clone());
+        }
+        if let Some(timezone) = &req.timezone {
+            settings.timezone = Some(timezone.trim().to_string());
+        }
     }
-    drop(settings);
 
     // The server name was previously a pure UI label with no connection to
     // the real OS hostname. If it changed, try to actually rename the host
@@ -513,6 +589,55 @@ pub async fn handle_general_settings_update(
     // Persist settings
     crate::settings_persistence::save_all_settings();
 
+    // Apply the timezone to the host (ROADMAP 13.4): it was stored and never
+    // read, so "02:00 daily" was scheduled against whatever `/etc/localtime`
+    // happened to say while the UI claimed the chosen zone. The setting is
+    // now the single source of truth — the scheduler reads it, `timedatectl`
+    // makes the rest of the host agree. Best effort, but a failure is
+    // **reported**: the previous behaviour was a silent success.
+    let mut timezone_notice = None;
+    if let Some(timezone) = req.timezone.as_deref() {
+        let target = timezone.trim().to_string();
+        // Off the async runtime: `sudo timedatectl` can block for seconds
+        // (X.1's `spawn_blocking` shape).
+        let applied = tokio::task::spawn_blocking(move || apply_system_timezone(&target)).await;
+        match applied {
+            Ok(Ok(())) => {
+                crate::events::log_event(format!(
+                    "Admin '{}' changed the system timezone to '{}'",
+                    session.username,
+                    timezone.trim()
+                ));
+            }
+            Ok(Err(err)) => {
+                crate::events::log_event_warn(format!(
+                    "Admin '{}' saved timezone '{}' but changing the OS timezone failed: {}",
+                    session.username,
+                    timezone.trim(),
+                    err
+                ));
+                timezone_notice = Some(crate::i18n::t_var(
+                    "settings.timezone_apply_failed",
+                    "error",
+                    err,
+                ));
+            }
+            Err(join_err) => {
+                crate::events::log_event_warn(format!(
+                    "Admin '{}' saved timezone '{}' but the change task failed: {}",
+                    session.username,
+                    timezone.trim(),
+                    join_err
+                ));
+                timezone_notice = Some(crate::i18n::t_var(
+                    "settings.timezone_apply_failed",
+                    "error",
+                    join_err,
+                ));
+            }
+        }
+    }
+
     crate::events::log_event(format!(
         "Admin '{}' saved General settings",
         session.username
@@ -522,6 +647,7 @@ pub async fn handle_general_settings_update(
         "message": t("settings.settings_saved"),
         "restart_required": restart_required,
         "hostname_notice": if restart_required { Some(t("settings.hostname_restart_notice")) } else { None },
+        "timezone_notice": timezone_notice,
     }))
 }
 

@@ -23,7 +23,7 @@ Handlers in `src/handlers/settings.rs`. Persistence via
 |----------|------|-------|
 | `GET /settings` | auth | aggregate of all categories |
 | `GET /settings/public` | public | safe subset (server name, language, theme) |
-| `GET/PUT /settings/general` | auth / admin | server name, timezone |
+| `GET/PUT /settings/general` | auth / admin | server name, timezone — the timezone is validated and **applied to the host** (see below) |
 | `GET/POST /settings/language` | auth | set UI language |
 | `GET /translations` | auth | flattened translation map (mounted at `/api/translations`; see [i18n](../I18N.md)) |
 | `GET/PUT /settings/email` | auth / admin | SMTP |
@@ -43,6 +43,27 @@ Handlers in `src/handlers/settings.rs`. Persistence via
 | `GET /snmp/availability\|info\|interfaces\|storage` | admin | SNMP-discoverable device data |
 | `GET /ups/availability\|list\|status/{name}\|variables/{name}` | admin | UPS/NUT monitoring (live readings) |
 | `GET/POST /ups/config`, `DELETE /ups/config/{name}` | admin | manage the `ups.conf` device sections (serial/network/USB), reloads NUT |
+
+### General: server name and timezone (ROADMAP 13.4)
+
+- **Server name** → sanitized to an RFC 1123 label and applied with
+  `hostnamectl set-hostname` (scoped sudoers grant); a rename reports
+  `restart_required`, surfaced as an `Alert` on the General card.
+- **Timezone** → validated as an IANA name *before* anything is persisted
+  (an unknown zone answers `400` naming the value), then applied with
+  `timedatectl set-timezone` (scoped sudoers grant, run through
+  `spawn_blocking` so the handler never blocks the runtime). A failure to
+  apply does **not** silently look like success: the save still returns
+  `200` but carries `timezone_notice`, shown as a warning `Alert`.
+- `settings::effective_timezone()` is the value the rest of the app reads —
+  notably the scheduled-task engine, which evaluates every task without its
+  own `timezone` in it (see [Scheduled Tasks](./scheduled-tasks.md)). It is a
+  pure in-memory read; `system_timezone()` (the `/etc/timezone` /
+  `/etc/localtime` reader) runs only at startup and in the Dashboard's
+  offloaded server-details builder.
+- On a fresh install (no persisted settings file) the timezone is **seeded
+  from the host** at startup, so the setting never contradicts the real
+  system zone.
 
 ## Frontend
 

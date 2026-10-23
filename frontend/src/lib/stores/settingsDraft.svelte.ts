@@ -218,10 +218,17 @@ export function seedAiModel(model: string) {
 }
 
 /** Notice shown after a server-name save (hostname restart recommendation). */
-export const notices = $state<{ hostname: string | null }>({ hostname: null });
+export const notices = $state<{ hostname: string | null; timezone: string | null }>({
+  hostname: null,
+  timezone: null,
+});
 
 export function clearHostnameNotice() {
   notices.hostname = null;
+}
+
+export function clearTimezoneNotice() {
+  notices.timezone = null;
 }
 
 /** TLS save result surfaced to the TlsCard (restart banner + cert info). */
@@ -330,6 +337,10 @@ async function saveGroup(group: SettingsGroup): Promise<void> {
       });
       if (!res.success) throw new Error(group);
       notices.hostname = res.data?.restart_required ? res.data.hostname_notice : null;
+      // ROADMAP 13.4: the timezone is now applied to the host. A refusal
+      // (no sudo, unknown zone on the host) is reported instead of looking
+      // like a save that worked.
+      notices.timezone = res.data?.timezone_notice ?? null;
       if (draft.general.language !== savedLanguage) {
         const lr = await api.setLanguage(draft.general.language);
         if (lr.success) {
@@ -458,6 +469,7 @@ export async function saveAll(): Promise<number> {
   _saving = true;
   _error = false;
   notices.hostname = null;
+  notices.timezone = null;
   setTlsSaveResult(null);
   let failed = 0;
   for (const group of dirty) {

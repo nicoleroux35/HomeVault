@@ -1170,6 +1170,9 @@ mod tests {
         "tar",
         "tee",
         "test",
+        // systemd, like `hostnamectl` above: the Settings "timezone" field is
+        // applied with `timedatectl set-timezone` (ROADMAP 13.4).
+        "timedatectl",
         "umount",
         "uname",
         "useradd",

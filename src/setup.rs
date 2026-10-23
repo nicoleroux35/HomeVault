@@ -823,6 +823,12 @@ impl SetupService {
         // pattern as the `useradd`/`groupadd` grants above.
         let hostnamectl = Self::resolve_bin("hostnamectl", "/usr/bin/hostnamectl");
 
+        // Settings page "timezone" field -> OS timezone (`src/handlers/settings.rs`,
+        // ROADMAP 13.4). `timedatectl` needs root; scoped to `set-timezone` with
+        // one argument, never the bare binary (which can also set the clock, the
+        // NTP servers or enable/disable NTP).
+        let timedatectl = Self::resolve_bin("timedatectl", "/usr/bin/timedatectl");
+
         // Storage/RAID/LUKS grants, rendered from the table below so they stay
         // scoped to the argument shapes the code actually runs (ROADMAP 7.1)
         // and can be asserted on without touching /etc (see `mod tests`).
@@ -1091,6 +1097,11 @@ homevault ALL=(root) NOPASSWD: {useradd} -M -s /usr/sbin/nologin *
 # `hostnamectl` is resolved for why this is scoped to just `set-hostname`.
 homevault ALL=(root) NOPASSWD: {hostnamectl} set-hostname *
 
+# Settings page "timezone" field (`src/handlers/settings.rs`) - scoped to
+# `set-timezone` with one argument, for the same reason as `hostnamectl`
+# above: the bare binary can also change the clock and the NTP settings.
+homevault ALL=(root) NOPASSWD: {timedatectl} set-timezone *
+
 # Settings page "start on boot" toggle (`src/autostart.rs`) - scoped to
 # exactly enabling/disabling HomeVault's own unit, not the bare `systemctl`
 # binary (shared variable with the Shares service-control grant above),
@@ -1133,6 +1144,7 @@ homevault ALL=(root) NOPASSWD: {systemctl} enable homevault, {systemctl} disable
             rm = rm,
             sftp_keys_glob = sftp_keys_glob,
             hostnamectl = hostnamectl,
+            timedatectl = timedatectl,
         );
 
         match std::fs::write("/etc/sudoers.d/homevault", sudoers_content) {
@@ -2176,6 +2188,20 @@ mod tests {
             "homevault ALL=(root) NOPASSWD: /usr/bin/tee /etc/fstab"
         );
         assert!(!line.contains("ALL=(ALL)"));
+    }
+
+    /// ROADMAP 13.4: the Settings "timezone" field is applied with
+    /// `timedatectl set-timezone <iana>` — the grant must cover exactly that
+    /// subcommand, never the bare binary (which can also move the clock or
+    /// change the NTP servers).
+    #[test]
+    fn test_timezone_grant_is_scoped_to_set_timezone() {
+        let grant = grant("/usr/bin/timedatectl", "set-timezone *");
+        assert_eq!(
+            grant, "/usr/bin/timedatectl set-timezone *",
+            "the grant must name the subcommand, not the binary alone"
+        );
+        assert!(!grant.ends_with("/usr/bin/timedatectl"));
     }
 
     #[test]

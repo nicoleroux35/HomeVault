@@ -84,6 +84,12 @@ impl ResponseHelper {
         (StatusCode::OK, AxumJson(JsonResponse::success(data))).into_response()
     }
 
+    /// `202 Accepted` for work that continues after the response — the caller
+    /// gets the handle it can poll instead of waiting for the result.
+    pub fn json_accepted<T: Serialize>(data: T) -> Response {
+        (StatusCode::ACCEPTED, AxumJson(JsonResponse::success(data))).into_response()
+    }
+
     pub fn json_error(message: String) -> Response {
         (
             StatusCode::BAD_REQUEST,

@@ -1701,20 +1701,12 @@ fn count_installed_packages() -> String {
 
 /// Resolve the system timezone: `/etc/timezone` (Debian family) first, then
 /// the symlink target of `/etc/localtime`. Empty string when neither works.
+///
+/// Single implementation, shared with the settings/scheduling code (ROADMAP
+/// 13.4) — it lives in `handlers::settings` because the persisted setting is
+/// the value that decides what the rest of the app uses.
 fn read_timezone() -> String {
-    let tz = std::fs::read_to_string("/etc/timezone")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
-    if !tz.is_empty() {
-        return tz;
-    }
-    if let Ok(target) = std::fs::read_link("/etc/localtime") {
-        let s = target.to_string_lossy();
-        if let Some(idx) = s.find("zoneinfo/") {
-            return s[idx + "zoneinfo/".len()..].to_string();
-        }
-    }
-    String::new()
+    crate::handlers::settings::system_timezone()
 }
 
 /// Format an uptime in seconds as a compact "5d 3h 21m" string.
