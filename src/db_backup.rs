@@ -148,6 +148,22 @@ impl DbBackupService {
         self.settings.inner.lock().clone()
     }
 
+    /// Reset the stored schedule to the shipped defaults.
+    ///
+    /// ROADMAP 13.5: "Reset to Defaults" left `data/db_backup.json` behind, so
+    /// the hourly schedule an admin had configured survived the reset. The file
+    /// is deleted rather than rewritten, so a later release's default applies
+    /// without a migration.
+    pub fn reset_settings(&self) -> Result<(), String> {
+        match Self::settings_storage().delete(SETTINGS_KEY) {
+            Ok(()) => {
+                *self.settings.inner.lock() = DbBackupSettings::default();
+                Ok(())
+            }
+            Err(e) => Err(format!("Failed to reset backup settings: {e}")),
+        }
+    }
+
     /// Persist new settings.
     pub fn update_settings(&self, next: DbBackupSettings) -> Result<(), String> {
         // Bounded so a typo cannot fill the disk with snapshots.
@@ -330,6 +346,12 @@ impl DbBackupService {
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
 
         loop {
+            // Re-read the persisted schedule every tick: the Settings reset
+            // deletes the file, and each handler builds its own instance, so a
+            // copy loaded once at startup would keep the old interval until the
+            // next restart (ROADMAP 13.5).
+            self.load_settings();
+
             if self.is_due() {
                 if let Err(e) = self.backup_now().await {
                     tracing::warn!(error = %e, "Scheduled database snapshot failed");

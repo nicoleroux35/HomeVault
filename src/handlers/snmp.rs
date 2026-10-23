@@ -112,15 +112,23 @@ pub async fn handle_snmp_info(
         return resp;
     }
 
-    let community = params.community.unwrap_or_else(|| "public".to_string());
+    let (community, version) = effective_connection(&params);
 
-    match SnmpService::get_system_info(&community) {
-        Ok(info) => ResponseHelper::json_success(info),
-        Err(e) => ResponseHelper::json_error(format!("SNMP error: {}", e)),
+    // Every `snmpget`/`snmpwalk` is a blocking child process with a 10 s
+    // deadline, so it runs on the blocking pool (ROADMAP X.1).
+    match tokio::task::spawn_blocking(move || SnmpService::get_system_info(&community, &version))
+        .await
+    {
+        Ok(Ok(info)) => ResponseHelper::json_success(info),
+        Ok(Err(e)) => ResponseHelper::json_error(format!("SNMP error: {}", e)),
+        Err(e) => ResponseHelper::json_error(format!("SNMP task failed: {}", e)),
     }
 }
 
 /// Returns SNMP interface stats (bytes in/out, errors, etc.).
+///
+/// `iface` narrows the result to one interface (ROADMAP 13.5 — it used to be
+/// accepted and ignored).
 pub async fn handle_snmp_interfaces(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -130,12 +138,17 @@ pub async fn handle_snmp_interfaces(
         return resp;
     }
 
-    let community = params.community.unwrap_or_else(|| "public".to_string());
-    let iface = params.iface.unwrap_or_default();
+    let iface = params.iface.clone().unwrap_or_default();
+    let (community, version) = effective_connection(&params);
 
-    match SnmpService::get_interface_stats(&iface, &community) {
-        Ok(interfaces) => ResponseHelper::json_success(interfaces),
-        Err(e) => ResponseHelper::json_error(format!("SNMP error: {}", e)),
+    match tokio::task::spawn_blocking(move || {
+        SnmpService::get_interface_stats(&iface, &community, &version)
+    })
+    .await
+    {
+        Ok(Ok(interfaces)) => ResponseHelper::json_success(interfaces),
+        Ok(Err(e)) => ResponseHelper::json_error(format!("SNMP error: {}", e)),
+        Err(e) => ResponseHelper::json_error(format!("SNMP task failed: {}", e)),
     }
 }
 
@@ -149,11 +162,14 @@ pub async fn handle_snmp_storage(
         return resp;
     }
 
-    let community = params.community.unwrap_or_else(|| "public".to_string());
+    let (community, version) = effective_connection(&params);
 
-    match SnmpService::get_storage_stats(&community) {
-        Ok(stats) => ResponseHelper::json_success(stats),
-        Err(e) => ResponseHelper::json_error(format!("SNMP error: {}", e)),
+    match tokio::task::spawn_blocking(move || SnmpService::get_storage_stats(&community, &version))
+        .await
+    {
+        Ok(Ok(stats)) => ResponseHelper::json_success(stats),
+        Ok(Err(e)) => ResponseHelper::json_error(format!("SNMP error: {}", e)),
+        Err(e) => ResponseHelper::json_error(format!("SNMP task failed: {}", e)),
     }
 }
 
@@ -166,9 +182,31 @@ pub async fn handle_snmp_availability(
         return resp;
     }
 
-    ResponseHelper::json_success(serde_json::json!({
-        "available": SnmpService::is_available()
-    }))
+    let available = tokio::task::spawn_blocking(SnmpService::is_available)
+        .await
+        .unwrap_or(false);
+    ResponseHelper::json_success(serde_json::json!({ "available": available }))
+}
+
+/// The community string and protocol version a query actually uses: the
+/// per-request override when present, otherwise the saved settings.
+///
+/// ROADMAP 13.5: the saved `version` was write-only — `run_walk` always passed
+/// `2c`. Reading it here is what makes the field mean something.
+fn effective_connection(params: &SnmpQueryParams) -> (String, String) {
+    let saved = SNMP_SETTINGS.read().clone();
+    let community = params
+        .community
+        .clone()
+        .filter(|c| !c.trim().is_empty())
+        .or(saved.community)
+        .unwrap_or_else(|| "public".to_string());
+    let version = saved
+        .version
+        .unwrap_or_else(|| "2c".to_string())
+        .trim()
+        .to_string();
+    (community, version)
 }
 
 /// Updates the in-memory SNMP settings (community, version).
@@ -181,15 +219,26 @@ pub async fn handle_snmp_settings_update(
         return resp;
     }
 
-    let mut settings = SNMP_SETTINGS.write();
+    // ROADMAP 13.5: the version is now actually used by every query, so an
+    // unsupported value is refused at save time instead of producing a broken
+    // query later (v3 needs credentials this card does not collect).
+    let version = match req.version.as_deref() {
+        Some(raw) => match crate::snmp::validate_snmp_version(raw) {
+            Ok(version) => Some(version),
+            Err(e) => return ResponseHelper::json_error(e),
+        },
+        None => None,
+    };
+
+    let mut next = SNMP_SETTINGS.read().clone();
     if let Some(community) = &req.community {
-        settings.community = Some(community.clone());
+        next.community = Some(community.trim().to_string());
     }
-    if let Some(version) = &req.version {
-        settings.version = Some(version.clone());
+    if let Some(version) = version {
+        next.version = Some(version);
     }
-    persist_snmp_settings(&settings);
-    drop(settings);
+    *SNMP_SETTINGS.write() = next.clone();
+    persist_snmp_settings(&next);
 
     tracing::info!("SNMP settings updated");
     ResponseHelper::json_success(serde_json::json!({

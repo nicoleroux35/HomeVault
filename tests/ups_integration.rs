@@ -247,6 +247,50 @@ async fn test_ups_config_requires_admin() {
 }
 
 #[tokio::test]
+async fn test_ups_config_write_rejects_invalid_input_before_touching_ups_conf() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_user(&state, "admin", 2).await;
+    let mut router = ups_router(state);
+    let token = login(&mut router, "admin").await;
+
+    // ROADMAP 13.2: the name and the driver reach a file and a `systemctl`
+    // argv, so they are validated before anything is written. None of these
+    // bodies may reach `sudo` (a bad value is a `400`, not a shell error).
+    for body in [
+        json!({"name": "../evil", "driver": "usbhid-ups", "port": "auto"}),
+        json!({"name": "rack ups", "driver": "usbhid-ups", "port": "auto"}),
+        json!({"name": "rack", "driver": "rm -rf /", "port": "auto"}),
+        json!({"name": "rack", "driver": "usbhid-ups", "port": "  "}),
+        json!({"name": "rack", "driver": "usbhid-ups", "port": "auto\n[evil]"}),
+    ] {
+        let (status, resp) = send(
+            &mut router,
+            Method::POST,
+            "/api/ups/config",
+            Some(&token),
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{body} must be refused before it reaches ups.conf: {resp}"
+        );
+    }
+
+    // The DELETE path validates the name the same way.
+    let (status, resp) = send(
+        &mut router,
+        Method::DELETE,
+        "/api/ups/config/rack%20ups",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{resp}");
+}
+
+#[tokio::test]
 async fn test_ups_config_admin_can_list() {
     let (state, _tmp, _guard) = setup_state().await;
     create_user(&state, "admin", 2).await; // role 2 = admin

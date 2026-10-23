@@ -20,10 +20,30 @@
 
 //! UPS monitoring via the NUT client (device enumeration + live variables).
 
+use crate::utils::process::run_timed;
 use serde::{Deserialize, Serialize};
 use std::process::Command;
+use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, warn};
+
+/// Deadline for a `upsc` query. A healthy local `upsd` answers in
+/// milliseconds; this only has to be shorter than a client poll interval so
+/// a wedged NUT socket cannot pile requests up behind it.
+pub const NUT_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Deadline for one `systemctl restart <nut unit>`. `nut-driver-enumerator`
+/// re-probes every configured device, so it gets more room than an `upsc`
+/// read — but still a bound, because a hung systemd job otherwise keeps the
+/// HTTP request (and its blocking thread) open forever.
+pub const NUT_RESTART_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The units NUT needs restarted after `/etc/nut/ups.conf` changes:
+/// `nut-driver-enumerator` regenerates one driver instance per `[section]`,
+/// and `nut-server` (`upsd`) must re-read the list. Kept as a constant so the
+/// argv scoped in `/etc/sudoers.d/homevault` and the argv actually run cannot
+/// drift apart (ROADMAP 13.2).
+pub const NUT_UNITS: [&str; 2] = ["nut-driver-enumerator.service", "nut-server"];
 
 #[derive(Error, Debug)]
 pub enum UpsError {
@@ -35,6 +55,11 @@ pub enum UpsError {
     ParseError(String),
     #[error("UPS not found: {0}")]
     NotFound(String),
+    /// The caller-supplied name/variable is not a NUT identifier. This is
+    /// rejected *before* any command runs: the value becomes an `upsc`
+    /// argument, so an unchecked name is an argv-injection vector.
+    #[error("Invalid UPS name or variable: {0}")]
+    InvalidName(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,7 +100,7 @@ impl UpsService {
     }
 
     fn check_upsc() -> Result<(), UpsError> {
-        let output = Command::new("upsc").args(["-L"]).output();
+        let output = run_timed(&mut Command::new("upsc").arg("-L"), NUT_QUERY_TIMEOUT);
 
         match output {
             Ok(out) => {
@@ -97,10 +122,8 @@ impl UpsService {
     }
 
     pub fn list_ups() -> Result<Vec<UpsInfo>, UpsError> {
-        let output = Command::new("upsc")
-            .args(["-L"])
-            .output()
-            .map_err(|e| UpsError::CommandFailed(e.to_string()))?;
+        let output = run_timed(&mut Command::new("upsc").arg("-L"), NUT_QUERY_TIMEOUT)
+            .map_err(UpsError::CommandFailed)?;
 
         if !output.status.success() {
             return Err(UpsError::CommandFailed(
@@ -113,10 +136,12 @@ impl UpsService {
     }
 
     pub fn get_ups_status(name: &str) -> Result<UpsStatus, UpsError> {
-        let output = Command::new("upsc")
-            .args([name])
-            .output()
-            .map_err(|e| UpsError::CommandFailed(e.to_string()))?;
+        validate_ups_name(name).map_err(UpsError::InvalidName)?;
+        let output = run_timed(
+            &mut Command::new("upsc").args(upsc_args(name, None)),
+            NUT_QUERY_TIMEOUT,
+        )
+        .map_err(UpsError::CommandFailed)?;
 
         if !output.status.success() {
             if String::from_utf8_lossy(&output.stderr).contains("Error") {
@@ -132,10 +157,12 @@ impl UpsService {
     }
 
     pub fn get_ups_variables(name: &str) -> Result<Vec<UpsVariable>, UpsError> {
-        let output = Command::new("upsc")
-            .args([name])
-            .output()
-            .map_err(|e| UpsError::CommandFailed(e.to_string()))?;
+        validate_ups_name(name).map_err(UpsError::InvalidName)?;
+        let output = run_timed(
+            &mut Command::new("upsc").args(upsc_args(name, None)),
+            NUT_QUERY_TIMEOUT,
+        )
+        .map_err(UpsError::CommandFailed)?;
 
         if !output.status.success() {
             return Err(UpsError::CommandFailed(
@@ -147,11 +174,20 @@ impl UpsService {
         parse_ups_variables(&output)
     }
 
+    /// Read one NUT variable (`upsc <name> <variable>`).
+    ///
+    /// ROADMAP 13.2: both the name and the variable are validated before the
+    /// argv is built. The old code passed `"{var}@{name}"` as a single
+    /// argument, which is not `upsc`'s syntax at all — every per-variable
+    /// read was a malformed target rather than a scoped query.
     pub fn get_ups_variable(name: &str, var: &str) -> Result<String, UpsError> {
-        let output = Command::new("upsc")
-            .args([format!("{}@{}", var, name)])
-            .output()
-            .map_err(|e| UpsError::CommandFailed(e.to_string()))?;
+        validate_ups_name(name).map_err(UpsError::InvalidName)?;
+        validate_ups_variable(var).map_err(UpsError::InvalidName)?;
+        let output = run_timed(
+            &mut Command::new("upsc").args(upsc_args(name, Some(var))),
+            NUT_QUERY_TIMEOUT,
+        )
+        .map_err(UpsError::CommandFailed)?;
 
         if !output.status.success() {
             return Err(UpsError::CommandFailed(
@@ -338,6 +374,41 @@ pub fn validate_ups_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A NUT variable name is a dotted identifier (`ups.status`, `battery.charge`,
+/// `driver.parameter.port`). It is passed as its own `upsc` argument, so the
+/// same allow-list reasoning as `validate_ups_name` applies: no spaces, no
+/// leading `-` (which `upsc` would read as an option), no metacharacters.
+pub fn validate_ups_variable(var: &str) -> Result<(), String> {
+    let var = var.trim();
+    if var.is_empty() || var.len() > 64 {
+        return Err("UPS variable must be 1–64 characters".to_string());
+    }
+    let valid = var.split('.').all(|part| {
+        !part.is_empty()
+            && !part.starts_with('-')
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    });
+    if !valid {
+        return Err(
+            "UPS variable must be a dotted identifier such as 'battery.charge'".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// The exact `upsc` argv for one query: `upsc <name>` (all variables) or
+/// `upsc <name> <variable>`. Pure, so the security-relevant shape is
+/// unit-testable without a NUT daemon.
+pub fn upsc_args(name: &str, var: Option<&str>) -> Vec<String> {
+    let mut args = vec![name.to_string()];
+    if let Some(var) = var {
+        args.push(var.to_string());
+    }
+    args
+}
+
 /// Validate a full UPS section before it is written to `ups.conf`.
 pub fn validate_ups_entry(entry: &UpsConfigEntry) -> Result<(), String> {
     validate_ups_name(&entry.name)?;
@@ -489,35 +560,115 @@ pub fn list_config() -> Result<Vec<UpsConfigEntry>, UpsError> {
     Ok(parse_ups_conf(&text))
 }
 
+/// The auto-detection section `installer/install.sh` ships: one generic
+/// `usbhid-ups` entry with `port = auto`, which attaches to whichever
+/// supported USB UPS is present.
+pub fn default_ups_entry() -> UpsConfigEntry {
+    UpsConfigEntry {
+        name: "ups".to_string(),
+        driver: "usbhid-ups".to_string(),
+        port: "auto".to_string(),
+        desc: "HomeVault auto-detected USB UPS".to_string(),
+    }
+}
+
+/// The text of `ups.conf` after "Reset to Defaults": global directives are
+/// preserved verbatim, every device section HomeVault may have written is
+/// dropped, and the shipped auto-detect section is restored.
+///
+/// Pure, so "reset restores the shipped state" is unit-testable without
+/// touching `/etc/nut`.
+pub fn reset_ups_conf_text(text: &str) -> String {
+    let globals: Vec<&str> = text
+        .lines()
+        .take_while(|line| !line.trim_start().starts_with('['))
+        .collect();
+    let globals = globals.join("\n");
+    let globals = globals.trim_end();
+    upsert_ups_section(globals, &default_ups_entry())
+}
+
+/// Restore the shipped `ups.conf` state and reload NUT (ROADMAP 13.5: the
+/// UPS device list previously survived a "Reset to Defaults" like every
+/// other un-wired setting).
+pub fn reset_config() -> Result<Vec<String>, UpsError> {
+    let text = std::fs::read_to_string(UPS_CONF_PATH).unwrap_or_default();
+    let cleared = reset_ups_conf_text(&text);
+    crate::shares::write_file_as_root(UPS_CONF_PATH, &cleared)
+        .map_err(|e| UpsError::CommandFailed(e.to_string()))?;
+    Ok(restart_nut())
+}
+
 /// Add or update one UPS section and reload NUT.
-pub fn save_config(entry: UpsConfigEntry) -> Result<(), UpsError> {
+///
+/// The `Ok` payload lists reload failures: the config write and the service
+/// reload are two different outcomes, and ROADMAP 13.2 was precisely the bug
+/// of reporting only the first. An empty vector means NUT really reloaded.
+pub fn save_config(entry: UpsConfigEntry) -> Result<Vec<String>, UpsError> {
     validate_ups_entry(&entry).map_err(UpsError::ParseError)?;
     let text = std::fs::read_to_string(UPS_CONF_PATH).unwrap_or_default();
     let updated = upsert_ups_section(&text, &entry);
     crate::shares::write_file_as_root(UPS_CONF_PATH, &updated)
         .map_err(|e| UpsError::CommandFailed(e.to_string()))?;
-    restart_nut();
-    Ok(())
+    Ok(restart_nut())
 }
 
-/// Remove one UPS section and reload NUT.
-pub fn delete_config(name: &str) -> Result<(), UpsError> {
-    validate_ups_name(name).map_err(UpsError::ParseError)?;
+/// Remove one UPS section and reload NUT (see `save_config` for the `Ok`
+/// payload).
+pub fn delete_config(name: &str) -> Result<Vec<String>, UpsError> {
+    validate_ups_name(name).map_err(UpsError::InvalidName)?;
     let text = std::fs::read_to_string(UPS_CONF_PATH).unwrap_or_default();
     let updated = remove_ups_section(&text, name);
     crate::shares::write_file_as_root(UPS_CONF_PATH, &updated)
         .map_err(|e| UpsError::CommandFailed(e.to_string()))?;
-    restart_nut();
-    Ok(())
+    Ok(restart_nut())
+}
+
+/// The argv used to reload one NUT unit. Pure, so the sudoers grant and the
+/// runtime command can be asserted to be the same shape.
+pub fn nut_restart_args(unit: &str) -> Vec<String> {
+    vec![
+        "systemctl".to_string(),
+        "restart".to_string(),
+        unit.to_string(),
+    ]
 }
 
 /// Regenerate the per-device driver instances from `ups.conf` and reload
-/// `upsd`. Best-effort: a config write that succeeded must not be reported as
-/// failed just because the service restart hiccuped.
-fn restart_nut() {
-    for unit in ["nut-driver-enumerator.service", "nut-server"] {
-        let _ = Command::new("systemctl").args(["restart", unit]).output();
+/// `upsd`. Returns one message per unit that did not reload.
+///
+/// ROADMAP 13.2: the previous version ran `systemctl` with no `sudo` and no
+/// grant existed for either unit, so on the shipped unprivileged service
+/// account every call failed silently — and the caller reported success.
+pub fn restart_nut() -> Vec<String> {
+    let mut failures = Vec::new();
+    for unit in NUT_UNITS {
+        let mut cmd = Command::new("sudo");
+        cmd.args(nut_restart_args(unit));
+        match run_timed(&mut cmd, NUT_RESTART_TIMEOUT) {
+            Ok(out) if out.status.success() => {
+                debug!("NUT unit {} restarted", unit);
+            }
+            Ok(out) => {
+                let detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                warn!("NUT unit {} did not restart: {}", unit, detail);
+                failures.push(format!(
+                    "{}: {}",
+                    unit,
+                    if detail.is_empty() {
+                        "systemctl exited with a failure status".to_string()
+                    } else {
+                        detail
+                    }
+                ));
+            }
+            Err(e) => {
+                warn!("NUT unit {} did not restart: {}", unit, e);
+                failures.push(format!("{}: {}", unit, e));
+            }
+        }
     }
+    failures
 }
 
 #[cfg(test)]
@@ -667,5 +818,136 @@ maxretry = 3
             ..ok.clone()
         };
         assert!(validate_ups_entry(&empty_port).is_err());
+    }
+
+    // -- ROADMAP 13.2: the name reaches the `upsc` argv -------------------
+
+    #[test]
+    fn test_validate_ups_name_rejects_argv_injection() {
+        for bad in [
+            "",
+            "   ",
+            "ups; reboot",
+            "ups&&reboot",
+            "$(reboot)",
+            "../etc",
+            "-L",
+            "ups name",
+            "ups\n",
+            "[ups]",
+            &"a".repeat(33),
+        ] {
+            assert!(
+                validate_ups_name(bad).is_err(),
+                "'{bad}' must not be accepted as a UPS name"
+            );
+        }
+        for ok in ["ups", "rack_1", "serial-2", "UPS03"] {
+            assert!(validate_ups_name(ok).is_ok(), "'{ok}' is a valid name");
+        }
+    }
+
+    #[test]
+    fn test_validate_ups_variable_is_a_dotted_identifier() {
+        for ok in [
+            "ups.status",
+            "battery.charge",
+            "driver.parameter.port",
+            "input_voltage",
+        ] {
+            assert!(validate_ups_variable(ok).is_ok(), "'{ok}' is valid");
+        }
+        for bad in [
+            "",
+            " ups.status",
+            "--help",
+            "battery..charge",
+            "battery.charge; reboot",
+            "battery.charge\n",
+            "a/b",
+            &"a".repeat(65),
+        ] {
+            assert!(
+                validate_ups_variable(bad).is_err(),
+                "'{bad}' must not be accepted as a UPS variable"
+            );
+        }
+    }
+
+    #[test]
+    fn test_upsc_argv_is_one_argument_per_field() {
+        // `upsc <name>` and `upsc <name> <variable>` — never the old
+        // `"{var}@{name}"` shape, which was not `upsc` syntax at all.
+        assert_eq!(upsc_args("ups", None), vec!["ups".to_string()]);
+        assert_eq!(
+            upsc_args("ups", Some("battery.charge")),
+            vec!["ups".to_string(), "battery.charge".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_a_bad_name_is_refused_before_any_command_runs() {
+        // No `upsc` exists in a test environment; the point is that the
+        // error is the validation one, not "command not found".
+        let err = UpsService::get_ups_status("ups; reboot").unwrap_err();
+        assert!(matches!(err, UpsError::InvalidName(_)), "{err:?}");
+        let err = UpsService::get_ups_variables("../ups").unwrap_err();
+        assert!(matches!(err, UpsError::InvalidName(_)), "{err:?}");
+        let err = UpsService::get_ups_variable("ups", "--help").unwrap_err();
+        assert!(matches!(err, UpsError::InvalidName(_)), "{err:?}");
+    }
+
+    #[test]
+    fn test_nut_restart_argv_matches_the_granted_units() {
+        assert_eq!(
+            nut_restart_args(NUT_UNITS[0]),
+            vec![
+                "systemctl".to_string(),
+                "restart".to_string(),
+                "nut-driver-enumerator.service".to_string()
+            ]
+        );
+        assert_eq!(
+            nut_restart_args(NUT_UNITS[1]),
+            vec![
+                "systemctl".to_string(),
+                "restart".to_string(),
+                "nut-server".to_string()
+            ]
+        );
+        // The enumerator runs before `upsd` reads the list it generates.
+        assert_eq!(NUT_UNITS, ["nut-driver-enumerator.service", "nut-server"]);
+    }
+
+    // -- ROADMAP 13.5: "Reset to Defaults" restores the shipped UPS state --
+
+    #[test]
+    fn test_reset_ups_conf_text_keeps_globals_and_restores_the_default() {
+        let text = "\
+# comment
+maxretry = 3
+
+[ups]
+    driver = usbhid-ups
+    port = auto
+
+[serial]
+    driver = blazer_ser
+    port = /dev/ttyS0
+";
+        let out = reset_ups_conf_text(text);
+        let parsed = parse_ups_conf(&out);
+        assert_eq!(parsed.len(), 1, "only the shipped section remains");
+        assert_eq!(parsed[0], default_ups_entry());
+        assert!(out.contains("maxretry = 3"), "global directives survive");
+        assert!(!out.contains("blazer_ser"));
+        assert!(!out.contains("ttyS0"));
+    }
+
+    #[test]
+    fn test_reset_ups_conf_text_on_an_empty_file_writes_the_default() {
+        let out = reset_ups_conf_text("");
+        let parsed = parse_ups_conf(&out);
+        assert_eq!(parsed, vec![default_ups_entry()]);
     }
 }

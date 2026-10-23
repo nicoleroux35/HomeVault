@@ -79,7 +79,6 @@ Two structural facts explain most of the list:
 | # | Area | Verdict | Blocking items |
 |---|---|---|---|
 | 10b | File Explorer — residual hardening | P2 | 3 |
-| 13 | Settings — remaining cards | P1 | 4 |
 | 16.4 | Cloud Sync (rclone) — no scheduler | P2 | 1 |
 | 18 | Syncthing | P1 | 1 |
 | 21 | Notifications | P1 | 3 |
@@ -95,7 +94,7 @@ Two structural facts explain most of the list:
 | 33 | Transfer quotas — residual | P2 | 1 |
 | — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **38** (31 per-area + 7 cross-cutting).
+Total open findings: **34** (27 per-area + 7 cross-cutting).
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
@@ -129,9 +128,10 @@ into one bucket), and `latest` answers `200` + `data: null` on a fresh install.
 closed the same day**: every rclone subprocess runs under a deadline, a started
 mount is owned by this process and unmounted at shutdown, the credential file is
 written `0600` and edited as parsed sections, and the screen no longer swallows a
-failure. Only the missing *scheduler* is left, as P2 **16.4**. Next: **13
-(Settings)** — the largest remaining P1 surface — with **21 (Notifications)**
-right behind it (blocking email inside the request loop, no per-user state).
+failure. Only the missing *scheduler* is left, as P2 **16.4**. **13 (Settings)
+closed on 2026-10-23** too (see Done), so **21 (Notifications)** is the next
+P1: the email/webhook transport is now off the request loop, but the read
+state is still shared and the throttle/dedup state still resets on restart.
 
 ---
 
@@ -143,67 +143,6 @@ None. Item 6 (Apps Center / app-proxy) was closed on 2026-10-23 — see
 ---
 
 ## P1 — Needs work
-
-### 13. Settings — the remaining cards
-
-- [ ] **13.2 — `restart_nut()` cannot succeed.** `src/ups.rs:517-521` runs
-      `systemctl restart nut-driver-enumerator.service nut-server`, but the
-      sudoers grant (`src/setup.rs:877-888`) whitelists specific verbs/units and
-      contains **no `nut-*` entry**. UPS config saves report success while the
-      daemon never reloads. Related: `get_ups_status` / `get_ups_variables` /
-      `get_ups_variable` (`src/ups.rs:116,135,151`) pass the request `name`
-      straight into the `upsc` argv — `validate_ups_name` exists (`:327`) but is
-      only used by add/delete config (`:343,505`).
-- [ ] **13.3 — Email SMTP settings are silently ignored.** `smtp_server`, `port`,
-      `username`, `password`, `use_tls` are persisted
-      (`src/handlers/settings.rs:643-661`) but `EmailService` only passes
-      `--from` to msmtp (`src/email.rs:236-244`); credentials must be
-      pre-configured in msmtp's own file. The primary notification channel does
-      not honour what the admin configured. Also `is_email_configured()` shells
-      `which` three times per call (`:385-401`).
-      *Acceptance:* either drive msmtp from the saved settings (or a real SMTP
-      client) or remove the fields and say so.
-- [ ] **13.4 — The UI language is not persisted.** `handle_set_language`
-      mutates only the in-process locale (`handlers/settings.rs:376`) and
-      `save_all_settings` has no language field, so the choice reverts to `en`
-      on restart. *(The `timezone` half of this finding closed with ROADMAP 12
-      on 2026-10-23: the setting is validated as an IANA name, applied with
-      `timedatectl set-timezone`, seeded from the host on a fresh install, and
-      is what the scheduled-task engine evaluates every task without a zone of
-      its own in.)*
-      *Acceptance:* the chosen language survives a restart and is applied
-      before the first page renders.
-- [ ] **13.5 — Dead and half-wired settings.** `scan_archives` (antivirus) is
-      persisted (`handlers/antivirus.rs:81,109`;
-      `storage/antivirus_repo.rs:34,117-131`) but `run_clamscan` never reads it
-      and always passes `-r` without `--scan-archive`
-      (`src/antivirus.rs:229-236`) — the toggle does nothing. SNMP `version` is
-      write-only: `run_walk` hardcodes `2c` (`src/snmp.rs:189`) and
-      `handle_snmp_interfaces` accepts `iface` and never uses it
-      (`:154-159`). `settings_persistence::reset()` (`:257-270`) covers
-      general/email/update/notification/appearance/AI/SNMP/TLS only — antivirus,
-      ransomware, disk spindown, DB-backup settings and `ups.conf` all survive a
-      "Reset to Defaults".
-
-Also in this pass: `quarantine_dir` is unvalidated and interpolated into the
-clamscan argv (`src/antivirus.rs:234`) with no `path_guard` check, unlike
-`scheduled_scan_path` (`handlers/antivirus.rs:94-99`); `clamscan_available()` /
-`definitions_status()` / `spindown_tool_available()` run `Command` inline in
-async handlers (`antivirus.rs:78-117` called from
-`handlers/antivirus.rs:50`, `antivirus_scheduler.rs:53`;
-`handlers/power.rs:49-63`); `webhook_url` is unvalidated and the engine builds a
-fresh `reqwest::Client::new()` with no timeout per dispatch
-(`src/notification_engine.rs:362-365`); settings import re-serialises through
-`serde_json::to_string` with no schema version and no per-field validation
-(`handlers/settings.rs:1285-1327`).
-
-*Tests:* every defect above lives in a module with **zero unit tests**
-(`email.rs`, `notification_engine.rs`, `handlers/antivirus.rs`,
-`antivirus_scheduler.rs`, `handlers/power.rs`, `autostart.rs`).
-*Docs:* `docs/guides/antivirus.md`, `docs/guides/settings.md`,
-`docs/guides/notifications.md`.
-
----
 
 ### 16.4. Cloud Sync (rclone) — a persisted sync job never runs on its own
 
@@ -610,6 +549,74 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-23 (q)** — Settings — the remaining cards — the four dead
+settings now do what the screen says, and every host call is bounded.
+**13.2 (a UPS save reloaded nothing):** the sudoers template had **no `nut-*`
+grant at all**, so `restart_nut()` could never succeed; `src/setup.rs` now
+writes a scoped block from `nut_grants()` (`tee /etc/nut/ups.conf`,
+`systemctl restart nut-driver-enumerator.service` and
+`systemctl restart nut-server.service`, plus a read-only `upsc`), with a test
+asserting the grants cover the conf file and **both** units. `save_config` /
+`delete_config` / `reset_config` return `Result<Vec<String>, UpsError>`: the
+file is written first, then each unit that refused is collected, and the
+handlers answer `reload_warnings` — a save is "written", not necessarily
+"live". `upsc` reads validate the device name (`validate_ups_name`) and the
+variable (`validate_ups_variable`) before the argv, every call runs on
+`spawn_blocking`, and `NUT_QUERY_TIMEOUT` (10 s) / `NUT_RESTART_TIMEOUT` (60 s)
+bound them. `get_ups_variable` also called `upsc <var>` with the arguments
+swapped, which it no longer does.
+**13.3 (SMTP fields were stored and ignored):** with a relay configured,
+`email.rs` generates a private (`0600`) msmtp configuration at
+`data_dir()/msmtp.conf` (`msmtp_config_text`/`write_msmtp_config`) and sends
+through `msmtp --file <path>`, so host/port/user/password/TLS/From come from
+the Settings card and take effect on the next notification; a blank or
+`localhost` host keeps the legacy `mutt` → `sendmail` → `msmtp` order for
+hosts that already deliver mail locally. stderr is drained by a reader thread
+while the child runs (a chatty MTA cannot defeat the 30 s deadline) and its
+tail is what the error shows; `is_email_configured()` caches its three probes
+instead of shelling `which` per call. Engine sends run in `spawn_blocking`.
+**13.4 (the language reverted to English on restart):** the choice is
+`GeneralSettings.language`, persisted by `handle_set_language` and by the
+aggregate save, and `apply_loaded_settings` calls `I18n::set_locale` during
+`init_persistence` — before the server accepts its first request.
+`normalize_language` keeps the primary subtag (`fr-BE` → `fr`) and refuses the
+rest with a `400`; `reset_settings()` returns the process to `en`; the card
+surfaces a failed save instead of looking saved.
+**13.5 (dead and half-wired settings):** `scan_archives` reaches the command
+line through `clamscan_args` as an explicit `--scan-archive=yes|no`;
+`quarantine_dir` is validated (`validate_quarantine_dir`: absolute, no `..`,
+inside `base_dir()` or a storage root) instead of being interpolated raw into
+`--move=`; the SNMP `version` is read (`snmpget_args`/`snmpwalk_args`, v1/v2c
+only, v3 refused with a reason) and `iface` filters the parsed table;
+`reset_settings()` now also clears antivirus, anti-ransomware, per-disk
+spindown, `data/db_backup.json` and `ups.conf` through
+`reset_domain_settings()`, which returns per-domain `warnings` (the response
+stays `success: true` and the page names what failed). `webhook_url` is
+validated at save **and** dispatch (`validate_webhook_url`: http(s), a host, no
+embedded credentials, ≤2048) and every alert reuses one `reqwest::Client` with
+a 10 s / 5 s-connect deadline instead of `Client::new()` with none. Export
+carries `schema_version`, `validate_import` names the offending field and
+and refuses a newer schema.
+**X.1/X.2, in scope:** every `clamscan`/`definitions`/`hdparm`/`snmpd`/
+`snmpget`/`snmpwalk`/NUT call left the async runtime (`spawn_blocking` or
+`spawn_blocking`-backed `*_async` helpers) and carries a `run_timed` deadline;
+`antivirus_scheduler`'s due decision became the pure, tested
+`is_due(cron, last_scan_at)`.
+Tests: `handlers/settings.rs` 17 → **25**, `settings_persistence.rs` 7 → **13**,
+`ups.rs` 7 → **14**, `antivirus.rs` 8 → **11**, `snmp.rs` 5 → **9**,
+`email.rs` 0 → **9**, `notification_engine.rs` 0 → **2**,
+`antivirus_scheduler.rs` 0 → **4**; `settings_core_integration.rs` 19 → **24**,
+`security_integration.rs` 25 → **26**, `snmp_integration.rs` 6 → **8**,
+`ups_integration.rs` 4 → **5** (a bad name/driver/port is a `400` before
+`sudo` is reached); `settings.spec.ts` +3 (SNMP version options + hint, UPS `reload_warnings`,
+partial-reset warning) — **written, not run** (per instruction);
+`cargo check --all-targets` clean, `npm run check` 0 errors.
+Docs: `docs/guides/settings.md` (language, outside-JSON reset table, UPS/NUT,
+SNMP, import format), `docs/guides/notifications.md` (msmtp transport, webhook
+delivery), `docs/guides/antivirus.md` (argv/quarantine validation, async
+probes), `docs/guides/power.md` (deadlines, reset), `docs/API.md`.
+X.1/X.2 stay open as cross-cutting items for the modules not in this list.
 
 **2026-10-23 (p)** — Cloud Sync (rclone) — every call is bounded, a mount is
 owned by the process that started it, and the credential file is private.

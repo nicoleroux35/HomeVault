@@ -485,6 +485,59 @@ async fn test_antivirus_settings_round_trip_and_path_guard() {
 }
 
 #[tokio::test]
+async fn test_antivirus_quarantine_dir_and_archive_flag_are_validated() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = security_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    // ROADMAP 13.5: `quarantine_dir` is interpolated into
+    // `clamscan --move=<dir>` and used with `create_dir_all`, so it now goes
+    // through the same validation as the scan path — a relative path is
+    // resolved by clamscan against its own cwd, not the admin's.
+    for bad in ["quarantine", "/etc", "/tmp/../etc", "/"] {
+        let (status, body) = send(
+            &mut r,
+            Method::PUT,
+            "/api/antivirus/settings",
+            Some(&token),
+            Some(av_settings(bad, Some("/tmp"))),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "'{bad}' must be refused as a quarantine directory: {body}"
+        );
+    }
+
+    // The archive toggle is stored and read back as sent (it used to be
+    // persisted but never reach the clamscan argv).
+    let mut body = av_settings("/tmp/hv-quarantine", Some("/tmp"));
+    body["scan_archives"] = json!(false);
+    let (status, _) = send(
+        &mut r,
+        Method::PUT,
+        "/api/antivirus/settings",
+        Some(&token),
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, got) = send(
+        &mut r,
+        Method::GET,
+        "/api/antivirus/settings",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(got["data"]["scan_archives"], json!(false));
+    assert_eq!(got["data"]["quarantine_dir"], json!("/tmp/hv-quarantine"));
+}
+
+#[tokio::test]
 async fn test_antivirus_scan_rejects_bad_paths_before_spawning_clamscan() {
     let (state, _tmp, _g) = setup_state().await;
     create_test_user(&state, "admin1", "Passw0rd!123", 2).await;

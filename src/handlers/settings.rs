@@ -153,6 +153,14 @@ struct LanguageResponse {
 pub struct GeneralSettings {
     pub server_name: Option<String>,
     pub timezone: Option<String>,
+    /// Server-wide default UI language (`en`, `fr`, `es`, `de`).
+    ///
+    /// ROADMAP 13.4: this was in-process state only, so the admin's choice
+    /// reverted to `en` on the next restart. It is now part of the persisted
+    /// General block and re-applied at boot (`init_persistence`), before the
+    /// first page is served.
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 impl Default for GeneralSettings {
@@ -160,7 +168,41 @@ impl Default for GeneralSettings {
         Self {
             server_name: Some("HomeVault".to_string()),
             timezone: Some("UTC".to_string()),
+            language: Some(DEFAULT_LANGUAGE.to_string()),
         }
+    }
+}
+
+/// The languages HomeVault ships translations for. The single list every
+/// entry point validates against (`POST /settings/language`, the General save,
+/// the startup read).
+pub const SUPPORTED_LANGUAGES: [&str; 4] = ["en", "fr", "es", "de"];
+
+/// Locale served when no (valid) language is persisted.
+pub const DEFAULT_LANGUAGE: &str = "en";
+
+/// Normalise a caller-supplied language to a supported tag.
+///
+/// Accepts the full tag as well as its primary subtag (`fr-BE` → `fr`), which
+/// is what a browser sends; anything else is refused so a typo cannot be
+/// persisted and then silently fall back to English on the next boot.
+pub fn normalize_language(input: &str) -> Result<String, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("Language must not be empty".to_string());
+    }
+    let primary = trimmed
+        .split(['-', '_'])
+        .next()
+        .unwrap_or(trimmed)
+        .to_ascii_lowercase();
+    if SUPPORTED_LANGUAGES.contains(&primary.as_str()) {
+        Ok(primary)
+    } else {
+        Err(format!(
+            "Unsupported language '{}'. Supported: {:?}",
+            trimmed, SUPPORTED_LANGUAGES
+        ))
     }
 }
 
@@ -299,6 +341,110 @@ impl Default for EmailSettings {
             use_tls: Some(true),
         }
     }
+}
+
+impl From<&EmailSettings> for crate::email::EmailConfig {
+    /// The one place saved settings become a transport configuration. Both the
+    /// test-email endpoint and the notification engine go through it, so the
+    /// two cannot disagree about what "configured" means.
+    fn from(settings: &EmailSettings) -> Self {
+        Self {
+            smtp_host: settings.smtp_server.clone().unwrap_or_default(),
+            smtp_port: settings.smtp_port.unwrap_or(587),
+            smtp_username: settings.smtp_username.clone().unwrap_or_default(),
+            smtp_password: settings.smtp_password.clone().unwrap_or_default(),
+            from_address: settings
+                .from_address
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "homevault@localhost".to_string()),
+            from_name: "HomeVault".to_string(),
+            use_tls: settings.use_tls.unwrap_or(true),
+        }
+    }
+}
+
+/// Conservative email-address check for the two fields that end up as an
+/// envelope/SMTP parameter (`from_address`, the notification recipient).
+///
+/// Not RFC 5322: it rejects what would break the argv/header shape — empty
+/// local part or domain, whitespace, control characters and the separators
+/// `<>(),;` — and accepts ordinary addresses, including the `homevault@localhost`
+/// default. The point is to refuse an obviously wrong value at save time
+/// instead of at 3 a.m. in a notification loop.
+pub fn is_valid_email_address(addr: &str) -> bool {
+    let addr = addr.trim();
+    if addr.is_empty() || addr.len() > 254 {
+        return false;
+    }
+    if addr
+        .chars()
+        .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '<' | '>' | '(' | ')' | ',' | ';' | '"'))
+    {
+        return false;
+    }
+    let Some((local, domain)) = addr.split_once('@') else {
+        return false;
+    };
+    if local.is_empty() || domain.is_empty() || domain.contains('@') {
+        return false;
+    }
+    // A domain needs at least one dot — except the host-local default, which
+    // is a legitimate `sendmail` recipient on this appliance.
+    if domain != "localhost" && !domain.contains('.') {
+        return false;
+    }
+    true
+}
+
+/// Validate an outgoing webhook URL (ROADMAP 13.5).
+///
+/// The stored value is handed to `reqwest` only when an alert fires, so an
+/// unchecked URL is a notification that silently never arrives. Rules:
+///
+/// * empty clears the field (the card's way of disabling the webhook);
+/// * `http` / `https` only — a `file:`/`data:` URL would make the server read
+///   or POST to something that is not a webhook at all;
+/// * a host is required and embedded credentials (`user:pass@`) are refused:
+///   the URL is displayed back in the card, so a password in it would be shown
+///   in clear text to whoever opens Settings, and the engine adds its own
+///   auth headers;
+/// * control characters, whitespace and anything longer than 2048 bytes are
+///   refused (the de-facto header/URL bound).
+///
+/// Returns the trimmed URL so the caller stores exactly what was validated.
+pub fn validate_webhook_url(raw: &str) -> Result<String, String> {
+    let url = raw.trim();
+    if url.is_empty() {
+        return Ok(String::new());
+    }
+    if url.len() > 2048 {
+        return Err("Webhook URL is too long (max 2048 characters)".to_string());
+    }
+    if url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err("Webhook URL must not contain spaces or control characters".to_string());
+    }
+    let parsed = url::Url::parse(url)
+        .map_err(|e| format!("Invalid webhook URL '{}': {}", url, e))?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        other => {
+            return Err(format!(
+                "Webhook URL must use http or https (got '{}')",
+                other
+            ))
+        }
+    }
+    if parsed.host_str().map(str::is_empty).unwrap_or(true) {
+        return Err("Webhook URL must name a host".to_string());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(
+            "Webhook URL must not embed credentials — use a URL the receiver authenticates"
+                .to_string(),
+        );
+    }
+    Ok(url.to_string())
 }
 
 /// Settings for automatic update checks.
@@ -448,17 +594,17 @@ pub async fn handle_set_language(
         return ResponseHelper::json_error("Admin access required".to_string());
     }
 
-    let language = &req.language;
+    let language = match normalize_language(&req.language) {
+        Ok(language) => language,
+        Err(e) => return ResponseHelper::json_error(e),
+    };
 
-    let valid_languages = ["en", "fr", "es", "de"];
-    if !valid_languages.contains(&language.as_str()) {
-        return ResponseHelper::json_error(format!(
-            "Invalid language '{}'. Supported: {:?}",
-            language, valid_languages
-        ));
-    }
-
-    I18n::set_locale(language);
+    // ROADMAP 13.4: persist it, or the choice reverts to `en` on the next
+    // restart. `GENERAL_SETTINGS.language` is the stored copy; the i18n locale
+    // is the live one, and both must move together.
+    GENERAL_SETTINGS.write().language = Some(language.clone());
+    I18n::set_locale(&language);
+    crate::settings_persistence::save_all_settings();
     tracing::info!("Language set to: {}", language);
 
     ResponseHelper::json_success(LanguageResponse {
@@ -488,7 +634,15 @@ pub async fn handle_get_language(
 
     let current_lang = I18n::get_locale();
     ResponseHelper::json_success(serde_json::json!({
-        "language": current_lang
+        "language": current_lang,
+        // The persisted value is echoed too: an admin checking the card should
+        // be able to tell "this is the stored choice" from "this is what this
+        // process happens to use", which ROADMAP 13.4 separated.
+        "persisted": GENERAL_SETTINGS
+            .read()
+            .language
+            .clone()
+            .unwrap_or_else(|| DEFAULT_LANGUAGE.to_string()),
     }))
 }
 
@@ -545,6 +699,17 @@ pub async fn handle_general_settings_update(
         }
     }
 
+    // Same rule for the language (ROADMAP 13.4): the aggregate save carries it
+    // too when the card saves everything at once, and an unsupported tag must
+    // be refused here rather than persisted and silently ignored at boot.
+    let language = match req.language.as_deref() {
+        Some(raw) => match normalize_language(raw) {
+            Ok(language) => Some(language),
+            Err(e) => return ResponseHelper::json_error(e),
+        },
+        None => None,
+    };
+
     // Scoped block, not a `drop()`: the guard is `!Send`, and the async fn
     // must not carry it across the `spawn_blocking` await below.
     {
@@ -555,6 +720,12 @@ pub async fn handle_general_settings_update(
         if let Some(timezone) = &req.timezone {
             settings.timezone = Some(timezone.trim().to_string());
         }
+        if let Some(language) = &language {
+            settings.language = Some(language.clone());
+        }
+    }
+    if let Some(language) = &language {
+        I18n::set_locale(language);
     }
 
     // The server name was previously a pure UI label with no connection to
@@ -830,26 +1001,50 @@ pub async fn handle_email_settings_update(
         return ResponseHelper::json_error("Admin access required".to_string());
     }
 
-    let mut settings = EMAIL_SETTINGS.write();
-    if let Some(smtp_server) = &req.smtp_server {
-        settings.smtp_server = Some(smtp_server.clone());
+    // ROADMAP 13.3: these values are now the ones that reach msmtp, so they are
+    // validated *before* they are persisted — a host with a space or a newline
+    // would otherwise become a directive in the generated configuration.
+    let mut next = EMAIL_SETTINGS.read().clone();
+    if let Some(server) = &req.smtp_server {
+        next.smtp_server = Some(server.trim().to_string());
     }
-    if let Some(smtp_port) = req.smtp_port {
-        settings.smtp_port = Some(smtp_port);
+    if let Some(port) = req.smtp_port {
+        next.smtp_port = Some(port);
     }
-    if let Some(smtp_username) = &req.smtp_username {
-        settings.smtp_username = Some(smtp_username.clone());
+    if let Some(username) = &req.smtp_username {
+        next.smtp_username = Some(username.trim().to_string());
     }
-    if let Some(smtp_password) = &req.smtp_password {
-        settings.smtp_password = Some(smtp_password.clone());
+    if let Some(password) = &req.smtp_password {
+        next.smtp_password = Some(password.clone());
     }
-    if let Some(from_address) = &req.from_address {
-        settings.from_address = Some(from_address.clone());
+    if let Some(from) = &req.from_address {
+        next.from_address = Some(from.trim().to_string());
     }
     if let Some(use_tls) = req.use_tls {
-        settings.use_tls = Some(use_tls);
+        next.use_tls = Some(use_tls);
     }
-    drop(settings);
+
+    if let Some(from) = next.from_address.as_deref().map(str::trim) {
+        if !from.is_empty() && !is_valid_email_address(from) {
+            return ResponseHelper::json_error(format!(
+                "Invalid From address '{}' — expected an address such as bot@example.com",
+                from
+            ));
+        }
+    }
+    if next.smtp_port == Some(0) {
+        return ResponseHelper::json_error("SMTP port must be 1-65535".to_string());
+    }
+    // Only a *configured* relay is checked for insertion safety; an empty host
+    // means "local MTA" and needs no msmtp configuration at all.
+    let probe = crate::email::EmailConfig::from(&next);
+    if probe.is_explicit() {
+        if let Err(e) = probe.validate() {
+            return ResponseHelper::json_error(format!("Invalid email settings: {e}"));
+        }
+    }
+
+    *EMAIL_SETTINGS.write() = next;
 
     // Persist settings
     crate::settings_persistence::save_all_settings();
@@ -914,25 +1109,18 @@ pub async fn handle_email_test(State(state): State<Arc<AppState>>, headers: Head
         return ResponseHelper::json_error("Admin access required".to_string());
     }
 
-    let settings = EMAIL_SETTINGS.read();
+    let settings = EMAIL_SETTINGS.read().clone();
 
-    if settings.smtp_server.is_none() || settings.smtp_username.is_none() {
+    if settings.smtp_server.is_none() && settings.smtp_username.is_none() {
         return ResponseHelper::json_error("Email settings not configured".to_string());
     }
 
-    let config = crate::email::EmailConfig {
-        smtp_host: settings.smtp_server.clone().unwrap_or_default(),
-        smtp_port: settings.smtp_port.unwrap_or(587),
-        smtp_username: settings.smtp_username.clone().unwrap_or_default(),
-        smtp_password: settings.smtp_password.clone().unwrap_or_default(),
-        from_address: settings
-            .from_address
-            .clone()
-            .unwrap_or_else(|| "homevault@localhost".to_string()),
-        from_name: "HomeVault".to_string(),
-        use_tls: settings.use_tls.unwrap_or(true),
-    };
-    drop(settings);
+    let config = crate::email::EmailConfig::from(&settings);
+    if config.is_explicit() {
+        if let Err(e) = config.validate() {
+            return ResponseHelper::json_error(format!("Email settings are invalid: {e}"));
+        }
+    }
 
     let recipient_email = NOTIFICATION_SETTINGS.read().email.clone();
     let Some(recipient_email) = recipient_email else {
@@ -947,11 +1135,18 @@ pub async fn handle_email_test(State(state): State<Arc<AppState>>, headers: Head
         name: None,
     };
 
-    match crate::email::EmailService::send_test_email(&recipient, &config) {
-        Ok(_) => ResponseHelper::json_success(serde_json::json!({
+    // ROADMAP 21.1 (same root cause as 13.3): sending shells out to an MTA with
+    // a 30 s deadline, so it must not run on the async runtime.
+    let sent =
+        tokio::task::spawn_blocking(move || crate::email::EmailService::send_test_email(&recipient, &config))
+            .await;
+
+    match sent {
+        Ok(Ok(_)) => ResponseHelper::json_success(serde_json::json!({
             "success": true,
             "message": t("settings.test_sent")
         })),
+        Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to send test email: {}", e)),
         Err(e) => ResponseHelper::json_error(format!("Failed to send test email: {}", e)),
     }
 }
@@ -1247,30 +1442,44 @@ pub async fn handle_notification_settings_update(
         return ResponseHelper::json_error("Admin access required".to_string());
     }
 
-    let mut settings = NOTIFICATION_SETTINGS.write();
+    // ROADMAP 13.5: the webhook URL used to be stored verbatim and handed to
+    // `reqwest` only when an alert fired, so a typo surfaced hours later as a
+    // silently dropped notification. Validate before persisting, into a copy,
+    // so a refused field cannot leave the in-memory settings half-updated.
+    let mut next = NOTIFICATION_SETTINGS.read().clone();
     if let Some(email) = &req.email {
-        settings.email = Some(email.clone());
-    }
-    if let Some(enable) = req.enable_alerts {
-        settings.enable_alerts = Some(enable);
-    }
-    if let Some(threshold) = req.alert_threshold {
-        settings.alert_threshold = Some(threshold.clamp(0, 100));
-    }
-    if let Some(smtp) = req.smtp_enabled {
-        settings.smtp_enabled = Some(smtp);
+        let email = email.trim();
+        if !email.is_empty() && !is_valid_email_address(email) {
+            return ResponseHelper::json_error(format!(
+                "Invalid notification email '{}' — expected an address such as admin@example.com",
+                email
+            ));
+        }
+        next.email = Some(email.to_string());
     }
     if let Some(webhook_url) = &req.webhook_url {
-        settings.webhook_url = Some(webhook_url.clone());
+        match validate_webhook_url(webhook_url) {
+            Ok(url) => next.webhook_url = Some(url),
+            Err(e) => return ResponseHelper::json_error(e),
+        }
+    }
+    if let Some(enable) = req.enable_alerts {
+        next.enable_alerts = Some(enable);
+    }
+    if let Some(threshold) = req.alert_threshold {
+        next.alert_threshold = Some(threshold.clamp(0, 100));
+    }
+    if let Some(smtp) = req.smtp_enabled {
+        next.smtp_enabled = Some(smtp);
     }
     if let Some(webhook_enabled) = req.webhook_enabled {
-        settings.webhook_enabled = Some(webhook_enabled);
+        next.webhook_enabled = Some(webhook_enabled);
     }
     if let Some(toggles) = &req.event_toggles {
         // Drop ids that aren't in the catalog — stale keys from removed
         // events shouldn't persist forever, and unknown ids are ignored by
         // `is_event_enabled` anyway.
-        settings.event_toggles = Some(
+        next.event_toggles = Some(
             toggles
                 .iter()
                 .filter(|(id, _)| {
@@ -1288,9 +1497,9 @@ pub async fn handle_notification_settings_update(
                 "Invalid webhook format: expected generic, slack or discord".to_string(),
             );
         }
-        settings.webhook_format = Some(format.clone());
+        next.webhook_format = Some(format.clone());
     }
-    drop(settings);
+    *NOTIFICATION_SETTINGS.write() = next;
 
     // Persist settings
     crate::settings_persistence::save_all_settings();
@@ -1458,7 +1667,12 @@ pub async fn handle_all_settings_get(
         "general": {
             "server_name": general.server_name,
             "timezone": general.timezone,
-            "language": I18n::get_locale(),
+            // The stored choice (ROADMAP 13.4), not merely this process's
+            // current locale — the Settings card edits the former.
+            "language": general
+                .language
+                .clone()
+                .unwrap_or_else(|| I18n::get_locale()),
         },
         "email": {
             "smtp_server": email.smtp_server,
@@ -1609,6 +1823,18 @@ pub async fn handle_settings_reset(
 
     match reset_settings() {
         Ok(_) => {
+            // ROADMAP 13.5: `reset_settings()` only clears `settings.json` and
+            // the in-memory statics. The families stored elsewhere (antivirus,
+            // anti-ransomware, disk spindown, database backups, `ups.conf`) are
+            // reset here, and anything that failed is named in `warnings`
+            // instead of being reported as a clean reset.
+            let warnings = reset_domain_settings(&state).await;
+            for warning in &warnings {
+                crate::events::log_event_warn(format!(
+                    "Settings reset: {} did not reset: {}",
+                    session.username, warning
+                ));
+            }
             crate::events::log_event_warn(format!(
                 "Admin '{}' reset all settings to defaults",
                 session.username
@@ -1616,10 +1842,85 @@ pub async fn handle_settings_reset(
             ResponseHelper::json_success(serde_json::json!({
                 "success": true,
                 "message": t("settings.settings_reset"),
+                "warnings": warnings,
             }))
         }
         Err(e) => ResponseHelper::json_error(format!("Reset failed: {}", e)),
     }
+}
+
+/// Reset every settings family that does **not** live in `settings.json`.
+///
+/// ROADMAP 13.5: "Reset to Defaults" only cleared the JSON statics, so the
+/// antivirus schedule and quarantine path, the anti-ransomware thresholds, the
+/// per-disk spindown rows, the database-backup interval and the UPS device list
+/// all survived a reset the UI described as complete. Each family is reset
+/// through its own repository; failures are collected per domain and returned
+/// rather than swallowed, because a partial reset that reports success is the
+/// same class of bug as the UPS reload one.
+pub async fn reset_domain_settings(state: &AppState) -> Vec<String> {
+    let mut failures: Vec<String> = Vec::new();
+
+    // Antivirus: SQLite singleton row (scan history and quarantined threats are
+    // evidence, not settings — they are deliberately left alone).
+    let av = crate::storage::AntivirusRepository::new(state.db.pool());
+    let av_defaults = crate::storage::AvSettings::default();
+    if let Err(e) = av
+        .save_settings(
+            &av_defaults.quarantine_dir,
+            av_defaults.scheduled_scan_enabled,
+            &av_defaults.scheduled_scan_cron,
+            av_defaults.scheduled_scan_path.as_deref(),
+            av_defaults.scan_archives,
+        )
+        .await
+    {
+        failures.push(format!("antivirus: {e}"));
+    }
+
+    // Anti-ransomware: settings row only; protected paths are admin data.
+    let rw = crate::storage::RansomwareRepository::new(state.db.pool());
+    let rw_defaults = crate::storage::RansomwareSettings::default();
+    if let Err(e) = rw
+        .save_settings(
+            rw_defaults.enabled,
+            rw_defaults.honeypots_enabled,
+            rw_defaults.rate_threshold_events,
+            rw_defaults.rate_threshold_seconds,
+            &rw_defaults.auto_response,
+        )
+        .await
+    {
+        failures.push(format!("anti-ransomware: {e}"));
+    }
+
+    // Per-disk spindown: rows are the setting, so they are dropped. Nothing is
+    // re-applied here — the defaults mean "no `hdparm` override", and the
+    // startup path re-applies whatever is left on boot.
+    let disk_power = crate::storage::DiskPowerRepository::new(state.db.pool());
+    if let Err(e) = disk_power.delete_all().await {
+        failures.push(format!("disk spindown: {e}"));
+    }
+
+    // Database snapshots: the schedule file (`data/db_backup.json`).
+    let db_backup = crate::db_backup::DbBackupService::new(state.db.clone());
+    if let Err(e) = db_backup.reset_settings() {
+        failures.push(e);
+    }
+
+    // UPS: restore the shipped `ups.conf` section and reload NUT. Blocking
+    // (`sudo tee` + `systemctl`), so off the runtime.
+    match tokio::task::spawn_blocking(crate::ups::reset_config).await {
+        Ok(Ok(reload_warnings)) => {
+            for warning in reload_warnings {
+                failures.push(format!("UPS reload: {warning}"));
+            }
+        }
+        Ok(Err(e)) => failures.push(format!("UPS: {e}")),
+        Err(e) => failures.push(format!("UPS: {e}")),
+    }
+
+    failures
 }
 
 #[cfg(test)]
@@ -1874,5 +2175,128 @@ mod tests {
         // nobody looks for).
         assert!(!names.contains(&"CET"));
         assert!(!names.contains(&"GB-Eire"));
+    }
+
+    // -- ROADMAP 13.3/13.4/13.5: settings validation ---------------------
+
+    #[test]
+    fn test_language_normalisation_accepts_a_region_tag() {
+        assert_eq!(normalize_language("en").unwrap(), "en");
+        assert_eq!(normalize_language(" FR ").unwrap(), "fr");
+        // A browser sends `fr-BE`; only the primary subtag is stored.
+        assert_eq!(normalize_language("fr-BE").unwrap(), "fr");
+        assert_eq!(normalize_language("de_AT").unwrap(), "de");
+        assert_eq!(normalize_language("es-419").unwrap(), "es");
+    }
+
+    #[test]
+    fn test_language_normalisation_refuses_an_unsupported_tag() {
+        for bad in ["", "  ", "it", "xx", "en-US-extra-extra"] {
+            assert!(
+                normalize_language(bad).is_err(),
+                "'{bad}' must not be persisted as the default language"
+            );
+        }
+    }
+
+    #[test]
+    fn test_general_settings_default_language_is_the_shipped_one() {
+        assert_eq!(GeneralSettings::default().language.as_deref(), Some(DEFAULT_LANGUAGE));
+        assert!(SUPPORTED_LANGUAGES.contains(&DEFAULT_LANGUAGE));
+    }
+
+    #[test]
+    fn test_email_address_check_accepts_ordinary_addresses() {
+        for ok in [
+            "bot@example.com",
+            "first.last+tag@sub.example.co.uk",
+            "homevault@localhost",
+        ] {
+            assert!(is_valid_email_address(ok), "'{ok}' is a valid address");
+        }
+    }
+
+    #[test]
+    fn test_email_address_check_refuses_what_would_break_the_argv_or_header() {
+        for bad in [
+            "",
+            "no-at-sign",
+            "@example.com",
+            "bot@",
+            "bot@@example.com",
+            "bot@example",
+            "bot @example.com",
+            "bot@example.com\nBcc: victim@example.com",
+            "bot@example.com,other@example.com",
+            "\"Bot\" <bot@example.com>",
+        ] {
+            assert!(
+                !is_valid_email_address(bad),
+                "'{bad}' must be refused at save time"
+            );
+        }
+    }
+
+    #[test]
+    fn test_webhook_url_accepts_http_and_https() {
+        assert_eq!(
+            validate_webhook_url("https://hooks.example.com/services/abc").unwrap(),
+            "https://hooks.example.com/services/abc"
+        );
+        assert_eq!(
+            validate_webhook_url("  http://192.168.1.10:9000/hook  ").unwrap(),
+            "http://192.168.1.10:9000/hook"
+        );
+        // Empty means "clear the field", not an error.
+        assert_eq!(validate_webhook_url("").unwrap(), "");
+        assert_eq!(validate_webhook_url("   ").unwrap(), "");
+    }
+
+    #[test]
+    fn test_webhook_url_refuses_schemes_and_shapes_that_are_not_a_webhook() {
+        for bad in [
+            "javascript:alert(1)",
+            "file:///etc/shadow",
+            "ftp://example.com/hook",
+            "data:text/plain,hi",
+            "not a url",
+            "https://",
+            "https://user:pass@example.com/hook",
+            "https://example.com/ hook",
+            "https://example.com/\nhook",
+        ] {
+            assert!(
+                validate_webhook_url(bad).is_err(),
+                "'{bad}' must be refused before it is persisted"
+            );
+        }
+        // The 2048-byte bound.
+        let long = format!("https://example.com/{}", "a".repeat(2048));
+        assert!(validate_webhook_url(&long).is_err());
+    }
+
+    #[test]
+    fn test_email_settings_become_the_transport_configuration() {
+        // ROADMAP 13.3: one conversion feeds both the test button and the
+        // notification engine.
+        let settings = EmailSettings {
+            smtp_server: Some("smtp.example.com".to_string()),
+            smtp_port: Some(465),
+            smtp_username: Some("bot@example.com".to_string()),
+            smtp_password: Some("secret".to_string()),
+            from_address: Some("bot@example.com".to_string()),
+            use_tls: Some(true),
+        };
+        let config = crate::email::EmailConfig::from(&settings);
+        assert!(config.is_explicit());
+        assert_eq!(config.smtp_host, "smtp.example.com");
+        assert_eq!(config.smtp_port, 465);
+        assert_eq!(config.from_address, "bot@example.com");
+        assert!(config.use_tls);
+
+        // An empty host keeps the legacy local-MTA behaviour.
+        let local = crate::email::EmailConfig::from(&EmailSettings::default());
+        assert!(!local.is_explicit());
+        assert_eq!(local.from_address, "homevault@localhost");
     }
 }

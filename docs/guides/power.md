@@ -16,8 +16,14 @@ idle timer). Inspiration: OMV's `conf.system.powermngmnt` + `hdparm`.
   "hdparm not available" and the setting is not applied.
 - `src/storage/disk_power_repo.rs` — `disk_power_settings` (migration
   `045_disk_power.sql`); a row with both fields `None` is deleted.
+  `delete_all()` drops every row and is what Settings → "Reset to Defaults"
+  uses (ROADMAP 13.5) — before that the old `hdparm` values were re-applied on
+  the next boot after a reset the UI described as complete.
 - `src/handlers/power.rs` — endpoints below; startup re-apply of spindown
   settings in `web/mod.rs::run()` (hdparm's timer is volatile per drive).
+  `hdparm --version` (the `spindown_supported` probe) runs in
+  `spawn_blocking`, so a status read never forks on the runtime thread
+  (ROADMAP X.1).
 - Scheduled power actions go through the
   [Scheduled Tasks](./scheduled-tasks.md) engine (`power` task type).
 
@@ -48,6 +54,12 @@ idle timer). Inspiration: OMV's `conf.system.powermngmnt` + `hdparm`.
   still stands for the next boot.
 - Reboot/shutdown kill the process mid-response; the JSON answer is
   best-effort by nature (the UI treats a dead connection as expected).
+- The `hdparm` (spindown) and `systemctl` (power action) calls are bounded
+  (ROADMAP X.2): 30 s through `run_timed`, so a wedged controller or a unit
+  stuck stopping cannot hold the request forever. The governor write goes
+  through `sudo tee`, which streams the value on stdin and is instead kept off
+  the runtime (`spawn_blocking`) — it touches only sysfs, with no service to
+  wait on.
 - Live systemctl/hdparm behaviour is **not** unit-tested (real host actions
   — see CLAUDE.md "What NOT to test in Rust"); integration tests cover
   guards and validation only.

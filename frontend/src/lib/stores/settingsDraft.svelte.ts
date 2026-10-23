@@ -23,7 +23,7 @@
  */
 
 import { api } from '$lib/services/api';
-import { languageStore } from './i18n';
+import { languageStore, translate } from './i18n';
 import { get } from 'svelte/store';
 import { monitorStore, type MonitorPositions } from './monitorStore';
 import { WIDGET_DEFS } from './widgetCatalog';
@@ -218,9 +218,17 @@ export function seedAiModel(model: string) {
 }
 
 /** Notice shown after a server-name save (hostname restart recommendation). */
-export const notices = $state<{ hostname: string | null; timezone: string | null }>({
+export const notices = $state<{
+  hostname: string | null;
+  timezone: string | null;
+  /** The general save succeeded but the language could not be persisted
+   *  (ROADMAP 13.4) — without this the selector would look saved and revert
+   *  on the next restart. */
+  language: string | null;
+}>({
   hostname: null,
   timezone: null,
+  language: null,
 });
 
 export function clearHostnameNotice() {
@@ -229,6 +237,10 @@ export function clearHostnameNotice() {
 
 export function clearTimezoneNotice() {
   notices.timezone = null;
+}
+
+export function clearLanguageNotice() {
+  notices.language = null;
 }
 
 /** TLS save result surfaced to the TlsCard (restart banner + cert info). */
@@ -346,6 +358,9 @@ async function saveGroup(group: SettingsGroup): Promise<void> {
         if (lr.success) {
           languageStore.setLanguage(draft.general.language as any);
           savedLanguage = draft.general.language;
+          notices.language = null;
+        } else {
+          notices.language = lr.error || translate('common.request_failed');
         }
       }
       break;
@@ -470,6 +485,7 @@ export async function saveAll(): Promise<number> {
   _error = false;
   notices.hostname = null;
   notices.timezone = null;
+  notices.language = null;
   setTlsSaveResult(null);
   let failed = 0;
   for (const group of dirty) {
