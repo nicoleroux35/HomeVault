@@ -30,7 +30,9 @@ src/
   app_proxy/            Per-installed-app reverse proxy (47000-47999); gate
                         accepts only the app-scoped hv_app_session minted by
                         GET /app-auth, and strips both HomeVault cookies before
-                        forwarding upstream (app_auth.rs, cookie.rs, serve.rs)
+                        forwarding upstream (app_auth.rs, cookie.rs, serve.rs);
+                        origin.rs resolves redirect hosts from server state
+                        (a forged Host can never aim a redirect elsewhere)
   rescue/               ddrescue / TestDisk / PhotoRec / mdadm-repair service +
                         SecurityValidator (protected-device blocklist)
   groups.rs             GroupService (incl. is_admin_group)

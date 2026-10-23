@@ -107,10 +107,19 @@ fn read_installed_port(install_key: &str) -> Option<u16> {
     .and_then(|s| s.trim().parse().ok())
 }
 
+/// Async wrapper around [`read_installed_port`] (blocking filesystem read).
+async fn read_installed_port_async(install_key: &str) -> Option<u16> {
+    let key = install_key.to_string();
+    tokio::task::spawn_blocking(move || read_installed_port(&key))
+        .await
+        .ok()
+        .flatten()
+}
+
 /// The `.install.toml` marker written next to an installed app's data,
 /// recording which catalog entry (and template version) it came from, plus
 /// its per-app reverse-proxy state.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct InstallMarker {
     store_id: String,
     app_id: String,
@@ -127,25 +136,46 @@ fn default_true() -> bool {
     true
 }
 
-fn write_install_marker(install_key: &str, marker: &InstallMarker) {
-    if let Ok(s) = toml::to_string_pretty(marker) {
-        let _ = std::fs::write(
-            crate::config::paths::apps_dir()
-                .join(install_key)
-                .join(".install.toml"),
-            s,
-        );
-    }
+/// Directory holding an installed app's own data and its `.install.toml`.
+fn install_dir(install_key: &str) -> std::path::PathBuf {
+    crate::config::paths::apps_dir().join(install_key)
 }
 
-fn read_install_marker(install_key: &str) -> Option<InstallMarker> {
-    let raw = std::fs::read_to_string(
-        crate::config::paths::apps_dir()
-            .join(install_key)
-            .join(".install.toml"),
-    )
-    .ok()?;
+/// Writes `.install.toml` into `dir` and **reports the failure**.
+///
+/// The result used to be discarded, so an install on a read-only/full apps
+/// directory looked successful while the marker was never persisted: the app
+/// then disappeared from the list after a restart and its reverse proxy was
+/// no longer restored. Blocking filesystem work — callers on the async path go
+/// through [`write_install_marker`].
+fn write_install_marker_sync(dir: &std::path::Path, marker: &InstallMarker) -> Result<(), String> {
+    let path = dir.join(".install.toml");
+    let body = toml::to_string_pretty(marker)
+        .map_err(|e| format!("cannot serialise install marker: {e}"))?;
+    std::fs::write(&path, body).map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
+/// Async wrapper: the marker write is blocking filesystem work, so it never
+/// runs on a runtime worker.
+async fn write_install_marker(install_key: &str, marker: InstallMarker) -> Result<(), String> {
+    let dir = install_dir(install_key);
+    tokio::task::spawn_blocking(move || write_install_marker_sync(&dir, &marker))
+        .await
+        .map_err(|e| format!("install marker task failed: {e}"))?
+}
+
+fn read_install_marker_sync(dir: &std::path::Path) -> Option<InstallMarker> {
+    let raw = std::fs::read_to_string(dir.join(".install.toml")).ok()?;
     toml::from_str(&raw).ok()
+}
+
+/// Async wrapper around [`read_install_marker_sync`].
+async fn read_install_marker(install_key: &str) -> Option<InstallMarker> {
+    let dir = install_dir(install_key);
+    tokio::task::spawn_blocking(move || read_install_marker_sync(&dir))
+        .await
+        .ok()
+        .flatten()
 }
 
 /// Every installed app's proxy config, for `app_proxy::restore_all` at
@@ -158,7 +188,7 @@ pub async fn proxy_restore_entries() -> Vec<crate::app_proxy::RestoreEntry> {
         };
         for entry in entries.flatten() {
             let key = entry.file_name().to_string_lossy().to_string();
-            let Some(m) = read_install_marker(&key) else {
+            let Some(m) = read_install_marker_sync(&install_dir(&key)) else {
                 continue;
             };
             // Only restore for apps whose compose project still exists.
@@ -281,7 +311,10 @@ pub async fn handle_catalog_list(
                     proxy_port: proxy.map(|p| p.proxy_port),
                     proxy_auth_required: proxy
                         .map(|p| p.auth_required)
-                        .or_else(|| read_install_marker(&key).map(|m| m.proxy_auth_required))
+                        .or_else(|| {
+                            read_install_marker_sync(&install_dir(&key))
+                                .map(|m| m.proxy_auth_required)
+                        })
                         .unwrap_or(true),
                     unsupported_on_host: !app.manifest.supports_host_arch(host_arch),
                 }
@@ -384,7 +417,15 @@ pub async fn install_catalog_app(
     };
 
     let install_key = app.install_key();
-    if ComposeManager::get_project(&install_key).is_ok() {
+    // `get_project` shells out to `docker compose`, so it never runs on a
+    // runtime worker.
+    let already_installed = {
+        let key = install_key.clone();
+        tokio::task::spawn_blocking(move || ComposeManager::get_project(&key).is_ok())
+            .await
+            .unwrap_or(false)
+    };
+    if already_installed {
         return Err(format!("{} is already installed", app.manifest.name));
     }
 
@@ -421,13 +462,25 @@ pub async fn install_catalog_app(
     // Missing providers are an error naming what to install first —
     // dependency installs stay an explicit admin decision, never an
     // implicit pull.
+    //
+    // Listing the stores reads the filesystem and `get_project` shells out to
+    // `docker compose` once per catalog entry, so that half runs on the
+    // blocking pool; the plan itself is pure.
+    let (all_apps, installed) = {
+        let stores = stores.clone();
+        tokio::task::spawn_blocking(move || {
+            let all_apps = app_catalog::list_apps(&stores);
+            let installed: std::collections::HashSet<String> = all_apps
+                .iter()
+                .filter(|a| ComposeManager::get_project(&a.install_key()).is_ok())
+                .map(|a| a.bare_id().to_string())
+                .collect();
+            (all_apps, installed)
+        })
+        .await
+        .map_err(|e| format!("install plan task failed: {e}"))?
+    };
     {
-        let all_apps = app_catalog::list_apps(&stores);
-        let installed: std::collections::HashSet<String> = all_apps
-            .iter()
-            .filter(|a| ComposeManager::get_project(&a.install_key()).is_ok())
-            .map(|a| a.bare_id().to_string())
-            .collect();
         for (dep, want) in &req.alternatives {
             if !app.manifest.dependencies.contains(dep) {
                 return Err(format!("{} does not depend on {dep:?}", app.manifest.name));
@@ -471,30 +524,69 @@ pub async fn install_catalog_app(
         }
     };
 
-    if let Err(e) = std::fs::create_dir_all(&data_dir) {
+    if let Err(e) = tokio::fs::create_dir_all(&data_dir).await {
         return Err(format!("Failed to create data directory: {}", e));
     }
 
-    if let Err(e) = ComposeManager::create_project(&install_key, &rendered) {
+    let key = install_key.clone();
+    if let Err(e) =
+        tokio::task::spawn_blocking(move || ComposeManager::create_project(&key, &rendered))
+            .await
+            .map_err(|e| format!("create_project task failed: {e}"))
+            .and_then(|r| r.map_err(|e| e.to_string()))
+    {
         return Err(format!("Failed to create project: {}", e));
     }
 
+    // Persist the install marker **before** anything runs: a marker that
+    // cannot be written (read-only or full apps directory) must abort the
+    // install instead of producing an app that vanishes after a restart. The
+    // proxy port is filled in below, once the proxy is actually up.
+    let marker = InstallMarker {
+        store_id: app.store_id.clone(),
+        app_id: app.bare_id().to_string(),
+        namespaced_id: app.namespaced_id(),
+        package_version: app.manifest.version.clone(),
+        host_port: port,
+        proxy_port: None,
+        proxy_auth_required: true,
+    };
+    if let Err(e) = write_install_marker(&install_key, marker.clone()).await {
+        return Err(format!(
+            "Failed to record the install of {}: {}",
+            app.manifest.name, e
+        ));
+    }
+
     // `start_project` runs `docker compose up -d`, which pulls the images —
-    // can take minutes. Surface it in the desktop activity taskbar as an
-    // indeterminate job (no percentage available from compose).
+    // can take minutes. It is synchronous, so it runs on the blocking pool; a
+    // first install on the runtime would pin a worker for its whole duration.
+    // Surface it in the desktop activity taskbar as an indeterminate job (no
+    // percentage available from compose).
     let job_id = crate::sse::PROGRESS_MANAGER.create_job(
         crate::sse::JobType::Custom("docker_install".to_string()),
         &format!("Installing {}", app.manifest.name),
     );
 
-    if let Err(e) = ComposeManager::start_project(&install_key) {
-        crate::sse::PROGRESS_MANAGER.fail_job(&job_id, &e.to_string());
+    let key = install_key.clone();
+    if let Err(e) = tokio::task::spawn_blocking(move || ComposeManager::start_project(&key))
+        .await
+        .map_err(|e| format!("start_project task failed: {e}"))
+        .and_then(|r| r.map_err(|e| e.to_string()))
+    {
+        crate::sse::PROGRESS_MANAGER.fail_job(&job_id, &e);
         return Err(format!("Failed to start {}: {}", app.manifest.name, e));
     }
 
     // Home Assistant uses `network_mode: host` - no compose-managed port.
     if app.bare_id() != "home-assistant" {
-        let _ = std::fs::write(data_dir.join(".port"), port.to_string());
+        if let Err(e) = tokio::fs::write(data_dir.join(".port"), port.to_string()).await {
+            tracing::warn!(
+                "could not record the published port of {}: {}",
+                app.manifest.name,
+                e
+            );
+        }
     }
 
     // Bring up a per-app reverse proxy (auth-gated by default). Best effort:
@@ -506,18 +598,20 @@ pub async fn install_catalog_app(
         .map_err(|e| tracing::warn!("app proxy for {} not started: {}", app.namespaced_id(), e))
         .ok();
 
-    write_install_marker(
-        &install_key,
-        &InstallMarker {
-            store_id: app.store_id.clone(),
-            app_id: app.bare_id().to_string(),
-            namespaced_id: app.namespaced_id(),
-            package_version: app.manifest.version.clone(),
-            host_port: port,
-            proxy_port,
-            proxy_auth_required: true,
-        },
-    );
+    // Record the proxy port so the proxy is restored on the next start. A
+    // failure here is not silent either: the app is stopped again rather than
+    // left running in a state the UI cannot describe.
+    let mut marker = marker;
+    marker.proxy_port = proxy_port;
+    if let Err(e) = write_install_marker(&install_key, marker).await {
+        let key = install_key.clone();
+        let _ = tokio::task::spawn_blocking(move || ComposeManager::stop_project(&key)).await;
+        crate::sse::PROGRESS_MANAGER.fail_job(&job_id, &e);
+        return Err(format!(
+            "Failed to record the proxy of {}: {}",
+            app.manifest.name, e
+        ));
+    }
 
     crate::sse::PROGRESS_MANAGER.complete_job(&job_id, &format!("{} installed", app.manifest.name));
 
@@ -559,16 +653,22 @@ pub async fn uninstall_catalog_app(
     let install_key = app.install_key();
 
     crate::app_proxy::APP_PROXY.stop(&app.namespaced_id()).await;
-    let _ = ComposeManager::stop_project(&install_key);
+    // Both compose calls are synchronous CLI invocations (stop can wait on
+    // container shutdown), so they run on the blocking pool.
+    let key = install_key.clone();
+    let _ = tokio::task::spawn_blocking(move || ComposeManager::stop_project(&key)).await;
 
-    match ComposeManager::delete_project(&install_key) {
-        Ok(_) => {
+    let key = install_key.clone();
+    let removed = tokio::task::spawn_blocking(move || ComposeManager::delete_project(&key)).await;
+    match removed {
+        Ok(Ok(_)) => {
             crate::events::log_event(format!(
                 "{} uninstalled catalog app '{}'",
                 actor, app.manifest.name
             ));
             Ok(format!("{} uninstalled", app.manifest.name))
         }
+        Ok(Err(e)) => Err(format!("Failed to uninstall {}: {}", app.manifest.name, e)),
         Err(e) => Err(format!("Failed to uninstall {}: {}", app.manifest.name, e)),
     }
 }
@@ -605,13 +705,20 @@ pub async fn handle_catalog_update(
         return ResponseHelper::json_error(format!("Unknown catalog app: {}", id));
     };
     let install_key = app.install_key();
-    if ComposeManager::get_project(&install_key).is_err() {
+    let check_key = install_key.clone();
+    let installed =
+        tokio::task::spawn_blocking(move || ComposeManager::get_project(&check_key).is_ok())
+            .await
+            .unwrap_or(false);
+    if !installed {
         return ResponseHelper::json_error(format!("{} is not installed", app.manifest.name));
     }
-    let host_port = read_installed_port(&install_key).unwrap_or(app.manifest.host_port());
+    let host_port = read_installed_port_async(&install_key)
+        .await
+        .unwrap_or(app.manifest.host_port());
 
     let name = app.manifest.name.clone();
-    let prev = read_install_marker(&install_key);
+    let prev = read_install_marker(&install_key).await;
     let marker = InstallMarker {
         store_id: app.store_id.clone(),
         app_id: app.bare_id().to_string(),
@@ -633,12 +740,25 @@ pub async fn handle_catalog_update(
     })
     .await
     {
-        Ok(Ok(())) => {
-            crate::sse::PROGRESS_MANAGER.complete_job(&job_id, &format!("{} updated", name));
-            write_install_marker(&install_key, &marker);
-            crate::events::log_event(format!("Admin '{}' updated catalog app '{}'", admin, name));
-            ResponseHelper::json_success(format!("{} updated", name))
-        }
+        Ok(Ok(())) => match write_install_marker(&install_key, marker).await {
+            Ok(()) => {
+                crate::sse::PROGRESS_MANAGER.complete_job(&job_id, &format!("{} updated", name));
+                crate::events::log_event(format!(
+                    "Admin '{}' updated catalog app '{}'",
+                    admin, name
+                ));
+                ResponseHelper::json_success(format!("{} updated", name))
+            }
+            // The images are updated but the marker could not be rewritten:
+            // report it instead of claiming a clean update.
+            Err(e) => {
+                crate::sse::PROGRESS_MANAGER.fail_job(&job_id, &e);
+                ResponseHelper::json_error(format!(
+                    "{} updated, but its install marker could not be recorded: {}",
+                    name, e
+                ))
+            }
+        },
         Ok(Err(e)) => {
             crate::sse::PROGRESS_MANAGER.fail_job(&job_id, &e.to_string());
             ResponseHelper::json_error(format!("Failed to update {}: {}", name, e))
@@ -739,34 +859,38 @@ pub async fn handle_catalog_update_all(
             continue;
         };
         let install_key = app.install_key();
-        let host_port = read_installed_port(&install_key).unwrap_or(app.manifest.host_port());
+        let host_port = read_installed_port_async(&install_key)
+            .await
+            .unwrap_or(app.manifest.host_port());
         let version = app.manifest.version.clone();
         let store_id = app.store_id.clone();
         let bare_id = app.bare_id().to_string();
         let ns_id = app.namespaced_id();
-        let prev = read_install_marker(&install_key);
+        let prev = read_install_marker(&install_key).await;
         let outcome = tokio::task::spawn_blocking(move || {
             crate::app_catalog::updates::apply_update(&app, host_port)
         })
         .await;
         match outcome {
             Ok(Ok(())) => {
-                write_install_marker(
-                    &install_key,
-                    &InstallMarker {
-                        store_id,
-                        app_id: bare_id,
-                        namespaced_id: ns_id,
-                        package_version: version,
-                        host_port,
-                        proxy_port: prev.as_ref().and_then(|m| m.proxy_port),
-                        proxy_auth_required: prev
-                            .as_ref()
-                            .map(|m| m.proxy_auth_required)
-                            .unwrap_or(true),
-                    },
-                );
-                updated.push(item.id.clone());
+                let marker = InstallMarker {
+                    store_id,
+                    app_id: bare_id,
+                    namespaced_id: ns_id,
+                    package_version: version,
+                    host_port,
+                    proxy_port: prev.as_ref().and_then(|m| m.proxy_port),
+                    proxy_auth_required: prev
+                        .as_ref()
+                        .map(|m| m.proxy_auth_required)
+                        .unwrap_or(true),
+                };
+                match write_install_marker(&install_key, marker).await {
+                    Ok(()) => updated.push(item.id.clone()),
+                    Err(e) => failed.push(
+                        serde_json::json!({"id": item.id, "error": format!("updated, but its install marker could not be recorded: {e}")}),
+                    ),
+                }
             }
             Ok(Err(e)) => failed.push(serde_json::json!({"id": item.id, "error": e.to_string()})),
             Err(e) => failed.push(serde_json::json!({"id": item.id, "error": e.to_string()})),
@@ -864,21 +988,55 @@ pub async fn handle_catalog_proxy_config(
     let install_key = app.install_key();
     let ns_id = app.namespaced_id();
 
-    // Apply live if the proxy is running; persist the preference either way
-    // (it's picked up on the next proxy start / server restart).
-    crate::app_proxy::APP_PROXY
+    // Apply live if the proxy is running, and persist the preference either
+    // way (it is picked up on the next proxy start / server restart). The two
+    // outcomes are reported separately: a live flag that could not be stored
+    // must not be answered as a plain success.
+    let applied = crate::app_proxy::APP_PROXY
         .set_auth_required(&ns_id, req.auth_required)
         .await;
-    if let Some(mut m) = read_install_marker(&install_key) {
-        m.proxy_auth_required = req.auth_required;
-        write_install_marker(&install_key, &m);
+    let existing = read_install_marker(&install_key).await;
+    let mut marker = match existing {
+        Some(mut m) => {
+            m.proxy_auth_required = req.auth_required;
+            m
+        }
+        // No marker (installed before markers existed, or the file was
+        // truncated): rebuild it from the catalog entry and live state rather
+        // than failing the toggle.
+        None => InstallMarker {
+            store_id: app.store_id.clone(),
+            app_id: app.bare_id().to_string(),
+            namespaced_id: ns_id.clone(),
+            package_version: app.manifest.version.clone(),
+            host_port: read_installed_port_async(&install_key)
+                .await
+                .unwrap_or(app.manifest.host_port()),
+            proxy_port: crate::app_proxy::APP_PROXY
+                .info(&ns_id)
+                .await
+                .map(|i| i.proxy_port),
+            proxy_auth_required: req.auth_required,
+        },
+    };
+    marker.proxy_auth_required = req.auth_required;
+    if let Err(e) = write_install_marker(&install_key, marker).await {
+        return ResponseHelper::json_error(format!(
+            "Could not save the proxy setting for {}: {}",
+            app.manifest.name, e
+        ));
     }
 
     crate::events::log_event(format!(
         "Admin '{}' set proxy auth for '{}' to {}",
         admin, app.manifest.name, req.auth_required
     ));
-    ResponseHelper::json_success(serde_json::json!({ "auth_required": req.auth_required }))
+    ResponseHelper::json_success(serde_json::json!({
+        "auth_required": req.auth_required,
+        // `applied` is false when the app's proxy is not running: the value is
+        // saved and takes effect when it next starts.
+        "applied": applied,
+    }))
 }
 
 // ─────────────────────────── Community app stores ───────────────────────────
@@ -1033,5 +1191,79 @@ pub async fn handle_store_delete(
         }
         Ok(false) => ResponseHelper::json_error(format!("Unknown store: {}", id)),
         Err(e) => ResponseHelper::json_error(format!("Failed to remove store: {}", e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn marker(proxy_port: Option<u16>) -> InstallMarker {
+        InstallMarker {
+            store_id: "official".to_string(),
+            app_id: "joplin".to_string(),
+            namespaced_id: "official:joplin".to_string(),
+            package_version: "1.2.3".to_string(),
+            host_port: 22300,
+            proxy_port,
+            proxy_auth_required: true,
+        }
+    }
+
+    fn scratch_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "hv-catalog-marker-{}-{}",
+            name,
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    #[test]
+    fn test_install_marker_round_trips_through_the_filesystem() {
+        let dir = scratch_dir("round-trip");
+        write_install_marker_sync(&dir, &marker(Some(47001))).expect("marker written");
+        let read = read_install_marker_sync(&dir).expect("marker read back");
+        assert_eq!(read.namespaced_id, "official:joplin");
+        assert_eq!(read.proxy_port, Some(47001));
+        assert!(read.proxy_auth_required);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A marker written before the proxy starts carries no proxy port; the
+    /// auth gate still defaults to on.
+    #[test]
+    fn test_install_marker_without_proxy_port_keeps_auth_on() {
+        let dir = scratch_dir("no-proxy");
+        write_install_marker_sync(&dir, &marker(None)).expect("marker written");
+        let read = read_install_marker_sync(&dir).expect("marker read back");
+        assert_eq!(read.proxy_port, None);
+        assert!(read.proxy_auth_required);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ROADMAP 6.1: an unwritable apps directory must be *reported*. The old
+    /// `write_install_marker` discarded the write result, so the install looked
+    /// successful and the app vanished after a restart.
+    #[test]
+    fn test_install_marker_write_failure_is_reported() {
+        // A plain file where the app directory is expected: the write fails
+        // whatever the process uid, unlike a chmod-based test under root.
+        let parent = scratch_dir("not-a-dir");
+        let not_a_dir = parent.join("app");
+        std::fs::write(&not_a_dir, b"not a directory").expect("file created");
+
+        let err = write_install_marker_sync(&not_a_dir, &marker(None)).expect_err("must fail");
+        assert!(err.contains("cannot write"), "got: {err}");
+        assert!(read_install_marker_sync(&not_a_dir).is_none());
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn test_missing_marker_reads_as_none() {
+        let dir = scratch_dir("missing");
+        assert!(read_install_marker_sync(&dir).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

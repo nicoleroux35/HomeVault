@@ -30,6 +30,7 @@
 
 pub mod app_auth;
 pub mod cookie;
+pub mod origin;
 mod serve;
 
 use once_cell::sync::Lazy;
@@ -117,15 +118,19 @@ impl AppProxyManager {
         }
     }
 
-    /// Stop and drop the proxy for an app, revoking its app sessions so a
+    /// Stop and drop the proxy for an app, revoking **its** app sessions so a
     /// stopped/removed app can't be reached with a still-valid cookie.
+    ///
+    /// Scoped to `ns_id` on purpose: revoking every app session here logged
+    /// the whole household out of every other proxied app whenever one app was
+    /// restarted or uninstalled.
     pub async fn stop(&self, ns_id: &str) {
         if let Some(mut e) = self.entries.write().await.remove(ns_id) {
             if let Some(tx) = e.shutdown.take() {
                 let _ = tx.send(());
             }
         }
-        app_auth::APP_AUTH.revoke_all();
+        app_auth::APP_AUTH.revoke_app(ns_id);
     }
 
     /// Start (or restart) a proxy for `ns_id` forwarding to

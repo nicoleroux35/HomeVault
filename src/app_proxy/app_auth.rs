@@ -44,8 +44,9 @@
 //!    app never sees either credential.
 //!
 //! The app session grants *proxy access only* — it is meaningless against the
-//! API — and is revoked when the app's proxy stops. It lives in memory, like
-//! the SSE ticket store, so a restart simply forces one re-auth round-trip.
+//! API — and is revoked when **its** app's proxy stops (other apps keep their
+//! sessions). It lives in memory, like the SSE ticket store, so a restart
+//! simply forces one re-auth round-trip.
 
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
@@ -69,10 +70,14 @@ pub static APP_AUTH: Lazy<AppAuthStore> = Lazy::new(AppAuthStore::new);
 
 struct AppSession {
     username: String,
+    /// Namespaced id of the app this session was minted for. A token is only
+    /// valid on that app's proxy: minting is a per-app grant, never a
+    /// household-wide one.
+    ns_id: String,
     expires_at: Instant,
 }
 
-/// In-memory map of app session token → owning user + expiry.
+/// In-memory map of app session token → owning user + app + expiry.
 pub struct AppAuthStore {
     sessions: Mutex<HashMap<String, AppSession>>,
 }
@@ -90,8 +95,9 @@ impl AppAuthStore {
         }
     }
 
-    /// Mints a fresh app session token for `username`.
-    pub fn mint(&self, username: &str) -> String {
+    /// Mints a fresh app session token for `username`, valid only on the
+    /// proxy of `ns_id`.
+    pub fn mint(&self, username: &str, ns_id: &str) -> String {
         let token = format!("hva_{}", Uuid::new_v4().simple());
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         Self::purge_expired(&mut sessions);
@@ -102,17 +108,20 @@ impl AppAuthStore {
             token.clone(),
             AppSession {
                 username: username.to_string(),
+                ns_id: ns_id.to_string(),
                 expires_at: Instant::now() + APP_SESSION_TTL,
             },
         );
         token
     }
 
-    /// Returns the owning username when `token` is a live app session.
-    pub fn validate(&self, token: &str) -> Option<String> {
+    /// Returns the owning username when `token` is a live app session **for
+    /// `ns_id`**. A token minted for another app is rejected, so one gated app
+    /// can never be reached with another app's credential.
+    pub fn validate(&self, token: &str, ns_id: &str) -> Option<String> {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         sessions.get(token).and_then(|s| {
-            if s.expires_at > Instant::now() {
+            if s.expires_at > Instant::now() && s.ns_id == ns_id {
                 Some(s.username.clone())
             } else {
                 None
@@ -126,12 +135,11 @@ impl AppAuthStore {
         sessions.retain(|_, s| s.username != username);
     }
 
-    /// Drops every session (used on shutdown/restart paths).
-    pub fn revoke_all(&self) {
-        self.sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+    /// Drops every session minted for one app's proxy, leaving every other
+    /// app's sessions untouched.
+    pub fn revoke_app(&self, ns_id: &str) {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.retain(|_, s| s.ns_id != ns_id);
     }
 
     fn purge_expired(sessions: &mut HashMap<String, AppSession>) {
@@ -165,46 +173,93 @@ mod tests {
     #[test]
     fn test_mint_and_validate_round_trip() {
         let store = AppAuthStore::new();
-        let token = store.mint("alice");
-        assert_eq!(store.validate(&token).as_deref(), Some("alice"));
+        let token = store.mint("alice", "default:joplin");
+        assert_eq!(
+            store.validate(&token, "default:joplin").as_deref(),
+            Some("alice")
+        );
     }
 
     #[test]
     fn test_validate_rejects_unknown_and_empty_tokens() {
         let store = AppAuthStore::new();
-        assert_eq!(store.validate("nope"), None);
-        assert_eq!(store.validate(""), None);
+        assert_eq!(store.validate("nope", "default:joplin"), None);
+        assert_eq!(store.validate("", "default:joplin"), None);
+    }
+
+    /// ROADMAP 6.2: a session is a per-app grant. The token minted for one
+    /// app's proxy must be useless on another app's proxy.
+    #[test]
+    fn test_session_is_bound_to_the_app_it_was_minted_for() {
+        let store = AppAuthStore::new();
+        let token = store.mint("alice", "default:joplin");
+        assert_eq!(
+            store.validate(&token, "default:joplin").as_deref(),
+            Some("alice")
+        );
+        assert_eq!(store.validate(&token, "default:immich"), None);
+        assert_eq!(store.validate(&token, "store two:docmost"), None);
     }
 
     #[test]
     fn test_mint_is_unique_per_call() {
         let store = AppAuthStore::new();
-        let a = store.mint("alice");
-        let b = store.mint("alice");
+        let a = store.mint("alice", "default:joplin");
+        let b = store.mint("alice", "default:joplin");
         assert_ne!(a, b);
-        assert_eq!(store.validate(&a).as_deref(), Some("alice"));
-        assert_eq!(store.validate(&b).as_deref(), Some("alice"));
+        assert_eq!(
+            store.validate(&a, "default:joplin").as_deref(),
+            Some("alice")
+        );
+        assert_eq!(
+            store.validate(&b, "default:joplin").as_deref(),
+            Some("alice")
+        );
     }
 
     #[test]
     fn test_revoke_user_removes_only_that_users_sessions() {
         let store = AppAuthStore::new();
-        let alice = store.mint("alice");
-        let bob = store.mint("bob");
+        let alice = store.mint("alice", "default:joplin");
+        let bob = store.mint("bob", "default:joplin");
         store.revoke_user("alice");
-        assert_eq!(store.validate(&alice), None);
-        assert_eq!(store.validate(&bob).as_deref(), Some("bob"));
+        assert_eq!(store.validate(&alice, "default:joplin"), None);
+        assert_eq!(
+            store.validate(&bob, "default:joplin").as_deref(),
+            Some("bob")
+        );
+    }
+
+    /// ROADMAP 6.2: stopping one app revokes that app's sessions only —
+    /// stopping app A must never sign the household out of apps B..Z.
+    #[test]
+    fn test_revoke_app_leaves_other_apps_signed_in() {
+        let store = AppAuthStore::new();
+        let joplin = store.mint("alice", "default:joplin");
+        let immich = store.mint("alice", "default:immich");
+        let docmost = store.mint("bob", "home:docmost");
+        store.revoke_app("default:joplin");
+        assert_eq!(store.validate(&joplin, "default:joplin"), None);
+        assert_eq!(
+            store.validate(&immich, "default:immich").as_deref(),
+            Some("alice")
+        );
+        assert_eq!(
+            store.validate(&docmost, "home:docmost").as_deref(),
+            Some("bob")
+        );
+        assert_eq!(store.len(), 2);
     }
 
     #[test]
-    fn test_revoke_all_clears_everything() {
+    fn test_revoke_app_with_no_sessions_is_a_no_op() {
         let store = AppAuthStore::new();
-        let a = store.mint("alice");
-        let b = store.mint("bob");
-        store.revoke_all();
-        assert_eq!(store.validate(&a), None);
-        assert_eq!(store.validate(&b), None);
-        assert_eq!(store.len(), 0);
+        let kept = store.mint("alice", "default:joplin");
+        store.revoke_app("default:absent");
+        assert_eq!(
+            store.validate(&kept, "default:joplin").as_deref(),
+            Some("alice")
+        );
     }
 
     /// Minting is bounded: at the cap the soonest-expiring session is evicted
@@ -214,12 +269,15 @@ mod tests {
     fn test_mint_is_capped_and_keeps_the_newest_sessions() {
         let store = AppAuthStore::new();
         for i in 0..MAX_APP_SESSIONS {
-            store.mint(&format!("user{i}"));
+            store.mint(&format!("user{i}"), "default:joplin");
         }
         assert_eq!(store.len(), MAX_APP_SESSIONS);
         // One more mint evicts the oldest entry instead of growing the store…
-        let overflow = store.mint("overflow-user");
-        assert_eq!(store.validate(&overflow).as_deref(), Some("overflow-user"));
+        let overflow = store.mint("overflow-user", "default:joplin");
+        assert_eq!(
+            store.validate(&overflow, "default:joplin").as_deref(),
+            Some("overflow-user")
+        );
         assert_eq!(store.len(), MAX_APP_SESSIONS);
         // …and the store's oldest entry was the one evicted.
         let evicted = store

@@ -86,17 +86,16 @@ pub async fn handle(
             .get(COOKIE)
             .and_then(|v| v.to_str().ok())
             .and_then(app_session_from_cookie_header)
-            .and_then(|tok| APP_AUTH.validate(tok));
+            .and_then(|tok| APP_AUTH.validate(tok, &ctx.ns_id));
 
         if authed.is_none() {
             // Redirect to the server-chosen app-auth entry on the main
-            // origin, preserving the host the browser used.
-            let host = req
-                .headers()
-                .get(HOST)
-                .and_then(|v| v.to_str().ok())
-                .map(|h| h.split(':').next().unwrap_or(h).to_string())
-                .unwrap_or_else(|| "localhost".to_string());
+            // origin. The host comes from the server's own identity, never
+            // from the `Host` header as-is: a forged header (or a proxy in
+            // front) must not be able to aim this redirect anywhere else.
+            let host = crate::app_proxy::origin::resolve_redirect_host(
+                req.headers().get(HOST).and_then(|v| v.to_str().ok()),
+            );
             // The redirect must land on the main origin the browser actually
             // holds `hv_session` on. Under an enabled HTTPS listener that
             // cookie is `Secure`, so pointing at the plain-HTTP main port
@@ -111,8 +110,9 @@ pub async fn handle(
             };
             let location = app_auth_location(ctx.main_port, tls, tls_port, &host, &ctx.ns_id);
             let mut resp = text(StatusCode::FOUND, "Authentication required");
-            resp.headers_mut()
-                .insert(LOCATION, HeaderValue::from_str(&location).unwrap());
+            if let Ok(value) = HeaderValue::from_str(&location) {
+                resp.headers_mut().insert(LOCATION, value);
+            }
             resp.headers_mut().insert(
                 hyper::header::CACHE_CONTROL,
                 HeaderValue::from_static("no-store"),
@@ -248,7 +248,9 @@ pub async fn handle(
 /// Pure builder so both TLS states are unit-testable. Plain HTTP targets
 /// `main_port`; with TLS enabled the target is the actual HTTPS entry,
 /// because `hv_session` is `Secure` there and would never be re-sent over
-/// plain HTTP (see the call site). `ns_id` is percent-encoded for the query.
+/// plain HTTP (see the call site). `host` must already be resolved through
+/// [`crate::app_proxy::origin`] (never a raw `Host` header). `ns_id` is
+/// percent-encoded for the query.
 pub fn app_auth_location(
     main_port: u16,
     tls_active: bool,
@@ -262,7 +264,10 @@ pub fn app_auth_location(
         ("http", main_port)
     };
     let encoded = url::form_urlencoded::byte_serialize(ns_id.as_bytes()).collect::<String>();
-    format!("{scheme}://{host}:{port}/app-auth?app={encoded}")
+    format!(
+        "{scheme}://{}/app-auth?app={encoded}",
+        crate::app_proxy::origin::authority(host, port)
+    )
 }
 
 fn rewrite_host<B>(req: &mut Request<B>, target_port: u16) {
@@ -347,6 +352,16 @@ mod tests {
         assert_eq!(
             app_auth_location(8080, false, 0, "h", "store two:app&1"),
             "http://h:8080/app-auth?app=store+two%3Aapp%261"
+        );
+    }
+
+    /// An IPv6 main origin stays a valid authority (`[host]:port`), not a
+    /// malformed `::1:8080`.
+    #[test]
+    fn test_app_auth_location_brackets_ipv6_host() {
+        assert_eq!(
+            app_auth_location(8080, false, 0, "[fd00::1]", "default:joplin"),
+            "http://[fd00::1]:8080/app-auth?app=default%3Ajoplin"
         );
     }
 }
