@@ -2,8 +2,8 @@
  * File          : rclone_integration.rs
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 12/10/2026 by Nicolas Le Roux
- * Version       : 1.0.0
+ * Last modified : 23/10/2026 by Nicolas Le Roux
+ * Version       : 1.1.0
  *
  * Description:
  *   Rclone integration tests: in-memory SQLite + assembled Axum router, exercising the area's endpoints end-to-end via oneshot requests.
@@ -40,9 +40,17 @@
 //!     all reject with a clean `{"success":false}` — no `rclone` spawned,
 //!     no file written.
 //!
+//! ROADMAP 16.3 added three more groups, all over HTTP through the real
+//! router: the config (and its dated backup) is written **0600**; deleting a
+//! remote is a parsed section edit, so `[mydrive]` survives deleting `my`
+//! (and adding `my` beside it is no longer refused as a duplicate); and a
+//! mount point outside `RCLONE_MOUNT_BASE`, an unconfigured remote, or a
+//! provider type carrying INI lines is refused before anything is spawned or
+//! created. The unmount body is the one the screen sends — `{ mount_point }`.
+//!
 //! A real `add_remote` → list → `delete_remote` round-trip needs a
-//! writable `/etc/rclone.conf` (root on a real deployment) and is left to
-//! `tests/e2e/cloudsync/cloudsync.spec.ts` (opt-in there too).
+//! writable config file; these tests point `RCLONE_CONFIG` at a tempdir, so
+//! it runs everywhere (the E2E spec keeps an opt-in copy).
 //!
 //! Note on status codes: these handlers always return HTTP 200 and signal
 //! auth/validation failure in the body (`{"success":false,"error":…}`) —
@@ -471,7 +479,7 @@ fn point_rclone_config_at(dir: &tempfile::TempDir) -> (std::path::PathBuf, Confi
 }
 
 /// The regression: `handle_get_config`/`_save_config`/`add_remote`/
-/// `delete_remote` hardcoded `/etc/rclone.conf` while `parse_rclone_config()`
+/// `delete_remote` hardcoded `/etc/rclone.conf` while the reader honoured the
 /// honoured the `RCLONE_CONFIG` override — so the Settings editor read and wrote
 /// a **different file** than the one the remote list came from. An admin who
 /// moved the config saw an empty remote list beside an editor showing
@@ -505,7 +513,7 @@ async fn config_endpoints_use_the_rclone_config_override() {
     );
 
     // `handle_list_remotes` already honoured the override before this fix (it
-    // goes through `parse_rclone_config`); only the mutating handlers and the
+    // goes through the same resolver); only the mutating handlers and the
     // editor did not. Asserted when rclone is present on the host — the list
     // handler refuses to answer otherwise, and that is not what this test
     // guards.
@@ -561,6 +569,12 @@ async fn save_config_writes_the_overridden_file_and_keeps_a_backup() {
         "[before]\ntype = s3\n",
         "the backup holds the previous content"
     );
+    #[cfg(unix)]
+    {
+        // 16.3: the credentials in both files are owner-only.
+        assert_eq!(mode_of(&config_path), 0o600);
+        assert_eq!(mode_of(&tmp.path().join(&backups[0])), 0o600);
+    }
 }
 
 /// The full `add_remote` → list → `delete_remote` round-trip, on a real file.
@@ -656,6 +670,201 @@ async fn add_list_delete_remote_round_trip_on_the_overridden_file() {
 }
 
 // ---------------------------------------------------------------------------
+// 3c. ROADMAP 16.3 — the config holds credentials, and section edits are parsed
+// ---------------------------------------------------------------------------
+
+/// File mode as the operator sees it (`ls -l`), not the type bits.
+#[cfg(unix)]
+fn mode_of(path: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .expect("metadata")
+        .permissions()
+        .mode()
+        & 0o777
+}
+
+/// The config file holds every remote's rclone-"obscured" secret, so a save
+/// must leave it — and its dated backup — unreadable to group and others.
+/// Before 16.3 both were created with the process umask (0644 on a default
+/// Debian install, and `tokio::fs::copy` kept the source mode).
+#[cfg(unix)]
+#[tokio::test]
+async fn add_remote_writes_the_config_and_backup_0600() {
+    let (state, tmp, _g) = setup_state().await;
+    let (config_path, _env) = point_rclone_config_at(&tmp);
+
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = rclone_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    // Created by the handler: `OpenOptions::mode` applies on creation.
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/rclone/remotes",
+        Some(&token),
+        Some(json!({"name": "secret", "provider": "s3", "config": "access_key_id = AKIA"})),
+    )
+    .await;
+    assert_eq!(body["success"], true, "got {body}");
+    assert_eq!(
+        mode_of(&config_path),
+        0o600,
+        "the config must be owner-only"
+    );
+
+    // Now save over it: the backup must be owner-only too, even though the
+    // existing file it is taken from was created 0644 by a previous build.
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/rclone/config",
+        Some(&token),
+        Some(json!({"config": "[secret]\ntype = s3\n"})),
+    )
+    .await;
+    assert_eq!(body["success"], true, "got {body}");
+    assert_eq!(
+        mode_of(&config_path),
+        0o600,
+        "an existing 0644 config must be repaired, not left readable"
+    );
+
+    let backups: Vec<std::path::PathBuf> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.to_string_lossy().contains(".backup."))
+        .collect();
+    assert_eq!(backups.len(), 1, "exactly one backup beside the config");
+    assert_eq!(
+        mode_of(&backups[0]),
+        0o600,
+        "the backup holds the same secrets and must be owner-only"
+    );
+}
+
+/// Deleting `my` must not touch `[mydrive]`. The old implementation searched
+/// the file for `[my]` and then for the next `[` anywhere after it, so a name
+/// that prefixes another section deleted the wrong bytes.
+#[tokio::test]
+async fn delete_remote_removes_only_the_exact_section() {
+    let (state, tmp, _g) = setup_state().await;
+    let (config_path, _env) = point_rclone_config_at(&tmp);
+    std::fs::write(
+        &config_path,
+        "[mydrive]\ntype = drive\nscope = drive\n\n[my]\ntype = s3\nregion = eu\n",
+    )
+    .unwrap();
+
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = rclone_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (_, body) = send(
+        &mut router,
+        Method::DELETE,
+        "/api/rclone/remotes/my",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], true, "got {body}");
+
+    let after = std::fs::read_to_string(&config_path).unwrap();
+    assert!(
+        !after.contains("[my]"),
+        "the named section must go: {after:?}"
+    );
+    assert!(
+        after.contains("[mydrive]") && after.contains("scope = drive"),
+        "the prefixing section must survive intact: {after:?}"
+    );
+    assert!(
+        !after.contains("region = eu"),
+        "only the named section's keys may go: {after:?}"
+    );
+}
+
+/// Adding `my` beside `[mydrive]` is legitimate. The old duplicate check was
+/// `content.contains("[my]")`, which is true for `[mydrive]` — so a perfectly
+/// valid name was refused as "already exists".
+#[tokio::test]
+async fn add_remote_allows_a_name_that_prefixes_an_existing_section() {
+    let (state, tmp, _g) = setup_state().await;
+    let (config_path, _env) = point_rclone_config_at(&tmp);
+    std::fs::write(&config_path, "[mydrive]\ntype = drive\n").unwrap();
+
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = rclone_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/rclone/remotes",
+        Some(&token),
+        Some(json!({"name": "my", "provider": "s3"})),
+    )
+    .await;
+    assert_eq!(body["success"], true, "got {body}");
+
+    let after = std::fs::read_to_string(&config_path).unwrap();
+    assert!(after.contains("[my]"), "got {after:?}");
+    assert!(after.contains("[mydrive]"), "got {after:?}");
+
+    // A true duplicate is still refused.
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/rclone/remotes",
+        Some(&token),
+        Some(json!({"name": "my", "provider": "s3"})),
+    )
+    .await;
+    denied(&body, "already exists");
+}
+
+/// `type = {provider}` is written verbatim into the INI section, so the
+/// provider field is as dangerous as the free-text `config` field: a newline
+/// in it appends attacker-chosen lines to the remote (or to the file).
+#[tokio::test]
+async fn add_remote_refuses_a_provider_that_injects_ini_lines() {
+    let (state, tmp, _g) = setup_state().await;
+    let (config_path, _env) = point_rclone_config_at(&tmp);
+
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = rclone_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    for provider in [
+        "s3\ntoken = attacker",
+        "s3\n[evil]\ntype = local",
+        "drive\nconfig_is_local = true",
+        "[evil]",
+    ] {
+        let (_, body) = send(
+            &mut router,
+            Method::POST,
+            "/api/rclone/remotes",
+            Some(&token),
+            Some(json!({"name": "ok", "provider": provider})),
+        )
+        .await;
+        denied(&body, "Provider type contains invalid characters");
+    }
+
+    // Nothing was written: the guard runs before the file is touched.
+    assert!(
+        !config_path.exists(),
+        "a refused provider must not create or touch the config"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 4. sync / copy / mount validation
 // ---------------------------------------------------------------------------
 
@@ -740,6 +949,144 @@ async fn test_mount_start_rejects_a_malformed_body_before_the_handler() {
 }
 
 // ---------------------------------------------------------------------------
+// 4b. ROADMAP 16.3 — a mount point is validated, a remote must be configured,
+//     and the unmount body is the one the UI actually sends
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mount_start_refuses_a_mount_point_outside_the_rclone_base() {
+    let (mut router, token, _tmp, _g) = admin_router().await;
+    let base = homevault::config::paths::RCLONE_MOUNT_BASE;
+
+    for mount_point in [
+        "/tmp/hv-escape".to_string(),
+        "/mnt".to_string(),
+        base.to_string(),
+        format!("{}/../etc", base),
+    ] {
+        let (_, body) = send(
+            &mut router,
+            Method::POST,
+            "/api/rclone/mount/start",
+            Some(&token),
+            Some(json!({"remote": "gd", "mount_point": mount_point})),
+        )
+        .await;
+        assert_eq!(body["success"], false, "{mount_point:?}: {body}");
+        let err = body["error"].as_str().unwrap_or_default();
+        assert!(
+            err.contains("must live under")
+                || err.contains("must be a sub-folder")
+                || err.contains("must not contain '.' or '..'"),
+            "{mount_point:?} must be refused with the rule, got {err:?}"
+        );
+    }
+
+    // The escape hatch never existed: nothing was created outside the base.
+    assert!(!std::path::Path::new("/tmp/hv-escape").exists());
+}
+
+#[tokio::test]
+async fn mount_start_refuses_a_remote_that_is_not_configured() {
+    let (state, tmp, _g) = setup_state().await;
+    let (config_path, _env) = point_rclone_config_at(&tmp);
+    std::fs::write(&config_path, "[other]\ntype = s3\n").unwrap();
+
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = rclone_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let mount_point = format!(
+        "{}/not-configured",
+        homevault::config::paths::RCLONE_MOUNT_BASE
+    );
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/rclone/mount/start",
+        Some(&token),
+        Some(json!({"remote": "gd", "mount_point": mount_point})),
+    )
+    .await;
+    denied(&body, "is not configured in the rclone config file");
+
+    // A refused name never becomes a directory either: the guard runs before
+    // `create_dir_all`.
+    assert!(!std::path::Path::new(&mount_point).exists());
+}
+
+#[tokio::test]
+async fn mount_start_refuses_a_remote_name_that_is_not_a_plain_slug() {
+    let (mut router, token, _tmp, _g) = admin_router().await;
+    let base = homevault::config::paths::RCLONE_MOUNT_BASE;
+
+    for remote in ["gd:other", "a/../b", "-oallow-other", "has space"] {
+        let (_, body) = send(
+            &mut router,
+            Method::POST,
+            "/api/rclone/mount/start",
+            Some(&token),
+            Some(json!({"remote": remote, "mount_point": format!("{}/x", base)})),
+        )
+        .await;
+        assert_eq!(body["success"], false, "{remote:?}: {body}");
+    }
+}
+
+/// `api.unmountCloudRemote()` posts `{ mount_point }` and nothing else. With
+/// the old `MountRequest` body the JSON extractor answered 422 before the
+/// handler ran, so every real "Stop mount" click in the UI failed.
+#[tokio::test]
+async fn mount_stop_accepts_the_body_the_ui_sends() {
+    let (mut router, token, _tmp, _g) = admin_router().await;
+    let mount_point = format!(
+        "{}/hv-integration-probe",
+        homevault::config::paths::RCLONE_MOUNT_BASE
+    );
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/rclone/mount/stop",
+        Some(&token),
+        Some(json!({ "mount_point": mount_point })),
+    )
+    .await;
+
+    assert_ne!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "the handler must run, not the extractor: {body}"
+    );
+    // Nothing is mounted at that path, so the answer is a clean refusal that
+    // names the unmount attempts — not a deserialization error.
+    assert_eq!(body["success"], false, "got {body}");
+    let err = body["error"].as_str().unwrap_or_default();
+    assert!(
+        err.contains("Failed to unmount"),
+        "expected an unmount failure, got {err:?}"
+    );
+    assert!(
+        err.contains("fusermount") && err.contains("umount"),
+        "both attempts must be reported: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn mount_stop_refuses_a_mount_point_outside_the_base() {
+    let (mut router, token, _tmp, _g) = admin_router().await;
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/rclone/mount/stop",
+        Some(&token),
+        Some(json!({ "mount_point": "/etc" })),
+    )
+    .await;
+    denied(&body, "Mount point must live under");
+}
+
+// ---------------------------------------------------------------------------
 // 5. Read success paths
 // ---------------------------------------------------------------------------
 
@@ -780,6 +1127,14 @@ async fn test_status_and_mounts_answer_for_a_plain_session() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], true);
     assert!(body["data"]["available"].is_boolean());
+    // The screen derives every mount point from this value instead of
+    // hardcoding `/mnt/rclone/<name>` client-side (ROADMAP 16.3).
+    assert_eq!(
+        body["data"]["mount_base"],
+        json!(homevault::config::paths::RCLONE_MOUNT_BASE),
+        "the status payload must carry the base the guard enforces"
+    );
+    assert!(body["data"]["fusermount"].is_boolean());
 
     let (_, body) = send(
         &mut router,

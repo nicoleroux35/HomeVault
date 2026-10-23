@@ -80,8 +80,7 @@ Two structural facts explain most of the list:
 |---|---|---|---|
 | 10b | File Explorer — residual hardening | P2 | 3 |
 | 13 | Settings — remaining cards | P1 | 4 |
-| 15 | Dashboard / Widgets | P1 | 3 |
-| 16 | Cloud Sync (rclone) | P1 | 3 |
+| 16.4 | Cloud Sync (rclone) — no scheduler | P2 | 1 |
 | 18 | Syncthing | P1 | 1 |
 | 21 | Notifications | P1 | 3 |
 | 22 | DB backup | P1 | 2 |
@@ -96,7 +95,7 @@ Two structural facts explain most of the list:
 | 33 | Transfer quotas — residual | P2 | 1 |
 | — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **43** (36 per-area + 7 cross-cutting).
+Total open findings: **38** (31 per-area + 7 cross-cutting).
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
@@ -126,10 +125,13 @@ through when the guard itself could not answer. **11 (Metrics) closed on
 instead of a `0.0`, each series averages on its own, throughput divides by the
 real elapsed time (and the loop skips missed ticks instead of bursting them
 into one bucket), and `latest` answers `200` + `data: null` on a fresh install.
-Next: **15 (Dashboard / Widgets)** — the last P1 where an authorization check is
-simply missing (any household user can delete or reorder every widget, and an
-expired token still reads and writes preferences), with **16.3** right behind
-it: the last credential written to disk without `0600`.
+**15 (Dashboard / Widgets) closed on 2026-10-23**, and **16 (Cloud Sync / rclone)
+closed the same day**: every rclone subprocess runs under a deadline, a started
+mount is owned by this process and unmounted at shutdown, the credential file is
+written `0600` and edited as parsed sections, and the screen no longer swallows a
+failure. Only the missing *scheduler* is left, as P2 **16.4**. Next: **13
+(Settings)** — the largest remaining P1 surface — with **21 (Notifications)**
+right behind it (blocking email inside the request loop, no per-user state).
 
 ---
 
@@ -203,35 +205,30 @@ fresh `reqwest::Client::new()` with no timeout per dispatch
 
 ---
 
-### 16. Cloud Sync (rclone) — no timeout, no shutdown cleanup, credentials at rest
+### 16.4. Cloud Sync (rclone) — a persisted sync job never runs on its own
 
-- [ ] **16.1 — No timeout on any transfer, mount or unmount.**
-      `src/handlers/rclone.rs:1119-1124,1389-1394,410,422,1434,1440,950,1002`:
-      `sync`/`copy`/`fusermount -u`/`umount` await `.output()` forever. A stalled
-      remote wedges the handler task and the job row stays `running`
-      indefinitely.
-- [ ] **16.2 — No shutdown cleanup.** The shutdown hook only cleans terminal
-      PTYs (`src/web/mod.rs:2290`) — no rclone unmount, so stale FUSE mounts and
-      orphaned processes survive a restart.
-- [ ] **16.3 — Config written without restrictive permissions, and mounts are
-      fire-and-forget.** The config is written with no `0600`
-      (`:1510`) although remotes carry credentials; `mount` builds argv from an
-      unvalidated `remote`/`mount_point` (`:950-971`) and calls `spawn()` without
-      retaining the handle, so the app cannot report a failure or unmount it
-      later; remote deletion is string surgery on the file rather than a parsed
-      edit (`:1631-1648`).
+16.1–16.3 were closed on 2026-10-23 — see Done. One "also" item was left open
+on purpose, because it is a new feature and not a defect in what shipped:
 
-Also: blocking `std::fs` on the async runtime (`:253-257,932`); the UI swallows
-six failures (`CloudSync.svelte:234-346`) and derives job status from
-`response.success` rather than the job state (`:322`); the mount point is
-hardcoded to `/mnt/rclone/<name>` (`:260`); `local` remotes are filtered out of
-the UI although the backend supports them (`:410`); **no scheduler exists** —
-jobs only run when clicked.
+- [ ] **16.4 — No scheduler.** `POST /rclone/jobs/{id}/run` is the only way a
+      persisted job runs. The `sync_jobs` table stores the definition only — no
+      due time, no interval, no last outcome — so a nightly sync cannot be
+      expressed, and the screen's "last run / status" columns are the outcome of
+      the click that just happened, not a server-side run state (commented as
+      such at the call site so it is not mistaken for one).
+      *Acceptance:* an interval or cron column (the Scheduled Tasks scheduler
+      already has `compute_next_run` and a due-time loop to reuse), a run state
+      written by the server, and the screen reading that state instead of
+      remembering the last response. The transfer must then run outside the HTTP
+      request, which also closes the request-shaped-transfer debt recorded in
+      `docs/guides/cloud-sync.md`.
 
-*Tests:* 15 unit, 17 integration (which state explicitly at
-`tests/rclone_integration.rs:31` that **no test performs a real transfer or
-mount**, so 16.1–16.3 are untested by construction), 24 E2E.
-*Docs:* `docs/guides/cloud-sync.md`.
+*Tests:* 39 unit, 26 integration (the suite now covers the real config file
+through `RCLONE_CONFIG`, the `0600` mode and the parsed section edits over HTTP;
+it still states explicitly that **no test performs a real transfer or mount**),
+29 E2E. The mount-ready poll, the shutdown unmount and the `0600` repair are
+covered by unit/integration tests, never by a live FUSE mount.
+*Docs:* `docs/guides/cloud-sync.md` (*Known debt*).
 
 ---
 
@@ -613,6 +610,77 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-23 (p)** — Cloud Sync (rclone) — every call is bounded, a mount is
+owned by the process that started it, and the credential file is private.
+**16.1 (no deadline on any rclone call):** `src/utils/process.rs` gained
+`run_timed_async_result` with a named `ProcessFailure { Spawn { program, error },
+Timeout { program, deadline } }`, so "not installed" and "too slow" no longer
+collapse into one `io::Error`; `run_timed_async` delegates to it and keeps its
+`.ok()` contract (5 tests). Four constants in `src/handlers/rclone.rs` replace
+every bare `.output()`: `RCLONE_PROBE_TIMEOUT` 10 s (`rclone version`,
+`listremotes`, `fusermount -V`), `RCLONE_MOUNT_READY_TIMEOUT` 20 s,
+`RCLONE_UMOUNT_TIMEOUT` 30 s (`fusermount -u`, `umount -f`) and
+`RCLONE_TRANSFER_TIMEOUT` 6 h (a ceiling, not an estimate — a first sync of a
+large library legitimately takes hours). `sync`/`copy`/`jobs/{id}/run` now
+complete or fail the `cloud_sync` activity job **with the reason** on every
+branch, including the abort, so a stalled remote no longer holds the HTTP
+request and the job row open forever.
+**16.2 (no shutdown cleanup, fire-and-forget mounts):** `handle_mount_start`
+dropped `--daemon`, keeps the `Child` (`kill_on_drop(false)`) in a process-wide
+`static MOUNTS: LazyLock<Mutex<HashMap<String, MountedRemote>>>` keyed by mount
+point (a static rather than a new `AppState` field, which would have touched the
+40+ `AppState` literals in `tests/`), drains stderr into a bounded 4 KiB tail
+(a full pipe would block the child) and answers success only once
+`wait_until_mounted` finds the mount point in `/proc/self/mounts` — a mount that
+"started" but never appeared is an error quoting rclone's last stderr lines, and
+the child is killed. `handle_list_mounts` reads `/proc/mounts` with a whole-field
+match and `\040`-style decoding, enriches each entry with the remote and pid from
+the registry, and reports a tracked child whose mount disappeared as
+`is_active: false` so the screen offers a real "Stop". `handle_mount_stop` tries
+`fusermount -u`, then `umount -f`, reports **both** reasons, then kills and reaps
+the child. `shutdown_mounts()` runs from `shutdown_signal` in `src/web/mod.rs`:
+each mount is unmounted, then its child killed — a restart no longer leaves stale
+FUSE mounts and orphaned processes.
+**16.3 (credentials on disk, fire-and-forget argv, string surgery):**
+`write_private_config` opens with `.mode(0o600)` and re-applies the mode, so an
+older 0644 config is **repaired**; the dated backup is written by re-reading the
+file (the old `tokio::fs::copy` recreated it with the source mode). Section edits
+are parsed: `config_has_section` matches a whole trimmed header line and
+`remove_section` ends a section at the next line *starting* with `[`, so deleting
+`my` no longer hits `[mydrive]` and `patterns = [a-z]` no longer truncates a
+section. `add_remote` validates the remote name (no `: [ ] / \`, whitespace,
+control characters or leading `-`, ≤64) and the provider slug — `type =
+{provider}` is written verbatim, so a newline there was the same INI injection as
+the free-text field. `validate_mount_point` confines every mount to a strict child
+of `RCLONE_MOUNT_BASE` with no `.`/`..` component, `validate_remote_subpath`
+refuses an absolute or traversing path, the remote must exist in the resolved
+config, and `GET /rclone/status` now returns `{ available, fusermount,
+mount_base }` so the screen derives its mount point from the server's rule
+instead of hardcoding `/mnt/rclone/<name>`.
+**Residual defects:** `/mount/stop` required a full `MountRequest` while the UI
+sends `{ mount_point }`, so every real unmount was a **422** before the handler —
+fixed with `MountStopRequest`; the screen swallowed every failure — seven empty
+`else {}` blocks (add/delete remote, mount, unmount, sync, save job, save
+config), two job handlers that only flipped a badge and five loaders that
+dropped their error — one dismissible page-level `Alert`
+(`data-testid="cloudsync-error"`, `rclone.error_title` + the server's reason)
+now covers them all (a failed jobs refresh keeps the list instead of blanking
+it); the sync selects offer `local`-type remotes again
+(`build_rclone_path` supports them — the `cloudRemotes` filter was screen-only);
+`std::fs::create_dir_all` left the async runtime (`spawn_blocking`).
+Tests: `handlers/rclone.rs` 15 → **39** unit (validators, `config_has_section`/
+`remove_section`, `parse_mounts_for`/`decode_mount_escape`, pure
+`parse_rclone_config_text`, deadline ordering, `CONFIG_FILE_MODE`,
+`RcloneStatus`), `rclone_integration.rs` 17 → **26** (0600 config + repaired
+0644 + 0600 backup, exact-section delete, prefix-named add, provider injection,
+mount point/remote refusals with nothing created, the `{ mount_point }` body),
+`cloudsync.spec.ts` 24 → **29** (3.6–3.8 guards, section 7 failure surface).
+Written on 2026-10-23; **not run yet** (per instruction); `cargo check
+--all-targets` clean and `npm run check` 0 errors. `docs/guides/cloud-sync.md`
+rewritten (deadline table, mount lifecycle, config hardening, invariants, known
+debt), `docs/API.md` gained the request/response shapes and the rejection
+strings. Left open on purpose as P2 **16.4**: the scheduler.
 
 **2026-10-23 (o)** — Dashboard / Widgets — tiles belong to an account, every host
 probe has a deadline, and nothing presented as a measurement is a constant.
