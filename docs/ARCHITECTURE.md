@@ -106,8 +106,10 @@ Loops spawned in `run()` (`src/web/mod.rs`; line numbers drift, grep for
   [guides/snapshots.md](./guides/snapshots.md).
 - **Metrics collector** (`metrics::run_collector_loop`) — one sample per
   minute (CPU deltas from /proc/stat, meminfo, loadavg, /proc/net/dev,
-  thermal zones) into `metric_samples`, 8-day retention pruned per tick; see
-  [guides/metrics.md](./guides/metrics.md).
+  thermal zones) into `metric_samples`, 8-day retention pruned per tick.
+  Every series is nullable: a read that fails is a gap (`NULL`), never a
+  `0.0`, and throughput divides by the real elapsed time between two reads;
+  see [guides/metrics.md](./guides/metrics.md).
 - **Notification engine** (`notification_engine::run_notification_loop`) —
   polls every 60s, turns health-check transitions and restic job results into
   `notifications` rows (in-memory dedup), optionally emailed/webhooked; also runs

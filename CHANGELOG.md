@@ -239,6 +239,38 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Metrics — a failed read is a gap, not a `0.0`, and a rate is divided by the
+  real elapsed time (2026-10-23, ROADMAP 11).** The collector used
+  `.unwrap_or(0.0)` for memory, load and CPU while `044_metrics_history.sql`
+  declared every column `NOT NULL`, so a transient `/proc` failure wrote a
+  plausible-looking `0 %` sample into the chart: a broken sensor, a missing
+  `/proc/net/dev` and a genuinely idle disk were the same picture — exactly
+  what `docs/guides/metrics.md` promised would never happen. Migration
+  `056_metrics_nullable_series.sql` rebuilds `metric_samples` with all five
+  measured columns nullable (existing rows copied verbatim, index recreated),
+  the collector stores `None` on failure, and each series now averages on its
+  own inside a bucket, so a missing thermal zone no longer halves the CPU
+  figure sitting next to it. **Rates:** the throughput series divided by the
+  constant `SAMPLE_INTERVAL_SECS`, so a sample taken 120 s after the previous
+  one reported twice the real rate; `sample_from` now divides by the real
+  distance between the two reads, and the loop runs
+  `MissedTickBehavior::Skip` instead of the default `Burst` (after a suspend,
+  `Burst` fired the missed ticks back-to-back, they collided in the same
+  minute bucket and `INSERT OR REPLACE` silently kept only the last one). A
+  first sample after a boot, a counter reset and a frozen clock store **no
+  rate** instead of a zero, and the three redundant `/proc` reads per tick
+  became one read per file. `GET /metrics/latest` answers `200` +
+  `data: null` on a fresh install instead of `400 "No metrics collected yet"`
+  — "nothing measured yet" is a first-boot state, not a bad request.
+  **Frontend:** the empty state is decided on all six series (a
+  temperature-only dataset used to render "no data"), every `load()` takes a
+  ticket so a slow `24h` answer cannot repaint a newer `1h` range, and a
+  missing figure prints `—` instead of `0.0`. Tests: `metrics.rs` 5 → **19**,
+  `metrics_integration.rs` 5 → **8**, `metrics.spec.ts` 4 → **6** `test(`.
+  Written on 2026-10-23; **not run yet** (per instruction).
+  `docs/guides/metrics.md` gained *Null semantics* and *Rates divide by the
+  real elapsed time*; `docs/API.md` documents the `data: null` answer.
+
 - **Firewall/ufw production-ready pass (2026-10-21) — nothing unvalidated
   reaches `sudo ufw`, and every destructive action is confirmed and verified.**
 

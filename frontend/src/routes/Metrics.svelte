@@ -32,6 +32,8 @@
   let points: MetricsPoint[] = [];
   let loading = true;
   let loadError = false;
+  /** Bumped by every `load()`; only the newest ticket may write the screen. */
+  let loadTicket = 0;
 
   onMount(() => {
     load();
@@ -49,8 +51,13 @@
   });
 
   async function load() {
+    // Only the newest request may write the screen. A slow `24h` answer used
+    // to land on top of a newer `1h` one and repaint the charts with the wrong
+    // range (ROADMAP 11). Every call takes a ticket; a stale answer is dropped.
+    const ticket = ++loadTicket;
     try {
       const res = await api.getMetricsHistory(range);
+      if (ticket !== loadTicket) return;
       if (!res.success) {
         loadError = true;
         return;
@@ -58,9 +65,10 @@
       points = res.data?.points ?? [];
       loadError = false;
     } catch {
+      if (ticket !== loadTicket) return;
       loadError = true;
     } finally {
-      loading = false;
+      if (ticket === loadTicket) loading = false;
     }
   }
 
@@ -87,6 +95,27 @@
     let i = 0;
     while (value >= 1024 && i < units.length - 1) { value /= 1024; i++; }
     return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[i]}`;
+  }
+
+  /** A missing reading renders as `—`: it is unknown, never a 0. */
+  function formatPercent(v: number | null): string {
+    return v == null ? '—' : `${v.toFixed(1)} %`;
+  }
+
+  function formatNumber(v: number | null, digits = 2): string {
+    return v == null ? '—' : v.toFixed(digits);
+  }
+
+  /** True when at least one series carries a value in this point. */
+  function hasReading(p: MetricsPoint): boolean {
+    return (
+      p.cpu != null ||
+      p.mem != null ||
+      p.load1 != null ||
+      p.temp != null ||
+      p.net_rx != null ||
+      p.net_tx != null
+    );
   }
 
   /** SVG polyline points for one nullable series over `pts`. */
@@ -126,9 +155,9 @@
   }
 
   const charts: ChartDef[] = [
-    { id: 'cpu', title: 'metrics.chart_cpu', max: 100, current: () => `${(latest('cpu') ?? 0).toFixed(1)} %` },
-    { id: 'mem', title: 'metrics.chart_mem', max: 100, current: () => `${(latest('mem') ?? 0).toFixed(1)} %` },
-    { id: 'load1', title: 'metrics.chart_load', max: 4, current: () => (latest('load1') ?? 0).toFixed(2) },
+    { id: 'cpu', title: 'metrics.chart_cpu', max: 100, current: () => formatPercent(latest('cpu')) },
+    { id: 'mem', title: 'metrics.chart_mem', max: 100, current: () => formatPercent(latest('mem')) },
+    { id: 'load1', title: 'metrics.chart_load', max: 4, current: () => formatNumber(latest('load1')) },
     { id: 'temp', title: 'metrics.chart_temp', max: 100, current: () => (latest('temp') == null ? '—' : `${latest('temp')!.toFixed(0)} °C`) },
     { id: 'net', title: 'metrics.chart_net', max: 0, current: () => `↓ ${formatBytesRate(latest('net_rx'))} · ↑ ${formatBytesRate(latest('net_tx'))}` },
   ];
@@ -171,7 +200,7 @@
       <EmptyState data-testid="metrics-loading" icon="chart-line" title={$t('metrics.loading')} />
     {:else if loadError && points.length === 0}
       <EmptyState data-testid="metrics-error" icon="alert-triangle" title={$t('metrics.error')} />
-    {:else if points.every((p) => p.cpu == null && p.mem == null)}
+    {:else if !points.some(hasReading)}
       <EmptyState
         data-testid="metrics-empty"
         icon="chart-line"

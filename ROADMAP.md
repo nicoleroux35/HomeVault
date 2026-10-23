@@ -50,7 +50,8 @@ sites**, **Apps Center / app-proxy**, the **RAID wizard's create path**,
 **Downloader**, **Syncthing's REST client**, **Virtual Machines (Incus)**,
 **Scheduled Tasks** — timezone-aware cron, pausing an unrunnable task, and
 "Run now" off the request — and **Transfer quotas** — failing closed, a
-calendar counting period, and an admin-gated read (see Done).
+calendar counting period, and an admin-gated read, and finally **Metrics** —
+nullable series and elapsed-time rates (see Done).
 
 Everything else is still on its original implementation plus incremental
 feature work. The pattern is consistent: **the screens render, the endpoints
@@ -77,7 +78,6 @@ Two structural facts explain most of the list:
 | # | Area | Verdict | Blocking items |
 |---|---|---|---|
 | 10b | File Explorer — residual hardening | P2 | 3 |
-| 11 | Metrics | P1 | 2 |
 | 13 | Settings — remaining cards | P1 | 4 |
 | 15 | Dashboard / Widgets | P1 | 3 |
 | 16 | Cloud Sync (rclone) | P1 | 3 |
@@ -95,7 +95,7 @@ Two structural facts explain most of the list:
 | 33 | Transfer quotas — residual | P2 | 1 |
 | — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **45** (38 per-area + 7 cross-cutting).
+Total open findings: **43** (36 per-area + 7 cross-cutting).
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
@@ -120,9 +120,15 @@ quotas) closed on 2026-10-23**, and with it 30.1: the guard now fails **closed**
 are counted over a real calendar day/week/month window settled at check time
 *and* by a reset loop, and both read endpoints enforce self-or-admin instead of
 trusting a screen-side redirect. That was the last P1 that let a request
-through when the guard itself could not answer. Next: **11 (Metrics)** — a
-failed collection is still persisted as a zero, so a broken sensor and an idle
-disk look identical on every chart.
+through when the guard itself could not answer. **11 (Metrics) closed on
+2026-10-23**: every series is nullable and a failed `/proc` read is a gap
+instead of a `0.0`, each series averages on its own, throughput divides by the
+real elapsed time (and the loop skips missed ticks instead of bursting them
+into one bucket), and `latest` answers `200` + `data: null` on a fresh install.
+Next: **15 (Dashboard / Widgets)** — the last P1 where an authorization check is
+simply missing (any household user can delete or reorder every widget, and an
+expired token still reads and writes preferences), with **16.3** right behind
+it: the last credential written to disk without `0600`.
 
 ---
 
@@ -134,37 +140,6 @@ None. Item 6 (Apps Center / app-proxy) was closed on 2026-10-23 — see
 ---
 
 ## P1 — Needs work
-
-### 11. Metrics — failures are persisted as zeros
-
-- [ ] **11.1 — A failed `/proc` read is stored as `0.0`, and the schema forbids
-      gaps.** `src/metrics.rs:316-317,340` use `.unwrap_or(0.0)` for memory,
-      load and CPU; migration `044_metrics_history.sql` declares every column
-      `NOT NULL`, so a transient read failure writes a plausible-looking 0 %
-      sample into the chart and gaps cannot be represented at all. This
-      contradicts `docs/guides/metrics.md:32` ("gaps are visible as gaps, never
-      interpolated").
-      *Acceptance:* nullable columns + `None` on failure + the chart already
-      draws null points.
-- [ ] **11.2 — Rates divide by a constant 60 s.** `src/metrics.rs:320-323` uses
-      `SAMPLE_INTERVAL_SECS` regardless of real elapsed time, and the loop uses
-      `interval.tick()` with the default `MissedTickBehavior::Burst`
-      (`:263-277`), so after a suspend or a stall it fires back-to-back samples
-      that collide in the same minute bucket and are `INSERT OR REPLACE`d
-      (`:335-337`) — under-reported throughput plus silently dropped data.
-
-Also: three redundant `/proc` reads per tick (`:312,331`); `GET /metrics/latest`
-returns HTTP 400 "No metrics collected yet" on a fresh install, which is a
-normal first-boot state reported as a client error; `Metrics.svelte:67-71` does
-not cancel an in-flight range request, so a slow `24h` response can overwrite a
-newer `1h`; the empty-state heuristic only checks `cpu`/`mem` (`:174`), so a
-temp-only dataset renders "no data".
-
-*Tests:* `metrics.rs` 5, `handlers/metrics.rs` **0**, integration 5, E2E 4.
-Nothing asserts null-on-failure or elapsed-time-based rates.
-*Docs:* `docs/guides/metrics.md`.
-
----
 
 ### 13. Settings — the remaining cards
 
@@ -631,9 +606,10 @@ reuse.
       `web/mod.rs:952`), the update check being opt-in (`settings.md:33`), the
       single-flight cache mover (`cache.md`), per-user notification read state
       (`notification_repo.rs:10`), "one row per (pool, prefix)"
-      (`046_snapshot_schedules.sql:5`, no unique index), metrics gaps
-      (`metrics.md:32`). Each is part of the corresponding item above; this line
-      exists so the pattern is not lost.
+      (`046_snapshot_schedules.sql:5`, no unique index). Each is part of the
+      corresponding item above; this line exists so the pattern is not lost.
+      *(Metrics gaps — `metrics.md:32` — was on this list and is now enforced,
+      see 11 in Done.)*
 - [ ] **X.5 — `TESTING.md` counts drift where the specs grew.** The Dashboard row
       states "37 runtime tests, recounted on 2026-09-14 via
       `grep -cE '^\s*test\('`"; the same grep on the spec today returns **41**.
@@ -679,6 +655,42 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-23 (n)** — Metrics — a failed read is a gap instead of a `0.0`, and a
+rate is divided by the real elapsed time. **11.1 (a failed `/proc` read was
+stored as `0.0`, and the schema forbade gaps):** migration
+`056_metrics_nullable_series.sql` rebuilds `metric_samples` with `cpu`, `mem`,
+`load1`, `net_rx` and `net_tx` nullable (SQLite has no `ALTER COLUMN`, so the
+table is rebuilt, the existing rows copied verbatim and the index recreated);
+`sample_from` returns `None` for a series whose file could not be read, and
+`store_sample` binds it as `NULL`. `RawSample` is now a `FromRow` struct of
+`Option<f64>`s, and `bucket_samples` keeps **one accumulator per series**, so a
+bucket where CPU came back twice and the thermal zone once reports the mean of
+the two CPU readings rather than a CPU figure halved by the missing sensor.
+**11.2 (rates divided by a constant 60 s):** the collector keeps
+`PrevSample { at, counters }` and divides the network delta by the real
+wall-clock distance between the two reads; the loop sets
+`MissedTickBehavior::Skip`, so a suspend can no longer fire the missed ticks
+back-to-back into one minute bucket where `INSERT OR REPLACE` kept only the
+last. A first sample after a boot, a counter reset and a frozen clock store no
+rate at all instead of a zero, and the three redundant `/proc` reads per tick
+became one `read_counters()` that reads each file exactly once. **Also:** the
+five `/proc`/thermal parsers are pure (`parse_proc_stat`, `parse_meminfo`,
+`parse_loadavg`, `parse_net_dev`, `parse_thermal_temp`) and unit-tested on
+fixtures; `GET /metrics/latest` answers `200` + `data: null` on a fresh install
+instead of `400 "No metrics collected yet"`. **Frontend:** the empty state is
+decided on all six series (a temperature-only dataset rendered "no data"), every
+`load()` takes a ticket so a slow `24h` answer cannot repaint a newer `1h`, and
+a missing figure prints `—` instead of `0.0`. Tests: `metrics.rs` 5 → **19**
+(per-series averaging, all-null bucket, `sample_from` matrix, parser fixtures),
+`metrics_integration.rs` 5 → **8** (a stored `NULL` is a gap while a stored
+`0.0` stays a zero, a null series does not drag its neighbours, `latest` keeps
+a null series null, the empty-DB `latest` is `200`), `metrics.spec.ts` 4 → **6**
+`test(` (§5.1 temperature-only dataset, §5.2 out-of-order range answer).
+Written on 2026-10-23; **not run yet** (per instruction).
+`docs/guides/metrics.md` gained *Null semantics* and *Rates divide by the real
+elapsed time*; `docs/API.md` documents the nullable series and the `data: null`
+answer.
 
 **2026-10-23 (m)** — Transfer quotas — the guard now fails closed, the counters
 count a real calendar window, and reads are scoped in the handler instead of the
