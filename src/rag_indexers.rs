@@ -25,59 +25,88 @@
 //! Each indexer knows how to collect documents from one source and upsert
 //! them into the `rag_documents` / `rag_chunks` tables.
 
+use crate::rag::EmbeddingProvider;
 use sqlx::SqlitePool;
 
-/// Index all document sources into the RAG knowledge base.
-/// Returns (total_documents, total_chunks) indexed.
-pub async fn index_all(pool: &SqlitePool) -> Result<(i32, i32), String> {
+/// Index all document sources into the RAG knowledge base and **reconcile**
+/// the result: each source reports the document ids it currently produces and
+/// everything else under that source is pruned.
+///
+/// A source failure (a DB error, a malformed manifest that aborts, or an
+/// embedding failure) **fails the whole run** and leaves the status at
+/// `error`. Before 2026-10-22 each source failure was a `warn!` and the run
+/// still ended `idle`, so a reindex that embedded nothing looked like a
+/// success. Returns (total_documents, total_chunks) in the index afterwards.
+pub async fn index_all<P: EmbeddingProvider>(
+    pool: &SqlitePool,
+    provider: &P,
+) -> Result<(i32, i32), String> {
     crate::rag::update_index_status(pool, "indexing", 0, 0).await?;
 
+    match index_sources(pool, provider).await {
+        Ok(counts) => {
+            crate::rag::update_index_status(pool, "idle", counts.0, counts.1).await?;
+            Ok(counts)
+        }
+        Err(e) => {
+            // Loud failure: the status becomes `error`, never `idle`.
+            let _ = crate::rag::update_index_status(pool, "error", 0, 0).await;
+            Err(e)
+        }
+    }
+}
+
+/// Run the three indexers in order, reconciling each source after it is
+/// indexed, and sum their (documents, chunks).
+async fn index_sources<P: EmbeddingProvider>(
+    pool: &SqlitePool,
+    provider: &P,
+) -> Result<(i32, i32), String> {
     let mut total_docs = 0i32;
     let mut total_chunks = 0i32;
 
     // 1. App catalog
-    match index_catalog(pool).await {
-        Ok((d, c)) => {
-            total_docs += d;
-            total_chunks += c;
-            tracing::info!("RAG: indexed catalog: {} docs, {} chunks", d, c);
-        }
-        Err(e) => tracing::warn!("RAG: catalog indexing failed: {}", e),
-    }
+    let (d, c, ids) = index_catalog(pool, provider)
+        .await
+        .map_err(|e| format!("catalog indexing failed: {e}"))?;
+    let pruned = crate::rag::prune_source(pool, "catalog", &ids).await?;
+    tracing::info!("RAG: indexed catalog: {d} docs, {c} chunks ({pruned} stale removed)");
+    total_docs += d;
+    total_chunks += c;
 
     // 2. HomeVault features documentation
-    match index_features(pool).await {
-        Ok((d, c)) => {
-            total_docs += d;
-            total_chunks += c;
-            tracing::info!("RAG: indexed features: {} docs, {} chunks", d, c);
-        }
-        Err(e) => tracing::warn!("RAG: features indexing failed: {}", e),
-    }
+    let (d, c, ids) = index_features(pool, provider)
+        .await
+        .map_err(|e| format!("features indexing failed: {e}"))?;
+    let pruned = crate::rag::prune_source(pool, "feature", &ids).await?;
+    tracing::info!("RAG: indexed features: {d} docs, {c} chunks ({pruned} stale removed)");
+    total_docs += d;
+    total_chunks += c;
 
     // 3. i18n keys (all languages as structured docs)
-    match index_i18n(pool).await {
-        Ok((d, c)) => {
-            total_docs += d;
-            total_chunks += c;
-            tracing::info!("RAG: indexed i18n: {} docs, {} chunks", d, c);
-        }
-        Err(e) => tracing::warn!("RAG: i18n indexing failed: {}", e),
-    }
-
-    crate::rag::update_index_status(pool, "idle", total_docs, total_chunks).await?;
+    let (d, c, ids) = index_i18n(pool, provider)
+        .await
+        .map_err(|e| format!("i18n indexing failed: {e}"))?;
+    let pruned = crate::rag::prune_source(pool, "i18n", &ids).await?;
+    tracing::info!("RAG: indexed i18n: {d} docs, {c} chunks ({pruned} stale removed)");
+    total_docs += d;
+    total_chunks += c;
 
     Ok((total_docs, total_chunks))
 }
 
 /// Index the built-in app catalog manifests.
-async fn index_catalog(pool: &SqlitePool) -> Result<(i32, i32), String> {
+async fn index_catalog<P: EmbeddingProvider>(
+    pool: &SqlitePool,
+    provider: &P,
+) -> Result<(i32, i32, Vec<String>), String> {
     use include_dir::include_dir;
 
     static BUILTIN_DIR: include_dir::Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/catalog");
 
     let mut doc_count = 0;
     let mut chunk_count = 0;
+    let mut ids: Vec<String> = Vec::new();
 
     for dir in BUILTIN_DIR.dirs() {
         let name = match dir.path().file_name() {
@@ -150,59 +179,24 @@ async fn index_catalog(pool: &SqlitePool) -> Result<(i32, i32), String> {
 
         let doc_id = format!("catalog:{}", manifest.id);
 
-        let chunks = crate::rag::chunk_text(&content);
-        let chunk_texts: Vec<String> = chunks.iter().map(|(t, _)| t.clone()).collect();
-        let embeddings = crate::rag::generate_embeddings(&chunk_texts)
-            .await
-            .unwrap_or_default();
-
-        // Upsert document
-        sqlx::query(
-            "INSERT INTO rag_documents (id, source, source_id, title, content, language, updated_at)
-             VALUES (?, 'catalog', ?, ?, ?, 'en', datetime('now'))
-             ON CONFLICT(id) DO UPDATE SET title=excluded.title, content=excluded.content,
-             language=excluded.language, updated_at=datetime('now')",
+        let inserted = crate::rag::upsert_document_with_chunks(
+            pool,
+            &doc_id,
+            "catalog",
+            &manifest.id,
+            &manifest.name,
+            &content,
+            "en",
+            provider,
         )
-        .bind(&doc_id)
-        .bind(&manifest.id)
-        .bind(&manifest.name)
-        .bind(&content)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
 
-        // Delete old chunks
-        sqlx::query("DELETE FROM rag_chunks WHERE document_id = ?")
-            .bind(&doc_id)
-            .execute(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        // Insert new chunks
-        for (i, (text, _)) in chunks.iter().enumerate() {
-            let chunk_id = format!("{}:{}", doc_id, i);
-            let emb_bytes = embeddings.get(i).map(|e| crate::rag::embedding_to_bytes(e));
-
-            sqlx::query(
-                "INSERT INTO rag_chunks (id, document_id, chunk_index, content, embedding, token_count)
-                 VALUES (?, ?, ?, ?, ?, ?)",
-            )
-            .bind(&chunk_id)
-            .bind(&doc_id)
-            .bind(i as i32)
-            .bind(text)
-            .bind(emb_bytes.as_deref())
-            .bind(crate::rag::estimate_tokens(text) as i32)
-            .execute(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-        }
-
+        ids.push(doc_id);
         doc_count += 1;
-        chunk_count += chunks.len() as i32;
+        chunk_count += inserted as i32;
     }
 
-    Ok((doc_count, chunk_count))
+    Ok((doc_count, chunk_count, ids))
 }
 
 /// Every feature documented in the knowledge base.
@@ -798,12 +792,14 @@ Three sources are indexed, all built into the application:
 - The interface translations: the wording of every screen, in all four languages.
 
 How it works:
+- The knowledge base is managed from Settings, under AI Assistant: that screen shows how many documents are indexed, says whether the embedding model is installed (and offers to install it), and starts a re-index, whose progress is followed live.
 - Indexing is an explicit administrator action and runs in the background, so the request returns immediately and the progress is polled.
 - Documents are split into chunks of roughly 400 words with an 80-word overlap, converted into vectors through Ollama, and stored in the database.
 - At question time the question is converted the same way, the closest chunks are found by cosine similarity, and the best matches are inserted into the instructions given to the model.
-- Re-indexing updates the existing documents rather than duplicating them. Nothing is read from the source tree: everything indexed is embedded in the installed application.
+- Re-indexing updates the existing documents, adds new ones, and removes those the sources no longer contain instead of leaving them behind. It does not duplicate anything. Nothing is read from the source tree: everything indexed is embedded in the installed application.
+- A re-index that cannot reach the embedding model fails and reports the failure rather than storing documents no search could ever find.
 
-The embedding model is fixed to nomic-embed-text, which has to be pulled before the first index. If the embedding step is unavailable the chat still works, simply without retrieved context."#.to_string(),
+The embedding model is fixed to nomic-embed-text, which has to be pulled before the first index. The chat screen points at the knowledge base when it is still empty, and if the embedding step is unavailable the chat still works, simply without retrieved context."#.to_string(),
         },
         FeatureDoc {
             id: "notifications".to_string(),
@@ -992,72 +988,49 @@ Power actions can also be scheduled from the Scheduled Tasks app (for example a 
 }
 
 /// Index HomeVault feature documentation into the knowledge base.
-async fn index_features(pool: &SqlitePool) -> Result<(i32, i32), String> {
+async fn index_features<P: EmbeddingProvider>(
+    pool: &SqlitePool,
+    provider: &P,
+) -> Result<(i32, i32, Vec<String>), String> {
     let features = feature_docs();
 
     let mut doc_count = 0;
     let mut chunk_count = 0;
+    let mut ids: Vec<String> = Vec::new();
 
     for feature in features {
         let doc_id = format!("feature:{}", feature.id);
-        let chunks = crate::rag::chunk_text(&feature.content);
-        let chunk_texts: Vec<String> = chunks.iter().map(|(t, _)| t.clone()).collect();
-        let embeddings = crate::rag::generate_embeddings(&chunk_texts)
-            .await
-            .unwrap_or_default();
 
-        sqlx::query(
-            "INSERT INTO rag_documents (id, source, source_id, title, content, language, updated_at)
-             VALUES (?, 'feature', ?, ?, ?, 'en', datetime('now'))
-             ON CONFLICT(id) DO UPDATE SET title=excluded.title, content=excluded.content,
-             language=excluded.language, updated_at=datetime('now')",
+        let inserted = crate::rag::upsert_document_with_chunks(
+            pool,
+            &doc_id,
+            "feature",
+            &feature.id,
+            &feature.title,
+            &feature.content,
+            "en",
+            provider,
         )
-        .bind(&doc_id)
-        .bind(&feature.id)
-        .bind(&feature.title)
-        .bind(&feature.content)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
 
-        sqlx::query("DELETE FROM rag_chunks WHERE document_id = ?")
-            .bind(&doc_id)
-            .execute(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        for (i, (text, _)) in chunks.iter().enumerate() {
-            let chunk_id = format!("{}:{}", doc_id, i);
-            let emb_bytes = embeddings.get(i).map(|e| crate::rag::embedding_to_bytes(e));
-
-            sqlx::query(
-                "INSERT INTO rag_chunks (id, document_id, chunk_index, content, embedding, token_count)
-                 VALUES (?, ?, ?, ?, ?, ?)",
-            )
-            .bind(&chunk_id)
-            .bind(&doc_id)
-            .bind(i as i32)
-            .bind(text)
-            .bind(emb_bytes.as_deref())
-            .bind(crate::rag::estimate_tokens(text) as i32)
-            .execute(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-        }
-
+        ids.push(doc_id);
         doc_count += 1;
-        chunk_count += chunks.len() as i32;
+        chunk_count += inserted as i32;
     }
 
-    Ok((doc_count, chunk_count))
+    Ok((doc_count, chunk_count, ids))
 }
 
 /// Index i18n strings as structured documents per language.
-async fn index_i18n(pool: &SqlitePool) -> Result<(i32, i32), String> {
+async fn index_i18n<P: EmbeddingProvider>(
+    pool: &SqlitePool,
+    provider: &P,
+) -> Result<(i32, i32, Vec<String>), String> {
     use std::collections::HashMap;
 
     let mut doc_count = 0;
     let mut chunk_count = 0;
+    let mut ids: Vec<String> = Vec::new();
 
     // Read from the TOML bundles embedded in the binary (`i18n.rs`), not from
     // `src/i18n/*.toml` on disk: those paths only exist in a source checkout,
@@ -1093,59 +1066,27 @@ async fn index_i18n(pool: &SqlitePool) -> Result<(i32, i32), String> {
                 }
 
                 let doc_id = format!("i18n:{}:{}", lang_code, section);
-                let chunks = crate::rag::chunk_text(&content);
-                let chunk_texts: Vec<String> = chunks.iter().map(|(t, _)| t.clone()).collect();
-                let embeddings = crate::rag::generate_embeddings(&chunk_texts)
-                    .await
-                    .unwrap_or_default();
 
-                sqlx::query(
-                    "INSERT INTO rag_documents (id, source, source_id, title, content, language, updated_at)
-                     VALUES (?, 'i18n', ?, ?, ?, ?, datetime('now'))
-                     ON CONFLICT(id) DO UPDATE SET content=excluded.content,
-                     language=excluded.language, updated_at=datetime('now')",
+                let inserted = crate::rag::upsert_document_with_chunks(
+                    pool,
+                    &doc_id,
+                    "i18n",
+                    section,
+                    &format!("i18n: {} - {}", section, lang_name),
+                    &content,
+                    lang_code,
+                    provider,
                 )
-                .bind(&doc_id)
-                .bind(section)
-                .bind(format!("i18n: {} - {}", section, lang_name))
-                .bind(&content)
-                .bind(lang_code)
-                .execute(pool)
-                .await
-                .map_err(|e| e.to_string())?;
+                .await?;
 
-                sqlx::query("DELETE FROM rag_chunks WHERE document_id = ?")
-                    .bind(&doc_id)
-                    .execute(pool)
-                    .await
-                    .map_err(|e| e.to_string())?;
-
-                for (i, (text, _)) in chunks.iter().enumerate() {
-                    let chunk_id = format!("{}:{}", doc_id, i);
-                    let emb_bytes = embeddings.get(i).map(|e| crate::rag::embedding_to_bytes(e));
-
-                    sqlx::query(
-                        "INSERT INTO rag_chunks (id, document_id, chunk_index, content, embedding, token_count)
-                         VALUES (?, ?, ?, ?, ?, ?)",
-                    )
-                    .bind(&chunk_id)
-                    .bind(&doc_id)
-                    .bind(i as i32)
-                    .bind(text)
-                    .bind(emb_bytes.as_deref())
-                    .bind(crate::rag::estimate_tokens(text) as i32)
-                    .execute(pool)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                }
-
+                ids.push(doc_id);
                 doc_count += 1;
-                chunk_count += chunks.len() as i32;
+                chunk_count += inserted as i32;
             }
         }
     }
 
-    Ok((doc_count, chunk_count))
+    Ok((doc_count, chunk_count, ids))
 }
 
 struct FeatureDoc {
@@ -1157,6 +1098,33 @@ struct FeatureDoc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Offline stand-in for Ollama: deterministic embeddings, or a hard
+    /// failure when `fail` is set (how the fail-loud contract is asserted).
+    struct StubEmbedder {
+        fail: bool,
+    }
+
+    impl crate::rag::EmbeddingProvider for StubEmbedder {
+        fn embed<'a>(&'a self, texts: &'a [String]) -> crate::rag::EmbedFuture<'a> {
+            let fail = self.fail;
+            let n = texts.len();
+            Box::pin(async move {
+                if fail {
+                    return Err("no embedding backend".to_string());
+                }
+                Ok(vec![vec![0.1f32, 0.2, 0.3, 0.4]; n])
+            })
+        }
+    }
+
+    async fn memory_pool() -> std::sync::Arc<sqlx::SqlitePool> {
+        let db = crate::storage::Database::new("sqlite::memory:")
+            .await
+            .expect("in-memory db");
+        db.run_migrations().await.expect("migrations");
+        db.pool()
+    }
 
     /// Guides that document *how the codebase is built* rather than a feature a
     /// user can open. They are deliberately **not** in the knowledge base: the
@@ -1344,13 +1312,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_index_all_populates_knowledge_base() {
-        let db = crate::storage::Database::new("sqlite::memory:")
-            .await
-            .expect("in-memory db");
-        db.run_migrations().await.expect("migrations");
-        let pool = db.pool();
+        let pool = memory_pool().await;
+        let embedder = StubEmbedder { fail: false };
 
-        let (docs, chunks) = super::index_all(pool.as_ref()).await.expect("index_all");
+        let (docs, chunks) = super::index_all(pool.as_ref(), &embedder)
+            .await
+            .expect("index_all");
         assert!(docs > 0, "expected indexed documents, got {docs}");
         assert!(chunks > 0, "expected indexed chunks, got {chunks}");
 
@@ -1373,11 +1340,73 @@ mod tests {
                 .expect("chunk query");
         assert!(chunk_docs > 0, "no chunks linked to documents");
 
+        // Every chunk carries a real embedding — never a NULL left by a
+        // swallowed embedding failure.
+        let nulls: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM rag_chunks WHERE embedding IS NULL")
+                .fetch_one(pool.as_ref())
+                .await
+                .expect("null-embedding count");
+        assert_eq!(nulls, 0, "no chunk may be stored without an embedding");
+
         // Re-indexing upserts rather than duplicating documents.
-        let (docs2, _) = super::index_all(pool.as_ref()).await.expect("second index");
+        let (docs2, _) = super::index_all(pool.as_ref(), &embedder)
+            .await
+            .expect("second index");
         assert_eq!(
             docs, docs2,
             "re-indexing must not change the document count"
         );
+    }
+
+    #[tokio::test]
+    async fn test_index_all_reconciles_stale_documents_away() {
+        let pool = memory_pool().await;
+        let embedder = StubEmbedder { fail: false };
+
+        // A document that the current sources no longer produce — as a deleted
+        // guide or a renamed app would leave behind.
+        sqlx::query(
+            "INSERT INTO rag_documents (id, source, source_id, title, content, language)
+             VALUES ('feature:ghost', 'feature', 'ghost', 'Ghost', 'gone', 'en')",
+        )
+        .execute(pool.as_ref())
+        .await
+        .expect("seed stale document");
+
+        super::index_all(pool.as_ref(), &embedder)
+            .await
+            .expect("index_all");
+
+        let ghosts: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM rag_documents WHERE id = 'feature:ghost'")
+                .fetch_one(pool.as_ref())
+                .await
+                .expect("count");
+        assert_eq!(ghosts, 0, "a document no source produces must be pruned");
+    }
+
+    #[tokio::test]
+    async fn test_index_all_fails_loudly_when_embedding_fails() {
+        let pool = memory_pool().await;
+        let embedder = StubEmbedder { fail: true };
+
+        let err = super::index_all(pool.as_ref(), &embedder)
+            .await
+            .expect_err("an embedding failure must fail the run");
+        assert!(err.contains("embedding failed"), "unexpected error: {err}");
+
+        // The run status says `error`, it is never reported as idle/success.
+        let status = crate::rag::get_index_status(pool.as_ref())
+            .await
+            .expect("status");
+        assert_eq!(status.status, "error");
+
+        // And nothing was half-indexed.
+        let docs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rag_documents")
+            .fetch_one(pool.as_ref())
+            .await
+            .expect("count");
+        assert_eq!(docs, 0);
     }
 }

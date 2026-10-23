@@ -37,7 +37,32 @@ use crate::handlers::AppState;
 use axum::http::HeaderMap;
 use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+/// One reindex at a time. Two concurrent runs would interleave upserts and
+/// prunes over the same tables and double the embedding load for no benefit;
+/// the loser is told so instead of queueing silently.
+static REINDEX_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// RAII claim on [`REINDEX_RUNNING`], released on drop — so a panic inside the
+/// indexing task cannot leave the flag set and wedge every later reindex.
+struct ReindexGuard;
+
+impl ReindexGuard {
+    fn acquire() -> Option<Self> {
+        REINDEX_RUNNING
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| ReindexGuard)
+    }
+}
+
+impl Drop for ReindexGuard {
+    fn drop(&mut self) {
+        REINDEX_RUNNING.store(false, Ordering::SeqCst);
+    }
+}
 
 // ── Request/Response types ───────────────────────────────────────────
 
@@ -153,6 +178,20 @@ pub async fn handle_rag_index(
         });
     }
 
+    // One reindex at a time — a second request while one is in flight is
+    // refused rather than queueing behind it.
+    let guard = match ReindexGuard::acquire() {
+        Some(g) => g,
+        None => {
+            return Json(RagIndexResponse {
+                success: false,
+                message: None,
+                error: Some("A reindex is already running".to_string()),
+                data: None,
+            });
+        }
+    };
+
     // Spawn indexing in the background, tracked as a progress job so it shows
     // in the desktop activity taskbar (indeterminate — index_all reports no
     // incremental progress).
@@ -162,7 +201,9 @@ pub async fn handle_rag_index(
         "Indexing knowledge base",
     );
     tokio::spawn(async move {
-        match crate::rag_indexers::index_all(&pool).await {
+        // Owns the single-flight claim; released even if indexing panics.
+        let _guard = guard;
+        match crate::rag_indexers::index_all(&pool, &crate::rag::OllamaEmbedder).await {
             Ok((docs, chunks)) => {
                 tracing::info!(
                     "RAG indexing complete: {} documents, {} chunks",
@@ -174,7 +215,8 @@ pub async fn handle_rag_index(
             }
             Err(e) => {
                 tracing::error!("RAG indexing failed: {}", e);
-                let _ = crate::rag::update_index_status(&pool, "error", 0, 0).await;
+                // `index_all` already records the `error` status; the job
+                // carries the reason to the activity taskbar.
                 crate::sse::PROGRESS_MANAGER.fail_job(&job, &e.to_string());
             }
         }
@@ -269,13 +311,25 @@ pub async fn handle_rag_documents(
         });
     }
 
-    let docs: Vec<RagDocSummary> = sqlx::query_as(
+    // A DB failure is reported as an error, never masked as "no documents":
+    // the previous `unwrap_or_default()` made a broken query indistinguishable
+    // from a genuinely empty index.
+    let docs: Vec<RagDocSummary> = match sqlx::query_as(
         "SELECT id, source, source_id, title, language FROM rag_documents ORDER BY source, title",
     )
     .fetch_all(&*state.db.pool())
     .await
-    .map_err(|e| e.to_string())
-    .unwrap_or_default();
+    {
+        Ok(docs) => docs,
+        Err(e) => {
+            tracing::warn!("RAG documents query failed: {}", e);
+            return Json(RagDocumentsResponse {
+                success: false,
+                data: None,
+                error: Some(format!("Failed to list indexed documents: {e}")),
+            });
+        }
+    };
 
     Json(RagDocumentsResponse {
         success: true,

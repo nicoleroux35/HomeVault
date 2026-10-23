@@ -33,6 +33,9 @@
 
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::collections::HashSet;
+use std::future::Future;
+use std::pin::Pin;
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -172,6 +175,34 @@ pub async fn generate_embeddings(texts: &[String]) -> Result<Vec<Vec<f32>>, Stri
     Ok(resp.embeddings)
 }
 
+// ── Embedding provider ───────────────────────────────────────────────
+
+/// The boxed future an [`EmbeddingProvider`] returns, factored out so the
+/// trait signatures stay readable and implementors (production, tests) do not
+/// repeat a long type.
+pub type EmbedFuture<'a> = Pin<Box<dyn Future<Output = Result<Vec<Vec<f32>>, String>> + Send + 'a>>;
+
+/// Async source of embeddings for a batch of text chunks.
+///
+/// The indexers depend on this trait instead of calling
+/// [`generate_embeddings`] directly, so the reconciliation contract and the
+/// "an embedding failure fails the run" rule can be tested in-process, with no
+/// live Ollama (`OllamaEmbedder` is the production implementation; the tests
+/// inject a deterministic fake).
+pub trait EmbeddingProvider: Send + Sync {
+    fn embed<'a>(&'a self, texts: &'a [String]) -> EmbedFuture<'a>;
+}
+
+/// The production provider: one HTTP round-trip to the local Ollama
+/// `/api/embed` endpoint.
+pub struct OllamaEmbedder;
+
+impl EmbeddingProvider for OllamaEmbedder {
+    fn embed<'a>(&'a self, texts: &'a [String]) -> EmbedFuture<'a> {
+        Box::pin(generate_embeddings(texts))
+    }
+}
+
 // ── Vector math ──────────────────────────────────────────────────────
 
 /// Cosine similarity between two f32 vectors.
@@ -206,7 +237,15 @@ pub fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
 // ── Database operations ──────────────────────────────────────────────
 
 /// Upsert a document and its chunks with embeddings.
-pub async fn upsert_document_with_chunks(
+///
+/// Chunks are embedded **before** anything is written: an embedding failure
+/// aborts the call and leaves the index untouched (the document keeps its
+/// previous chunks, or stays absent). Before 2026-10-22 a failure was logged
+/// and the chunks were stored with a `NULL` embedding — present in the table,
+/// invisible to search, so the run looked successful while that document had
+/// become unanswerable.
+#[allow(clippy::too_many_arguments)]
+pub async fn upsert_document_with_chunks<P: EmbeddingProvider>(
     pool: &SqlitePool,
     doc_id: &str,
     source: &str,
@@ -214,10 +253,26 @@ pub async fn upsert_document_with_chunks(
     title: &str,
     content: &str,
     language: &str,
+    provider: &P,
 ) -> Result<usize, String> {
     let chunks = chunk_text(content);
     if chunks.is_empty() {
         return Ok(0);
+    }
+
+    // Embed first so a failure cannot leave a half-written document behind.
+    let chunk_texts: Vec<String> = chunks.iter().map(|(text, _)| text.clone()).collect();
+    let embeddings = provider
+        .embed(&chunk_texts)
+        .await
+        .map_err(|e| format!("embedding failed for '{}': {}", title, e))?;
+    if embeddings.len() != chunks.len() {
+        return Err(format!(
+            "embedding count mismatch for '{}': {} chunks, {} embeddings",
+            title,
+            chunks.len(),
+            embeddings.len()
+        ));
     }
 
     // Upsert the document
@@ -244,21 +299,11 @@ pub async fn upsert_document_with_chunks(
         .await
         .map_err(|e| format!("DB error deleting old chunks: {}", e))?;
 
-    // Generate embeddings in batch
-    let chunk_texts: Vec<String> = chunks.iter().map(|(text, _)| text.clone()).collect();
-    let embeddings = match generate_embeddings(&chunk_texts).await {
-        Ok(e) => e,
-        Err(e) => {
-            tracing::warn!("Failed to generate embeddings for '{}': {}", title, e);
-            vec![]
-        }
-    };
-
-    // Insert chunks with embeddings
+    // Insert chunks with their embeddings
     let mut inserted = 0;
     for (i, (text, _)) in chunks.iter().enumerate() {
         let chunk_id = format!("{}:{}", doc_id, i);
-        let embedding_bytes = embeddings.get(i).map(|e| embedding_to_bytes(e));
+        let embedding_bytes = embedding_to_bytes(&embeddings[i]);
         let tokens = estimate_tokens(text) as i32;
 
         sqlx::query(
@@ -269,7 +314,7 @@ pub async fn upsert_document_with_chunks(
         .bind(doc_id)
         .bind(i as i32)
         .bind(text)
-        .bind(embedding_bytes.as_deref())
+        .bind(embedding_bytes.as_slice())
         .bind(tokens)
         .execute(pool)
         .await
@@ -281,29 +326,51 @@ pub async fn upsert_document_with_chunks(
     Ok(inserted)
 }
 
-/// Delete all documents and chunks for a given source.
-pub async fn clear_source(pool: &SqlitePool, source: &str) -> Result<(), String> {
-    let doc_ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM rag_documents WHERE source = ?")
+/// Delete every document of `source` (and its chunks). The degenerate case of
+/// [`prune_source`] with an empty keep set; returns the number removed.
+pub async fn clear_source(pool: &SqlitePool, source: &str) -> Result<usize, String> {
+    prune_source(pool, source, &[]).await
+}
+
+/// Delete every document of `source` whose id is **not** in `keep_ids`, plus
+/// its chunks. Returns how many documents were removed.
+///
+/// This is the reconciliation half of a reindex. `index_all` only upserts, so
+/// without this a deleted or renamed guide, app or i18n section stays in the
+/// index — and in every chat answer — forever. `clear_source` had zero callers
+/// until 2026-10-22, which is exactly how that happened.
+pub async fn prune_source(
+    pool: &SqlitePool,
+    source: &str,
+    keep_ids: &[String],
+) -> Result<usize, String> {
+    let existing: Vec<(String,)> = sqlx::query_as("SELECT id FROM rag_documents WHERE source = ?")
         .bind(source)
         .fetch_all(pool)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("DB error listing documents of '{source}': {e}"))?;
 
-    for (doc_id,) in &doc_ids {
+    let keep: HashSet<&str> = keep_ids.iter().map(String::as_str).collect();
+    let mut removed = 0usize;
+
+    for (doc_id,) in &existing {
+        if keep.contains(doc_id.as_str()) {
+            continue;
+        }
         sqlx::query("DELETE FROM rag_chunks WHERE document_id = ?")
             .bind(doc_id)
             .execute(pool)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("DB error deleting chunks of '{doc_id}': {e}"))?;
+        sqlx::query("DELETE FROM rag_documents WHERE id = ?")
+            .bind(doc_id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("DB error deleting document '{doc_id}': {e}"))?;
+        removed += 1;
     }
 
-    sqlx::query("DELETE FROM rag_documents WHERE source = ?")
-        .bind(source)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
+    Ok(removed)
 }
 
 /// Cosine similarity search across all chunks.
@@ -365,19 +432,23 @@ pub async fn get_index_status(pool: &SqlitePool) -> Result<RagIndexStatus, Strin
     .await
     .map_err(|e| e.to_string())?;
 
+    // `embedding_model` is always the model the indexer is compiled to use,
+    // not the (possibly empty) value stored on the last run: the UI needs the
+    // required model name to tell whether it is installed, even before the
+    // first index.
     match row {
-        Some((at, docs, chunks, model, status)) => Ok(RagIndexStatus {
+        Some((at, docs, chunks, _model, status)) => Ok(RagIndexStatus {
             last_indexed_at: at,
             total_documents: docs,
             total_chunks: chunks,
-            embedding_model: model.unwrap_or_default(),
+            embedding_model: EMBEDDING_MODEL.to_string(),
             status: status.unwrap_or_else(|| "idle".to_string()),
         }),
         None => Ok(RagIndexStatus {
             last_indexed_at: None,
             total_documents: 0,
             total_chunks: 0,
-            embedding_model: String::new(),
+            embedding_model: EMBEDDING_MODEL.to_string(),
             status: "idle".to_string(),
         }),
     }
@@ -390,23 +461,46 @@ pub async fn update_index_status(
     docs: i32,
     chunks: i32,
 ) -> Result<(), String> {
-    sqlx::query(
-        "INSERT INTO rag_index_status (id, last_indexed_at, total_documents, total_chunks, embedding_model, status)
-         VALUES (1, datetime('now'), ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           last_indexed_at=datetime('now'),
-           total_documents=excluded.total_documents,
-           total_chunks=excluded.total_chunks,
-           embedding_model=excluded.embedding_model,
-           status=excluded.status",
-    )
-    .bind(docs)
-    .bind(chunks)
-    .bind(EMBEDDING_MODEL)
-    .bind(status)
-    .execute(pool)
-    .await
-    .map_err(|e| e.to_string())?;
+    // `last_indexed_at` only advances on a completed run, and the counts are
+    // only replaced by that run's result. Stamping the timestamp on every
+    // transition made a *failed* reindex report "last indexed: now" with zero
+    // documents, while a running one blanked the counts of the index that was
+    // still serving answers (documents are embedded before they are written,
+    // so a failure leaves the previous index intact).
+    if status == "idle" {
+        sqlx::query(
+            "INSERT INTO rag_index_status (id, last_indexed_at, total_documents, total_chunks, embedding_model, status)
+             VALUES (1, datetime('now'), ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               last_indexed_at=datetime('now'),
+               total_documents=excluded.total_documents,
+               total_chunks=excluded.total_chunks,
+               embedding_model=excluded.embedding_model,
+               status=excluded.status",
+        )
+        .bind(docs)
+        .bind(chunks)
+        .bind(EMBEDDING_MODEL)
+        .bind(status)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    } else {
+        sqlx::query(
+            "INSERT INTO rag_index_status (id, last_indexed_at, total_documents, total_chunks, embedding_model, status)
+             VALUES (1, NULL, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               embedding_model=excluded.embedding_model,
+               status=excluded.status",
+        )
+        .bind(docs)
+        .bind(chunks)
+        .bind(EMBEDDING_MODEL)
+        .bind(status)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
 
     Ok(())
 }
@@ -522,5 +616,200 @@ mod tests {
         let ctx = build_rag_context(&results);
         assert!(ctx.contains("Jellyfin"));
         assert!(ctx.contains("Free media server"));
+    }
+
+    // ── Reconciliation + fail-loud embedding ─────────────────────────────
+
+    /// Deterministic, offline stand-in for Ollama. `fail` makes every batch
+    /// embedding fail, which is how the "an embedding failure fails the run"
+    /// contract is asserted without a model server.
+    struct FakeEmbedder {
+        dim: usize,
+        fail: bool,
+    }
+
+    impl EmbeddingProvider for FakeEmbedder {
+        fn embed<'a>(&'a self, texts: &'a [String]) -> EmbedFuture<'a> {
+            let fail = self.fail;
+            let dim = self.dim;
+            let n = texts.len();
+            Box::pin(async move {
+                if fail {
+                    return Err("embedding backend unavailable".to_string());
+                }
+                Ok(vec![vec![0.25f32; dim]; n])
+            })
+        }
+    }
+
+    async fn memory_pool() -> std::sync::Arc<SqlitePool> {
+        let db = crate::storage::Database::new("sqlite::memory:")
+            .await
+            .expect("in-memory db");
+        db.run_migrations().await.expect("migrations");
+        db.pool()
+    }
+
+    async fn seed_doc(pool: &SqlitePool, id: &str, source: &str) {
+        sqlx::query(
+            "INSERT INTO rag_documents (id, source, source_id, title, content, language)
+             VALUES (?, ?, ?, 't', 'body', 'en')",
+        )
+        .bind(id)
+        .bind(source)
+        .bind(id)
+        .execute(pool)
+        .await
+        .expect("seed document");
+    }
+
+    async fn count(pool: &SqlitePool, sql: &'static str) -> i64 {
+        sqlx::query_scalar(sql)
+            .fetch_one(pool)
+            .await
+            .expect("count")
+    }
+
+    #[tokio::test]
+    async fn test_upsert_fails_loudly_and_writes_nothing_on_embedding_error() {
+        let pool = memory_pool().await;
+        let err = upsert_document_with_chunks(
+            pool.as_ref(),
+            "catalog:demo",
+            "catalog",
+            "demo",
+            "Demo",
+            "some reasonably long indexable content for this document",
+            "en",
+            &FakeEmbedder { dim: 4, fail: true },
+        )
+        .await
+        .expect_err("an embedding failure must abort the upsert");
+        assert!(err.contains("embedding failed"), "unexpected error: {err}");
+
+        // Nothing half-written: no document, no chunk, no NULL embedding.
+        assert_eq!(
+            count(pool.as_ref(), "SELECT COUNT(*) FROM rag_documents").await,
+            0
+        );
+        assert_eq!(
+            count(pool.as_ref(), "SELECT COUNT(*) FROM rag_chunks").await,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_upsert_stores_chunks_with_a_real_embedding() {
+        let pool = memory_pool().await;
+        let inserted = upsert_document_with_chunks(
+            pool.as_ref(),
+            "catalog:demo",
+            "catalog",
+            "demo",
+            "Demo",
+            "some reasonably long indexable content for this document",
+            "en",
+            &FakeEmbedder {
+                dim: 4,
+                fail: false,
+            },
+        )
+        .await
+        .expect("upsert");
+        assert!(inserted >= 1);
+        assert_eq!(
+            count(
+                pool.as_ref(),
+                "SELECT COUNT(*) FROM rag_chunks WHERE embedding IS NULL"
+            )
+            .await,
+            0,
+            "no chunk may be stored without an embedding"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_index_status_only_stamps_last_indexed_on_success() {
+        let pool = memory_pool().await;
+
+        update_index_status(pool.as_ref(), "idle", 12, 34)
+            .await
+            .expect("idle status");
+        let done = get_index_status(pool.as_ref()).await.expect("status");
+        assert!(done.last_indexed_at.is_some());
+        let stamped = done.last_indexed_at.clone();
+
+        // A running reindex keeps the counts of the index that still serves
+        // answers — and does not move the timestamp.
+        update_index_status(pool.as_ref(), "indexing", 0, 0)
+            .await
+            .expect("indexing status");
+        let running = get_index_status(pool.as_ref()).await.expect("status");
+        assert_eq!(running.status, "indexing");
+        assert_eq!(running.total_documents, 12);
+        assert_eq!(running.total_chunks, 34);
+        assert_eq!(running.last_indexed_at, stamped);
+
+        // A failed run must not claim a fresh index.
+        update_index_status(pool.as_ref(), "error", 0, 0)
+            .await
+            .expect("error status");
+        let failed = get_index_status(pool.as_ref()).await.expect("status");
+        assert_eq!(failed.status, "error");
+        assert_eq!(failed.total_documents, 12);
+        assert_eq!(failed.last_indexed_at, stamped);
+    }
+
+    #[tokio::test]
+    async fn test_prune_source_removes_only_the_documents_it_no_longer_produces() {
+        let pool = memory_pool().await;
+        seed_doc(pool.as_ref(), "catalog:keep", "catalog").await;
+        seed_doc(pool.as_ref(), "catalog:gone", "catalog").await;
+        seed_doc(pool.as_ref(), "feature:untouched", "feature").await;
+
+        let removed = prune_source(pool.as_ref(), "catalog", &["catalog:keep".to_string()])
+            .await
+            .expect("prune");
+        assert_eq!(removed, 1);
+
+        assert_eq!(
+            count(
+                pool.as_ref(),
+                "SELECT COUNT(*) FROM rag_documents WHERE id = 'catalog:keep'"
+            )
+            .await,
+            1
+        );
+        assert_eq!(
+            count(
+                pool.as_ref(),
+                "SELECT COUNT(*) FROM rag_documents WHERE id = 'catalog:gone'"
+            )
+            .await,
+            0
+        );
+        // A different source is never touched by a catalog prune.
+        assert_eq!(
+            count(
+                pool.as_ref(),
+                "SELECT COUNT(*) FROM rag_documents WHERE id = 'feature:untouched'"
+            )
+            .await,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_clear_source_removes_every_document_of_the_source() {
+        let pool = memory_pool().await;
+        seed_doc(pool.as_ref(), "catalog:a", "catalog").await;
+        seed_doc(pool.as_ref(), "catalog:b", "catalog").await;
+
+        let removed = clear_source(pool.as_ref(), "catalog").await.expect("clear");
+        assert_eq!(removed, 2);
+        assert_eq!(
+            count(pool.as_ref(), "SELECT COUNT(*) FROM rag_documents").await,
+            0
+        );
     }
 }
