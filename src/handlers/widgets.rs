@@ -35,9 +35,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-static PREV_STATS: Lazy<RwLock<HashMap<String, (u64, u64)>>> =
-    Lazy::new(|| RwLock::new(HashMap::new()));
-
 /// CPU usage percentage, load averages, and core count.
 #[derive(Serialize, Clone)]
 pub struct CpuUsageResponse {
@@ -74,65 +71,40 @@ pub struct CpuTempResponse {
     pub label: String,
 }
 
-/// Software update availability for the app and server OS.
+/// Software update availability and the running versions.
+///
+/// Only the *app* update is checked: it is the one endpoint with a real
+/// manifest behind it. There is deliberately no `has_server_update` field —
+/// the previous value was the constant `false` in both branches, i.e. a
+/// measurement that was never taken (ROADMAP 15.3). `server_current_version`
+/// stays because it is read from the running system.
 #[derive(Serialize, Clone)]
 pub struct UpdateInfoResponse {
     pub has_app_update: bool,
     pub app_current_version: String,
     pub app_latest_version: Option<String>,
-    pub has_server_update: bool,
     pub server_current_version: String,
 }
 
 /// Returns CPU usage percentage, load averages, and core count for the dashboard widget.
+///
+/// The percentage comes from the shared `/proc/stat` sampler keyed by the
+/// calling account (ROADMAP 15.3): a process-wide slot on the literal `"cpu"`
+/// meant two clients polling concurrently consumed each other's delta and one
+/// of them read `0 %`. The sampler also falls back to the since-boot average
+/// on the first sample, so a fresh tile never shows a made-up zero.
 pub async fn handle_widget_cpu_usage(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers).await {
-        return response;
-    }
-
-    let content = ProcParser::read_proc_file("/proc/stat");
-
-    let mut total_idle: u64 = 0;
-    let mut total_total: u64 = 0;
-
-    if let Some(cpu_line) = content.lines().find(|l| l.starts_with("cpu ")) {
-        let parts: Vec<&str> = cpu_line.split_whitespace().skip(1).collect();
-        if parts.len() >= 5 {
-            let user: u64 = parts[0].parse().unwrap_or(0);
-            let nice: u64 = parts[1].parse().unwrap_or(0);
-            let system: u64 = parts[2].parse().unwrap_or(0);
-            let idle: u64 = parts[3].parse().unwrap_or(0);
-            let iowait: u64 = parts.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
-            let irq: u64 = parts.get(5).and_then(|s| s.parse().ok()).unwrap_or(0);
-            let softirq: u64 = parts.get(6).and_then(|s| s.parse().ok()).unwrap_or(0);
-
-            total_idle = idle + iowait;
-            total_total = user + nice + system + idle + iowait + irq + softirq;
-        }
-    }
-
-    let (prev_idle, prev_total) = {
-        let mut prev = PREV_STATS.write();
-        let entry = prev.entry("cpu".to_string()).or_insert((0, 0));
-        let result = *entry;
-        *entry = (total_idle, total_total);
-        result
+    let username = match require_auth(&state, &headers).await {
+        Ok(username) => username,
+        Err(response) => return response,
     };
 
-    let usage_percent = if total_total > prev_total {
-        let delta_total = total_total - prev_total;
-        let delta_idle = total_idle - prev_idle;
-        if delta_total > 0 {
-            ((delta_total - delta_idle) as f64 / delta_total as f64 * 100.0) as u32
-        } else {
-            0
-        }
-    } else {
-        0
-    };
+    let usage_percent = crate::utils::proc::cpu_usage_percent_since_last_sample(&username)
+        .map(|percent| percent.round().clamp(0.0, 100.0) as u32)
+        .unwrap_or(0);
 
     let loadavg_str = ProcParser::parse_loadavg();
     let parts: Vec<&str> = loadavg_str.split_whitespace().collect();
@@ -194,14 +166,18 @@ pub async fn handle_widget_ram_usage(
 static PREV_NETWORK_STATS: Lazy<RwLock<HashMap<String, (u64, u64, u64)>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
+/// Most per-account network samples kept before the map is reset.
+const MAX_NETWORK_SAMPLE_KEYS: usize = 256;
+
 /// Returns network traffic rates (RX/TX) per second for the dashboard widget.
 pub async fn handle_widget_network_traffic(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers).await {
-        return response;
-    }
+    let username = match require_auth(&state, &headers).await {
+        Ok(username) => username,
+        Err(response) => return response,
+    };
 
     let content = ProcParser::read_proc_file("/proc/net/dev");
     let now = std::time::SystemTime::now()
@@ -231,17 +207,35 @@ pub async fn handle_widget_network_traffic(
         }
     }
 
+    // Keyed by account, so two clients polling concurrently do not consume
+    // each other's delta (ROADMAP 15.3). The map is bounded like the CPU
+    // sampler's.
     let (prev_rx, prev_tx, prev_ts) = {
         let mut prev = PREV_NETWORK_STATS.write();
-        let entry = prev.entry("_total".to_string()).or_insert((0, 0, 0));
+        if prev.len() > MAX_NETWORK_SAMPLE_KEYS && !prev.contains_key(&username) {
+            prev.clear();
+        }
+        let entry = prev.entry(username).or_insert((0, 0, 0));
         let result = *entry;
         *entry = (total_rx, total_tx, now);
         result
     };
 
     let elapsed = now.saturating_sub(prev_ts).max(1);
-    let rx_bytes_per_sec = total_rx.saturating_sub(prev_rx) * 1000 / elapsed;
-    let tx_bytes_per_sec = total_tx.saturating_sub(prev_tx) * 1000 / elapsed;
+    // No previous timestamp means "no rate yet" on the very first sample:
+    // the counters already hold bytes since boot, so dividing them by one
+    // millisecond would report an absurd spike. `saturating_sub` keeps a
+    // counter reset from underflowing.
+    let rx_bytes_per_sec = if prev_ts == 0 {
+        0
+    } else {
+        total_rx.saturating_sub(prev_rx) * 1000 / elapsed
+    };
+    let tx_bytes_per_sec = if prev_ts == 0 {
+        0
+    } else {
+        total_tx.saturating_sub(prev_tx) * 1000 / elapsed
+    };
 
     let data = NetworkTrafficResponse {
         rx_bytes_per_sec,
@@ -317,7 +311,6 @@ pub async fn handle_widget_update_info(
                     has_app_update: cache.has_app_update,
                     app_current_version: app_version,
                     app_latest_version: cache.app_latest_version.clone(),
-                    has_server_update: false,
                     server_current_version: server_version,
                 });
             }
@@ -344,7 +337,6 @@ pub async fn handle_widget_update_info(
         has_app_update,
         app_current_version: app_version,
         app_latest_version,
-        has_server_update: false,
         server_current_version: server_version,
     })
 }

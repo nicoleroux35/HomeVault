@@ -13,6 +13,10 @@
  *   browser origins. Hand-edited or foreign refresh values are coerced back
  *   to a sane cadence so they can never starve or hammer the pollers.
  *
+ *   The stored blob carries a `savedAt` stamp and the server copy is adopted
+ *   only when it is at least as new, so logging in on a second origin can no
+ *   longer overwrite a layout the user edited on this one (last write wins).
+ *
  * Dependencies:
  *   - svelte (>= 5)
  *
@@ -65,6 +69,11 @@ export interface MonitorPositions {
    *  Lives in the same layout blob as the positions so it follows the account
    *  across origins — see `setRefreshMs` and `Desktop.svelte`'s pollers. */
   refreshMs: number
+  /** When this layout was last edited on this origin, in epoch ms; `0` means
+   *  "never edited" (a pristine default or a blob saved before this field
+   *  existed). The server copy is adopted only when it is at least as new, so
+   *  a login can no longer overwrite a layout the user just changed. */
+  savedAt: number
 }
 
 /** The boolean `*Visible` fields of `MonitorPositions` — the key a widget
@@ -86,6 +95,12 @@ function normalizeRefreshMs(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 1000
     ? value
     : DEFAULT_REFRESH_MS
+}
+
+/** Coerce a stored/server `savedAt` back to a finite epoch-ms stamp; anything
+ *  else reads as "never edited". */
+function normalizeSavedAt(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0
 }
 
 function defaultPositions(): MonitorPositions {
@@ -127,6 +142,7 @@ function defaultPositions(): MonitorPositions {
     sessionsMonitorVisible: false,
     healthMonitorVisible: false,
     refreshMs: DEFAULT_REFRESH_MS,
+    savedAt: 0,
   }
 }
 
@@ -175,6 +191,9 @@ function loadFromStorage(username: string): MonitorPositions {
         // Added after the first layouts shipped — a blob saved before this
         // key existed falls back to the default rather than reading undefined.
         refreshMs: normalizeRefreshMs(parsed.refreshMs),
+        // Added after the first layouts shipped; a blob saved before this key
+        // existed counts as "never edited" so the server copy still wins once.
+        savedAt: normalizeSavedAt(parsed.savedAt),
       }
     }
   } catch {
@@ -202,6 +221,11 @@ function createMonitorStore() {
   let currentPositions: MonitorPositions = defaultPositions()
   let pushTimer: ReturnType<typeof setTimeout> | undefined
 
+  /** Every local edit stamps `savedAt`, which is what `syncFromServer` compares
+   *  against before overwriting the store (last write wins). */
+  const edit = (fn: (p: MonitorPositions) => MonitorPositions) =>
+    update((p) => ({ ...fn(p), savedAt: Date.now() }))
+
   // localStorage is per-origin (host:port), so the same account accessed
   // from two different addresses (e.g. a LAN IP and a public IP forwarded to
   // the same server) would otherwise each keep their own independent layout.
@@ -223,8 +247,21 @@ function createMonitorStore() {
       if (currentUsername !== username) return // account changed while awaiting
       if (res.success && res.data?.layout_json) {
         const parsed = JSON.parse(res.data.layout_json)
+        const serverSavedAt = normalizeSavedAt(parsed.savedAt)
+        if (serverSavedAt < currentPositions.savedAt) {
+          // This origin was edited more recently than the stored copy: keep
+          // the local layout and publish it, instead of silently discarding
+          // the change on the next login (ROADMAP 15.3).
+          scheduleServerPush(username, currentPositions)
+          return
+        }
         const d = defaultPositions()
-        set({ ...d, ...parsed, refreshMs: normalizeRefreshMs(parsed.refreshMs) })
+        set({
+          ...d,
+          ...parsed,
+          refreshMs: normalizeRefreshMs(parsed.refreshMs),
+          savedAt: serverSavedAt,
+        })
       } else if (res.success) {
         // No layout saved server-side yet for this account - push whatever
         // this origin already has (fresh defaults or a pre-existing
@@ -261,76 +298,77 @@ function createMonitorStore() {
   return {
     subscribe,
     updateResourcePosition(x: number, y: number) {
-      update((p) => ({ ...p, resourceMonitor: { x, y } }))
+      edit((p) => ({ ...p, resourceMonitor: { x, y } }))
     },
     updateRaidPosition(x: number, y: number) {
-      update((p) => ({ ...p, raidMonitor: { x, y } }))
+      edit((p) => ({ ...p, raidMonitor: { x, y } }))
     },
     updateSecurityPosition(x: number, y: number) {
-      update((p) => ({ ...p, securityMonitor: { x, y } }))
+      edit((p) => ({ ...p, securityMonitor: { x, y } }))
     },
     updateVpnPosition(x: number, y: number) {
-      update((p) => ({ ...p, vpnMonitor: { x, y } }))
+      edit((p) => ({ ...p, vpnMonitor: { x, y } }))
     },
     updateDownloaderPosition(x: number, y: number) {
-      update((p) => ({ ...p, downloaderMonitor: { x, y } }))
+      edit((p) => ({ ...p, downloaderMonitor: { x, y } }))
     },
     updateSyncthingPosition(x: number, y: number) {
-      update((p) => ({ ...p, syncthingMonitor: { x, y } }))
+      edit((p) => ({ ...p, syncthingMonitor: { x, y } }))
     },
     setResourceVisible(visible: boolean) {
-      update((p) => ({ ...p, resourceMonitorVisible: visible }))
+      edit((p) => ({ ...p, resourceMonitorVisible: visible }))
     },
     setRaidVisible(visible: boolean) {
-      update((p) => ({ ...p, raidMonitorVisible: visible }))
+      edit((p) => ({ ...p, raidMonitorVisible: visible }))
     },
     setSecurityVisible(visible: boolean) {
-      update((p) => ({ ...p, securityMonitorVisible: visible }))
+      edit((p) => ({ ...p, securityMonitorVisible: visible }))
     },
     setVpnVisible(visible: boolean) {
-      update((p) => ({ ...p, vpnMonitorVisible: visible }))
+      edit((p) => ({ ...p, vpnMonitorVisible: visible }))
     },
     setDownloaderVisible(visible: boolean) {
-      update((p) => ({ ...p, downloaderMonitorVisible: visible }))
+      edit((p) => ({ ...p, downloaderMonitorVisible: visible }))
     },
     setSyncthingVisible(visible: boolean) {
-      update((p) => ({ ...p, syncthingMonitorVisible: visible }))
+      edit((p) => ({ ...p, syncthingMonitorVisible: visible }))
     },
     updateCalendarPosition(x: number, y: number) {
-      update((p) => ({ ...p, calendarMonitor: { x, y } }))
+      edit((p) => ({ ...p, calendarMonitor: { x, y } }))
     },
     setCalendarVisible(visible: boolean) {
-      update((p) => ({ ...p, calendarMonitorVisible: visible }))
+      edit((p) => ({ ...p, calendarMonitorVisible: visible }))
     },
     updateDockerPosition(x: number, y: number) {
-      update((p) => ({ ...p, dockerMonitor: { x, y } }))
+      edit((p) => ({ ...p, dockerMonitor: { x, y } }))
     },
     setDockerVisible(visible: boolean) {
-      update((p) => ({ ...p, dockerMonitorVisible: visible }))
+      edit((p) => ({ ...p, dockerMonitorVisible: visible }))
     },
     updateWeatherPosition(x: number, y: number) {
-      update((p) => ({ ...p, weatherMonitor: { x, y } }))
+      edit((p) => ({ ...p, weatherMonitor: { x, y } }))
     },
     setWeatherVisible(visible: boolean) {
-      update((p) => ({ ...p, weatherMonitorVisible: visible }))
+      edit((p) => ({ ...p, weatherMonitorVisible: visible }))
     },
     updateSessionsPosition(x: number, y: number) {
-      update((p) => ({ ...p, sessionsMonitor: { x, y } }))
+      edit((p) => ({ ...p, sessionsMonitor: { x, y } }))
     },
     setSessionsVisible(visible: boolean) {
-      update((p) => ({ ...p, sessionsMonitorVisible: visible }))
+      edit((p) => ({ ...p, sessionsMonitorVisible: visible }))
     },
     updateHealthPosition(x: number, y: number) {
-      update((p) => ({ ...p, healthMonitor: { x, y } }))
+      edit((p) => ({ ...p, healthMonitor: { x, y } }))
     },
     setHealthVisible(visible: boolean) {
-      update((p) => ({ ...p, healthMonitorVisible: visible }))
+      edit((p) => ({ ...p, healthMonitorVisible: visible }))
     },
     setRefreshMs(ms: number) {
-      update((p) => ({ ...p, refreshMs: ms }))
+      edit((p) => ({ ...p, refreshMs: ms }))
     },
     reset() {
-      set(defaultPositions())
+      // Stamped so the reset also wins the next `syncFromServer` comparison.
+      set({ ...defaultPositions(), savedAt: Date.now() })
     },
   }
 }
