@@ -212,7 +212,8 @@ use crate::handlers::{
         handle_get_translations, handle_notification_settings_get,
         handle_notification_settings_update, handle_public_settings_get, handle_set_language,
         handle_settings_export, handle_settings_import, handle_settings_reset,
-        handle_update_settings_get, handle_update_settings_update, handle_version_info,
+        handle_timezones_get, handle_update_settings_get, handle_update_settings_update,
+        handle_version_info,
     },
     share_links::{
         handle_share_link_create, handle_share_link_delete, handle_share_link_download,
@@ -497,6 +498,7 @@ pub fn create_app(state: AppStateArc) -> Router {
         // Settings - general
         .route("/api/settings/general", get(handle_general_settings_get))
         .route("/api/settings/general", put(handle_general_settings_update))
+        .route("/api/settings/timezones", get(handle_timezones_get))
         // Settings - start on boot (systemd autostart for homevault.service)
         .route("/api/settings/autostart", get(handle_autostart_get))
         .route("/api/settings/autostart", put(handle_autostart_update))

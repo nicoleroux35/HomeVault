@@ -520,12 +520,21 @@ test.describe('3 — General', () => {
     expect(opts.join('|')).toMatch(/Español/);
   });
 
-  test('3.3 — timezone select has many zones and a working change', async ({ page }) => {
+  test('3.3 — timezone select offers the whole IANA database and a working change', async ({ page }) => {
     await openSettings(page, admin);
     const sel = set(page).locator('#timezone');
-    expect(await sel.locator('option').count()).toBeGreaterThan(5);
-    await sel.selectOption('Europe/Paris');
-    await expect(sel).toHaveValue('Europe/Paris');
+    // The options come from GET /api/settings/timezones (the IANA database),
+    // not a hardcoded shortlist — zones the old 14-entry list could never
+    // offer (Lisbon, Casablanca…) must be selectable.
+    await expect(sel.locator('option[value="Europe/Lisbon"]')).toHaveCount(1, { timeout: 10_000 });
+    expect(await sel.locator('option').count()).toBeGreaterThan(200);
+    // Grouped by region, so a 500-entry list stays navigable.
+    expect(await sel.locator('optgroup').count()).toBeGreaterThan(5);
+    expect(await sel.locator('optgroup[label="Europe"] option').count()).toBeGreaterThan(10);
+
+    // Selecting is staged only (no Save here), so the server keeps its zone.
+    await sel.selectOption('Europe/Lisbon');
+    await expect(sel).toHaveValue('Europe/Lisbon');
   });
 
   test('3.4 — "start on boot" toggle is staged, then PUT /api/settings/autostart on Save', async ({ page }) => {
