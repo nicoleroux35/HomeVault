@@ -299,3 +299,66 @@ async fn test_write_endpoints_reject_non_admin_session() {
         );
     }
 }
+
+/// ROADMAP 8 — the degraded-create policy is **one** table shared by the API
+/// gate and the creation job, and a level that cannot start degraded is
+/// refused with its reason before any device is inspected (so before `mdadm`
+/// is reachable at all).
+///
+/// This is the only creation-path assertion that runs without real hardware:
+/// every other create case stops at the device gate. The devices below do not
+/// exist, which is the point — a 400 about the *level* proves the refusal
+/// happened first.
+#[tokio::test]
+async fn test_create_refuses_a_degraded_create_the_level_cannot_support() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "Password123!", 2).await;
+    let mut router = raid_router(state);
+    let token = login(&mut router, "admin", "Password123!").await;
+
+    for (level, devices, reason) in [
+        // raid0 has no redundancy to degrade.
+        ("raid0", vec!["/dev/hv-nonexistent-a"], "no redundancy"),
+        // raid10 needs an explicit layout for a `missing` slot.
+        (
+            "raid10",
+            vec![
+                "/dev/hv-nonexistent-a",
+                "/dev/hv-nonexistent-b",
+                "/dev/hv-nonexistent-c",
+            ],
+            "explicit layout",
+        ),
+    ] {
+        let (status, body) = send(
+            &mut router,
+            Method::POST,
+            "/api/storage/raid",
+            Some(&token),
+            Some(json!({
+                "name": "hvtest",
+                "level": level,
+                "devices": devices,
+                "filesystem": "ext4",
+                "allow_missing": true,
+            })),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{level}: {body}");
+        let message = body["error"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("cannot start degraded"),
+            "{level} must name the refusal: {message}"
+        );
+        assert!(
+            message.contains(reason),
+            "{level} must name the reason ({reason}): {message}"
+        );
+        // No job was started: the refusal is synchronous.
+        assert!(
+            body["data"]["job_id"].is_null(),
+            "{level} must not start a job: {body}"
+        );
+    }
+}
