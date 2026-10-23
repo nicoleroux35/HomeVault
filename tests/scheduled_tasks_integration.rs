@@ -69,7 +69,7 @@ async fn setup_state() -> (
     let admin_rate_limiter = Arc::new(RateLimitState::new(100, 60));
     let pty_manager = Arc::new(PtyManager::new());
     let downloader = Arc::new(tokio::sync::Mutex::new(
-        homevault::handlers::downloader::Aria2Process { child: None },
+        homevault::handlers::downloader::Aria2Process::new(),
     ));
     let (ransomware_watch_tx, _) =
         tokio::sync::mpsc::unbounded_channel::<homevault::ransomware_watcher::WatchCommand>();

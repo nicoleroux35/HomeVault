@@ -79,7 +79,6 @@ Two structural facts explain most of the list:
 | 13 | Settings — remaining cards | P1 | 4 |
 | 15 | Dashboard / Widgets | P1 | 3 |
 | 16 | Cloud Sync (rclone) | P1 | 3 |
-| 17 | Downloader (aria2) | P1 | 3 |
 | 18 | Syncthing | P1 | 2 |
 | 19 | Virtual Machines (Incus) | P1 | 2 |
 | 21 | Notifications | P1 | 3 |
@@ -95,19 +94,20 @@ Two structural facts explain most of the list:
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **55** (48 per-area + 7 cross-cutting).
+Total open findings: **52** (45 per-area + 7 cross-cutting).
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
 host sources are now admin-only, so the remaining P1 list has no data leak
 left. P1 now goes by blast radius, and 12.2/12.3 and 13.4 go together, since
 a UTC-only cron with a stored-but-unapplied timezone is one defect seen from
-two screens. **9 (LUKS2) was closed on 2026-10-23.** Next: **17.1
-(Downloader)** — `uri`, `dir` and `out` reach aria2's RPC unvalidated, so any
-session gets arbitrary file write (traversal) and `file://` local read as the
-service user, and 17.2's missing `--rpc-secret` lets any local process drive
-the same RPC port. It is the remaining P1 whose blast radius is writing files
-rather than a broken feature.
+two screens. **9 (LUKS2) was closed on 2026-10-23**, and **17 (Downloader) closed the same
+day**: `uri`/`dir`/`out` are now validated against an allowlist and a confined
+root, the RPC port carries a per-process secret, and the child is reaped and
+killed on shutdown. Next: **18.2 (Syncthing)** — `danger_accept_invalid_certs(true)`
+is set unconditionally on the daemon client, so a self-signed impostor on the
+configured address is trusted, and `HeaderValue::from_str(&key).unwrap()`
+panics the handler on a malformed key instead of answering 4xx.
 
 ---
 
@@ -347,37 +347,6 @@ jobs only run when clicked.
 `tests/rclone_integration.rs:31` that **no test performs a real transfer or
 mount**, so 16.1–16.3 are untested by construction), 24 E2E.
 *Docs:* `docs/guides/cloud-sync.md`.
-
----
-
-### 17. Downloader (aria2) — unvalidated input reaches the RPC
-
-- [ ] **17.1 — `uri`, `dir` and `out` reach aria2 unvalidated.**
-      `src/handlers/downloader.rs:389-423` passes them straight into the RPC
-      options: `dir`/`out` give arbitrary file write (traversal), `uri` accepts
-      any scheme including `file://` (SSRF + local read). This is also what
-      turns the remaining root shell-outs into root, since aria2 writes as the
-      service user.
-      *Acceptance:* scheme allowlist, paths confined to a configured download
-      root, `out` sanitised.
-- [ ] **17.2 — No RPC timeout and no `--rpc-secret`.** `aria2_rpc` builds
-      `reqwest::Client::new()` with no timeout (`:150-186`), and aria2 is
-      launched without `--rpc-secret` (`:208-244`) — any local process can drive
-      the RPC port and write files. A fixed 500 ms sleep replaces a health poll,
-      so the first request after start can fail.
-- [ ] **17.3 — The child is never reaped, and downloads land in `/tmp`.**
-      `status` only checks `child.is_some()` (`:246-266`), so a crashed aria2
-      reports "running"; nothing kills it on app shutdown (`src/web/mod.rs:2290`);
-      the default directory is `/tmp/aria2-downloads`, never cleaned, so a NAS
-      appliance loses its downloads on reboot.
-
-Also: the UI auto-starts aria2 on mount with no consent
-(`Downloader.svelte:73-91`), pause/unpause/remove failures are not surfaced
-(`:146-165`), and `role="button"` wraps a container with nested controls
-(`:306`).
-
-*Tests:* 15 unit, 8 integration, 40 E2E (the best-covered UI in the repo — yet
-17.1 has no test). *Docs:* `docs/guides/downloader.md`.
 
 ---
 
@@ -780,6 +749,56 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-23 (i)** — Downloader (aria2) — nothing the request says reaches the
+RPC unvalidated, the port is no longer open to any local process, and the
+daemon no longer outlives the server. **17.1 (unvalidated `uri`/`dir`/`out`):**
+`validate_uri` applies a scheme allowlist (`http`, `https`, `ftp`, `sftp`,
+`magnet`) — `file://` (local read as the service user), `data:`, `javascript:`,
+`smb:` and every other scheme are refused with a reason; non-magnet links must
+carry a host, magnet links an `xt=`. `dir` changed meaning: it is now a
+**relative sub-folder of one configured root**, `paths::downloader_dir()` =
+`<DATA_DIRECTORY>/downloads` (`validate_subfolder` refuses absolute paths, `..`,
+`.` and backslashes), and `resolve_download_dir` canonicalises the deepest
+existing ancestor so a symlink planted in the root cannot redirect a download
+outside it; `out` must be a bare file name (`validate_output_name`). All three
+run **before** `ensure_aria2_running`, so a refused request can never spawn the
+daemon, and `dir` is now always sent explicitly so aria2 cannot fall back to its
+own cwd. The event log gained `redact_userinfo` (a link carrying `user:pass@` no
+longer lands in the journal). **17.2 (no timeout, no secret, fixed sleep):**
+each start generates a fresh `rpc-secret` (`hv_` + 128 bits) which is written to
+`<DATA_DIRECTORY>/aria2-rpc.conf` with mode 0600 and handed to aria2 through
+`--conf-path` — **not** `--rpc-secret`, because `/proc/<pid>/cmdline` is
+world-readable (CLAUDE.md "Secrets never hit a command line"); every RPC call
+now prepends `token:<secret>` and runs under a 10 s timeout; the 500 ms sleep
+became `wait_until_ready`, a bounded `aria2.getVersion` poll (10 s deadline,
+200 ms probe) that kills the child if it exits or never answers, so "started"
+now means the port is actually up. `src/handlers/activity.rs` dropped its own
+unauthenticated RPC re-implementation and uses the shared secret-aware helper
+(1.5 s bound for the taskbar). **17.3 (child never reaped, no cleanup, `/tmp`):**
+`aria2_is_running`/`ensure_aria2_running` reap a dead child through `try_wait`
+instead of reporting `child.is_some()`, `shutdown_signal` in `src/web/mod.rs`
+now takes the downloader state and kills+waits the daemon on Ctrl+C/systemd
+stop, and the download root moved out of `/tmp/aria2-downloads` (wiped on every
+reboot) to `<DATA_DIRECTORY>/downloads`. **UI:** opening the app no longer
+spawns aria2c behind the user's back — a stopped daemon shows an explicit
+"Start the download service" panel; `add`/`pause`/`unpause`/`remove`/`start`
+failures reach a dismissible `Alert` (`data-testid="downloader-error"`) instead
+of five empty `else {}` branches; the free folder picker (which offered absolute
+paths the API now refuses) became a relative "Sub-folder" field with the
+destination root stated underneath; and a task card is a plain container whose
+selectable part is a real `<button>` — it used to be `role="button"` wrapping
+its own action buttons (WCAG 4.1.2). Tests (`src/handlers/downloader.rs` 15 →
+**32** unit — the scheme/sub-folder/out matrix, symlink escape, missing root,
+redaction and secret shape; `downloader_integration.rs` 8 → **13** — `dir` under
+`DATA_DIRECTORY`, no secret in `/status`, crashed child reaped as
+`running:false`, and three refusal tests that assert aria2 was never spawned;
+`downloader.spec.ts` 40 → **46** — no auto-start, `file://` and `../etc` refused
+with a visible reason, a stubbed failed add surfacing the server reason, a
+keyboard-selectable card, and the API refusing `file://` for an admin).
+`docs/guides/downloader.md` rewritten around the new invariants, `docs/API.md`
+gained the validation table and the `dir` semantics. **Not run** (per
+instruction): no unit, integration or E2E suite was executed.
 
 **2026-10-23 (h)** — System Journal — the privilege level now follows the data,
 the search runs before the page is cut, and a failed cleanup is retried instead

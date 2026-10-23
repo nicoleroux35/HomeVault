@@ -54,7 +54,15 @@
 //!      before any handler logic or aria2 spawn);
 //!   3. the one genuinely side-effect-free success path: `GET
 //!      /api/downloader/status` with an admin session, which only runs
-//!      `which aria2c` and reads the (fresh, empty) process handle.
+//!      `which aria2c` and reads the (fresh, empty) process handle — plus the
+//!      two contracts ROADMAP 17 added to it (the reported download root lives
+//!      under `DATA_DIRECTORY`, and the RPC secret is never serialised);
+//!   4. **input confinement (ROADMAP 17.1)**: a `file://`/`data:`/`smb:` link,
+//!      an absolute or `..` destination and a path-like `out` are all refused
+//!      *before* `ensure_aria2_running`, so a refused request can never spawn
+//!      the daemon — the assertions the feature shipped without;
+//!   5. **liveness (ROADMAP 17.3)**: a child that already exited is reaped and
+//!      reported as `running: false` instead of "running" forever.
 //!
 //! Note on status codes: these handlers always return HTTP 200 and signal
 //! auth failure in the JSON body (`{"success":false,"error":...}`) — the
@@ -117,7 +125,7 @@ async fn setup_state() -> (
     let admin_rate_limiter = Arc::new(RateLimitState::new(100, 60));
     let pty_manager = Arc::new(PtyManager::new());
     let downloader = Arc::new(tokio::sync::Mutex::new(
-        homevault::handlers::downloader::Aria2Process { child: None },
+        homevault::handlers::downloader::Aria2Process::new(),
     ));
     let (ransomware_watch_tx, _) =
         tokio::sync::mpsc::unbounded_channel::<homevault::ransomware_watcher::WatchCommand>();
@@ -412,7 +420,7 @@ async fn test_pause_rejects_missing_gid_field_with_422() {
 
 #[tokio::test]
 async fn test_status_success_path_for_admin() {
-    let (state, _tmp, _guard) = setup_state().await;
+    let (state, tmp, _guard) = setup_state().await;
     create_test_user(&state, "admin1", "Password123!", 2).await;
     let mut router = downloader_router(state.clone());
     let token = login(&mut router, "admin1", "Password123!").await;
@@ -435,11 +443,182 @@ async fn test_status_success_path_for_admin() {
     // This isolated AppState started aria2 nowhere, so `running` is deterministically false.
     assert_eq!(body["data"]["running"], false);
 
+    // The download root is reported so the screen never guesses where files go.
+    let dir = body["data"]["dir"]
+        .as_str()
+        .expect("`dir` must be a string");
+    assert_eq!(
+        dir,
+        tmp.path()
+            .join("downloads")
+            .to_string_lossy()
+            .as_ref(),
+        "the download root must live under DATA_DIRECTORY, not /tmp"
+    );
+
     // And the guarantee this whole file rests on: reading status spawned nothing.
     assert!(
         state.downloader.lock().await.child.is_none(),
         "GET /status must never start an aria2c process"
     );
+}
+
+#[tokio::test]
+async fn test_status_never_leaks_the_rpc_secret() {
+    // ROADMAP 17.2: the daemon's `rpc-secret` must not reach a response body,
+    // a URL or the event log. The status payload is the only one that reports
+    // daemon state, so it is the one to pin.
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = downloader_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/downloader/status",
+        Some(&token),
+        None,
+    )
+    .await;
+    let raw = body.to_string();
+    assert!(
+        !raw.contains("hv_"),
+        "the RPC secret must never be serialised: {raw}"
+    );
+    assert!(body["data"].get("secret").is_none());
+    assert!(body["data"].get("token").is_none());
+}
+
+#[tokio::test]
+async fn test_status_reports_a_crashed_child_as_not_running() {
+    // ROADMAP 17.3: `child.is_some()` used to answer "running" forever. A child
+    // that already exited must be reaped and reported as stopped.
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = downloader_router(state.clone());
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    // A stand-in for aria2c that exits immediately.
+    let child = tokio::process::Command::new("true")
+        .spawn()
+        .expect("spawn a short-lived child");
+    state.downloader.lock().await.child = Some(child);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/downloader/status",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(
+        body["data"]["running"], false,
+        "a dead child must not read as running"
+    );
+    assert!(
+        state.downloader.lock().await.child.is_none(),
+        "the dead child must be reaped, not kept"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 6. Input confinement (ROADMAP 17.1) — refused before aria2 is touched
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_add_refuses_a_non_allowlisted_scheme_without_spawning_aria2() {
+    // `file://` is the local-read primitive the finding names; the rest are the
+    // same class. None of them may reach `aria2.addUri`.
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = downloader_router(state.clone());
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    for uri in [
+        "file:///etc/shadow",
+        "data:text/plain;base64,SGVsbG8=",
+        "javascript:alert(1)",
+        "smb://nas/secret",
+        "",
+    ] {
+        let (_, body) = send(
+            &mut router,
+            Method::POST,
+            "/api/downloader/add",
+            Some(&token),
+            Some(json!({ "uri": uri })),
+        )
+        .await;
+        assert_eq!(
+            body["success"], false,
+            "`{uri}` must be refused, got {body}"
+        );
+        assert!(
+            body["error"].as_str().unwrap_or_default().len() > 5,
+            "a refusal must explain itself, got {body}"
+        );
+    }
+
+    assert!(
+        state.downloader.lock().await.child.is_none(),
+        "a refused link must never start aria2"
+    );
+}
+
+#[tokio::test]
+async fn test_add_refuses_a_destination_outside_the_download_root() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = downloader_router(state.clone());
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    for dir in ["/etc", "../etc", "films/../../etc", "a\\b"] {
+        let (_, body) = send(
+            &mut router,
+            Method::POST,
+            "/api/downloader/add",
+            Some(&token),
+            Some(json!({ "uri": "https://example.com/a.bin", "dir": dir })),
+        )
+        .await;
+        assert_eq!(
+            body["success"], false,
+            "dir `{dir}` must be refused, got {body}"
+        );
+    }
+
+    assert!(
+        state.downloader.lock().await.child.is_none(),
+        "a refused destination must never start aria2"
+    );
+}
+
+#[tokio::test]
+async fn test_add_refuses_an_output_name_that_is_a_path() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = downloader_router(state.clone());
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    for out in ["../x", "a/b", "/etc/passwd", ".."] {
+        let (_, body) = send(
+            &mut router,
+            Method::POST,
+            "/api/downloader/add",
+            Some(&token),
+            Some(json!({ "uri": "https://example.com/a.bin", "out": out })),
+        )
+        .await;
+        assert_eq!(
+            body["success"], false,
+            "out `{out}` must be refused, got {body}"
+        );
+    }
+
+    assert!(state.downloader.lock().await.child.is_none());
 }
 
 #[tokio::test]

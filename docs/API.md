@@ -631,16 +631,33 @@ admin-only. There are no read-only `auth` endpoints here.
 
 | Method | Path | Notes |
 |--------|------|-------|
-| GET | `/downloader/status` | daemon status + globals |
+| GET | `/downloader/status` | `{ available, running, dir }` — `dir` is the download root |
 | GET | `/downloader/global-stat` | aria2 global stats |
 | GET | `/downloader/tasks` | active/waiting/done tasks |
 | GET | `/downloader/task/{gid}` | one task |
-| POST | `/downloader/add` | enqueue a download |
-| POST | `/downloader/start` | start the daemon |
+| POST | `/downloader/add` | enqueue a download (validation below) |
+| POST | `/downloader/start` | start the daemon; returns the canonical download root |
 | POST | `/downloader/stop` | stop the daemon |
 | POST | `/downloader/pause` | pause a task |
 | POST | `/downloader/unpause` | unpause a task |
 | POST | `/downloader/remove` | remove a task |
+
+### `POST /downloader/add` — request validation
+
+`{ "uri": string, "dir"?: string, "out"?: string }`. Every field is validated
+**before** the daemon is touched: a refused request returns
+`{ success: false, error }` (HTTP 200, like the rest of the module) and never
+spawns aria2.
+
+| Field | Rule |
+|-------|------|
+| `uri` | Required. Scheme allowlist `http`, `https`, `ftp`, `sftp`, `magnet`; plain links need a host, magnet links need `xt=`; no spaces/control characters; ≤ 2048 chars. |
+| `dir` | **Relative** sub-folder of the download root (`<DATA_DIRECTORY>/downloads`). No leading `/`, no `..`/`.` segment, no backslash, no control characters; ≤ 128 chars. Absolute paths were accepted before 2026-10-23 and are now refused. |
+| `out` | Bare file name only — no path separator, not `.`/`..`, no control characters; ≤ 255 chars. |
+
+`dir` is always sent to aria2 explicitly (defaulting to the root), so the daemon
+never falls back to its own working directory. The response never contains the
+daemon's RPC secret.
 
 ## Snapshots
 
