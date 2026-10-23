@@ -2,7 +2,7 @@
  * File          : notifications_integration.rs
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Last modified : 23/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
@@ -21,11 +21,12 @@
 #![allow(clippy::await_holding_lock)]
 //! Integration tests for the Notifications API — `crate::handlers::notifications`:
 //!
-//!   GET    /api/notifications              (list recent — any session)
-//!   GET    /api/notifications/unread-count  (badge count — any session)
-//!   POST   /api/notifications/read-all     (mark all read — any session)
-//!   POST   /api/notifications/{id}/read    (mark one read — any session)
-//!   DELETE /api/notifications/{id}         (delete one — any session)
+//!   GET    /api/notifications              (paginated list, per-user read state)
+//!   GET    /api/notifications/unread-count  (caller's badge count)
+//!   POST   /api/notifications/read-all     (mark all read — caller only)
+//!   POST   /api/notifications/{id}/read    (mark one read — caller only)
+//!   DELETE /api/notifications/{id}         (delete one — **admin only**)
+//!   DELETE /api/notifications              (clear all — **admin only**, ROADMAP 21.3)
 //!   POST   /api/notifications/events/ticket (SSE ticket — any session)
 //!   GET    /api/events                     (SSE stream — ticket only)
 //!
@@ -52,8 +53,8 @@ use homevault::config::PathGuard;
 use homevault::handlers::notifications::{
     handle_notification_delete, handle_notification_events_config_get,
     handle_notification_events_config_update, handle_notification_mark_read,
-    handle_notifications_events, handle_notifications_events_ticket, handle_notifications_list,
-    handle_notifications_mark_all_read, handle_notifications_unread_count,
+    handle_notifications_clear_all, handle_notifications_events, handle_notifications_events_ticket,
+    handle_notifications_list, handle_notifications_mark_all_read, handle_notifications_unread_count,
 };
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{auth::handle_login, AppState};
@@ -106,7 +107,10 @@ async fn setup_state() -> (
 fn notifications_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/auth/login", post(handle_login))
-        .route("/api/notifications", get(handle_notifications_list))
+        .route(
+            "/api/notifications",
+            get(handle_notifications_list).delete(handle_notifications_clear_all),
+        )
         .route(
             "/api/notifications/unread-count",
             get(handle_notifications_unread_count),
@@ -201,25 +205,50 @@ async fn send(
     (status, json)
 }
 
-/// Insert a notification row directly into the DB.
-async fn insert_notification(state: &AppState, title: &str, severity: &str, read: bool) -> String {
+/// Insert a notification row directly into the DB. `read_for` (an optional
+/// username) inserts the caller's per-user read row (migration 058) — the
+/// old global `read_at` column is gone.
+async fn insert_notification(
+    state: &AppState,
+    title: &str,
+    severity: &str,
+    read_for: Option<&str>,
+) -> String {
+    insert_notification_at(state, title, severity, "datetime('now')", read_for).await
+}
+
+/// Insert a notification with an explicit `created_at` SQL expression so
+/// ordering tests are deterministic (newest first).
+async fn insert_notification_at(
+    state: &AppState,
+    title: &str,
+    severity: &str,
+    created_at: &str,
+    read_for: Option<&str>,
+) -> String {
     let id = uuid::Uuid::new_v4().to_string();
-    let read_at = if read {
-        Some("2026-01-01T00:00:00Z".to_string())
-    } else {
-        None
-    };
     sqlx::query(
-        "INSERT INTO notifications (id, title, message, severity, category, source, created_at, read_at)
-         VALUES (?, ?, 'msg', ?, 'cat', 'test', datetime('now'), ?)",
+        "INSERT INTO notifications (id, title, message, severity, category, source, created_at)
+         VALUES (?, ?, 'msg', ?, 'cat', 'test', ?)",
     )
     .bind(&id)
     .bind(title)
     .bind(severity)
-    .bind(&read_at)
+    .bind(created_at)
     .execute(&*state.db.pool())
     .await
     .expect("insert notification");
+    if let Some(username) = read_for {
+        sqlx::query(
+            "INSERT INTO notification_reads (notification_id, username, read_at)
+             VALUES (?, ?, '2026-01-01T00:00:00Z')",
+        )
+        .bind(&id)
+        .bind(username)
+        .execute(&*state.db.pool())
+        .await
+        .expect("insert read row");
+    }
     id
 }
 
@@ -305,6 +334,14 @@ async fn test_delete_requires_a_session() {
 }
 
 #[tokio::test]
+async fn test_clear_all_requires_a_session() {
+    let (state, _tmp, _guard) = setup_state().await;
+    let mut r = notifications_router(state);
+    let (status, _) = send(&mut r, Method::DELETE, "/api/notifications", None, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn test_events_ticket_requires_a_session() {
     let (state, _tmp, _guard) = setup_state().await;
     let mut r = notifications_router(state);
@@ -320,13 +357,13 @@ async fn test_events_ticket_requires_a_session() {
 }
 
 // ---------------------------------------------------------------------------
-// 2. List / unread-count with real data
+// 2. List / unread-count with real data (per-user read state, ROADMAP 21.2)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_list_returns_empty_when_no_notifications() {
     let (state, _tmp, _guard) = setup_state().await;
-    create_test_user(&state, "u", "Password123!", 1).await;
+    create_test_user(&state, "u", "Password123!", USER_ROLE_ID).await;
     let mut r = notifications_router(state);
     let token = login(&mut r, "u", "Password123!").await;
 
@@ -340,20 +377,24 @@ async fn test_list_returns_empty_when_no_notifications() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], json!(true));
-    assert_eq!(body["data"].as_array().map(|a| a.len()), Some(0));
+    assert_eq!(
+        body["data"]["notifications"].as_array().map(|a| a.len()),
+        Some(0)
+    );
+    assert_eq!(body["data"]["total"], 0);
 }
 
 #[tokio::test]
 async fn test_list_returns_notifications_and_unread_count_tracks_reads() {
     let (state, _tmp, _guard) = setup_state().await;
-    create_test_user(&state, "u", "Password123!", 1).await;
+    create_test_user(&state, "u", "Password123!", USER_ROLE_ID).await;
     let mut r = notifications_router(state.clone());
     let token = login(&mut r, "u", "Password123!").await;
 
-    // Insert 2 unread + 1 read notification.
-    let id1 = insert_notification(&state, "unread1", "info", false).await;
-    let _id2 = insert_notification(&state, "unread2", "warning", false).await;
-    let _id3 = insert_notification(&state, "already-read", "info", true).await;
+    // Insert 2 unread + 1 notification already read by "u".
+    let id1 = insert_notification(&state, "unread1", "info", None).await;
+    let _id2 = insert_notification(&state, "unread2", "warning", None).await;
+    let _id3 = insert_notification(&state, "already-read", "info", Some("u")).await;
 
     // Unread count = 2.
     let (_, body) = send(
@@ -366,7 +407,7 @@ async fn test_list_returns_notifications_and_unread_count_tracks_reads() {
     .await;
     assert_eq!(body["data"]["count"], 2);
 
-    // List returns all 3 (newest first).
+    // List returns all 3, with per-user read_at resolved.
     let (_, body) = send(
         &mut r,
         Method::GET,
@@ -375,7 +416,9 @@ async fn test_list_returns_notifications_and_unread_count_tracks_reads() {
         None,
     )
     .await;
-    assert_eq!(body["data"].as_array().unwrap().len(), 3);
+    let items = body["data"]["notifications"].as_array().unwrap();
+    assert_eq!(items.len(), 3);
+    assert_eq!(body["data"]["total"], 3);
 
     // Mark one as read.
     let (status, _) = send(
@@ -423,31 +466,211 @@ async fn test_list_returns_notifications_and_unread_count_tracks_reads() {
 }
 
 #[tokio::test]
-async fn test_delete_removes_notification() {
+async fn test_read_state_is_per_user() {
     let (state, _tmp, _guard) = setup_state().await;
-    create_test_user(&state, "u", "Password123!", 1).await;
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    create_test_user(&state, "user", "UserPass123!", USER_ROLE_ID).await;
     let mut r = notifications_router(state.clone());
-    let token = login(&mut r, "u", "Password123!").await;
+    let admin = login(&mut r, "admin", "AdminPass123!").await;
+    let user = login(&mut r, "user", "UserPass123!").await;
 
-    let id = insert_notification(&state, "to-delete", "error", false).await;
+    let id = insert_notification(&state, "shared", "warning", None).await;
 
-    // Confirm it exists.
+    // Both accounts see it unread.
+    for token in [&admin, &user] {
+        let (_, body) = send(
+            &mut r,
+            Method::GET,
+            "/api/notifications/unread-count",
+            Some(token),
+            None,
+        )
+        .await;
+        assert_eq!(body["data"]["count"], 1, "unread for {token}");
+    }
+
+    // The admin reads it; only the admin's count changes.
+    let (status, _) = send(
+        &mut r,
+        Method::POST,
+        &format!("/api/notifications/{}/read", id),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
     let (_, body) = send(
         &mut r,
         Method::GET,
         "/api/notifications/unread-count",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"]["count"], 0, "admin read it");
+
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications/unread-count",
+        Some(&user),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"]["count"], 1, "user still unread");
+
+    // The user's list still resolves read_at = null; the admin's is set.
+    let (_, admin_list) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert!(admin_list["data"]["notifications"][0]["read_at"].is_string());
+    let (_, user_list) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications",
+        Some(&user),
+        None,
+    )
+    .await;
+    assert!(user_list["data"]["notifications"][0]["read_at"].is_null());
+}
+
+#[tokio::test]
+async fn test_mark_all_read_is_caller_scoped() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    create_test_user(&state, "user", "UserPass123!", USER_ROLE_ID).await;
+    let mut r = notifications_router(state.clone());
+    let admin = login(&mut r, "admin", "AdminPass123!").await;
+    let user = login(&mut r, "user", "UserPass123!").await;
+
+    let _id1 = insert_notification(&state, "a", "info", None).await;
+    let _id2 = insert_notification(&state, "b", "info", None).await;
+
+    // Admin marks all read — the user's badge must be untouched.
+    let (status, _) = send(
+        &mut r,
+        Method::POST,
+        "/api/notifications/read-all",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications/unread-count",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"]["count"], 0);
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications/unread-count",
+        Some(&user),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"]["count"], 2, "other account unaffected");
+
+    // The user marks all read in turn.
+    let (status, _) = send(
+        &mut r,
+        Method::POST,
+        "/api/notifications/read-all",
+        Some(&user),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications/unread-count",
+        Some(&user),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"]["count"], 0);
+}
+
+#[tokio::test]
+async fn test_mark_read_idempotent() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", USER_ROLE_ID).await;
+    let mut r = notifications_router(state.clone());
+    let token = login(&mut r, "u", "Password123!").await;
+
+    let id = insert_notification(&state, "mark-twice", "info", None).await;
+
+    let url = format!("/api/notifications/{}/read", id);
+    let (status, _) = send(&mut r, Method::POST, &url, Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Second mark is still 200 (idempotent — already read by this caller).
+    let (status, _) = send(&mut r, Method::POST, &url, Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_mark_read_nonexistent_is_404() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", USER_ROLE_ID).await;
+    let mut r = notifications_router(state);
+    let token = login(&mut r, "u", "Password123!").await;
+
+    let (status, _) = send(
+        &mut r,
+        Method::POST,
+        "/api/notifications/nonexistent-id/read",
         Some(&token),
         None,
     )
     .await;
-    assert_eq!(body["data"]["count"], 1);
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
 
-    // Delete it.
+// ---------------------------------------------------------------------------
+// 3. Delete / clear-all — admin-only (ROADMAP 21.2/21.3)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_delete_requires_admin() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    create_test_user(&state, "user", "UserPass123!", USER_ROLE_ID).await;
+    let mut r = notifications_router(state.clone());
+    let admin = login(&mut r, "admin", "AdminPass123!").await;
+    let user = login(&mut r, "user", "UserPass123!").await;
+
+    let id = insert_notification(&state, "to-delete", "error", None).await;
+
+    // A regular account cannot delete from the broadcast feed.
     let (status, _) = send(
         &mut r,
         Method::DELETE,
         &format!("/api/notifications/{}", id),
-        Some(&token),
+        Some(&user),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // An admin can.
+    let (status, _) = send(
+        &mut r,
+        Method::DELETE,
+        &format!("/api/notifications/{}", id),
+        Some(&admin),
         None,
     )
     .await;
@@ -458,7 +681,7 @@ async fn test_delete_removes_notification() {
         &mut r,
         Method::GET,
         "/api/notifications/unread-count",
-        Some(&token),
+        Some(&admin),
         None,
     )
     .await;
@@ -466,50 +689,156 @@ async fn test_delete_removes_notification() {
 }
 
 #[tokio::test]
-async fn test_delete_nonexistent_returns_success() {
+async fn test_delete_nonexistent_is_404() {
     let (state, _tmp, _guard) = setup_state().await;
-    create_test_user(&state, "u", "Password123!", 1).await;
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
     let mut r = notifications_router(state);
-    let token = login(&mut r, "u", "Password123!").await;
+    let admin = login(&mut r, "admin", "AdminPass123!").await;
 
-    let (status, body) = send(
+    let (status, _) = send(
         &mut r,
         Method::DELETE,
         "/api/notifications/nonexistent-id",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_clear_all_requires_admin_and_empties_feed() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    create_test_user(&state, "user", "UserPass123!", USER_ROLE_ID).await;
+    let mut r = notifications_router(state.clone());
+    let admin = login(&mut r, "admin", "AdminPass123!").await;
+    let user = login(&mut r, "user", "UserPass123!").await;
+
+    let _id1 = insert_notification(&state, "one", "info", None).await;
+    let _id2 = insert_notification(&state, "two", "warning", None).await;
+    let _id3 = insert_notification(&state, "three", "error", None).await;
+
+    // A regular account cannot clear the feed.
+    let (status, _) = send(
+        &mut r,
+        Method::DELETE,
+        "/api/notifications",
+        Some(&user),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // One awaited admin call clears everything (ROADMAP 21.3).
+    let (status, body) = send(
+        &mut r,
+        Method::DELETE,
+        "/api/notifications",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["deleted"], 3);
+
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"]["notifications"].as_array().map(|a| a.len()), Some(0));
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications/unread-count",
+        Some(&user),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"]["count"], 0);
+}
+
+// ---------------------------------------------------------------------------
+// 4. Pagination (ROADMAP 21.3)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_list_paginates_with_limit_offset_and_total() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", USER_ROLE_ID).await;
+    let mut r = notifications_router(state.clone());
+    let token = login(&mut r, "u", "Password123!").await;
+
+    // Explicit, distinct timestamps so ordering is deterministic.
+    let _newest = insert_notification_at(&state, "newest", "info", "'2026-01-03T00:00:00Z'", None).await;
+    let _middle = insert_notification_at(&state, "middle", "info", "'2026-01-02T00:00:00Z'", None).await;
+    let _oldest = insert_notification_at(&state, "oldest", "info", "'2026-01-01T00:00:00Z'", None).await;
+
+    // First page: limit 2, newest first.
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications?limit=2&offset=0",
         Some(&token),
         None,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["success"], json!(true));
+    let items = body["data"]["notifications"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["title"], "newest");
+    assert_eq!(items[1]["title"], "middle");
+    assert_eq!(body["data"]["total"], 3);
+    assert_eq!(body["data"]["offset"], 0);
+    // offset + page < total → a client can show "load older".
+    assert_eq!(0 + 2 < 3, true);
+
+    // Second page picks up the remainder.
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications?limit=2&offset=2",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["data"]["notifications"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["title"], "oldest");
 }
 
 #[tokio::test]
-async fn test_mark_read_idempotent() {
+async fn test_list_clamps_oversized_limit() {
     let (state, _tmp, _guard) = setup_state().await;
-    create_test_user(&state, "u", "Password123!", 1).await;
-    let mut r = notifications_router(state.clone());
+    create_test_user(&state, "u", "Password123!", USER_ROLE_ID).await;
+    let mut r = notifications_router(state);
     let token = login(&mut r, "u", "Password123!").await;
 
-    let id = insert_notification(&state, "mark-twice", "info", false).await;
-
-    let url = format!("/api/notifications/{}/read", id);
-    let (status, _) = send(&mut r, Method::POST, &url, Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/notifications?limit=99999",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-
-    // Second mark is still 200 (idempotent — already read).
-    let (status, _) = send(&mut r, Method::POST, &url, Some(&token), None).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["limit"], 200, "limit clamped server-side");
 }
 
 // ---------------------------------------------------------------------------
-// 3. SSE events ticket
+// 5. SSE events ticket
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_events_ticket_returns_ticket_string() {
     let (state, _tmp, _guard) = setup_state().await;
-    create_test_user(&state, "u", "Password123!", 1).await;
+    create_test_user(&state, "u", "Password123!", USER_ROLE_ID).await;
     let mut r = notifications_router(state);
     let token = login(&mut r, "u", "Password123!").await;
 

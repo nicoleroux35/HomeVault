@@ -24,10 +24,12 @@
   import { api } from '$lib/services/api';
   import { formatDistanceToNow } from 'date-fns';
   import { fr, de, es, enUS } from 'date-fns/locale';
+  import { toast } from 'svelte-sonner';
   import { IconCheck, IconX } from '@tabler/icons-svelte';
   import { Icon } from '$lib/components/theme';
   import NotificationBellIcon from '$lib/components/shared/NotificationBellIcon.svelte';
   import { t, languageStore } from '$lib/stores/i18n';
+  import { isAdmin } from '$lib/stores/auth';
   import { get } from 'svelte/store';
   import { fade } from 'svelte/transition';
 
@@ -37,6 +39,13 @@
 
   /** Whether the notification panel is currently visible */
   export let isOpen = false;
+
+  /**
+   * Called after a mutation that empties or reshapes the feed (clear-all,
+   * mark-all) so the panel resets its pagination window from the server
+   * instead of guessing. Wired to Desktop.svelte's 30s poll loader.
+   */
+  export let onRefresh: () => Promise<void> | void = () => {};
 
   /**
    * Persistent-centre filters. The panel is not just a toast list — it keeps
@@ -92,25 +101,62 @@
     }
   }
 
-  function handleMarkAsRead(id: string) {
-    notificationsStore.markAsRead(id);
-    api.markNotificationRead(id);
+  /**
+   * Mutations are awaited and checked (ROADMAP 21.3): the old code fired the
+   * request and updated the store optimistically, so a failure looked like a
+   * success until the next 30s poll. The store now changes only after the
+   * server confirms, and a failure surfaces as a toast.
+   */
+  async function handleMarkAsRead(id: string) {
+    const res = await api.markNotificationRead(id);
+    if (res.success) {
+      notificationsStore.markAsRead(id);
+    } else {
+      toast.error($t('notifications.action_failed'));
+    }
   }
 
-  function handleRemove(id: string) {
-    notificationsStore.remove(id);
-    api.deleteNotification(id);
+  async function handleRemove(id: string) {
+    const res = await api.deleteNotification(id);
+    if (res.success) {
+      notificationsStore.remove(id);
+    } else {
+      toast.error($t('notifications.action_failed'));
+    }
   }
 
-  function handleMarkAllAsRead() {
-    notificationsStore.markAllAsRead();
-    api.markAllNotificationsRead();
+  async function handleMarkAllAsRead() {
+    const res = await api.markAllNotificationsRead();
+    if (res.success) {
+      notificationsStore.markAllAsRead();
+    } else {
+      toast.error($t('notifications.action_failed'));
+    }
   }
 
-  function handleClearAll() {
-    const ids = get(notificationsStore).notifications.map(n => n.id);
-    notificationsStore.clear();
-    for (const id of ids) api.deleteNotification(id);
+  /** One awaited bulk call instead of N unawaited DELETEs (ROADMAP 21.3). */
+  async function handleClearAll() {
+    const res = await api.clearNotifications();
+    if (res.success) {
+      notificationsStore.clear();
+      await onRefresh();
+    } else {
+      toast.error($t('notifications.action_failed'));
+    }
+  }
+
+  /** Loads the next older page and appends it below the current window. */
+  async function handleLoadOlder() {
+    const state = get(notificationsStore);
+    if (state.loadingOlder || !state.hasMore) return;
+    notificationsStore.setLoadingOlder(true);
+    const res = await api.getNotifications(50, state.offset + state.notifications.length);
+    if (res.success && res.data) {
+      notificationsStore.appendFromServer(res.data);
+    } else {
+      notificationsStore.setLoadingOlder(false);
+      toast.error($t('notifications.action_failed'));
+    }
   }
 </script>
 
@@ -130,7 +176,7 @@
             {$t('notifications.mark_all_read')}
           </button>
         {/if}
-        {#if $notificationsStore.notifications.length > 0}
+        {#if $isAdmin && $notificationsStore.notifications.length > 0}
           <button class="action-link" onclick={handleClearAll}>
             {$t('notifications.clear_all')}
           </button>
@@ -206,17 +252,33 @@
                   <IconCheck size={18} stroke={2} />
                 </button>
               {/if}
-              <button
-                class="icon-btn hv-ic"
-                onclick={() => handleRemove(notification.id)}
-                title={$t('common.delete')}
-                aria-label={$t('common.delete')}
-              >
-                <IconX size={18} stroke={2} />
-              </button>
+              {#if $isAdmin}
+                <button
+                  class="icon-btn hv-ic"
+                  onclick={() => handleRemove(notification.id)}
+                  title={$t('common.delete')}
+                  aria-label={$t('common.delete')}
+                >
+                  <IconX size={18} stroke={2} />
+                </button>
+              {/if}
             </div>
           </div>
         {/each}
+        {#if $notificationsStore.hasMore}
+          <button
+            type="button"
+            class="load-older"
+            onclick={handleLoadOlder}
+            disabled={$notificationsStore.loadingOlder}
+          >
+            {#if $notificationsStore.loadingOlder}
+              {$t('notifications.loading_older')}
+            {:else}
+              {$t('notifications.load_older')}
+            {/if}
+          </button>
+        {/if}
       {/if}
     </div>
   </div>
@@ -385,6 +447,35 @@
   .empty-state :global(svg) {
     color: var(--hv-shell-border-strong);
     margin-bottom: var(--hv-space-3);
+  }
+
+  .load-older {
+    min-height: var(--hv-touch-target-min);
+    padding: 0 var(--hv-space-4);
+    background: transparent;
+    border: 1px solid var(--hv-shell-border);
+    border-radius: var(--hv-radius-control);
+    color: var(--hv-shell-text-2);
+    font-family: var(--hv-font-family);
+    font-size: var(--hv-text-base);
+    font-weight: var(--hv-font-weight-semibold);
+    cursor: pointer;
+    transition: background 150ms;
+  }
+
+  .load-older:hover:not(:disabled) {
+    background: var(--hv-shell-border-soft);
+    color: var(--hv-shell-text-strong);
+  }
+
+  .load-older:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
+  .load-older:focus-visible {
+    outline: none;
+    box-shadow: var(--hv-focus-ring);
   }
 
   .notification-item {

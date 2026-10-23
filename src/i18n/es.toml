@@ -1589,6 +1589,9 @@ filter_error = "Error"
 search_placeholder = "Buscar notificaciones"
 unread_only = "Solo no leídas"
 no_match = "Ninguna notificación coincide con los filtros"
+load_older = "Cargar más antiguas"
+loading_older = "Cargando…"
+action_failed = "No se pudo completar esta acción. Inténtelo de nuevo."
 
 [whats_new]
 title = "Novedades"

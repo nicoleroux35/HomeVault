@@ -81,7 +81,6 @@ Two structural facts explain most of the list:
 | 10b | File Explorer — residual hardening | P2 | 3 |
 | 16.4 | Cloud Sync (rclone) — no scheduler | P2 | 1 |
 | 18 | Syncthing | P1 | 1 |
-| 21 | Notifications | P1 | 2 |
 | 22 | DB backup | P1 | 2 |
 | 24 | Server control | P1 | 2 |
 | 25 | Autostart | P1 | 2 |
@@ -92,9 +91,9 @@ Two structural facts explain most of the list:
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | 32 | Virtual Machines — residual | P2 | 2 |
 | 33 | Transfer quotas — residual | P2 | 1 |
-| — | Cross-cutting (8 systemic) | — | 8 |
+| — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **34** (26 per-area + 8 cross-cutting).
+Total open findings: **31** (24 per-area + 7 cross-cutting).
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
@@ -129,10 +128,10 @@ closed the same day**: every rclone subprocess runs under a deadline, a started
 mount is owned by this process and unmounted at shutdown, the credential file is
 written `0600` and edited as parsed sections, and the screen no longer swallows a
 failure. Only the missing *scheduler* is left, as P2 **16.4**. **13 (Settings)
-closed on 2026-10-23** too (see Done), so **21 (Notifications)** is the next
-P1 — with 21.1 already gone (the transport left the request loop with item 13):
-the read state is still shared and the throttle/dedup state still resets on
-restart.
+closed on 2026-10-23** too (see Done), and **21 (Notifications) closed the
+same day** — see Done (2026-10-23 (r)): read state is per user, the feed is
+paginated, and the shared delete paths are admin-only. **22 (DB backup)** is
+therefore the next P1: the documented serialisation still does not hold.
 
 ---
 
@@ -193,40 +192,6 @@ Syncthing has no bulk call). The HTTP client has a real 10 s timeout
 (`HTTP_TIMEOUT`, `:44`) — the only one of the four network apps with a bound.
 
 *Tests:* 18 unit, 8 integration, 23 E2E. *Docs:* `docs/guides/syncthing.md`.
-
----
-
-### 21. Notifications — no per-user read state, no pagination
-
-21.1 (a blocking `EmailService::send_system_alert` on the runtime, and a fresh
-untimed `reqwest::Client` per webhook) was closed with item 13 on 2026-10-23 —
-see Done: the send runs in `spawn_blocking` and every dispatch reuses
-`webhook_client()` (10 s total, 5 s connect).
-
-- [ ] **21.2 — There is no per-user read state, although the code says there is.**
-      `src/storage/notification_repo.rs:10,19` claim it, but `read_at` is a
-      single global column (`sqlx/migrations/015_notifications.sql:13`) and
-      `mark_read`/`mark_all_read` (`:112,122`) have no user predicate — one
-      admin clicking "mark all read" clears the badge for every account.
-      `mark_read`/`delete` are `require_auth` with no owner
-      (`src/handlers/notifications.rs:72,86,105`), so any user can delete the
-      alert trail.
-      *Acceptance:* either per-user state (a join table) or a documented,
-      correctly labelled global feed — not the current half-and-half.
-- [ ] **21.3 — No pagination, and "clear all" is N unawaited DELETEs.**
-      `list_recent(50)` hard-caps (`handlers/notifications.rs:49`,
-      `notification_repo.rs:94`); older alerts are unreachable and the clear loop
-      only clears the visible 50. `NotificationCenter.svelte:111-113` fires one
-      request per id, unawaited and unchecked, and `:96,102,107` fire mark-read
-      and delete with no error handling while the store updates optimistically
-      (`stores/notifications.ts:163`) — a failure looks like a success until the
-      next poll.
-
-*Tests:* `notification_engine.rs` **2** (2026-10-23 — the shared client carries
-a deadline, an unvalidated URL is never dispatched), `handlers/notifications.rs`
-**0**, integration 18, no dedicated E2E.
-*Docs:* `docs/guides/notifications.md` (`:125` already documents the
-in-memory dedup reset as accepted debt — keep, but fix 21.2–21.3).
 
 ---
 
@@ -477,18 +442,13 @@ reuse.
       simplicity rule 5 ("every action gives visible feedback"). A shared
       `notifyError()` helper already exists (`Settings.svelte` uses
       `notifySettings`) — use it.
-- [ ] **X.4 — Documented invariants the code does not enforce.** DB-backup
-      serialisation (`backup-restic.md:43`, item 22.1) and per-user notification
-      read state (`notification_repo.rs:10`, item 21.2). Each is part of the
-      corresponding item above; this line exists so the pattern is not lost.
-      *(Now enforced, so removed from this list: the scheduled-task overlap
-      guard — Done 2026-10-22 (g); "RAID never destroys" — the legacy
-      `DELETE /api/storage/raid/{name}` route is gone, Done 2026-10-23 (c); the
-      update check being opt-in — Done 2026-10-22 (d); the single-flight cache
-      mover — `MOVER_RUNNING`/`MoverRunGuard` in `cache.rs` guards
-      `run_mover`, the only entry point; "one row per (pool, prefix)" — migration
-      `053_snapshot_schedule_unique_prefix.sql`, Done 2026-10-22 (f); metrics
-      gaps — see 11 in Done.)*
+**X.4 — Documented invariants the code does not enforce.** Closed on
+      2026-10-23 — see Done (2026-10-23 (r)): every invariant on the list is
+      now enforced (scheduled-task overlap guard, "RAID never destroys", opt-in
+      update check, single-flight cache mover, unique `(pool, prefix)`, metrics
+      gaps, per-user notification read state), and the last remaining instance
+      (DB-backup serialisation) is already tracked as item 22.1, so the
+      cross-cutting pointer is redundant.
 - [ ] **X.5 — `TESTING.md` counts drift where the specs grew.** The Dashboard row
       stated "37 runtime tests, recounted on 2026-09-14 via
       `grep -cE '^\s*test\('`". *Re-counted 2026-10-23 with both figures: 48
@@ -552,6 +512,43 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-23 (r)** — Notifications — the read state is per user, the feed is
+paginated, and the shared delete paths are admin-only (items 21.2, 21.3).
+**21.2 (no per-user read state, despite the code claiming it):** the global
+`notifications.read_at` column is gone (migration `058_notification_reads.sql`
+rebuilds the table) and read state lives in the `notification_reads`
+`(notification_id, username, read_at)` join table — `mark_read` /
+`mark_all_read` take the caller's username, `list_recent` / `unread_count_for`
+resolve that caller's `read_at` through a LEFT JOIN / NOT EXISTS, so one user
+marking "all read" never clears another account's badge. `DELETE
+/notifications/{id}` and the new bulk `DELETE /notifications`
+(`handle_notifications_clear_all`) are now `require_admin` — the feed is
+broadcast, so removing an alert-trail entry is a shared, destructive operation
+(least privilege: reads `require_auth`, mutations `require_admin`). Unknown ids
+on `mark_read`/`delete` answer `404` instead of a fake success.
+**21.3 (no pagination; "clear all" was N unawaited DELETEs):**
+`GET /notifications?limit=&offset=` answers `{ notifications, total, limit,
+offset }` (limit clamped ≤200, default 50); the frontend keeps the page
+window and offers a 44px "Load older" button while `offset + len < total`;
+"clear all" is now **one awaited** bulk call and every mutation
+(mark-read/delete/mark-all/clear) awaits the server and surfaces a failure as
+a toast instead of an optimistic update that lies until the next 30s poll.
+Per-item delete and "Clear all" are hidden for non-admin accounts. The list
+response shape changed, so `CONTRACT_VERSION` went 1 → 2.
+**X.4 closed as a side effect:** the cross-cutting "documented invariants the
+code does not enforce" pointer is gone — the scheduled-task overlap guard,
+"RAID never destroys", the opt-in update check, the single-flight cache mover,
+`(pool, prefix)` uniqueness, the metrics gaps and the per-user notification
+read state are all enforced now, and its last remaining instance (DB-backup
+serialisation) is already tracked as item 22.1.
+Tests: `notifications_integration.rs` 18 → **26** (per-user isolation,
+caller-scoped mark-all, admin-only delete/clear-all, `404`s, pagination,
+clamped limit) — **written, not run** (per instruction); `notification_engine.rs`
+stays 2; `handlers/notifications.rs` 0 (no unit tests, handler logic covered by
+the integration suite). `npm run check` run? — no (not run per instruction).
+Docs: `docs/guides/notifications.md` (per-user read state, pagination,
+admin-only delete, invariants), `docs/API.md` (endpoint table).
 
 **2026-10-23 (q)** — Settings — the remaining cards — the four dead
 settings now do what the screen says, and every host call is bounded.
