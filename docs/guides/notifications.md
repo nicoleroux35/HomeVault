@@ -43,8 +43,16 @@ expected shape.
      `EmailService::send_system_alert` and/or posts a JSON payload to
      `NOTIFICATION_SETTINGS.webhook_url` if `webhook_enabled`.
 - `src/storage/notification_repo.rs` — `notifications` table (migration
-  `015_notifications.sql`). Broadcast-style (no `user_id` — matches
-  `NotificationSettings`/`EmailSettings` already being global, not per-user).
+  `015_notifications.sql`) + per-user read state in the `notification_reads`
+  join table (migration `058_notification_reads.sql`, ROADMAP 21.2). The feed
+  stays broadcast-style (no `user_id` — matches `NotificationSettings` /
+  `EmailSettings` already being global, not per-user), but each account's
+  read/unread view is its own: `mark_read`/`mark_all_read` take the caller's
+  username, and `list_recent`/`unread_count_for` resolve that caller's
+  `read_at` through the join table. One user clicking "mark all read" never
+  clears another account's badge. Deleting from the feed (`delete`, and the
+  bulk `clear_all`) is a shared, destructive operation, so the handlers gate
+  both on `require_admin`.
 - **Event sources other than the loop.** `notify()` is `pub(crate)` so a
   background engine can raise an event through the same mute/persist/dispatch
   path instead of writing notification rows directly. Current caller:
@@ -52,8 +60,11 @@ expected shape.
   `error`, category `storage`) **once per outage** — on the transition into
   failure, so a schedule that keeps failing does not notify every tick (see
   [Snapshots](./snapshots.md)).
-- `src/handlers/notifications.rs` — list/unread-count/mark-read/mark-all-read/
-  delete (see [API Contract](../API.md)), all `require_auth`.
+- `src/handlers/notifications.rs` — paginated list/unread-count/mark-read/
+  mark-all-read/delete/clear-all (see [API Contract](../API.md)). Reads are
+  `require_auth` and caller-scoped; `DELETE /notifications/{id}` and
+  `DELETE /notifications` are `require_admin` (the feed is broadcast, so
+  removing an alert-trail entry is a shared, destructive operation).
 - `src/email.rs` — `EmailService::send_system_alert` / `send_test_email` now
   take an explicit `&EmailConfig` parameter (built from `EMAIL_SETTINGS`)
   instead of silently using `EmailConfig::default()` — previously they always
@@ -115,17 +126,30 @@ unless they happened to be in msmtp's own config file.
 - `frontend/src/lib/stores/notifications.ts` — `notificationsStore` gained
   `setFromServer(rows)`, which replaces the store from backend rows
   (preserving server-issued ids, so mark-read/delete round-trip correctly)
-  instead of the old client-only `add()`.
+  instead of the old client-only `add()`. Since ROADMAP 21.3 the feed is
+  **paginated**: the store holds the first page plus whatever the panel loaded
+  through "Load older", and tracks `total`/`offset`/`hasMore` so the panel
+  knows when the server has more rows than the current window.
 - `frontend/src/lib/components/NotificationCenter.svelte` — the persistent
   notification **center**: mark-read/remove/mark-all/clear call the backend
-  (`api.markNotificationRead`, etc.) instead of only mutating local state, and
-  the panel carries severity-filter chips, an unread-only toggle and a text
-  search. All strings come from `$t('notifications.*')`.
+  (`api.markNotificationRead`, etc.) and **await the result** — the store only
+  changes after the server confirms, and a failed mutation surfaces as a
+  toast instead of silently optimistically updating until the next poll
+  (ROADMAP 21.3). "Clear all" is now **one awaited bulk call**
+  (`api.clearNotifications()`), not N unawaited DELETEs, and resets the
+  pagination window through the panel's `onRefresh` prop. When more rows exist
+  than the first page, the panel offers a "Load older" button (44px hit area,
+  keyboard/touch reachable). Because `DELETE /notifications/{id}` and
+  `DELETE /notifications` are admin-only, the per-item delete and "Clear all"
+  controls are hidden for non-admin accounts. The panel carries
+  severity-filter chips, an unread-only toggle and a text search. All strings
+  come from `$t('notifications.*')`.
 - `frontend/src/routes/Desktop.svelte` — on-mount + 30s-interval fetch of
-  `api.getNotifications()` feeding `notificationsStore.setFromServer(...)`,
-  cleaned up on destroy. The bell icon, unread badge, and panel were already
-  wired up in the topbar (`showNotifications`, `$notificationsStore.unreadCount`)
-  — this was the only missing piece.
+  `api.getNotifications(50, 0)` feeding `notificationsStore.setFromServer(...)`,
+  cleaned up on destroy; `loadNotifications` is also handed to the panel as
+  `onRefresh`. The bell icon, unread badge, and panel were already wired up in
+  the topbar (`showNotifications`, `$notificationsStore.unreadCount`) — this
+  was the only missing piece.
 - `frontend/src/routes/Settings.svelte` — Notifications card gained a webhook
   URL field + enable toggle; "Send test email" now reflects the real result.
 - `src/i18n/{en,fr,de,es}.toml` — `[notifications]` section.
@@ -171,6 +195,16 @@ that fail loudly instead of silently misparsing.
 
 ## Invariants
 
+- Read state is **per user** (ROADMAP 21.2): `read_at` in the API is the
+  caller's timestamp resolved through `notification_reads`; marking one or all
+  as read affects only the caller's account.
+- Deleting the feed is **admin-only** (ROADMAP 21.2): `DELETE
+  /notifications/{id}` and the bulk `DELETE /notifications` remove rows every
+  account sees, so they follow the same least-privilege rule as every other
+  shared-data mutation. Regular accounts can read and mark, not delete.
+- The list is **paginated** (ROADMAP 21.3): `GET /notifications?limit=&offset=`
+  answers an envelope `{ notifications, total, limit, offset }`; the client
+  never silently caps the visible history at 50 rows.
 - Notifications are deduplicated by in-memory state that resets on server
   restart — a still-open problem may re-fire once after a restart. This is an
   accepted MVP limitation (no extra table for cross-restart dedup state).

@@ -155,7 +155,8 @@ use crate::handlers::{
     notifications::{
         handle_notification_delete, handle_notification_events_config_get,
         handle_notification_events_config_update, handle_notification_mark_read,
-        handle_notifications_events, handle_notifications_events_ticket, handle_notifications_list,
+        handle_notifications_clear_all, handle_notifications_events,
+        handle_notifications_events_ticket, handle_notifications_list,
         handle_notifications_mark_all_read, handle_notifications_unread_count,
     },
     permissions::{
@@ -1024,8 +1025,12 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/encryption/volumes/{id}",
             delete(handle_encryption_delete),
         )
-        // Notifications
-        .route("/api/notifications", get(handle_notifications_list))
+        // Notifications. Reads are `require_auth` and per-user; deleting the
+        // broadcast feed (one row or all of it) is admin-only.
+        .route(
+            "/api/notifications",
+            get(handle_notifications_list).delete(handle_notifications_clear_all),
+        )
         .route(
             "/api/notifications/unread-count",
             get(handle_notifications_unread_count),

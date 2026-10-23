@@ -108,7 +108,7 @@ interface CacheEntry {
  * is compared against it so a stale cached bundle can surface a reload prompt
  * instead of failing silently.
  */
-export const CONTRACT_VERSION = 1;
+export const CONTRACT_VERSION = 2;
 
 /**
  * API client for the HomeVault backend.
@@ -1182,8 +1182,13 @@ class ApiClient {
   // Notifications
   // ==============================================
 
-  async getNotifications() {
-    return this.get('/notifications', { cache: false });
+  /**
+   * Paginated notification feed for the caller, newest first (ROADMAP 21.3).
+   * Answers `{ notifications, total, limit, offset }`; `read_at` is the
+   * caller's per-user read timestamp.
+   */
+  async getNotifications(limit = 50, offset = 0) {
+    return this.get(`/notifications?limit=${limit}&offset=${offset}`, { cache: false });
   }
 
   async markNotificationRead(id: string) {
@@ -1194,8 +1199,17 @@ class ApiClient {
     return this.post('/notifications/read-all', {});
   }
 
+  /** Deletes one notification — admin-only (the feed is broadcast). */
   async deleteNotification(id: string) {
     return this.delete(`/notifications/${encodeURIComponent(id)}`);
+  }
+
+  /**
+   * Clears the whole notification feed in one awaited call (ROADMAP 21.3) —
+   * replaces the old per-row delete loop. Admin-only.
+   */
+  async clearNotifications() {
+    return this.delete('/notifications');
   }
 
   /** One-time ticket for authenticating the `/api/events` SSE connection (see websocket.ts). */

@@ -1588,6 +1588,9 @@ filter_error = "Fehler"
 search_placeholder = "Benachrichtigungen durchsuchen"
 unread_only = "Nur ungelesene"
 no_match = "Keine Benachrichtigung entspricht den Filtern"
+load_older = "Ältere laden"
+loading_older = "Lädt…"
+action_failed = "Diese Aktion konnte nicht ausgeführt werden. Versuchen Sie es erneut."
 
 [whats_new]
 title = "Neuerungen"

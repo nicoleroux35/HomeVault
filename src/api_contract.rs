@@ -44,7 +44,7 @@
 use serde::Serialize;
 
 /// Breaking-change counter. Bump on any incompatible API change.
-pub const CONTRACT_VERSION: u32 = 1;
+pub const CONTRACT_VERSION: u32 = 2;
 
 /// Human-facing build version (`Cargo.toml`).
 pub fn server_version() -> &'static str {

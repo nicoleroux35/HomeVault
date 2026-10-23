@@ -2,16 +2,19 @@
  * File          : notifications.rs
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Last modified : 23/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
- *   System-notification endpoints for the topbar bell panel: list with
- *   pagination, unread count, mark read (one or all), delete, and the
- *   live SSE event stream. The stream authenticates with a short-lived,
+ *   System-notification endpoints for the topbar bell panel: paginated list,
+ *   unread count, mark read (one or all, per user), delete, clear-all, and
+ *   the live SSE event stream. Read state is per-user (ROADMAP 21.2): the
+ *   feed is broadcast, but each account's unread view lives in
+ *   `notification_reads`. Deleting the feed is a shared, destructive
+ *   operation, so `DELETE /notifications/{id}` and `DELETE /notifications`
+ *   are admin-only (least privilege — reads are `require_auth`, mutations
+ *   `require_admin`). The stream authenticates with a short-lived,
  *   single-use ticket because EventSource cannot send session headers.
- *   All endpoints are session-auth; the notifications themselves are
- *   persisted by the writers (see sse/notifications.rs for the live bus).
  *
  * Dependencies:
  *   - axum (>= 0.8)
@@ -36,85 +39,153 @@ use axum::{
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Lists the most recent notifications (newest first).
+/// Query parameters for the paginated list (ROADMAP 21.3). The page size is
+/// clamped server-side so no caller can ask for (and pin) an unbounded set.
+#[derive(serde::Deserialize)]
+pub struct NotificationsListQuery {
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+const DEFAULT_PAGE_SIZE: i64 = 50;
+const MAX_PAGE_SIZE: i64 = 200;
+
+/// Lists the most recent notifications (newest first), paginated, with the
+/// caller's read state. Answers an envelope so the client knows whether
+/// older rows exist:
+/// `{ "notifications": [...], "total": n, "limit": l, "offset": o }`.
 pub async fn handle_notifications_list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(query): Query<NotificationsListQuery>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers).await {
-        return response;
-    }
+    let username = match require_auth(&state, &headers).await {
+        Ok(u) => u,
+        Err(r) => return r,
+    };
+
+    let limit = query.limit.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE);
+    let offset = query.offset.unwrap_or(0).max(0);
 
     let repo = NotificationRepository::new(state.db.pool());
-    match repo.list_recent(50).await {
-        Ok(list) => ResponseHelper::json_success(list),
+    match repo.list_recent(&username, limit, offset).await {
+        Ok(items) => {
+            let total = match repo.total_count().await {
+                Ok(n) => n,
+                Err(e) => {
+                    return ResponseHelper::json_internal_error(format!(
+                        "Failed to count notifications: {}",
+                        e
+                    ))
+                }
+            };
+            ResponseHelper::json_success(serde_json::json!({
+                "notifications": items,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }))
+        }
         Err(e) => ResponseHelper::json_error(format!("Failed to list notifications: {}", e)),
     }
 }
 
-/// Returns the count of unread notifications, for the topbar badge.
+/// Returns the caller's unread notification count, for the topbar badge.
 pub async fn handle_notifications_unread_count(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers).await {
-        return response;
-    }
+    let username = match require_auth(&state, &headers).await {
+        Ok(u) => u,
+        Err(r) => return r,
+    };
 
     let repo = NotificationRepository::new(state.db.pool());
-    match repo.unread_count().await {
+    match repo.unread_count_for(&username).await {
         Ok(count) => ResponseHelper::json_success(serde_json::json!({ "count": count })),
         Err(e) => ResponseHelper::json_error(format!("Failed to count notifications: {}", e)),
     }
 }
 
-/// Marks a single notification as read.
+/// Marks a single notification as read **for the caller**.
 pub async fn handle_notification_mark_read(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers).await {
-        return response;
-    }
+    let username = match require_auth(&state, &headers).await {
+        Ok(u) => u,
+        Err(r) => return r,
+    };
 
     let repo = NotificationRepository::new(state.db.pool());
-    match repo.mark_read(&id).await {
-        Ok(_) => ResponseHelper::json_success("Marked as read".to_string()),
+    match repo.mark_read(&username, &id).await {
+        Ok(true) => ResponseHelper::json_success("Marked as read".to_string()),
+        Ok(false) => ResponseHelper::json_error_with_status(
+            StatusCode::NOT_FOUND,
+            "No such notification".to_string(),
+        ),
         Err(e) => ResponseHelper::json_error(format!("Failed to mark notification as read: {}", e)),
     }
 }
 
-/// Marks every notification as read.
+/// Marks every notification as read **for the caller only** — one user's
+/// "mark all read" never clears another account's badge.
 pub async fn handle_notifications_mark_all_read(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers).await {
-        return response;
-    }
+    let username = match require_auth(&state, &headers).await {
+        Ok(u) => u,
+        Err(r) => return r,
+    };
 
     let repo = NotificationRepository::new(state.db.pool());
-    match repo.mark_all_read().await {
+    match repo.mark_all_read(&username).await {
         Ok(count) => ResponseHelper::json_success(serde_json::json!({ "updated": count })),
         Err(e) => ResponseHelper::json_error(format!("Failed to mark all as read: {}", e)),
     }
 }
 
-/// Deletes a single notification.
+/// Deletes a single notification. Admin-only (ROADMAP 21.2): the feed is
+/// broadcast, so removing an alert-trail entry is a shared, destructive
+/// operation; reads stay `require_auth`, mutations of the feed are
+/// `require_admin`.
 pub async fn handle_notification_delete(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers).await {
+    if let Err(response) = require_admin(&state, &headers).await {
         return response;
     }
 
     let repo = NotificationRepository::new(state.db.pool());
     match repo.delete(&id).await {
-        Ok(_) => ResponseHelper::json_success("Notification deleted".to_string()),
+        Ok(true) => ResponseHelper::json_success("Notification deleted".to_string()),
+        Ok(false) => ResponseHelper::json_error_with_status(
+            StatusCode::NOT_FOUND,
+            "No such notification".to_string(),
+        ),
         Err(e) => ResponseHelper::json_error(format!("Failed to delete notification: {}", e)),
+    }
+}
+
+/// Deletes the whole notification feed in one operation (ROADMAP 21.3) —
+/// the "clear all" path, replacing the old N-unawaited-DELETEs loop.
+/// Admin-only, same rationale as `handle_notification_delete`.
+pub async fn handle_notifications_clear_all(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers).await {
+        return response;
+    }
+
+    let repo = NotificationRepository::new(state.db.pool());
+    match repo.clear_all().await {
+        Ok(count) => ResponseHelper::json_success(serde_json::json!({ "deleted": count })),
+        Err(e) => ResponseHelper::json_error(format!("Failed to clear notifications: {}", e)),
     }
 }
 
