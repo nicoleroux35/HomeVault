@@ -27,7 +27,7 @@
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
   import { cn } from '$lib/utils.js';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
-  import { IconServer, IconDatabase, IconThermometer, IconUsb, IconActivity, IconLock, IconLockOpen, IconShieldCheckered, IconTrash, IconBolt, IconPlus, IconPlayerPlay, IconClock, IconAlertTriangle, IconStack, IconTool, IconCamera } from '@tabler/icons-svelte';
+  import { IconServer, IconDatabase, IconThermometer, IconUsb, IconActivity, IconLock, IconLockOpen, IconKey, IconShieldCheckered, IconTrash, IconBolt, IconPlus, IconPlayerPlay, IconClock, IconAlertTriangle, IconStack, IconTool, IconCamera } from '@tabler/icons-svelte';
   import { t, translate } from '$lib/stores/i18n';
   import { isAdmin } from '$lib/stores/auth';
 
@@ -192,6 +192,19 @@
   let encryptLabel = '';
   let encryptPassphrase = '';
   let encryptPassphraseConfirm = '';
+  /** `luksFormat` + `mkfs` + `mount` run in a tracked job (ROADMAP 9.1). */
+  let encryptJobId: string | null = null;
+  let encryptProgress = 0;
+  let encryptProgressMsg = '';
+  let encryptStopStream: (() => void) | null = null;
+  const MIN_ENCRYPTION_PASSPHRASE = 12;
+
+  // Passphrase rotation (ROADMAP 9 — there was no way to rotate at all).
+  let rotateVolume: EncryptedVolume | null = null;
+  let rotateOld = '';
+  let rotateNew = '';
+  let rotateNewConfirm = '';
+  let rotateBusy = false;
 
   // ── Cache tier (HomeVault write caching) ──
   interface CacheSettingsLocal {
@@ -383,6 +396,8 @@
   onDestroy(() => {
     if (smartPoller !== null) clearInterval(smartPoller);
     if (removableRefreshInterval) clearInterval(removableRefreshInterval);
+    encryptStopStream?.();
+    encryptStopStream = null;
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', onVisibilityChange);
     }
@@ -710,16 +725,20 @@
     encryptLabel = '';
     encryptPassphrase = '';
     encryptPassphraseConfirm = '';
+    encryptJobId = null;
+    encryptProgress = 0;
+    encryptProgressMsg = '';
     showEncryptModal = true;
     loadEncryptionAvailableDevices();
   }
 
   async function confirmEncryptVolume() {
+    if (encryptJobId) return; // a job is already running for this modal
     if (!encryptDevice || !encryptLabel.trim()) {
       dlg.notify(translate('encryption.error_missing_fields'));
       return;
     }
-    if (encryptPassphrase.length < 8) {
+    if (encryptPassphrase.length < MIN_ENCRYPTION_PASSPHRASE) {
       dlg.notify(translate('encryption.error_passphrase_length'));
       return;
     }
@@ -735,11 +754,73 @@
       passphrase: encryptPassphrase,
     });
     encryptionBusy = false;
-    if (resp.success) {
-      showEncryptModal = false;
-      await Promise.all([loadDisks(), loadPartitions(), loadEncryptedVolumes()]);
-    } else {
+    if (!resp.success || !resp.data?.job_id) {
       dlg.notify(resp.message || resp.error || translate('encryption.error_create_failed'));
+      return;
+    }
+    // The request only starts the job: follow the milestones, then reload.
+    const jobId = resp.data.job_id as string;
+    encryptJobId = jobId;
+    encryptProgress = 0;
+    encryptProgressMsg = translate('encryption.progress_started');
+    encryptStopStream = api.subscribeToProgress(
+      jobId,
+      (event) => {
+        encryptProgress = Math.round(event.progress || 0);
+        encryptProgressMsg = event.message || encryptProgressMsg;
+      },
+      async () => {
+        encryptProgress = 100;
+        encryptStopStream?.();
+        encryptStopStream = null;
+        encryptJobId = null;
+        showEncryptModal = false;
+        await Promise.all([loadDisks(), loadPartitions(), loadEncryptedVolumes()]);
+      },
+      () => {
+        // A failed job answers on the same stream: report it and reload, the
+        // device may have been rolled back to the available pool.
+        encryptStopStream?.();
+        encryptStopStream = null;
+        encryptJobId = null;
+        dlg.notify(encryptProgressMsg || translate('encryption.error_create_failed'));
+        Promise.all([loadDisks(), loadPartitions(), loadEncryptedVolumes()]);
+      }
+    );
+  }
+
+  function openRotateModal(volume: EncryptedVolume) {
+    rotateVolume = volume;
+    rotateOld = '';
+    rotateNew = '';
+    rotateNewConfirm = '';
+  }
+
+  async function confirmRotatePassphrase() {
+    if (!rotateVolume) return;
+    if (!rotateOld) {
+      dlg.notify(translate('encryption.error_current_passphrase_required'));
+      return;
+    }
+    if (rotateNew.length < MIN_ENCRYPTION_PASSPHRASE) {
+      dlg.notify(translate('encryption.error_passphrase_length'));
+      return;
+    }
+    if (rotateNew !== rotateNewConfirm) {
+      dlg.notify(translate('encryption.error_passphrase_mismatch'));
+      return;
+    }
+    rotateBusy = true;
+    const resp = await api.changeEncryptedVolumePassphrase(rotateVolume.id, rotateOld, rotateNew);
+    rotateBusy = false;
+    if (resp.success) {
+      dlg.notify(translate('encryption.passphrase_changed'));
+      rotateVolume = null;
+      rotateOld = '';
+      rotateNew = '';
+      rotateNewConfirm = '';
+    } else {
+      dlg.notify(resp.message || resp.error || translate('encryption.error_passphrase_change_failed'));
     }
   }
 
@@ -770,8 +851,15 @@
     encryptionBusy = true;
     const resp = await api.deleteEncryptedVolume(volume.id);
     encryptionBusy = false;
-    if (resp.success) await Promise.all([loadDisks(), loadPartitions(), loadEncryptedVolumes()]);
-    else dlg.notify(resp.message || resp.error || translate('encryption.error_delete_failed'));
+    if (resp.success) {
+      // The key slots are gone; a cleanup warning (signature still on the
+      // disk, fstab block left behind) is still worth showing.
+      const warnings: string[] = resp.data?.warnings ?? [];
+      if (warnings.length > 0) dlg.notify(warnings.join(' '));
+      await Promise.all([loadDisks(), loadPartitions(), loadEncryptedVolumes()]);
+    } else {
+      dlg.notify(resp.message || resp.error || translate('encryption.error_delete_failed'));
+    }
   }
 
   function onVisibilityChange() {
@@ -1206,12 +1294,17 @@
                 {#if v.unlocked}
                   <div class="flex gap-2.5 mt-3">
                     <Button variant="ghost" onclick={() => lockVolume(v)} disabled={encryptionBusy}><IconLock size={14} /> {$t('encryption.lock')}</Button>
+                    <Button variant="ghost" onclick={() => openRotateModal(v)} disabled={encryptionBusy} data-testid="storage-enc-rotate-btn"><IconKey size={14} /> {$t('encryption.change_passphrase')}</Button>
                     <Button variant="danger" onclick={() => deleteVolume(v)} disabled={encryptionBusy}>{$t('common.delete')}</Button>
                   </div>
                 {:else}
                   <div class="flex gap-2 mt-3">
-                    <input type="password" class={cn(inpSel, 'flex-1')} placeholder={$t('encryption.passphrase')} bind:value={unlockPassphrase[v.id]} />
+                    <input type="password" class={cn(inpSel, 'flex-1')} placeholder={$t('encryption.passphrase')} aria-label={$t('encryption.passphrase')} bind:value={unlockPassphrase[v.id]} />
                     <Button variant="primary" onclick={() => unlockVolume(v)} disabled={encryptionBusy || !unlockPassphrase[v.id]}><IconLockOpen size={14} /> {$t('encryption.unlock')}</Button>
+                  </div>
+                  <div class="flex gap-2.5 mt-2">
+                    <Button variant="ghost" onclick={() => openRotateModal(v)} disabled={encryptionBusy} data-testid="storage-enc-rotate-btn"><IconKey size={14} /> {$t('encryption.change_passphrase')}</Button>
+                    <Button variant="danger" onclick={() => deleteVolume(v)} disabled={encryptionBusy}>{$t('common.delete')}</Button>
                   </div>
                 {/if}
               </div>
@@ -1583,21 +1676,55 @@
 <Modal open={showEncryptModal} title={$t('encryption.encrypt_device')} size="md" onclose={() => showEncryptModal = false}>
   <div>
     <p class="m-0 mb-3 px-3 py-2.5 rounded-lg bg-[var(--hv-warning-light)] border border-[var(--hv-warning)]/40 text-xs text-[var(--hv-warning-text)]">{$t('encryption.warning_unrecoverable')}</p>
-    <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="encDevice">{$t('encryption.device')}</label>
-    <select id="encDevice" class={encInput} bind:value={encryptDevice}><option value="">{$t('encryption.select_device')}</option>{#each encryptionAvailableDevices as d}<option value={d.name}>{d.name} &mdash; {d.model} ({formatBytes(d.size)})</option>{/each}</select>
-    <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="encFs">{$t('encryption.filesystem')}</label>
-    <select id="encFs" class={encInput} bind:value={encryptFilesystem}><option value="ext4">ext4</option><option value="xfs">xfs</option><option value="btrfs">btrfs</option></select>
-    <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="encLabel">{$t('encryption.label')}</label>
-    <input id="encLabel" class={encInput} type="text" bind:value={encryptLabel} placeholder={$t('encryption.label_placeholder')} />
-    <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="encPass">{$t('encryption.passphrase')}</label>
-    <input id="encPass" class={encInput} type="password" bind:value={encryptPassphrase} />
-    <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="encPassConfirm">{$t('encryption.passphrase_confirm')}</label>
-    <input id="encPassConfirm" class={encInput} type="password" bind:value={encryptPassphraseConfirm} />
+    {#if encryptJobId}
+      <!-- The request only starts a job: formatting a real disk takes minutes. -->
+      <div data-testid="storage-enc-progress" class="mb-2" role="status" aria-live="polite">
+        <div class="h-2 rounded-full bg-[var(--hv-shell-border-soft)] overflow-hidden">
+          <div class="h-full rounded-full bg-[var(--hv-primary)] transition-[width] duration-300" style="width: {encryptProgress}%;"></div>
+        </div>
+        <span class="mt-1.5 block text-xs text-[var(--hv-shell-text-2)]"><strong class="text-[var(--hv-shell-text-strong)]">{encryptProgress}%</strong> · {encryptProgressMsg}</span>
+      </div>
+      <p class="m-0 text-xs text-[var(--hv-shell-text-2)]">{$t('encryption.progress_hint')}</p>
+    {:else}
+      <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="encDevice">{$t('encryption.device')}</label>
+      <select id="encDevice" class={encInput} bind:value={encryptDevice}><option value="">{$t('encryption.select_device')}</option>{#each encryptionAvailableDevices as d}<option value={d.name}>{d.name} &mdash; {d.model} ({formatBytes(d.size)})</option>{/each}</select>
+      <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="encFs">{$t('encryption.filesystem')}</label>
+      <select id="encFs" class={encInput} bind:value={encryptFilesystem}><option value="ext4">ext4</option><option value="xfs">xfs</option><option value="btrfs">btrfs</option></select>
+      <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="encLabel">{$t('encryption.label')}</label>
+      <input id="encLabel" class={encInput} type="text" bind:value={encryptLabel} placeholder={$t('encryption.label_placeholder')} />
+      <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="encPass">{$t('encryption.passphrase')}</label>
+      <input id="encPass" class={encInput} type="password" bind:value={encryptPassphrase} aria-describedby="encPassHint" />
+      <p id="encPassHint" class="mt-1 mb-2 text-xs text-[var(--hv-shell-text-2)]">{$t('encryption.passphrase_hint')}</p>
+      <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="encPassConfirm">{$t('encryption.passphrase_confirm')}</label>
+      <input id="encPassConfirm" class={encInput} type="password" bind:value={encryptPassphraseConfirm} />
+    {/if}
   </div>
   {#snippet footer()}
     <div class="flex gap-2.5 justify-end">
-      <Button variant="ghost" onclick={() => showEncryptModal = false}>{$t('common.cancel')}</Button>
-      <Button variant="primary" onclick={confirmEncryptVolume} disabled={encryptionBusy}>{$t('encryption.encrypt_device')}</Button>
+      <Button variant="ghost" onclick={() => showEncryptModal = false} disabled={!!encryptJobId}>{$t('common.cancel')}</Button>
+      <Button variant="primary" onclick={confirmEncryptVolume} disabled={encryptionBusy || !!encryptJobId}>{$t('encryption.encrypt_device')}</Button>
+    </div>
+  {/snippet}
+</Modal>
+
+<!-- CHANGE PASSPHRASE MODAL -->
+<Modal open={!!rotateVolume} title={$t('encryption.change_passphrase')} size="md" onclose={() => (rotateVolume = null)}>
+  {#if rotateVolume}
+    <div data-testid="storage-enc-rotate-modal">
+      <p class="m-0 mb-3 text-sm text-[var(--hv-shell-text-2)]">{$t('encryption.change_passphrase_hint', { label: rotateVolume.label })}</p>
+      <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="encRotateOld">{$t('encryption.current_passphrase')}</label>
+      <input id="encRotateOld" class={encInput} type="password" bind:value={rotateOld} />
+      <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="encRotateNew">{$t('encryption.new_passphrase')}</label>
+      <input id="encRotateNew" class={encInput} type="password" bind:value={rotateNew} aria-describedby="encRotateHint" />
+      <p id="encRotateHint" class="mt-1 mb-2 text-xs text-[var(--hv-shell-text-2)]">{$t('encryption.passphrase_hint')}</p>
+      <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="encRotateConfirm">{$t('encryption.passphrase_confirm')}</label>
+      <input id="encRotateConfirm" class={encInput} type="password" bind:value={rotateNewConfirm} />
+    </div>
+  {/if}
+  {#snippet footer()}
+    <div class="flex gap-2.5 justify-end">
+      <Button variant="ghost" onclick={() => (rotateVolume = null)} disabled={rotateBusy}>{$t('common.cancel')}</Button>
+      <Button variant="primary" onclick={confirmRotatePassphrase} disabled={rotateBusy} data-testid="storage-enc-rotate-save">{$t('encryption.change_passphrase')}</Button>
     </div>
   {/snippet}
 </Modal>

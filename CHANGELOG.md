@@ -8,6 +8,54 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Disk encryption (LUKS2) production-ready pass (2026-10-23).** The three
+  ways the encryption tab could destroy data or wedge itself are gone, and the
+  two operations that did not exist now do. **Deletion is gated:** `DELETE
+  /api/encryption/volumes/{id}` used to run `let _ = unmount(); let _ =
+  close(); erase();` — a busy mount made `umount` fail, `cryptsetup erase`
+  succeeded anyway, and the key material was gone while the filesystem was
+  still mounted and being written to. It now unmounts (a failure answers 400 and
+  stops), closes the mapper if `cryptsetup status` says it is open, then
+  **re-verifies** the release from the kernel's own view — `/proc/self/mounts`
+  (with `\040`-style escapes decoded and the mount point matched as a whole
+  field) and `cryptsetup status` — and only then erases; an unreadable
+  `/proc/self/mounts` fails closed. Every refusal keeps the metadata row.
+  **Unlock rolls back:** `open()` followed by a failed `mount()` closes the
+  mapper again (the old code left it open while the UI still said "locked", so
+  every retry hit "already mapped"); when even that fails the message names the
+  `sudo cryptsetup close` line to run. **Creation is a tracked job:**
+  `POST /encryption/volumes` validates synchronously (passphrase policy,
+  filesystem allow-list, label, duplicate label, device gate — nothing
+  privileged runs on a refusal) and answers `{ job_id }`; the work runs as
+  `Custom("encryption_create")` with milestones and one `VOLUME_LOCK`, and a
+  failure after `luksFormat` rolls the container back (unmount → close → erase)
+  so the device returns to the available pool instead of being stuck "in use"
+  with no metadata row. New **passphrase rotation**
+  (`POST /encryption/volumes/{id}/passphrase`) sends the three lines
+  `luksChangeKey` actually prompts for — the old shape sent one, so it would
+  have failed on "Passphrases do not match" — and proves the new passphrase with
+  `cryptsetup open --test-passphrase`. New **passphrase policy** for new
+  passphrases (12 characters, no wordlist entry, not the label, four distinct
+  characters), applied to create and rotation only so existing volumes stay
+  unlockable. Also fixed: lock reports the unmount failure instead of closing
+  anyway; the progress stream replays a job's last known event on subscribe (a
+  job that failed before the modal connected used to be invisible, leaving the
+  panel on its bar forever); the fstab write no longer `.unwrap()`s the child's
+  stdin; the fstab
+  edits are async with unit-tested pure halves; the volume list probes statuses
+  concurrently instead of serially; `wipefs -a`'s failure is reported in
+  `data.warnings[]` instead of leaving the device unusable with no explanation;
+  and every privileged call is bounded (`run_timed` with `kill_on_drop`:
+  format 900 s, open/`luksChangeKey` 180 s, close 120 s, erase/`wipefs` 600 s,
+  status 15 s, UUID 30 s, mount 120 s, fstab 60 s). UI: the create modal turns
+  into a progress panel and a "Change passphrase" modal was added (i18n ×4).
+  Tests: `src/encryption.rs` 2 → 24 unit, `handlers/encryption.rs` 0 → 6,
+  new `tests/encryption_integration.rs` (15), `storage_integration.rs` updated
+  to the new policy, `storage.spec.ts` +1 case and 13.1 rewritten to follow the
+  job and prove the rotated passphrase. **Written but not executed** (per
+  instruction): `cargo check --all-targets` and `npm run check` are clean, no
+  test suite was run.
+
 - **Docker production-ready pass (2026-10-20).** The Docker module gained the
   whole engine surface a NAS console needs: **volumes** (list/create/delete
   with in-use detection), **disk usage** (`docker system df`) and **prune**

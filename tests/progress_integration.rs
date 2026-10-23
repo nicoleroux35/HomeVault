@@ -362,6 +362,68 @@ async fn job_status_reports_the_real_last_event() {
 }
 
 // ---------------------------------------------------------------------------
+// The SSE stream replays a terminal event that already happened
+// ---------------------------------------------------------------------------
+
+/// A job that fails **before** the client subscribes (a refused `sudo`, a
+/// missing tool, an invalid device) used to be invisible: the client opened a
+/// broadcast receiver after the terminal event had already been sent, so the
+/// stream carried only heartbeats and a progress modal stayed on its bar
+/// forever. The stream now replays the job's last known event first — the same
+/// snapshot `GET /api/progress/{job_id}/status` serves — and closes when that
+/// event is terminal.
+#[tokio::test]
+async fn sse_stream_replays_a_terminal_event_that_already_happened() {
+    use homevault::sse::progress::{JobType, PROGRESS_MANAGER};
+
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "alice", "Sup3rSecret!!", 2).await;
+    let mut r = progress_router(state);
+    let token = login(&mut r, "alice", "Sup3rSecret!!").await;
+
+    let job_id = PROGRESS_MANAGER.create_job_with_owner(
+        JobType::Custom("encryption_create".to_string()),
+        "Encrypting 'vault'",
+        Some("alice".to_string()),
+    );
+    PROGRESS_MANAGER.fail_job(&job_id, "sudo: a password is required");
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/api/progress/{job_id}"))
+        .header("x-session-token", &token)
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = ServiceExt::<Req>::ready(&mut r)
+        .await
+        .unwrap()
+        .call(req)
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    // The stream must end on its own: a terminal job has nothing left to send.
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body = String::from_utf8_lossy(&bytes);
+
+    assert!(
+        body.contains("\"state\":\"failed\""),
+        "the terminal state must be replayed: {body}"
+    );
+    assert!(
+        body.contains("sudo: a password is required"),
+        "the failure reason must reach the client: {body}"
+    );
+    assert!(
+        body.contains("event: progress"),
+        "a failed job is delivered as a progress event (the UI reads its message): {body}"
+    );
+
+    PROGRESS_MANAGER.remove_job(&job_id);
+}
+
+// ---------------------------------------------------------------------------
 // G5 — response hardening headers on every response
 // ---------------------------------------------------------------------------
 

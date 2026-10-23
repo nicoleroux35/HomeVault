@@ -30,8 +30,9 @@
 //!     POST /api/cache/mover/run                                   (admin)
 //!   Encryption (LUKS2):
 //!     GET  /api/encryption/volumes | /available-devices          (read)
-//!     POST /api/encryption/volumes                               (admin)
+//!     POST /api/encryption/volumes                               (admin, job)
 //!     POST /api/encryption/volumes/{id}/unlock | /lock           (admin)
+//!     POST /api/encryption/volumes/{id}/passphrase               (admin)
 //!     DELETE /api/encryption/volumes/{id}                        (admin)
 //!
 //! Fresh in-memory SQLite + all migrations per test, a minimal Axum router,
@@ -91,8 +92,9 @@ use homevault::handlers::{
         handle_cache_share_delete, handle_cache_share_update, handle_cache_shares_list,
     },
     encryption::{
-        handle_encryption_available_devices, handle_encryption_create, handle_encryption_delete,
-        handle_encryption_list, handle_encryption_lock, handle_encryption_unlock,
+        handle_encryption_available_devices, handle_encryption_change_passphrase,
+        handle_encryption_create, handle_encryption_delete, handle_encryption_list,
+        handle_encryption_lock, handle_encryption_unlock,
     },
     storage::{
         handle_disk_smart_capabilities, handle_disk_smart_test_start,
@@ -213,6 +215,10 @@ fn storage_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/encryption/volumes/{id}/lock",
             post(handle_encryption_lock),
+        )
+        .route(
+            "/api/encryption/volumes/{id}/passphrase",
+            post(handle_encryption_change_passphrase),
         )
         .route(
             "/api/encryption/volumes/{id}",
@@ -337,18 +343,26 @@ fn write_endpoints() -> Vec<(Method, &'static str, Option<Value>)> {
             Method::POST,
             "/api/encryption/volumes",
             Some(
-                json!({"device": "/dev/hv-x", "filesystem": "ext4", "label": "l", "passphrase": "abcdefgh"}),
+                json!({"device": "/dev/hv-x", "filesystem": "ext4", "label": "l", "passphrase": "correct-horse-battery"}),
             ),
         ),
         (
             Method::POST,
             "/api/encryption/volumes/00000000-0000-0000-0000-000000000000/unlock",
-            Some(json!({"passphrase": "abcdefgh"})),
+            Some(json!({"passphrase": "correct-horse-battery"})),
         ),
         (
             Method::POST,
             "/api/encryption/volumes/00000000-0000-0000-0000-000000000000/lock",
             None,
+        ),
+        (
+            Method::POST,
+            "/api/encryption/volumes/00000000-0000-0000-0000-000000000000/passphrase",
+            Some(json!({
+                "old_passphrase": "correct-horse-battery",
+                "new_passphrase": "a-longer-replacement-1"
+            })),
         ),
         (
             Method::DELETE,
@@ -621,7 +635,7 @@ async fn test_encryption_create_rejects_short_passphrase() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(msg(&body).contains("at least 8 characters"));
+    assert!(msg(&body).contains("at least 12 characters"));
 }
 
 #[tokio::test]
@@ -632,7 +646,7 @@ async fn test_encryption_create_rejects_bad_filesystem() {
         Method::POST,
         "/api/encryption/volumes",
         Some(&token),
-        Some(json!({"device": "/dev/hv-x", "filesystem": "ntfs", "label": "vault", "passphrase": "abcdefgh"})),
+        Some(json!({"device": "/dev/hv-x", "filesystem": "ntfs", "label": "vault", "passphrase": "correct-horse-battery"})),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -648,7 +662,7 @@ async fn test_encryption_create_rejects_bad_label() {
             Method::POST,
             "/api/encryption/volumes",
             Some(&token),
-            Some(json!({"device": "/dev/hv-x", "filesystem": "ext4", "label": bad, "passphrase": "abcdefgh"})),
+            Some(json!({"device": "/dev/hv-x", "filesystem": "ext4", "label": bad, "passphrase": "correct-horse-battery"})),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "label {bad:?}");
@@ -670,7 +684,7 @@ async fn test_encryption_create_rejects_a_device_that_is_not_available() {
             Method::POST,
             "/api/encryption/volumes",
             Some(&token),
-            Some(json!({"device": dev, "filesystem": "ext4", "label": "vault", "passphrase": "abcdefgh"})),
+            Some(json!({"device": dev, "filesystem": "ext4", "label": "vault", "passphrase": "correct-horse-battery"})),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "device {dev:?}");
@@ -692,7 +706,7 @@ async fn test_encryption_unlock_lock_report_unknown_volume() {
         Method::POST,
         &format!("/api/encryption/volumes/{id}/unlock"),
         Some(&token),
-        Some(json!({"passphrase": "abcdefgh"})),
+        Some(json!({"passphrase": "correct-horse-battery"})),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);

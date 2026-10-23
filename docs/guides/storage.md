@@ -46,7 +46,8 @@ endpoints.
 
 Disk encryption (separate guide: [Disk Encryption](./encryption.md)):
 `GET /encryption/volumes`, `/encryption/available-devices`;
-`POST /encryption/volumes`, `/{id}/unlock`, `/{id}/lock`;
+`POST /encryption/volumes` (answers `{ job_id }` — creation is a tracked job),
+`/{id}/unlock`, `/{id}/lock`, `/{id}/passphrase`;
 `DELETE /encryption/volumes/{id}`.
 
 ## RAID ↔ Storage boundary (inverted 2026-09-06)
@@ -260,7 +261,13 @@ still binding:
 - `handle_encryption_create` gates `req.device` against
   `DiskService::get_available_devices()` — a past hole let an admin luksFormat
   the boot disk. `encryption::erase` runs a trailing `wipefs -a` so a deleted
-  volume's device returns to the available pool.
+  volume's device returns to the available pool, and a failure of that step is
+  reported in `data.warnings[]` instead of being swallowed.
+- **Encryption never erases a live volume.** `DELETE /encryption/volumes/{id}`
+  re-verifies the release (`/proc/self/mounts` + `cryptsetup status`) before
+  `cryptsetup erase`, and keeps the metadata row on any refusal; creation runs
+  as a tracked job and rolls its own container back when a step fails. See
+  [Disk Encryption](./encryption.md).
 - **Editable since 2026-09-12** — the frozen-area registry is gone; the
   invariants above stay binding.
 

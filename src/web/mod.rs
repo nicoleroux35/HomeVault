@@ -110,8 +110,9 @@ use crate::handlers::{
         handle_downloader_unpause,
     },
     encryption::{
-        handle_encryption_available_devices, handle_encryption_create, handle_encryption_delete,
-        handle_encryption_list, handle_encryption_lock, handle_encryption_unlock,
+        handle_encryption_available_devices, handle_encryption_change_passphrase,
+        handle_encryption_create, handle_encryption_delete, handle_encryption_list,
+        handle_encryption_lock, handle_encryption_unlock,
     },
     explorer::{
         handle_explorer_compress, handle_explorer_copy, handle_explorer_delete,
@@ -1012,6 +1013,10 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route(
             "/api/encryption/volumes/{id}/lock",
             post(handle_encryption_lock),
+        )
+        .route(
+            "/api/encryption/volumes/{id}/passphrase",
+            post(handle_encryption_change_passphrase),
         )
         .route(
             "/api/encryption/volumes/{id}",
