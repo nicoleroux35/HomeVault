@@ -54,7 +54,7 @@
 
 use crate::handlers::admin_guard::require_admin;
 use crate::handlers::AppState;
-use crate::incus::{self, ExecSession, IncusError, IncusInstance, IncusService, STATUS_RUNNING};
+use crate::incus::{self, ExecSession, IncusError, IncusInstance, IncusService, WaitOutcome, STATUS_RUNNING};
 use crate::sse::{JobType, PROGRESS_MANAGER};
 use crate::utils::ResponseHelper;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -308,23 +308,78 @@ pub fn create_vm_router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// Displays handed out in the last minute — so two near-simultaneous creates
-/// don't both grab the same free port before either VM's qemu binds it.
+/// Displays handed out in the last [`VNC_RESERVATION_TTL`] — so two
+/// near-simultaneous creates don't both grab the same free port before either
+/// VM's qemu binds it.
 static RESERVED_DISPLAYS: LazyLock<parking_lot::Mutex<HashMap<u16, Instant>>> =
     LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 
-/// Find a free VNC display (`127.0.0.1:5900+N`) for a new ISO-install VM:
-/// its loopback port must be bindable *and* not just handed to another create.
-fn alloc_vnc_display() -> Option<u16> {
-    use std::net::TcpListener;
-    let mut reserved = RESERVED_DISPLAYS.lock();
-    let now = Instant::now();
-    reserved.retain(|_, t| now.duration_since(*t) < Duration::from_secs(60));
-    let pick = (VNC_DISPLAY_MIN..=VNC_DISPLAY_MAX).find(|d| {
-        !reserved.contains_key(d) && TcpListener::bind(("127.0.0.1", 5900 + d)).is_ok()
-    })?;
-    reserved.insert(pick, now);
-    Some(pick)
+/// How long a claimed display stays claimed. It must cover a **whole create**,
+/// not a fixed minute: an image pull plus first boot easily outlives the old
+/// 60 s reservation, and the second create then picked the same port while the
+/// first was still building (ROADMAP 19.2). Once the VM's qemu is up it holds
+/// the port itself, and [`display_is_free`] refuses it from then on.
+const VNC_RESERVATION_TTL: Duration = Duration::from_secs(CREATE_WAIT_SECS + 60);
+
+/// Run blocking filesystem work off the async runtime.
+///
+/// The pattern is the one `mdns.rs`, `transfer_quota.rs` and
+/// `handlers/journal.rs` already use: a handler's body must never sit on a
+/// blocking call, because one slow filesystem (a spun-down disk, an NFS mount
+/// that went away) would otherwise stall every other request on that worker
+/// (ROADMAP 19.2 / X.1). The closure owns its inputs and returns the
+/// plain-language error the handler can show as-is.
+async fn blocking_io<T, F>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(r) => r,
+        Err(e) => Err(format!("The server could not finish that file operation: {e}")),
+    }
+}
+
+/// Is `127.0.0.1:5900+display` bindable? The bind is a blocking syscall, so it
+/// runs on the blocking pool — never on the request's task.
+async fn display_is_free(display: u16) -> bool {
+    let port = 5900 + display;
+    matches!(
+        blocking_io(move || Ok(std::net::TcpListener::bind(("127.0.0.1", port)).is_ok())).await,
+        Ok(true)
+    )
+}
+
+/// Find a free VNC display (`127.0.0.1:5900+N`) for a new ISO-install VM.
+///
+/// The slot is **claimed before it is probed**, both under one lock, so two
+/// concurrent creates can never walk away with the same number: the loser sees
+/// the slot taken and moves on. The probe then rejects a port something
+/// already listens on (a running VM's own qemu), and a rejected candidate is
+/// released so the next create can still use it.
+async fn alloc_vnc_display() -> Option<u16> {
+    for _ in VNC_DISPLAY_MIN..=VNC_DISPLAY_MAX {
+        let candidate = {
+            let mut reserved = RESERVED_DISPLAYS.lock();
+            let now = Instant::now();
+            reserved.retain(|_, t| now.duration_since(*t) < VNC_RESERVATION_TTL);
+            let pick = (VNC_DISPLAY_MIN..=VNC_DISPLAY_MAX).find(|d| !reserved.contains_key(d))?;
+            reserved.insert(pick, now);
+            pick
+        };
+        if display_is_free(candidate).await {
+            return Some(candidate);
+        }
+        // Something already listens there — give the slot back and try the next.
+        RESERVED_DISPLAYS.lock().remove(&candidate);
+    }
+    None
+}
+
+/// Hand a display back as soon as the machine is up (or the create failed):
+/// the reservation exists to cover the window before qemu binds the port.
+fn release_vnc_display(display: u16) {
+    RESERVED_DISPLAYS.lock().remove(&display);
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────────
@@ -466,6 +521,10 @@ pub async fn handle_vm_create(
 
     let (mut cpu, mut mem, mut disk) = size_preset(&req.size);
 
+    // The display claimed by an ISO install, so the create job can hand it back
+    // as soon as the machine is up (or the create failed).
+    let mut claimed_display: Option<u16> = None;
+
     // ── Build the create body — one of two shapes ─────────────────────────
     // `tpm_note` is Some(msg) when a Windows VM had to be created without a TPM
     // up front; `has_removable_tpm` means a `vtpm` device was attached and can
@@ -477,7 +536,10 @@ pub async fn handle_vm_create(
         bool,
     ) = if let Some(iso_path) = iso {
         // ---------- ISO install ----------
-        let iso_path = match validate_local_iso(iso_path) {
+        // Everything below touches the filesystem (canonicalise, stat, chmod,
+        // PATH probes) — off the async runtime.
+        let iso_owned = iso_path.to_string();
+        let iso_path = match blocking_io(move || validate_local_iso(&iso_owned)).await {
             Ok(p) => p,
             Err(e) => return ResponseHelper::json_error(e),
         };
@@ -488,10 +550,13 @@ pub async fn handle_vm_create(
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            Some(p) => match validate_local_iso(p) {
-                Ok(p) => Some(p),
-                Err(e) => return ResponseHelper::json_error(format!("Driver ISO: {e}")),
-            },
+            Some(p) => {
+                let owned = p.to_string();
+                match blocking_io(move || validate_local_iso(&owned)).await {
+                    Ok(p) => Some(p),
+                    Err(e) => return ResponseHelper::json_error(format!("Driver ISO: {e}")),
+                }
+            }
             None => None,
         };
 
@@ -520,13 +585,16 @@ pub async fn handle_vm_create(
         // Linux. Refuse "on" when the host has no Microsoft-signed firmware —
         // the guest would just fail to boot with no explanation.
         let secure_boot = req.secure_boot.unwrap_or(windows);
-        if secure_boot && !ovmf_secureboot_available() {
+        let ovmf = blocking_io(|| Ok(ovmf_secureboot_available()))
+            .await
+            .unwrap_or(false);
+        if secure_boot && !ovmf {
             return ResponseHelper::json_error(
                 "Secure Boot needs the Microsoft-signed UEFI firmware, which is not installed on this server (package `ovmf`). Install it, or turn Secure Boot off in the advanced options.".to_string(),
             );
         }
 
-        let display = match alloc_vnc_display() {
+        let display = match alloc_vnc_display().await {
             Some(d) => d,
             None => {
                 return ResponseHelper::json_error(
@@ -534,6 +602,7 @@ pub async fn handle_vm_create(
                 )
             }
         };
+        claimed_display = Some(display);
 
         let mut config: HashMap<String, String> = HashMap::new();
         config.insert("limits.cpu".to_string(), cpu.to_string());
@@ -578,7 +647,10 @@ pub async fn handle_vm_create(
         // (`swtpm-tools`). If not, the VM is still created (Windows 10 is fine,
         // Win11 can be bypassed) and the job note says so.
         let tpm_wanted = windows;
-        let tpm_added = tpm_wanted && swtpm_available();
+        let tpm_available = blocking_io(|| Ok(swtpm_available()))
+            .await
+            .unwrap_or(false);
+        let tpm_added = tpm_wanted && tpm_available;
         if tpm_added {
             devices.insert("vtpm".to_string(), serde_json::json!({ "type": "tpm" }));
         }
@@ -732,7 +804,15 @@ pub async fn handle_vm_create(
             Some(n) => format!("\"{}\" is ready to use — {}", job_name, n),
             None => format!("\"{}\" is ready to use", job_name),
         };
+        // A claimed display only has to cover the window before the VM's own
+        // qemu binds the port; hand it back as soon as the create is settled.
+        let free_display = || {
+            if let Some(d) = claimed_display {
+                release_vnc_display(d);
+            }
+        };
         if op.is_empty() {
+            free_display();
             PROGRESS_MANAGER.complete_job(&job, &ready_msg(tpm_note.as_deref()));
             crate::events::log_event(format!(
                 "VM '{}' ({}) created by {}",
@@ -746,6 +826,10 @@ pub async fn handle_vm_create(
         // start fails with an opaque error. If we attached a `vtpm`, wipe the
         // failed instance and recreate it without one — the person gets a
         // working (Windows-10-capable) VM instead of nothing.
+        //
+        // `outcome.is_err()` — never `StillRunning`: a slow create is not a
+        // failure, and deleting the instance here is exactly what left an
+        // orphan behind plus a duplicate on retry (ROADMAP 19.1).
         if outcome.is_err() && has_removable_tpm {
             // The failed instance must be fully gone before we can reuse the name.
             if let Ok(dop) = IncusService::delete_instance(&job_name).await {
@@ -757,43 +841,67 @@ pub async fn handle_vm_create(
             b2.devices.remove("vtpm");
             // Another VM may have taken this display while we were failing —
             // grab a fresh one for the retry.
-            if let Some(fresh) = alloc_vnc_display() {
+            let mut retry_display: Option<u16> = None;
+            if let Some(fresh) = alloc_vnc_display().await {
                 b2.config.insert(
                     "raw.qemu".to_string(),
                     format!("-vnc 127.0.0.1:{},share=force-shared", fresh),
                 );
                 b2.config.insert(VNC_KEY.to_string(), fresh.to_string());
+                retry_display = Some(fresh);
             }
+            let mut retried = false;
             if let Ok(op2) = IncusService::create_instance(&b2).await {
-                if IncusService::wait_for_operation(&op2, CREATE_WAIT_SECS)
-                    .await
-                    .is_ok()
-                {
-                    PROGRESS_MANAGER.complete_job(
-                        &job,
-                        &format!(
-                            "\"{}\" is ready — but without a TPM 2.0 (Windows 11 needs one; this server's Incus is too old to provide it).",
-                            job_name
-                        ),
-                    );
-                    crate::events::log_event(format!(
-                        "VM '{}' ({}) created by {} (TPM dropped — host can't back it)",
-                        job_name, job_label, admin
-                    ));
-                    return;
-                }
+                retried = matches!(
+                    IncusService::wait_for_operation(&op2, CREATE_WAIT_SECS).await,
+                    Ok(WaitOutcome::Completed)
+                );
+            }
+            if let Some(d) = retry_display {
+                release_vnc_display(d);
+            }
+            if retried {
+                PROGRESS_MANAGER.complete_job(
+                    &job,
+                    &format!(
+                        "\"{}\" is ready — but without a TPM 2.0 (Windows 11 needs one; this server's Incus is too old to provide it).",
+                        job_name
+                    ),
+                );
+                crate::events::log_event(format!(
+                    "VM '{}' ({}) created by {} (TPM dropped — host can't back it)",
+                    job_name, job_label, admin
+                ));
+                return;
             }
             outcome = Err(IncusError::Operation(
                 "the machine could not start".to_string(),
             ));
         }
 
+        free_display();
         match outcome {
-            Ok(()) => {
+            Ok(WaitOutcome::Completed) => {
                 PROGRESS_MANAGER.complete_job(&job, &ready_msg(tpm_note.as_deref()));
                 crate::events::log_event(format!(
                     "VM '{}' ({}) created by {}",
                     job_name, job_label, admin
+                ));
+            }
+            // Not a failure and **not** something to clean up: Incus is still
+            // building the machine. Say so, with the operation id, instead of
+            // claiming the create failed at 45 s (ROADMAP 19.1).
+            Ok(WaitOutcome::StillRunning { operation_id }) => {
+                PROGRESS_MANAGER.complete_job(
+                    &job,
+                    &format!(
+                        "\"{}\" is still being created — Incus is taking longer than usual (operation {}). It will appear in the list when it is ready.",
+                        job_name, operation_id
+                    ),
+                );
+                crate::events::log_event(format!(
+                    "VM '{}' ({}) is still being created by {} (operation {})",
+                    job_name, job_label, admin, operation_id
                 ));
             }
             Err(e) => {
@@ -848,8 +956,21 @@ pub async fn handle_vm_delete(
     match IncusService::delete_instance(&name).await {
         Ok(op) => {
             if !op.is_empty() {
-                if let Err(e) = IncusService::wait_for_operation(&op, LIFECYCLE_WAIT_SECS).await {
-                    return incus_err(e);
+                match IncusService::wait_for_operation(&op, LIFECYCLE_WAIT_SECS).await {
+                    Ok(WaitOutcome::Completed) => {}
+                    // Incus is still tearing it down — the machine may still be
+                    // listed. Say that instead of "was deleted".
+                    Ok(WaitOutcome::StillRunning { operation_id }) => {
+                        crate::events::log_event(format!(
+                            "VM '{}' is being deleted by {} (operation {})",
+                            name, admin, operation_id
+                        ));
+                        return ResponseHelper::json_success(format!(
+                            "\"{}\" is being removed (operation {}). It disappears from the list when Incus finishes.",
+                            name, operation_id
+                        ));
+                    }
+                    Err(e) => return incus_err(e),
                 }
             }
             crate::events::log_event(format!("VM '{}' deleted by {}", name, admin));
@@ -906,9 +1027,8 @@ async fn lifecycle(
         if let Ok(inst) = IncusService::get_instance(name).await {
             if inst.status_code != STATUS_RUNNING {
                 if let Some(display) = vnc_display(&inst) {
-                    use std::net::TcpListener;
-                    if TcpListener::bind(("127.0.0.1", 5900 + display)).is_err() {
-                        if let Some(fresh) = alloc_vnc_display() {
+                    if !display_is_free(display).await {
+                        if let Some(fresh) = alloc_vnc_display().await {
                             let mut c = HashMap::new();
                             c.insert(
                                 "raw.qemu".to_string(),
@@ -916,6 +1036,9 @@ async fn lifecycle(
                             );
                             c.insert(VNC_KEY.to_string(), fresh.to_string());
                             let _ = IncusService::update_config(name, c).await;
+                            // The claim stays until its TTL: qemu binds this
+                            // port as it starts, and nothing else may pick it
+                            // in the meantime.
                         }
                     }
                 }
@@ -931,20 +1054,22 @@ async fn lifecycle(
     };
 
     let mut result = if op.is_empty() {
-        Ok(())
+        Ok(WaitOutcome::Completed)
     } else {
         IncusService::wait_for_operation(&op, LIFECYCLE_WAIT_SECS).await
     };
 
     // A stubborn guest that ignored the ACPI request — hit it harder once.
-    if result.is_err() && (action == "stop" || action == "restart") {
+    // "Still running" after the graceful window is exactly that case, so it
+    // triggers the forced retry too.
+    if !matches!(result, Ok(WaitOutcome::Completed)) && (action == "stop" || action == "restart") {
         if let Ok(op) = IncusService::set_state(name, action, true, Some(15)).await {
             result = IncusService::wait_for_operation(&op, LIFECYCLE_WAIT_SECS).await;
         }
     }
 
     match result {
-        Ok(()) => {
+        Ok(WaitOutcome::Completed) => {
             crate::events::log_event(format!("VM '{}' {}ed by {}", name, action, admin));
             let msg = match action {
                 "start" => format!("\"{}\" is starting.", name),
@@ -952,6 +1077,23 @@ async fn lifecycle(
                 _ => format!("\"{}\" is restarting.", name),
             };
             ResponseHelper::json_success(msg)
+        }
+        // Incus is still working: report that, with the operation id, instead
+        // of a failure the user would retry (ROADMAP 19.1).
+        Ok(WaitOutcome::StillRunning { operation_id }) => {
+            crate::events::log_event(format!(
+                "VM '{}' {} requested by {} — still running (operation {})",
+                name, action, admin, operation_id
+            ));
+            let what = match action {
+                "start" => "is still starting",
+                "stop" => "is still stopping",
+                _ => "is still restarting",
+            };
+            ResponseHelper::json_success(format!(
+                "\"{}\" {} — Incus is taking longer than usual (operation {}). Check the machine in a moment.",
+                name, what, operation_id
+            ))
         }
         Err(e) => incus_err(e),
     }
@@ -1043,8 +1185,20 @@ pub async fn handle_vm_snapshot_create(
     match IncusService::create_snapshot(&name, snap, req.stateful).await {
         Ok(op) => {
             if !op.is_empty() {
-                if let Err(e) = IncusService::wait_for_operation(&op, LIFECYCLE_WAIT_SECS).await {
-                    return incus_err(e);
+                match IncusService::wait_for_operation(&op, LIFECYCLE_WAIT_SECS).await {
+                    Ok(WaitOutcome::Completed) => {}
+                    // The snapshot is being written; it is not an error.
+                    Ok(WaitOutcome::StillRunning { operation_id }) => {
+                        crate::events::log_event(format!(
+                            "Snapshot '{}' of VM '{}' is being saved by {} (operation {})",
+                            snap, name, admin, operation_id
+                        ));
+                        return ResponseHelper::json_success(format!(
+                            "Saving the state as \"{}\" — Incus is taking longer than usual (operation {}).",
+                            snap, operation_id
+                        ));
+                    }
+                    Err(e) => return incus_err(e),
                 }
             }
             crate::events::log_event(format!(
@@ -1085,7 +1239,7 @@ pub async fn handle_vm_snapshot_restore(
         Ok(op) if !op.is_empty() => {
             IncusService::wait_for_operation(&op, LIFECYCLE_WAIT_SECS).await
         }
-        Ok(_) => Ok(()),
+        Ok(_) => Ok(WaitOutcome::Completed),
         Err(e) => Err(e),
     };
 
@@ -1097,12 +1251,22 @@ pub async fn handle_vm_snapshot_restore(
     }
 
     match outcome {
-        Ok(()) => {
+        Ok(WaitOutcome::Completed) => {
             crate::events::log_event(format!(
                 "VM '{}' restored to snapshot '{}' by {}",
                 name, snap, admin
             ));
             ResponseHelper::json_success(format!("\"{}\" was rolled back to \"{}\".", name, snap))
+        }
+        Ok(WaitOutcome::StillRunning { operation_id }) => {
+            crate::events::log_event(format!(
+                "VM '{}' is being restored to snapshot '{}' by {} (operation {})",
+                name, snap, admin, operation_id
+            ));
+            ResponseHelper::json_success(format!(
+                "\"{}\" is being rolled back to \"{}\" — Incus is taking longer than usual (operation {}).",
+                name, snap, operation_id
+            ))
         }
         Err(e) => incus_err(e),
     }
@@ -1358,6 +1522,29 @@ fn ensure_iso_dir() -> Result<std::path::PathBuf, String> {
     Ok(d)
 }
 
+/// The managed store's contents. Blocking (`read_dir` + a `stat` per entry),
+/// so it is only ever called through [`blocking_io`].
+fn read_iso_entries(dir: &std::path::Path) -> Vec<IsoEntry> {
+    let mut list: Vec<IsoEntry> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if !name.to_ascii_lowercase().ends_with(".iso") {
+                continue;
+            }
+            let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+            list.push(IsoEntry {
+                virtio: name.to_ascii_lowercase().contains("virtio"),
+                path: e.path().to_string_lossy().to_string(),
+                name,
+                size,
+            });
+        }
+    }
+    list.sort_by_key(|a| a.name.to_lowercase());
+    list
+}
+
 fn safe_iso_name(n: &str) -> Option<String> {
     let n = n.trim();
     if n.is_empty() || n.len() > 128 || n.starts_with('.') {
@@ -1383,27 +1570,13 @@ pub async fn handle_vm_isos(State(state): State<Arc<AppState>>, headers: HeaderM
     if let Err(e) = require_admin(&state, &headers).await {
         return e;
     }
-    let dir = match ensure_iso_dir() {
+    let dir = match blocking_io(ensure_iso_dir).await {
         Ok(d) => d,
         Err(e) => return ResponseHelper::json_error(e),
     };
-    let mut list: Vec<IsoEntry> = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(&dir) {
-        for e in rd.flatten() {
-            let name = e.file_name().to_string_lossy().to_string();
-            if !name.to_ascii_lowercase().ends_with(".iso") {
-                continue;
-            }
-            let size = e.metadata().map(|m| m.len()).unwrap_or(0);
-            list.push(IsoEntry {
-                virtio: name.to_ascii_lowercase().contains("virtio"),
-                path: e.path().to_string_lossy().to_string(),
-                name,
-                size,
-            });
-        }
-    }
-    list.sort_by_key(|a| a.name.to_lowercase());
+    let list = blocking_io(move || Ok(read_iso_entries(&dir)))
+        .await
+        .unwrap_or_default();
     ResponseHelper::json_success(list)
 }
 
@@ -1437,7 +1610,7 @@ pub async fn handle_vm_iso_download(
             )
         }
     };
-    start_iso_download(&admin, &url, &name)
+    start_iso_download(&admin, &url, &name).await
 }
 
 /// POST /api/vm/isos/virtio — one-click VirtIO drivers for Windows.
@@ -1449,16 +1622,19 @@ pub async fn handle_vm_iso_virtio(
         Ok(u) => u,
         Err(e) => return e,
     };
-    start_iso_download(&admin, VIRTIO_WIN_URL, "virtio-win.iso")
+    start_iso_download(&admin, VIRTIO_WIN_URL, "virtio-win.iso").await
 }
 
-fn start_iso_download(admin: &str, url: &str, name: &str) -> Response {
-    let dir = match ensure_iso_dir() {
+async fn start_iso_download(admin: &str, url: &str, name: &str) -> Response {
+    // `create_dir_all` + the chmod walk, then a `stat` — both off the runtime.
+    let dir = match blocking_io(ensure_iso_dir).await {
         Ok(d) => d,
         Err(e) => return ResponseHelper::json_error(e),
     };
     let dest = dir.join(name);
-    if dest.exists() {
+    let probe = dest.clone();
+    let exists = matches!(blocking_io(move || Ok(probe.exists())).await, Ok(true));
+    if exists {
         return ResponseHelper::json_error(format!("\"{}\" is already in the store.", name));
     }
     let job = PROGRESS_MANAGER.create_job_with_owner(
@@ -1472,6 +1648,25 @@ fn start_iso_download(admin: &str, url: &str, name: &str) -> Response {
     let dest_job = dest.clone();
     tokio::spawn(async move { run_iso_download(&job, &url, &dest_job, &name_owned).await });
     ResponseHelper::json_success(serde_json::json!({ "name": name_resp, "status": "downloading" }))
+}
+
+/// The post-download checks, as one blocking unit: reject a body that is not a
+/// real ISO (and remove it), then `chmod o+r` so the unprivileged qemu can read
+/// it. Returns the message to fail the job with.
+fn finalise_iso(dest: &std::path::Path) -> Result<(), String> {
+    if std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0) < 10_000_000 {
+        let _ = std::fs::remove_file(dest);
+        return Err("That link did not return a valid ISO.".to_string());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(m) = std::fs::metadata(dest) {
+            let mode = m.permissions().mode();
+            let _ = std::fs::set_permissions(dest, std::fs::Permissions::from_mode(mode | 0o044));
+        }
+    }
+    Ok(())
 }
 
 async fn run_iso_download(job: &str, url: &str, dest: &std::path::Path, name: &str) {
@@ -1536,18 +1731,11 @@ async fn run_iso_download(job: &str, url: &str, dest: &std::path::Path, name: &s
     let _ = file.flush().await;
     drop(file);
 
-    if std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0) < 10_000_000 {
-        let _ = std::fs::remove_file(dest);
-        PROGRESS_MANAGER.fail_job(job, "That link did not return a valid ISO.");
+    // Size floor + the `o+r` qemu needs — one blocking unit, off the runtime.
+    let dest_owned = dest.to_path_buf();
+    if let Err(e) = blocking_io(move || finalise_iso(&dest_owned)).await {
+        PROGRESS_MANAGER.fail_job(job, &e);
         return;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(m) = std::fs::metadata(dest) {
-            let mode = m.permissions().mode();
-            let _ = std::fs::set_permissions(dest, std::fs::Permissions::from_mode(mode | 0o044));
-        }
     }
     PROGRESS_MANAGER.complete_job(job, &format!("{} is ready", name));
     crate::events::log_event(format!("VM ISO '{}' downloaded", name));
@@ -1567,19 +1755,25 @@ pub async fn handle_vm_iso_delete(
         Some(n) => n,
         None => return ResponseHelper::json_error("Invalid ISO name.".to_string()),
     };
-    let dest = match ensure_iso_dir() {
+    let dest = match blocking_io(ensure_iso_dir).await {
         Ok(d) => d.join(&name),
         Err(e) => return ResponseHelper::json_error(e),
     };
-    if !dest.is_file() {
-        return ResponseHelper::json_error("That ISO is not in the store.".to_string());
-    }
-    match std::fs::remove_file(&dest) {
+    // `is_file` + `remove_file` in one blocking unit.
+    let target = dest.clone();
+    match blocking_io(move || {
+        if !target.is_file() {
+            return Err("That ISO is not in the store.".to_string());
+        }
+        std::fs::remove_file(&target).map_err(|e| format!("Could not delete it: {e}"))
+    })
+    .await
+    {
         Ok(()) => {
             crate::events::log_event(format!("VM ISO '{}' deleted by {}", name, admin));
             ResponseHelper::json_success(format!("Deleted \"{}\".", name))
         }
-        Err(e) => ResponseHelper::json_error(format!("Could not delete it: {e}")),
+        Err(e) => ResponseHelper::json_error(e),
     }
 }
 
@@ -2045,6 +2239,10 @@ fn incus_err(e: IncusError) -> Response {
         IncusError::InstanceNotFound(n) => {
             ResponseHelper::json_error(format!("The machine \"{}\" no longer exists.", n))
         }
+        IncusError::Timeout(secs) => ResponseHelper::json_error(format!(
+            "Incus did not answer within {} seconds. Check that the Incus service is running, then try again.",
+            secs
+        )),
         other => ResponseHelper::json_error(other.to_string()),
     }
 }
@@ -2232,10 +2430,122 @@ mod tests {
         let _ = std::fs::remove_file(&big);
     }
 
-    #[test]
-    fn test_alloc_vnc_display_in_range() {
-        let d = alloc_vnc_display().expect("a free display on a test box");
+    #[tokio::test]
+    async fn test_alloc_vnc_display_in_range() {
+        let d = alloc_vnc_display().await.expect("a free display on a test box");
         assert!((VNC_DISPLAY_MIN..=VNC_DISPLAY_MAX).contains(&d));
+        release_vnc_display(d);
+    }
+
+    /// ROADMAP 19.2: the slot is claimed *before* it is probed, so two creates
+    /// that run at the same time can never walk away with the same number.
+    #[tokio::test]
+    async fn test_alloc_vnc_display_never_hands_out_the_same_slot_twice() {
+        let (a, b, c) = tokio::join!(
+            alloc_vnc_display(),
+            alloc_vnc_display(),
+            alloc_vnc_display()
+        );
+        let mut picked = vec![
+            a.expect("a free display"),
+            b.expect("a free display"),
+            c.expect("a free display"),
+        ];
+        let count = picked.len();
+        picked.sort_unstable();
+        picked.dedup();
+        assert_eq!(picked.len(), count, "two creates got the same display");
+        for d in picked {
+            release_vnc_display(d);
+        }
+    }
+
+    /// The reservation has to cover a whole create, not a fixed minute: an
+    /// image pull plus first boot outlives the old 60 s window, and the next
+    /// create then picked the port of a machine that was still building.
+    #[test]
+    fn test_vnc_reservation_covers_a_whole_create() {
+        assert!(VNC_RESERVATION_TTL >= Duration::from_secs(CREATE_WAIT_SECS));
+        assert!(VNC_RESERVATION_TTL > Duration::from_secs(60));
+    }
+
+    /// A port something already listens on must read as taken, and a released
+    /// one as free. Probed from the top of the range so a concurrent test that
+    /// allocates from the bottom cannot interfere.
+    #[tokio::test]
+    async fn test_display_is_free_sees_a_bound_port() {
+        let mut held = None;
+        for d in (VNC_DISPLAY_MIN..=VNC_DISPLAY_MAX).rev() {
+            if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", 5900 + d)) {
+                held = Some((d, listener));
+                break;
+            }
+        }
+        let Some((display, listener)) = held else {
+            return;
+        };
+        assert!(
+            !display_is_free(display).await,
+            "a bound port must read as taken"
+        );
+        drop(listener);
+        assert!(
+            display_is_free(display).await,
+            "a released port must read as free"
+        );
+    }
+
+    /// `blocking_io` must run the closure and pass its plain-language error
+    /// through untouched (the handlers show that string to the user).
+    #[tokio::test]
+    async fn test_blocking_io_passes_values_and_messages_through() {
+        assert_eq!(blocking_io(|| Ok(7u8)).await, Ok(7));
+        assert_eq!(
+            blocking_io(|| Err::<u8, String>("no such folder".to_string())).await,
+            Err("no such folder".to_string())
+        );
+    }
+
+    /// The ISO store lists only `.iso` files, flags the VirtIO one, and reports
+    /// a size — the whole thing runs in one blocking unit.
+    #[test]
+    fn test_read_iso_entries_lists_only_isos() {
+        let dir = std::env::temp_dir().join("hv-vmtest-iso-list");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ubuntu.iso"), vec![0u8; 32]).unwrap();
+        std::fs::write(dir.join("virtio-win.iso"), vec![0u8; 8]).unwrap();
+        std::fs::write(dir.join("notes.txt"), b"nope").unwrap();
+
+        let list = read_iso_entries(&dir);
+        let names: Vec<&str> = list.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["ubuntu.iso", "virtio-win.iso"]);
+        assert!(list[0].size == 32);
+        assert!(!list[0].virtio);
+        assert!(list[1].virtio);
+        assert!(list[0].path.ends_with("ubuntu.iso"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The 10 MB floor is enforced *and* the rejected body is removed, so a
+    /// "download" that returned an HTML error page does not sit in the store.
+    #[test]
+    fn test_finalise_iso_rejects_and_removes_a_too_small_file() {
+        let dir = std::env::temp_dir().join("hv-vmtest-finalise");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let small = dir.join("small.iso");
+        std::fs::write(&small, b"<html>not found</html>").unwrap();
+        let err = finalise_iso(&small).unwrap_err();
+        assert!(err.contains("did not return a valid ISO"));
+        assert!(!small.exists(), "the rejected body must be removed");
+
+        let big = dir.join("big.iso");
+        std::fs::write(&big, vec![0u8; 12_000_000]).unwrap();
+        assert!(finalise_iso(&big).is_ok());
+        assert!(big.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

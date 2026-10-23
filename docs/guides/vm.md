@@ -57,8 +57,8 @@ WebSocket is a nested router built by `src/handlers/vm.rs::create_vm_router`.
 | `vm/create` | POST | `CreateVmRequest` → `{ name, status:"creating" }`; the image pull + first boot run as a tracked `vm_create` job |
 | `vm/{name}` | GET | `VmDetail` (adds `login_user`, live memory/disk use, snapshots) |
 | `vm/{name}` | DELETE | stops the machine first if it is running, then deletes |
-| `vm/{name}/start` | PUT | waits for the operation (up to 40 s) |
-| `vm/{name}/stop` | PUT | graceful, then a forced retry if the guest ignores it |
+| `vm/{name}/start` | PUT | waits for the operation (up to 40 s); a wait that expires answers `success:true` "still starting" + the operation id |
+| `vm/{name}/stop` | PUT | graceful, then a forced retry if the guest ignores it (a wait that expired counts as "ignored") |
 | `vm/{name}/restart` | PUT | graceful, forced retry fallback |
 | `vm/{name}/config` | PUT | `{ cpu_cores?, memory_mb? }` — merged with `PATCH`, needs a reboot |
 | `vm/{name}/snapshots` | GET/POST | list / create (`{ name, stateful? }`) |
@@ -116,6 +116,33 @@ half-built instance so the name frees up. Every other lifecycle call
 operation (`IncusService::wait_for_operation`, `GET /1.0/operations/{id}/wait`)
 so the UI never reports a state that has not actually happened.
 
+### Timeouts, and what "still running" means
+
+Two different ceilings, on purpose:
+
+| Call | Ceiling | Why |
+|------|---------|-----|
+| Any ordinary request (list, get, create, patch, snapshot…) | `DEFAULT_TIMEOUT` = **45 s** | a wedged daemon must never hang a handler (the machine list used to freeze forever) |
+| `GET <op>/wait?timeout=N` | `wait_budget(N)` = **N + 10 s** | Incus holds the request open for the whole operation, so our ceiling has to sit *above* Incus' own — a 900 s create wait (`CREATE_WAIT_SECS`) is never cut at 45 s |
+
+`wait_for_operation` returns a `WaitOutcome`, not a bare `Result<()>`:
+
+* `WaitOutcome::Completed` — Incus reports success (`status_code` 200/106, or a
+  **synchronous** reply, which carries no operation status at all);
+* `WaitOutcome::StillRunning { operation_id }` — our deadline expired (or
+  Incus answered "Running"). **This is not a failure.** The instance keeps
+  being built, so nothing is deleted and nothing is retried: the handler
+  answers `{success:true}` with a plain sentence naming the operation id
+  ("… is still starting — Incus is taking longer than usual (operation …)").
+  The `vm_create` job completes with the same wording instead of failing, and
+  — crucially — the TPM self-heal below does **not** fire, because that would
+  delete a machine that is still being created;
+* `Err(IncusError::Operation(reason))` — a real failure, carrying Incus' own
+  reason (`metadata.err`, a `107`, a cancelled operation).
+
+A timed-out *ordinary* call is `IncusError::Timeout(secs)` and is reported as
+"Incus did not answer within N seconds" — never as an operation failure.
+
 ## ISO install (Linux / Windows)
 
 Picked in the wizard's second mode. The `.iso` is either browsed to on disk or
@@ -129,8 +156,12 @@ with:
 
 * `raw.qemu = "-vnc 127.0.0.1:5900+N,share=force-shared"` and
   `user.homevault-vnc = N` — a loopback-only VNC server. `alloc_vnc_display()`
-  probes `20..=119` for a free port **and** keeps a 60 s reservation so two
-  simultaneous creates don't collide.
+  probes `20..=119` for a free port and **claims the slot before probing it**
+  (both under one lock, so two concurrent creates can never pick the same
+  number); a claim is held for a whole create (`VNC_RESERVATION_TTL` =
+  `CREATE_WAIT_SECS` + 60 s) and handed back by the create job once the machine
+  is up or has failed. The bind probe itself runs on the blocking pool, not on
+  the request's task;
 * `install-media` disk device = the ISO, `boot.priority = 10`;
 * an empty `root` disk from the `default` pool;
 * **Windows** (`iso_os = windows`): `io.bus = nvme` on the root disk (Setup
@@ -180,8 +211,9 @@ always passes `-spice` to qemu, so without that package **no VM boots at all**
 
 If the stored VNC port turns out to be taken when a *stopped* screen VM is
 started, `lifecycle()` moves it to a free display first (`raw.qemu` +
-`user.homevault-vnc` rewritten). Every Incus HTTP call has a 45 s timeout
-(`request_json`) so a stuck daemon can't hang the machine list.
+`user.homevault-vnc` rewritten) — the probe is `display_is_free()`, on the
+blocking pool. See *Timeouts, and what "still running" means* above for the
+per-call ceilings.
 
 ## Console
 
@@ -256,9 +288,24 @@ protocol as the Terminal app).
   always passes `-spice`; without it **no VM boots**). `raw.qemu -vnc` and
   Incus's `-spice` coexist on the same qemu process — do not remove the
   `-vnc`.
-- `wait_for_operation` maps a non-200 operation to `IncusError::Operation`
-  carrying `metadata.err` — the lifecycle handlers surface that, they must not
-  report success on a failed operation.
+- `wait_for_operation` returns `WaitOutcome`: `Completed`, `StillRunning`, or
+  `Err(IncusError::Operation)` carrying `metadata.err`. A **timed-out wait is
+  `StillRunning`, never an error** — do not "fix" it back into a failure: the
+  instance is still being built, and the old behaviour (a false failure at
+  45 s) orphaned the instance and duplicated it on retry. A **synchronous**
+  reply has no operation status and classifies as `Completed`; reading its
+  missing `status_code` as `0` reported successful creates as failed.
+- Never wrap a `/wait` in `DEFAULT_TIMEOUT` — use `wait_budget(timeout_secs)`
+  (Incus' own `?timeout=` plus `WAIT_GRACE_SECS`). The ceiling must sit above
+  Incus', or the transport fires first and a slow-but-fine operation looks
+  like a dead daemon.
+- `operation_id` answers `""` **only** for a `"type":"sync"` reply (nothing to
+  follow). An async reply with no `operation` field is an error, not "already
+  done".
+- Nothing blocking runs on a handler's task: `std::fs` (ISO store, `chmod`
+  walks, `validate_local_iso`, the OVMF/swtpm probes) and
+  `TcpListener::bind` all go through `blocking_io()` (`spawn_blocking`), the
+  `mdns.rs` / `transfer_quota.rs` shape.
 - `list_instances` uses `recursion=2` so status, IPv4 and snapshot counts come
   in one round-trip — do not drop back to `recursion=1` (the list would lose
   the IP and the running/stopped truth).
@@ -273,7 +320,9 @@ protocol as the Terminal app).
   the `{name}` param. Verified at boot.
 - `alloc_vnc_display` bakes a fixed display into `raw.qemu` at create time; a
   restart re-binds the same port. Rare port clashes surface as a start error,
-  not silent breakage.
+  not silent breakage. The slot is **claimed before it is probed** (one lock)
+  and the claim outlives a whole create — a fixed 60 s reservation let a
+  second create take the port of a machine that was still building.
 
 ## Frontend
 

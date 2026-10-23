@@ -693,3 +693,101 @@ test.describe('14 — Memory', () => {
     if (before > 0 && after > 0) expect(after - before).toBeLessThan(12);
   });
 });
+
+// ===========================================================================
+// 15 — Long Incus operations (ROADMAP 19.1)
+// ===========================================================================
+/**
+ * A `/wait` that expires is **not** a failure any more: the handler answers
+ * `{success:true, data:"… is still starting … (operation <id>)"}` so the screen
+ * shows a reassuring sentence with the operation id. Before the fix every wait
+ * was cut at 45 s and answered `{success:false, error:"Incus did not respond in
+ * time"}` while the daemon kept working — the person retried and got a
+ * duplicate.
+ *
+ * These run against stubbed endpoints, so they need no Incus at all.
+ */
+test.describe('15 — Long Incus operations', () => {
+  const STOPPED_VM = {
+    name: 'web', kind: 'vm', status: 'stopped', running: false,
+    cpu_cores: 2, memory_mb: 2048, disk_gb: 25, ipv4: null,
+    os: 'Ubuntu 24.04 LTS', created_at: '', snapshot_count: 0, has_screen: false,
+  };
+  const envelope = (body: unknown) =>
+    JSON.stringify({ success: true, data: body, message: null });
+
+  /** Pretend Incus is up and holds exactly one stopped machine. */
+  async function stubOneMachine(page: Page) {
+    await page.route('**/api/vm/available', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: envelope({ available: true }),
+      }),
+    );
+    await page.route('**/api/vm/os-options', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: envelope([]) }),
+    );
+    await page.route('**/api/vm/list*', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: envelope([STOPPED_VM]),
+      }),
+    );
+  }
+
+  test('15.1 — a wait Incus has not finished reads as "still starting", not a failure', async ({
+    page,
+  }) => {
+    await stubOneMachine(page);
+    const stillStarting =
+      '"web" is still starting — Incus is taking longer than usual ' +
+      '(operation /1.0/operations/abc-123). Check the machine in a moment.';
+    await page.route('**/api/vm/web/start', (route) =>
+      route.request().method() === 'PUT'
+        ? route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: envelope(stillStarting),
+          })
+        : route.continue(),
+    );
+    try {
+      await gotoVm(page, adminTokens);
+      await win(page).locator('[data-testid="vm-btn-primary"]').click();
+      // The success banner carries the server's own sentence, operation id
+      // included — it must not be swallowed into "action failed".
+      await expect(win(page).getByText(/still starting/)).toBeVisible({ timeout: 8_000 });
+      await expect(win(page).getByText(/operations\/abc-123/)).toBeVisible();
+    } finally {
+      await page.unroute('**/api/vm/web/start');
+    }
+  });
+
+  test('15.2 — a genuinely refused action still shows the server reason', async ({ page }) => {
+    await stubOneMachine(page);
+    await page.route('**/api/vm/web/start', (route) =>
+      route.request().method() === 'PUT'
+        ? route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              success: false,
+              data: null,
+              message: 'The machine "web" could not be started.',
+            }),
+          })
+        : route.continue(),
+    );
+    try {
+      await gotoVm(page, adminTokens);
+      await win(page).locator('[data-testid="vm-btn-primary"]').click();
+      await expect(win(page).getByText(/could not be started/)).toBeVisible({
+        timeout: 8_000,
+      });
+    } finally {
+      await page.unroute('**/api/vm/web/start');
+    }
+  });
+});
