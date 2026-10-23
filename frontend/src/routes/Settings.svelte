@@ -180,23 +180,42 @@
     { value: 'de', label: 'Deutsch' }
   ];
 
-  // Timezones
-  const timezones = [
-    { value: 'UTC', label: 'UTC' },
-    { value: 'America/New_York', label: 'Eastern Time (New York)' },
-    { value: 'America/Chicago', label: 'Central Time (Chicago)' },
-    { value: 'America/Denver', label: 'Mountain Time (Denver)' },
-    { value: 'America/Los_Angeles', label: 'Pacific Time (Los Angeles)' },
-    { value: 'America/Toronto', label: 'Eastern Time (Toronto)' },
-    { value: 'Europe/London', label: 'London' },
-    { value: 'Europe/Paris', label: 'Paris' },
-    { value: 'Europe/Berlin', label: 'Berlin' },
-    { value: 'Europe/Madrid', label: 'Madrid' },
-    { value: 'Asia/Tokyo', label: 'Tokyo' },
-    { value: 'Asia/Shanghai', label: 'Shanghai' },
-    { value: 'Asia/Singapore', label: 'Singapore' },
-    { value: 'Australia/Sydney', label: 'Sydney' }
-  ];
+  // Timezones — every zone the server can evaluate, grouped by region for
+  // the picker. The screen used to hardcode 14 zones, so an admin in Lisbon
+  // or Casablanca could not pick their zone even though the backend accepted
+  // it (`GET /settings/timezones`).
+  let timezoneGroups: { region: string; zones: string[] }[] = [];
+
+  function groupTimezones(names: string[]): { region: string; zones: string[] }[] {
+    const groups = new Map<string, string[]>();
+    for (const name of names) {
+      const slash = name.indexOf('/');
+      // `UTC` carries no region: it renders as a plain first option.
+      if (slash === -1) continue;
+      const region = name.slice(0, slash);
+      const zones = groups.get(region);
+      if (zones) zones.push(name);
+      else groups.set(region, [name]);
+    }
+    return [...groups.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([region, zones]) => ({ region, zones }));
+  }
+
+  async function loadTimezones() {
+    const res = await api.getTimezones();
+    const names = res.data?.timezones;
+    if (res.success && Array.isArray(names) && names.length) {
+      timezoneGroups = groupTimezones(names);
+    }
+  }
+
+  /** The current value is always selectable, even when the list failed to
+   *  load or holds a legacy alias (`CET`) the picker does not offer — the
+   *  field must never silently show (and then save) a different zone. */
+  function timezoneIsListed(value: string): boolean {
+    return value === 'UTC' || timezoneGroups.some((g) => g.zones.includes(value));
+  }
 
   // AI / Ollama
   let aiModels: { name: string; modified_at: string; size: number }[] = [];
@@ -341,7 +360,8 @@
       loadAutostart(),
       loadNotificationEvents(),
       loadPower(),
-      loadDbBackup()
+      loadDbBackup(),
+      loadTimezones()
     ]);
     // After a save flushes the AI group, keep the display model in step.
     onGroupSaved('ai', () => {
@@ -979,9 +999,25 @@
           </div>
           <div class={settingsRow}>
             <label class={settingsRowLabel} for="timezone">{$t('settings.timezone')}</label>
-            <select id="timezone" class={cn(settingsSelect, 'max-w-[280px]')} bind:value={draft.general.timezone}>
-              {#each timezones as tz}<option value={tz.value}>{tz.label}</option>{/each}
-            </select>
+            <div class="flex min-w-0 flex-col gap-1 @min-[480px]:items-end">
+              <select
+                id="timezone"
+                class={cn(settingsSelect, 'max-w-[280px]')}
+                bind:value={draft.general.timezone}
+                aria-describedby="timezoneHint"
+              >
+                {#if !timezoneIsListed(draft.general.timezone)}
+                  <option value={draft.general.timezone}>{draft.general.timezone}</option>
+                {/if}
+                <option value="UTC">UTC</option>
+                {#each timezoneGroups as group}
+                  <optgroup label={group.region}>
+                    {#each group.zones as zone}<option value={zone}>{zone}</option>{/each}
+                  </optgroup>
+                {/each}
+              </select>
+              <p id="timezoneHint" class={cn(settingsRowHint, 'max-w-[280px]')}>{$t('settings.timezone_hint')}</p>
+            </div>
           </div>
           <div class={settingsRow}>
             <div class="min-w-0">
