@@ -2,8 +2,8 @@
  * File          : rclone.rs
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 12/10/2026 by Nicolas Le Roux
- * Version       : 1.0.1
+ * Last modified : 23/10/2026 by Nicolas Le Roux
+ * Version       : 1.1.0
  *
  * Description:
  *   Cloud-sync endpoints backed by rclone: remote and provider listing,
@@ -13,6 +13,10 @@
  *   — and reading the raw config, which contains every remote's
  *   credentials — requires admin. The rclone binary runs locally, spawned
  *   per operation.
+ *
+ *   Every subprocess is bounded by a deadline (ROADMAP 16.1), the mounts this
+ *   process starts are tracked and unmounted at shutdown (16.2), and the
+ *   config file carries the credentials so it is written mode 0600 (16.3).
  *
  * Dependencies:
  *   - axum (>= 0.8)
@@ -36,11 +40,94 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::{Component, Path as FsPath};
 use std::process::Stdio;
-use tokio::process::Command;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::process::{Child, Command};
 
+use crate::config::paths::RCLONE_MOUNT_BASE;
 use crate::handlers::AppStateArc;
 use crate::storage::sync_job_repo::{NewSyncJob, SyncJob, SyncJobRepository};
+use crate::utils::process::run_timed_async_result;
+
+// ---------------------------------------------------------------------------
+// Deadlines (ROADMAP 16.1)
+// ---------------------------------------------------------------------------
+
+/// One-shot rclone probe: `rclone version`, `rclone listremotes`,
+/// `fusermount -V`. rclone answers these before it touches the network.
+pub const RCLONE_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long `fusermount -u` / `umount -f` may take. A wedged FUSE server is
+/// exactly the case this deadline exists for: waiting forever is what left the
+/// handler task (and the mount) alive.
+pub const RCLONE_UMOUNT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a started mount is given to appear in the kernel's mount table.
+/// rclone authenticates with the remote first, so this is not instant on a
+/// slow provider — but it is a start, not a transfer.
+pub const RCLONE_MOUNT_READY_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Ceiling on one `rclone sync` / `rclone copy`.
+///
+/// Deliberately generous: a first sync of a large library legitimately takes
+/// hours, and a shorter ceiling would turn a working transfer into a failure.
+/// It exists so a stalled remote can no longer hold the HTTP request and the
+/// activity job open *forever* — see `docs/guides/cloud-sync.md` for the
+/// trade-off and for the "Run now" path that shares it.
+pub const RCLONE_TRANSFER_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// Poll interval while waiting for a mount to become active.
+const MOUNT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Mode every write of the config — and of its `.backup.*` sibling — is
+/// pinned to. The file holds every remote's credentials (rclone only
+/// "obscures" them), so it must never be group- or world-readable.
+pub const CONFIG_FILE_MODE: u32 = 0o600;
+
+/// Longest accepted remote name. rclone section names are short in practice;
+/// the bound keeps one config section from being absurd.
+const MAX_REMOTE_NAME_LEN: usize = 64;
+
+/// Longest accepted provider type (`type = …` in the config file).
+const MAX_PROVIDER_LEN: usize = 32;
+
+/// Longest accepted mount point.
+const MAX_MOUNT_POINT_LEN: usize = 200;
+
+/// Longest accepted sub-path inside a remote.
+const MAX_REMOTE_PATH_LEN: usize = 200;
+
+/// How much of rclone's stderr is kept for the "the mount did not start"
+/// message. The tail only — the beginning of a mount log is always the same
+/// preamble.
+const STDERR_TAIL_BYTES: usize = 4096;
+
+// ---------------------------------------------------------------------------
+// Mount registry (ROADMAP 16.2 / 16.3)
+// ---------------------------------------------------------------------------
+
+/// One mount this process started and therefore owns.
+///
+/// `handle_mount_start` used to call `spawn()` and drop the handle, so nothing
+/// could report a failure after the fact, nothing could unmount it on
+/// shutdown, and a second "Start mount" click stacked a second rclone on the
+/// same directory. The registry is process-wide for the same reason the
+/// downloader's state is: one process owns the mounts it started.
+pub struct MountedRemote {
+    pub child: Child,
+    pub remote: String,
+    pub mount_point: String,
+    /// Last bytes rclone wrote on stderr, quoted in a startup failure.
+    pub log_tail: Arc<Mutex<String>>,
+}
+
+/// Every mount this process owns, keyed by mount point.
+static MOUNTS: LazyLock<tokio::sync::Mutex<HashMap<String, MountedRemote>>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(HashMap::new()));
 
 /// Response wrapper for API responses
 #[derive(Serialize)]
@@ -104,158 +191,221 @@ async fn check_admin(state: &AppStateArc, headers: &HeaderMap) -> Result<String,
     }
 }
 
-/// Remote information from configured remotes
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Remote {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub remote_type: String,
-}
+// ---------------------------------------------------------------------------
+// Input validation (ROADMAP 16.3)
+//
+// Every value below reaches an `rclone` argv or the INI file the credentials
+// live in. They are pure functions so the matrices are unit-testable without
+// a process, a file or a network.
+// ---------------------------------------------------------------------------
 
-/// Provider tier information
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Provider {
-    pub name: String,
-    pub description: String,
-    pub tier: String,
-}
-
-/// Mount information
-#[derive(Serialize, Debug, Clone)]
-pub struct Mount {
-    pub remote: String,
-    pub mount_point: String,
-    pub path: Option<String>,
-    pub is_active: bool,
-    pub pid: Option<u32>,
-}
-
-/// Request for sync operation
-#[derive(Deserialize)]
-pub struct SyncRequest {
-    pub source_type: Option<String>, // "cloud" or "local"
-    pub source: String,
-    pub source_path: Option<String>,
-    pub dest_type: Option<String>, // "cloud" or "local"
-    pub destination: String,
-    pub dest_path: Option<String>,
-    pub delete: bool,
-    pub dry_run: bool,
-    pub update: bool,
-    pub exclude: Option<String>,
-}
-
-/// Request for copy operation
-#[derive(Deserialize)]
-pub struct CopyRequest {
-    pub source_type: Option<String>, // "cloud" or "local"
-    pub source: String,
-    pub source_path: Option<String>,
-    pub dest_type: Option<String>, // "cloud" or "local"
-    pub destination: String,
-    pub dest_path: Option<String>,
-    pub delete: bool,
-    pub dry_run: bool,
-    pub interactive: bool,
-}
-
-/// Request for mount operation. `read_only`/`allow_other`/`daemon` default
-/// to `false` when omitted — a real bug found during release verification
-/// had these as required fields with no default, but the frontend
-/// (`api.startMount()`) only ever sends `{ remote, mount_point, path }`, so
-/// every real mount request failed JSON deserialization before the handler
-/// even ran. `daemon` is kept for API compatibility but no longer changes
-/// behavior — see `handle_mount_start`.
-#[derive(Deserialize)]
-pub struct MountRequest {
-    pub remote: String,
-    pub mount_point: String,
-    pub path: Option<String>,
-    #[serde(default)]
-    pub read_only: bool,
-    #[serde(default)]
-    pub allow_other: bool,
-    #[serde(default)]
-    pub daemon: bool,
-}
-
-/// Build a source or destination path for rclone
-/// For cloud: "remote:path" or "remote:"
-/// For local: "/path" or "/path/subpath"
-fn build_rclone_path(path_type: &str, remote: &str, sub_path: &Option<String>) -> String {
-    let clean_subpath = sub_path
-        .as_ref()
-        .map(|p| p.trim_start_matches('/'))
-        .unwrap_or("");
-
-    if path_type == "local" {
-        // Local path: /path or /path/subpath
-        if clean_subpath.is_empty() {
-            remote.to_string()
-        } else {
-            format!("{}/{}", remote.trim_end_matches('/'), clean_subpath)
-        }
-    } else {
-        // Cloud path: remote:path or remote:
-        if clean_subpath.is_empty() {
-            format!("{}:", remote)
-        } else {
-            format!("{}:{}", remote, clean_subpath)
-        }
-    }
-}
-
-/// Canonical config location when nothing else exists — also what a fresh
-/// install writes.
-const DEFAULT_RCLONE_CONFIG: &str = "/etc/rclone.conf";
-
-/// The locations rclone itself falls back to, in order, when `RCLONE_CONFIG`
-/// is not set.
-fn rclone_config_fallback_paths() -> Vec<std::path::PathBuf> {
-    let mut paths = vec![std::path::PathBuf::from(DEFAULT_RCLONE_CONFIG)];
-    paths.push(std::path::PathBuf::from("/root/.config/rclone/rclone.conf"));
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
-            paths.push(std::path::PathBuf::from(home).join(".config/rclone/rclone.conf"));
-        }
-    }
-    paths
-}
-
-/// The **one** config file this module reads *and* writes.
+/// Validate a remote name — an rclone config *section* name.
 ///
-/// Every handler used to hardcode `/etc/rclone.conf` while
-/// [`parse_rclone_config`] honoured the `RCLONE_CONFIG` override — so the
-/// Settings editor could read and write a different file from the one the
-/// remote list was parsed from, and an admin who moved the config (the
-/// supported way to run a second, non-root rclone) saw an empty list next to
-/// editor contents that did not match it. Both sides now resolve through this
-/// single function, so they cannot drift apart again.
-///
-/// Order: an explicit non-empty `RCLONE_CONFIG` wins outright — existing or
-/// not, since that is how a fresh config gets created outside `/etc` — then
-/// the first of rclone's fallback locations that exists, then
-/// [`DEFAULT_RCLONE_CONFIG`].
-fn rclone_config_path() -> std::path::PathBuf {
-    if let Ok(overridden) = std::env::var("RCLONE_CONFIG") {
-        if !overridden.is_empty() {
-            return std::path::PathBuf::from(overridden);
-        }
+/// Rejects `:` (rclone's own `remote:path` separator), `[`/`]` (the section
+/// delimiters, i.e. INI injection), `/` and `\` (a name is not a path), any
+/// control character, whitespace (a name is never quoted, so a space would
+/// silently truncate it in a hand-edited section) and a leading `-` (which an
+/// argv parser could read as a flag).
+pub fn validate_remote_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err("Remote name is required".to_string());
     }
-
-    rclone_config_fallback_paths()
-        .into_iter()
-        .find(|path| path.exists())
-        .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_RCLONE_CONFIG))
+    if name.len() > MAX_REMOTE_NAME_LEN {
+        return Err(format!(
+            "Remote name is longer than {} characters",
+            MAX_REMOTE_NAME_LEN
+        ));
+    }
+    if name.starts_with('-') {
+        return Err("Remote name must not start with '-'".to_string());
+    }
+    let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@' | '+');
+    if !name.chars().all(allowed) {
+        return Err(
+            "Remote name contains invalid characters (letters, digits, '-', '_', '.', '@' and '+' only)"
+                .to_string(),
+        );
+    }
+    Ok(name.to_string())
 }
 
-/// Parse rclone config file to get remotes with their types
-fn parse_rclone_config() -> Option<Vec<Remote>> {
-    // One resolver, shared with every handler that writes the file (see
-    // `rclone_config_path`). Previously this looped over the candidates on its
-    // own, which is exactly how it ended up disagreeing with them.
-    let content = std::fs::read_to_string(rclone_config_path()).ok()?;
+/// Validate a provider type — the value written as `type = …` in the config.
+///
+/// rclone type names are lower-case slugs (`drive`, `s3`, `webdav`, …). The
+/// field is free text from the API, so an unvalidated value containing a
+/// newline would append attacker-chosen lines to the INI section — the same
+/// class of defect as the `[section]` injection guard on the `config` field.
+pub fn validate_provider_slug(raw: &str) -> Result<String, String> {
+    let provider = raw.trim().to_ascii_lowercase();
+    if provider.is_empty() {
+        return Err("Provider type is required".to_string());
+    }
+    if provider.len() > MAX_PROVIDER_LEN {
+        return Err(format!(
+            "Provider type is longer than {} characters",
+            MAX_PROVIDER_LEN
+        ));
+    }
+    let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_');
+    if !provider.chars().all(allowed) {
+        return Err(
+            "Provider type contains invalid characters (letters, digits, '-' and '_' only)"
+                .to_string(),
+        );
+    }
+    Ok(provider)
+}
 
+/// Validate a mount point and return it normalised.
+///
+/// A mount point is turned into an `rclone mount` argv entry and a
+/// `fusermount -u` target, so it must be an absolute path **strictly inside**
+/// [`RCLONE_MOUNT_BASE`], with no `.`/`..` component, no control character and
+/// no leading `-` on any component. The server — not the browser — is the
+/// authority here: `CloudSync.svelte` used to build `/mnt/rclone/<name>`
+/// itself, and any admin-gated client could post anything.
+pub fn validate_mount_point(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("Mount point is required".to_string());
+    }
+    if trimmed.len() > MAX_MOUNT_POINT_LEN {
+        return Err(format!(
+            "Mount point is longer than {} characters",
+            MAX_MOUNT_POINT_LEN
+        ));
+    }
+    if trimmed.chars().any(|c| c.is_control()) {
+        return Err("Mount point contains control characters".to_string());
+    }
+    if !trimmed.starts_with('/') {
+        return Err(format!(
+            "Mount point must be an absolute path under {}",
+            RCLONE_MOUNT_BASE
+        ));
+    }
+    let path = FsPath::new(trimmed);
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
+    {
+        return Err("Mount point must not contain '.' or '..'".to_string());
+    }
+
+    let base = FsPath::new(RCLONE_MOUNT_BASE);
+    let relative = path.strip_prefix(base).map_err(|_| {
+        format!(
+            "Mount point must live under {} (one folder per remote)",
+            RCLONE_MOUNT_BASE
+        )
+    })?;
+    if relative.as_os_str().is_empty() {
+        return Err(format!(
+            "Mount point must be a sub-folder of {}, not the shared root",
+            RCLONE_MOUNT_BASE
+        ));
+    }
+    if relative.components().any(|component| match component {
+        Component::Normal(name) => name.to_string_lossy().starts_with('-'),
+        _ => false,
+    }) {
+        return Err("Mount point folder must not start with '-'".to_string());
+    }
+
+    Ok(base.join(relative).to_string_lossy().into_owned())
+}
+
+/// Validate the optional sub-path inside a remote (`remote:sub/path`).
+///
+/// rclone's own paths are relative to the remote root, so an absolute path
+/// (`/etc`) or a `..` component is meaningless at best. A backslash is
+/// refused because it is a path separator on the provider side and a client
+/// sending one is describing something else than it thinks.
+pub fn validate_remote_subpath(raw: &Option<String>) -> Result<Option<String>, String> {
+    let Some(value) = raw else {
+        return Ok(None);
+    };
+    let trimmed = value.trim().trim_matches('/');
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.len() > MAX_REMOTE_PATH_LEN {
+        return Err(format!(
+            "Remote path is longer than {} characters",
+            MAX_REMOTE_PATH_LEN
+        ));
+    }
+    if value.trim().starts_with('/') {
+        return Err("Remote path must be relative to the remote root".to_string());
+    }
+    if trimmed.contains('\\') || trimmed.chars().any(|c| c.is_control()) {
+        return Err("Remote path contains invalid characters".to_string());
+    }
+    if trimmed
+        .split('/')
+        .any(|segment| segment == ".." || segment == ".")
+    {
+        return Err("Remote path must not contain '.' or '..'".to_string());
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+/// `true` when the config holds a section named exactly `name`.
+///
+/// The previous check was `content.contains("[name]")`, which matched
+/// `[my]` inside `[mydrive]` — so adding `my` was refused as a duplicate, and
+/// deleting `my` could delete `mydrive`.
+pub fn config_has_section(content: &str, name: &str) -> bool {
+    let header = format!("[{}]", name);
+    content.lines().any(|line| line.trim() == header)
+}
+
+/// Remove the `[name]` section from an INI-style config, keeping every other
+/// byte.
+///
+/// The previous implementation searched for the first `[` after the header,
+/// which both matched a *prefix* (`[my]` → `[mydrive]`) and could cut a
+/// section in half when a value contained a `[`. Here the header is matched
+/// on a whole trimmed line and the section ends at the next line that starts
+/// with `[` — a comment (`# [x]`) or a bracketed value (`patterns = [a-z]`)
+/// does not end it.
+pub fn remove_section(content: &str, name: &str) -> Result<String, String> {
+    let header = format!("[{}]", name);
+    let lines: Vec<&str> = content.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| line.trim() == header)
+        .ok_or_else(|| format!("Remote '{}' not found", name))?;
+    let end = lines[start + 1..]
+        .iter()
+        .position(|line| line.trim_start().starts_with('['))
+        .map(|offset| start + 1 + offset)
+        .unwrap_or(lines.len());
+
+    let mut kept: Vec<&str> = Vec::with_capacity(lines.len());
+    kept.extend_from_slice(&lines[..start]);
+    kept.extend_from_slice(&lines[end..]);
+
+    // Collapse the blank line the removal may leave at the seam, then keep a
+    // single trailing newline (rclone and every INI reader accept it).
+    while kept.first() == Some(&"") {
+        kept.remove(0);
+    }
+    while kept.last() == Some(&"") {
+        kept.pop();
+    }
+    if kept.is_empty() {
+        return Ok(String::new());
+    }
+    Ok(format!("{}\n", kept.join("\n")))
+}
+
+/// Parse the text of an rclone config into its remotes (pure).
+///
+/// Sections without a `type` are skipped: rclone itself ignores them, and the
+/// screen cannot offer a remote it does not know how to describe.
+pub fn parse_rclone_config_text(content: &str) -> Option<Vec<Remote>> {
     let mut remotes = Vec::new();
     let mut current_section = String::new();
     let mut current_type = String::new();
@@ -309,6 +459,461 @@ fn parse_rclone_config() -> Option<Vec<Remote>> {
 
     remotes.sort_by(|a, b| a.name.cmp(&b.name));
     Some(remotes)
+}
+
+/// Read and parse the config off the async runtime (ROADMAP 16.1's sibling:
+/// the blocking `std::fs` call left the handler's async body).
+async fn load_remotes() -> Option<Vec<Remote>> {
+    let path = rclone_config_path();
+    tokio::task::spawn_blocking(move || {
+        let content = read_rclone_config(&path)?;
+        parse_rclone_config_text(&content)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// Write the config (or one of its backups) with mode 0600.
+///
+/// `OpenOptions::mode` only applies on creation, so the mode is pinned again
+/// afterwards — that is what repairs a file an older build left at 0644.
+async fn write_private_config(path: &FsPath, content: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
+        }
+    }
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(CONFIG_FILE_MODE)
+        .open(path)
+        .await
+        .map_err(|e| format!("Failed to save config: {}", e))?;
+    file.write_all(content.as_bytes())
+        .await
+        .map_err(|e| format!("Failed to save config: {}", e))?;
+    file.flush()
+        .await
+        .map_err(|e| format!("Failed to save config: {}", e))?;
+
+    let mut permissions = tokio::fs::metadata(path)
+        .await
+        .map_err(|e| format!("Failed to read config metadata: {}", e))?
+        .permissions();
+    permissions.set_mode(CONFIG_FILE_MODE);
+    tokio::fs::set_permissions(path, permissions)
+        .await
+        .map_err(|e| format!("Failed to restrict config permissions: {}", e))?;
+    Ok(())
+}
+
+/// `true` when `mount_point` appears as a mount point in `/proc/self/mounts`.
+///
+/// The kernel's own view, not the registry: a mount started before a restart
+/// is still mounted, and a registry entry is a claim about a child process,
+/// not about the filesystem. The mount point is matched as a whole field and
+/// octal escapes (`\040` for a space) are decoded, so `/mnt/rclone/vault2`
+/// can never satisfy `/mnt/rclone/vault`.
+fn parse_mounts_for(content: &str, mount_point: &str) -> bool {
+    content.lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        let _device = fields.next();
+        match fields.next() {
+            Some(field) => decode_mount_escape(field) == mount_point,
+            None => false,
+        }
+    })
+}
+
+/// Decode the `\040`-style escapes `/proc/*/mounts` uses for space, tab,
+/// newline and backslash in a path.
+fn decode_mount_escape(field: &str) -> String {
+    let mut out = String::with_capacity(field.len());
+    let mut chars = field.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        let digits: String = chars.clone().take(3).collect();
+        if digits.len() == 3 && digits.chars().all(|d| d.is_ascii_digit()) {
+            if let Ok(byte) = u8::from_str_radix(&digits, 8) {
+                out.push(byte as char);
+                for _ in 0..3 {
+                    chars.next();
+                }
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+async fn mount_is_active(mount_point: &str) -> bool {
+    match tokio::fs::read_to_string("/proc/self/mounts").await {
+        Ok(content) => parse_mounts_for(&content, mount_point),
+        Err(_) => false,
+    }
+}
+
+/// `true` while a mount this process started is still alive. A child that
+/// exited behind our back is reaped here, exactly like the downloader's
+/// `aria2_is_running`, so a dead mount is never reported as active.
+async fn mount_is_tracked(mount_point: &str) -> bool {
+    let mut mounts = MOUNTS.lock().await;
+    let Some(entry) = mounts.get_mut(mount_point) else {
+        return false;
+    };
+    match entry.child.try_wait() {
+        Ok(None) => true,
+        Ok(Some(status)) => {
+            tracing::warn!(
+                "rclone mount of '{}' at {} exited unexpectedly ({})",
+                entry.remote,
+                mount_point,
+                status
+            );
+            mounts.remove(mount_point);
+            false
+        }
+        Err(e) => {
+            tracing::warn!("could not poll the rclone mount at {}: {}", mount_point, e);
+            mounts.remove(mount_point);
+            false
+        }
+    }
+}
+
+/// Kill the child this process owns for `mount_point` and forget it.
+async fn release_mount(mount_point: &str) {
+    let entry = MOUNTS.lock().await.remove(mount_point);
+    if let Some(mut entry) = entry {
+        if let Ok(Some(_)) = entry.child.try_wait() {
+            return;
+        }
+        let _ = entry.child.kill().await;
+        let _ = entry.child.wait().await;
+    }
+}
+
+/// Unmount `mount_point`, trying `fusermount -u` first and `umount -f` after.
+///
+/// Both calls are bounded and the failure names both reasons: "fusermount is
+/// not installed" and "the server is wedged" are different problems, and the
+/// old code reported only the second one's absence.
+async fn unmount_checked(mount_point: &str) -> Result<(), String> {
+    let fusermount = run_timed_async_result(
+        Command::new("fusermount").arg("-u").arg(mount_point),
+        RCLONE_UMOUNT_TIMEOUT,
+    )
+    .await;
+    match &fusermount {
+        Ok(output) if output.status.success() => return Ok(()),
+        _ => {}
+    }
+
+    let umount = run_timed_async_result(
+        Command::new("umount").arg("-f").arg(mount_point),
+        RCLONE_UMOUNT_TIMEOUT,
+    )
+    .await;
+    match &umount {
+        Ok(output) if output.status.success() => return Ok(()),
+        _ => {}
+    }
+
+    Err(format!(
+        "Failed to unmount {}: fusermount {}; umount {}",
+        mount_point,
+        describe_attempt(&fusermount),
+        describe_attempt(&umount)
+    ))
+}
+
+/// One line describing what one unmount attempt did, for the error above.
+fn describe_attempt(
+    attempt: &Result<std::process::Output, crate::utils::process::ProcessFailure>,
+) -> String {
+    match attempt {
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let reason = stderr.trim();
+            if reason.is_empty() {
+                format!("exited with {}", output.status)
+            } else {
+                format!("refused: {}", reason)
+            }
+        }
+        Err(failure) => failure.to_string(),
+    }
+}
+
+/// Unmount every mount this process started, then kill its child.
+///
+/// Called from the shutdown hook (`src/web/mod.rs`) so a restart does not
+/// leave stale FUSE mounts and orphaned `rclone` processes behind —
+/// the state the old fire-and-forget `spawn()` guaranteed (ROADMAP 16.2).
+pub async fn shutdown_mounts() {
+    let mount_points: Vec<String> = {
+        let mounts = MOUNTS.lock().await;
+        mounts.keys().cloned().collect()
+    };
+    if mount_points.is_empty() {
+        return;
+    }
+
+    tracing::info!(
+        "Unmounting {} rclone mount(s) before shutdown",
+        mount_points.len()
+    );
+    for mount_point in mount_points {
+        if let Err(e) = unmount_checked(&mount_point).await {
+            tracing::warn!("{}", e);
+        }
+        release_mount(&mount_point).await;
+    }
+}
+
+/// Message for a mount that never appeared in the kernel's mount table.
+fn mount_failure_message(
+    mount_point: &str,
+    status: Option<std::process::ExitStatus>,
+    log_tail: &Arc<Mutex<String>>,
+) -> String {
+    let base = match status {
+        Some(status) => format!(
+            "rclone exited before {} became a mount point ({})",
+            mount_point, status
+        ),
+        None => format!(
+            "rclone did not mount {} within {} seconds",
+            mount_point,
+            RCLONE_MOUNT_READY_TIMEOUT.as_secs()
+        ),
+    };
+    let tail = log_tail
+        .lock()
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if tail.is_empty() {
+        base
+    } else {
+        format!("{}: {}", base, tail)
+    }
+}
+
+/// Poll until `mount_point` is in the kernel's mount table, the child dies, or
+/// the deadline passes. A mount that "started" but is not in
+/// `/proc/self/mounts` is a failure, which is exactly what the old
+/// `spawn()`-and-report-success path could not tell.
+async fn wait_until_mounted(
+    mount_point: &str,
+    child: &mut Child,
+    log_tail: &Arc<Mutex<String>>,
+) -> Result<(), String> {
+    let deadline = Instant::now() + RCLONE_MOUNT_READY_TIMEOUT;
+    loop {
+        if mount_is_active(mount_point).await {
+            return Ok(());
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Err(mount_failure_message(mount_point, Some(status), log_tail))
+            }
+            Ok(None) => {}
+            Err(e) => return Err(format!("Could not poll the rclone mount: {}", e)),
+        }
+        if Instant::now() >= deadline {
+            return Err(mount_failure_message(mount_point, None, log_tail));
+        }
+        tokio::time::sleep(MOUNT_POLL_INTERVAL).await;
+    }
+}
+
+/// Remote information from configured remotes
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Remote {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub remote_type: String,
+}
+
+/// Provider tier information
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Provider {
+    pub name: String,
+    pub description: String,
+    pub tier: String,
+}
+
+/// Mount information
+#[derive(Serialize, Debug, Clone)]
+pub struct Mount {
+    pub remote: String,
+    pub mount_point: String,
+    pub path: Option<String>,
+    pub is_active: bool,
+    pub pid: Option<u32>,
+}
+
+/// `GET /rclone/status` payload.
+///
+/// `mount_base` is included so the screen derives a mount point from the
+/// server's own rule instead of hardcoding `/mnt/rclone/<name>` client-side.
+#[derive(Serialize, Debug, Clone)]
+pub struct RcloneStatus {
+    pub available: bool,
+    pub fusermount: bool,
+    pub mount_base: String,
+}
+
+/// Request for sync operation
+#[derive(Deserialize)]
+pub struct SyncRequest {
+    pub source_type: Option<String>, // "cloud" or "local"
+    pub source: String,
+    pub source_path: Option<String>,
+    pub dest_type: Option<String>, // "cloud" or "local"
+    pub destination: String,
+    pub dest_path: Option<String>,
+    pub delete: bool,
+    pub dry_run: bool,
+    pub update: bool,
+    pub exclude: Option<String>,
+}
+
+/// Request for copy operation
+#[derive(Deserialize)]
+pub struct CopyRequest {
+    pub source_type: Option<String>, // "cloud" or "local"
+    pub source: String,
+    pub source_path: Option<String>,
+    pub dest_type: Option<String>, // "cloud" or "local"
+    pub destination: String,
+    pub dest_path: Option<String>,
+    pub delete: bool,
+    pub dry_run: bool,
+    pub interactive: bool,
+}
+
+/// Request for mount operation. `read_only`/`allow_other`/`daemon` default
+/// to `false` when omitted — a real bug found during release verification
+/// had these as required fields with no default, but the frontend
+/// (`api.startMount()`) only ever sends `{ remote, mount_point, path }`, so
+/// every real mount request failed JSON deserialization before the handler
+/// even ran. `daemon` is kept for API compatibility but changes nothing:
+/// this process always owns the mount child itself (no `--daemon`), which is
+/// what lets it report a startup failure and unmount on shutdown
+/// (ROADMAP 16.2/16.3).
+#[derive(Deserialize)]
+pub struct MountRequest {
+    pub remote: String,
+    pub mount_point: String,
+    pub path: Option<String>,
+    #[serde(default)]
+    pub read_only: bool,
+    #[serde(default)]
+    pub allow_other: bool,
+    #[serde(default)]
+    pub daemon: bool,
+}
+
+/// Request for unmounting. Only the mount point matters — a dedicated body
+/// because `MountRequest` requires `remote`, and `api.unmountCloudRemote()`
+/// sends `{ mount_point }` alone: every real "Stop mount" click used to be
+/// rejected by the JSON extractor (a `422`) before the handler ran.
+#[derive(Deserialize)]
+pub struct MountStopRequest {
+    pub mount_point: String,
+}
+
+/// Build a source or destination path for rclone
+/// For cloud: "remote:path" or "remote:"
+/// For local: "/path" or "/path/subpath"
+fn build_rclone_path(path_type: &str, remote: &str, sub_path: &Option<String>) -> String {
+    let clean_subpath = sub_path
+        .as_ref()
+        .map(|p| p.trim_start_matches('/'))
+        .unwrap_or("");
+
+    if path_type == "local" {
+        // Local path: /path or /path/subpath
+        if clean_subpath.is_empty() {
+            remote.to_string()
+        } else {
+            format!("{}/{}", remote.trim_end_matches('/'), clean_subpath)
+        }
+    } else {
+        // Cloud path: remote:path or remote:
+        if clean_subpath.is_empty() {
+            format!("{}:", remote)
+        } else {
+            format!("{}:{}", remote, clean_subpath)
+        }
+    }
+}
+
+/// Canonical config location when nothing else exists — also what a fresh
+/// install writes.
+const DEFAULT_RCLONE_CONFIG: &str = "/etc/rclone.conf";
+
+/// The locations rclone itself falls back to, in order, when `RCLONE_CONFIG`
+/// is not set.
+fn rclone_config_fallback_paths() -> Vec<std::path::PathBuf> {
+    let mut paths = vec![std::path::PathBuf::from(DEFAULT_RCLONE_CONFIG)];
+    paths.push(std::path::PathBuf::from("/root/.config/rclone/rclone.conf"));
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            paths.push(std::path::PathBuf::from(home).join(".config/rclone/rclone.conf"));
+        }
+    }
+    paths
+}
+
+/// The **one** config file this module reads *and* writes.
+///
+/// Every handler used to hardcode `/etc/rclone.conf` while the reader honoured
+/// the `RCLONE_CONFIG` override — so the Settings editor could read and write a
+/// different file from the one the
+/// remote list was parsed from, and an admin who moved the config (the
+/// supported way to run a second, non-root rclone) saw an empty list next to
+/// editor contents that did not match it. Both sides now resolve through this
+/// single function, so they cannot drift apart again.
+///
+/// Order: an explicit non-empty `RCLONE_CONFIG` wins outright — existing or
+/// not, since that is how a fresh config gets created outside `/etc` — then
+/// the first of rclone's fallback locations that exists, then
+/// [`DEFAULT_RCLONE_CONFIG`].
+fn rclone_config_path() -> std::path::PathBuf {
+    if let Ok(overridden) = std::env::var("RCLONE_CONFIG") {
+        if !overridden.is_empty() {
+            return std::path::PathBuf::from(overridden);
+        }
+    }
+
+    rclone_config_fallback_paths()
+        .into_iter()
+        .find(|path| path.exists())
+        .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_RCLONE_CONFIG))
+}
+
+/// Parse rclone config file to get remotes with their types
+fn read_rclone_config(path: &FsPath) -> Option<String> {
+    // One resolver, shared with every handler that writes the file (see
+    // `rclone_config_path`). Previously this looped over the candidates on its
+    // own, which is exactly how it ended up disagreeing with them.
+    //
+    // Blocking `std::fs` on purpose, and only ever reached from
+    // `spawn_blocking` (see `load_remotes`): reading a config file on the
+    // async runtime is what ROADMAP X.1 is about.
+    std::fs::read_to_string(path).ok()
 }
 
 /// Get human-readable description for provider type
@@ -406,20 +1011,30 @@ pub async fn handle_list_remotes(
         return Json(ApiResponse::error(&e));
     }
 
-    // Check if rclone is available
-    let check = Command::new("rclone").arg("version").output().await;
-
-    if check.is_err() {
-        return Json(ApiResponse::error("rclone is not installed on this system"));
+    // Check if rclone is available. Bounded: the old bare `.output()` hung
+    // here forever when `rclone` was replaced by something slow (a wrapper
+    // script waiting on a network mount), so the remotes tab never loaded and
+    // gave no reason (ROADMAP 16.1).
+    if run_timed_async_result(Command::new("rclone").arg("version"), RCLONE_PROBE_TIMEOUT)
+        .await
+        .is_err()
+    {
+        return Json(ApiResponse::error(
+            "rclone is not installed on this system (or did not answer in time)",
+        ));
     }
 
     // Try to parse config file directly for better type detection
-    if let Some(remotes) = parse_rclone_config() {
+    if let Some(remotes) = load_remotes().await {
         return Json(ApiResponse::success(remotes));
     }
 
     // Fallback: use rclone listremotes command
-    let output = Command::new("rclone").args(["listremotes"]).output().await;
+    let output = run_timed_async_result(
+        Command::new("rclone").args(["listremotes"]),
+        RCLONE_PROBE_TIMEOUT,
+    )
+    .await;
 
     match output {
         Ok(output) => {
@@ -455,7 +1070,7 @@ pub async fn handle_list_remotes(
             Json(ApiResponse::success(remotes))
         }
         Err(e) => Json(ApiResponse::error(&format!(
-            "Failed to execute rclone: {}",
+            "Failed to list remotes: {}",
             e
         ))),
     }
@@ -841,7 +1456,12 @@ pub async fn handle_list_providers(
     Json(ApiResponse::success(providers))
 }
 
-/// List active mounts
+/// List active mounts.
+///
+/// The kernel's mount table is the source of truth for *what is mounted*; the
+/// process registry only contributes what the kernel cannot know — the remote
+/// a mount came from and the pid of the child we own, so the UI can offer a
+/// real "Stop".
 pub async fn handle_list_mounts(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
@@ -850,66 +1470,118 @@ pub async fn handle_list_mounts(
         return Json(ApiResponse::error(&e));
     }
 
-    // Read /proc/mounts to find rclone mounts
-    let mounts_content = tokio::fs::read_to_string("/proc/mounts").await;
-
-    match mounts_content {
-        Ok(content) => {
-            let mut mounts = Vec::new();
-
-            for line in content.lines() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
+    // Snapshot the mounts this process owns (and reap the dead ones).
+    let tracked: HashMap<String, (String, Option<u32>)> = {
+        let mut registry = MOUNTS.lock().await;
+        let points: Vec<String> = registry.keys().cloned().collect();
+        let mut owned = HashMap::new();
+        for point in points {
+            let alive = registry
+                .get_mut(&point)
+                .and_then(|entry| match entry.child.try_wait() {
+                    Ok(None) => Some((entry.remote.clone(), entry.child.id())),
+                    Ok(Some(status)) => {
+                        tracing::warn!(
+                            "rclone mount of '{}' at {} exited ({})",
+                            entry.remote,
+                            point,
+                            status
+                        );
+                        None
+                    }
+                    Err(_) => None,
+                });
+            match alive {
+                Some(value) => {
+                    owned.insert(point, value);
                 }
-
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() < 3 {
-                    continue;
-                }
-
-                let mount_point = parts[1].to_string();
-                let fs_type = parts[2].to_string();
-
-                // Check if this is a rclone mount
-                if fs_type == "rclone"
-                    || mount_point.starts_with(crate::config::paths::RCLONE_MOUNT_BASE)
-                    || mount_point.starts_with("/run/rclone")
-                {
-                    // Try to parse the remote name from the mount point
-                    let remote = mount_point
-                        .split('/')
-                        .next_back()
-                        .unwrap_or("unknown")
-                        .to_string();
-
-                    mounts.push(Mount {
-                        remote,
-                        mount_point,
-                        path: None,
-                        is_active: true,
-                        pid: None,
-                    });
+                None => {
+                    registry.remove(&point);
                 }
             }
+        }
+        owned
+    };
 
-            // Sort by mount point name
-            mounts.sort_by(|a, b| a.mount_point.cmp(&b.mount_point));
-            Json(ApiResponse::success(mounts))
+    let content = match tokio::fs::read_to_string("/proc/mounts").await {
+        Ok(content) => content,
+        // A process that cannot read its own mount table has nothing truthful
+        // to report; the old code did the same and returned an empty list.
+        Err(_) => return Json(ApiResponse::success(Vec::new())),
+    };
+
+    let mut mounts = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+
+    for line in content.lines() {
+        let mut fields = line.split_whitespace();
+        let _device = fields.next();
+        let Some(mount_point_field) = fields.next() else {
+            continue;
+        };
+        let Some(fs_type) = fields.next() else {
+            continue;
+        };
+
+        let mount_point = decode_mount_escape(mount_point_field);
+        let is_rclone = fs_type == "fuse.rclone"
+            || fs_type == "rclone"
+            || mount_point.starts_with(crate::config::paths::RCLONE_MOUNT_BASE)
+            || mount_point.starts_with("/run/rclone");
+        if !is_rclone {
+            continue;
         }
-        Err(_) => {
-            // If we can't read /proc/mounts, return empty list
-            Json(ApiResponse::success(Vec::new()))
-        }
+
+        let (remote, pid) = match tracked.get(&mount_point) {
+            Some((remote, pid)) => (remote.clone(), *pid),
+            None => (
+                mount_point
+                    .split('/')
+                    .next_back()
+                    .unwrap_or("unknown")
+                    .to_string(),
+                None,
+            ),
+        };
+
+        seen.push(mount_point.clone());
+        mounts.push(Mount {
+            remote,
+            mount_point,
+            path: None,
+            is_active: true,
+            pid,
+        });
     }
+
+    // A child we own whose mount is gone is a broken mount, not a healthy one:
+    // report it inactive so the screen offers "Start" (or "Stop", which kills
+    // the child) instead of a mount that silently reads an empty directory.
+    for (mount_point, (remote, pid)) in tracked {
+        if seen.contains(&mount_point) {
+            continue;
+        }
+        mounts.push(Mount {
+            remote,
+            mount_point,
+            path: None,
+            is_active: false,
+            pid,
+        });
+    }
+
+    mounts.sort_by(|a, b| a.mount_point.cmp(&b.mount_point));
+    Json(ApiResponse::success(mounts))
 }
 
-/// Start a mount operation. Always spawns rclone detached (`--daemon`-style,
-/// via `Command::spawn` without waiting) regardless of the request's
-/// `daemon` field — a real bug found during release verification had a
-/// "foreground" branch that `.output().await`'d the process, but
-/// `rclone mount` without `--daemon` never exits on its own, so that branch
-/// would hang the HTTP request forever.
+/// Start a mount and report success only once the kernel agrees.
+///
+/// The old version appended `--daemon`, called `spawn()` and dropped the
+/// handle: rclone forked, the child exited, and every outcome — a bad token,
+/// a missing fuse device, a mount that never appeared — looked identical to
+/// the caller (ROADMAP 16.2/16.3). Here the child is ours, `--daemon` is
+/// gone, and the call returns only after the mount point shows up in
+/// `/proc/self/mounts` or the child dies (see `wait_until_mounted`).
 pub async fn handle_mount_start(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
@@ -920,133 +1592,206 @@ pub async fn handle_mount_start(
         Err(e) => return Json(ApiResponse::error(&e)),
     };
 
-    // Validate mount point
-    if req.mount_point.is_empty() {
-        return Json(ApiResponse::error("Mount point is required"));
-    }
+    // Validate every value before it reaches an argv or a filesystem call.
+    let mount_point = match validate_mount_point(&req.mount_point) {
+        Ok(point) => point,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+    let remote = match validate_remote_name(&req.remote) {
+        Ok(remote) => remote,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+    let sub_path = match validate_remote_subpath(&req.path) {
+        Ok(path) => path,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
 
-    // Create the mount point directory before spawning rclone.
-    // Unlike other mount types, rclone's FUSE mount can create the dir itself,
-    // but we create it explicitly for consistency with RAID/pools/encrypted
-    // and to ensure proper permissions.
-    if let Err(e) = std::fs::create_dir_all(&req.mount_point) {
+    // The remote must exist in the config the server itself resolved: `mount`
+    // with an unknown name would still spawn rclone and fail asynchronously,
+    // and the argv would be built from a name nobody validated against the
+    // file that holds the credentials.
+    let configured = load_remotes()
+        .await
+        .map(|remotes| remotes.iter().any(|candidate| candidate.name == remote))
+        .unwrap_or(false);
+    if !configured {
         return Json(ApiResponse::error(&format!(
-            "Failed to create mount point: {}",
-            e
+            "Remote '{}' is not configured in the rclone config file",
+            remote
         )));
     }
 
-    if req.remote.is_empty() {
-        return Json(ApiResponse::error("Remote is required"));
+    // One mount per directory: a second rclone on the same mount point would
+    // stack two FUSE servers and neither could be stopped cleanly.
+    if mount_is_tracked(&mount_point).await || mount_is_active(&mount_point).await {
+        return Json(ApiResponse::error(&format!(
+            "Something is already mounted at {} — unmount it first",
+            mount_point
+        )));
     }
 
-    // Build rclone mount command
-    let source = if let Some(path) = &req.path {
-        format!("{}:{}", req.remote, path)
-    } else {
-        format!("{}:", req.remote)
+    // Create the mount point directory before spawning rclone. Unlike other
+    // mount types, rclone's FUSE mount can create the dir itself, but we create
+    // it explicitly for consistency with RAID/pools/encrypted. Off the async
+    // runtime: this is a privileged call on a possibly slow filesystem.
+    let directory = mount_point.clone();
+    match tokio::task::spawn_blocking(move || std::fs::create_dir_all(&directory)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            return Json(ApiResponse::error(&format!(
+                "Failed to create mount point: {}",
+                e
+            )))
+        }
+        Err(e) => {
+            return Json(ApiResponse::error(&format!(
+                "Failed to create mount point: {}",
+                e
+            )))
+        }
+    }
+
+    // Build `rclone mount remote:sub/path mount_point …`.
+    let source = match &sub_path {
+        Some(path) => format!("{}:{}", remote, path),
+        None => format!("{}:", remote),
     };
 
-    let mut args = vec!["mount".to_string(), source, req.mount_point.clone()];
+    let mut command = Command::new("rclone");
+    command
+        .arg("mount")
+        .arg(&source)
+        .arg(&mount_point)
+        .arg("--vfs-cache-mode")
+        .arg("writes")
+        .arg("--log-level")
+        .arg("ERROR")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        // We own the child from here on: it must not be killed by dropping a
+        // future, only by `release_mount`/`shutdown_mounts`.
+        .kill_on_drop(false);
 
     if req.read_only {
-        args.push("--read-only".to_string());
+        command.arg("--read-only");
     }
-
     if req.allow_other {
-        args.push("--allow-other".to_string());
+        command.arg("--allow-other");
     }
+    // `req.daemon` is deliberately ignored: a forked rclone is a mount nobody
+    // can report on, wait for, or unmount.
 
-    args.push("--daemon".to_string());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) => return Json(ApiResponse::error(&format!("Failed to start mount: {}", e))),
+    };
+    let log_tail = capture_stderr_tail(&mut child);
 
-    // Add some sensible defaults
-    args.push("--vfs-cache-mode".to_string());
-    args.push("writes".to_string());
-
-    let mut cmd = Command::new("rclone");
-    cmd.args(&args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    match cmd.spawn() {
-        Ok(_child) => {
-            let mount = Mount {
-                remote: req.remote,
-                mount_point: req.mount_point,
-                path: req.path,
-                is_active: true,
-                pid: None,
-            };
-            crate::events::log_event(format!(
-                "Admin '{}' mounted cloud remote '{}' at '{}'",
-                admin_username, mount.remote, mount.mount_point
-            ));
-            Json(ApiResponse::success(mount))
+    let pid = match wait_until_mounted(&mount_point, &mut child, &log_tail).await {
+        Ok(()) => child.id(),
+        Err(e) => {
+            // Never leave a half-started mount behind on the failure path.
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Json(ApiResponse::error(&e));
         }
-        Err(e) => Json(ApiResponse::error(&format!("Failed to start mount: {}", e))),
-    }
+    };
+
+    MOUNTS.lock().await.insert(
+        mount_point.clone(),
+        MountedRemote {
+            child,
+            remote: remote.clone(),
+            mount_point: mount_point.clone(),
+            log_tail,
+        },
+    );
+
+    let mount = Mount {
+        remote: remote.clone(),
+        mount_point: mount_point.clone(),
+        path: sub_path,
+        is_active: true,
+        pid,
+    };
+    crate::events::log_event(format!(
+        "Admin '{}' mounted cloud remote '{}' at '{}'",
+        admin_username, remote, mount_point
+    ));
+    Json(ApiResponse::success(mount))
 }
 
-/// Stop a mount operation
+/// Keep the last few KiB of a child's stderr for a startup-failure message.
+///
+/// rclone's `.output()` is not usable for a mount (it never exits), so its
+/// stderr is drained by a task instead — a full pipe would otherwise block the
+/// child. The buffer is bounded and only the tail is kept: the head of a mount
+/// log is always the same banner.
+fn capture_stderr_tail(child: &mut Child) -> Arc<Mutex<String>> {
+    let log_tail = Arc::new(Mutex::new(String::new()));
+    let Some(mut stderr) = child.stderr.take() else {
+        return log_tail;
+    };
+    let sink = Arc::clone(&log_tail);
+    tokio::spawn(async move {
+        let mut buffer = [0u8; 1024];
+        loop {
+            match stderr.read(&mut buffer).await {
+                Ok(0) | Err(_) => break,
+                Ok(read) => {
+                    if let Ok(mut text) = sink.lock() {
+                        text.push_str(&String::from_utf8_lossy(&buffer[..read]));
+                        if text.len() > STDERR_TAIL_BYTES {
+                            let excess = text.len() - STDERR_TAIL_BYTES;
+                            let cut = text
+                                .char_indices()
+                                .map(|(index, _)| index)
+                                .find(|index| *index >= excess)
+                                .unwrap_or(0);
+                            text.drain(..cut);
+                        }
+                    }
+                }
+            }
+        }
+    });
+    log_tail
+}
+
+/// Stop a mount: `fusermount -u`, then `umount -f`, then kill our child.
+///
+/// Takes a [`MountStopRequest`] because the UI sends `{ mount_point }` alone —
+/// with the old `MountRequest` the JSON extractor rejected every real unmount
+/// before this code ran.
 pub async fn handle_mount_stop(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
-    Json(req): Json<MountRequest>,
+    Json(req): Json<MountStopRequest>,
 ) -> Json<ApiResponse<bool>> {
     let admin_username = match check_admin(&state, &headers).await {
         Ok(u) => u,
         Err(e) => return Json(ApiResponse::error(&e)),
     };
 
-    // Use fusermount to unmount
-    let output = Command::new("fusermount")
-        .args(["-u", &req.mount_point])
-        .output()
-        .await;
+    let mount_point = match validate_mount_point(&req.mount_point) {
+        Ok(point) => point,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
 
-    match output {
-        Ok(output) => {
-            if output.status.success() {
-                crate::events::log_event(format!(
-                    "Admin '{}' unmounted cloud mount at '{}'",
-                    admin_username, req.mount_point
-                ));
-                Json(ApiResponse::success(true))
-            } else {
-                // Try with umount as fallback
-                let output = Command::new("umount")
-                    .args(["-f", &req.mount_point])
-                    .output()
-                    .await;
-
-                match output {
-                    Ok(output) => {
-                        if output.status.success() {
-                            crate::events::log_event(format!(
-                                "Admin '{}' unmounted cloud mount at '{}'",
-                                admin_username, req.mount_point
-                            ));
-                            Json(ApiResponse::success(true))
-                        } else {
-                            let stderr = String::from_utf8_lossy(&output.stderr);
-                            Json(ApiResponse::error(&format!(
-                                "Failed to unmount: {}",
-                                stderr
-                            )))
-                        }
-                    }
-                    Err(e) => Json(ApiResponse::error(&format!(
-                        "Failed to execute umount: {}",
-                        e
-                    ))),
-                }
-            }
-        }
-        Err(e) => Json(ApiResponse::error(&format!(
-            "Failed to execute fusermount: {}",
-            e
-        ))),
+    if let Err(e) = unmount_checked(&mount_point).await {
+        return Json(ApiResponse::error(&e));
     }
+
+    // The mount is gone; make sure the process we own is gone too, otherwise a
+    // live rclone keeps retrying against an unmounted FUSE path.
+    release_mount(&mount_point).await;
+
+    crate::events::log_event(format!(
+        "Admin '{}' unmounted cloud mount at '{}'",
+        admin_username, mount_point
+    ));
+    Json(ApiResponse::success(true))
 }
 
 /// Run sync operation
@@ -1110,18 +1855,16 @@ async fn execute_sync(admin_username: &str, req: &SyncRequest) -> Json<ApiRespon
     args.push("--progress".to_string());
 
     // Show the transfer in the desktop activity taskbar (indeterminate — the
-    // blocking `.output()` gives no incremental stats).
+    // blocking call gives no incremental stats). The deadline is what closes
+    // the job if the remote stalls (ROADMAP 16.1): before it, a stuck `rclone
+    // sync` kept the HTTP request *and* this job open forever.
     let job = crate::sse::PROGRESS_MANAGER.create_job(
         crate::sse::JobType::Custom("cloud_sync".to_string()),
         &format!("Sync {} -> {}", req.source, req.destination),
     );
 
-    let output = Command::new("rclone")
-        .args(&args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await;
+    let output =
+        run_timed_async_result(Command::new("rclone").args(&args), RCLONE_TRANSFER_TIMEOUT).await;
 
     match output {
         Ok(output) => {
@@ -1142,10 +1885,11 @@ async fn execute_sync(admin_username: &str, req: &SyncRequest) -> Json<ApiRespon
         }
         Err(e) => {
             crate::sse::PROGRESS_MANAGER.fail_job(&job, &e.to_string());
-            Json(ApiResponse::error(&format!(
-                "Failed to execute rclone sync: {}",
-                e
-            )))
+            crate::events::log_event(format!(
+                "Admin '{}' — sync from '{}' to '{}' aborted: {}",
+                admin_username, req.source, req.destination, e
+            ));
+            Json(ApiResponse::error(&format!("Sync failed: {}", e)))
         }
     }
 }
@@ -1386,12 +2130,8 @@ pub async fn handle_copy(
         &format!("Copy {} -> {}", req.source, req.destination),
     );
 
-    let output = Command::new("rclone")
-        .args(&args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await;
+    let output =
+        run_timed_async_result(Command::new("rclone").args(&args), RCLONE_TRANSFER_TIMEOUT).await;
 
     match output {
         Ok(output) => {
@@ -1412,40 +2152,49 @@ pub async fn handle_copy(
         }
         Err(e) => {
             crate::sse::PROGRESS_MANAGER.fail_job(&job, &e.to_string());
-            Json(ApiResponse::error(&format!(
-                "Failed to execute rclone copy: {}",
-                e
-            )))
+            crate::events::log_event(format!(
+                "Admin '{}' — copy from '{}' to '{}' aborted: {}",
+                admin_username, req.source, req.destination, e
+            ));
+            Json(ApiResponse::error(&format!("Copy failed: {}", e)))
         }
     }
 }
 
-/// Check if rclone is available
+/// Check if rclone is available.
+///
+/// Returns the resolved mount base too, so the screen stops building
+/// `/mnt/rclone/<name>` itself — the server is the only side that knows
+/// where mounts are allowed (`docs/guides/cloud-sync.md`).
 pub async fn handle_rclone_status(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
-) -> Json<ApiResponse<HashMap<String, bool>>> {
+) -> Json<ApiResponse<RcloneStatus>> {
     if let Err(e) = check_session(&state, &headers).await {
         return Json(ApiResponse::error(&e));
     }
 
-    let mut status = HashMap::new();
-
-    let check = Command::new("rclone").arg("version").output().await;
-
-    let available = check.is_ok() && check.as_ref().map(|o| o.status.success()).unwrap_or(false);
-    status.insert("available".to_string(), available);
-
-    // Check for fusermount (needed for unmounting)
-    let fusermount = Command::new("fusermount").arg("-V").output().await;
-    let has_fusermount = fusermount.is_ok()
-        && fusermount
-            .as_ref()
-            .map(|o| o.status.success())
+    // Both probes are bounded: a wrapper script on `$PATH` that never answers
+    // must not hang the status tile (ROADMAP 16.1).
+    let available =
+        run_timed_async_result(Command::new("rclone").arg("version"), RCLONE_PROBE_TIMEOUT)
+            .await
+            .map(|output| output.status.success())
             .unwrap_or(false);
-    status.insert("fusermount".to_string(), has_fusermount);
 
-    Json(ApiResponse::success(status))
+    // `fusermount` is what unmounts a FUSE mount; the screen warns when it is
+    // missing instead of letting "Stop mount" fail.
+    let fusermount =
+        run_timed_async_result(Command::new("fusermount").arg("-V"), RCLONE_PROBE_TIMEOUT)
+            .await
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+
+    Json(ApiResponse::success(RcloneStatus {
+        available,
+        fusermount,
+        mount_base: RCLONE_MOUNT_BASE.to_string(),
+    }))
 }
 
 /// Get the current rclone.conf content. Admin-only: this file contains
@@ -1478,7 +2227,12 @@ pub struct SaveConfigRequest {
     pub config: String,
 }
 
-/// Save the rclone.conf content
+/// Save the rclone.conf content.
+///
+/// The file holds every remote's credentials, so both it and its dated backup
+/// are written mode 0600 (ROADMAP 16.3): `tokio::fs::write` used to create it
+/// with the process umask (0644 on a default Debian install) and
+/// `tokio::fs::copy` recreated the backup the same way.
 pub async fn handle_save_config(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
@@ -1489,16 +2243,16 @@ pub async fn handle_save_config(
     }
 
     let config_path = rclone_config_path();
-    let config_path_str = config_path.to_string_lossy().to_string();
-    let backup_path = format!(
+    let backup_path = std::path::PathBuf::from(format!(
         "{}.backup.{}",
-        config_path_str,
+        config_path.to_string_lossy(),
         chrono::Utc::now().format("%Y%m%d_%H%M%S")
-    );
+    ));
 
-    // Create backup of existing config
-    if tokio::fs::metadata(&config_path).await.is_ok() {
-        if let Err(e) = tokio::fs::copy(&config_path, &backup_path).await {
+    // Back up the existing content by re-reading it, not by `copy`: a copy
+    // keeps the source's mode and the point is to write both files 0600.
+    if let Ok(previous) = tokio::fs::read_to_string(&config_path).await {
+        if let Err(e) = write_private_config(&backup_path, &previous).await {
             return Json(ApiResponse::error(&format!(
                 "Failed to create backup: {}",
                 e
@@ -1506,13 +2260,12 @@ pub async fn handle_save_config(
         }
     }
 
-    // Write new config
-    match tokio::fs::write(&config_path, &req.config).await {
-        Ok(_) => Json(ApiResponse::success(format!(
+    match write_private_config(&config_path, &req.config).await {
+        Ok(()) => Json(ApiResponse::success(format!(
             "Config saved successfully. Backup: {}",
-            backup_path
+            backup_path.display()
         ))),
-        Err(e) => Json(ApiResponse::error(&format!("Failed to save config: {}", e))),
+        Err(e) => Json(ApiResponse::error(&e)),
     }
 }
 
@@ -1537,16 +2290,17 @@ pub async fn handle_add_remote(
 
     let config_path = rclone_config_path();
 
-    // Validate name
-    if req.name.is_empty() {
-        return Json(ApiResponse::error("Remote name is required"));
-    }
-
-    if req.name.contains(':') || req.name.contains('[') || req.name.contains(']') {
-        return Json(ApiResponse::error(
-            "Remote name contains invalid characters",
-        ));
-    }
+    // Validate name and provider. The provider is written as `type = …`, so an
+    // unvalidated value containing a newline would append arbitrary INI lines
+    // to the section — the same injection class as the `[section]` guard below.
+    let name = match validate_remote_name(&req.name) {
+        Ok(name) => name,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+    let provider = match validate_provider_slug(&req.provider) {
+        Ok(provider) => provider,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
 
     // Reject a `config` value containing an embedded `[section]` line —
     // otherwise this free-text field, appended verbatim into the INI-style
@@ -1565,44 +2319,48 @@ pub async fn handle_add_remote(
         .await
         .unwrap_or_default();
 
-    // Check if remote already exists
-    let remote_section = format!("[{}]", req.name);
-    if existing_config.contains(&remote_section) {
+    // Exact section match: `contains("[my]")` also matched `[mydrive]`, which
+    // refused a legitimate `my` and made the delete path ambiguous.
+    if config_has_section(&existing_config, &name) {
         return Json(ApiResponse::error(&format!(
             "Remote '{}' already exists",
-            req.name
+            name
         )));
     }
 
     // Build new remote section
+    let remote_section = format!("[{}]", name);
     let new_section = if let Some(config) = &req.config {
-        format!(
-            "\n{}\ntype = {}\n{}\n",
-            remote_section, req.provider, config
-        )
+        format!("\n{}\ntype = {}\n{}\n", remote_section, provider, config)
     } else {
-        format!("\n{}\ntype = {}\n", remote_section, req.provider)
+        format!("\n{}\ntype = {}\n", remote_section, provider)
     };
 
     // Append to config
     let new_config = format!("{}{}", existing_config.trim_end(), new_section);
 
-    match tokio::fs::write(&config_path, new_config).await {
-        Ok(_) => {
+    match write_private_config(&config_path, &new_config).await {
+        Ok(()) => {
             crate::events::log_event(format!(
                 "Admin '{}' added cloud remote '{}' ({})",
-                admin_username, req.name, req.provider
+                admin_username, name, provider
             ));
             Json(ApiResponse::success(format!(
                 "Remote '{}' added successfully",
-                req.name
+                name
             )))
         }
-        Err(e) => Json(ApiResponse::error(&format!("Failed to save config: {}", e))),
+        Err(e) => Json(ApiResponse::error(&e)),
     }
 }
 
-/// Delete a remote
+/// Delete a remote.
+///
+/// The old implementation searched the file for `[name]` and then for the next
+/// `[` anywhere after it, so deleting `my` matched inside `[mydrive]` and a
+/// value like `patterns = [a-z]` could cut a section in half. The edit is now
+/// a parsed one, on whole lines, and the result is written 0600 like every
+/// other config write.
 pub async fn handle_delete_remote(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
@@ -1627,34 +2385,13 @@ pub async fn handle_delete_remote(
         }
     };
 
-    // Find and remove the remote section
-    let section_start = format!("[{}]", name);
-    let section_start_idx = existing_config.find(&section_start);
-
-    if section_start_idx.is_none() {
-        return Json(ApiResponse::error(&format!("Remote '{}' not found", name)));
-    }
-
-    // Find the end of this section (next [section] or end of file)
-    let start_pos = section_start_idx.unwrap();
-    let after_start = &existing_config[start_pos..];
-
-    let end_pos = after_start[1..]
-        .find('[')
-        .map(|p| p + 1)
-        .unwrap_or(after_start.len());
-
-    let before_section = &existing_config[..start_pos].trim_end();
-    let after_section = &existing_config[start_pos + end_pos..].trim_start();
-
-    let new_config = if before_section.is_empty() {
-        after_section.to_string()
-    } else {
-        format!("{}\n{}", before_section, after_section)
+    let new_config = match remove_section(&existing_config, &name) {
+        Ok(content) => content,
+        Err(e) => return Json(ApiResponse::error(&e)),
     };
 
-    match tokio::fs::write(&config_path, new_config).await {
-        Ok(_) => {
+    match write_private_config(&config_path, &new_config).await {
+        Ok(()) => {
             crate::events::log_event_warn(format!(
                 "Admin '{}' deleted cloud remote '{}'",
                 admin_username, name
@@ -1664,7 +2401,7 @@ pub async fn handle_delete_remote(
                 name
             )))
         }
-        Err(e) => Json(ApiResponse::error(&format!("Failed to save config: {}", e))),
+        Err(e) => Json(ApiResponse::error(&e)),
     }
 }
 
@@ -1676,9 +2413,11 @@ mod tests {
     //! source/dest becomes an `rclone` argument — `remote:` vs `remote:sub`
     //! vs a local path), `get_provider_description` (the provider-type →
     //! label table, incl. the `<type> (custom)` fallback), the `rclone.conf`
-    //! INI parser, and the `ApiResponse` envelope shape the frontend checks.
+    //! INI parser, the input validators that guard an argv and the config file
+    //! (ROADMAP 16.3), the parsed section removal, the `/proc/mounts` matcher
+    //! (16.2) and the `ApiResponse` envelope shape the frontend checks.
     //!
-    //! No network, no `rclone` process. The config-parser tests point
+    //! No network, no `rclone` process, no FUSE. The config-file tests point
     //! `RCLONE_CONFIG` at a tempfile (serialised behind a mutex).
     //!
     //! Run: `cargo test handlers::rclone::tests`
@@ -1824,7 +2563,10 @@ mod tests {
         std::fs::write(&path, "[probe]\ntype = s3\n").unwrap();
 
         let (parsed, resolved) = with_env_override(Some(&path), || {
-            (parse_rclone_config(), rclone_config_path())
+            let config_path = rclone_config_path();
+            let parsed = read_rclone_config(&config_path)
+                .and_then(|content| parse_rclone_config_text(&content));
+            (parsed, config_path)
         });
 
         assert_eq!(resolved, path, "the writer's target must be the override");
@@ -1834,18 +2576,11 @@ mod tests {
         assert_eq!(remotes[0].remote_type, "Amazon S3");
     }
 
-    // -- parse_rclone_config (INI) ------------------------------------
-
-    fn with_config<T>(contents: &str, f: impl FnOnce() -> T) -> T {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rclone.conf");
-        std::fs::write(&path, contents).unwrap();
-        std::env::set_var("RCLONE_CONFIG", &path);
-        let out = f();
-        std::env::remove_var("RCLONE_CONFIG");
-        out
-    }
+    // -- parse_rclone_config_text (INI) -------------------------------
+    //
+    // The parser is pure now: the file read lives in `read_rclone_config`
+    // (called only from `spawn_blocking`), so the matrix below needs no
+    // tempdir and no process environment.
 
     #[test]
     fn test_parse_rclone_config_reads_sections_sorted() {
@@ -1859,7 +2594,7 @@ token = xxx
 type = drive
 scope = drive
 ";
-        let remotes = with_config(cfg, parse_rclone_config).expect("some remotes");
+        let remotes = parse_rclone_config_text(cfg).expect("some remotes");
         let names: Vec<_> = remotes.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, vec!["alpha", "zeta"]); // sorted by name
         assert_eq!(remotes[0].remote_type, "Google Drive");
@@ -1876,12 +2611,296 @@ type = s3
 provider = whatever
 region = us-east-1
 ";
-        let remotes = with_config(cfg, parse_rclone_config).expect("some remotes");
+        let remotes = parse_rclone_config_text(cfg).expect("some remotes");
         assert_eq!(remotes.len(), 1);
         assert_eq!(remotes[0].name, "good");
     }
 
-    // -- ApiResponse envelope ---------------------------------------
+    #[test]
+    fn test_parse_rclone_config_text_returns_none_for_an_empty_file() {
+        assert!(parse_rclone_config_text("").is_none());
+        assert!(parse_rclone_config_text("# only a comment\n").is_none());
+    }
+
+    // -- validate_remote_name (16.3) ----------------------------------
+
+    #[test]
+    fn test_validate_remote_name_keeps_a_plain_name() {
+        assert_eq!(validate_remote_name("gdrive").unwrap(), "gdrive");
+        assert_eq!(
+            validate_remote_name("  my.drive-2  ").unwrap(),
+            "my.drive-2"
+        );
+        assert_eq!(validate_remote_name("s3@home+x").unwrap(), "s3@home+x");
+    }
+
+    #[test]
+    fn test_validate_remote_name_rejects_an_empty_name() {
+        assert_eq!(
+            validate_remote_name("   ").unwrap_err(),
+            "Remote name is required"
+        );
+    }
+
+    #[test]
+    fn test_validate_remote_name_rejects_arg_and_ini_metacharacters() {
+        for raw in [
+            "a:b",
+            "has[bracket",
+            "has]bracket",
+            "a/b",
+            "a\\b",
+            "-leading",
+        ] {
+            let err = validate_remote_name(raw).unwrap_err().to_lowercase();
+            assert!(
+                err.contains("invalid characters") || err.contains("must not start with"),
+                "{raw:?} must be refused, got {err:?}"
+            );
+        }
+        // A space is refused too: a name is never quoted in the section header,
+        // so it would silently truncate in a hand-edited config.
+        assert!(validate_remote_name("two words").is_err());
+    }
+
+    #[test]
+    fn test_validate_remote_name_rejects_a_name_that_is_too_long() {
+        let long = "a".repeat(MAX_REMOTE_NAME_LEN + 1);
+        assert!(validate_remote_name(&long).is_err());
+        assert!(validate_remote_name(&"a".repeat(MAX_REMOTE_NAME_LEN)).is_ok());
+    }
+
+    // -- validate_provider_slug (16.3, INI injection) -----------------
+
+    #[test]
+    fn test_validate_provider_slug_accepts_known_slugs() {
+        assert_eq!(validate_provider_slug("drive").unwrap(), "drive");
+        assert_eq!(validate_provider_slug(" S3 ").unwrap(), "s3");
+        assert_eq!(validate_provider_slug("webdav").unwrap(), "webdav");
+        assert_eq!(validate_provider_slug("local").unwrap(), "local");
+    }
+
+    #[test]
+    fn test_validate_provider_slug_refuses_to_inject_ini_lines() {
+        // `type = {provider}` is written verbatim into the config section.
+        let err = validate_provider_slug("s3\ntoken = attacker").unwrap_err();
+        assert!(err.contains("invalid characters"), "got {err:?}");
+        assert!(validate_provider_slug("[evil]").is_err());
+        assert!(validate_provider_slug("drive\n[evil]").is_err());
+    }
+
+    #[test]
+    fn test_validate_provider_slug_rejects_empty_and_overlong_values() {
+        assert_eq!(
+            validate_provider_slug("").unwrap_err(),
+            "Provider type is required"
+        );
+        assert!(validate_provider_slug(&"a".repeat(MAX_PROVIDER_LEN + 1)).is_err());
+    }
+
+    // -- validate_mount_point (16.3) ----------------------------------
+
+    #[test]
+    fn test_validate_mount_point_accepts_a_child_of_the_base() {
+        let base = crate::config::paths::RCLONE_MOUNT_BASE;
+        assert_eq!(
+            validate_mount_point(&format!("{}/gdrive", base)).unwrap(),
+            format!("{}/gdrive", base)
+        );
+        // A trailing slash is normalised away, and a nested folder is allowed.
+        assert_eq!(
+            validate_mount_point(&format!("{}/gdrive/", base)).unwrap(),
+            format!("{}/gdrive", base)
+        );
+        assert_eq!(
+            validate_mount_point(&format!("{}/team/a", base)).unwrap(),
+            format!("{}/team/a", base)
+        );
+    }
+
+    #[test]
+    fn test_validate_mount_point_requires_one() {
+        // The exact sentence the E2E suite (and the screen) shows.
+        assert_eq!(
+            validate_mount_point("").unwrap_err(),
+            "Mount point is required"
+        );
+    }
+
+    #[test]
+    fn test_validate_mount_point_refuses_anything_outside_the_base() {
+        let base = crate::config::paths::RCLONE_MOUNT_BASE;
+        for raw in [
+            "/tmp/evil".to_string(),
+            "/mnt".to_string(),
+            "/".to_string(),
+            base.to_string(),
+            format!("{}/../etc", base),
+            format!("{}/./x", base),
+            format!("{}/ok/../../etc", base),
+            "relative/dir".to_string(),
+        ] {
+            assert!(
+                validate_mount_point(&raw).is_err(),
+                "{raw:?} must not be accepted as a mount point"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_mount_point_refuses_control_characters_and_leading_dash() {
+        let base = crate::config::paths::RCLONE_MOUNT_BASE;
+        assert!(validate_mount_point(&format!("{}/ok\n", base)).is_err());
+        assert!(validate_mount_point(&format!("{}/-rf", base)).is_err());
+    }
+
+    // -- validate_remote_subpath --------------------------------------
+
+    #[test]
+    fn test_validate_remote_subpath_normalises_and_rejects_traversal() {
+        assert_eq!(validate_remote_subpath(&None).unwrap(), None);
+        assert_eq!(
+            validate_remote_subpath(&Some("  ".to_string())).unwrap(),
+            None
+        );
+        assert_eq!(
+            validate_remote_subpath(&Some("/backups/2026/".to_string())).unwrap_err(),
+            "Remote path must be relative to the remote root"
+        );
+        assert_eq!(
+            validate_remote_subpath(&Some("backups/2026/".to_string())).unwrap(),
+            Some("backups/2026".to_string())
+        );
+        assert!(validate_remote_subpath(&Some("../etc".to_string())).is_err());
+        assert!(validate_remote_subpath(&Some("a/../b".to_string())).is_err());
+        assert!(validate_remote_subpath(&Some("a\\b".to_string())).is_err());
+    }
+
+    // -- config_has_section / remove_section (16.3, prefix bug) -------
+
+    #[test]
+    fn test_config_has_section_matches_whole_headers_only() {
+        let config = "[mydrive]\ntype = drive\n[my]\ntype = s3\n";
+        assert!(config_has_section(config, "my"));
+        assert!(config_has_section(config, "mydrive"));
+        assert!(!config_has_section(config, "myd"));
+        // A commented head is not a section.
+        assert!(!config_has_section("# [ghost]\ntype = s3\n", "ghost"));
+    }
+
+    #[test]
+    fn test_config_has_section_does_not_match_a_prefix() {
+        // The exact bug: `contains("[my]")` was true for `[mydrive]`.
+        let config = "[mydrive]\ntype = drive\n";
+        assert!(!config_has_section(config, "my"));
+    }
+
+    #[test]
+    fn test_remove_section_removes_only_the_named_section() {
+        let config = "# header comment\n[mydrive]\ntype = drive\n\n[my]\ntype = s3\nregion = eu\n";
+        let result = remove_section(config, "my").unwrap();
+        assert!(!result.contains("[my]"), "got {result:?}");
+        assert!(
+            result.contains("[mydrive]") && result.contains("type = drive"),
+            "the other section must survive, got {result:?}"
+        );
+        assert!(
+            result.contains("# header comment"),
+            "comments must survive, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_remove_section_does_not_cut_on_a_bracketed_value() {
+        // The old code ended the section at the first `[` *anywhere*, so this
+        // value truncated the section and left `z]` behind.
+        let config = "[a]\ntype = crypt\npatterns = [a-z]\n\n[b]\ntype = s3\n";
+        let result = remove_section(config, "a").unwrap();
+        assert_eq!(result, "[b]\ntype = s3\n");
+    }
+
+    #[test]
+    fn test_remove_section_handles_the_first_and_last_section() {
+        let first = remove_section("[a]\ntype = s3\n\n[b]\ntype = drive\n", "a").unwrap();
+        assert_eq!(first, "[b]\ntype = drive\n");
+        let last = remove_section("[a]\ntype = s3\n\n[b]\ntype = drive\n", "b").unwrap();
+        assert_eq!(last, "[a]\ntype = s3\n");
+    }
+
+    #[test]
+    fn test_remove_section_reports_a_missing_section() {
+        assert_eq!(
+            remove_section("[a]\ntype = s3\n", "b").unwrap_err(),
+            "Remote 'b' not found"
+        );
+        // A prefix must not be deleted by accident.
+        assert!(remove_section("[mydrive]\ntype = drive\n", "my").is_err());
+    }
+
+    // -- parse_mounts_for / decode_mount_escape (16.2) ----------------
+
+    #[test]
+    fn test_parse_mounts_for_matches_the_whole_field() {
+        let mounts = "\
+/dev/sda1 / ext4 rw 0 0
+gdrive: /mnt/rclone/vault fuse.rclone rw 0 0
+gdrive: /mnt/rclone/vault2 fuse.rclone rw 0 0
+";
+        assert!(parse_mounts_for(mounts, "/mnt/rclone/vault"));
+        assert!(!parse_mounts_for(mounts, "/mnt/rclone"));
+        assert!(!parse_mounts_for(mounts, "/mnt/rclone/vau"));
+    }
+
+    #[test]
+    fn test_parse_mounts_for_decodes_octal_escapes() {
+        // The kernel writes a space as \040, so a mount point with a space
+        // would never match the raw text.
+        let mounts = "remote: /mnt/rclone/my\\040disk fuse.rclone rw 0 0\n";
+        assert!(parse_mounts_for(mounts, "/mnt/rclone/my disk"));
+        assert_eq!(decode_mount_escape("/a\\040b"), "/a b");
+        assert_eq!(decode_mount_escape("/a\\011b"), "/a\tb");
+        assert_eq!(decode_mount_escape("/plain"), "/plain");
+    }
+
+    // -- deadlines (16.1) ---------------------------------------------
+
+    #[test]
+    fn test_rclone_deadlines_are_bounded_and_ordered() {
+        // A probe must answer faster than a mount may take to appear, which
+        // must itself be faster than a tolerant unmount, which is far below the
+        // transfer ceiling.
+        assert!(RCLONE_PROBE_TIMEOUT <= Duration::from_secs(30));
+        assert!(RCLONE_PROBE_TIMEOUT < RCLONE_MOUNT_READY_TIMEOUT);
+        assert!(RCLONE_MOUNT_READY_TIMEOUT < RCLONE_UMOUNT_TIMEOUT);
+        assert!(RCLONE_UMOUNT_TIMEOUT < RCLONE_TRANSFER_TIMEOUT);
+        // Long enough for a real first sync, short enough to be a ceiling.
+        assert!(RCLONE_TRANSFER_TIMEOUT >= Duration::from_secs(60 * 60));
+        assert!(RCLONE_TRANSFER_TIMEOUT <= Duration::from_secs(24 * 60 * 60));
+    }
+
+    #[test]
+    fn test_config_write_mode_is_private() {
+        // 0600: owner read/write only. The file holds every remote's
+        // credentials (rclone "obscures", it does not encrypt).
+        assert_eq!(CONFIG_FILE_MODE, 0o600);
+    }
+
+    // -- status payload (mount base comes from the server) ------------
+
+    #[test]
+    fn test_rclone_status_carries_the_server_mount_base() {
+        let status = RcloneStatus {
+            available: true,
+            fusermount: false,
+            mount_base: crate::config::paths::RCLONE_MOUNT_BASE.to_string(),
+        };
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["available"], true);
+        assert_eq!(json["fusermount"], false);
+        assert_eq!(json["mount_base"], crate::config::paths::RCLONE_MOUNT_BASE);
+    }
+
+    // -- MountRequest defaults (the release-verification bug) -------
 
     #[test]
     fn test_api_response_shapes() {

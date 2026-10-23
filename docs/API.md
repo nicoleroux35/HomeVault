@@ -603,8 +603,40 @@ Every Compose project-name path parameter is validated by
 `POST /rclone/crypt` was removed — it was a fake stub (always returned a
 canned success string without doing anything) with zero frontend callers.
 
-See [Cloud Sync](./guides/cloud-sync.md) for the mount-deserialization fix,
-the config-injection fix, and what was verified live.
+**Bodies and shapes (2026-10-23 pass).**
+
+- `GET /rclone/status` answers `{"success":true,"data":{"available":bool,
+  "fusermount":bool,"mount_base":"/mnt/rclone"}}`. `mount_base` is the
+  server's own rule — the screen derives every mount point from it instead of
+  hardcoding `/mnt/rclone/<name>`.
+- `POST /rclone/mount/start` takes `{"remote","mount_point","path"?,
+  "read_only"?,"allow_other"?}`. `daemon` is accepted and ignored: the process
+  always owns the mount child (no `--daemon`). `mount_point` must be an
+  absolute path **strictly under** `RCLONE_MOUNT_BASE`, with no `./..`
+  component; `remote` must be a plain slug and must exist in the config the
+  server resolved. Success is reported only once the mount point appears in
+  `/proc/self/mounts`; otherwise the error quotes rclone's last stderr lines
+  (`"rclone exited before … became a mount point"` /
+  `"rclone did not mount … within 20 seconds"`).
+- `POST /rclone/mount/stop` takes `{"mount_point"}` **only** (`MountStopRequest`).
+  It tries `fusermount -u`, then `umount -f`, then kills the child; a failure
+  names both attempts (`"Failed to unmount …: fusermount …; umount …"`).
+- Transfer deadlines: a `sync`/`copy`/`jobs/{id}/run` that exceeds six hours is
+  killed and answered `{"success":false,"error":"Sync failed: rclone did not
+  finish within … seconds"}` (same for `Copy failed:`).
+- `POST /rclone/config` writes the config **and** its dated `.backup.*` sibling
+  mode `0600`; both are repaired if they were looser.
+- `DELETE /rclone/remotes/{name}` removes the exact `[name]` section only —
+  `[mydrive]` is untouched when `my` is deleted, and adding `my` beside it is
+  allowed.
+- Rejections worth matching client-side: `Remote name is required`,
+  `Remote name contains invalid characters`, `Provider type contains invalid
+  characters`, `Mount point is required`, `Mount point must live under /mnt/rclone`,
+  `Remote '<name>' is not configured in the rclone config file`,
+  `Something is already mounted at <path>`, `Remote '<name>' not found`.
+
+See [Cloud Sync](./guides/cloud-sync.md) for the deadline table, the mount
+lifecycle, the config-hardening rules and the known debt (no scheduler).
 
 ## Syncthing — `syncthing/*` (all `admin`)
 

@@ -441,8 +441,16 @@ Features:
 - One-way copy
 - Mount remote storage locally
 - Manage multiple cloud providers
+- A raw-config editor for advanced rclone settings (admin only)
 
-Mount feature: mounts a remote as a local directory using FUSE. Supports daemon mode for background mounting."#.to_string(),
+Mount feature: mounts a remote as a local directory using FUSE. The server owns the
+mount process: a mount is reported successful only once it appears in the kernel's
+mount table, its errors are shown with rclone's own message, and it is unmounted when
+the server shuts down. Mount points live under /mnt/rclone.
+
+Safety: the rclone config file holds cloud credentials, so it is written owner-only
+(0600) together with its dated backup. Sync and copy jobs are saved definitions; a job
+runs only when you click "Run now" — there is no automatic schedule yet."#.to_string(),
         },
         FeatureDoc {
             id: "network".to_string(),
