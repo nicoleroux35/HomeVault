@@ -24,7 +24,9 @@
 //! JSON response envelope (`response`).
 
 pub mod proc;
+pub mod process;
 pub mod response;
 
 pub use proc::ProcParser;
+pub use process::{run_timed, run_timed_async, HOST_PROBE_TIMEOUT, SMART_PROBE_TIMEOUT};
 pub use response::{JsonResponse, ResponseHelper};

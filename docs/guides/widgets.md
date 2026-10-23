@@ -94,6 +94,27 @@ The long-cadence pollers (Docker catalog, notifications) deliberately keep
 their own fixed intervals — they are not "widget refresh" and are not driven
 by `refreshMs`.
 
+### `savedAt` — last write wins across origins (ROADMAP 15.3)
+
+`MonitorPositions` also carries `savedAt: number` (epoch ms; **`0` means
+"never edited"**). Every mutator stamps it (`edit()` in `monitorStore.ts`
+wraps each setter), `reset()` stamps it too, and `syncFromServer` adopts the
+server blob **only when its `savedAt` is at least as new** as the local one —
+otherwise it keeps the local layout and pushes it. Without the stamp, logging
+in on a second origin silently reverted a layout the user had just changed.
+A blob saved before the field existed normalises to `0`, so the server copy
+still wins exactly once.
+
+### The layout blob is validated before it is stored (ROADMAP 15.1)
+
+`POST /monitor-layout` stores `layout_json` **verbatim** (never re-serialised —
+`tests/widgets_integration.rs` requires a byte-for-byte round trip, including a
+legacy blob with no `refreshMs`), but only after a structural check: JSON
+**object**, ≤ 16 KiB, ≤ 4 levels deep, ≤ 512 nodes, keys ≤ 64 characters,
+string values ≤ 256 characters. A rejected blob is `400` and leaves the stored
+layout untouched, so a hand-edited localStorage mirror cannot bloat the row or
+break the reader.
+
 ### Edit Widgets — drag & drop layout editor (2026-10-16)
 
 The `edit-widgets` app (`frontend/src/routes/EditWidgets.svelte`, opened from
@@ -160,9 +181,14 @@ the keyboard path.
 - There is no second place to keep monitors in sync — see the three-file
   list above. Missing one leaves either a dead store field, a panel that
   never renders, or a catalog tile that toggles nothing.
-- `refreshMs` is persisted in the same `monitor-layout` blob as the positions
-  (no migration) and must be added to `loadFromStorage`'s explicit whitelist,
-  not just to the type — see the Persistence section.
+- `refreshMs` (and `savedAt`) are persisted in the same `monitor-layout` blob
+  as the positions (no migration) and must be added to `loadFromStorage`'s
+  explicit whitelist, not just to the type — see the Persistence section.
+  `savedAt: 0` must stay the default: it means "never edited", which is what
+  lets the server copy win once for a legacy blob.
+- The layout blob has no schema, so the backend's structural validation
+  (object / 16 KiB / depth 4 / 512 nodes / key 64 / string 256) is the only
+  defence against a malformed client payload — see the Persistence section.
 - The System Health monitor tallies the wire values `healthy`/`warning`/
   `unhealthy`/`unknown` (displaying `unhealthy` as "critical") — never a
   literal `'critical'` string, which doesn't appear on the wire. See

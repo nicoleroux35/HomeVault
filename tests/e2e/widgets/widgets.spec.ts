@@ -329,6 +329,36 @@ test.describe('3 — Toggling a widget', () => {
     await win(page).locator('[data-testid="widgets-reset"]').click();
     await expect(win(page).locator('[data-testid="widgets-tile"].active')).toHaveCount(0);
   });
+  test('3.6 — the stored layout carries a savedAt stamp so a stale browser copy cannot win', async ({ page }) => {
+    // `monitorStore.syncFromServer` adopts the server copy only when its
+    // `savedAt` is at least as new as the local one; without the stamp a login
+    // on a second origin silently reverted the layout (ROADMAP 15.3).
+    await openWidgets(page, adminTokens);
+    await tile(page, /Calendar/i).click();
+
+    const readLayout = () =>
+      page.evaluate(
+        async (token) => {
+          const r = await fetch('/api/monitor-layout', {
+            headers: { 'x-session-token': token },
+          });
+          const body = await r.json().catch(() => ({}));
+          return body?.data?.layout_json ?? '';
+        },
+        adminTokens.token,
+      );
+
+    await expect.poll(readLayout, { timeout: 10_000 }).toContain('savedAt');
+
+    const blob = await readLayout();
+    const parsed = JSON.parse(blob);
+    // A JSON object (the backend rejects anything else), with a real stamp
+    // and the coerced refresh interval travelling with it.
+    expect(Array.isArray(parsed)).toBe(false);
+    expect(parsed.savedAt).toBeGreaterThan(0);
+    expect(typeof parsed.refreshMs).toBe('number');
+  });
+
 });
 
 // ===========================================================================
@@ -442,6 +472,48 @@ test.describe('8 — Security', () => {
     const dump = await page.evaluate(() => JSON.stringify(localStorage));
     expect(dump).not.toContain(ADMIN_PASS);
   });
+  test('8.4 — a malformed layout blob is refused and the stored layout is unchanged', async ({ page }) => {
+    // The blob is opaque to the backend (the frontend owns the shape), so the
+    // only defence is the structural validation added in ROADMAP 15.1:
+    // JSON object, bounded size, depth, node count, key and string length.
+    await gotoDesktop(page, adminTokens);
+    const result = await page.evaluate(
+      async ({ token, csrf }) => {
+        const headers = {
+          'x-session-token': token,
+          'x-csrf-token': csrf,
+          'content-type': 'application/json',
+        };
+        const before = await (await fetch('/api/monitor-layout', { headers })).json();
+        const statuses: number[] = [];
+        for (const bad of [
+          '[]',
+          'not json',
+          '',
+          '{"a":{"b":{"c":{"d":{"e":1}}}}}',
+          `{"blob":"${'x'.repeat(20 * 1024)}"}`,
+        ]) {
+          const r = await fetch('/api/monitor-layout', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ layout_json: bad }),
+          });
+          statuses.push(r.status);
+        }
+        const after = await (await fetch('/api/monitor-layout', { headers })).json();
+        return {
+          statuses,
+          before: before?.data?.layout_json ?? null,
+          after: after?.data?.layout_json ?? null,
+        };
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf },
+    );
+
+    for (const status of result.statuses) expect(status).toBe(400);
+    expect(result.after).toEqual(result.before);
+  });
+
 });
 
 // ===========================================================================

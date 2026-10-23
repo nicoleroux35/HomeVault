@@ -26,8 +26,9 @@
  * `GET /api/dashboard/server-details` and `GET /api/dashboard/health`
  * every 5 s (`frontend/src/routes/Dashboard.svelte`).
  *
- * **This suite is entirely read-only.** The Dashboard screen has no
- * mutating action (the manual "Refresh" button just re-runs the two GETs).
+ * **This suite is read-only against the host.** The only mutation is a
+ * throwaway regular account created (and deleted) by the admin-only usage
+ * card test; the manual "Refresh" button just re-runs the two GETs.
  * Widget CRUD / widget-preferences / the small `/api/widgets/*` endpoints
  * have no consumer on this screen and are covered by
  * `tests/dashboard_integration.rs`.
@@ -277,6 +278,41 @@ test.describe('2 — Data cards', () => {
     expect(bg).not.toBe('');
     expect(bg).not.toMatch(/rgba?\(0, 0, 0, 0\)/);
   });
+
+  test('2.8 — the health hint follows the reported status, not a constant', async ({ page }) => {
+    await openDashboard(page, adminTokens);
+    const hint = win(page).locator('[data-testid="dashboard-health-hint"]');
+    await expect(hint).toBeVisible();
+    const status = await hint.getAttribute('data-health-status');
+    // The backend vocabulary is healthy|warning|unhealthy|unknown — the old
+    // fifth word ("critical") is gone, and so is the always-optimistic hint.
+    expect(['healthy', 'warning', 'unhealthy', 'unknown']).toContain(status);
+    const text = (await hint.innerText()).trim();
+    if (status === 'healthy') expect(text).toMatch(/No critical alerts/i);
+    else if (status === 'warning') expect(text).toMatch(/need attention/i);
+    else if (status === 'unhealthy') expect(text).toMatch(/unhealthy/i);
+    else expect(text).toMatch(/Waiting/i);
+  });
+
+  test('2.9 — the SMART footer reports measured values, never a placeholder', async ({ page }) => {
+    await openDashboard(page, adminTokens);
+    const detail = win(page).locator('[data-testid="dashboard-smart-detail"]');
+    await expect(detail).toBeVisible();
+    const text = (await detail.innerText()).trim();
+    // It always names the healthy/total count…
+    expect(text).toMatch(/\d+\/\d+/);
+    // …and never the old fabricated "last test 2 · last checked".
+    expect(text).not.toMatch(/last test\s+2\b/i);
+    expect(text).not.toMatch(/last checked/i);
+  });
+
+  test('2.10 — the OS card shows no fabricated "UP TO DATE" badge', async ({ page }) => {
+    // Nothing on the box checks for OS updates, so claiming it is current is
+    // a lie the card used to print unconditionally (ROADMAP 15.3).
+    await openDashboard(page, adminTokens);
+    await expect(win(page).getByText(/^UP TO DATE$/i)).toHaveCount(0);
+    await expect(win(page).locator('[data-testid="dashboard-os-grid"]')).toBeVisible();
+  });
 });
 
 // ===========================================================================
@@ -347,6 +383,35 @@ test.describe('3 — Interactions', () => {
     expect(mutated).toBe(false);
     await page.keyboard.press('Escape');
   });
+
+  test('3.6 — polling stops while the tab is hidden and resumes immediately on return', async ({ page }) => {
+    await openDashboard(page, adminTokens);
+    let polls = 0;
+    page.on('request', (r) => {
+      if (r.url().includes('/api/dashboard/server-details')) polls++;
+    });
+    // Let any in-flight cycle settle before counting.
+    await page.waitForTimeout(700);
+
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    polls = 0;
+    // Longer than one 5 s interval: a hidden tab must not keep probing the
+    // host (ROADMAP 15.2).
+    await page.waitForTimeout(6500);
+    expect(polls).toBe(0);
+
+    // Coming back refreshes right away instead of waiting for the next tick.
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await expect.poll(() => polls, { timeout: 8000 }).toBeGreaterThan(0);
+  });
 });
 
 // ===========================================================================
@@ -401,6 +466,61 @@ test.describe('4 — Security', () => {
     await openDashboard(page, adminTokens);
     const html = await win(page).locator('[data-testid="dashboard-os-grid"]').innerHTML();
     expect(html).not.toMatch(/<script|onerror=|<img[^>]+onerror/i);
+  });
+
+  test('4.6 — a non-admin gets an explanation instead of the admin-only app usage', async ({
+    page,
+    playwright,
+  }) => {
+    // `/api/docker/containers?stats=true` is require_admin, so a regular user
+    // used to see a card that quietly failed every 5 s. It now renders a
+    // notice and issues no request at all.
+    const ctx = await newCtx(playwright);
+    const admin = await apiLogin(ctx, ADMIN_USER, ADMIN_PASS);
+    const adminHeaders = {
+      'x-session-token': admin.token,
+      'x-csrf-token': admin.csrf,
+    };
+    const username = `e2edash_${Date.now().toString(36)}`;
+    const password = 'UserPassw0rd!';
+
+    const created = await ctx.post('/api/users', {
+      headers: adminHeaders,
+      data: {
+        username,
+        password,
+        fullname: 'E2E Dashboard Viewer',
+        email: '',
+        role_id: 1,
+        groups: [],
+        home_enabled: false,
+      },
+    });
+    expect(created.ok(), await created.text()).toBeTruthy();
+
+    try {
+      const viewer = await apiLogin(ctx, username, password);
+      expect(viewer.token).not.toEqual('');
+      const tokens = { username, password, token: viewer.token, csrf: viewer.csrf };
+
+      const adminOnlyCalls: number[] = [];
+      page.on('response', (r) => {
+        if (r.url().includes('/api/docker/containers')) adminOnlyCalls.push(r.status());
+      });
+
+      await openDashboard(page, tokens);
+      await expect(win(page).locator('[data-testid="dashboard-usage-admin-only"]')).toBeVisible({
+        timeout: 20_000,
+      });
+      await expect(win(page).locator('[data-testid="dashboard-usage-row"]')).toHaveCount(0);
+
+      // Give the 5 s poll a chance to fire if it were going to.
+      await page.waitForTimeout(6000);
+      expect(adminOnlyCalls.filter((s) => s === 401 || s === 403)).toEqual([]);
+    } finally {
+      await ctx.delete(`/api/users/${username}`, { headers: adminHeaders }).catch(() => {});
+      await ctx.dispose();
+    }
   });
 });
 

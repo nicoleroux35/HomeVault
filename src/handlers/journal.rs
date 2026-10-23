@@ -53,9 +53,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::io::{Read as _, Seek as _, SeekFrom};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::{Arc, LazyLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::handlers::AppStateArc;
 use crate::storage::journal_cleanup_repo::JournalCleanupRepository;
@@ -712,70 +712,13 @@ fn strip_target_prefix(msg: &str) -> (Option<String>, String) {
 
 /// Run one command under a deadline.
 ///
-/// Both pipes are drained on their own threads: a child that writes more than
-/// a pipe buffer (a 10 000-line `journalctl` dump easily does) would block on
-/// write and never reach `try_wait`, so the deadline could not fire at all.
-/// On timeout the child is killed, so a wedged `journalctl` does not survive
-/// the request (ROADMAP 20's "no timeout" finding).
+/// Delegates to the shared helper (`crate::utils::process::run_timed`) so the
+/// Journal and the Dashboard enforce a hung `journalctl`/`smartctl`/`lsblk`
+/// the same way — one implementation of "kill the child at the deadline",
+/// not two that can drift apart. See the helper for the pipe-draining and
+/// kill-on-timeout invariants (ROADMAP 20 / 15.2).
 fn run_timed(mut cmd: Command, deadline: Duration) -> Result<std::process::Output, String> {
-    let program = cmd.get_program().to_string_lossy().into_owned();
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Failed to run {}: {}", program, e))?;
-
-    let mut out_pipe = child.stdout.take();
-    let mut err_pipe = child.stderr.take();
-    let out_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(pipe) = out_pipe.as_mut() {
-            let _ = pipe.read_to_end(&mut buf);
-        }
-        buf
-    });
-    let err_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(pipe) = err_pipe.as_mut() {
-            let _ = pipe.read_to_end(&mut buf);
-        }
-        buf
-    });
-
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
-                if started.elapsed() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = out_reader.join();
-                    let _ = err_reader.join();
-                    return Err(format!(
-                        "{} did not finish within {} seconds",
-                        program,
-                        deadline.as_secs()
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = out_reader.join();
-                let _ = err_reader.join();
-                return Err(format!("Failed to wait for {}: {}", program, e));
-            }
-        }
-    };
-
-    Ok(std::process::Output {
-        status,
-        stdout: out_reader.join().unwrap_or_default(),
-        stderr: err_reader.join().unwrap_or_default(),
-    })
+    crate::utils::process::run_timed(&mut cmd, deadline)
 }
 
 fn read_entries(
@@ -939,6 +882,7 @@ fn seconds_to_iso(micros: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     // --- priority_text: numeric syslog priority → label ---
 

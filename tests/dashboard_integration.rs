@@ -28,11 +28,13 @@
 //!     GET  /api/dashboard/cpu-temperature | /storage-volumes
 //!     GET  /api/dashboard/health | /server-details
 //!     GET  /api/widgets/cpu | /ram | /network-traffic | /cpu-temp | /update-info
-//!   Widget CRUD (require_auth):
+//!   Widget CRUD (require_auth, scoped to the caller's own grid):
 //!     POST   /api/dashboard/widget
 //!     DELETE /api/dashboard/widget/{id}
 //!     POST   /api/dashboard/widgets/reorder
-//!   Per-user widget preferences (own token check, not require_auth):
+//!   Per-user widget preferences (require_auth since ROADMAP 15.1 — an
+//!   expired session used to be accepted because the handler hand-rolled a
+//!   `SELECT ... FROM sessions WHERE token = ?` with no `expires_at`):
 //!     GET|POST /api/dashboard/widget-preferences
 //!
 //! Fresh in-memory SQLite + all migrations per test, a minimal Axum router,
@@ -43,6 +45,11 @@
 //! `200` with whatever they could gather — safe to run for real. Nothing
 //! here mutates the host. The widget + preference tables are plain app
 //! state, exercised end to end.
+//!
+//! Since ROADMAP 15.1 a tile belongs to exactly one account (`widgets` is
+//! keyed by `(username, id)`), so the CRUD cases check that one account can
+//! neither see, delete nor reorder another's tiles, and that an add request
+//! carrying junk ids/titles/sizes is refused before it reaches SQL.
 //!
 //! `/api/health` (the Health page's own endpoint) is covered by the Health
 //! section, not here.
@@ -303,9 +310,8 @@ async fn test_widget_crud_endpoints_reject_missing_token() {
 
 #[tokio::test]
 async fn test_widget_preferences_reject_missing_token() {
-    // These handlers do their own token check (not `require_auth`); a
-    // missing token is a 400 `success:false`, an unknown one too
-    // ("Invalid session").
+    // A missing header is a malformed request (400) per `require_auth`; an
+    // unknown token is an authentication failure (401).
     let (state, _tmp, _guard) = setup_state().await;
     let mut router = dashboard_router(state);
 
@@ -328,8 +334,95 @@ async fn test_widget_preferences_reject_missing_token() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["success"], json!(false));
+
+    // The write side goes through the same guard.
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/dashboard/widget-preferences",
+        Some("nope"),
+        Some(json!({"widget_key": "cpu", "position_x": 1, "position_y": 1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_widget_preferences_reject_an_expired_session() {
+    // Regression for ROADMAP 15.1: the handler used to run its own
+    // `SELECT username FROM sessions WHERE token = ?`, which never looked at
+    // `expires_at`, so an expired token kept reading AND writing preferences
+    // while every other endpoint refused it.
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", 1).await;
+    let mut router = dashboard_router(Arc::clone(&state));
+    let token = login(&mut router, "u", "Password123!").await;
+
+    sqlx::query("UPDATE sessions SET expires_at = ? WHERE token = ?")
+        .bind(chrono::Utc::now() - chrono::Duration::hours(1))
+        .bind(&token)
+        .execute(&*state.db.pool())
+        .await
+        .expect("expire the session");
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/dashboard/widget-preferences",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["success"], json!(false));
+
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/dashboard/widget-preferences",
+        Some(&token),
+        Some(json!({"widget_key": "cpu", "position_x": 1, "position_y": 1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Nothing was written on the way through.
+    let rows: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user_widget_preferences")
+        .fetch_one(&*state.db.pool())
+        .await
+        .expect("count");
+    assert_eq!(rows.0, 0, "an expired session must not write preferences");
+}
+
+#[tokio::test]
+async fn test_widget_preferences_reject_invalid_values() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", 1).await;
+    let mut router = dashboard_router(state);
+    let token = login(&mut router, "u", "Password123!").await;
+
+    let cases = [
+        // Unsafe key: would be reflected in messages and used as a map key.
+        json!({"widget_key": "cpu/../etc", "position_x": 1, "position_y": 1}),
+        json!({"widget_key": "", "position_x": 1, "position_y": 1}),
+        // Off-screen panel coordinates.
+        json!({"widget_key": "cpu", "position_x": 100_000, "position_y": 1}),
+        json!({"widget_key": "cpu", "position_x": 1, "position_y": -100_000}),
+    ];
+    for body in cases {
+        let (status, response) = send(
+            &mut router,
+            Method::POST,
+            "/api/dashboard/widget-preferences",
+            Some(&token),
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(response["success"], json!(false), "{body}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -390,7 +483,9 @@ async fn test_widget_data_known_and_unknown_ids() {
         assert_eq!(body["data"]["type"], wtype, "{id}");
     }
 
-    let (_, body) = send(
+    // An id no tile uses is a client bug: 404, not a `type: "unknown"` shell
+    // that renders as an empty card (ROADMAP 15.3).
+    let (status, body) = send(
         &mut router,
         Method::GET,
         "/api/dashboard/widget/does-not-exist",
@@ -398,7 +493,43 @@ async fn test_widget_data_known_and_unknown_ids() {
         None,
     )
     .await;
-    assert_eq!(body["data"]["type"], "unknown");
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["success"], json!(false));
+}
+
+#[tokio::test]
+async fn test_widget_memory_data_reports_real_numbers() {
+    // The memory tile used to answer with placeholders; it now reads
+    // /proc/meminfo, so the payload must be self-consistent.
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", 1).await;
+    let mut router = dashboard_router(state);
+    let token = login(&mut router, "u", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/dashboard/widget/memory",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let data = &body["data"]["data"];
+    let total = data["total_bytes"].as_u64().unwrap_or(0);
+    let used = data["used_bytes"].as_u64().unwrap_or(0);
+    let available = data["available_bytes"].as_u64().unwrap_or(0);
+    let percent = data["usage_percent"].as_u64().unwrap_or(0);
+
+    // A host that cannot report memory has total 0; otherwise the numbers
+    // must add up and the percentage must match them.
+    if total > 0 {
+        assert!(used <= total, "used {used} > total {total}");
+        assert_eq!(used + available, total, "used + available must be total");
+        let expected = (used as f64 / total as f64 * 100.0).round() as u64;
+        assert_eq!(percent, expected);
+        assert!(percent <= 100, "{percent}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -610,4 +741,328 @@ async fn test_widget_preferences_are_scoped_per_user() {
     )
     .await;
     assert_eq!(body["data"].as_array().map(|a| a.len()), Some(0));
+}
+
+// ---------------------------------------------------------------------------
+// 5. Widget ownership — one account can never touch another's grid
+//    (ROADMAP 15.1: any authenticated user could delete or reorder every
+//    widget, because `username` was hardcoded to `None`)
+// ---------------------------------------------------------------------------
+
+/// Add one tile through the API and assert it succeeded.
+async fn add_widget(router: &mut Router, token: &str, id: &str, row: u32) {
+    let (status, body) = send(
+        router,
+        Method::POST,
+        "/api/dashboard/widget",
+        Some(token),
+        Some(json!({"id": id, "wtype": "cpu", "title": id, "size": "1x1", "row": row, "col": 1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "add {id}: {body}");
+    assert_eq!(body["success"], json!(true), "add {id}: {body}");
+}
+
+async fn widget_ids(router: &mut Router, token: &str) -> Vec<String> {
+    let (_, body) = send(
+        router,
+        Method::GET,
+        "/api/dashboard/widgets",
+        Some(token),
+        None,
+    )
+    .await;
+    body["data"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|w| w["id"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn test_widgets_are_scoped_to_their_owner() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "alice", "Password123!", 1).await;
+    create_test_user(&state, "bob", "Password123!", 1).await;
+    let mut router = dashboard_router(state);
+    let alice = login(&mut router, "alice", "Password123!").await;
+    let bob = login(&mut router, "bob", "Password123!").await;
+
+    add_widget(&mut router, &alice, "alice-cpu", 1).await;
+
+    // Bob's list and the shared dashboard payload show nothing of Alice's.
+    assert_eq!(widget_ids(&mut router, &bob).await, Vec::<String>::new());
+    assert_eq!(widget_ids(&mut router, &alice).await, vec!["alice-cpu"]);
+
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/dashboard/data",
+        Some(&bob),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"]["widgets"].as_array().map(|a| a.len()), Some(0));
+
+    // Bob cannot delete it: the row is not his, so the id is indistinguishable
+    // from a missing one.
+    let (status, body) = send(
+        &mut router,
+        Method::DELETE,
+        "/api/dashboard/widget/alice-cpu",
+        Some(&bob),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["success"], json!(false));
+    assert_eq!(
+        widget_ids(&mut router, &alice).await,
+        vec!["alice-cpu"],
+        "Bob's delete must not touch Alice's grid"
+    );
+
+    // Bob cannot move it either: the reorder matches none of his rows.
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/dashboard/widgets/reorder",
+        Some(&bob),
+        Some(json!({"widgets": ["alice-cpu"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // And the id is free for Bob to use for his own tile.
+    add_widget(&mut router, &bob, "alice-cpu", 2).await;
+    assert_eq!(widget_ids(&mut router, &bob).await, vec!["alice-cpu"]);
+    assert_eq!(widget_ids(&mut router, &alice).await, vec!["alice-cpu"]);
+
+    // Alice deleting hers leaves Bob's intact.
+    let (status, _) = send(
+        &mut router,
+        Method::DELETE,
+        "/api/dashboard/widget/alice-cpu",
+        Some(&alice),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(widget_ids(&mut router, &alice).await, Vec::<String>::new());
+    assert_eq!(widget_ids(&mut router, &bob).await, vec!["alice-cpu"]);
+}
+
+#[tokio::test]
+async fn test_widget_remove_an_unknown_id_is_404() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", 1).await;
+    let mut router = dashboard_router(state);
+    let token = login(&mut router, "u", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::DELETE,
+        "/api/dashboard/widget/nope",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["success"], json!(false));
+    assert!(body["message"].as_str().unwrap_or("").contains("not found"));
+}
+
+#[tokio::test]
+async fn test_widget_rows_are_attributed_to_the_session_owner() {
+    // The old handler wrote `username: None`, so no row had an owner. Every
+    // row created through the API must now carry the caller's username.
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "carol", "Password123!", 1).await;
+    let mut router = dashboard_router(Arc::clone(&state));
+    let token = login(&mut router, "carol", "Password123!").await;
+    add_widget(&mut router, &token, "tile", 1).await;
+
+    let owners: Vec<(String,)> = sqlx::query_as("SELECT username FROM widgets")
+        .fetch_all(&*state.db.pool())
+        .await
+        .expect("read widgets");
+    assert_eq!(owners, vec![("carol".to_string(),)]);
+}
+
+// ---------------------------------------------------------------------------
+// 6. Widget validation (ROADMAP 15.1: the handler used to accept any id,
+//    type, title, size and position)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_widget_add_rejects_invalid_fields() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", 1).await;
+    let mut router = dashboard_router(state);
+    let token = login(&mut router, "u", "Password123!").await;
+
+    let valid = || json!({"id": "cpu", "wtype": "cpu", "title": "CPU", "size": "1x1", "row": 1, "col": 1});
+    let mut cases: Vec<(String, Value)> = Vec::new();
+
+    let mut body = valid();
+    body["id"] = json!("has space");
+    cases.push(("unsafe id".into(), body));
+
+    let mut body = valid();
+    body["id"] = json!("a".repeat(65));
+    cases.push(("over-long id".into(), body));
+
+    let mut body = valid();
+    body["title"] = json!("   ");
+    cases.push(("blank title".into(), body));
+
+    let mut body = valid();
+    body["title"] = json!("t".repeat(121));
+    cases.push(("over-long title".into(), body));
+
+    let mut body = valid();
+    body["size"] = json!("wide");
+    cases.push(("bad size".into(), body));
+
+    let mut body = valid();
+    body["size"] = json!("9x9");
+    cases.push(("oversized tile".into(), body));
+
+    let mut body = valid();
+    body["row"] = json!(0);
+    cases.push(("row zero".into(), body));
+
+    let mut body = valid();
+    body["col"] = json!(9999);
+    cases.push(("col off the grid".into(), body));
+
+    let mut body = valid();
+    body["row_span"] = json!(99);
+    cases.push(("span too large".into(), body));
+
+    for (label, payload) in cases {
+        let (status, response) = send(
+            &mut router,
+            Method::POST,
+            "/api/dashboard/widget",
+            Some(&token),
+            Some(payload.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{label}: {response}");
+        assert_eq!(response["success"], json!(false), "{label}");
+    }
+
+    // Nothing was stored by the rejected attempts.
+    assert_eq!(widget_ids(&mut router, &token).await, Vec::<String>::new());
+
+    // A valid request still works, and the title is stored trimmed.
+    let mut ok = valid();
+    ok["title"] = json!("  CPU  ");
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/dashboard/widget",
+        Some(&token),
+        Some(ok),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/dashboard/widgets",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"][0]["title"], "CPU");
+}
+
+#[tokio::test]
+async fn test_widget_reorder_rejects_an_invalid_list() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", 1).await;
+    let mut router = dashboard_router(state);
+    let token = login(&mut router, "u", "Password123!").await;
+    add_widget(&mut router, &token, "cpu", 1).await;
+
+    // A non-slug id is refused instead of reaching SQL.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/dashboard/widgets/reorder",
+        Some(&token),
+        Some(json!({"widgets": ["bad id"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["success"], json!(false));
+
+    // Too many ids at once.
+    let many: Vec<String> = (0..65).map(|i| format!("w{i}")).collect();
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/dashboard/widgets/reorder",
+        Some(&token),
+        Some(json!({"widgets": many})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // An empty list is a no-op success, not a 404.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/dashboard/widgets/reorder",
+        Some(&token),
+        Some(json!({"widgets": []})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn test_widget_add_is_capped_per_account() {
+    // `MAX_WIDGETS_PER_USER` keeps one account from filling the table.
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", 1).await;
+    let mut router = dashboard_router(Arc::clone(&state));
+    let token = login(&mut router, "u", "Password123!").await;
+
+    for i in 0..64 {
+        sqlx::query(
+            "INSERT INTO widgets (username, id, wtype, title, size, row_pos, col_pos, row_span, col_span)
+             VALUES ('u', ?, 'cpu', 't', '1x1', 1, 1, 1, 1)",
+        )
+        .bind(format!("tile{i}"))
+        .execute(&*state.db.pool())
+        .await
+        .expect("seed widget");
+    }
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/dashboard/widget",
+        Some(&token),
+        Some(json!({"id": "one-more", "wtype": "cpu", "title": "t", "size": "1x1", "row": 1, "col": 1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["success"], json!(false));
+    assert!(
+        body["message"].as_str().unwrap_or("").contains("maximum"),
+        "{body}"
+    );
+
+    // Another account is not affected by that cap.
+    create_test_user(&state, "other", "Password123!", 1).await;
+    let other = login(&mut router, "other", "Password123!").await;
+    add_widget(&mut router, &other, "one-more", 1).await;
 }

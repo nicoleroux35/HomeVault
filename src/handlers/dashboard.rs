@@ -45,6 +45,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::process::Command;
 
 use crate::handlers::admin_guard::require_auth;
@@ -53,9 +54,65 @@ use crate::storage::models::Widget;
 use crate::utils::ProcParser;
 use crate::utils::ResponseHelper;
 
+/// Run one async host probe under the shared deadline (ROADMAP 15.2).
+///
+/// Every command this module shells out to — `df`, `lsblk`, `mdadm`,
+/// `zpool` — is a probe whose answer is optional: on a timeout the caller
+/// reports the field as unknown instead of letting a wedged NFS mount or a
+/// spinning disk pile requests up behind it. The child is killed on expiry.
+async fn run_probe(cmd: &mut tokio::process::Command) -> std::io::Result<std::process::Output> {
+    crate::utils::process::run_timed_async(cmd, crate::utils::process::HOST_PROBE_TIMEOUT)
+        .await
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "probe did not finish within its deadline",
+            )
+        })
+}
+
+/// Blocking counterpart, for the `spawn_blocking` fan-out in
+/// `build_server_details` (nvidia-smi, rocm-smi, ip, lsblk, sensors,
+/// dpkg-query).
+fn run_probe_blocking(cmd: &mut std::process::Command) -> std::io::Result<std::process::Output> {
+    crate::utils::process::run_timed(cmd, crate::utils::process::HOST_PROBE_TIMEOUT)
+        .map_err(|message| std::io::Error::new(std::io::ErrorKind::TimedOut, message))
+}
+
+/// Blocking `smartctl` probe with the wider SMART deadline.
+fn run_smart_blocking(cmd: &mut std::process::Command) -> std::io::Result<std::process::Output> {
+    crate::utils::process::run_timed(cmd, crate::utils::process::SMART_PROBE_TIMEOUT)
+        .map_err(|message| std::io::Error::new(std::io::ErrorKind::TimedOut, message))
+}
+
 /// Stores previous per-core CPU stats for delta calculation.
 static PREV_PER_CORE: Lazy<RwLock<HashMap<String, (u64, u64)>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
+
+/// How long a disk-health snapshot is reused before the probes run again.
+///
+/// The browser polls health every 5 s and each collection forks `lsblk`, `df`
+/// and up to three commands per disk; without this the same 5 s tick re-runs
+/// the whole SMART fan-out. A 30 s snapshot decouples the cheap JSON poll from
+/// the expensive hardware probes and is what keeps requests from piling up
+/// behind a slow drive (ROADMAP 15.2).
+const DISK_HEALTH_TTL: Duration = Duration::from_secs(30);
+
+/// Last disk-health collection, coalesced: concurrent callers wait on the
+/// mutex and the second one reuses the first one's snapshot.
+static DISK_HEALTH_SNAPSHOT: Lazy<tokio::sync::Mutex<Option<DiskHealthSnapshot>>> =
+    Lazy::new(|| tokio::sync::Mutex::new(None));
+
+struct DiskHealthSnapshot {
+    fetched_at: Instant,
+    disks: Vec<DiskHealth>,
+    filesystems: Vec<FsHealth>,
+}
+
+/// Is a snapshot taken at `fetched_at` still within `ttl` at `now`?
+fn snapshot_is_fresh(fetched_at: Instant, now: Instant, ttl: Duration) -> bool {
+    now.saturating_duration_since(fetched_at) < ttl
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthData {
@@ -153,15 +210,146 @@ pub struct ReorderWidgetsRequest {
     pub widgets: Vec<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Widget tiles (ROADMAP 15.1)
+//
+// A tile belongs to exactly one account (`widgets` is keyed by
+// `(username, id)`), every handler resolves the owner through `require_auth`
+// and passes that username to the repository, and every client-supplied field
+// is validated here before it reaches SQL. A tile the caller does not own is
+// indistinguishable from a missing one (404), so the endpoint never confirms
+// that another account has a tile with that id.
+// ---------------------------------------------------------------------------
+
+/// Longest widget id / type tag accepted from a client.
+pub const MAX_WIDGET_ID_LEN: usize = 64;
+/// Longest tile title accepted from a client.
+pub const MAX_WIDGET_TITLE_LEN: usize = 120;
+/// Highest row/column a client may place a tile on.
+pub const MAX_WIDGET_POSITION: u32 = 64;
+/// Largest row/column span a tile may declare (`size` is `NxN`).
+pub const MAX_WIDGET_SPAN: u32 = 6;
+/// Most tiles one account may keep, so a client cannot fill the table.
+pub const MAX_WIDGETS_PER_USER: i64 = 64;
+
+/// A widget id / type tag is a short, opaque slug: no whitespace, no path
+/// separators, no quotes. Keeping the charset narrow is what makes the id
+/// safe to echo in a message and to use as a map key.
+fn is_widget_slug(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_WIDGET_ID_LEN
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+}
+
+/// `size` is the grid footprint (`1x1`, `2x2`, …). Anything else — including a
+/// valid CSS value — is refused: the grid renders spans, not free-form CSS.
+fn validate_widget_size(size: &str) -> Result<(), String> {
+    let (rows, cols) = size
+        .split_once('x')
+        .ok_or_else(|| format!("Invalid widget size '{size}': expected NxN"))?;
+    let parse = |part: &str| -> Result<u32, String> {
+        part.parse::<u32>()
+            .map_err(|_| format!("Invalid widget size '{size}': expected NxN"))
+    };
+    let (rows, cols) = (parse(rows)?, parse(cols)?);
+    if rows == 0 || cols == 0 || rows > MAX_WIDGET_SPAN || cols > MAX_WIDGET_SPAN {
+        return Err(format!(
+            "Invalid widget size '{size}': each side must be 1..={MAX_WIDGET_SPAN}"
+        ));
+    }
+    Ok(())
+}
+
+/// Validate one new tile before it reaches the database.
+///
+/// Rejects an unsafe id/type tag, an empty or over-long title, a control
+/// character in the title, an unparsable `size`, and a position/span outside
+/// the grid. Every message names the offending field, which is what the UI
+/// shows back to the user.
+pub fn validate_add_widget(req: &AddWidgetRequest) -> Result<(), String> {
+    if !is_widget_slug(&req.id) {
+        return Err(format!(
+            "Invalid widget id: 1-{MAX_WIDGET_ID_LEN} characters from A-Z, a-z, 0-9, '-', '_', '.' or ':'"
+        ));
+    }
+    if !is_widget_slug(&req.wtype) {
+        return Err(format!(
+            "Invalid widget type: 1-{MAX_WIDGET_ID_LEN} characters from A-Z, a-z, 0-9, '-', '_', '.' or ':'"
+        ));
+    }
+    let title = req.title.trim();
+    if title.is_empty() {
+        return Err("Widget title cannot be empty".to_string());
+    }
+    if title.chars().count() > MAX_WIDGET_TITLE_LEN {
+        return Err(format!(
+            "Widget title is too long (max {MAX_WIDGET_TITLE_LEN} characters)"
+        ));
+    }
+    if title.chars().any(|c| c.is_control()) {
+        return Err("Widget title cannot contain control characters".to_string());
+    }
+    validate_widget_size(&req.size)?;
+
+    for (label, value) in [
+        ("row", req.row),
+        ("col", req.col),
+        ("row_span", req.row_span),
+        ("col_span", req.col_span),
+    ] {
+        if value == 0 || value > MAX_WIDGET_POSITION {
+            return Err(format!(
+                "Invalid widget {label}: must be 1..={MAX_WIDGET_POSITION}"
+            ));
+        }
+    }
+    if req.row_span > MAX_WIDGET_SPAN || req.col_span > MAX_WIDGET_SPAN {
+        return Err(format!(
+            "Invalid widget span: each side must be 1..={MAX_WIDGET_SPAN}"
+        ));
+    }
+    Ok(())
+}
+
+/// Bounds for the floating-panel positions kept in `user_widget_preferences`:
+/// the screen the panels live on is far smaller than this, but the value is
+/// still made finite and bounded instead of trusted verbatim.
+pub const MAX_WIDGET_PANEL_OFFSET: i32 = 10_000;
+
+/// Validate an incoming widget preference (panel position + visibility).
+pub fn validate_widget_preference(req: &UpdateWidgetPreferenceRequest) -> Result<(), String> {
+    if !is_widget_slug(&req.widget_key) {
+        return Err(format!(
+            "Invalid widget key: 1-{MAX_WIDGET_ID_LEN} characters from A-Z, a-z, 0-9, '-', '_', '.' or ':'"
+        ));
+    }
+    for (label, value) in [("position_x", req.position_x), ("position_y", req.position_y)] {
+        if !(-MAX_WIDGET_PANEL_OFFSET..=MAX_WIDGET_PANEL_OFFSET).contains(&value) {
+            return Err(format!(
+                "Invalid {label}: must be between -{MAX_WIDGET_PANEL_OFFSET} and {MAX_WIDGET_PANEL_OFFSET}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The caller's widget grid (never another account's).
 pub async fn handle_dashboard_data(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers).await {
-        return response;
-    }
+    let username = match require_auth(&state, &headers).await {
+        Ok(username) => username,
+        Err(response) => return response,
+    };
 
-    let widgets: Vec<Widget> = state.widgets.find_all().await.unwrap_or_default();
+    let widgets: Vec<Widget> = state
+        .widgets
+        .find_by_username(&username)
+        .await
+        .unwrap_or_default();
 
     let data = DashboardData {
         status: "ok".to_string(),
@@ -174,32 +362,53 @@ pub async fn handle_dashboard_data(
     ResponseHelper::json_success(data)
 }
 
+/// Live data for one tile type.
+///
+/// Replies 404 for an unknown id instead of a `type: "unknown"` shell: the
+/// desktop asks for ids it knows about, so an unknown one is a client bug, and
+/// answering 200 with an empty payload is how a placeholder card used to
+/// appear. `memory` reports real `/proc/meminfo` figures (ROADMAP 15.3).
 pub async fn handle_widget_data(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers).await {
-        return response;
-    }
+    let username = match require_auth(&state, &headers).await {
+        Ok(username) => username,
+        Err(response) => return response,
+    };
 
     let widget_data = match id.as_str() {
         "cpu" => {
             let loadavg = ProcParser::parse_loadavg();
+            let usage = crate::utils::proc::cpu_usage_percent_since_last_sample(&username);
             serde_json::json!({
                 "type": "cpu",
                 "title": "CPU Usage",
                 "data": {
-                    "loadavg": loadavg
+                    "loadavg": loadavg,
+                    "usage_percent": usage
                 }
             })
         }
         "memory" => {
+            let mem = ProcParser::parse_meminfo();
+            let total = mem.total_kb * 1024;
+            let available = mem.available_kb * 1024;
+            let used = total.saturating_sub(available);
+            let usage_percent = if mem.total_kb > 0 {
+                (used as f64 / total as f64 * 100.0).round() as u32
+            } else {
+                0
+            };
             serde_json::json!({
                 "type": "memory",
                 "title": "RAM Usage",
                 "data": {
-                    "source": "/proc/meminfo"
+                    "total_bytes": total,
+                    "used_bytes": used,
+                    "available_bytes": available,
+                    "usage_percent": usage_percent
                 }
             })
         }
@@ -209,53 +418,72 @@ pub async fn handle_widget_data(
                 "type": "uptime",
                 "title": "Server Uptime",
                 "data": {
-                    "uptime_raw": uptime.to_string()
+                    "uptime_raw": uptime.to_string(),
+                    "uptime_seconds": uptime,
+                    "uptime_human": format_uptime(uptime)
                 }
             })
         }
         _ => {
-            serde_json::json!({
-                "type": "unknown",
-                "title": "Unknown Widget",
-                "data": {}
-            })
+            return ResponseHelper::json_error_with_status(
+                axum::http::StatusCode::NOT_FOUND,
+                format!("Unknown widget '{id}'"),
+            )
         }
     };
 
     ResponseHelper::json_success(widget_data)
 }
 
+/// Add a tile to the caller's own grid.
 pub async fn handle_add_widget(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     AxumJson(req): AxumJson<AddWidgetRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers).await {
-        return response;
+    let username = match require_auth(&state, &headers).await {
+        Ok(username) => username,
+        Err(response) => return response,
+    };
+
+    if let Err(message) = validate_add_widget(&req) {
+        return ResponseHelper::json_error(message);
+    }
+
+    match state.widgets.count_for(&username).await {
+        Ok(count) if count >= MAX_WIDGETS_PER_USER => {
+            return ResponseHelper::json_error(format!(
+                "You already have the maximum of {MAX_WIDGETS_PER_USER} widgets"
+            ))
+        }
+        Ok(_) => {}
+        Err(e) => return ResponseHelper::json_error(format!("Failed to add widget: {e}")),
+    }
+
+    // Only the caller's own tiles are probed, so this cannot leak whether
+    // another account already uses the id.
+    match state.widgets.find_by_id(&username, &req.id).await {
+        Ok(Some(_)) => {
+            return ResponseHelper::json_error(format!(
+                "Widget with ID '{}' already exists",
+                req.id
+            ))
+        }
+        Ok(None) => {}
+        Err(e) => return ResponseHelper::json_error(format!("Failed to add widget: {e}")),
     }
 
     let widget = Widget {
-        id: req.id.clone(),
+        id: req.id,
         wtype: req.wtype,
-        title: req.title,
+        title: req.title.trim().to_string(),
         size: req.size,
         row_pos: req.row,
         col_pos: req.col,
         row_span: req.row_span,
         col_span: req.col_span,
-        username: None,
+        username,
     };
-
-    match state.widgets.find_by_id(&req.id).await {
-        Ok(Some(_)) => {
-            return ResponseHelper::json_error(format!(
-                "Widget with ID '{}' already exists",
-                req.id
-            ));
-        }
-        Ok(None) => {}
-        Err(_) => {}
-    }
 
     match state.widgets.create(&widget).await {
         Ok(_) => ResponseHelper::json_success("Widget added successfully".to_string()),
@@ -263,45 +491,69 @@ pub async fn handle_add_widget(
     }
 }
 
+/// Remove one of the caller's tiles. 404 when the id is not theirs.
 pub async fn handle_remove_widget(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers).await {
-        return response;
-    }
+    let username = match require_auth(&state, &headers).await {
+        Ok(username) => username,
+        Err(response) => return response,
+    };
 
-    match state.widgets.delete(&id).await {
-        Ok(_) => ResponseHelper::json_success(format!("Widget {} removed", id)),
+    match state.widgets.delete_for(&username, &id).await {
+        Ok(true) => ResponseHelper::json_success(format!("Widget {id} removed")),
+        Ok(false) => ResponseHelper::json_error_with_status(
+            axum::http::StatusCode::NOT_FOUND,
+            format!("Widget '{id}' not found"),
+        ),
         Err(e) => ResponseHelper::json_error(format!("Failed to remove widget: {}", e)),
     }
 }
 
+/// Reorder the caller's grid. Ids they do not own are ignored; a list that
+/// matches none of their tiles is a 404 rather than a silent success.
 pub async fn handle_reorder_widgets(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     AxumJson(req): AxumJson<ReorderWidgetsRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers).await {
-        return response;
+    let username = match require_auth(&state, &headers).await {
+        Ok(username) => username,
+        Err(response) => return response,
+    };
+
+    if req.widgets.len() as i64 > MAX_WIDGETS_PER_USER {
+        return ResponseHelper::json_error(format!(
+            "Too many widgets in one reorder (max {MAX_WIDGETS_PER_USER})"
+        ));
+    }
+    if let Some(bad) = req.widgets.iter().find(|id| !is_widget_slug(id)) {
+        return ResponseHelper::json_error(format!("Invalid widget id '{bad}'"));
     }
 
-    match state.widgets.reorder(&req.widgets).await {
+    match state.widgets.reorder_for(&username, &req.widgets).await {
+        Ok(0) if !req.widgets.is_empty() => ResponseHelper::json_error_with_status(
+            axum::http::StatusCode::NOT_FOUND,
+            "None of those widgets belong to you".to_string(),
+        ),
         Ok(_) => ResponseHelper::json_success("Widgets reordered successfully".to_string()),
         Err(e) => ResponseHelper::json_error(format!("Failed to reorder widgets: {}", e)),
     }
 }
 
+/// The caller's widget grid (alias of `/dashboard/data`'s `widgets` field).
 pub async fn handle_get_all_widgets(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers).await {
-        return response;
-    }
+    let username = match require_auth(&state, &headers).await {
+        Ok(username) => username,
+        Err(response) => return response,
+    };
 
-    match state.widgets.find_all().await {
+    match state.widgets.find_by_username(&username).await {
         Ok(widgets) => ResponseHelper::json_success(widgets),
         Err(e) => ResponseHelper::json_error(format!("Failed to get widgets: {}", e)),
     }
@@ -393,7 +645,7 @@ pub async fn handle_storage_data(
         return response;
     }
 
-    let output = Command::new("df")
+    let output = run_probe(Command::new("df")
         .args([
             "-h",
             "--output=source,size,used,avail,pcent,target",
@@ -404,7 +656,7 @@ pub async fn handle_storage_data(
             "-x",
             "squashfs",
         ])
-        .output()
+        )
         .await;
 
     let filesystems = if let Ok(output) = output {
@@ -496,11 +748,12 @@ pub async fn handle_health_data(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers).await {
-        return response;
-    }
+    let username = match require_auth(&state, &headers).await {
+        Ok(username) => username,
+        Err(response) => return response,
+    };
 
-    let (cpu_usage, memory_usage, memory_total, memory_used) = get_system_metrics();
+    let (cpu_usage, memory_usage, memory_total, memory_used) = get_system_metrics(&username);
     let (disks, filesystems) = get_disk_health().await;
 
     // Calculate disk health score
@@ -522,13 +775,10 @@ pub async fn handle_health_data(
     .max(0.0);
     let overall_score = ((cpu_score * 0.25) + (mem_score * 0.25) + (disk_score * 0.5)) as u32;
 
-    let status = if overall_score >= 70 {
-        "healthy".to_string()
-    } else if overall_score >= 40 {
-        "warning".to_string()
-    } else {
-        "critical".to_string()
-    };
+    // One vocabulary across the dashboard payload, matching what the UI
+    // declares (`healthy | warning | unhealthy | unknown`); "critical" was a
+    // fifth word nothing rendered (ROADMAP 15.3).
+    let status = health_status_for_score(overall_score).to_string();
 
     let health_data = HealthData {
         score: overall_score,
@@ -545,30 +795,45 @@ pub async fn handle_health_data(
     ResponseHelper::json_success(health_data)
 }
 
-fn get_system_metrics() -> (f64, f64, u64, u64) {
-    // Get CPU usage
-    let loadavg = ProcParser::parse_loadavg();
-    let cpu_info = ProcParser::read_proc_file("/proc/cpuinfo");
-    let cores = cpu_info
-        .lines()
-        .filter(|l| l.starts_with("processor"))
-        .count() as f64;
-    let cores = if cores > 0.0 { cores } else { 1.0 };
+/// Mean of the per-core readings, rounded; `0` when no core answered.
+fn mean_core_usage(cores: &[PerCoreUsageItem]) -> u32 {
+    if cores.is_empty() {
+        return 0;
+    }
+    let total: u32 = cores.iter().map(|c| c.usage_percent).sum();
+    ((total as f64) / (cores.len() as f64)).round() as u32
+}
 
-    let load: f64 = loadavg
-        .split_whitespace()
-        .next()
-        .and_then(|s| s.parse().ok())
+/// Map an overall health score to the dashboard's status vocabulary.
+///
+/// `healthy` at 70+, `warning` at 40-69, `unhealthy` below. Extracted so the
+/// payload and its tests share one definition instead of two branches that
+/// can drift apart.
+fn health_status_for_score(score: u32) -> &'static str {
+    if score >= 70 {
+        "healthy"
+    } else if score >= 40 {
+        "warning"
+    } else {
+        "unhealthy"
+    }
+}
+
+/// CPU and memory usage plus memory totals.
+///
+/// CPU is a real `/proc/stat` delta for this caller (ROADMAP 15.3), not
+/// `load1 / cores` — a load figure can exceed 100 % and contradicts the
+/// Metrics app, which already reports deltas.
+fn get_system_metrics(username: &str) -> (f64, f64, u64, u64) {
+    let cpu_usage = crate::utils::proc::cpu_usage_percent_since_last_sample(username)
+        .map(|percent| percent.clamp(0.0, 100.0))
         .unwrap_or(0.0);
 
-    let cpu_usage = (load / cores * 100.0).min(100.0);
-
-    // Get memory usage
     let mem_info = ProcParser::parse_meminfo();
     let memory_total = mem_info.total_kb * 1024;
-    let memory_used = (mem_info.total_kb - mem_info.available_kb) * 1024;
+    let memory_used = mem_info.total_kb.saturating_sub(mem_info.available_kb) * 1024;
     let memory_usage = if mem_info.total_kb > 0 {
-        (mem_info.total_kb - mem_info.available_kb) as f64 / mem_info.total_kb as f64 * 100.0
+        memory_used as f64 / memory_total as f64 * 100.0
     } else {
         0.0
     };
@@ -576,14 +841,34 @@ fn get_system_metrics() -> (f64, f64, u64, u64) {
     (cpu_usage, memory_usage, memory_total, memory_used)
 }
 
+/// Disk and filesystem health, from a snapshot at most [`DISK_HEALTH_TTL`] old.
 async fn get_disk_health() -> (Vec<DiskHealth>, Vec<FsHealth>) {
+    let mut snapshot = DISK_HEALTH_SNAPSHOT.lock().await;
+    if let Some(cached) = snapshot.as_ref() {
+        if snapshot_is_fresh(cached.fetched_at, Instant::now(), DISK_HEALTH_TTL) {
+            return (cached.disks.clone(), cached.filesystems.clone());
+        }
+    }
+
+    let (disks, filesystems) = collect_disk_health().await;
+    *snapshot = Some(DiskHealthSnapshot {
+        fetched_at: Instant::now(),
+        disks: disks.clone(),
+        filesystems: filesystems.clone(),
+    });
+    (disks, filesystems)
+}
+
+/// Run the actual probes (lsblk, df, one SMART query per disk, per-disk role
+/// and usage lookups).
+async fn collect_disk_health() -> (Vec<DiskHealth>, Vec<FsHealth>) {
     let mut disks = Vec::new();
     let mut filesystems = Vec::new();
 
     // Get disk list using lsblk
-    if let Ok(lsblk_output) = Command::new("lsblk")
+    if let Ok(lsblk_output) = run_probe(Command::new("lsblk")
         .args(["-d", "-n", "-o", "NAME,SIZE,TYPE,VENDOR,MODEL,SERIAL,TRAN"])
-        .output()
+        )
         .await
     {
         // Parse every disk line first, then look up SMART/role/usage for all
@@ -648,7 +933,7 @@ async fn get_disk_health() -> (Vec<DiskHealth>, Vec<FsHealth>) {
     }
 
     // Get filesystem data using df
-    if let Ok(df_output) = Command::new("df")
+    if let Ok(df_output) = run_probe(Command::new("df")
         .args([
             "-B1",
             "--output=source,fstype,size,used,avail,target",
@@ -659,7 +944,7 @@ async fn get_disk_health() -> (Vec<DiskHealth>, Vec<FsHealth>) {
             "-x",
             "squashfs",
         ])
-        .output()
+        )
         .await
     {
         let stdout = String::from_utf8_lossy(&df_output.stdout);
@@ -680,7 +965,7 @@ async fn get_disk_health() -> (Vec<DiskHealth>, Vec<FsHealth>) {
                 };
 
                 let status = if usage_percent > 95.0 {
-                    "critical".to_string()
+                    "unhealthy".to_string()
                 } else if usage_percent > 85.0 {
                     "warning".to_string()
                 } else {
@@ -812,10 +1097,15 @@ async fn run_smartctl(
     args: &[&str],
     is_usable: impl Fn(&str) -> bool,
 ) -> Option<String> {
-    let output = crate::smart::tokio_command(device, args)
-        .output()
-        .await
-        .ok()?;
+    // A SMART query is the slowest probe on the box (a drive may have to spin
+    // up), so it gets the wider deadline; on expiry the child is killed and
+    // the tile reports "Unknown" instead of the request hanging (ROADMAP 15.2).
+    let mut cmd = crate::smart::tokio_command(device, args);
+    let output = crate::utils::process::run_timed_async(
+        &mut cmd,
+        crate::utils::process::SMART_PROBE_TIMEOUT,
+    )
+    .await?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
 
     if is_usable(&stdout) {
@@ -835,9 +1125,12 @@ async fn run_smartctl(
         // (ROADMAP 7.4).
         let mut sat_args: Vec<&str> = vec!["-d", "sat"];
         sat_args.extend(args);
-        if let Ok(sat_output) = crate::smart::tokio_command(device, &sat_args)
-            .output()
-            .await
+        let mut sat_cmd = crate::smart::tokio_command(device, &sat_args);
+        if let Some(sat_output) = crate::utils::process::run_timed_async(
+            &mut sat_cmd,
+            crate::utils::process::SMART_PROBE_TIMEOUT,
+        )
+        .await
         {
             let sat_stdout = String::from_utf8_lossy(&sat_output.stdout).into_owned();
             if is_usable(&sat_stdout) {
@@ -860,9 +1153,9 @@ async fn detect_disk_role(device_name: &str) -> String {
     // read-only probe ("must be super-user" otherwise), so a bare call
     // silently failed and every array member was reported as a plain disk
     // (ROADMAP 7.4).
-    if let Ok(output) = Command::new("sudo")
+    if let Ok(output) = run_probe(Command::new("sudo")
         .args(["mdadm", "--examine", &device])
-        .output()
+        )
         .await
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -872,9 +1165,9 @@ async fn detect_disk_role(device_name: &str) -> String {
     }
 
     // Check if part of ZFS — same `sudo` reason as `mdadm --examine` above.
-    if let Ok(output) = Command::new("sudo")
+    if let Ok(output) = run_probe(Command::new("sudo")
         .args(["zpool", "status", &device])
-        .output()
+        )
         .await
     {
         if output.status.success() {
@@ -883,9 +1176,9 @@ async fn detect_disk_role(device_name: &str) -> String {
     }
 
     // Check mount points
-    if let Ok(output) = Command::new("lsblk")
+    if let Ok(output) = run_probe(Command::new("lsblk")
         .args(["-n", "-o", "MOUNTPOINT", &device])
-        .output()
+        )
         .await
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -902,9 +1195,9 @@ async fn detect_disk_role(device_name: &str) -> String {
 
 async fn get_disk_usage_percent(device_name: &str) -> f64 {
     // Get partitions for this disk and calculate average usage
-    if let Ok(output) = Command::new("lsblk")
+    if let Ok(output) = run_probe(Command::new("lsblk")
         .args(["-n", "-o", "NAME,MOUNTPOINT"])
-        .output()
+        )
         .await
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -919,7 +1212,7 @@ async fn get_disk_usage_percent(device_name: &str) -> f64 {
                 && parts[1] != "MOUNTPOINT"
             {
                 let partition = format!("/dev/{}", parts[0]);
-                if let Ok(df_output) = Command::new("df").args(["-B1", &partition]).output().await {
+                if let Ok(df_output) = run_probe(Command::new("df").args(["-B1", &partition])).await {
                     let df_stdout = String::from_utf8_lossy(&df_output.stdout);
                     let lines: Vec<&str> = df_stdout.lines().collect();
                     if lines.len() >= 2 {
@@ -944,49 +1237,46 @@ async fn get_disk_usage_percent(device_name: &str) -> f64 {
     0.0
 }
 
+/// Per-disk health score from the three things actually measured.
+///
+/// SMART verdict (40), temperature (20) and space usage (40) sum to 100, so
+/// there is no leftover to fill: the old score added a hardcoded
+/// `error_score = 10` that no disk ever earned, which lifted a failing disk
+/// off the floor and capped the grade below 100 for a perfect one (ROADMAP
+/// 15.3). Unknown temperature keeps half credit — the same policy as an
+/// unknown SMART verdict — because a probe that could not answer is not
+/// evidence of a fault.
 fn calculate_individual_disk_score(
     smart_status: &str,
     temperature: Option<f64>,
     usage_percent: f64,
 ) -> u32 {
-    // SMART status: 40 points
     let smart_score = match smart_status {
         "Healthy" => 40,
         "Warning" => 20,
         "Failed" => 0,
-        _ => 30,
+        _ => 20,
     };
 
-    // Temperature: 20 points
-    let temp_score: u32 = if let Some(temp) = temperature {
-        if temp < 50.0 {
-            20
-        } else if temp < 70.0 {
-            15
-        } else if temp < 85.0 {
-            10
-        } else {
-            0
-        }
-    } else {
-        15 // Unknown temperature, give partial score
+    let temp_score: u32 = match temperature {
+        Some(temp) if temp < 50.0 => 20,
+        Some(temp) if temp < 70.0 => 15,
+        Some(temp) if temp < 85.0 => 10,
+        Some(_) => 0,
+        None => 10,
     };
 
-    // Usage space: 30 points
     let usage_score: u32 = if usage_percent < 70.0 {
-        30
+        40
     } else if usage_percent < 85.0 {
-        20
+        26
     } else if usage_percent < 95.0 {
-        10
+        13
     } else {
         0
     };
 
-    // Error count: 10 points (simplified)
-    let error_score = 10;
-
-    (smart_score + temp_score + usage_score + error_score).min(100)
+    (smart_score + temp_score + usage_score).min(100)
 }
 
 fn calculate_disk_summary(disks: &[DiskHealth]) -> DiskSummary {
@@ -1141,9 +1431,9 @@ async fn get_raid_volumes() -> Vec<StorageVolume> {
     // needs it: `zpool` opens `/dev` nodes that are `660 root:disk`, and the
     // service account is not in the `disk` group — without it this read
     // silently reported "no pool" on a host that has one (ROADMAP 7.4).
-    if let Ok(output) = Command::new("sudo")
+    if let Ok(output) = run_probe(Command::new("sudo")
         .args(["zpool", "list", "-H", "-p"])
-        .output()
+        )
         .await
     {
         if output.status.success() {
@@ -1163,7 +1453,7 @@ async fn get_raid_volumes() -> Vec<StorageVolume> {
                     };
 
                     let status = if usage_percent > 90.0 {
-                        "critical".to_string()
+                        "unhealthy".to_string()
                     } else if usage_percent > 80.0 {
                         "warning".to_string()
                     } else {
@@ -1200,9 +1490,9 @@ async fn get_raid_device_info(device_name: &str, raid_level: &str) -> Option<Sto
     let device_path = format!("/dev/{}", device_name);
 
     // Get filesystem info using df
-    if let Ok(output) = Command::new("df")
+    if let Ok(output) = run_probe(Command::new("df")
         .args(["-B1", &device_path])
-        .output()
+        )
         .await
     {
         if output.status.success() {
@@ -1224,7 +1514,7 @@ async fn get_raid_device_info(device_name: &str, raid_level: &str) -> Option<Sto
                     };
 
                     let status = if usage_percent > 90.0 {
-                        "critical".to_string()
+                        "unhealthy".to_string()
                     } else if usage_percent > 80.0 {
                         "warning".to_string()
                     } else {
@@ -1387,6 +1677,12 @@ pub struct CpuDetails {
     pub governor: String,
     /// 1-, 5- and 15-minute load averages from `/proc/loadavg`.
     pub load_avg: Vec<f64>,
+    /// Mean of `per_core_usage`, i.e. the aggregate CPU utilisation.
+    ///
+    /// The "Live usage by app" card needs one host number to draw its base
+    /// band; it used to read a field that did not exist and fell back to a
+    /// literal `0` (ROADMAP 15.3).
+    pub usage_percent: u32,
     pub per_core_usage: Vec<PerCoreUsageItem>,
     pub temperatures: Vec<TempItem>,
 }
@@ -1590,6 +1886,7 @@ fn build_server_details() -> ServerDetailsResponse {
             cache_size: cpu_info.cache_size,
             governor,
             load_avg,
+            usage_percent: mean_core_usage(&per_core_usage),
             per_core_usage,
             temperatures: temperatures.clone(),
         },
@@ -1684,9 +1981,7 @@ fn count_installed_packages() -> String {
     ];
 
     for (label, argv) in candidates {
-        if let Ok(output) = std::process::Command::new(argv[0])
-            .args(&argv[1..])
-            .output()
+        if let Ok(output) = run_probe_blocking(std::process::Command::new(argv[0]).args(&argv[1..]))
         {
             if output.status.success() {
                 let n = count_lines(&output.stdout);
@@ -1788,12 +2083,12 @@ fn get_gpu_details() -> Vec<GpuDetails> {
     let mut gpus = Vec::new();
 
     // Try nvidia-smi first (NVIDIA GPUs)
-    if let Ok(output) = std::process::Command::new("nvidia-smi")
+    if let Ok(output) = run_probe_blocking(std::process::Command::new("nvidia-smi")
         .args([
             "--query-gpu=index,name,temperature.gpu,utilization.gpu,memory.total,memory.used,power.draw,clocks.current.graphics,clocks.max.graphics,encoder.utilization,decoder.utilization",
             "--format=csv,noheader,nounits",
         ])
-        .output()
+        )
     {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1834,7 +2129,7 @@ fn get_gpu_details() -> Vec<GpuDetails> {
 
     // Try rocm-smi (AMD GPUs)
     let mut rocm_found = false;
-    if let Ok(output) = std::process::Command::new("rocm-smi")
+    if let Ok(output) = run_probe_blocking(std::process::Command::new("rocm-smi")
         .args([
             "--showtemp",
             "--showuse",
@@ -1842,7 +2137,7 @@ fn get_gpu_details() -> Vec<GpuDetails> {
             "--showpower",
             "--showclocks",
         ])
-        .output()
+        )
     {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1984,9 +2279,7 @@ fn get_network_details() -> NetworkDetails {
     }
 
     // Parse IP addresses from `ip -json addr show`
-    let ip_output = std::process::Command::new("ip")
-        .args(["-json", "addr", "show"])
-        .output();
+    let ip_output = run_probe_blocking(std::process::Command::new("ip").args(["-json", "addr", "show"]));
     let mut ipv4_map: HashMap<String, Vec<String>> = HashMap::new();
     let mut ipv6_map: HashMap<String, Vec<String>> = HashMap::new();
     if let Ok(ref output) = ip_output {
@@ -2137,9 +2430,9 @@ fn get_network_details() -> NetworkDetails {
 fn get_drive_temperatures() -> Vec<TempItem> {
     let mut temps = Vec::new();
 
-    if let Ok(output) = std::process::Command::new("lsblk")
+    if let Ok(output) = run_probe_blocking(std::process::Command::new("lsblk")
         .args(["-d", "-n", "-o", "NAME"])
-        .output()
+        )
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
@@ -2150,8 +2443,10 @@ fn get_drive_temperatures() -> Vec<TempItem> {
             // Needs root the same way get_smart_status/get_smart_temperature
             // above do — the shared helper carries the sudoers-granted argv
             // shape; see src/smart.rs.
-            if let Ok(smart) = crate::smart::std_command(&format!("/dev/{}", dev), &["-A"]).output()
-            {
+            if let Ok(smart) = run_smart_blocking(&mut crate::smart::std_command(
+                &format!("/dev/{}", dev),
+                &["-A"],
+            )) {
                 let smart_out = String::from_utf8_lossy(&smart.stdout);
                 for smart_line in smart_out.lines() {
                     if smart_line.contains("Temperature_Celsius")
@@ -2184,7 +2479,7 @@ fn parse_voltages(_meminfo: &str, _sensors: &crate::utils::proc::SensorInfo) -> 
     let mut voltages = Vec::new();
 
     // Try to get voltages from `sensors` command output directly
-    if let Ok(output) = std::process::Command::new("sensors").output() {
+    if let Ok(output) = run_probe_blocking(&mut std::process::Command::new("sensors")) {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut _current_chip = String::new();
 
@@ -2249,84 +2544,70 @@ fn parse_voltages(_meminfo: &str, _sensors: &crate::utils::proc::SensorInfo) -> 
     voltages
 }
 
+/// The caller's floating-panel preferences.
+///
+/// Goes through `require_auth` like every other protected handler (ROADMAP
+/// 15.1): the previous hand-rolled `SELECT username FROM sessions WHERE token
+/// = ?` had no `expires_at` predicate, so an **expired** session still read and
+/// wrote preferences, and an invalid one answered 400 instead of 401. The
+/// guard resolves `/api/internal`'s session once — expiry included — and the
+/// `user_widget_preferences` row is keyed by that resolved username.
 pub async fn handle_get_widget_preferences(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
+    let username = match require_auth(&state, &headers).await {
+        Ok(username) => username,
+        Err(response) => return response,
+    };
 
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    // Get user_id from session
-    let user_id =
-        match sqlx::query_scalar::<_, String>("SELECT username FROM sessions WHERE token = ?")
-            .bind(session_token)
-            .fetch_optional(state.db.pool().as_ref())
-            .await
-        {
-            Ok(Some(id)) => id,
-            Ok(None) => return ResponseHelper::json_error("Invalid session".to_string()),
-            Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
-        };
-
-    // Fetch widget preferences
-    let preferences = sqlx::query_as::<_, (String, i32, i32, bool)>(
-        "SELECT widget_key, position_x, position_y, is_visible FROM user_widget_preferences WHERE user_id = ?"
-    )
-    .bind(user_id)
-    .fetch_all(state.db.pool().as_ref())
-    .await;
-
-    match preferences {
-        Ok(prefs) => {
-            let widget_prefs: Vec<WidgetPreference> = prefs
-                .into_iter()
-                .map(
-                    |(widget_key, position_x, position_y, is_visible)| WidgetPreference {
-                        widget_key,
-                        position_x,
-                        position_y,
-                        is_visible,
-                    },
-                )
-                .collect();
-
-            ResponseHelper::json_success(widget_prefs)
-        }
-        Err(e) => ResponseHelper::json_error(format!("Failed to fetch preferences: {}", e)),
+    match load_widget_preferences(&state, &username).await {
+        Ok(prefs) => ResponseHelper::json_success(prefs),
+        Err(message) => ResponseHelper::json_error(message),
     }
 }
 
+/// Read one account's panel preferences (shared by the GET handler and tests).
+async fn load_widget_preferences(
+    state: &Arc<AppState>,
+    username: &str,
+) -> Result<Vec<WidgetPreference>, String> {
+    let preferences = sqlx::query_as::<_, (String, i32, i32, bool)>(
+        "SELECT widget_key, position_x, position_y, is_visible
+         FROM user_widget_preferences WHERE user_id = ? ORDER BY widget_key",
+    )
+    .bind(username)
+    .fetch_all(state.db.pool().as_ref())
+    .await
+    .map_err(|e| format!("Failed to fetch preferences: {e}"))?;
+
+    Ok(preferences
+        .into_iter()
+        .map(
+            |(widget_key, position_x, position_y, is_visible)| WidgetPreference {
+                widget_key,
+                position_x,
+                position_y,
+                is_visible,
+            },
+        )
+        .collect())
+}
+
+/// Create or update one of the caller's panel preferences.
 pub async fn handle_update_widget_preference(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
     AxumJson(payload): AxumJson<UpdateWidgetPreferenceRequest>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
+    let username = match require_auth(&state, &headers).await {
+        Ok(username) => username,
+        Err(response) => return response,
+    };
 
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
+    if let Err(message) = validate_widget_preference(&payload) {
+        return ResponseHelper::json_error(message);
     }
-
-    // Get user_id from session
-    let user_id =
-        match sqlx::query_scalar::<_, String>("SELECT username FROM sessions WHERE token = ?")
-            .bind(session_token)
-            .fetch_optional(state.db.pool().as_ref())
-            .await
-        {
-            Ok(Some(id)) => id,
-            Ok(None) => return ResponseHelper::json_error("Invalid session".to_string()),
-            Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
-        };
 
     let is_visible = payload.is_visible.unwrap_or(true);
 
@@ -2338,9 +2619,9 @@ pub async fn handle_update_widget_preference(
          position_x = excluded.position_x,
          position_y = excluded.position_y,
          is_visible = excluded.is_visible,
-         updated_at = CURRENT_TIMESTAMP"
+         updated_at = CURRENT_TIMESTAMP",
     )
-    .bind(user_id)
+    .bind(&username)
     .bind(&payload.widget_key)
     .bind(payload.position_x)
     .bind(payload.position_y)
@@ -2464,7 +2745,8 @@ mod tests {
 
     #[test]
     fn test_individual_disk_score_failed_smart_drags_it_down() {
-        // 0 (smart) + 20 (temp) + 30 (usage) + 10 (errors) = 60
+        // 0 (SMART) + 20 (30 °C) + 40 (20 % used) = 60; the old hardcoded
+        // `error_score = 10` added a tenth of the score nobody measured.
         assert_eq!(
             calculate_individual_disk_score("Failed", Some(30.0), 20.0),
             60
@@ -2473,22 +2755,94 @@ mod tests {
 
     #[test]
     fn test_individual_disk_score_unknown_smart_and_temp_give_partial() {
-        // 30 (unknown smart) + 15 (unknown temp) + 30 (usage) + 10 = 85
-        assert_eq!(calculate_individual_disk_score("???", None, 5.0), 85);
+        // 20 (unknown SMART) + 10 (unknown temp) + 40 (5 % used) = 70.
+        assert_eq!(calculate_individual_disk_score("???", None, 5.0), 70);
     }
 
     #[test]
     fn test_individual_disk_score_hot_and_full_disk_is_penalised() {
-        // 40 (healthy) + 0 (>=85°C) + 0 (>=95% usage) + 10 = 50
+        // 40 (SMART) + 0 (>=85 °C) + 0 (>=95 % used) = 40.
         assert_eq!(
             calculate_individual_disk_score("Healthy", Some(90.0), 99.0),
-            50
+            40
         );
     }
 
     #[test]
     fn test_individual_disk_score_never_exceeds_100() {
-        assert!(calculate_individual_disk_score("Healthy", Some(0.0), 0.0) <= 100);
+        assert_eq!(
+            calculate_individual_disk_score("Healthy", Some(0.0), 0.0),
+            100
+        );
+    }
+
+    #[test]
+    fn test_individual_disk_score_has_no_unmeasured_component() {
+        // Every point must come from one of the three measured inputs: a disk
+        // whose inputs sum to zero scores zero, not a constant 10.
+        assert_eq!(
+            calculate_individual_disk_score("Failed", Some(95.0), 99.0),
+            0
+        );
+        // And the three maximums add up to exactly 100.
+        assert_eq!(
+            calculate_individual_disk_score("Healthy", Some(20.0), 0.0),
+            100
+        );
+    }
+
+    // --- health_status_for_score: the one status vocabulary ---
+
+    #[test]
+    fn test_health_status_uses_the_documented_vocabulary() {
+        assert_eq!(health_status_for_score(100), "healthy");
+        assert_eq!(health_status_for_score(70), "healthy");
+        assert_eq!(health_status_for_score(69), "warning");
+        assert_eq!(health_status_for_score(40), "warning");
+        assert_eq!(health_status_for_score(39), "unhealthy");
+        assert_eq!(health_status_for_score(0), "unhealthy");
+    }
+
+    #[test]
+    fn test_health_status_never_answers_critical() {
+        // The UI declares healthy|warning|unhealthy|unknown; the fifth word the
+        // backend used to emit was rendered by nothing.
+        for score in 0..=100 {
+            assert_ne!(health_status_for_score(score), "critical");
+        }
+    }
+
+    // --- mean_core_usage: aggregate for the app-usage card ---
+
+    #[test]
+    fn test_mean_core_usage_averages_and_rounds() {
+        let cores = vec![
+            PerCoreUsageItem { core: "C0".into(), usage_percent: 10 },
+            PerCoreUsageItem { core: "C1".into(), usage_percent: 21 },
+            PerCoreUsageItem { core: "C2".into(), usage_percent: 30 },
+        ];
+        assert_eq!(mean_core_usage(&cores), 20); // 61/3 = 20.33
+        assert_eq!(mean_core_usage(&[]), 0, "no core answered");
+    }
+
+    // --- snapshot_is_fresh: the disk-health cache window ---
+
+    #[test]
+    fn test_snapshot_is_fresh_only_inside_the_ttl() {
+        let now = Instant::now();
+        assert!(snapshot_is_fresh(now, now, DISK_HEALTH_TTL));
+        assert!(snapshot_is_fresh(
+            now - Duration::from_secs(29),
+            now,
+            DISK_HEALTH_TTL
+        ));
+        assert!(!snapshot_is_fresh(
+            now - Duration::from_secs(31),
+            now,
+            DISK_HEALTH_TTL
+        ));
+        // A clock that appears to go backwards must not panic.
+        assert!(snapshot_is_fresh(now + Duration::from_secs(5), now, DISK_HEALTH_TTL));
     }
 
     // --- calculate_disk_summary: bucket disks by health_score ---
@@ -2575,5 +2929,141 @@ mod tests {
     fn test_disk_score_a_critically_full_filesystem_zeroes_the_fs_component() {
         // disk_avg 100 * 0.6 + fs 0 * 0.4 = 60
         assert_eq!(calculate_disk_score(&[disk(100)], &[fs(97.0)]), 60.0);
+    }
+
+    // --- widget validation (ROADMAP 15.1) ---
+
+    fn add_request() -> AddWidgetRequest {
+        AddWidgetRequest {
+            id: "cpu".to_string(),
+            wtype: "cpu".to_string(),
+            title: "CPU".to_string(),
+            size: "1x1".to_string(),
+            row: 1,
+            col: 1,
+            row_span: 1,
+            col_span: 1,
+        }
+    }
+
+    #[test]
+    fn test_validate_add_widget_accepts_a_minimal_tile() {
+        assert!(validate_add_widget(&add_request()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_add_widget_accepts_the_whole_id_charset() {
+        let mut req = add_request();
+        req.id = "disk.usage_2:raid-0".to_string();
+        assert!(validate_add_widget(&req).is_ok());
+    }
+
+    #[test]
+    fn test_validate_add_widget_rejects_an_unsafe_id() {
+        for bad in ["", "with space", "sla/sh", "quote'", "<script>", "a\nb"] {
+            let mut req = add_request();
+            req.id = bad.to_string();
+            assert!(validate_add_widget(&req).is_err(), "id {bad:?}");
+        }
+    }
+
+    #[test]
+    fn test_validate_add_widget_rejects_an_over_long_id() {
+        let mut req = add_request();
+        req.id = "a".repeat(MAX_WIDGET_ID_LEN + 1);
+        assert!(validate_add_widget(&req).is_err());
+        req.id = "a".repeat(MAX_WIDGET_ID_LEN);
+        assert!(validate_add_widget(&req).is_ok());
+    }
+
+    #[test]
+    fn test_validate_add_widget_rejects_a_bad_type() {
+        let mut req = add_request();
+        req.wtype = "cpu usage".to_string();
+        assert!(validate_add_widget(&req).is_err());
+    }
+
+    #[test]
+    fn test_validate_add_widget_rejects_an_empty_or_over_long_title() {
+        let mut req = add_request();
+        req.title = "   ".to_string();
+        assert!(validate_add_widget(&req).is_err());
+        req.title = "t".repeat(MAX_WIDGET_TITLE_LEN + 1);
+        assert!(validate_add_widget(&req).is_err());
+        req.title = "t".repeat(MAX_WIDGET_TITLE_LEN);
+        assert!(validate_add_widget(&req).is_ok());
+    }
+
+    #[test]
+    fn test_validate_add_widget_rejects_control_characters_in_the_title() {
+        let mut req = add_request();
+        req.title = "CPU\u{0000}".to_string();
+        assert!(validate_add_widget(&req).is_err());
+    }
+
+    #[test]
+    fn test_validate_add_widget_rejects_a_malformed_or_oversized_tile() {
+        for bad in ["", "2", "2x", "x2", "2x2x2", "0x1", "7x1", "1x7", "axb", "-1x2"] {
+            let mut req = add_request();
+            req.size = bad.to_string();
+            assert!(validate_add_widget(&req).is_err(), "size {bad:?}");
+        }
+        let mut req = add_request();
+        req.size = format!("{MAX_WIDGET_SPAN}x{MAX_WIDGET_SPAN}");
+        assert!(validate_add_widget(&req).is_ok());
+    }
+
+    #[test]
+    fn test_validate_add_widget_rejects_a_position_or_span_outside_the_grid() {
+        let mut req = add_request();
+        req.row = 0;
+        assert!(validate_add_widget(&req).is_err(), "row 0");
+        req = add_request();
+        req.col = MAX_WIDGET_POSITION + 1;
+        assert!(validate_add_widget(&req).is_err(), "col too far");
+        req = add_request();
+        req.row_span = MAX_WIDGET_SPAN + 1;
+        assert!(validate_add_widget(&req).is_err(), "row span too large");
+        req = add_request();
+        req.col_span = 0;
+        assert!(validate_add_widget(&req).is_err(), "col span zero");
+    }
+
+    // --- widget preference validation (ROADMAP 15.1) ---
+
+    fn preference_request() -> UpdateWidgetPreferenceRequest {
+        UpdateWidgetPreferenceRequest {
+            widget_key: "resourceMonitor".to_string(),
+            position_x: 10,
+            position_y: 20,
+            is_visible: Some(true),
+        }
+    }
+
+    #[test]
+    fn test_validate_widget_preference_accepts_a_normal_panel() {
+        assert!(validate_widget_preference(&preference_request()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_widget_preference_rejects_an_unsafe_key() {
+        for bad in ["", "a b", "x/y", "k'".to_string().as_str()] {
+            let mut req = preference_request();
+            req.widget_key = bad.to_string();
+            assert!(validate_widget_preference(&req).is_err(), "key {bad:?}");
+        }
+    }
+
+    #[test]
+    fn test_validate_widget_preference_bounds_the_panel_position() {
+        let mut req = preference_request();
+        req.position_x = MAX_WIDGET_PANEL_OFFSET + 1;
+        assert!(validate_widget_preference(&req).is_err());
+        req.position_x = -MAX_WIDGET_PANEL_OFFSET - 1;
+        assert!(validate_widget_preference(&req).is_err());
+        req.position_x = -MAX_WIDGET_PANEL_OFFSET;
+        assert!(validate_widget_preference(&req).is_ok());
+        req.position_y = MAX_WIDGET_PANEL_OFFSET;
+        assert!(validate_widget_preference(&req).is_ok());
     }
 }

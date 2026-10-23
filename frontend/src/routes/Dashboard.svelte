@@ -34,6 +34,7 @@
   let error = '';
   let updatedAt = '';
   let prevNetTraffic: Record<string, { rx: number; tx: number }> = {};
+  let prevNetSampleAt = 0;
 
   function fmtBytes(b: number): string {
     if (!b || b === 0) return '0 B';
@@ -89,7 +90,19 @@
     return 'green';
   }
 
+  /**
+   * One refresh tick.
+   *
+   * Skipped while the tab is hidden or while the previous tick is still in
+   * flight (ROADMAP 15.2): the two server endpoints fork SMART/lsblk probes
+   * and there is no point collecting them for a tab nobody is looking at, nor
+   * queueing a second request behind a slow one. `visibilitychange` below
+   * refreshes immediately when the tab comes back.
+   */
+  let refreshing = false;
   async function refresh() {
+    if (refreshing || document.hidden) return;
+    refreshing = true;
     try {
       const [detailsRes, healthRes] = await Promise.all([
         api.getServerDetails(),
@@ -97,13 +110,18 @@
       ]);
       if (detailsRes.success) {
         const prev = prevNetTraffic;
+        const now = Date.now();
+        // Rate = bytes since the previous sample / the real time between the
+        // two samples (the interval is not a constant: a tick is skipped when
+        // the tab is hidden, and a slow response stretches it).
+        const elapsedSec = prevNetSampleAt ? Math.max((now - prevNetSampleAt) / 1000, 0.001) : 0;
         for (const iface of detailsRes.data?.network?.interfaces ?? []) {
           const key = iface.name;
-          if (prev[key]) {
+          if (prev[key] && elapsedSec > 0) {
             const rxDelta = iface.rx_bytes - prev[key].rx;
             const txDelta = iface.tx_bytes - prev[key].tx;
-            iface.rx_rate = Math.max(0, rxDelta * 8 / 5);
-            iface.tx_rate = Math.max(0, txDelta * 8 / 5);
+            iface.rx_rate = Math.max(0, (rxDelta * 8) / elapsedSec);
+            iface.tx_rate = Math.max(0, (txDelta * 8) / elapsedSec);
           } else {
             iface.rx_rate = 0;
             iface.tx_rate = 0;
@@ -111,6 +129,7 @@
           prev[key] = { rx: iface.rx_bytes, tx: iface.tx_bytes };
         }
         prevNetTraffic = prev;
+        prevNetSampleAt = now;
         serverDetails = detailsRes.data;
       }
       if (healthRes.success) {
@@ -124,18 +143,25 @@
       error = translate('dashboard.load_failed');
       console.error('Dashboard error:', e);
     } finally {
+      refreshing = false;
       loading = false;
       updatedAt = new Date().toLocaleTimeString(LOCALE_MAP[$languageStore] || 'en-US');
     }
   }
 
+  function onVisibilityChange() {
+    if (!document.hidden) refresh();
+  }
+
   onMount(() => {
     refresh();
     timer = setInterval(refresh, 5000);
+    document.addEventListener('visibilitychange', onVisibilityChange);
   });
 
   onDestroy(() => {
     if (timer) clearInterval(timer);
+    document.removeEventListener('visibilitychange', onVisibilityChange);
   });
 
   $: cpu = serverDetails?.cpu;
@@ -165,7 +191,14 @@
   $: gaugeCircumference = 2 * Math.PI * 84;
   $: gaugeDash = `${(gaugeCircumference * healthScore / 100).toFixed(1)} ${gaugeCircumference.toFixed(1)}`;
   $: healthLabel = healthScore >= 90 ? $t('dashboard.health_sain') : healthScore >= 75 ? $t('dashboard.health_correct') : $t('dashboard.health_watch');
-  $: healthHint = $t('dashboard.health_hint_ok');
+  $: healthHint =
+    healthStatus === 'healthy'
+      ? $t('dashboard.health_hint_ok')
+      : healthStatus === 'warning'
+        ? $t('dashboard.health_hint_warning')
+        : healthStatus === 'unhealthy'
+          ? $t('dashboard.health_hint_critical')
+          : $t('dashboard.health_hint_unknown');
 
   $: cpuPct = health?.cpu_usage ?? 0;
   $: cpuCores = cpu?.per_core_usage ?? [];
@@ -176,6 +209,17 @@
 
   $: netSummary = `${netInterfaces.length} ${$t('dashboard.active_interfaces')}`;
   $: smartSummary = `${diskHealthy}/${diskTotal} ${$t('dashboard.healthy_label')}`;
+  // Most recent self-test actually reported by a drive; empty when none has
+  // ever run (the old line printed the literal "2").
+  $: lastSelfTest = (disks as any[])
+    .map((d) => d.last_self_test)
+    .filter((v): v is string => typeof v === 'string' && v.length > 0)
+    .sort()
+    .pop() ?? '';
+  $: smartTone =
+    diskTotal > 0 && diskHealthy === diskTotal
+      ? { box: 'bg-[var(--hv-success-bg)] border-[var(--hv-success)]/40', text: 'text-[var(--hv-success-text)]' }
+      : { box: 'bg-[var(--hv-warning-bg)] border-[var(--hv-warning)]/40', text: 'text-[var(--hv-warning)]' };
   $: sensorCount = (sensorData?.cpu_temps?.length ?? 0) + (sensorData?.motherboard_temps?.length ?? 0) + (sensorData?.drive_temps?.length ?? 0);
 
   $: osInfo = serverDetails?.os ?? serverDetails?.system;
@@ -291,8 +335,8 @@
               <div class="text-sm text-[var(--hv-shell-text-2)] mt-1">{$t('dashboard.health_out_of')}</div>
             </div>
           </div>
-          <div class="mt-4 text-xl font-semibold text-[var(--hv-success-text)]">{healthLabel}</div>
-          <div class="mt-1.5 text-sm leading-relaxed text-center text-[var(--hv-shell-text-2)] text-pretty">{healthHint}</div>
+          <div data-testid="dashboard-health-label" class="mt-4 text-xl font-semibold text-[var(--hv-success-text)]">{healthLabel}</div>
+          <div data-testid="dashboard-health-hint" data-health-status={healthStatus} class="mt-1.5 text-sm leading-relaxed text-center text-[var(--hv-shell-text-2)] text-pretty">{healthHint}</div>
           <div class="self-stretch flex flex-col gap-0.5 mt-5 pt-4 border-t border-[var(--hv-shell-border-soft)]">
             <div class={kvRow}><span>{$t('dashboard.uptime_label')}</span><span class={mono}>{osInfo?.uptime ?? '—'}</span></div>
             <div class={kvRow}><span>{$t('dashboard.load_average')}</span><span class={mono}>{cpu?.load_avg?.[0]?.toFixed(2) ?? '—'} · {cpu?.load_avg?.[1]?.toFixed(2) ?? '—'} · {cpu?.load_avg?.[2]?.toFixed(2) ?? '—'}</span></div>
@@ -325,7 +369,7 @@
           <div class="flex flex-col gap-0.5 mt-auto pt-3">
             <div class={kvRow}><span>{$t('dashboard.clock')}</span><span class={mono}>{fmtFreq(cpu?.frequency_mhz)}</span></div>
             <div class={kvRow}><span>{$t('dashboard.cores')} / {$t('dashboard.threads')}</span><span class={mono}>{phys} / {logical}{isHyperThreading ? ' (HT)' : ''}</span></div>
-            <div class={kvRow}><span>{$t('dashboard.load_average')}</span><span class={mono}>{cpuPct.toFixed(0)} %</span></div>
+            <div class={kvRow}><span>{$t('dashboard.cpu_usage')}</span><span class={mono}>{cpuPct.toFixed(0)} %</span></div>
           </div>
         </SectionCard>
 
@@ -482,12 +526,6 @@
             </div>
           </div>
           {/snippet}
-          {#snippet actions()}
-          <span class="inline-flex items-center gap-2 h-11 px-3 flex-none rounded-full bg-[var(--hv-success-bg)] text-[var(--hv-success)] text-c-base font-bold">
-              <span class="w-2.5 h-2.5 rounded-full bg-[var(--hv-success)]"></span>
-              {$t('dashboard.os_uptodate')}
-            </span>
-          {/snippet}
           <div data-testid="dashboard-os-grid" class="grid grid-cols-2 gap-x-5 gap-y-0.5 mt-4 @max-[768px]:grid-cols-1">
             {#if osKernel}<div class={kvRow}><span>{$t('dashboard.os_kernel')}</span><span class={mono}>{osKernel}</span></div>{/if}
             {#if osArch}<div class={kvRow}><span>{$t('dashboard.os_architecture')}</span><span class={mono}>{osArch}</span></div>{/if}
@@ -533,7 +571,7 @@
                 </div>
               {/each}
             </div>
-            <div class="flex items-center gap-4 mt-5 px-5 py-4 rounded-lg bg-[var(--hv-success-bg)] border border-[var(--hv-success)]/40">
+            <div data-testid="dashboard-smart-summary" class="flex items-center gap-4 mt-5 px-5 py-4 rounded-lg border {smartTone.box}">
               <span class="grid place-items-center w-[52px] h-[52px] rounded-2xl bg-[var(--hv-success-bg)] text-[var(--hv-success)] flex-none">
                 <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M12 3.5l7 3v5.5c0 4-3 7-7 8.5-4-1.5-7-4.5-7-8.5V6.5z"></path>
@@ -542,7 +580,9 @@
               </span>
               <div class="flex-1 min-w-0">
                 <div class="text-base font-semibold">{$t('dashboard.smart_health')}</div>
-                <div class="text-sm text-[var(--hv-shell-text-2)] mt-0.5">{$t('dashboard.all_healthy')} · {$t('dashboard.last_test')} 2 {$t('dashboard.last_check')}</div>
+                <div data-testid="dashboard-smart-detail" class="text-sm text-[var(--hv-shell-text-2)] mt-0.5">
+                  {smartSummary}{#if lastSelfTest} · {$t('dashboard.last_test')} {lastSelfTest}{:else} · {$t('dashboard.never_tested')}{/if}
+                </div>
               </div>
               <span class="font-[family-name:var(--hv-font-mono)] text-2xl font-bold text-[var(--hv-success-text)]">{diskHealthy} / {diskTotal}</span>
             </div>
@@ -579,7 +619,7 @@
                       <span class="w-2 h-2 rounded-full bg-[var(--hv-primary)]"></span>
                       {iface.carrier ? 'ACTIVE' : 'DOWN'}
                     </span>
-                    <span class="flex-1 text-right text-sm text-[var(--hv-shell-text-2)]">{iface.speed ? iface.speed + ' Mb/s' : '—'}</span>
+                    <span class="flex-1 text-right text-sm text-[var(--hv-shell-text-2)]">{iface.link_speed_mbps ? iface.link_speed_mbps + ' Mb/s' : '—'}</span>
                   </div>
                   <div class="grid grid-cols-2 gap-x-5 gap-y-0.5 mt-3 @max-[768px]:grid-cols-1">
                     {#if iface.ipv4?.length}<div class={kvRow}><span>IPv4</span><span class={mono}>{iface.ipv4[0]}</span></div>{/if}

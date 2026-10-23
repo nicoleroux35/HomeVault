@@ -111,13 +111,11 @@ export async function loadWidgetData<T>(widgetId: string): Promise<WidgetLoadRes
         if (!res.success || !res.data) return { status: 'error', error: 'Failed to load' };
         return { status: 'ready', data: translateTemp(res.data) as T };
       }
-      /* app-update and server-update share the same endpoint. */
-      case 'app-update':
-      case 'server-update': {
-        const res = await api.getWidgetUpdateInfo();
-        if (!res.success || !res.data) return { status: 'error', error: 'Failed to load' };
-        return { status: 'ready', data: res.data as T };
-      }
+      // `app-update` / `server-update` were removed from the widget catalog on
+      // 2026-07-18, so no tile ever asks for them; the two cases kept routing
+      // a dead widget id to an endpoint nothing could reach. The
+      // `/widgets/update-info` endpoint itself stays (documented in
+      // docs/API.md) but no desktop widget dispatches to it.
 
       default:
         return { status: 'error', error: `Unknown widget: ${widgetId}` };

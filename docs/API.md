@@ -113,16 +113,16 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
-| GET | `/dashboard/data` | auth | CPU/RAM/disk/network summary |
-| GET | `/dashboard/widget/{id}` | auth | data for one widget |
-| POST | `/dashboard/widget` | auth | add widget |
-| DELETE | `/dashboard/widget/{id}` | auth | remove widget |
-| POST | `/dashboard/widgets/reorder` | auth | reorder |
-| GET | `/dashboard/widgets` | auth | all widgets |
+| GET | `/dashboard/data` | auth | CPU/RAM/disk/network summary; `widgets` is **the caller's own grid** |
+| GET | `/dashboard/widget/{id}` | auth | live data for one tile type (`cpu`, `memory`, `uptime`); **`404`** for any other id |
+| POST | `/dashboard/widget` | auth | add a tile to the caller's grid — `{id, wtype, title, size, row, col, row_span?, col_span?}`, strictly validated (`400` on a bad slug/title/`size`/position, `400` "already exists" for an id the caller already owns, `400` past 64 tiles) |
+| DELETE | `/dashboard/widget/{id}` | auth | remove one of the caller's tiles; **`404`** when the id is not theirs (another account's tile is indistinguishable from a missing one) |
+| POST | `/dashboard/widgets/reorder` | auth | `{widgets: [id…]}` → index → 3-column row/col; ids the caller does not own are ignored, a list matching none of their tiles is **`404`** |
+| GET | `/dashboard/widgets` | auth | the caller's tiles in display order |
 | GET | `/dashboard/network-traffic` | auth | |
 | GET | `/dashboard/cpu-temperature` | auth | |
 | GET | `/dashboard/storage-volumes` | auth | |
-| GET/POST | `/dashboard/widget-preferences` | auth | per-user widget prefs |
+| GET/POST | `/dashboard/widget-preferences` | auth | floating-panel position/visibility, keyed by the resolved username; `400` on a bad `widget_key` or an off-screen position, `401` for an invalid **or expired** session (it used to answer `400` and accept an expired token) |
 | GET | `/dashboard/disk-io` | auth | |
 | GET | `/dashboard/storage` | auth | |
 | GET | `/dashboard/health` | auth | |
@@ -130,11 +130,11 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 | GET | `/health` | auth | overall health + CPU/mem from `/proc` |
 | GET | `/health/live` | public | liveness probe — `200 {"status":"ok"}` whenever the HTTP stack responds. No host detail (public route) |
 | GET | `/health/ready` | public | readiness probe — `200` ready / `503` degraded. Runs `SELECT 1` (1 s cache) and reports a failed boot-time `PRAGMA quick_check`. No host detail |
-| GET | `/widgets/cpu` | auth | desktop widget |
+| GET | `/widgets/cpu` | auth | desktop widget; `usage_percent` is a `/proc/stat` delta sampled per account |
 | GET | `/widgets/ram` | auth | |
 | GET | `/widgets/network-traffic` | auth | |
 | GET | `/widgets/cpu-temp` | auth | |
-| GET | `/widgets/update-info` | auth | real check when `UPDATE_CHECK_URL` is set (JSON `{"version":"<semver>"}`, compared with `is_newer_version`, results cached process-wide for 1 h); offline / timeout / malformed payload → `has_app_update=false` without noise |
+| GET | `/widgets/update-info` | auth | real check when `UPDATE_CHECK_URL` is set (JSON `{"version":"<semver>"}`, compared with `is_newer_version`, results cached process-wide for 1 h); offline / timeout / malformed payload → `has_app_update=false` without noise. Returns `has_app_update`, `app_current_version`, `app_latest_version`, `server_current_version` — there is **no `has_server_update`** (removed: it was the constant `false`, a measurement never taken) |
 
 ## Server control
 
@@ -1039,6 +1039,22 @@ Per-user persisted UI state, not tied to any specific monitor widget:
 `GET/POST /monitor-layout` (drag position + visibility for every desktop
 monitor panel) and `GET/POST /weather-location` (the Weather monitor's saved
 city). See [Widgets](./guides/widgets.md).
+
+`POST /monitor-layout` takes `{layout_json: "<client blob>"}` and stores that
+string **verbatim** (upsert on `username`) so a read returns exactly the bytes
+that were written. Before storing it is validated structurally — the blob is
+never re-serialised:
+
+| Bound | Value |
+|-------|-------|
+| Type | a JSON **object** (an array/scalar is `400`) |
+| Size | ≤ 16 KiB |
+| Nesting | ≤ 4 levels |
+| Nodes (objects + arrays + scalars) | ≤ 512 |
+| Object key length | ≤ 64 characters |
+| String value length | ≤ 256 characters |
+
+A rejected blob is `400` and leaves the stored layout untouched.
 
 ## Web shortcuts — `shortcuts/*` (`auth`)
 

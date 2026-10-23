@@ -44,10 +44,17 @@
    *    an action menu is open (and during an in-flight action), so rows never
    *    reorder or disappear under the user's cursor mid-click. The same
    *    reason the Docker app freezes its list during a menu.
+   *
+   * 3. **Admin-only, and only while visible.** `/docker/containers?stats=true`
+   *    is `require_admin`, so a non-admin viewer used to issue a failing
+   *    request every 5 s; the card now shows an admin-only notice and polls
+   *    nothing. A hidden tab skips the tick entirely (ROADMAP 15.2), and the
+   *    next visible tick refreshes immediately.
    */
   import { onMount, onDestroy } from 'svelte';
   import { api } from '$lib/services/api';
   import { t, translate } from '$lib/stores/i18n';
+  import { isAdmin } from '$lib/stores/auth';
   import { SectionCard } from '$lib/components/app';
   import { AreaChart, type AreaSeries } from '$lib/components/charts';
   import { Spinner } from '$lib/components/theme';
@@ -78,11 +85,14 @@
   const HISTORY = 24;
 
   let containers: Container[] = [];
+  let refreshing = false;
   let hostCpuPct = 0;
   let hostMemPct = 0;
   let loading = true;
   let error = '';
   let updatedAt = '';
+  /** Failure of the last restart/stop/uninstall, shown in the card. */
+  let actionError = '';
 
   /** Rolling history, one object per sample. Keys are `cpu:<name>` /
    *  `mem:<name>` so the same rows can feed both stacked charts. */
@@ -116,6 +126,10 @@
     // Freeze while a menu is open or an action is in flight — see the file
     // header. The next tick after the menu closes resumes normally.
     if (menuFor !== null || busyFor !== null) return;
+    // The container endpoint is admin-only: polling it as a regular user is
+    // a guaranteed 403 every 5 s. Skip the tick entirely.
+    if (!$isAdmin || document.hidden || refreshing) return;
+    refreshing = true;
     try {
       const [containersRes, detailsRes] = await Promise.all([
         api.getDockerContainersWithStats(),
@@ -134,6 +148,7 @@
       console.error('AppUsageBreakdown error:', e);
     } finally {
       loading = false;
+      refreshing = false;
     }
   }
 
@@ -153,12 +168,15 @@
       if (!ok) return;
     }
     busyFor = name;
+    actionError = '';
     try {
       if (action === 'restart') await api.restartContainer(name);
       else if (action === 'stop') await api.stopContainer(name);
       else await api.removeDockerContainer(name, true);
       await refresh();
     } catch (e) {
+      // A failed action must say so on screen, not only in the console.
+      actionError = translate('dashboard.usage_action_failed', { name });
       console.error(`Container ${action} failed:`, e);
     } finally {
       busyFor = null;
@@ -169,10 +187,18 @@
     menuFor = menuFor === name ? null : name;
   }
 
+  function onVisibilityChange() {
+    if (!document.hidden) refresh();
+  }
+
   onMount(() => {
     refresh();
     const timer = setInterval(refresh, 5000);
-    return () => clearInterval(timer);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   });
 
   function fmtMem(mb: number | null): string {
@@ -207,7 +233,11 @@
     </button>
   {/snippet}
 
-  {#if loading && containers.length === 0}
+  {#if !$isAdmin}
+    <div data-testid="dashboard-usage-admin-only" class="py-10 text-center text-c-base text-[var(--hv-shell-text-2)]">
+      {$t('dashboard.usage_admin_only')}
+    </div>
+  {:else if loading && containers.length === 0}
     <div class="flex items-center justify-center gap-3 py-12 text-[var(--hv-shell-text-3)]">
       <Spinner />
       <span>{$t('dashboard.usage_loading')}</span>
@@ -217,8 +247,8 @@
       {$t('dashboard.usage_empty')}
     </div>
   {:else}
-    {#if error}
-      <div class="mb-4 px-4 py-2.5 rounded-md bg-[var(--hv-error-bg)] border border-[var(--hv-error)]/30 text-[var(--hv-error-text)] text-sm">{error}</div>
+    {#if error || actionError}
+      <div role="alert" class="mb-4 px-4 py-2.5 rounded-md bg-[var(--hv-error-bg)] border border-[var(--hv-error)]/30 text-[var(--hv-error-text)] text-sm">{error || actionError}</div>
     {/if}
 
     <!-- Composition charts: one band per app, stacked to the host total. -->
