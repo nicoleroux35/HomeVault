@@ -24,25 +24,25 @@ Handlers in `src/handlers/settings.rs`. Persistence via
 | `GET /settings` | auth | aggregate of all categories |
 | `GET /settings/public` | public | safe subset (server name, language, theme) |
 | `GET/PUT /settings/general` | auth / admin | server name, timezone — the timezone is validated and **applied to the host** (see below) |
-| `GET/POST /settings/language` | auth | set UI language |
+| `GET/POST /settings/language` | auth | set UI language — persisted as `general.language` and re-applied at boot before the first page renders (ROADMAP 13.4) |
 | `GET /translations` | auth | flattened translation map (mounted at `/api/translations`; see [i18n](../I18N.md)) |
-| `GET/PUT /settings/email` | auth / admin | SMTP |
+| `GET/PUT /settings/email` | auth / admin | SMTP relay; validated before it is stored and used to generate the `msmtp` configuration (ROADMAP 13.3) |
 | `POST /settings/email/test` | admin | sends a real test email via `EmailService::send_test_email` to `NOTIFICATION_SETTINGS.email` (previously a stub that only logged and always reported success) |
-| `GET/PUT /settings/notifications` | auth / admin | alert email, threshold, `webhook_url`/`webhook_enabled` (new) |
+| `GET/PUT /settings/notifications` | auth / admin | alert email, threshold, `webhook_url`/`webhook_enabled`; the URL is validated at save time and again at dispatch |
 | `GET/PUT /settings/appearance` | auth / admin | theme, wallpaper (one of the 44 bundled — no upload), accent, density (accent/density fields still round-trip but have no UI) |
 | `GET/PUT /settings/update` | auth / admin | update-check frequency — **default `Manual`** since 2026-09-07 (G2: no automatic outbound call to GitHub) |
 | `GET /settings/version` | auth | current version + last **cached** check. Contacts the update endpoint only when the saved frequency says a scheduled check is due — opening Settings is never an outbound call by itself |
 | `POST /settings/version/check` | admin | "Check now": the only path that **forces** an outbound check, whatever the saved frequency |
-| `GET /settings/export` | admin | JSON dump |
-| `POST /settings/import` | admin | JSON import |
-| `POST /settings/reset` | admin | reset to defaults |
+| `GET /settings/export` | admin | JSON dump, stamped with `schema_version` |
+| `POST /settings/import` | admin | JSON import; schema version and every field are validated first |
+| `POST /settings/reset` | admin | reset to defaults, including the families stored outside `settings.json`; partial failures come back as `warnings` |
 | `GET /settings/backup/db` | admin | snapshots of HomeVault's own database (settings + files on disk + total size) |
 | `PUT /settings/backup/db` | admin | update `interval_hours` / `retain`; a lower retention prunes immediately |
 | `POST /settings/backup/db/now` | admin | take a `VACUUM INTO` snapshot now |
-| `GET/PUT /snmp/settings` | admin | SNMP community/version |
-| `GET /snmp/availability\|info\|interfaces\|storage` | admin | SNMP-discoverable device data |
+| `GET/PUT /snmp/settings` | admin | SNMP community/version (`v1`/`v2c` only) |
+| `GET /snmp/availability\|info\|interfaces\|storage` | admin | SNMP-discoverable device data; `interfaces` accepts `iface` to narrow the result |
 | `GET /ups/availability\|list\|status/{name}\|variables/{name}` | admin | UPS/NUT monitoring (live readings) |
-| `GET/POST /ups/config`, `DELETE /ups/config/{name}` | admin | manage the `ups.conf` device sections (serial/network/USB), reloads NUT |
+| `GET/POST /ups/config`, `DELETE /ups/config/{name}` | admin | manage the `ups.conf` device sections (serial/network/USB), then reload NUT; each unit that refused the restart is named in `reload_warnings` |
 
 ### General: server name and timezone (ROADMAP 13.4)
 
@@ -80,6 +80,88 @@ Handlers in `src/handlers/settings.rs`. Persistence via
 - On a fresh install (no persisted settings file) the timezone is **seeded
   from the host** at startup, so the setting never contradicts the real
   system zone.
+
+### General: language (ROADMAP 13.4)
+
+- `handle_set_language` writes `GENERAL_SETTINGS.language` and calls
+  `save_all_settings()`, so the choice is part of `settings.json`. Before this
+  it only mutated the in-process locale and the choice reverted to `en` on the
+  next restart.
+- `settings_persistence::apply_loaded_settings` reads `general.language` and
+  calls `I18n::set_locale` during `init_persistence()`, i.e. before the HTTP
+  server accepts its first request — the first rendered page is already in the
+  chosen language.
+- Only the four shipped locales (`en`, `fr`, `de`, `es`) are accepted.
+  `normalize_language()` trims, lowercases and keeps the primary subtag, so a
+  browser tag (`fr-BE`) or a hand-edited value (`FR`) normalises instead of
+  being refused; an unsupported tag answers `400`. `reset_settings()` puts the
+  process back on `en`.
+- The General card saves the language through `POST /settings/language` rather
+  than the PUT, because the locale has to change immediately. A failure is
+  surfaced as a warning `Alert` (`settings.language_save_failed`) instead of
+  looking saved.
+
+### Settings stored outside `settings.json` (ROADMAP 13.5)
+
+`reset_settings()` clears the JSON blob and the in-memory statics;
+`reset_domain_settings()` (`handlers/settings.rs`) handles the rest:
+
+| Family | Where it lives | Reset through |
+|---|---|---|
+| Antivirus (quarantine dir, schedule, archive toggle) | `av_settings` row | `AntivirusRepository::save_settings(AvSettings::default())` |
+| Anti-ransomware thresholds | `ransomware_settings` row | `RansomwareRepository::save_settings(default)` |
+| Per-disk spindown | `disk_power_settings` rows | `DiskPowerRepository::delete_all()` |
+| Database snapshots | `data/db_backup.json` | `DbBackupService::reset_settings()` (the scheduler also re-reads the file every tick) |
+| UPS devices | `/etc/nut/ups.conf` | `ups::reset_config()` — shipped section restored, NUT reloaded |
+
+Scan history, quarantined threats and protected paths are evidence/admin data,
+not settings, and are deliberately left in place. A domain that fails is
+returned in `warnings` (the response is still `success: true`, because most of
+the reset did happen) and the page shows `settings.settings_reset_partial`
+instead of the plain success toast.
+
+### UPS device configuration and NUT reloads (ROADMAP 13.2)
+
+- Every `upsc` read validates the device name (`validate_ups_name`, a
+  `[A-Za-z0-9._-]` label) and the variable (`validate_ups_variable`) before it
+  reaches the argv; both refuse before any process starts.
+- Writes go through the scoped sudoers grant built by `nut_grants()` in
+  `src/setup.rs`: `tee /etc/nut/ups.conf`, `systemctl restart
+  nut-driver-enumerator.service` and `systemctl restart nut-server.service`.
+  Before this the grant contained no `nut-*` entry at all, so `restart_nut()`
+  could never succeed and a save reported success while the daemon kept its old
+  configuration.
+- `save_config` / `delete_config` / `reset_config` return
+  `Result<Vec<String>, UpsError>`: the file is written first (an edit is never
+  lost to a refused reload), then every unit that failed is collected. The
+  handlers expose that as `reload_warnings`, and `UpsCard` renders it with
+  `role="status"` — "saved" and "live" are no longer the same claim.
+- All UPS calls run through `spawn_blocking` (ROADMAP X.1) with deadlines
+  (`NUT_QUERY_TIMEOUT` 10 s, `NUT_RESTART_TIMEOUT` 60 s; ROADMAP X.2).
+
+### SNMP (ROADMAP 13.5)
+
+- The saved `version` now reaches `snmpget`/`snmpwalk` (`-v <version>`); it was
+  write-only, with `run_walk` hardcoding `2c`.
+- Only `v1` and `v2c` are accepted. `v3` needs a user plus auth/privacy
+  protocols this card does not collect, so it is refused at save time with a
+  message saying so rather than silently running as v2c. The select no longer
+  offers it and the hint under it says why.
+- `GET /snmp/interfaces?iface=<name>` filters the parsed table (matched against
+  `ifName`, case-insensitively); an empty value keeps every interface. The
+  parameter used to be accepted and ignored.
+- Queries run on the blocking pool with a 10 s deadline (`SNMP_QUERY_TIMEOUT`).
+
+### Import and export format (ROADMAP 13.5)
+
+- Every export carries `schema_version` (`CURRENT_SETTINGS_SCHEMA`). An import
+  from a newer schema is refused with both numbers in the message instead of
+  being half-applied.
+- `validate_import()` checks every field before the blob replaces the stored
+  one, and names the offender (`general.timezone 'Mars/Olympus' is not a known
+  IANA timezone`, `email.smtp_port must be 1-65535`,
+  `notifications.webhook_url: …`). An absent `schema_version` is a legacy blob
+  and is still accepted.
 
 ## Frontend
 

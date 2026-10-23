@@ -31,18 +31,29 @@ files outside a customized data directory before being fixed.
 
 Core logic `src/antivirus.rs`:
 
-- `clamscan_available()` — version-check via a bare `Command::new
-  ("clamscan")` (unprivileged; `clamscan` runs as the `homevault` user
-  against paths it already owns, unlike `ufw`, so no `sudo` is needed or
-  used here).
-- `definitions_status()` — read-only mtime check of
-  `/var/lib/clamav/{daily,main}.{cvd,cld}`. HomeVault never runs
-  `freshclam` itself; that's the OS-level `clamav-freshclam` timer's job.
+- `clamscan_available()` — version check via `run_timed("clamscan
+  --version", HOST_PROBE_TIMEOUT)` (unprivileged; `clamscan` runs as the
+  `homevault` user against paths it already owns, unlike `ufw`, so no `sudo`
+  is needed or used here). Handlers and the scheduler call
+  `clamscan_available_async()`, which runs it on the blocking pool — a status
+  poll must not fork a signature-loading process on a runtime thread
+  (ROADMAP X.1). The sync form stays for `dependencies.rs`, whose probe
+  contract is a plain `fn() -> bool`.
+- `definitions_status()` / `definitions_status_async()` — read-only mtime check
+  of `/var/lib/clamav/{daily,main}.{cvd,cld}`, offloaded for the same reason.
+  HomeVault never runs `freshclam` itself; that's the OS-level
+  `clamav-freshclam` timer's job.
 - `AV_SCAN_RUNNING: AtomicBool` + `AvRunGuard` — single-scan concurrency
   guard, same shape as `cache.rs`'s `MOVER_RUNNING`/`MoverRunGuard`.
-- `run_scan` — spawns `clamscan -r -i --no-summary --move=<quarantine_dir>
-  <path>` as a `tokio::process::Command` (not `spawn_blocking`: needs live
-  stdout streaming for SSE progress and a killable handle for real
+- `clamscan_args(scan_path, quarantine_dir, scan_archives)` — the pure argv
+  builder. The archive toggle is an **explicit** `--scan-archive=yes|no`, so
+  the value the card shows is the behaviour regardless of `clamscan`'s default
+  (ROADMAP 13.5: `scan_archives` was persisted and never read, so the switch
+  did nothing).
+- `run_scan` — creates the quarantine directory with `tokio::fs::create_dir_all`
+  (the volume is often a spun-down disk) and spawns `clamscan` from
+  `clamscan_args` as a `tokio::process::Command` (not `spawn_blocking`: needs
+  live stdout streaming for SSE progress and a killable handle for real
   cancellation), streams `FOUND` lines into `av_threats`, and records a
   `NotificationRepository` alert on completion. Exit codes: `0` clean,
   `1` threats found, `2` error (stderr is captured and included in the
@@ -52,14 +63,22 @@ Core logic `src/antivirus.rs`:
   `Child` parked in a mutex across an `.await`, which would be
   unsound/deadlock-prone); genuinely stops the process, unlike the
   generic `handle_cancel_job` in `progress.rs` which only drops the SSE
-  job record.
+  job record. The signal call is bounded by `run_timed_async` (ROADMAP X.2).
+- `validate_quarantine_dir(input, allowed_roots)` — the quarantine directory is
+  interpolated into `--move=<dir>` and created on disk, so it is validated like
+  the scan path (ROADMAP 13.5): absolute, no `..`, no control characters, not
+  `/`, and inside the data directory or a configured storage root. It was
+  previously stored verbatim — the only antivirus field with no check at all.
 - `resolve_threat()` — optionally deletes the quarantined file, marks
   `resolved_at`.
 
 Scheduler `src/antivirus_scheduler.rs` (`run_scheduler_loop`): polls every
 30s; when the next cron tick is due, `scheduled_scan_enabled` is set, a
 `scheduled_scan_path` is configured, and no scan is already running, it
-calls `run_scan`. Own file rather than folded into another scheduler so a
+calls `run_scan`. The decision itself is `is_due(cron, last_scan_at)` — a pure
+function with unit tests: an unparsable cron is never due (a broken schedule
+must not mean a scan every 30 s) and an unparsable `last_scan_at` counts as
+"never ran". Own file rather than folded into another scheduler so a
 heavy scan tick can't block/be blocked by an unrelated domain's tick (e.g.
 the cache mover). Spawned once at startup in `src/web/mod.rs`.
 
@@ -67,7 +86,7 @@ the cache mover). Spawned once at startup in `src/web/mod.rs`.
 |----------|------|-------|
 | `GET /antivirus/status` | auth | `clamscan_available`, `definitions`, `scan_running` |
 | `GET /antivirus/settings` | auth | current config |
-| `PUT /antivirus/settings` | admin | update config (scheduled path validated via `PathGuard`) |
+| `PUT /antivirus/settings` | admin | update config; both the scheduled path and `quarantine_dir` are validated (`PathGuard` + `validate_quarantine_dir`) |
 | `POST /antivirus/scan` | admin | start a manual scan, returns `job_id` for SSE progress |
 | `POST /antivirus/scan/cancel` | admin | kill the running scan |
 | `GET /antivirus/scans` | auth | scan history (last 50) |
@@ -78,7 +97,10 @@ All handlers in `src/handlers/antivirus.rs`. Read endpoints use
 `require_auth`; mutations use `require_admin`. Scan paths are validated
 via `state.path_guard.validate(...)` — an admin can't be tricked (e.g. a
 crafted request) into scanning arbitrary host paths outside the allowed
-Explorer roots.
+Explorer roots. The quarantine directory is validated against
+`base_dir()` **and** `path_guard.allowed_roots()`, so a custom data directory
+and a mounted storage root both work while `/etc` does not. `exists()` and the
+availability/definitions probes run off the runtime (ROADMAP X.1).
 
 ## Frontend
 
@@ -128,6 +150,9 @@ All strings under `[antivirus]` in `src/i18n/{en,fr,de,es}.toml`.
 - Only one scan (manual or scheduled) can run at a time, enforced by
   `AV_SCAN_RUNNING`; a second trigger is rejected immediately rather than
   racing two `clamscan` processes.
+- `scan_archives` reaches the command line through `clamscan_args` — never
+  inline a second `clamscan` invocation that skips it, or the toggle silently
+  stops working again.
 
 ## Verified
 

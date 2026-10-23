@@ -42,24 +42,29 @@ pub async fn handle_power_status(
         return resp;
     }
     let governors = available_governors();
+    // `hdparm --version` forks; keep it off the runtime (ROADMAP X.1) and
+    // bounded (X.2).
+    let spindown_supported = tokio::task::spawn_blocking(spindown_tool_available)
+        .await
+        .unwrap_or(false);
     ResponseHelper::json_success(serde_json::json!({
         "governor": current_governor(),
         "available_governors": governors,
         "governor_supported": !governors.is_empty(),
-        "spindown_supported": spindown_tool_available(),
+        "spindown_supported": spindown_supported,
     }))
 }
 
 /// Whether `hdparm` exists (sudo-wrapped calls fail harmlessly otherwise —
 /// the UI disables the section instead of showing buttons that always fail).
 fn spindown_tool_available() -> bool {
-    std::process::Command::new("hdparm")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    use crate::utils::process::{run_timed, HOST_PROBE_TIMEOUT};
+    run_timed(
+        std::process::Command::new("hdparm").arg("--version"),
+        HOST_PROBE_TIMEOUT,
+    )
+    .map(|s| s.status.success())
+    .unwrap_or(false)
 }
 
 /// PUT /power/governor — { "governor": "performance" }.

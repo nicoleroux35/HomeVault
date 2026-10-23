@@ -68,6 +68,9 @@
   let removing = $state('');
   let message = $state('');
   let error = $state('');
+  /** NUT accepted the file but did not reload (ROADMAP 13.2): the section is
+   *  written, yet it is not live until the named units restart. */
+  let warning = $state('');
 
   const isSerial = $derived(
     ['blazer_ser', 'blazer_usb', 'nutdrv_qx', 'apcsmart'].includes(formDriver),
@@ -95,6 +98,7 @@
     saving = true;
     message = '';
     error = '';
+    warning = '';
     try {
       const res = await api.saveUpsConfig({
         name: formName.trim(),
@@ -104,6 +108,7 @@
       });
       if (res.success) {
         message = $t('settings.ups_saved');
+        warning = reloadWarning(res.data);
         formName = '';
         formPort = '';
         formDesc = '';
@@ -117,15 +122,24 @@
     saving = false;
   }
 
+  /** Turn the server's per-unit reload failures into one readable sentence. */
+  function reloadWarning(data: unknown): string {
+    const warnings = ((data as any)?.reload_warnings as string[] | undefined) ?? [];
+    if (warnings.length === 0) return '';
+    return $t('settings.ups_reload_warning', { reason: warnings.join('; ') });
+  }
+
   async function removeConfig(name: string) {
     if (!confirm($t('settings.ups_remove_confirm', { name }))) return;
     removing = name;
     message = '';
     error = '';
+    warning = '';
     try {
       const res = await api.deleteUpsConfig(name);
       if (res.success) {
         message = $t('settings.ups_removed');
+        warning = reloadWarning(res.data);
         await loadStatus();
       } else {
         error = res.error || $t('settings.ups_remove_failed');
@@ -264,6 +278,7 @@
           {saving ? $t('settings.ups_saving') : $t('settings.ups_add')}
         </button>
         {#if message}<span class="text-xs text-[var(--hv-success)]">{message}</span>{/if}
+        {#if warning}<span class="text-xs text-[var(--hv-warning-text)]" role="status" data-testid="ups-reload-warning">{warning}</span>{/if}
         {#if error}<span class="text-xs text-[var(--hv-error)]">{error}</span>{/if}
       </div>
     </div>

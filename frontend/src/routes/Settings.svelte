@@ -45,6 +45,7 @@
     notices,
     clearHostnameNotice,
     clearTimezoneNotice,
+    clearLanguageNotice,
     type SettingsGroup
   } from '$lib/stores/settingsDraft.svelte';
   import SettingsSaveButton from '$lib/components/settings/SettingsSaveButton.svelte';
@@ -785,7 +786,18 @@
         await loadSettings();
         await loadAutostart();
         await loadAiModels();
-        notifySettings(translate('settings.settings_reset'));
+        // ROADMAP 13.5: the reset now also clears the families stored outside
+        // settings.json; a domain that could not be reset is named instead of
+        // being hidden behind a plain success toast.
+        const warnings = ((response.data as any)?.warnings as string[] | undefined) ?? [];
+        if (warnings.length > 0) {
+          notifySettings(
+            translate('settings.settings_reset_partial', { reason: warnings.join('; ') }),
+            'error',
+          );
+        } else {
+          notifySettings(translate('settings.settings_reset'));
+        }
       } else {
         notifySettings(response.error || translate('settings.reset_failed'), 'error');
       }
@@ -964,6 +976,11 @@
           {#if notices.timezone}
             <div class="py-3 border-b-[1.45px] border-[var(--hv-settings-hairline)]">
               <Alert variant="warning" dismissible ondismiss={clearTimezoneNotice}>{notices.timezone}</Alert>
+            </div>
+          {/if}
+          {#if notices.language}
+            <div class="py-3 border-b-[1.45px] border-[var(--hv-settings-hairline)]">
+              <Alert variant="warning" dismissible ondismiss={clearLanguageNotice}>{$t('settings.language_save_failed', { reason: notices.language })}</Alert>
             </div>
           {/if}
           <div class={settingsRow}>
