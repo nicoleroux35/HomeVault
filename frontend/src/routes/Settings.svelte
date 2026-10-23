@@ -82,6 +82,7 @@
   import UpsCard from '$lib/components/settings/UpsCard.svelte';
   import SnmpCard from '$lib/components/settings/SnmpCard.svelte';
   import McpCard from '$lib/components/settings/McpCard.svelte';
+  import KnowledgeBaseCard from '$lib/components/settings/KnowledgeBaseCard.svelte';
   import { IconAlertTriangle, IconCookie, IconShield, IconCheck, IconSettings, IconWifiOff, IconRefresh, IconMapPin, IconPencil } from '@tabler/icons-svelte';
 
   // Sidebar categories — 8 grouped entries instead of a 12-item flat list.
@@ -1244,6 +1245,12 @@
             </div>
           {/if}
         </div>
+        <!-- Knowledge base (RAG). The chat's grounding in the shipped docs:
+             shows what is indexed and lets an admin install the embedding
+             model + reindex. Right under the model card, since the two are the
+             same feature (the assistant needs both a chat model and an
+             embedding model). -->
+        <KnowledgeBaseCard class="mt-3" />
         <!-- External agents (MCP gateway). Lives here, not in the Chat app:
              it is a server-wide admin configuration (kill-switch, global
              permissions, revocable tokens) sitting next to the model choice.

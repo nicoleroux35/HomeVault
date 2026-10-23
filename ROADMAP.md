@@ -1,6 +1,6 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-22 — current version: 1.0.0
+Last updated: 2026-10-23 — current version: 1.0.0
 
 ## How to read this file
 
@@ -43,7 +43,8 @@ The areas that have had a full "production-ready" pass are out of scope here:
 **Groups**, **Rescue**, **Shares**, **Network**, **VPN** and the **app-proxy
 auth under HTTPS** (all 2026-10-21), and **Health** (2026-10-22) — followed by
 **Health's numbered follow-ups**, the **File Explorer security pass**, the
-**Account / Security pass** and **disk quotas** (all 2026-10-22, see Done).
+**Account / Security pass**, **disk quotas** and the **AI Assistant / RAG pass**
+(all 2026-10-22, see Done).
 
 Everything else is still on its original implementation plus incremental
 feature work. The pattern is consistent: **the screens render, the endpoints
@@ -68,7 +69,6 @@ Two structural facts explain most of the list:
 
 | # | Area | Verdict | Blocking items |
 |---|---|---|---|
-| 4 | AI Assistant / RAG | **P0** | 3 |
 | 6 | Apps Center / app-proxy | **P0** | 3 |
 | 7 | Storage | P1 | 3 |
 | 8 | RAID wizard | P1 | 3 |
@@ -96,63 +96,15 @@ Two structural facts explain most of the list:
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **73** (66 per-area + 7 cross-cutting).
+Total open findings: **70** (63 per-area + 7 cross-cutting).
 
-**Suggested order.** The two P0s first (4, 6), then P1 by blast radius —
+**Suggested order.** The remaining P0 first (6), then P1 by blast radius —
 12.2/12.3 and 13.4 together, since a UTC-only cron with a stored-but-unapplied
 timezone is one defect seen from two screens.
 
 ---
 
 ## P0 — Broken
-
-### 4. AI Assistant / RAG — the knowledge base has no user-facing surface
-
-`src/rag.rs`, `src/rag_indexers.rs`, `src/handlers/rag.rs`,
-`frontend/src/lib/services/api.ts`, `frontend/src/routes/Chat.svelte`.
-
-- [ ] **4.1 — RAG is unreachable from the product.**
-      `frontend/src/lib/services/api.ts:2234-2248` is an empty comment block:
-      no `ragStatus` / `ragIndex` / `ragSearch` / `ragDocuments` client method,
-      and no control anywhere in `Chat.svelte` or `Settings.svelte` to trigger
-      indexing or pull `nomic-embed-text`. The `/api/rag/*` endpoints exist and
-      answer, but nothing calls them, so the index stays empty in practice.
-      *Acceptance:* the admin can see index status, trigger a reindex and see
-      progress from the UI; the chat answers "I don't know" only when the index
-      is genuinely empty.
-- [ ] **4.2 — Index integrity is unmaintained.** `clear_source`
-      (`src/rag.rs:285-307`) has **zero callers** → deleted or renamed guides
-      stay indexed forever. `index_all` only logs a warning per failed source
-      (`src/rag_indexers.rs:32-70`) and never removes one. Embedding failures
-      are swallowed and the chunk is stored with a `NULL` embedding
-      (`src/rag.rs:249-255`), i.e. silently unsearchable. Search errors are
-      masked as "no documents found" (`src/handlers/rag.rs:272-284`).
-      *Acceptance:* a reindex reconciles (adds, updates **and** removes);
-      embedding failure fails the run loudly; search distinguishes an error
-      from an empty result.
-- [ ] **4.3 — Blocking subprocess and `/proc` reads on the async runtime.**
-      `detect_gpu()` shells out to `nvidia-smi` / `rocm-smi` with
-      `std::process::Command` inside the async `handle_chat_models_recommend`
-      (`src/handlers/chat.rs:1021,1040`); `src/handlers/chat.rs:989-1003` reads
-      `/proc/meminfo` synchronously. (MCP's Docker call is correctly wrapped at
-      `src/handlers/mcp.rs:588` — use it as the reference.)
-
-Also in this pass: full-table cosine scan in the app process per query
-(`src/rag.rs:310-353`); hand-rolled markdown rendered through `{@html}` with no
-sanitizer (`Chat.svelte:228-282`); conversations only in `localStorage`
-(`:81-102`); Ollama availability checked once on mount and never re-polled
-(`:69-79`); French-only error strings in an otherwise i18n'd app
-(`src/handlers/chat.rs:506` and neighbours); `system.reboot` reachable through
-MCP with token permissions as its only guard (`src/handlers/mcp.rs:758-770`).
-
-*Tests:* RAG has 15 unit tests, **no integration file and no E2E**. That is the
-least-covered subsystem in the repo. Add `tests/rag_integration.rs` (index →
-search → reconcile → remove) and a `chat` E2E section for the index controls.
-
-*Docs:* `docs/guides/rag.md` (Document Sources table + the new controls),
-`docs/guides/chat.md`, `docs/guides/mcp.md` (blast radius of the reboot tool).
-
----
 
 ### 6. Apps Center / app-proxy — blocking installs, a global logout, an open redirect
 
@@ -1029,6 +981,42 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-23** — AI Assistant / RAG — the knowledge base has a user-facing
+surface and an integrity contract. **4.1:** the computer-visible endpoints
+became a product feature — `KnowledgeBaseCard` (Settings → AI Assistant) shows
+the index status (documents, chunks, `idle`/`indexing`/`error`, last indexed),
+installs the embedding model, triggers a reindex and polls progress every 2 s;
+the Chat empty state names an empty index (with an "index now" action for an
+admin) instead of the assistant silently answering "I don't know" for shipped
+features; `GET /rag/status` always reports the required embedding model, even
+before the first index, so the card can gate the action on it. **4.2:** a
+reindex now **reconciles** — each indexer returns the ids it produced and
+`rag::prune_source` drops every document of that source the run did not (a
+deleted guide/renamed app no longer stays searchable forever; `clear_source` is
+now this with an empty keep set and finally has a caller). An embedding failure
+**fails the run loudly**: `upsert_document_with_chunks` embeds before writing
+and returns the error, no chunk is stored with a `NULL` embedding, and
+`index_all` records `error` instead of warn-and-continue; `last_indexed_at` and
+the counts only advance on a completed run, so a failed reindex cannot report
+"last indexed: now" with zero documents. A second reindex while
+one runs is refused (`ReindexGuard`). `GET /rag/documents` and `/rag/search`
+report an error rather than an empty result. The indexers take a new
+`EmbeddingProvider` (`OllamaEmbedder` in production, a deterministic fake in
+tests). **4.3:** `detect_system_specs` (nvidia-smi/rocm-smi + `/proc/meminfo`)
+runs on the blocking pool, and the Chat RAG failure is logged, not swallowed.
+The `/chat/*` error strings and the pull success message are English now (they
+leaked French into every locale; the recommendation copy is still French-only —
+known gap noted in `docs/guides/chat.md`).
+Tests: `rag.rs` 10 → 15 unit, `rag_indexers.rs` 3 → 5 unit,
+`tests/rag_integration.rs` (8, new), `tests/e2e/settings/knowledge-base.spec.ts`
+(4, new). (`docs/guides/rag.md`, `docs/guides/chat.md`, `docs/API.md`.)
+**Still open from this area, deliberately not in this pass** (none blocking, none
+counted above): search loads every chunk and runs cosine in the app process
+(a real index would need a vector store); the assistant renders hand-rolled
+markdown through `{@html}` with no sanitizer; conversations live only in
+`localStorage`; Ollama availability is probed once per page load; and
+`system.reboot` remains reachable as an MCP tool.
 
 **2026-10-22 (h)** — Disk quotas — the home-directory size limit now actually
 limits. Every save resolves the backend from the **mount that holds the folder**
