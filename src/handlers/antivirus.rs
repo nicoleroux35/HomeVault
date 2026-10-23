@@ -47,8 +47,10 @@ pub async fn handle_antivirus_status(
         return response;
     }
 
-    let available = antivirus::clamscan_available();
-    let definitions = antivirus::definitions_status();
+    // Both probes fork/stat on the host (clamscan loads its signature
+    // database), so they run off the runtime (ROADMAP X.1).
+    let available = antivirus::clamscan_available_async().await;
+    let definitions = antivirus::definitions_status_async().await;
     ResponseHelper::json_success(serde_json::json!({
         "clamscan_available": available,
         "definitions": definitions,
@@ -99,10 +101,21 @@ pub async fn handle_antivirus_settings_update(
         }
     }
 
+    // ROADMAP 13.5: the quarantine directory is interpolated into
+    // `clamscan --move=<dir>`, so it gets the same treatment as the scan path
+    // (it was the only antivirus field stored with no validation at all).
+    let mut quarantine_roots = vec![crate::config::paths::base_dir()];
+    quarantine_roots.extend(state.path_guard.allowed_roots().iter().cloned());
+    let quarantine_dir =
+        match antivirus::validate_quarantine_dir(&body.quarantine_dir, &quarantine_roots) {
+            Ok(dir) => dir,
+            Err(e) => return ResponseHelper::json_error(e),
+        };
+
     let repo = AntivirusRepository::new(state.db.pool());
     match repo
         .save_settings(
-            &body.quarantine_dir,
+            &quarantine_dir,
             body.scheduled_scan_enabled,
             &body.scheduled_scan_cron,
             body.scheduled_scan_path.as_deref(),
@@ -138,10 +151,17 @@ pub async fn handle_antivirus_scan_start(
     let Some(resolved) = state.path_guard.validate(&body.path) else {
         return ResponseHelper::json_error("Scan path is not within an allowed root".to_string());
     };
-    if !resolved.exists() {
+    // `exists()` is a blocking metadata call on a possibly spun-down volume.
+    let resolved_exists = {
+        let probe = resolved.clone();
+        tokio::task::spawn_blocking(move || probe.exists())
+            .await
+            .unwrap_or(false)
+    };
+    if !resolved_exists {
         return ResponseHelper::json_error("Scan path does not exist".to_string());
     }
-    if !antivirus::clamscan_available() {
+    if !antivirus::clamscan_available_async().await {
         return ResponseHelper::json_error("ClamAV (clamscan) is not installed".to_string());
     }
     if av_scan_is_running() {

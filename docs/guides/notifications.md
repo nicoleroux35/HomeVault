@@ -67,6 +67,49 @@ expected shape.
   (`PersistedNotifications`) so they survive a restart like every other
   setting.
 
+### Email transport — the saved SMTP settings are the transport (ROADMAP 13.3)
+
+Before this the SMTP fields were persisted and never used: `EmailService` only
+passed `--from` to `msmtp`, so the admin's server/port/credentials were ignored
+unless they happened to be in msmtp's own config file.
+
+- `EmailConfig::from(&EmailSettings)` is the single mapping from the Settings
+  card to the transport, used by both the test button and the notification
+  engine. `EmailConfig::is_explicit()` says whether an SMTP relay was
+  configured at all.
+- With a relay configured, every send writes a private (`0600`) msmtp
+  configuration to `data_dir()/msmtp.conf` (`msmtp_config_path` /
+  `msmtp_config_text` / `write_msmtp_config`) and runs
+  `msmtp --file <path> --from <addr>`. Host, port, username, password and TLS
+  all come from the saved settings; a saved `smtp_server` therefore takes
+  effect on the next notification, with no package or manual `~/.msmtprc` edit.
+- A blank or `localhost` host keeps the legacy local-MTA path
+  (`mutt` → `sendmail` → `msmtp`) for appliances that already deliver mail
+  through a host MTA. The card's hint says so.
+- The generated file is `0600` and never returned by an API; the SMTP password
+  stays redacted in the export and absent from `GET /settings/email`.
+- stderr is captured by a reader thread while the child runs, so the 30 s
+  deadline cannot be defeated by an MTA that writes steadily, and the last
+  lines of stderr are what the error message shows.
+- `is_email_configured()` probes the three binaries once and caches the answer
+  instead of shelling `which` three times per call.
+- Sending runs in `tokio::task::spawn_blocking` from the engine (ROADMAP X.1) —
+  a hung MTA no longer blocks the scheduler tick.
+
+### Webhook delivery (ROADMAP 13.5)
+
+- `handlers::settings::validate_webhook_url()` runs at save time **and** again
+  at dispatch, so a value persisted before this validation (or hand-edited into
+  `settings.json`) can never reach `reqwest`. Rules: `http`/`https` only, a host
+  is required, no embedded `user:pass@`, no whitespace/control characters, at
+  most 2048 characters. Empty clears the setting.
+- One `reqwest::Client` (`webhook_client()`, `OnceLock`) is shared by every
+  alert: 10 s total timeout, 5 s connect timeout, HomeVault user agent. The old
+  code built `Client::new()` per dispatch with no timeout at all, so a sink
+  that accepted the connection and never answered pinned the scheduler task.
+- A non-2xx answer is logged with its status; a delivery failure never fails the
+  notification itself (the in-app row is already written).
+
 ## Frontend
 
 - `frontend/src/lib/stores/notifications.ts` — `notificationsStore` gained

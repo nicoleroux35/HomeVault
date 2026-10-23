@@ -829,6 +829,21 @@ impl SetupService {
         // NTP servers or enable/disable NTP).
         let timedatectl = Self::resolve_bin("timedatectl", "/usr/bin/timedatectl");
 
+        // Settings page "UPS" card (`src/ups.rs`, ROADMAP 13.2). Two separate
+        // privileges, both previously missing:
+        //   * `/etc/nut/ups.conf` — the NUT package ships `/etc/nut` as
+        //     `0750 nut:nut`, so the unprivileged service account cannot write
+        //     it at all; `UpsService::save_config`/`delete_config` go through
+        //     `write_file_as_root` (`sudo tee <path>`), which needs this grant.
+        //   * the two units a new section requires — `nut-driver-enumerator`
+        //     regenerates one driver instance per `[section]` and `nut-server`
+        //     (`upsd`) re-reads the list. Before this grant, `restart_nut()`
+        //     ran `systemctl` with no `sudo` and no entry covered `nut-*`, so
+        //     every save reported success while NUT never reloaded.
+        // Both are scoped to exactly what the code runs (the file name, the
+        // `restart` verb, the two unit names), never the bare binaries.
+        let ups_conf = "/etc/nut/ups.conf";
+
         // Storage/RAID/LUKS grants, rendered from the table below so they stay
         // scoped to the argument shapes the code actually runs (ROADMAP 7.1)
         // and can be asserted on without touching /etc (see `mod tests`).
@@ -877,6 +892,7 @@ impl SetupService {
         let firewall_grants = sudoers_line(&host.firewall_grants());
         let raid_grants = sudoers_line(&host.raid_grants());
         let diagnostics_grants = sudoers_line(&host.diagnostics_grants());
+        let nut_sudoers = sudoers_line(&nut_grants(&systemctl, &tee, ups_conf));
 
         let sudoers_content = format!(
             r#"# HomeVault sudoers configuration
@@ -1107,6 +1123,12 @@ homevault ALL=(root) NOPASSWD: {timedatectl} set-timezone *
 # binary (shared variable with the Shares service-control grant above),
 # which could otherwise enable/disable/start/stop any unit on the host.
 homevault ALL=(root) NOPASSWD: {systemctl} enable homevault, {systemctl} disable homevault
+
+# Settings page "UPS" card (`src/ups.rs`, ROADMAP 13.2) - writing the device
+# sections of `/etc/nut/ups.conf` and reloading the two units that read them.
+# See the comment above where `ups_conf` is resolved for why the file and the
+# units are named explicitly instead of granting `tee` or `systemctl` whole.
+{nut_grants}
 "#,
             vpn_grants = vpn_grants,
             network_grants = network_grants,
@@ -1145,6 +1167,7 @@ homevault ALL=(root) NOPASSWD: {systemctl} enable homevault, {systemctl} disable
             sftp_keys_glob = sftp_keys_glob,
             hostnamectl = hostnamectl,
             timedatectl = timedatectl,
+            nut_grants = nut_sudoers,
         );
 
         match std::fs::write("/etc/sudoers.d/homevault", sudoers_content) {
@@ -1460,6 +1483,20 @@ fn sudoers_line(grants: &[String]) -> String {
 fn grant(bin: &str, args: &str) -> String {
     debug_assert!(!args.is_empty(), "sudoers grant for '{bin}' has no args");
     format!("{bin} {args}")
+}
+
+/// NUT grants for the Settings "UPS" card (ROADMAP 13.2).
+///
+/// The units come from `crate::ups::NUT_UNITS`, the same constant the runtime
+/// loop iterates, so the grant and the command can never drift apart — the
+/// original defect was exactly that drift (`restart_nut` named two units that
+/// no grant covered).
+fn nut_grants(systemctl: &str, tee: &str, ups_conf: &str) -> Vec<String> {
+    let mut grants = vec![grant(tee, ups_conf)];
+    for unit in crate::ups::NUT_UNITS {
+        grants.push(grant(systemctl, &format!("restart {unit}")));
+    }
+    grants
 }
 
 #[cfg(test)]
@@ -2202,6 +2239,40 @@ mod tests {
             "the grant must name the subcommand, not the binary alone"
         );
         assert!(!grant.ends_with("/usr/bin/timedatectl"));
+    }
+
+    /// ROADMAP 13.2: saving a UPS section writes `/etc/nut/ups.conf` through
+    /// `sudo tee` and restarts exactly the two NUT units the runtime loop
+    /// names. Both were absent, so every save claimed success and NUT never
+    /// reloaded — this test is the regression guard for the drift.
+    #[test]
+    fn test_nut_grants_cover_the_conf_file_and_both_units() {
+        let grants = nut_grants("/usr/bin/systemctl", "/usr/bin/tee", "/etc/nut/ups.conf");
+
+        assert_eq!(
+            grants,
+            vec![
+                "/usr/bin/tee /etc/nut/ups.conf".to_string(),
+                "/usr/bin/systemctl restart nut-driver-enumerator.service".to_string(),
+                "/usr/bin/systemctl restart nut-server".to_string(),
+            ],
+            "the UPS grants must be the file plus the two units, nothing else"
+        );
+        // The runtime argv and the grant must be the same shape: `sudo` is
+        // added by the caller, and the unit list comes from one constant.
+        for unit in crate::ups::NUT_UNITS {
+            let argv = crate::ups::nut_restart_args(unit).join(" ");
+            assert!(
+                grants
+                    .iter()
+                    .any(|g| g.ends_with(&format!("/usr/bin/systemctl {argv}"))),
+                "no grant covers `systemctl {argv}`"
+            );
+        }
+        // Never the bare binaries: `tee` unscoped can rewrite /etc/shadow and
+        // `systemctl` unscoped can stop sshd.
+        assert!(!grants.iter().any(|g| g == "/usr/bin/tee"));
+        assert!(!grants.iter().any(|g| g == "/usr/bin/systemctl"));
     }
 
     #[test]

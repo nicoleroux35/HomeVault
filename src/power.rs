@@ -149,10 +149,16 @@ pub fn set_governor(governor: &str) -> Result<(), String> {
 /// Executes a host power action through systemctl. This is intentionally
 /// synchronous and terminal for the box — callers confirm in the UI first.
 pub fn host_power_action(action: PowerAction) -> Result<(), String> {
-    let output = std::process::Command::new("sudo")
-        .args(["systemctl", action.systemctl_verb()])
-        .output()
-        .map_err(|e| e.to_string())?;
+    use crate::utils::process::run_timed;
+    use std::time::Duration;
+
+    // Bounded (ROADMAP X.2): a `systemctl reboot` that is waiting on a stuck
+    // unit must still answer, not hold the request open.
+    let output = run_timed(
+        std::process::Command::new("sudo").args(["systemctl", action.systemctl_verb()]),
+        Duration::from_secs(30),
+    )
+    .map_err(|e| e.to_string())?;
     if output.status.success() {
         Ok(())
     } else {
@@ -229,17 +235,22 @@ pub fn is_valid_block_device_name(name: &str) -> bool {
 /// Applies one disk's spindown settings via hdparm. Best-effort: disks that
 /// don't support APM (SSDs, USB bridges) fail — the caller logs, not fatal.
 pub fn apply_spindown(setting: &DiskSpindownSetting) -> Result<(), String> {
+    use crate::utils::process::run_timed;
+    use std::time::Duration;
+
     if !is_valid_block_device_name(&setting.device) {
         return Err(format!("Invalid device name '{}'", setting.device));
     }
     let Some(args) = hdparm_args(setting) else {
         return Ok(()); // nothing configured for this disk
     };
-    let output = std::process::Command::new("sudo")
-        .arg("hdparm")
-        .args(&args)
-        .output()
-        .map_err(|e| format!("hdparm not available: {e}"))?;
+    // Bounded (ROADMAP X.2): `hdparm -y` on a wedged controller blocks in the
+    // kernel and used to keep the caller's blocking thread forever.
+    let output = run_timed(
+        std::process::Command::new("sudo").arg("hdparm").args(&args),
+        Duration::from_secs(30),
+    )
+    .map_err(|e| format!("hdparm not available: {e}"))?;
     if output.status.success() {
         Ok(())
     } else {

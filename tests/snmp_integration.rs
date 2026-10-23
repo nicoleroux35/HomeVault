@@ -300,6 +300,96 @@ async fn test_snmp_settings_default_and_update() {
     assert_eq!(body["data"]["version"], "2c"); // unchanged
 }
 
+#[tokio::test]
+async fn test_snmp_version_is_validated_and_v3_is_refused() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "Password123!", 2).await;
+    let mut r = snmp_router(state);
+    let token = login(&mut r, "admin", "Password123!").await;
+
+    // ROADMAP 13.5: the saved version now reaches `snmpget -v`, so v3 — which
+    // needs credentials this card does not collect — is refused at save time
+    // instead of silently running as v2c.
+    let (status, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/snmp/settings",
+        Some(&token),
+        Some(json!({"version": "3"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"].as_str().unwrap_or("").contains("v3"),
+        "the refusal must explain the v3 limitation: {body}"
+    );
+
+    // Nothing was persisted by the refused save.
+    let (_, got) = send(
+        &mut r,
+        Method::GET,
+        "/api/snmp/settings",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(got["data"]["version"], "2c");
+
+    // v1 and v2c are accepted.
+    for version in ["1", "2c"] {
+        let (status, body) = send(
+            &mut r,
+            Method::PUT,
+            "/api/snmp/settings",
+            Some(&token),
+            Some(json!({"version": version})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{version}: {body}");
+    }
+
+    let (status, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/snmp/settings",
+        Some(&token),
+        Some(json!({"version": "4"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
+async fn test_snmp_interfaces_honours_the_iface_query_parameter() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "Password123!", 2).await;
+    let mut r = snmp_router(state);
+    let token = login(&mut r, "admin", "Password123!").await;
+
+    // `iface` used to be accepted and ignored (ROADMAP 13.5). With no agent
+    // installed the walk fails, but the filtered request must still be a clean
+    // answer rather than a 500 or an unparsed-parameter rejection.
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/snmp/interfaces?iface=lo",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert!(
+        status == StatusCode::OK || status == StatusCode::BAD_REQUEST,
+        "GET with iface: status {status}, body {body}"
+    );
+    assert!(
+        body["success"].is_boolean() || body["message"].is_string(),
+        "{body}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 4. Info / interfaces / storage — admin-only, no crash
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // 4. Info / interfaces / storage — admin-only, no crash
 // ---------------------------------------------------------------------------

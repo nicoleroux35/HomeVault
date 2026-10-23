@@ -1217,6 +1217,76 @@ test.describe('13 — Monitoring', () => {
     // Disk quotas are managed per user/group on the Users/Groups pages now.
     expect(titles).not.toMatch(/quota/);
   });
+
+  test('13.2 — SNMP offers only the versions the card can authenticate', async ({ page }) => {
+    await openSettings(page, admin);
+    await openCategory(page, 'monitoring');
+    const snmp = set(page).locator('[data-testid="settings-card"]', { hasText: /SNMP/i });
+    const select = snmp.locator('#snmp-version');
+    await expect(select).toBeVisible();
+    // ROADMAP 13.5: v3 needs a user + auth/privacy protocols the card does not
+    // collect, and the saved version now really reaches `snmpget -v`.
+    await expect(select.locator('option')).toHaveCount(2);
+    await expect(select.locator('option[value="3"]')).toHaveCount(0);
+    await expect(snmp).toContainText(/v1 and v2c only/i);
+  });
+
+  test('13.3 — the UPS card surfaces a per-unit NUT reload failure', async ({ page }) => {
+    // The form only renders when NUT reports itself available, and the write
+    // must not touch the host's `/etc/nut/ups.conf`. Mock the whole card
+    // surface before the page mounts (the card loads on mount).
+    await page.route('**/api/ups/availability', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: true, data: { available: true } }),
+      }),
+    );
+    await page.route('**/api/ups/list', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: true, data: [] }),
+      }),
+    );
+    await page.route('**/api/ups/config', async (route) => {
+      if (route.request().method() === 'GET') {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ success: true, data: [] }),
+        });
+      }
+      // The write succeeded but `systemctl restart` was refused for one unit;
+      // the response must not be rendered as a clean save (ROADMAP 13.2).
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: {
+            success: true,
+            message: 'UPS configuration saved',
+            reload_warnings: ['nut-server.service: Interactive authentication required.'],
+          },
+        }),
+      });
+    });
+
+    await openSettings(page, admin);
+    await openCategory(page, 'monitoring');
+    const ups = set(page).locator('[data-testid="settings-card"]', { hasText: /UPS/ });
+
+    await ups.locator('#ups-name').fill('rack');
+    await ups.locator('#ups-port').fill('auto');
+    await ups.locator('[data-testid="ups-config-save"]').click();
+
+    const warning = page.locator('[data-testid="ups-reload-warning"]');
+    await expect(warning).toBeVisible({ timeout: 10_000 });
+    await expect(warning).toContainText('nut-server.service');
+    // Announced, not just coloured (WCAG 4.1.3).
+    await expect(warning).toHaveAttribute('role', 'status');
+  });
 });
 
 // ===========================================================================
@@ -1273,6 +1343,51 @@ test.describe('14 — Data Management', () => {
     // Dismissed — nothing is reset.
     await page.locator('[data-slot="dialog-content"]').getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(page.locator('[data-slot="dialog-content"]')).toHaveCount(0);
+  });
+
+  test('14.6 — a partial reset names the areas that could not be reset', async ({ page }) => {
+    await openSettings(page, admin);
+    await openCategory(page, 'data_management');
+
+    // ROADMAP 13.5: the reset now also clears the families stored outside
+    // settings.json. One that fails must be named, not hidden behind the
+    // plain success toast.
+    await page.route('**/api/settings/reset', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: {
+            success: true,
+            message: 'Settings reset to defaults',
+            warnings: ['antivirus: database is locked'],
+          },
+        }),
+      });
+    });
+
+    await set(page).locator('.settings-data-actions .settings-btn-danger').click();
+    const [resetResp] = await Promise.all([
+      page.waitForResponse((r) => r.url().includes('/api/settings/reset'), {
+        timeout: 15_000,
+      }),
+      page
+        .locator('[data-slot="dialog-content"]')
+        .getByRole('button', { name: /Confirm/i })
+        .click(),
+    ]);
+    expect(resetResp.ok()).toBeTruthy();
+
+    // The result is a persistent notification (the bell), not a floating
+    // toast — read it where the user actually sees it.
+    await page.locator('[data-testid="topbar-notifications"]').click();
+    const panel = page.locator('.notifications-panel');
+    await expect(panel).toBeVisible({ timeout: 8_000 });
+    await expect(panel).toContainText('antivirus: database is locked', {
+      timeout: 10_000,
+    });
   });
 });
 

@@ -80,6 +80,18 @@ impl DiskPowerRepository {
             .await?;
         Ok(())
     }
+
+    /// Drop every per-disk schedule.
+    ///
+    /// ROADMAP 13.5: "Reset to Defaults" left these rows in place, so the next
+    /// startup kept re-applying the old `hdparm` values to every disk. The
+    /// caller re-applies the defaults through the normal apply path.
+    pub async fn delete_all(&self) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM disk_power_settings")
+            .execute(self.pool.as_ref())
+            .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

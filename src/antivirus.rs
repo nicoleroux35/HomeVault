@@ -75,11 +75,26 @@ impl Drop for AvRunGuard {
 
 /// Whether the `clamscan` binary is installed (mirrors `wireguard_available()`
 /// in `src/vpn.rs`).
+///
+/// Blocking: forks `clamscan --version`, which loads the signature database and
+/// can take a second. Handler and scheduler callers use
+/// [`clamscan_available_async`]; this form is kept for the dependency probe,
+/// whose `check_installed` contract is a plain `fn() -> bool`.
 pub fn clamscan_available() -> bool {
-    std::process::Command::new("clamscan")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
+    use crate::utils::process::{run_timed, HOST_PROBE_TIMEOUT};
+    run_timed(
+        std::process::Command::new("clamscan").arg("--version"),
+        HOST_PROBE_TIMEOUT,
+    )
+    .map(|o| o.status.success())
+    .unwrap_or(false)
+}
+
+/// [`clamscan_available`] off the async runtime (ROADMAP X.1): a status poll
+/// must not fork a signature-loading process on a runtime thread.
+pub async fn clamscan_available_async() -> bool {
+    tokio::task::spawn_blocking(clamscan_available)
+        .await
         .unwrap_or(false)
 }
 
@@ -116,6 +131,76 @@ pub fn definitions_status() -> DefinitionsStatus {
     }
 }
 
+/// [`definitions_status`] off the async runtime: it stats a handful of files on
+/// the (possibly slow/spun-down) data volume.
+pub async fn definitions_status_async() -> DefinitionsStatus {
+    tokio::task::spawn_blocking(definitions_status)
+        .await
+        .unwrap_or(DefinitionsStatus {
+            available: false,
+            last_updated: None,
+        })
+}
+
+/// Validate the configured quarantine directory (ROADMAP 13.5).
+///
+/// The value is interpolated into `clamscan`'s `--move=<dir>` argument and
+/// created with `create_dir_all`, so it is not just a display field. It used to
+/// be stored verbatim, alone among the antivirus settings.
+///
+/// Rules: an absolute path, no `..` component, no control characters, not the
+/// filesystem root, and inside one of `allowed_roots` (HomeVault's own base
+/// directory by default, plus any configured storage root). A relative path is
+/// refused rather than resolved, because `clamscan` resolves it against its own
+/// working directory, which is not the one the admin is looking at.
+pub fn validate_quarantine_dir(input: &str, allowed_roots: &[std::path::PathBuf]) -> Result<String, String> {
+    let raw = input.trim();
+    if raw.is_empty() {
+        return Err("Quarantine directory must not be empty".to_string());
+    }
+    if raw.len() > 1024 {
+        return Err("Quarantine directory is too long".to_string());
+    }
+    if raw.chars().any(|c| c.is_control()) {
+        return Err("Quarantine directory must not contain control characters".to_string());
+    }
+    let path = std::path::Path::new(raw);
+    if !path.is_absolute() {
+        return Err(format!(
+            "Quarantine directory '{}' must be an absolute path",
+            raw
+        ));
+    }
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err("Quarantine directory must not contain '..'".to_string());
+    }
+    let normalized: std::path::PathBuf =
+        path.components().filter(|c| matches!(c, std::path::Component::Normal(_))).collect();
+    if normalized.as_os_str().is_empty() {
+        return Err("Quarantine directory must not be the filesystem root".to_string());
+    }
+    let inside = allowed_roots.iter().any(|root| {
+        let root: std::path::PathBuf = root
+            .components()
+            .filter(|c| matches!(c, std::path::Component::Normal(_)))
+            .collect();
+        normalized.starts_with(&root)
+    });
+    if !inside {
+        return Err(format!(
+            "Quarantine directory '{}' must be inside HomeVault's data directory or a configured storage root",
+            raw
+        ));
+    }
+    // Trailing slashes are harmless to `clamscan`, but they make the stored
+    // value differ from the one a later save sends back — trim them so the
+    // field round-trips byte-for-byte.
+    Ok(raw.trim_end_matches('/').to_string())
+}
+
 /// Summary of a completed (or failed) scan.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AvScanSummary {
@@ -150,7 +235,10 @@ pub async fn run_scan(
 
     let repo = AntivirusRepository::new(pool.clone());
     let settings = repo.get_settings().await.map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&settings.quarantine_dir)
+    // Async create: `std::fs` here ran a metadata+mkdir on the event loop
+    // (ROADMAP X.1), and the quarantine volume is often a spun-down disk.
+    tokio::fs::create_dir_all(&settings.quarantine_dir)
+        .await
         .map_err(|e| format!("Failed to create quarantine dir: {}", e))?;
 
     let scan = repo
@@ -158,7 +246,13 @@ pub async fn run_scan(
         .await
         .map_err(|e| e.to_string())?;
 
-    let result = run_clamscan(&scan_path, &settings.quarantine_dir, job_id.as_deref()).await;
+    let result = run_clamscan(
+        &scan_path,
+        &settings.quarantine_dir,
+        settings.scan_archives,
+        job_id.as_deref(),
+    )
+    .await;
 
     match result {
         Ok((summary, threats)) => {
@@ -218,22 +312,38 @@ struct ThreatMatch {
     quarantine_path: Option<String>,
 }
 
+/// The exact `clamscan` argv for one scan. Pure, so "the archive toggle and
+/// the quarantine path really reach the command line" is unit-testable.
+///
+/// ROADMAP 13.5: `scan_archives` was persisted and rendered but never used, so
+/// the switch did nothing. It is now an explicit `--scan-archive=yes|no` —
+/// explicit in both directions, so the value the UI shows is the behaviour
+/// regardless of the argument `clamscan` happens to default to.
+pub fn clamscan_args(scan_path: &str, quarantine_dir: &str, scan_archives: bool) -> Vec<String> {
+    vec![
+        "-r".to_string(),
+        "-i".to_string(),
+        "--no-summary".to_string(),
+        format!("--move={}", quarantine_dir),
+        format!(
+            "--scan-archive={}",
+            if scan_archives { "yes" } else { "no" }
+        ),
+        scan_path.to_string(),
+    ]
+}
+
 /// Spawns `clamscan` as an async child (not `spawn_blocking`) so we can
 /// stream stdout line-by-line for live progress and keep a killable handle
 /// for real cancellation via `cancel_scan()`.
 async fn run_clamscan(
     scan_path: &str,
     quarantine_dir: &str,
+    scan_archives: bool,
     job_id: Option<&str>,
 ) -> Result<(AvScanSummary, Vec<ThreatMatch>), String> {
     let mut child = Command::new("clamscan")
-        .args([
-            "-r",
-            "-i",
-            "--no-summary",
-            &format!("--move={}", quarantine_dir),
-            scan_path,
-        ])
+        .args(clamscan_args(scan_path, quarantine_dir, scan_archives))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -382,13 +492,18 @@ fn resolve_move_status(file_path: &str, quarantine_dir: &str) -> (String, Option
 /// Signal the currently running scan to stop, if any. Returns whether a scan
 /// was actually running.
 pub async fn cancel_scan() -> bool {
+    use crate::utils::process::run_timed_async;
+    use std::time::Duration;
+
     let pid = *AV_SCAN_PID.lock();
     match pid {
         Some(pid) => {
-            let _ = Command::new("kill")
-                .args(["-TERM", &pid.to_string()])
-                .output()
-                .await;
+            // ROADMAP X.2: bounded, like every other host command. `kill` on a
+            // live PID returns in milliseconds; the deadline only exists so a
+            // wedged process table cannot hang the cancel button.
+            let mut cmd = Command::new("kill");
+            cmd.args(["-TERM", &pid.to_string()]);
+            let _ = run_timed_async(&mut cmd, Duration::from_secs(5)).await;
             true
         }
         None => false,
@@ -548,5 +663,66 @@ mod tests {
         .unwrap();
         assert_eq!(json["files_scanned"], serde_json::json!(12));
         assert_eq!(json["threats_found"], serde_json::json!(1));
+    }
+
+    // -- ROADMAP 13.5: the quarantine directory reaches the clamscan argv ---
+
+    fn roots() -> Vec<std::path::PathBuf> {
+        vec![
+            std::path::PathBuf::from("/var/lib/homevault"),
+            std::path::PathBuf::from("/mnt/data"),
+        ]
+    }
+
+    #[test]
+    fn test_quarantine_dir_accepts_the_shipped_default_and_storage_roots() {
+        assert_eq!(
+            validate_quarantine_dir("/var/lib/homevault/quarantine", &roots()).unwrap(),
+            "/var/lib/homevault/quarantine"
+        );
+        assert_eq!(
+            validate_quarantine_dir("/mnt/data/quarantine", &roots()).unwrap(),
+            "/mnt/data/quarantine"
+        );
+        // Trailing slashes are trimmed so the field round-trips.
+        assert_eq!(
+            validate_quarantine_dir("/mnt/data/quarantine/", &roots()).unwrap(),
+            "/mnt/data/quarantine"
+        );
+    }
+
+    #[test]
+    fn test_quarantine_dir_refuses_anything_outside_the_managed_roots() {
+        for bad in [
+            "",
+            "   ",
+            "quarantine",              // relative
+            "./quarantine",            // relative
+            "/",                       // filesystem root
+            "/etc",                    // outside every root
+            "/var/lib/homevault/../etc", // traversal
+            "/mnt/data/../etc",
+            "/var/lib/homevault/quar\nantine",
+        ] {
+            assert!(
+                validate_quarantine_dir(bad, &roots()).is_err(),
+                "'{bad}' must not be accepted as a quarantine directory"
+            );
+        }
+        // A sibling with a shared prefix is not "inside" the root.
+        assert!(validate_quarantine_dir("/var/lib/homevault-evil", &roots()).is_err());
+    }
+
+    #[test]
+    fn test_clamscan_argv_carries_the_archive_toggle_and_the_quarantine_dir() {
+        let on = clamscan_args("/mnt/data/docs", "/var/lib/homevault/quarantine", true);
+        assert!(on.contains(&"-r".to_string()));
+        assert!(on.contains(&"--scan-archive=yes".to_string()));
+        assert!(on.contains(&"--move=/var/lib/homevault/quarantine".to_string()));
+        assert_eq!(on.last().map(String::as_str), Some("/mnt/data/docs"));
+
+        let off = clamscan_args("/mnt/data/docs", "/var/lib/homevault/quarantine", false);
+        assert!(off.contains(&"--scan-archive=no".to_string()));
+        assert!(!off.iter().any(|a| a == "--scan-archive=yes"));
     }
 }

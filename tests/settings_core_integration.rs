@@ -44,10 +44,17 @@
 //!
 //! The `*_SETTINGS` statics and the persistence singleton are process-global,
 //! so every test serialises behind `ENV_LOCK` and calls `reset_settings()`
-//! first. Nothing here shells out: the one handler that would
-//! (`/api/settings/general` → `hostnamectl`) is deliberately not covered
-//! here — its display-name sanitiser is unit-tested in
-//! `handlers::settings::tests` instead.
+//! first. Nothing here is *tested through a host side effect*:
+//! `/api/settings/general` (`hostnamectl`) is deliberately not covered — its
+//! display-name sanitiser is unit-tested in `handlers::settings::tests`
+//! instead.
+//!
+//! One exception is documented rather than hidden: `POST /api/settings/reset`
+//! now also clears the families stored outside `settings.json`
+//! (`reset_domain_settings`), and the UPS part of that is `sudo tee
+//! /etc/nut/ups.conf` + `systemctl restart`. Run unprivileged (as CI does),
+//! those fail immediately and are reported in the response's `warnings`; the
+//! test asserts the response shape, not the host state.
 //!
 //! Run:
 //!   cargo test --test settings_core_integration
@@ -837,6 +844,282 @@ async fn test_notification_threshold_is_clamped_and_round_trips() {
         got["data"]["alert_threshold"], 100,
         "a u8 threshold above 100 is clamped"
     );
+}
+
+// ---------------------------------------------------------------------------
+// ROADMAP 13.4/13.5 — language persistence, validation and import errors
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_language_choice_is_persisted_with_the_other_settings() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = settings_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/settings/language",
+        Some(&token),
+        Some(json!({"language": "fr"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The aggregate read reports the *stored* choice, not merely this
+    // process's current locale — the Settings card edits the former.
+    let (_, all) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(
+        all["data"]["general"]["language"], "fr",
+        "the language must be readable as a saved setting: {all}"
+    );
+
+    // And it reaches the exported blob, so it travels with a backup.
+    let (_, export) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/export",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(export["data"]["data"]["general"]["language"], "fr");
+
+    // Restore English for the rest of this binary.
+    let _ = send(
+        &mut router,
+        Method::POST,
+        "/api/settings/language",
+        Some(&token),
+        Some(json!({"language": "en"})),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_an_export_carries_the_settings_schema_version() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = settings_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (_, export) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/export",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(
+        export["data"]["data"]["schema_version"],
+        json!(homevault::settings_persistence::CURRENT_SETTINGS_SCHEMA),
+        "an export must state the schema it was written with: {export}"
+    );
+}
+
+#[tokio::test]
+async fn test_notification_webhook_url_is_validated_before_it_is_stored() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = settings_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    for bad in [
+        "javascript:alert(1)",
+        "ftp://example.com/hook",
+        "https://user:pass@example.com/hook",
+        "not a url",
+    ] {
+        let (status, body) = send(
+            &mut router,
+            Method::PUT,
+            "/api/settings/notifications",
+            Some(&token),
+            Some(json!({"webhook_url": bad, "webhook_enabled": true})),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "'{bad}' must be refused at save time: {body}"
+        );
+        assert_eq!(body["success"], json!(false));
+    }
+
+    // Nothing was persisted by the refused saves.
+    let (_, before) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/notifications",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(
+        before["data"]["webhook_url"],
+        Value::Null,
+        "a refused URL must not be stored: {before}"
+    );
+
+    // A real webhook URL is accepted and round-trips trimmed.
+    let (status, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/settings/notifications",
+        Some(&token),
+        Some(json!({
+            "webhook_url": "  https://hooks.example.com/services/abc  ",
+            "webhook_enabled": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (_, after) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/notifications",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(
+        after["data"]["webhook_url"], "https://hooks.example.com/services/abc",
+        "the stored value is exactly what was validated: {after}"
+    );
+}
+
+#[tokio::test]
+async fn test_email_fields_are_validated_before_they_are_stored() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = settings_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    // A malformed From: address breaks the MTA call at send time, so it is
+    // refused at save time.
+    let (status, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/settings/email",
+        Some(&token),
+        Some(json!({"smtp_server": "mail.example.com", "from_address": "not-an-address"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // The notification recipient goes through the same check.
+    let (status, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/settings/notifications",
+        Some(&token),
+        Some(json!({"email": "two addresses@example.com"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // Valid values are accepted.
+    let (status, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/settings/email",
+        Some(&token),
+        Some(json!({
+            "smtp_server": "mail.example.com",
+            "smtp_port": 587,
+            "smtp_username": "bot@example.com",
+            "smtp_password": "secret",
+            "from_address": "homevault@example.com",
+            "use_tls": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (_, got) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/email",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(got["data"]["from_address"], "homevault@example.com");
+}
+
+#[tokio::test]
+async fn test_import_refuses_a_newer_schema_and_names_the_bad_field() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = settings_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    // An export from a future release must not be half-applied.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/settings/import",
+        Some(&token),
+        Some(json!({"data": {
+            "schema_version": 999,
+            "general": {"server_name": "FUTURE", "timezone": "Europe/Paris"}
+        }})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("newer HomeVault"),
+        "the refusal must explain the version mismatch: {body}"
+    );
+
+    // A bad field is named rather than silently stored.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/settings/import",
+        Some(&token),
+        Some(json!({"data": {
+            "schema_version": 1,
+            "email": {"smtp_server": "mail.example.com", "smtp_port": 0}
+        }})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("smtp_port"),
+        "the error must name the offending field: {body}"
+    );
+
+    // A valid blob is applied.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/settings/import",
+        Some(&token),
+        Some(json!({"data": {
+            "schema_version": 1,
+            "general": {"server_name": "IMPORTED", "timezone": "Europe/Paris"}
+        }})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["success"], json!(true));
 }
 
 // ===========================================================================

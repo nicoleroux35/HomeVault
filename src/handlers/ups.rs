@@ -2,7 +2,7 @@
  * File          : ups.rs
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Last modified : 23/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
@@ -25,7 +25,7 @@
 //! all admin-only.
 
 use crate::handlers::AppState;
-use crate::ups::{UpsConfigEntry, UpsService};
+use crate::ups::{UpsConfigEntry, UpsError, UpsService};
 use crate::utils::ResponseHelper;
 use axum::{
     extract::{Path, Query, State},
@@ -51,6 +51,28 @@ pub struct UpsConfigRequest {
     pub desc: String,
 }
 
+/// Every `upsc`/`systemctl` call is blocking, so it runs on the blocking
+/// pool (ROADMAP X.1) — the handlers below never touch a child process on
+/// the runtime thread.
+async fn blocking<T, F>(f: F) -> Result<T, Response>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(value) => Ok(value),
+        Err(e) => Err(ResponseHelper::json_internal_error(format!(
+            "UPS task failed: {e}"
+        ))),
+    }
+}
+
+/// A validation refusal is a `400` naming the field; a command failure keeps
+/// the existing message shape.
+fn ups_error(e: UpsError) -> Response {
+    ResponseHelper::json_error(format!("UPS error: {}", e))
+}
+
 /// Lists all connected UPS devices and their status.
 pub async fn handle_ups_list(
     State(state): State<Arc<AppState>>,
@@ -61,9 +83,10 @@ pub async fn handle_ups_list(
         return resp;
     }
 
-    match UpsService::list_all_status() {
-        Ok(list) => ResponseHelper::json_success(list),
-        Err(e) => ResponseHelper::json_error(format!("UPS error: {}", e)),
+    match blocking(UpsService::list_all_status).await {
+        Ok(Ok(list)) => ResponseHelper::json_success(list),
+        Ok(Err(e)) => ups_error(e),
+        Err(resp) => resp,
     }
 }
 
@@ -77,9 +100,10 @@ pub async fn handle_ups_status(
         return resp;
     }
 
-    match UpsService::get_ups_status(&name) {
-        Ok(status) => ResponseHelper::json_success(status),
-        Err(e) => ResponseHelper::json_error(format!("UPS error: {}", e)),
+    match blocking(move || UpsService::get_ups_status(&name)).await {
+        Ok(Ok(status)) => ResponseHelper::json_success(status),
+        Ok(Err(e)) => ups_error(e),
+        Err(resp) => resp,
     }
 }
 
@@ -93,9 +117,10 @@ pub async fn handle_ups_variables(
         return resp;
     }
 
-    match UpsService::get_ups_variables(&name) {
-        Ok(vars) => ResponseHelper::json_success(vars),
-        Err(e) => ResponseHelper::json_error(format!("UPS error: {}", e)),
+    match blocking(move || UpsService::get_ups_variables(&name)).await {
+        Ok(Ok(vars)) => ResponseHelper::json_success(vars),
+        Ok(Err(e)) => ups_error(e),
+        Err(resp) => resp,
     }
 }
 
@@ -108,9 +133,12 @@ pub async fn handle_ups_availability(
         return resp;
     }
 
-    ResponseHelper::json_success(serde_json::json!({
-        "available": UpsService::is_available()
-    }))
+    match blocking(UpsService::is_available).await {
+        Ok(available) => ResponseHelper::json_success(serde_json::json!({
+            "available": available
+        })),
+        Err(resp) => resp,
+    }
 }
 
 /// Lists the UPS devices configured in `/etc/nut/ups.conf`.
@@ -122,14 +150,21 @@ pub async fn handle_ups_config_list(
         return resp;
     }
 
-    match crate::ups::list_config() {
-        Ok(entries) => ResponseHelper::json_success(entries),
-        Err(e) => ResponseHelper::json_error(format!("UPS config error: {}", e)),
+    match blocking(crate::ups::list_config).await {
+        Ok(Ok(entries)) => ResponseHelper::json_success(entries),
+        Ok(Err(e)) => ResponseHelper::json_error(format!("UPS config error: {}", e)),
+        Err(resp) => resp,
     }
 }
 
 /// Adds or updates one UPS section (serial / network / USB) in `ups.conf`,
 /// then reloads NUT.
+///
+/// ROADMAP 13.2: the response distinguishes "written" from "reloaded". The
+/// file is written first (so a reload refusal never loses the admin's edit),
+/// and every unit that refused to restart is named in `reload_warnings` —
+/// the old handler answered a flat success even when no grant existed and
+/// NUT never saw the new section.
 pub async fn handle_ups_config_save(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -146,12 +181,14 @@ pub async fn handle_ups_config_save(
         desc: req.desc,
     };
 
-    match crate::ups::save_config(entry) {
-        Ok(()) => ResponseHelper::json_success(serde_json::json!({
+    match blocking(move || crate::ups::save_config(entry)).await {
+        Ok(Ok(reload_warnings)) => ResponseHelper::json_success(serde_json::json!({
             "success": true,
-            "message": "UPS configuration saved"
+            "message": "UPS configuration saved",
+            "reload_warnings": reload_warnings,
         })),
-        Err(e) => ResponseHelper::json_error(format!("UPS config error: {}", e)),
+        Ok(Err(e)) => ResponseHelper::json_error(format!("UPS config error: {}", e)),
+        Err(resp) => resp,
     }
 }
 
@@ -165,12 +202,14 @@ pub async fn handle_ups_config_delete(
         return resp;
     }
 
-    match crate::ups::delete_config(&name) {
-        Ok(()) => ResponseHelper::json_success(serde_json::json!({
+    match blocking(move || crate::ups::delete_config(&name)).await {
+        Ok(Ok(reload_warnings)) => ResponseHelper::json_success(serde_json::json!({
             "success": true,
-            "message": "UPS configuration removed"
+            "message": "UPS configuration removed",
+            "reload_warnings": reload_warnings,
         })),
-        Err(e) => ResponseHelper::json_error(format!("UPS config error: {}", e)),
+        Ok(Err(e)) => ResponseHelper::json_error(format!("UPS config error: {}", e)),
+        Err(resp) => resp,
     }
 }
 

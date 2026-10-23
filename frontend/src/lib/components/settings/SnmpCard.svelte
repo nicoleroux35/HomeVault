@@ -109,8 +109,8 @@
           <select id="snmp-version" class={settingsSelect} bind:value={draft.snmp.version}>
             <option value="1">v1</option>
             <option value="2c">v2c</option>
-            <option value="3">v3</option>
           </select>
+          <p class={settingsHint}>{$t('settings.snmp_version_hint')}</p>
         </div>
       </div>
     </div>

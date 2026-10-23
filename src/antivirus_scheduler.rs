@@ -50,7 +50,9 @@ pub async fn run_scheduler_loop(state: Arc<crate::handlers::AppState>) {
 }
 
 async fn run_due(state: &Arc<crate::handlers::AppState>) -> Result<(), String> {
-    if !antivirus::clamscan_available() || av_scan_is_running() {
+    // Off the runtime: `clamscan_available` forks a signature-loading process
+    // every 30 s tick (ROADMAP X.1).
+    if !antivirus::clamscan_available_async().await || av_scan_is_running() {
         return Ok(());
     }
 
@@ -65,24 +67,7 @@ async fn run_due(state: &Arc<crate::handlers::AppState>) -> Result<(), String> {
         return Ok(());
     };
 
-    let now = Utc::now();
-    let after = settings
-        .last_scan_at
-        .as_ref()
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map(|d| d.with_timezone(&Utc))
-        .unwrap_or_else(|| now - chrono::Duration::days(8));
-
-    let next = compute_next_run(&settings.scheduled_scan_cron, after)
-        .ok()
-        .flatten();
-
-    let should_run = match next {
-        Some(n) => n <= now,
-        None => false,
-    };
-
-    if !should_run {
+    if !is_due(&settings.scheduled_scan_cron, settings.last_scan_at.as_deref()) {
         return Ok(());
     }
 
@@ -95,4 +80,59 @@ async fn run_due(state: &Arc<crate::handlers::AppState>) -> Result<(), String> {
     });
 
     Ok(())
+}
+
+/// Whether the cron schedule is due, given the previous run.
+///
+/// Split out of `run_due` so the one part with a real decision in it is
+/// unit-testable without a database or a `clamscan` binary. An unparsable
+/// `last_scan_at` counts as "never ran" (past the 8-day floor used for a first
+/// run), and an unparsable cron is never due — a broken schedule must not turn
+/// into a scan every 30 seconds.
+fn is_due(cron: &str, last_scan_at: Option<&str>) -> bool {
+    let now = Utc::now();
+    let after = last_scan_at
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&Utc))
+        .unwrap_or_else(|| now - chrono::Duration::days(8));
+
+    match compute_next_run(cron, after).ok().flatten() {
+        Some(next) => next <= now,
+        None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Scheduling decisions (ROADMAP 13.5): the cron gate and the "already
+    //! running" guard are the only logic in this file, and both used to be
+    //! inline in an async fn that could not be tested.
+    //!
+    //! Run: `cargo test antivirus_scheduler::tests`
+
+    use super::*;
+
+    #[test]
+    fn test_an_unparsable_cron_is_never_due() {
+        // Must not degrade into "scan every tick".
+        assert!(!is_due("not a cron", None));
+        assert!(!is_due("", None));
+    }
+
+    #[test]
+    fn test_a_daily_schedule_is_due_when_the_last_run_is_old() {
+        let two_days_ago = (Utc::now() - chrono::Duration::days(2)).to_rfc3339();
+        assert!(is_due("0 3 * * *", Some(&two_days_ago)));
+    }
+
+    #[test]
+    fn test_a_daily_schedule_is_not_due_right_after_a_run() {
+        let just_now = (Utc::now() - chrono::Duration::minutes(1)).to_rfc3339();
+        assert!(!is_due("0 3 * * *", Some(&just_now)));
+    }
+
+    #[test]
+    fn test_a_never_run_schedule_is_due() {
+        assert!(is_due("0 3 * * *", None));
+    }
 }

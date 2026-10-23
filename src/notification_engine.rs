@@ -29,7 +29,7 @@
 //! poll — so `src/restic_scheduler.rs` itself (frozen, part of the Backup
 //! page) is never touched.
 
-use crate::email::{EmailConfig, EmailRecipient, EmailService, SystemAlertEmail};
+use crate::email::{EmailRecipient, EmailService, SystemAlertEmail};
 use crate::handlers::settings::{EMAIL_SETTINGS, NOTIFICATION_SETTINGS};
 use crate::handlers::AppState;
 use crate::health::{HealthService, HealthStatus};
@@ -322,19 +322,7 @@ pub(crate) async fn notify(
 
     if settings.enable_alerts.unwrap_or(false) && settings.smtp_enabled.unwrap_or(false) {
         if let Some(email) = &settings.email {
-            let email_settings = EMAIL_SETTINGS.read().clone();
-            let config = EmailConfig {
-                smtp_host: email_settings.smtp_server.clone().unwrap_or_default(),
-                smtp_port: email_settings.smtp_port.unwrap_or(587),
-                smtp_username: email_settings.smtp_username.clone().unwrap_or_default(),
-                smtp_password: email_settings.smtp_password.clone().unwrap_or_default(),
-                from_address: email_settings
-                    .from_address
-                    .clone()
-                    .unwrap_or_else(|| "homevault@localhost".to_string()),
-                from_name: "HomeVault".to_string(),
-                use_tls: email_settings.use_tls.unwrap_or(true),
-            };
+            let config = crate::email::EmailConfig::from(&*EMAIL_SETTINGS.read());
             let alert = SystemAlertEmail {
                 severity: severity.to_string(),
                 title: title.to_string(),
@@ -345,14 +333,39 @@ pub(crate) async fn notify(
                 email: email.clone(),
                 name: None,
             };
-            if let Err(e) = EmailService::send_system_alert(&alert, &[recipient], &config) {
-                tracing::warn!("Notification engine: failed to send alert email: {}", e);
+            // ROADMAP 13.3: sending runs `msmtp`/`mutt`/`sendmail` with a 30 s
+            // deadline. On the runtime thread that blocked the whole scheduler
+            // tick (and every other task) while the MTA hung.
+            let sent = tokio::task::spawn_blocking(move || {
+                EmailService::send_system_alert(&alert, &[recipient], &config)
+            })
+            .await;
+            match sent {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!("Notification engine: failed to send alert email: {}", e)
+                }
+                Err(e) => tracing::warn!(
+                    "Notification engine: alert email task failed: {}",
+                    e
+                ),
             }
         }
     }
 
     if settings.webhook_enabled.unwrap_or(false) {
         if let Some(url) = &settings.webhook_url {
+            // ROADMAP 13.5: re-validate at dispatch. A URL persisted before
+            // save-time validation existed (or hand-edited into the file) must
+            // not reach `reqwest`; an empty value means "no webhook".
+            let url = match crate::handlers::settings::validate_webhook_url(url) {
+                Ok(url) if !url.is_empty() => url,
+                Ok(_) => return,
+                Err(e) => {
+                    tracing::warn!("Notification engine: invalid webhook URL: {}", e);
+                    return;
+                }
+            };
             // The sink format decides the body shape: the historical generic
             // JSON, or Slack/Discord's incoming-webhook fields so a channel
             // URL can be pasted without a relay service.
@@ -362,10 +375,82 @@ pub(crate) async fn notify(
                 .and_then(crate::notification_events::WebhookFormat::parse)
                 .unwrap_or_default();
             let payload = format.payload(title, message, severity, category);
-            let client = reqwest::Client::new();
-            if let Err(e) = client.post(url).json(&payload).send().await {
-                tracing::warn!("Notification engine: failed to post webhook: {}", e);
+            // One shared client, with a deadline: `Client::new()` per alert
+            // built a fresh connection pool each time and had no timeout, so a
+            // sink that accepted the TCP connection and never answered kept
+            // this future alive forever.
+            match webhook_client().post(&url).json(&payload).send().await {
+                Ok(resp) if resp.status().is_success() => {}
+                Ok(resp) => tracing::warn!(
+                    "Notification engine: webhook answered {}",
+                    resp.status()
+                ),
+                Err(e) => tracing::warn!("Notification engine: failed to post webhook: {}", e),
             }
         }
+    }
+}
+
+/// Maximum time a webhook delivery may take, including the connect, the body
+/// write and the response headers.
+pub const WEBHOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The one HTTP client used for outgoing webhooks.
+///
+/// Built once so every alert reuses its connection pool, and bounded so a
+/// black-holed sink cannot pin the notification (and backup scheduling) task.
+pub fn webhook_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(WEBHOOK_TIMEOUT)
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .user_agent(concat!("HomeVault/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    //! ROADMAP 13.5: the webhook path was an untimed `Client::new()` per
+    //! alert and an unvalidated URL. These pin the two properties that matter
+    //! and are testable without a network.
+    //!
+    //! Run: `cargo test notification_engine::tests`
+
+    use super::*;
+
+    #[test]
+    fn test_the_webhook_client_has_a_deadline() {
+        assert!(
+            WEBHOOK_TIMEOUT <= std::time::Duration::from_secs(30),
+            "a webhook must not hold the scheduler task for half a minute"
+        );
+        // Same instance on every call: this is what makes the connection pool
+        // and the timeout apply to every alert.
+        let first = webhook_client() as *const reqwest::Client;
+        let second = webhook_client() as *const reqwest::Client;
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn test_a_bad_webhook_url_is_refused_before_dispatch() {
+        for bad in ["javascript:alert(1)", "ftp://example.com/hook", "not a url"] {
+            assert!(
+                crate::handlers::settings::validate_webhook_url(bad).is_err(),
+                "'{bad}' must not reach the webhook client"
+            );
+        }
+        assert_eq!(
+            crate::handlers::settings::validate_webhook_url("  https://example.com/hook  ")
+                .unwrap(),
+            "https://example.com/hook"
+        );
+        // Empty clears the setting rather than being an error.
+        assert_eq!(
+            crate::handlers::settings::validate_webhook_url("   ").unwrap(),
+            ""
+        );
     }
 }

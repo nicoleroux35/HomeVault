@@ -38,15 +38,42 @@ use std::str::FromStr;
 static SETTINGS_PERSISTENCE: Lazy<RwLock<Option<SettingsPersistence>>> =
     Lazy::new(|| RwLock::new(None));
 
+/// Schema version written into every export and expected on import.
+///
+/// ROADMAP 13.5: exports were a bare blob with no version, so an import from a
+/// different release either silently dropped fields the importer did not know
+/// or failed with a serde message that named no field. The number is bumped
+/// whenever a persisted key changes shape; an import from the future is refused
+/// with that number in the message instead of being half-applied.
+pub const CURRENT_SETTINGS_SCHEMA: u32 = 1;
+
 /// Settings persistence data structure
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedSettings {
+    /// `1` for this release. Absent (`0`) is a pre-versioning export, accepted
+    /// because those blobs are exactly what this release still reads.
+    #[serde(default)]
+    pub schema_version: u32,
     pub general: Option<PersistedGeneral>,
     pub email: Option<PersistedEmail>,
     pub update: Option<PersistedUpdate>,
     pub notifications: Option<PersistedNotifications>,
     pub appearance: Option<PersistedAppearance>,
     pub ai: Option<PersistedAi>,
+}
+
+impl Default for PersistedSettings {
+    fn default() -> Self {
+        Self {
+            schema_version: CURRENT_SETTINGS_SCHEMA,
+            general: None,
+            email: None,
+            update: None,
+            notifications: None,
+            appearance: None,
+            ai: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +85,9 @@ pub struct PersistedAi {
 pub struct PersistedGeneral {
     pub server_name: Option<String>,
     pub timezone: Option<String>,
+    /// Server-wide default UI language (ROADMAP 13.4).
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +132,7 @@ impl PersistedSettings {
         GeneralSettings {
             server_name: self.general.as_ref().and_then(|g| g.server_name.clone()),
             timezone: self.general.as_ref().and_then(|g| g.timezone.clone()),
+            language: self.general.as_ref().and_then(|g| g.language.clone()),
         }
     }
 
@@ -179,9 +210,11 @@ impl SettingsPersistence {
         appearance: &AppearanceSettings,
     ) -> Result<(), String> {
         let settings = PersistedSettings {
+            schema_version: CURRENT_SETTINGS_SCHEMA,
             general: Some(PersistedGeneral {
                 server_name: general.server_name.clone(),
                 timezone: general.timezone.clone(),
+                language: general.language.clone(),
             }),
             email: Some(PersistedEmail {
                 smtp_server: email.smtp_server.clone(),
@@ -233,17 +266,31 @@ impl SettingsPersistence {
     /// an export is still safe: `apply_loaded_settings` only overwrites fields
     /// that are `Some(..)`, so a redacted `None` password leaves the currently
     /// configured one untouched.
+    ///
+    /// The blob carries `schema_version` (ROADMAP 13.5) so a later release can
+    /// tell an old export from a foreign file before applying anything.
     pub fn export(&self) -> Result<String, String> {
         let mut settings = self.load_all();
+        settings.schema_version = CURRENT_SETTINGS_SCHEMA;
         if let Some(email) = settings.email.as_mut() {
             email.smtp_password = None;
         }
         serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())
     }
 
-    /// Import settings from JSON string
+    /// Import settings from JSON string.
+    ///
+    /// ROADMAP 13.5: the file is validated *before* it replaces the stored
+    /// blob — schema version first, then every field whose bad value would
+    /// otherwise be persisted and only fail much later (a port of 0, an
+    /// unknown timezone, a webhook URL that is not a URL). The error names the
+    /// offending field, which the old bare `serde_json` error never did.
     pub fn import(&self, json: &str) -> Result<PersistedSettings, String> {
-        let settings: PersistedSettings = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let mut settings: PersistedSettings = serde_json::from_str(json).map_err(|e| {
+            format!("Settings file is not valid for this HomeVault version: {e}")
+        })?;
+        validate_import(&settings)?;
+        settings.schema_version = CURRENT_SETTINGS_SCHEMA;
         self.storage
             .save("settings", &settings)
             .map_err(|e| e.to_string())?;
@@ -264,6 +311,10 @@ impl SettingsPersistence {
         *APPEARANCE_SETTINGS.write() = AppearanceSettings::default();
         crate::handlers::chat::reset_ai_model();
         crate::handlers::snmp::reset_snmp_settings();
+        // ROADMAP 13.4/13.5: the language is a setting too, so resetting must
+        // put the running process back on English instead of keeping the old
+        // locale until the next restart.
+        crate::i18n::I18n::set_locale(crate::handlers::settings::DEFAULT_LANGUAGE);
         // Built-in HTTPS/TLS config (data/tls.json) is separate from settings.json
         // but is still "a setting" from the admin's point of view — clear it too.
         crate::tls::clear_settings();
@@ -271,7 +322,134 @@ impl SettingsPersistence {
     }
 }
 
-/// Initialize the settings persistence system
+/// Validate an imported settings blob before it is persisted.
+///
+/// Kept separate from `import` so it is unit-testable without touching disk and
+/// so a future caller (e.g. a migration) can reuse it. Every refusal names the
+/// field: "invalid settings file" alone was the reason ROADMAP 13.5 listed the
+/// import as half-wired.
+pub fn validate_import(settings: &PersistedSettings) -> Result<(), String> {
+    if settings.schema_version > CURRENT_SETTINGS_SCHEMA {
+        return Err(format!(
+            "This settings file was exported by a newer HomeVault (schema {}; this build supports up to {}). Update HomeVault first.",
+            settings.schema_version, CURRENT_SETTINGS_SCHEMA
+        ));
+    }
+
+    if let Some(general) = &settings.general {
+        if let Some(name) = &general.server_name {
+            if name.chars().count() > 64 {
+                return Err("general.server_name is longer than 64 characters".to_string());
+            }
+            if name.chars().any(|c| c.is_control()) {
+                return Err("general.server_name contains control characters".to_string());
+            }
+        }
+        if let Some(tz) = &general.timezone {
+            let tz = tz.trim();
+            if tz.is_empty() || chrono_tz::Tz::from_str(tz).is_err() {
+                return Err(format!(
+                    "general.timezone '{}' is not a known IANA timezone",
+                    tz
+                ));
+            }
+        }
+        if let Some(language) = &general.language {
+            crate::handlers::settings::normalize_language(language)
+                .map_err(|e| format!("general.language: {e}"))?;
+        }
+    }
+
+    if let Some(email) = &settings.email {
+        if email.smtp_port == Some(0) {
+            return Err("email.smtp_port must be 1-65535".to_string());
+        }
+        if let Some(from) = &email.from_address {
+            let from = from.trim();
+            if !from.is_empty() && !crate::handlers::settings::is_valid_email_address(from) {
+                return Err(format!("email.from_address '{}' is not a valid address", from));
+            }
+        }
+        // The relay fields become lines of the generated msmtp configuration,
+        // so they go through the same validator that endpoint uses.
+        let probe = crate::email::EmailConfig {
+            smtp_host: email.smtp_server.clone().unwrap_or_default(),
+            smtp_port: email.smtp_port.unwrap_or(587),
+            smtp_username: email.smtp_username.clone().unwrap_or_default(),
+            smtp_password: email.smtp_password.clone().unwrap_or_default(),
+            from_address: email
+                .from_address
+                .clone()
+                .unwrap_or_else(|| "homevault@localhost".to_string()),
+            from_name: "HomeVault".to_string(),
+            use_tls: email.use_tls.unwrap_or(true),
+        };
+        if probe.is_explicit() {
+            probe
+                .validate()
+                .map_err(|e| format!("email: {}", e))?;
+        }
+    }
+
+    if let Some(notifications) = &settings.notifications {
+        if let Some(threshold) = notifications.alert_threshold {
+            if threshold > 100 {
+                return Err("notifications.alert_threshold must be 0-100".to_string());
+            }
+        }
+        if let Some(email) = &notifications.email {
+            let email = email.trim();
+            if !email.is_empty() && !crate::handlers::settings::is_valid_email_address(email) {
+                return Err(format!(
+                    "notifications.email '{}' is not a valid address",
+                    email
+                ));
+            }
+        }
+        if let Some(url) = &notifications.webhook_url {
+            crate::handlers::settings::validate_webhook_url(url)
+                .map_err(|e| format!("notifications.webhook_url: {e}"))?;
+        }
+        if let Some(format) = &notifications.webhook_format {
+            if crate::notification_events::WebhookFormat::parse(format).is_none() {
+                return Err(format!(
+                    "notifications.webhook_format '{}' is not generic, slack or discord",
+                    format
+                ));
+            }
+        }
+    }
+
+    if let Some(appearance) = &settings.appearance {
+        for (field, value, max) in [
+            ("appearance.theme", &appearance.theme, 32usize),
+            ("appearance.wallpaper", &appearance.wallpaper, 512),
+            ("appearance.accent_color", &appearance.accent_color, 32),
+            ("appearance.density", &appearance.density, 32),
+        ] {
+            if let Some(value) = value {
+                if value.chars().count() > max {
+                    return Err(format!("{field} is longer than {max} characters"));
+                }
+                if value.chars().any(|c| c.is_control()) {
+                    return Err(format!("{field} contains control characters"));
+                }
+            }
+        }
+    }
+
+    if let Some(ai) = &settings.ai {
+        if let Some(model) = &ai.model {
+            if model.chars().count() > 200 || model.chars().any(|c| c.is_control()) {
+                return Err("ai.model is not a valid model id".to_string());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Initialize the settings persistence system.
 pub fn init_persistence(data_directory: String) {
     let loaded_settings;
     let ai_model_option;
@@ -332,6 +510,17 @@ fn apply_loaded_settings(loaded: &PersistedSettings) {
         }
         if let Some(tz) = &general.timezone {
             settings.timezone = Some(tz.clone());
+        }
+        if let Some(language) = &general.language {
+            // ROADMAP 13.4: the stored language is applied here, before the
+            // HTTP server starts accepting requests, so the very first page
+            // the admin sees is already in the language they chose. A value
+            // from an older/hand-edited file that this build does not ship is
+            // ignored rather than served as a broken locale.
+            if let Ok(language) = crate::handlers::settings::normalize_language(language) {
+                settings.language = Some(language.clone());
+                crate::i18n::I18n::set_locale(&language);
+            }
         }
     }
 
@@ -448,9 +637,11 @@ pub fn save_all_settings() {
         let appearance = APPEARANCE_SETTINGS.read();
 
         let settings = PersistedSettings {
+            schema_version: CURRENT_SETTINGS_SCHEMA,
             general: Some(PersistedGeneral {
                 server_name: general.server_name.clone(),
                 timezone: general.timezone.clone(),
+                language: general.language.clone(),
             }),
             email: Some(PersistedEmail {
                 smtp_server: email.smtp_server.clone(),
@@ -479,6 +670,8 @@ pub fn save_all_settings() {
                 accent_color: appearance.accent_color.clone(),
                 density: appearance.density.clone(),
             }),
+            // Filled below from `AI_MODEL` (`settings_with_ai`): the model is
+            // written by `save_ai_model`, not held in a settings static.
             ai: None,
         };
 
@@ -735,5 +928,140 @@ mod tests {
         // Restore the globals for any other test in this binary.
         *EMAIL_SETTINGS.write() = saved_email;
         *APPEARANCE_SETTINGS.write() = saved_appearance;
+    }
+
+    // -- ROADMAP 13.4/13.5: language, schema version, import validation ---
+
+    #[test]
+    fn test_the_general_block_round_trips_the_language() {
+        let (p, _dir) = persistence();
+        let mut general = GeneralSettings::default();
+        general.language = Some("fr".to_string());
+        p.save_all(
+            &general,
+            &EmailSettings::default(),
+            &UpdateSettings::default(),
+            &NotificationSettings::default(),
+            &AppearanceSettings::default(),
+        )
+        .unwrap();
+
+        let loaded = p.load_all();
+        assert_eq!(
+            loaded.to_general().language.as_deref(),
+            Some("fr"),
+            "the language is a persisted setting, not process state"
+        );
+    }
+
+    #[test]
+    fn test_an_export_carries_the_current_schema_version() {
+        let (p, _dir) = persistence();
+        save(&p, &email_with_password("pw"), &AppearanceSettings::default());
+        let json: serde_json::Value = serde_json::from_str(&p.export().unwrap()).unwrap();
+        assert_eq!(
+            json["schema_version"], CURRENT_SETTINGS_SCHEMA,
+            "an export must say which schema it is"
+        );
+    }
+
+    #[test]
+    fn test_an_import_from_a_newer_schema_is_refused() {
+        let (p, _dir) = persistence();
+        let mut newer = PersistedSettings::default();
+        newer.schema_version = CURRENT_SETTINGS_SCHEMA + 1;
+        let json = serde_json::to_string(&newer).unwrap();
+        let err = p.import(&json).unwrap_err();
+        assert!(
+            err.contains("newer HomeVault"),
+            "the refusal must name the version problem: {err}"
+        );
+    }
+
+    #[test]
+    fn test_a_pre_versioning_import_is_still_accepted() {
+        // Blobs written before the field existed have no `schema_version`.
+        let (p, _dir) = persistence();
+        let json = r#"{"general":{"server_name":"NAS","timezone":"Europe/Paris"}}"#;
+        let imported = p.import(json).expect("legacy blob is accepted");
+        assert_eq!(imported.schema_version, CURRENT_SETTINGS_SCHEMA);
+        assert_eq!(imported.to_general().server_name.as_deref(), Some("NAS"));
+    }
+
+    #[test]
+    fn test_import_validation_names_the_offending_field() {
+        let mut bad_port = PersistedSettings::default();
+        bad_port.email = Some(PersistedEmail {
+            smtp_server: Some("mail.example.com".to_string()),
+            smtp_port: Some(0),
+            smtp_username: None,
+            smtp_password: None,
+            from_address: None,
+            use_tls: Some(true),
+        });
+        let err = validate_import(&bad_port).unwrap_err();
+        assert!(err.contains("smtp_port"), "{err}");
+
+        let mut bad_tz = PersistedSettings::default();
+        bad_tz.general = Some(PersistedGeneral {
+            server_name: None,
+            timezone: Some("Mars/Olympus".to_string()),
+            language: None,
+        });
+        let err = validate_import(&bad_tz).unwrap_err();
+        assert!(err.contains("timezone"), "{err}");
+
+        let mut bad_url = PersistedSettings::default();
+        bad_url.notifications = Some(PersistedNotifications {
+            email: None,
+            enable_alerts: None,
+            alert_threshold: Some(80),
+            smtp_enabled: None,
+            webhook_url: Some("ftp://example.com/hook".to_string()),
+            webhook_enabled: Some(true),
+            event_toggles: None,
+            webhook_format: None,
+        });
+        let err = validate_import(&bad_url).unwrap_err();
+        assert!(err.contains("webhook_url"), "{err}");
+
+        let mut bad_threshold = PersistedSettings::default();
+        bad_threshold.notifications = Some(PersistedNotifications {
+            email: None,
+            enable_alerts: None,
+            alert_threshold: Some(200),
+            smtp_enabled: None,
+            webhook_url: None,
+            webhook_enabled: None,
+            event_toggles: None,
+            webhook_format: None,
+        });
+        assert!(validate_import(&bad_threshold)
+            .unwrap_err()
+            .contains("alert_threshold"));
+
+        let mut bad_language = PersistedSettings::default();
+        bad_language.general = Some(PersistedGeneral {
+            server_name: None,
+            timezone: None,
+            language: Some("it".to_string()),
+        });
+        assert!(validate_import(&bad_language)
+            .unwrap_err()
+            .contains("language"));
+    }
+
+    #[test]
+    fn test_a_valid_import_passes_validation() {
+        let settings = PersistedSettings {
+            schema_version: CURRENT_SETTINGS_SCHEMA,
+            general: Some(PersistedGeneral {
+                server_name: Some("NAS".to_string()),
+                timezone: Some("Europe/Paris".to_string()),
+                language: Some("fr".to_string()),
+            }),
+            ..PersistedSettings::default()
+        };
+        assert!(validate_import(&settings).is_ok());
     }
 }

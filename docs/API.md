@@ -80,18 +80,18 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 | GET | `/settings/public` | public | safe subset (server name, language, theme) |
 | GET/PUT | `/settings/general` | auth / admin | server name, timezone — the timezone is validated (IANA) and applied to the host with `timedatectl`; a failed apply returns `timezone_notice` |
 | GET | `/settings/timezones` | auth | every zone name the scheduler can evaluate (`chrono-tz`'s IANA database, region-prefixed names + `UTC`), sorted — what the Settings picker renders |
-| GET/POST | `/settings/language` | auth | set UI language (persisted) |
+| GET/POST | `/settings/language` | auth | set UI language — persisted as `general.language` and applied at boot before the first page renders; unsupported tags answer `400` |
 | GET | `/translations` | auth | returns flattened `locale → key → string` map (`handle_get_translations`, `src/handlers/settings.rs`; mounted at `/api/translations`) |
-| GET/PUT | `/settings/email` | auth / admin | SMTP |
+| GET/PUT | `/settings/email` | auth / admin | SMTP relay; validated before it is stored (From: address, port) and used to generate the `msmtp` configuration |
 | POST | `/settings/email/test` | admin | send test email |
-| GET/PUT | `/settings/notifications` | auth / admin | |
+| GET/PUT | `/settings/notifications` | auth / admin | alert e-mail, threshold, `webhook_url`/`webhook_enabled`/`webhook_format`; the URL must be `http(s)` with a host and no embedded credentials (`400` otherwise) and is validated again at dispatch (`validate_webhook_url`) |
 | GET/PUT | `/settings/appearance` | auth / admin | theme, wallpaper, accent, density |
 | GET/PUT | `/settings/update` | auth / admin | update-check frequency |
 | GET | `/settings/version` | auth | current version + last cached check (never forces an outbound call) |
 | POST | `/settings/version/check` | admin | "Check now" — the only path that forces the outbound update check |
-| GET | `/settings/export` | admin | JSON dump |
-| POST | `/settings/import` | admin | JSON import |
-| POST | `/settings/reset` | admin | reset to defaults |
+| GET | `/settings/export` | admin | JSON dump, stamped with `schema_version` (SMTP password redacted) |
+| POST | `/settings/import` | admin | JSON import — refused when `schema_version` is newer than this build or any field is invalid, naming the field |
+| POST | `/settings/reset` | admin | reset to defaults, including antivirus / anti-ransomware / disk spindown / DB-backup settings and `ups.conf`; a domain that failed is listed in `warnings` |
 | GET/PUT | `/settings/tls` | admin | built-in HTTPS config + cert info; PUT returns `requires_restart` |
 | POST | `/settings/tls/regenerate` | admin | force self-signed cert regeneration |
 | GET | `/settings/backup/db` | admin | snapshots of HomeVault's own database — settings + files on disk + total size (the DB is WAL, so the `.db` alone is not restorable) |
@@ -1057,13 +1057,13 @@ frontend cards in Settings (`UpsCard.svelte`/`SnmpCard.svelte`) — see
 | GET | `/ups/status/{name}` | admin |
 | GET | `/ups/variables/{name}` | admin |
 | GET | `/ups/config` | admin — list `ups.conf` sections |
-| POST | `/ups/config` | admin — add/update a section (`{name, driver, port, desc?}`; driver allow-listed, reloads NUT) |
-| DELETE | `/ups/config/{name}` | admin — remove a section (reloads NUT) |
+| POST | `/ups/config` | admin — add/update a section (`{name, driver, port, desc?}`; name and driver validated, reloads NUT). `data.reload_warnings` names every unit that refused to restart — `success: true` means *written*, not necessarily *live* |
+| DELETE | `/ups/config/{name}` | admin — remove a section (reloads NUT; same `reload_warnings` contract) |
 | GET | `/snmp/availability` | admin |
-| GET | `/snmp/info` | admin |
-| GET | `/snmp/interfaces` | admin |
+| GET | `/snmp/info` | admin — uses the saved community/version (a `community` query parameter overrides the community) |
+| GET | `/snmp/interfaces` | admin — `?iface=<name>` narrows the table (matched against `ifName`, case-insensitive) |
 | GET | `/snmp/storage` | admin |
-| GET/PUT | `/snmp/settings` | admin |
+| GET/PUT | `/snmp/settings` | admin — `version` is `1` or `2c`; `3` answers `400` because the card does not collect v3 credentials |
 
 ## Desktop monitor state — `monitor-layout`, `weather-location` (`auth`)
 
