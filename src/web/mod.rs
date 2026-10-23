@@ -247,7 +247,7 @@ use crate::handlers::{
         handle_disk_smart_capabilities, handle_disk_smart_test_start,
         handle_disk_smart_test_status, handle_disks_list, handle_import_pool,
         handle_importable_pools_list, handle_partitions_list, handle_raid_arrays_list,
-        handle_raid_available_devices, handle_raid_create, handle_raid_delete, handle_raid_rebuild,
+        handle_raid_available_devices, handle_raid_create, handle_raid_rebuild,
         handle_removable_disks_list, handle_virtual_disk_delete, handle_virtual_disk_grow,
         handle_virtual_disk_scrub, handle_virtual_disk_scrub_status, handle_virtual_disks_list,
     },
@@ -956,7 +956,6 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/storage/raid/devices",
             get(handle_raid_available_devices),
         )
-        .route("/api/storage/raid/{name}", delete(handle_raid_delete))
         .route(
             "/api/storage/raid/{name}/rebuild",
             post(handle_raid_rebuild),

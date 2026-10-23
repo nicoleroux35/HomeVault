@@ -65,6 +65,11 @@ every reboot until an admin re-enters the passphrase through the UI.
   requirement the existing RAID/`mdadm` code already has. If the server is run
   as an unprivileged user, both RAID and Encryption operations will fail with
   a permission error from the underlying tool, not from HomeVault's own code.
+  In the generated sudoers policy each of those is scoped (ROADMAP 7.1):
+  `cryptsetup` per subcommand (`luksFormat`, `open`, `close`, `status`,
+  `luksUUID`, `luksChangeKey`, `erase`), `mkfs.ext4 -F`/`mkfs.xfs -f`/
+  `mkfs.btrfs -f`, `wipefs -a`, `mount`/`umount` confined to `/mnt/*`, and the
+  fstab entry through `tee /etc/fstab` only.
 
 ## Related
 

@@ -25,7 +25,6 @@
 //!   GET    /api/storage/raid            (list arrays — read, any session)
 //!   GET    /api/storage/raid/devices    (free block devices — read)
 //!   POST   /api/storage/raid            (create a virtual disk — admin)
-//!   DELETE /api/storage/raid/{name}     (tear down an array — admin)
 //!   POST   /api/storage/raid/{name}/rebuild  (rebuild after a disk swap — admin)
 //!   POST   /api/storage/virtual-disks/{name}/grow  (grow the array — admin)
 //!
@@ -47,7 +46,7 @@
 //!   cargo test --test raid_integration
 
 use axum::{
-    routing::{delete, get, post},
+    routing::{get, post},
     Router,
 };
 use http::{Method, Request, StatusCode};
@@ -64,7 +63,7 @@ use homevault::handlers::{
     auth::handle_login,
     storage::{
         handle_raid_arrays_list, handle_raid_available_devices, handle_raid_create,
-        handle_raid_delete, handle_raid_rebuild, handle_virtual_disk_grow,
+        handle_raid_rebuild, handle_virtual_disk_grow,
     },
     AppState,
 };
@@ -122,7 +121,6 @@ fn raid_router(state: Arc<AppState>) -> Router {
             "/api/storage/raid/devices",
             get(handle_raid_available_devices),
         )
-        .route("/api/storage/raid/{name}", delete(handle_raid_delete))
         .route(
             "/api/storage/raid/{name}/rebuild",
             post(handle_raid_rebuild),
@@ -227,7 +225,6 @@ fn read_endpoints() -> Vec<(Method, &'static str)> {
 fn write_endpoints() -> Vec<(Method, &'static str, Option<Value>)> {
     vec![
         (Method::POST, "/api/storage/raid", Some(create_body())),
-        (Method::DELETE, "/api/storage/raid/hvtest", None),
         (
             Method::POST,
             "/api/storage/raid/hvtest/rebuild",

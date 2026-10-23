@@ -64,7 +64,20 @@ re-parses the file; a verification failure rolls the appended line back and
 fails the creation instead of leaving a line that would break the next boot.
 After the `mdadm.conf` append the initramfs is regenerated best-effort
 (`sudo update-initramfs -u`, `sudo dracut -f` fallback; both are scoped
-sudoers grants) so the new array assembles early in boot. If the format or
+sudoers grants) so the new array assembles early in boot. The `mdadm.conf`
+append itself is the one persistence step that cannot be rolled back (the
+array is already created, formatted and mounted), so it is never silent: a
+failed/empty `mdadm --detail --scan` or a failed append is logged at error
+level with the consequence spelled out — the array will not reassemble after
+a reboot — plus the exact `ARRAY` line to add by hand (ROADMAP 7.4). Every
+privileged
+step of that path is scoped in the sudoers policy (ROADMAP 7.1/7.4): the fstab
+and `mdadm.conf` writes are `tee /etc/fstab` / `tee /etc/mdadm/mdadm.conf`, the
+mount point is `mkdir -p /mnt/*`, the mount itself is
+`mount [-o <opts>] <dev> /mnt/*`, `mdadm` is granted per mode (`--create`,
+`--detail`, `--examine`, `--stop`, `--zero-superblock`, `--manage`, `--grow`,
+`--action`/`--action=<mode>`), and the teardown's unmount is
+`umount /mnt/*` (plus `/dev/*` for the kernel-side check). If the format or
 mount step fails, `teardown_failed_array` stops the fresh array and zeroes the
 member superblocks (logging every step) instead of leaving an orphan holding
 the disks busy.
@@ -109,10 +122,12 @@ per disk, and only when the tree itself doesn't already disqualify it.
 | `POST /storage/raid` | admin | create one virtual disk as a background job → `{message, job_id}`; body takes `spares?` / `allow_missing?`; device-is-free + name-collision + request-shape gates enforced server-side |
 | `POST /storage/virtual-disks/{name}/grow` | admin | mdadm only: `--add` the device then `--grow --raid-devices N+1` (`grow_raid`); raid0/raid10 refused; the reshape runs in the background |
 
-The old `GET /storage/raid` (list), `DELETE /storage/raid/{name}`, and
-`POST /storage/raid/{name}/rebuild` routes still exist — Storage's "Virtual
-disks" tab reuses the rebuild route; listing/destroying is done through
-`GET|DELETE /api/storage/virtual-disks` (see [Storage](./storage.md)).
+The old `GET /storage/raid` (list) route still exists for compatibility, and
+`POST /storage/raid/{name}/rebuild` is reused by Storage's Rebuild button.
+Listing/destroying is done through `GET|DELETE /api/storage/virtual-disks`
+(see [Storage](./storage.md)); the legacy `DELETE /storage/raid/{name}` was
+removed on 2026-10-23 so the RAID surface really is creation-only (it had no
+UI caller and contradicted this page's own boundary statement).
 
 Health surfaces arrays too: the `raid_arrays` check (ids `health.raid_arrays`)
 reports degraded/failed mdadm arrays as a warning/error, and raises

@@ -70,7 +70,6 @@ Two structural facts explain most of the list:
 
 | # | Area | Verdict | Blocking items |
 |---|---|---|---|
-| 7 | Storage | P1 | 3 |
 | 8 | RAID wizard | P1 | 3 |
 | 9 | LUKS2 encryption | P1 | 3 |
 | 10b | File Explorer — residual hardening | P2 | 3 |
@@ -96,7 +95,7 @@ Two structural facts explain most of the list:
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **67** (60 per-area + 7 cross-cutting).
+Total open findings: **64** (57 per-area + 7 cross-cutting).
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23. P1 now goes by blast radius, and 12.2/12.3 and 13.4 go
@@ -113,65 +112,6 @@ None. Item 6 (Apps Center / app-proxy) was closed on 2026-10-23 — see
 ---
 
 ## P1 — Needs work
-
-### 7. Storage — the sudoers grant is the weakest link
-
-- [ ] **7.1 — Unscoped sudoers grants for the most destructive binaries.**
-      `src/setup.rs:864` grants `zpool`, `zfs`, `mkfs_btrfs`, `mkfs_ext4`,
-      `mkfs_xfs`, `mount`, `umount`, `wipefs`, `btrfs`, `cryptsetup`, `blkid`,
-      `mkdir`, `rmdir`, `tee` **with no argument restriction** — any
-      attacker-controlled string reaching an argv (see 10.1, 17.1) becomes
-      `mkfs.ext4 /dev/sda`, `zfs destroy -r tank` or `tee /etc/shadow` as root.
-      The very next lines show the pattern that should have been used:
-      `findmnt --verify --fstab` (`:870`) and `tee {smb_conf}` (`:895`) are
-      scoped to exact argument shapes.
-      *Acceptance:* every grant in that block is scoped to the argument shapes
-      the code actually runs, exactly like the Shares and autostart grants.
-- [ ] **7.2 — mdadm scrub in Storage can never work.** `src/handlers/storage.rs:609-614`
-      runs `sudo bash -c "echo check > /sys/block/{md}/md/sync_action"`; `bash`
-      is not in the sudoers grant and the write needs root, so "Scrub" on an
-      mdadm virtual disk always fails with a confusing sudo prompt.
-      `src/pools.rs:526-536` already documents this exact failure ("always
-      failed with EACCES … confirmed live") and removed its copy; the dead one
-      is still here. *Acceptance:* one implementation, using the same
-      `sudo tee` path the rest of the codebase uses.
-- [ ] **7.3 — `delete_raid` ignores a failed unmount, then zeroes superblocks.**
-      `src/disk.rs:1676-1680` does `let _ = Command::new("sudo").arg("umount")…`
-      and proceeds to `mdadm --stop` + `--zero-superblock` on every member.
-      Irreversible, guarded only by a UI `ConfirmDialog`
-      (`Storage.svelte:508`) — no typed confirmation, no dry run. It is also
-      still routed at `src/web/mod.rs:952` although `docs/guides/raid.md:3-8`
-      says "RAID never lists or destroys anything".
-      *Acceptance:* unmount failure aborts; the confirmation names the array and
-      requires typing its name; doc and route agree.
-
-Also: `mount_disk` / `unmount_disk` / removable variants use bare `mount`/`umount`
-with no `sudo`, and `mount_disk` / `unmount_disk` ignore the exit status entirely
-(`src/disk.rs:526,540,564-575`) — a mount that the kernel refused is reported as
-success, and removable-media mount cannot work as the service user at all; `create_zfs_pool` runs `zpool create -f` without `sudo`
-(`:1623-1628`) — guaranteed failure, plus `-f` over devices that may belong to
-an exported pool; `format_device` accepts `ntfs` → `mkfs.ntfs` (`:1577-1581`),
-which is neither in the sudoers grant nor in the RAID wizard's validated set;
-`list_removable_disks` parses `lsblk` with `split_whitespace()`
-(`:450-471`), so a LABEL containing a space shifts every column (the exact bug
-class `docs/guides/storage.md:139-145` says was fixed elsewhere by moving to
-`lsblk -P`); `is_removable_transport` treats `ata|sata|scsi|nvme` as removable
-(`:497-502`), so **every internal SATA/NVMe disk shows up as "removable
-media"**; `get_smart_details` reads `parts[9]`, which breaks on attribute names
-containing spaces; `get_smart_test_status` invents an ETA as
-`progress_pct * 2 / 10` (`:2424`); `mount_and_persist_raid` ignores a failed
-`mdadm.conf` append (`:1266-1270`) so the array silently does not reassemble
-after reboot, while the fstab write right after it *is* verified and rolled
-back; no command timeout anywhere in `disk.rs`/`pools.rs`.
-
-*Tests:* `disk.rs` 19+6, `pools.rs` 33, `handlers/storage.rs` 5 (0 async);
-`tests/e2e/storage/storage.spec.ts` 34, with the LUKS and scrub blocks
-env-gated behind `STORAGE_E2E_LOOP=1`.
-
-*Docs:* `docs/guides/storage.md` (`:13` still says `lsblk -l`; `:107` admits ZFS
-advanced-pool creation was not live-tested; `:160` Btrfs rollback unsupported).
-
----
 
 ### 8. RAID wizard — a failed format destroys every listed device
 
@@ -484,7 +424,8 @@ mount**, so 16.1–16.3 are untested by construction), 24 E2E.
       `src/handlers/downloader.rs:389-423` passes them straight into the RPC
       options: `dir`/`out` give arbitrary file write (traversal), `uri` accepts
       any scheme including `file://` (SSRF + local read). This is also what
-      turns 7.1 into root, since aria2 writes as the service user.
+      turns the remaining root shell-outs into root, since aria2 writes as the
+      service user.
       *Acceptance:* scheme allowlist, paths confined to a configured download
       root, `out` sanitised.
 - [ ] **17.2 — No RPC timeout and no `--rpc-secret`.** `aria2_rpc` builds
@@ -945,6 +886,119 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-23 (e)** — Storage — the residual privileged call sites are fixed and
+the rest of the sudoers file is scoped. **7.4:** (a) `disk.rs`'s four
+mount/unmount helpers ran bare `mount`/`umount` and `mount_disk`/
+`unmount_disk` discarded the exit status, so a kernel refusal was reported as
+success — they had **no caller anywhere** in `src/` or `tests/`, so they were
+removed instead of fixed; `create_zfs_pool` now runs `sudo zpool create`
+**without `-f`** (a device carrying an exported pool is a conflict to surface,
+not to overwrite); `format_device` lost its `ntfs` → `mkfs.ntfs` arm (no grant,
+and the wizard never accepted it) so it fails loudly as unsupported;
+`list_removable_disks` parses `lsblk -P` through the existing
+`parse_lsblk_pairs`, so a label with a space no longer shifts every column;
+`is_removable_transport` dropped `ata`/`sata`/`scsi`/`nvme`, which had made
+every internal disk appear under "removable media"; `get_smart_details` and
+`get_disk_temperature` read SMART rows through one pure parser
+(`parse_smart_attribute`) anchored on the TYPE column (`Pre-fail`/`Old_age`)
+instead of `parts[9]` (which is WHEN_FAILED, i.e. "-" read as 0, whenever the
+name spanned two tokens, and which also mis-read a `38 (Min/Max 20/45)`
+RAW_VALUE); `get_smart_test_status` no
+longer invents `pct * 2 / 10` minutes — it uses the drive's own advertised
+duration for that test kind from `smartctl -c` (`parse_smart_polling_minutes`,
+which reads the kind on the line *above* the polling time); and
+`mount_and_persist_raid` reports a failed/empty `mdadm --detail --scan` or a
+failed `mdadm.conf` append at `error!` level with the consequence spelled out
+("will not reassemble after a reboot", plus the line to add by hand) instead of
+dropping both results. (b) every remaining `zpool`/`btrfs`/`mdadm` read goes
+through `sudo`:
+`handlers/dashboard.rs` (`mdadm --examine`, `zpool status`, `zpool list` — they
+silently reported "no array"/"no pool" for a non-root service), its dead
+`btrfs filesystem show` block deleted, and `disk.rs::detect_disk_role` plus
+both `gather_device_facts` paths, where a bare read meant `zfs_member`/
+`btrfs_member` were always false — a ZFS/Btrfs member could therefore be
+offered as a free disk for a new array. `detect_disk_role` also passes a
+`/dev/<name>` vdev path to `zpool status` (a bare device name never matched).
+The USB `-d sat` SMART retry now puts `-d sat` first so its argv matches a
+grant. (c) The rest of `configure_sudoers` is scoped the same
+way as 7.1: a second table (`HostBins`) renders the VPN, interface, firewall,
+`mdadm`, `smartctl`/`journalctl`/`tail` lines — `wg` only `wg0`,
+`openvpn --config /etc/openvpn/*.ovpn … --daemon`, `ip` per object (never
+`netns`/`tunnel`/`rule`), one `wpa_cli` grant per subcommand, `ufw` per
+subcommand, `mdadm` per mode (both `--action` spellings), `smartctl` per flag
+with the device confined to `/dev/*`, `tail` to the four whitelisted logs;
+`dhclient` (used by `ip_sudo` but never granted) and `exportfs -ra` are now
+covered, and `pkill` — resolved and granted but never run — is gone.
+`vpn.rs` passes an explicit `-TERM` to match the pinned `kill` grant. Still
+open by design: sudoers cannot express a numeric pid (`kill -TERM *` is a
+documented residual, same class as `chpasswd`), and command timeouts are 8.3,
+not here. `src/setup.rs` +12 tests (bare-grant/shell guards, `pkill` gone,
+`wg0`/openvpn/config-dir pinning, `ip` objects, `wpa_cli`/`ufw` per
+subcommand, both `mdadm --action` spellings, `/dev`-confined `smartctl`,
+whitelisted `tail`, every host binary represented, and no grant may carry an
+unescaped comma — sudoers reads one as a command separator, which is why the
+journalctl `--output-fields` list is written `\,` — 73 → 85); `src/disk.rs` +8
+(`is_removable_transport`, `lsblk -P` label-with-space and empty-field rows,
+`parse_smart_attribute` standard/two-token-name/header rows and a
+`(Min/Max …)` RAW_VALUE,
+`parse_smart_polling_minutes` per kind — 34 → 42). (`docs/guides/storage.md`,
+`docs/guides/raid.md`, `docs/guides/vpn.md`, `docs/guides/network.md`,
+`docs/guides/firewall.md`, `docs/guides/journal.md`, `docs/ARCHITECTURE.md`.)
+
+**2026-10-23 (d)** — Storage — the sudoers grants are scoped. **7.1:** the
+Storage/LUKS block in `SetupService::configure_sudoers` granted `zpool`, `zfs`,
+`mkfs.btrfs`/`ext4`/`xfs`, `mount`, `umount`, `wipefs`, `btrfs`, `cryptsetup`,
+`blkid`, `mkdir`, `rmdir` and `tee` with **no argument restriction**, so any
+attacker-controlled string reaching an argv (10.1, 17.1) became
+`mkfs.ext4 /dev/sda`, `zfs destroy -r tank` or `tee /etc/shadow` as root. The
+block is now rendered from a small table (`StorageBins` →
+`pool_grants`/`filesystem_grants`/`mount_grants`/`config_grants`) where every
+entry carries its scope: `zpool`/`zfs`/`btrfs`/`cryptsetup` per subcommand,
+`mkfs.*`/`wipefs`/`blkid` per flag shape, and the shared host-wide tools per
+path — `mount * /mnt/*`, `umount /mnt/*`, `mkdir -p /mnt/*`, `rmdir /mnt/*`,
+`tee /etc/fstab`, `tee /etc/mdadm/mdadm.conf`. The SFTP jail root
+(`/var/lib/homevault-sftp/…`) and removable media (`/media`, `/run/media`)
+keep the grants they were relying on implicitly, and the other modules that
+had been covered by that `tee` (resolv.conf, netplan/ifupdown, avahi, Docker's
+`daemon.json`, the cpufreq governor, `/proc/sys/net/ipv6/conf/*/*`) got their
+own exact-path grant so nothing broke — including the `rm -f` that unpublishes
+the avahi service file, which had no grant at all. `mkfs.exfat` — Explorer's
+"format as exFAT", already a tracked dependency — had no grant at all and is
+now covered. What sudoers cannot constrain is documented in place: the pool
+name and options after a `zpool`/`zfs` subcommand stay variable, which is the
+feature. `src/setup.rs` gained 12 tests over the rendered table (no grant may
+be a bare binary or reach a shell; the per-subcommand/flag/path scopes are
+pinned), and the residual call sites the scoping exposed are now their own
+finding (7.4 — closed in (e) below). (`docs/guides/storage.md`,
+`docs/guides/encryption.md`, `docs/guides/raid.md`.)
+
+**2026-10-23 (c)** — Storage — scrub works, destroy is unmount-gated. **7.2:**
+"Scrub" on an mdadm virtual disk ran `sudo bash -c "echo check >
+/sys/block/<md>/md/sync_action"`; `bash` is not (and should not be) in the
+sudoers grant, so the action always failed with a sudo prompt. It now runs
+`sudo mdadm --action check <array>` — the same call `rebuild_raid` already makes
+on a healthy array, on a binary the RAID page is already granted, so no new
+privilege and one implementation instead of two. **7.3:** `delete_raid` used to
+discard the `umount` result and then run `mdadm --stop` +
+`--zero-superblock` on every member, erasing the metadata of a filesystem that
+was still mounted and being written to. It now resolves every mount point
+backed by the array from `/proc/mounts` (canonical kernel node,
+`/dev/md/<name>` symlink and `UUID=…` source all match), unmounts each one and
+**aborts on the first failure** — before the stop, the `mdadm.conf`/`fstab`
+cleanup and the superblock wipe — with a second, kernel-side `umount <device>`
+check that only tolerates "not mounted". The Storage destroy confirmation is
+now typed (`ConfirmDialog` `requireText` → `dlg.ask(msg, { requireText })`
+keeps the danger button disabled until the disk name is typed exactly, label
+`common.type_to_confirm` ×4 locales), and the legacy
+`DELETE /api/storage/raid/{name}` + `handle_raid_delete` are gone: they had no
+UI caller, duplicated the typed Storage path, and contradicted
+`docs/guides/raid.md` — the RAID surface is creation-only again, so doc and
+route agree. No test was added in this pass (explicitly out of scope); the
+existing suites keep their counts (`tests/raid_integration.rs` 5 — the DELETE
+entry left the write matrix without changing the test count,
+`tests/e2e/storage/storage.spec.ts` 43). (`docs/guides/storage.md`,
+`docs/guides/raid.md`, `docs/API.md`.)
 
 **2026-10-23 (b)** — Apps Center / app-proxy — the last P0. **6.1:** the
 minutes-long compose calls left the async runtime —

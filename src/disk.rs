@@ -438,39 +438,45 @@ impl DiskService {
     }
 
     /// List USB and other removable disks by filtering on transport type.
+    ///
+    /// `lsblk -P` (`KEY="value"` pairs) rather than the plain table: a
+    /// whitespace split shifted every column as soon as one value contained a
+    /// space — a USB stick labelled `My Disk` lost its label, its UUID and
+    /// reported `Disk` as the filesystem, and an empty MOUNTPOINT/LABEL/UUID
+    /// (lsblk prints nothing for those in table mode) collapsed the columns
+    /// outright (ROADMAP 7.4).
     pub async fn list_removable_disks() -> Result<Vec<RemovableDisk>, DiskError> {
         let mut removable_disks = Vec::new();
 
         let output = Command::new("lsblk")
-            .args(["-n", "-o", "NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL,UUID,TRAN"])
+            .args([
+                "-P",
+                "-n",
+                "-o",
+                "NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL,UUID,TRAN",
+            ])
             .output()
             .await?;
 
         for line in String::from_utf8_lossy(&output.stdout).lines() {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 6 {
-                continue;
-            }
-
-            let transport = parts.get(6).unwrap_or(&"");
+            let fields = Self::parse_lsblk_pairs(line);
+            let transport = fields.get("TRAN").map(String::as_str).unwrap_or("");
             if !Self::is_removable_transport(transport) {
                 continue;
             }
 
-            let name = parts[0];
-            let size = Self::parse_size(parts.get(1).unwrap_or(&"0"));
-            let filesystem = parts.get(2).unwrap_or(&"").to_string();
-            let mount_point = parts.get(3).map(|s| s.to_string());
-            let label = parts
-                .get(4)
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string());
-            let uuid = parts
-                .get(5)
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string());
+            let name = fields.get("NAME").map(String::as_str).unwrap_or("");
+            if name.is_empty() {
+                continue;
+            }
 
-            let is_mounted = mount_point.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
+            let non_empty = |key: &str| fields.get(key).filter(|v| !v.is_empty()).cloned();
+            let size = Self::parse_size(fields.get("SIZE").map(String::as_str).unwrap_or("0"));
+            let filesystem = non_empty("FSTYPE").unwrap_or_else(|| "Unknown".to_string());
+            let mount_point = non_empty("MOUNTPOINT");
+            let label = non_empty("LABEL");
+            let uuid = non_empty("UUID");
+            let is_mounted = mount_point.is_some();
 
             removable_disks.push(RemovableDisk {
                 device: format!("/dev/{}", name),
@@ -478,11 +484,7 @@ impl DiskService {
                     .clone()
                     .unwrap_or_else(|| format!("USB Device {}", name)),
                 size_bytes: size,
-                filesystem: if filesystem.is_empty() {
-                    "Unknown".to_string()
-                } else {
-                    filesystem
-                },
+                filesystem,
                 mount_point,
                 label,
                 uuid,
@@ -493,85 +495,15 @@ impl DiskService {
         Ok(removable_disks)
     }
 
-    /// Returns `true` if the transport type is considered removable.
+    /// Returns `true` if the transport is a genuinely removable one.
+    ///
+    /// `ata`/`sata`/`scsi`/`nvme` used to be in this list, which made every
+    /// internal boot disk show up in the Storage page's "removable media"
+    /// list (ROADMAP 7.4) — those are the transports of fixed disks. What is
+    /// left is the bus a hot-pluggable device actually reports: USB, the
+    /// FireWire bridge, and the SD/MMC controllers (card readers).
     fn is_removable_transport(transport: &str) -> bool {
-        matches!(
-            transport,
-            "usb" | "ata" | "sata" | "scsi" | "nvme" | "firewire" | "sd" | "mmc"
-        )
-    }
-
-    /// Mount a removable disk with user-level ownership (uid=1000,gid=1000).
-    /// Creates the mount point directory if it does not exist.
-    pub async fn mount_removable_disk(
-        &self,
-        device: &str,
-        mount_point: &str,
-    ) -> Result<(), DiskError> {
-        // `sudo mkdir`, not `std::fs::create_dir_all` — the mount point may be
-        // under a root-owned directory (e.g. /mnt/) and the unprivileged
-        // homevault process cannot create subdirectories there.
-        let mkdir_output = Command::new("sudo")
-            .arg("mkdir")
-            .args(["-p", mount_point])
-            .output()
-            .await?;
-        if !mkdir_output.status.success() {
-            let stderr = String::from_utf8_lossy(&mkdir_output.stderr);
-            return Err(DiskError::Parse(format!(
-                "Failed to create mount point '{}': {}",
-                mount_point, stderr
-            )));
-        }
-        let output = Command::new("mount")
-            .args(["-o", "uid=1000,gid=1000", device, mount_point])
-            .output()
-            .await?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DiskError::Parse(format!("Mount failed: {}", stderr)));
-        }
-        Ok(())
-    }
-
-    /// Unmount a removable disk by its mount point.
-    pub async fn unmount_removable_disk(&self, mount_point: &str) -> Result<(), DiskError> {
-        let output = Command::new("umount").arg(mount_point).output().await?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DiskError::Parse(format!("Unmount failed: {}", stderr)));
-        }
-        Ok(())
-    }
-
-    /// Mount a disk (including non-removable) at the given mount point.
-    pub async fn mount_disk(&self, device: &str, mount_point: &str) -> Result<(), DiskError> {
-        // `sudo mkdir`, not `std::fs::create_dir_all` — same reason as mount_removable_disk.
-        let mkdir_output = Command::new("sudo")
-            .arg("mkdir")
-            .args(["-p", mount_point])
-            .output()
-            .await?;
-        if !mkdir_output.status.success() {
-            let stderr = String::from_utf8_lossy(&mkdir_output.stderr);
-            return Err(DiskError::Parse(format!(
-                "Failed to create mount point '{}': {}",
-                mount_point, stderr
-            )));
-        }
-        Command::new("mount")
-            .args([device, mount_point])
-            .output()
-            .await?;
-        Ok(())
-    }
-
-    /// Unmount a disk by its mount point.
-    pub async fn unmount_disk(&self, mount_point: &str) -> Result<(), DiskError> {
-        Command::new("umount").arg(mount_point).output().await?;
-        Ok(())
+        matches!(transport, "usb" | "firewire" | "sd" | "mmc")
     }
 
     /// Retrieve SMART attribute values and overall health via `smartctl`.
@@ -592,24 +524,18 @@ impl DiskService {
         let mut bad_sectors = 0u64;
 
         for line in stdout.lines() {
-            if line.contains("ID") {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 10 {
-                    let attr_name = parts.get(1).unwrap_or(&"");
-                    let raw_value = parts.get(9).unwrap_or(&"0");
-
-                    match *attr_name {
-                        "Read_Error_Rate" | "Hardware_ECC_Corrected" => {
-                            read_errors = raw_value.parse().unwrap_or(0);
-                        }
-                        "Write_Error_Rate" => {
-                            write_errors = raw_value.parse().unwrap_or(0);
-                        }
-                        "Reallocated_Sector_Ct" | "Current_Pending_Sector" => {
-                            bad_sectors += raw_value.parse().unwrap_or(0);
-                        }
-                        _ => {}
+            if let Some((attr_name, raw_value)) = Self::parse_smart_attribute(line) {
+                match attr_name.as_str() {
+                    "Read_Error_Rate" | "Hardware_ECC_Corrected" => {
+                        read_errors = raw_value;
                     }
+                    "Write_Error_Rate" => {
+                        write_errors = raw_value;
+                    }
+                    "Reallocated_Sector_Ct" | "Current_Pending_Sector" => {
+                        bad_sectors += raw_value;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -627,6 +553,45 @@ impl DiskService {
         (status, read_errors, write_errors, bad_sectors)
     }
 
+    /// One row of `smartctl -A` output: the attribute name and its RAW_VALUE.
+    ///
+    /// The columns are `ID# NAME FLAG VALUE WORST THRESH TYPE UPDATED
+    /// WHEN_FAILED RAW_VALUE`. Reading them positionally (`parts[9]`) silently
+    /// returned WHEN_FAILED instead of RAW_VALUE on any firmware whose
+    /// attribute name contains a space, which shifted every column after it
+    /// (ROADMAP 7.4) — so the row is anchored on the TYPE column instead,
+    /// which is what lets both a two-token name and a multi-token RAW_VALUE
+    /// (`35 (Min/Max 20/45)`) parse correctly.
+    fn parse_smart_attribute(line: &str) -> Option<(String, u64)> {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        // ID + a one-token name + the 8 fixed columns is the shortest row.
+        if parts.len() < 10 || parts[0].parse::<u8>().is_err() {
+            return None;
+        }
+        // The TYPE column (`Pre-fail`/`Old_age`) is the one fixed anchor that
+        // can appear neither in an attribute name nor in RAW_VALUE, so it pins
+        // every other column no matter how many tokens either of them spans
+        // (`35 (Min/Max 20/45)` is a real RAW_VALUE).
+        let type_idx = parts
+            .iter()
+            .position(|t| *t == "Pre-fail" || *t == "Old_age")?;
+        // FLAG, VALUE, WORST and THRESH sit between the name and TYPE.
+        if type_idx < 5 {
+            return None;
+        }
+        let name = parts[1..type_idx - 4].join(" ");
+        if name.is_empty() {
+            return None;
+        }
+        // RAW_VALUE is the third column after TYPE; its first numeric token is
+        // the value (`-` and the "(Min/Max …)" suffix are not numbers).
+        let raw_value = parts
+            .get(type_idx + 3..)
+            .and_then(|rest| rest.iter().find_map(|t| t.parse::<u64>().ok()))
+            .unwrap_or(0);
+        Some((name, raw_value))
+    }
+
     /// Read the disk temperature from SMART attribute `Temperature_Celsius` or `Airflow_Temperature_Cel`.
     async fn get_disk_temperature(device_name: &str) -> Result<f64, DiskError> {
         let device = format!("/dev/{}", device_name);
@@ -636,12 +601,9 @@ impl DiskService {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
-            if line.contains("Temperature_Celsius") || line.contains("Airflow_Temperature_Cel") {
-                let parts: Vec<&str> = line.split_whitespace().filter(|s| !s.is_empty()).collect();
-                if let Some(temp) = parts.last() {
-                    if let Ok(t) = temp.parse::<f64>() {
-                        return Ok(t);
-                    }
+            if let Some((attr_name, raw_value)) = Self::parse_smart_attribute(line) {
+                if attr_name == "Temperature_Celsius" || attr_name == "Airflow_Temperature_Cel" {
+                    return Ok(raw_value as f64);
                 }
             }
         }
@@ -663,9 +625,12 @@ impl DiskService {
             }
         }
 
-        // Check if disk is part of ZFS pool
-        if let Ok(zpool_output) = Command::new("zpool")
-            .args(["status", device_name])
+        // Check if disk is part of ZFS pool. `sudo` + the `/dev/` path: a
+        // bare `zpool status <name>` both needs root and takes a vdev path,
+        // so it always failed and a ZFS member was reported as a plain disk
+        // (ROADMAP 7.4).
+        if let Ok(zpool_output) = Command::new("sudo")
+            .args(["zpool", "status", &format!("/dev/{}", device_name)])
             .output()
             .await
         {
@@ -674,9 +639,14 @@ impl DiskService {
             }
         }
 
-        // Check if disk is part of Btrfs filesystem
-        if let Ok(btrfs_output) = Command::new("btrfs")
-            .args(["filesystem", "show", &format!("/dev/{}", device_name)])
+        // Check if disk is part of Btrfs filesystem — same `sudo` reason.
+        if let Ok(btrfs_output) = Command::new("sudo")
+            .args([
+                "btrfs",
+                "filesystem",
+                "show",
+                &format!("/dev/{}", device_name),
+            ])
             .output()
             .await
         {
@@ -1277,21 +1247,65 @@ impl DiskService {
         let marker = format!("# homevault-raid:{}", name);
 
         // Record the array so mdadm reassembles it automatically on boot.
-        if let Ok(scan_output) = Command::new("sudo")
+        //
+        // This is the one persistence step that cannot be rolled back: the
+        // array is already created, formatted and mounted, so failing here
+        // would strand it half-configured. It must therefore never be silent
+        // (ROADMAP 7.4) — an array missing from mdadm.conf simply does not
+        // come back after a reboot, and the fstab entry added below then has
+        // nothing to mount. The old code dropped both the append result and
+        // the scan status on the floor (`let _ =`).
+        match Command::new("sudo")
             .arg("mdadm")
             .args(["--detail", "--scan", raid_device])
             .output()
             .await
         {
-            if scan_output.status.success() {
+            Ok(scan_output) if scan_output.status.success() => {
                 let array_line = String::from_utf8_lossy(&scan_output.stdout)
                     .trim()
                     .to_string();
-                if !array_line.is_empty() {
-                    let _ =
-                        Self::append_marked_entry("/etc/mdadm/mdadm.conf", &marker, &array_line)
-                            .await;
+                if array_line.is_empty() {
+                    tracing::error!(
+                        "Array '{}' was created but `mdadm --detail --scan {}` returned no ARRAY \
+                         line: it is NOT recorded in /etc/mdadm/mdadm.conf and will not \
+                         reassemble automatically after a reboot",
+                        name,
+                        raid_device
+                    );
+                } else if let Err(e) =
+                    Self::append_marked_entry("/etc/mdadm/mdadm.conf", &marker, &array_line).await
+                {
+                    tracing::error!(
+                        "Array '{}' was created and mounted but could not be recorded in \
+                         /etc/mdadm/mdadm.conf ({}): it will NOT reassemble automatically after a \
+                         reboot. Add this line manually: {}",
+                        name,
+                        e,
+                        array_line
+                    );
                 }
+            }
+            Ok(scan_output) => {
+                let stderr = String::from_utf8_lossy(&scan_output.stderr);
+                tracing::error!(
+                    "Array '{}' was created and mounted but `mdadm --detail --scan {}` failed \
+                     ({}): it is NOT recorded in /etc/mdadm/mdadm.conf and will not reassemble \
+                     automatically after a reboot",
+                    name,
+                    raid_device,
+                    stderr.trim()
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Array '{}' was created and mounted but `mdadm --detail --scan {}` could not \
+                     be run ({}): it is NOT recorded in /etc/mdadm/mdadm.conf and will not \
+                     reassemble automatically after a reboot",
+                    name,
+                    raid_device,
+                    e
+                );
             }
         }
 
@@ -1627,7 +1641,11 @@ impl DiskService {
             "ext4" => "mkfs.ext4",
             "xfs" => "mkfs.xfs",
             "btrfs" => "mkfs.btrfs",
-            "ntfs" => "mkfs.ntfs",
+            // No `ntfs` arm: `mkfs.ntfs` is granted to nothing (ROADMAP 7.1
+            // scoped every mkfs to the shapes the wizard and Explorer run) and
+            // the RAID wizard's own validation only accepts ext4/xfs/btrfs, so
+            // this branch could only ever have been reached with an argv
+            // nothing sanctions. It now fails loudly as unsupported instead.
             "zfs" => {
                 // ZFS is handled differently - it's a pool-based filesystem
                 return Self::create_zfs_pool(device).await;
@@ -1675,9 +1693,14 @@ impl DiskService {
             .trim_start_matches("/dev/md/")
             .trim_start_matches("/dev/");
 
-        // Create ZFS pool
-        let output = Command::new("zpool")
-            .args(["create", "-f", pool_name, device])
+        // Create ZFS pool. `sudo` for the same reason `mkfs`/`zpool` need it
+        // everywhere else (a real block device is `660 root:disk`), and
+        // deliberately without `-f`: `zpool create -f` overwrites whatever
+        // pool signature the device already carries, including an array that
+        // was only *exported* — refusing instead surfaces the conflict to the
+        // admin rather than silently destroying a pool (ROADMAP 7.4).
+        let output = Command::new("sudo")
+            .args(["zpool", "create", pool_name, device])
             .output()
             .await?;
 
@@ -1692,7 +1715,16 @@ impl DiskService {
         Ok(())
     }
 
-    /// Delete a RAID array
+    /// Tear down a RAID array: unmount, stop it, drop its `mdadm.conf`/`fstab`
+    /// entries, then zero every member's superblock.
+    ///
+    /// The teardown is only destructive once nothing is mounted any more: a
+    /// failed unmount aborts the whole operation, so an array whose filesystem
+    /// is still mounted and being written to never has its metadata erased.
+    ///
+    /// Not an HTTP entry point — Storage's "Destroy" reaches it through
+    /// `DELETE /storage/virtual-disks/{name}` (the RAID app itself never
+    /// destroys anything, see `docs/guides/raid.md`).
     pub async fn delete_raid(name: &str) -> Result<(), DiskError> {
         let device = if name.starts_with("/dev/") {
             name.to_string()
@@ -1722,11 +1754,50 @@ impl DiskService {
         // `sudo umount`, not a bare `umount`: a bare one silently fails as a
         // non-root process, leaving the array mounted so `--stop` then errors
         // out and the whole delete aborts.
-        let _ = Command::new("sudo")
+        //
+        // Every mount point backed by the array is resolved from
+        // `/proc/mounts` rather than assuming the device path: the array can
+        // be mounted by UUID (that is how create_raid writes the fstab entry)
+        // and `/proc/mounts` records the kernel node (`/dev/md127`), not the
+        // `/dev/md/<name>` symlink. This used to be `let _ = umount`, so a
+        // failed unmount was silently followed by `--stop` and
+        // `--zero-superblock` on every member — the array's metadata was
+        // erased while its filesystem was still mounted and being written to,
+        // which is unrecoverable at the next remount. A failed unmount now
+        // aborts before anything is stopped or wiped.
+        for mount_point in Self::raid_mount_points(&device).await {
+            let unmount = Command::new("sudo")
+                .arg("umount")
+                .arg(&mount_point)
+                .output()
+                .await?;
+            if !unmount.status.success() {
+                let stderr = String::from_utf8_lossy(&unmount.stderr);
+                return Err(DiskError::CommandFailed {
+                    command: format!("umount {}", mount_point),
+                    stderr: friendly_tool_error("Unmount", &stderr),
+                });
+            }
+        }
+
+        // Kernel-side double check: unmounting the device itself only fails
+        // when something is still mounted from it (or when nothing is, which
+        // is the normal case). Anything else means the array is still in use
+        // and must not be stopped, let alone have its members zeroed.
+        let unmount = Command::new("sudo")
             .arg("umount")
             .arg(&device)
             .output()
-            .await;
+            .await?;
+        if !unmount.status.success() {
+            let stderr = String::from_utf8_lossy(&unmount.stderr);
+            if !Self::not_mounted_error(&stderr) {
+                return Err(DiskError::CommandFailed {
+                    command: format!("umount {}", device),
+                    stderr: friendly_tool_error("Unmount", &stderr),
+                });
+            }
+        }
 
         // Stop the array
         let stop_output = Command::new("sudo")
@@ -1776,6 +1847,97 @@ impl DiskService {
         }
 
         Ok(())
+    }
+
+    /// Every mount point currently backed by `device`, read from
+    /// `/proc/mounts`.
+    ///
+    /// Three spellings have to be matched or a live mount is missed and its
+    /// superblocks get zeroed underneath it: the device path as the caller
+    /// knows it (`/dev/md/storage`), the kernel node `/proc/mounts` actually
+    /// records (`/dev/md127`, the canonical form), and a `UUID=…` source
+    /// (create_raid writes the fstab entry by UUID, and util-linux records
+    /// either the resolved device or the literal `UUID=` token depending on
+    /// the mount path).
+    ///
+    /// `tokio::fs`, not `std::fs`: this runs inside the delete handler's async
+    /// body (ROADMAP X.1).
+    async fn raid_mount_points(device: &str) -> Vec<String> {
+        let canonical = tokio::fs::canonicalize(device).await.ok();
+        let node = canonical
+            .as_deref()
+            .and_then(|p| p.file_name())
+            .map(|s| s.to_string_lossy().into_owned());
+        let Ok(mounts) = tokio::fs::read_to_string("/proc/mounts").await else {
+            return Vec::new();
+        };
+
+        // Resolve every distinct source spelling once (`/proc/mounts` records
+        // the kernel node, while fstab may have mounted it by `UUID=`), then
+        // let the pure matcher below decide which lines belong to the array.
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut resolved: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if let Some(wanted) = canonical.as_deref() {
+            for source in mounts
+                .lines()
+                .filter_map(|line| line.split_whitespace().next())
+            {
+                if !seen.insert(source) {
+                    continue;
+                }
+                if tokio::fs::canonicalize(source)
+                    .await
+                    .is_ok_and(|p| p.as_path() == wanted)
+                {
+                    resolved.insert(source.to_string());
+                }
+            }
+        }
+
+        Self::mount_targets_matching(&mounts, device, node.as_deref(), &|source| {
+            resolved.contains(source)
+        })
+    }
+
+    /// Pure half of [`Self::raid_mount_points`]: which mount targets in a
+    /// `/proc/mounts` body belong to `device`.
+    ///
+    /// `device` is the spelling the caller used, `node` the canonical file
+    /// name (`md127`), and `resolved` answers "does this source resolve to the
+    /// array?" for spellings only the filesystem can decide (`UUID=…`).
+    fn mount_targets_matching(
+        mounts: &str,
+        device: &str,
+        node: Option<&str>,
+        resolved: &dyn Fn(&str) -> bool,
+    ) -> Vec<String> {
+        let mut points: Vec<String> = Vec::new();
+        for line in mounts.lines() {
+            let mut fields = line.split_whitespace();
+            let (Some(source), Some(target)) = (fields.next(), fields.next()) else {
+                continue;
+            };
+            let same = source == device
+                || node.is_some_and(|n| source.rsplit('/').next() == Some(n))
+                || resolved(source);
+            if same {
+                let target = unescape_mount_field(target);
+                if !points.contains(&target) {
+                    points.push(target);
+                }
+            }
+        }
+        points
+    }
+
+    /// Whether a `umount` failure only means "nothing was mounted there",
+    /// which is the normal state for an array that still has to be destroyed.
+    fn not_mounted_error(stderr: &str) -> bool {
+        let lower = stderr.to_ascii_lowercase();
+        lower.contains("not mounted")
+            || lower.contains("not currently mounted")
+            || lower.contains("no mount point")
+            || lower.contains("not in /etc/mtab")
     }
 
     /// Get device paths from RAID for cleanup
@@ -1900,15 +2062,15 @@ impl DiskService {
                 {
                     facts.md_member = String::from_utf8_lossy(&out.stdout).contains("raid");
                 }
-                if let Ok(out) = Command::new("zpool")
-                    .args(["status", &device_path])
+                if let Ok(out) = Command::new("sudo")
+                    .args(["zpool", "status", &device_path])
                     .output()
                     .await
                 {
                     facts.zfs_member = out.status.success();
                 }
-                if let Ok(out) = Command::new("btrfs")
-                    .args(["filesystem", "show", &device_path])
+                if let Ok(out) = Command::new("sudo")
+                    .args(["btrfs", "filesystem", "show", &device_path])
                     .output()
                     .await
                 {
@@ -2071,15 +2233,15 @@ impl DiskService {
         {
             facts.md_member = String::from_utf8_lossy(&out.stdout).contains("raid");
         }
-        if let Ok(out) = Command::new("zpool")
-            .args(["status", device_path])
+        if let Ok(out) = Command::new("sudo")
+            .args(["zpool", "status", device_path])
             .output()
             .await
         {
             facts.zfs_member = out.status.success();
         }
-        if let Ok(out) = Command::new("btrfs")
-            .args(["filesystem", "show", device_path])
+        if let Ok(out) = Command::new("sudo")
+            .args(["btrfs", "filesystem", "show", device_path])
             .output()
             .await
         {
@@ -2427,11 +2589,14 @@ impl DiskService {
             }
         };
 
-        // Parse the self-test log — most recent entry first.
+        // Parse the self-test log — most recent entry first:
+        //   # 1  Extended offline    Self-test routine in progress 90% 1234  -
+        // i.e. `#`, index, test kind, mode, …status…, `NN%` remaining, hours,
+        // LBA.
         let mut in_progress = false;
         let mut progress_pct: u8 = 0;
-        let mut remaining_minutes: u32 = 0;
         let mut last_result: Option<String> = None;
+        let mut test_kind = String::new();
 
         for line in stdout.lines() {
             let trimmed = line.trim_start();
@@ -2444,25 +2609,18 @@ impl DiskService {
             }
 
             let status_field = tokens[3..].join(" ");
-            let remaining_str = tokens
+            if let Some(pct) = tokens
                 .iter()
                 .find(|t| t.ends_with('%'))
-                .copied()
-                .unwrap_or("00%");
-
-            // Extract Remaining %: "90%" → 90
-            if let Some(pct_str) = remaining_str.strip_suffix('%') {
-                progress_pct = pct_str.parse().unwrap_or(0);
+                .and_then(|t| t.strip_suffix('%'))
+            {
+                progress_pct = pct.parse().unwrap_or(0);
             }
+            test_kind = tokens[2].to_string();
 
             if status_field.contains("in progress") {
                 in_progress = true;
-                // Estimate remaining minutes based on test type + progress
-                // We can't determine exact type from log, use a reasonable default
-                remaining_minutes = ((progress_pct as u32) * 2) / 10; // rough estimate
             } else {
-                in_progress = false;
-                remaining_minutes = 0;
                 last_result = Some(status_field);
             }
 
@@ -2471,12 +2629,70 @@ impl DiskService {
             break;
         }
 
+        // Remaining time = the device's own advertised duration for that test
+        // kind, scaled by the percentage it says is left. The old code
+        // invented `pct * 2 / 10` minutes, a number unrelated both to the
+        // drive and to the test being run (ROADMAP 7.4).
+        let remaining_minutes = if in_progress {
+            let total = Self::smart_test_total_minutes(&device, &test_kind).await;
+            ((total as u64 * progress_pct as u64) / 100) as u32
+        } else {
+            0
+        };
+
         SmartTestStatus {
             in_progress,
             progress_pct,
             remaining_minutes,
             last_result,
         }
+    }
+
+    /// The device's own advertised duration, in minutes, for a self-test kind
+    /// (`Short`, `Extended`, `Conveyance`), read from `smartctl -c`.
+    async fn smart_test_total_minutes(device: &str, test_kind: &str) -> u32 {
+        match crate::smart::tokio_command(device, &["-c"]).output().await {
+            Ok(o) => {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                Self::parse_smart_polling_minutes(&stdout, test_kind).unwrap_or(0)
+            }
+            Err(_) => 0,
+        }
+    }
+
+    /// Pure parser for `smartctl -c`: the polling time announced for
+    /// `test_kind`, or `None` when the drive does not advertise that kind.
+    ///
+    /// The kind sits on the line *above* its polling time —
+    /// `Extended self-test routine` then `recommended polling time: (123)
+    /// minutes` — which is why matching "minutes" alone always returned the
+    /// Short test's duration.
+    fn parse_smart_polling_minutes(stdout: &str, test_kind: &str) -> Option<u32> {
+        let wanted = test_kind.trim().to_ascii_lowercase();
+        let mut current: Option<&str> = None;
+        for line in stdout.lines() {
+            let trimmed = line.trim();
+            let lower = trimmed.to_ascii_lowercase();
+            if lower.contains("self-test routine") {
+                current = ["short", "extended", "conveyance"]
+                    .into_iter()
+                    .find(|kind| lower.starts_with(kind));
+                continue;
+            }
+            if lower.contains("polling time") {
+                let minutes = trimmed
+                    .split('(')
+                    .nth(1)
+                    .and_then(|rest| rest.split(')').next())
+                    .and_then(|min| min.trim().parse::<u32>().ok());
+                if let (Some(kind), Some(minutes)) = (current, minutes) {
+                    if kind == wanted {
+                        return Some(minutes);
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Resolve remaining SMART test minutes from `smartctl -c` output for a known test type.
@@ -3108,6 +3324,263 @@ mod tests {
         sub.report(50, "half");
         assert_eq!(last.load(Ordering::SeqCst), 35); // 15 + 40/2
     }
+
+    // -- delete_raid: mount-point resolution before the teardown ------------
+    //
+    // `delete_raid` unmounts every mount point backed by the array and aborts
+    // on the first failure, *before* `mdadm --stop`/`--zero-superblock`. The
+    // resolution and the "nothing was mounted" classification are pure, so
+    // they are pinned here without needing a real array.
+
+    /// A `/proc/mounts` body with the three spellings an array can be
+    /// mounted under, plus unrelated mounts that must not be touched.
+    const PROC_MOUNTS: &str = "\
+/dev/sda1 / ext4 rw,relatime 0 0
+/dev/md127 /mnt/raid/storage ext4 rw,relatime 0 0
+/dev/md127 /mnt/raid/also-here ext4 rw,relatime 0 0
+/dev/md127 /mnt/raid/also-here ext4 rw,relatime 0 0
+UUID=0d5c8f2e-1111-2222-3333-444455556666 /mnt/raid/by-uuid ext4 rw 0 0
+/dev/mapper/vault /mnt/encrypted/vault ext4 rw 0 0
+";
+
+    #[test]
+    fn test_mount_targets_matching_finds_the_kernel_node_spelling() {
+        // The array is asked for as `/dev/md/storage` (the symlink the UI
+        // shows) but `/proc/mounts` records `/dev/md127`; matching only the
+        // literal path used to miss the live mount and zero the members.
+        let points = DiskService::mount_targets_matching(
+            PROC_MOUNTS,
+            "/dev/md/storage",
+            Some("md127"),
+            &|_| false,
+        );
+        assert_eq!(points, vec!["/mnt/raid/storage", "/mnt/raid/also-here"]);
+    }
+
+    #[test]
+    fn test_mount_targets_matching_finds_the_literal_device_spelling() {
+        let points =
+            DiskService::mount_targets_matching(PROC_MOUNTS, "/dev/md127", None, &|_| false);
+        assert_eq!(points, vec!["/mnt/raid/storage", "/mnt/raid/also-here"]);
+    }
+
+    #[test]
+    fn test_mount_targets_matching_uses_the_resolver_for_uuid_sources() {
+        // fstab entries written by create_raid mount by `UUID=`, which only a
+        // canonicalisation can tie back to the array.
+        let points = DiskService::mount_targets_matching(
+            PROC_MOUNTS,
+            "/dev/md/storage",
+            Some("md127"),
+            &|s| s.starts_with("UUID="),
+        );
+        assert_eq!(
+            points,
+            vec![
+                "/mnt/raid/storage",
+                "/mnt/raid/also-here",
+                "/mnt/raid/by-uuid"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_mount_targets_matching_ignores_other_filesystems() {
+        let points =
+            DiskService::mount_targets_matching(PROC_MOUNTS, "/dev/md/other", None, &|_| false);
+        assert!(points.is_empty(), "{points:?}");
+    }
+
+    #[test]
+    fn test_mount_targets_matching_unescapes_a_mount_point_with_a_space() {
+        let mounts = "/dev/md127 /mnt/raid/my\\040array ext4 rw 0 0\n";
+        let points = DiskService::mount_targets_matching(mounts, "/dev/md127", None, &|_| false);
+        assert_eq!(points, vec!["/mnt/raid/my array"]);
+    }
+
+    #[test]
+    fn test_unescape_mount_field_decodes_the_octal_escapes() {
+        assert_eq!(
+            unescape_mount_field("/mnt/raid/my\\040array"),
+            "/mnt/raid/my array"
+        );
+        assert_eq!(unescape_mount_field("a\\011b\\012c"), "a\tb\nc");
+        assert_eq!(unescape_mount_field("back\\\\slash"), "back\\slash");
+    }
+
+    #[test]
+    fn test_unescape_mount_field_leaves_plain_and_broken_escapes_alone() {
+        assert_eq!(
+            unescape_mount_field("/mnt/raid/storage"),
+            "/mnt/raid/storage"
+        );
+        // Not three octal digits: keep the backslash verbatim rather than
+        // swallowing the following characters.
+        assert_eq!(unescape_mount_field("/mnt/we\\ird"), "/mnt/we\\ird");
+        assert_eq!(unescape_mount_field("trailing\\"), "trailing\\");
+    }
+
+    #[test]
+    fn test_not_mounted_error_accepts_only_the_nothing_mounted_wording() {
+        // The second, kernel-side `umount <device>` normally fails because
+        // nothing is mounted from the device any more — that is success.
+        assert!(DiskService::not_mounted_error(
+            "umount: /dev/md127: not mounted."
+        ));
+        assert!(DiskService::not_mounted_error("not currently mounted"));
+        assert!(DiskService::not_mounted_error("no mount point specified"));
+        assert!(DiskService::not_mounted_error("not found in /etc/mtab"));
+    }
+
+    #[test]
+    fn test_not_mounted_error_rejects_a_busy_or_failed_unmount() {
+        // A still-busy array must abort the teardown, never be treated as
+        // "already unmounted".
+        assert!(!DiskService::not_mounted_error(
+            "umount: /mnt/raid/x: target is busy."
+        ));
+        assert!(!DiskService::not_mounted_error(
+            "umount: /dev/md127: Device or resource busy"
+        ));
+        assert!(!DiskService::not_mounted_error(
+            "umount: only root can do that"
+        ));
+        assert!(!DiskService::not_mounted_error(""));
+    }
+
+    // -- ROADMAP 7.4: removable media and SMART parsing --------------------
+
+    #[test]
+    fn test_is_removable_transport_rejects_fixed_disk_buses() {
+        // The regression: `ata`/`sata`/`scsi`/`nvme` were treated as
+        // removable, so every internal disk was listed as removable media.
+        for fixed in ["ata", "sata", "scsi", "nvme", ""] {
+            assert!(
+                !DiskService::is_removable_transport(fixed),
+                "'{fixed}' must not be treated as removable"
+            );
+        }
+        for removable in ["usb", "firewire", "sd", "mmc"] {
+            assert!(
+                DiskService::is_removable_transport(removable),
+                "'{removable}' must be treated as removable"
+            );
+        }
+    }
+
+    #[test]
+    fn test_lsblk_pairs_keep_a_label_with_a_space() {
+        // A USB stick labelled "My Disk": the plain table split on
+        // whitespace shifted every column after the label, reporting "Disk"
+        // as the filesystem and losing the mount point and UUID.
+        let row = r#"NAME="sdb1" SIZE="14.9G" FSTYPE="exfat" MOUNTPOINT="/media/My Disk" LABEL="My Disk" UUID="1234-ABCD" TRAN="usb""#;
+        let fields = DiskService::parse_lsblk_pairs(row);
+        assert_eq!(fields.get("NAME").map(String::as_str), Some("sdb1"));
+        assert_eq!(fields.get("LABEL").map(String::as_str), Some("My Disk"));
+        assert_eq!(
+            fields.get("MOUNTPOINT").map(String::as_str),
+            Some("/media/My Disk")
+        );
+        assert_eq!(fields.get("TRAN").map(String::as_str), Some("usb"));
+        assert_eq!(fields.get("FSTYPE").map(String::as_str), Some("exfat"));
+        assert_eq!(fields.get("UUID").map(String::as_str), Some("1234-ABCD"));
+    }
+
+    #[test]
+    fn test_lsblk_pairs_report_an_empty_field_as_empty() {
+        // An unmounted, unformatted, unlabelled device keeps its keys with
+        // empty values, which is how the caller tells "no mount point" apart
+        // from "column missing".
+        let fields = DiskService::parse_lsblk_pairs(
+            r#"NAME="sdc" SIZE="0B" FSTYPE="" MOUNTPOINT="" LABEL="" UUID="" TRAN="usb""#,
+        );
+        assert_eq!(fields.get("MOUNTPOINT").map(String::as_str), Some(""));
+        assert_eq!(fields.get("FSTYPE").map(String::as_str), Some(""));
+        assert_eq!(fields.get("TRAN").map(String::as_str), Some("usb"));
+    }
+
+    #[test]
+    fn test_parse_smart_attribute_reads_the_standard_row() {
+        let (name, raw) = DiskService::parse_smart_attribute(
+            "  5 Reallocated_Sector_Ct   0x0033   100   100   010    Pre-fail  Always       -       7",
+        )
+        .expect("a normal -A row must parse");
+        assert_eq!(name, "Reallocated_Sector_Ct");
+        assert_eq!(raw, 7);
+    }
+
+    #[test]
+    fn test_parse_smart_attribute_survives_a_name_with_a_space() {
+        // The regression: RAW_VALUE was read as `parts[9]`, which is
+        // WHEN_FAILED once the attribute name spans two tokens — a failing
+        // drive then reported "-" parsed as 0, i.e. clean.
+        let (name, raw) = DiskService::parse_smart_attribute(
+            "194 Temperature Celsius   0x0022   100   100   000    Old_age   Always       -       41",
+        )
+        .expect("a two-token name must still parse");
+        assert_eq!(name, "Temperature Celsius");
+        assert_eq!(raw, 41);
+    }
+
+    #[test]
+    fn test_parse_smart_attribute_reads_a_multi_token_raw_value() {
+        // smartctl prints the temperature range in the RAW_VALUE column;
+        // taking the last token read "20/45)" (unparseable, so 0 °C).
+        let (name, raw) = DiskService::parse_smart_attribute(
+            "194 Temperature_Celsius     0x0022   038   052   000    Old_age   Always       -       38 (Min/Max 20/45)",
+        )
+        .expect("a RAW_VALUE with a Min/Max suffix must still parse");
+        assert_eq!(name, "Temperature_Celsius");
+        assert_eq!(raw, 38);
+    }
+
+    #[test]
+    fn test_parse_smart_attribute_ignores_headers_and_notes() {
+        for line in [
+            "ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE",
+            "",
+            "Above list only includes attributes that the device supports",
+            "SMART Attributes Data Structure revision number: 16",
+        ] {
+            assert!(
+                DiskService::parse_smart_attribute(line).is_none(),
+                "must not parse: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_smart_polling_minutes_picks_the_test_kind() {
+        // `smartctl -c` puts the kind on the line *above* its polling time,
+        // so matching "minutes" alone always returned the Short duration.
+        const CAPABILITIES: &str = "\
+Self-test execution status:      (   0)\tThe previous self-test routine completed
+Short self-test routine
+recommended polling time: \t (   2) minutes.
+Extended self-test routine
+recommended polling time: \t ( 123) minutes.
+Conveyance self-test routine
+recommended polling time: \t (   5) minutes.
+";
+        assert_eq!(
+            DiskService::parse_smart_polling_minutes(CAPABILITIES, "Extended"),
+            Some(123)
+        );
+        assert_eq!(
+            DiskService::parse_smart_polling_minutes(CAPABILITIES, "Short"),
+            Some(2)
+        );
+        assert_eq!(
+            DiskService::parse_smart_polling_minutes(CAPABILITIES, "Conveyance"),
+            Some(5)
+        );
+        // A kind the drive does not advertise must not borrow another kind's
+        // duration.
+        assert_eq!(
+            DiskService::parse_smart_polling_minutes(CAPABILITIES, "Offline"),
+            None
+        );
+    }
 }
 
 /// Maps a sub-window (e.g. `from=15, to=55`) of an overall progress job onto
@@ -3141,6 +3614,39 @@ struct LsblkRow {
     size: String,
     vendor: String,
     model: String,
+}
+
+/// Decodes the octal escapes `/proc/mounts` applies to a source or mount
+/// point (`\040` space, `\011` tab, `\012` newline, `\134` backslash).
+///
+/// The file is space-separated, so a path containing a space is written
+/// escaped; passing the raw field to `umount` would target a directory that
+/// does not exist.
+fn unescape_mount_field(field: &str) -> String {
+    if !field.contains('\\') {
+        return field.to_string();
+    }
+    let mut out = String::with_capacity(field.len());
+    let mut rest = field;
+    while let Some(idx) = rest.find('\\') {
+        out.push_str(&rest[..idx]);
+        let tail = &rest[idx..];
+        match tail
+            .get(1..4)
+            .and_then(|octal| u8::from_str_radix(octal, 8).ok())
+        {
+            Some(code) => {
+                out.push(code as char);
+                rest = &tail[4..];
+            }
+            None => {
+                out.push('\\');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Translates the raw stderr of a failed creation/management step into a

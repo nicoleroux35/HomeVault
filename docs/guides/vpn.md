@@ -101,8 +101,16 @@ currently running from (stop the connection before replacing it).
 `wg-quick up` (300 ms grace) instead of assuming success — `wg-quick` can
 fail silently (missing permissions, PostUp script error) and provisioning
 would otherwise announce a server no peer can reach. Sudoers grants live in
-`src/setup.rs` (`wg`, `wg-quick`, `openvpn`, `kill`, `systemctl enable/start
-wg-quick@wg0`, scoped `tee` on `/etc/wireguard/wg0.conf`); `/etc/wireguard`
+`src/setup.rs` (`HostBins::vpn_grants`, scoped since ROADMAP 7.4): `wg show
+wg0`, `wg show wg0 dump`, `wg set wg0 …`, `wg-quick up wg0` (nothing else of
+either binary — the interface name is the hardcoded `WG_INTERFACE`),
+`openvpn --config /etc/openvpn/*.ovpn --cd /etc/openvpn --log
+/etc/openvpn/*.log --daemon [--auth-user-pass /etc/openvpn/*.auth]` (both
+tails, so the optional credentials file stays inside the config directory),
+`kill -TERM <pid>` (the signal is pinned; the pid cannot be expressed in
+sudoers — a documented residual, and it is validated numeric upstream),
+`systemctl enable/start wg-quick@wg0`, and scoped `tee` on
+`/etc/wireguard/wg0.conf`; `/etc/wireguard`
 and `/etc/openvpn` are chowned `homevault:homevault 0750` by
 `prepare_vpn_directories`, which is what lets the unprivileged service write
 the configs directly.
