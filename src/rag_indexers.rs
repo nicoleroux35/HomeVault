@@ -693,8 +693,10 @@ It is the Firewall card in Settings."#.to_string(),
             title: "Disk Encryption (LUKS2)".to_string(),
             content: r#"Whole-device encryption for a single spare block device, using LUKS2.
 
-- Encrypt a device that is not currently in use — unassigned, and not part of an array.
+- Encrypt a device that is not currently in use — unassigned, and not part of an array. Formatting runs in the background with a progress bar; you can close the window while it finishes.
 - Lock and unlock volumes, change a volume's passphrase, and delete an encrypted volume, which erases the LUKS header and wipes the leftover filesystem signatures.
+- A new passphrase must be at least 12 characters, must not be a common password and must not repeat the volume name. Existing volumes stay unlockable with their original passphrase.
+- Deleting is refused while the volume is still mounted or still unlocked, so key material is never destroyed under a live mount.
 - Unlocking is always manual and per boot: no key material is ever kept on the server, so a volume stays locked after a restart until an administrator types the passphrase again.
 - Passphrases are piped to the encryption tool over standard input, never passed as a command-line argument, so they cannot be read from the process list.
 - The stored record keeps only what is needed to address the volume — device, mapper name, UUID, filesystem, label and mount point — never the passphrase itself.

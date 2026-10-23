@@ -2165,6 +2165,11 @@ class ApiClient {
     return this.get('/encryption/available-devices', { ttl: 5000 });
   }
 
+  /**
+   * Starts a LUKS2 volume creation. The work runs in a tracked job — the
+   * answer is `{ job_id }` (not the volume), because `luksFormat` + `mkfs` +
+   * `mount` take minutes on a real disk. Follow `/api/progress/{job_id}`.
+   */
   async createEncryptedVolume(data: { device: string; filesystem: string; label: string; passphrase: string }) {
     const res = await this.post('/encryption/volumes', data);
     this.invalidateCache('/encryption/volumes');
@@ -2179,6 +2184,16 @@ class ApiClient {
 
   async lockEncryptedVolume(id: string) {
     const res = await this.post(`/encryption/volumes/${encodeURIComponent(id)}/lock`, {});
+    this.invalidateCache('/encryption/volumes');
+    return res;
+  }
+
+  /** Rotates a volume's LUKS passphrase (`luksChangeKey` + a test unlock). */
+  async changeEncryptedVolumePassphrase(id: string, oldPassphrase: string, newPassphrase: string) {
+    const res = await this.post(`/encryption/volumes/${encodeURIComponent(id)}/passphrase`, {
+      old_passphrase: oldPassphrase,
+      new_passphrase: newPassphrase,
+    });
     this.invalidateCache('/encryption/volumes');
     return res;
   }

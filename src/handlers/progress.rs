@@ -71,6 +71,28 @@ pub async fn handle_progress_sse(
         let mut rx = rx;
         let mut ticker = interval(Duration::from_secs(30));
 
+        // Replay the job's last known event before waiting on the channel.
+        // A client that subscribes a moment after a job that failed
+        // immediately (a refused `sudo`, a missing tool, an invalid device)
+        // would otherwise sit on a broadcast receiver that already carried the
+        // terminal event and never see it — the modal would stay on its
+        // progress bar forever. This is the same snapshot
+        // `GET /api/progress/{job_id}/status` serves.
+        if let Some(snapshot) = PROGRESS_MANAGER.get_progress(&job_id) {
+            let event_json = serde_json::to_string(&snapshot).unwrap_or_default();
+            let terminal = snapshot.state == crate::sse::ProgressState::Completed
+                || snapshot.state == crate::sse::ProgressState::Failed;
+            let event_name = if snapshot.state == crate::sse::ProgressState::Completed {
+                "done"
+            } else {
+                "progress"
+            };
+            yield Ok::<_, Infallible>(Event::default().event(event_name).data(event_json));
+            if terminal {
+                return;
+            }
+        }
+
         loop {
             tokio::select! {
                 // Try to receive a progress event
