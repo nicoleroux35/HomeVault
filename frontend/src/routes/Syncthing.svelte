@@ -19,7 +19,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { api } from '$lib/services/api';
   import { t, translate } from '$lib/stores/i18n';
-  import { Spinner, Button } from '$lib/components/theme';
+  import { Spinner, Button, Alert } from '$lib/components/theme';
   import { PageLayout, StatCard, EmptyState } from '$lib/components/app';
   import { cn } from '$lib/utils.js';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
@@ -76,6 +76,13 @@
   let folders: FolderStatus[] = [];
   let loading = true;
   let acting = false;
+  // One visible reason for every failure this screen can produce. The backend
+  // answers `{success:false,error:…}` for a refused action and — since
+  // ROADMAP 18.2 — for a `config.xml` whose API key cannot be sent as a
+  // header. Before, the three action handlers below had empty `else {}`
+  // branches, so a refused pause/scan/restart was indistinguishable from a
+  // slow one (simplicity rule 5).
+  let errorMessage: string | null = null;
   let activeTab: 'overview' | 'devices' | 'folders' = 'overview';
   let refreshInterval: ReturnType<typeof setInterval>;
 
@@ -141,6 +148,12 @@
     const res = await api.getSyncthingStatus();
     if (res.success && res.data) {
       status = res.data;
+      errorMessage = null;
+    } else if (res.error) {
+      // The only error `/syncthing/status` reports is a configuration fault
+      // (the API key in `config.xml` cannot be sent), so it is shown instead of
+      // being swallowed into the "not available" panel.
+      errorMessage = res.error;
     }
   }
 
@@ -164,30 +177,38 @@
 
   async function toggleDevice(device: DeviceWithStatus) {
     acting = true;
+    errorMessage = null;
     const res = device.paused
       ? await api.resumeSyncthingDevice(device.device_id)
       : await api.pauseSyncthingDevice(device.device_id);
     if (res.success) {
       await loadDevices();
     } else {
+      errorMessage = res.error || $t('syncthing.action_failed');
     }
     acting = false;
   }
 
   async function scanFolder(folderId: string) {
     acting = true;
+    errorMessage = null;
     const res = await api.scanSyncthingFolder(folderId);
     if (res.success) {
+      await loadFolders();
     } else {
+      errorMessage = res.error || $t('syncthing.action_failed');
     }
     acting = false;
   }
 
   async function restartSyncthing() {
     acting = true;
+    errorMessage = null;
     const res = await api.restartSyncthing();
     if (res.success) {
+      await loadStatus();
     } else {
+      errorMessage = res.error || $t('syncthing.action_failed');
     }
     acting = false;
   }
@@ -261,16 +282,27 @@
     </Button>
   {/snippet}
 
+  {#if errorMessage}
+    <div data-testid="syncthing-error" class="mb-4">
+      <Alert variant="error" title={$t('syncthing.error_title')}>
+        {errorMessage}
+      </Alert>
+    </div>
+  {/if}
+
   {#if loading}
     <div data-testid="syncthing-loading" class="flex items-center justify-center gap-3 py-16 text-[var(--hv-shell-text)]">
       <Spinner />
       <span>{$t('syncthing.loading')}</span>
     </div>
-  {:else if !status.available}
+  {:else if !status.available && !errorMessage}
+    <!-- Only when the backend actually said "unavailable". A configuration
+         fault (a key that cannot be sent) is explained by the banner above;
+         claiming "install Syncthing" there would be a lie. -->
     <EmptyState data-testid="syncthing-empty" title={$t('syncthing.not_available_title')} description={$t('syncthing.not_available_desc')}>
       {#snippet iconSnippet()}<IconAlertCircle size={32} stroke={1.8} />{/snippet}
     </EmptyState>
-  {:else}
+  {:else if status.available}
     <div data-testid="syncthing-stats" class="grid grid-cols-2 @min-[880px]:grid-cols-4 gap-3 mb-5">
       <StatCard data-testid="syncthing-stat-card" label={$t('syncthing.stat_devices')} value={`${devices.length}`} tone={'info'}>
         {#snippet iconSnippet()}<IconDeviceMobile size={20} />{/snippet}

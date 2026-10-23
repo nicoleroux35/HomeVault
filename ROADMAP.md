@@ -79,7 +79,7 @@ Two structural facts explain most of the list:
 | 13 | Settings — remaining cards | P1 | 4 |
 | 15 | Dashboard / Widgets | P1 | 3 |
 | 16 | Cloud Sync (rclone) | P1 | 3 |
-| 18 | Syncthing | P1 | 2 |
+| 18 | Syncthing | P1 | 1 |
 | 19 | Virtual Machines (Incus) | P1 | 2 |
 | 21 | Notifications | P1 | 3 |
 | 22 | DB backup | P1 | 2 |
@@ -94,7 +94,7 @@ Two structural facts explain most of the list:
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **52** (45 per-area + 7 cross-cutting).
+Total open findings: **51** (44 per-area + 7 cross-cutting).
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
@@ -104,10 +104,12 @@ a UTC-only cron with a stored-but-unapplied timezone is one defect seen from
 two screens. **9 (LUKS2) was closed on 2026-10-23**, and **17 (Downloader) closed the same
 day**: `uri`/`dir`/`out` are now validated against an allowlist and a confined
 root, the RPC port carries a per-process secret, and the child is reaped and
-killed on shutdown. Next: **18.2 (Syncthing)** — `danger_accept_invalid_certs(true)`
-is set unconditionally on the daemon client, so a self-signed impostor on the
-configured address is trusted, and `HeaderValue::from_str(&key).unwrap()`
-panics the handler on a malformed key instead of answering 4xx.
+killed on shutdown. **18.2 closed on 2026-10-23**: a malformed API key is a
+named error instead of a panicking handler, certificate verification is back on,
+and the key read left the runtime. Next: **19.1 (Incus VM)** — every create
+aborts at 45 s while Incus keeps building the instance, so the user sees a false
+failure, the instance is orphaned and a retry duplicates it; nothing else on the
+P1 list breaks its feature's primary action that reliably.
 
 ---
 
@@ -353,23 +355,24 @@ mount**, so 16.1–16.3 are untested by construction), 24 E2E.
 ### 18. Syncthing — it is a monitor, not a manager
 
 - [ ] **18.1 — Folders and devices cannot be added or removed.** There is no
-      route and no UI control for either (`Syncthing.svelte:165-193` is the
-      entire action surface; `api.ts:1854-1883`). A user cannot onboard a new
+      route and no UI control for either (`Syncthing.svelte:175-215` is the
+      entire action surface; `api.ts:1917-1943`). A user cannot onboard a new
       share or peer from HomeVault at all.
       *Acceptance:* add/remove folder and device, with validation and the same
       admin bar as the rest of the app.
-- [ ] **18.2 — A malformed API key panics the handler, and TLS verification is
-      off.** `HeaderValue::from_str(&key).unwrap()` (`src/handlers/syncthing.rs:294`)
-      crashes the task instead of returning 4xx/5xx; `danger_accept_invalid_certs(true)`
-      is set unconditionally (`:281-298`).
 
-Also: blocking config discovery on the async runtime (`:251-266`); an N+1
-`db/status?folder=` round-trip per folder on every poll (`:479-538`, deliberate
-— Syncthing has no bulk call); UI failure branches empty
-(`Syncthing.svelte:165-193`). The HTTP client does have a real 10 s timeout
-(`:281-298`) — the only one of the four network apps with a bound.
+18.2 (a malformed API key panicked the handler, and TLS verification was off)
+was closed on 2026-10-23 — see Done. The blocking config discovery that sat
+behind it (`find_syncthing_config` reading up to four files inline in every
+handler) moved to `spawn_blocking` in the same pass, and the three empty
+`else {}` action branches on the screen became one visible `Alert`.
 
-*Tests:* 11 unit, 5 integration, 21 E2E. *Docs:* `docs/guides/syncthing.md`.
+Remaining "also" item, untouched: an N+1 `db/status?folder=` round-trip per
+folder on every poll (`src/handlers/syncthing.rs:585-613`, deliberate —
+Syncthing has no bulk call). The HTTP client has a real 10 s timeout
+(`HTTP_TIMEOUT`, `:44`) — the only one of the four network apps with a bound.
+
+*Tests:* 18 unit, 8 integration, 23 E2E. *Docs:* `docs/guides/syncthing.md`.
 
 ---
 
@@ -670,11 +673,12 @@ reuse.
       Notifications (`notification_engine.rs:345`),
       Antivirus/Power (`handlers/antivirus.rs:50`, `handlers/power.rs:49`),
       Explorer (`explorer.rs:665,2628,2659`), rclone (`rclone.rs:253,932`),
-      syncthing (`syncthing.rs:262`), VM (`handlers/vm.rs:318,1341,1382,1577`),
+      VM (`handlers/vm.rs:318,1341,1382,1577`),
       DB backup (`db_backup.rs:178,222,229,236,241,270`).
       **Reference implementations already in the tree:** `src/mdns.rs:449`,
       `src/handlers/journal.rs:171`, `src/transfer_quota.rs:136`,
-      `src/handlers/docker.rs`, `src/handlers/mcp.rs:588`.
+      `src/handlers/docker.rs`, `src/handlers/mcp.rs:588`, and
+      `src/handlers/syncthing.rs::read_api_key` (2026-10-23).
       *Acceptance:* zero `std::process::Command` / blocking `std::fs` reachable
       from a handler's async body. A CI grep (or a clippy lint) would keep it
       that way.
@@ -687,11 +691,12 @@ reuse.
       A wedged `zpool`/`mdadm`/`smartctl`/`df` currently blocks a handler or a
       job forever.
 - [ ] **X.3 — Empty `else {}` error handling in the UI.** CloudSync (6),
-      Syncthing, Downloader, Health, Desktop (power),
-      NotificationCenter, Dashboard — *Explorer's 11 sites are fixed
-      (2026-10-22, `dlg.notify` + partial-batch messages) and the Journal's 5
-      are fixed (2026-10-23: error state + Retry, in-modal errors, a
-      page-level banner)*. Direct violation of
+      Health, Desktop (power), NotificationCenter, Dashboard — *Downloader's 5
+      are fixed (2026-10-23: a dismissible `Alert` with the server reason),
+      Syncthing's 3 are fixed (2026-10-23: one page-level `Alert`), Explorer's
+      11 sites are fixed (2026-10-22, `dlg.notify` + partial-batch messages) and
+      the Journal's 5 are fixed (2026-10-23: error state + Retry, in-modal
+      errors, a page-level banner)*. Direct violation of
       simplicity rule 5 ("every action gives visible feedback"). A shared
       `notifyError()` helper already exists (`Settings.svelte` uses
       `notifySettings`) — use it.
@@ -749,6 +754,55 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-23 (j)** — Syncthing — a malformed API key is a named error instead of
+a dead request task, certificate verification is back on, and the key read left
+the async runtime. **18.2 (panic + TLS):** `HeaderValue::from_str(&key).unwrap()`
+is gone from `build_headers`; the value comes from `config.xml`, a file an
+administrator edits by hand, so it is untrusted input and now goes through
+`api_key_header` (`src/handlers/syncthing.rs`), which **trims** the value first
+(XML pretty-printing indents the element, and the leading newline alone is an
+invalid header value — the most likely way a real config broke), treats a blank
+key as "no key configured" (no header, not an error), and returns a message
+**starting with `Syncthing API key`** that never echoes the key itself. Every
+endpoint answers `{"success":false,"error":"Syncthing API key …"}` (HTTP 200,
+module convention) and `handle_syncthing_status` now checks the key *after* the
+binary probe and *before* the ping, so a running daemon with an unusable key is
+no longer reported as "Installed but not running". `danger_accept_invalid_certs(true)`
+is removed from `http_client()`: it was inert only because `SYNCTHING_ADDR` is
+loopback `http`, and it would have been a man-in-the-middle the day the address
+became configurable; a unit test scans this module's source and fails if the
+flag returns (reqwest has no read-back for it). The client keeps its 10 s
+timeout and no longer falls back to `.unwrap_or_default()` — that fallback
+silently produced a client with **no** timeout. **Also closed in the same pass:**
+`find_syncthing_config` (up to four path probes plus a file read) ran inline in
+every handler's async body, once per proxied request — it is now
+`read_api_key`, on `tokio::task::spawn_blocking` (X.1's `mdns.rs` /
+`transfer_quota.rs` shape), and the duplicated GET/POST bodies collapsed into
+one `syncthing_request`. **UI:** the three empty `else {}` branches
+(`scanFolder`, `toggleDevice`, `restartSyncthing`) became a single page-level
+`Alert` (`data-testid="syncthing-error"`, body = the server's own reason) that
+also surfaces a status error; while it is shown the "Syncthing is not available /
+install it" panel is suppressed, because offering to install an installed
+daemon is a lie. Devices/folders *load* failures stay silent on purpose — that is
+what the empty state already says. Tests (`src/handlers/syncthing.rs` 11 →
+**18** unit: the key→header matrix — realistic key, indented XML, newline/CR/NUL/
+DEL, non-ASCII, blank, the `build_headers` matrix, the key never echoed, plus the
+source guard for certificate verification; `syncthing_integration.rs` 5 → **8**:
+a temporary `config.xml` under `DATA_DIRECTORY` drives the real handlers — a
+newline in the key is a named `success:false` error from `/config` (and from
+`/status` when the binary exists), an indented key is accepted, a blank key is
+"no key" and never a key error; `syncthing.spec.ts` 21 → **23** `test(`: 4.4 a
+stubbed unsendable-key status renders the banner **and** suppresses the install
+panel, 4.5 a stubbed refused scan surfaces the server reason). The existing
+`test_status_for_admin_returns_a_well_formed_envelope` now writes a well-formed
+key first, so it no longer depends on whatever `/root/.config/syncthing/config.xml`
+holds on the host. `docs/guides/syncthing.md` gained a "REST client (ROADMAP
+18.2)" section (the three invariants, the three key rules, the banner contract),
+`docs/API.md` the error contract, and the RAG entry for Syncthing now says the
+screen explains a configuration fault too. **Not run** (per instruction): no
+unit, integration or E2E suite was executed; `cargo check --all-targets`,
+`npm run check` and `npm run build` are clean.
 
 **2026-10-23 (i)** — Downloader (aria2) — nothing the request says reaches the
 RPC unvalidated, the port is no longer open to any local process, and the

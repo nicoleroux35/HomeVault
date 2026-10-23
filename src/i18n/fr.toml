@@ -2722,6 +2722,8 @@ pending_stat_label = "En attente"
 none_label = "Aucun"
 scan_button = "Analyser"
 no_folders_desc = "Ajoutez des dossiers dans Syncthing pour commencer à synchroniser des fichiers."
+error_title = "Syncthing a signalé un problème"
+action_failed = "La demande a été refusée"
 restarting = "Syncthing redémarre..."
 
 [widgets]
