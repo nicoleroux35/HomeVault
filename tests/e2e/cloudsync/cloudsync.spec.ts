@@ -2,8 +2,8 @@
  * File          : cloudsync.spec.ts
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 12/10/2026 by Nicolas Le Roux
- * Version       : 1.0.0
+ * Last modified : 23/10/2026 by Nicolas Le Roux
+ * Version       : 1.1.0
  *
  * Description:
  *   Cloudsync screen end-to-end tests (Playwright): covers the screen's functionality per TESTING.md.
@@ -30,6 +30,12 @@
  * + the raw-config read need admin, and the config-injection / bad-name /
  * empty-source guards reject cleanly. It never runs a real `rclone`
  * transfer or mount.
+ *
+ * Sections 3.6–3.8 cover the 16.3 guards (mount point confined to the
+ * server's `mount_base`, provider type not injectable into the INI file, and
+ * the `{ mount_point }`-only unmount body the screen actually sends).
+ * Section 7 uses one stubbed failing response to assert the *display* path:
+ * every action on this screen used to fail silently behind an empty `else {}`.
  *
  * A real `add remote → list → delete` round-trip writes the config file the
  * server resolved at request time: `/etc/rclone.conf` when nothing overrides
@@ -311,6 +317,114 @@ test.describe('3 — Validation', () => {
     });
     expect(r.success).toBe(false);
     expect(r.error).toMatch(/mount point is required/i);
+  });
+
+  test('3.6 — mount start refuses a mount point outside the rclone base', async ({ page }) => {
+    await gotoCloudSync(page, adminTokens);
+    // The screen derives its mount point from `/rclone/status`'s `mount_base`;
+    // the server must still refuse anything else, because the API is reachable
+    // without the screen (ROADMAP 16.3).
+    for (const mount_point of ['/tmp/hv-e2e-escape', '/mnt', '/mnt/rclone']) {
+      const r = await api(page, adminTokens, 'POST', '/api/rclone/mount/start', {
+        remote: 'gd',
+        mount_point,
+      });
+      expect(r.success, mount_point).toBe(false);
+      expect(r.error, mount_point).toMatch(/must live under|must be a sub-folder/i);
+    }
+  });
+
+  test('3.7 — add remote refuses a provider that would inject INI lines', async ({ page }) => {
+    await gotoCloudSync(page, adminTokens);
+    for (const provider of ['s3\ntoken = attacker', 'drive\n[evil]\ntype = local']) {
+      const r = await api(page, adminTokens, 'POST', '/api/rclone/remotes', {
+        name: 'ok',
+        provider,
+      });
+      expect(r.success, JSON.stringify(provider)).toBe(false);
+      expect(r.error, JSON.stringify(provider)).toMatch(/provider type contains invalid characters/i);
+    }
+  });
+
+  test('3.8 — unmount accepts the body the screen sends ({ mount_point } only)', async ({ page }) => {
+    await gotoCloudSync(page, adminTokens);
+    // `api.unmountCloudRemote()` posts `{ mount_point }`. Requiring `remote`
+    // answered 422 before the handler, so every real "Stop mount" failed.
+    const r = await api(page, adminTokens, 'POST', '/api/rclone/mount/stop', {
+      mount_point: '/mnt/rclone/hv-e2e-probe',
+    });
+    expect(r.http).not.toBe(422);
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/failed to unmount/i);
+  });
+});
+
+// ===========================================================================
+// 7. Failure surface
+//
+// Every action here used to fail silently: the screen's handlers ended in an
+// empty `else {}`, so a refused mount or a rejected provider looked like a
+// click that did nothing. These use a single stubbed response to assert the
+// *display* path (the guards themselves are covered over the real backend in
+// section 3).
+// ===========================================================================
+
+test.describe('7 — Failure surface', () => {
+  test('7.1 — a failed mount shows the server reason in the page alert', async ({ page }) => {
+    await page.route('**/api/rclone/mount/start', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: false,
+          data: null,
+          error: 'rclone did not mount /mnt/rclone/probe within 20 seconds',
+        }),
+      });
+    });
+    await gotoCloudSync(page, adminTokens);
+
+    const card = win(page).locator('[data-testid="cloudsync-remote-card"]').first();
+    if ((await card.count()) === 0) {
+      test.skip(true, 'no configured remote on this host — the failure path needs a Mount button');
+    }
+    await card.locator('button').first().click();
+
+    const alert = win(page).locator('[data-testid="cloudsync-error"]');
+    await expect(alert).toBeVisible({ timeout: 8_000 });
+    await expect(alert).toContainText('did not mount');
+  });
+
+  test('7.2 — dismissing the failure alert clears it', async ({ page }) => {
+    await page.route('**/api/rclone/mount/start', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: false,
+          data: null,
+          error: 'rclone did not mount /mnt/rclone/probe within 20 seconds',
+        }),
+      });
+    });
+    await gotoCloudSync(page, adminTokens);
+
+    const card = win(page).locator('[data-testid="cloudsync-remote-card"]').first();
+    if ((await card.count()) === 0) {
+      test.skip(true, 'no configured remote on this host — the failure path needs a Mount button');
+    }
+    await card.locator('button').first().click();
+
+    const alert = win(page).locator('[data-testid="cloudsync-error"]');
+    await expect(alert).toBeVisible({ timeout: 8_000 });
+
+    // Icon-only dismiss must carry an accessible name (i18n key, not a title).
+    const dismiss = alert.getByRole('button', { name: /dismiss|fermer|schließen|cerrar/i });
+    await expect(dismiss).toHaveCount(1);
+    await dismiss.click();
+    await expect(alert).toHaveCount(0);
+    // The screen is still usable, not blanked by the dismissed banner.
+    await expect(win(page)).toBeVisible();
   });
 });
 

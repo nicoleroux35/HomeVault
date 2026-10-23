@@ -11,7 +11,8 @@
  *   helper (for `tokio::process`) that both kill the child at a deadline and
  *   report the timeout as a normal failure instead of hanging the caller.
  *   Every dashboard probe — `nvidia-smi`, `rocm-smi`, `ip`, `lsblk`, `df`,
- *   `smartctl`, `sensors`, `dpkg-query`, `mdadm`, `zpool` — goes through it.
+ *   `smartctl`, `sensors`, `dpkg-query`, `mdadm`, `zpool` — goes through it,
+ *   as does every long-running rclone operation (probe, transfer, unmount).
  *
  * Dependencies:
  *   - tokio (>= 1, `process` + `time` + `rt` features)
@@ -120,15 +121,62 @@ pub async fn run_timed_async(
     cmd: &mut tokio::process::Command,
     deadline: Duration,
 ) -> Option<Output> {
+    run_timed_async_result(cmd, deadline).await.ok()
+}
+
+/// Why a [`run_timed_async_result`] call did not produce output.
+///
+/// The two cases must stay distinguishable: "the tool is not installed" and
+/// "the tool took too long" need different words in front of a user, even
+/// though both are a failure the caller has to handle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessFailure {
+    /// The command could not be started at all (not installed, not
+    /// executable, …).
+    Spawn { program: String, error: String },
+    /// The deadline expired. The child has already been killed and reaped.
+    Timeout { program: String, deadline: Duration },
+}
+
+impl std::fmt::Display for ProcessFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Spawn { program, error } => write!(f, "Failed to run {}: {}", program, error),
+            Self::Timeout { program, deadline } => write!(
+                f,
+                "{} did not finish within {} seconds",
+                program,
+                deadline.as_secs()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ProcessFailure {}
+
+/// [`run_timed_async`], but keeping *why* it failed.
+///
+/// Same contract — `kill_on_drop` plus `tokio::time::timeout`, output drained
+/// by the runtime — with a named [`ProcessFailure`] instead of a bare `None`.
+/// Use this when the error reaches a user (rclone transfers, mounts) and the
+/// `None` form when a missing answer is simply "no data" (host probes).
+pub async fn run_timed_async_result(
+    cmd: &mut tokio::process::Command,
+    deadline: Duration,
+) -> Result<Output, ProcessFailure> {
+    let program = cmd.as_std().get_program().to_string_lossy().into_owned();
     cmd.kill_on_drop(true)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
     match tokio::time::timeout(deadline, cmd.output()).await {
-        Ok(Ok(output)) => Some(output),
-        // Spawn failure and timeout are both "no data"; the timeout case has
-        // already killed the child via `kill_on_drop`.
-        Ok(Err(_)) | Err(_) => None,
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(e)) => Err(ProcessFailure::Spawn {
+            program,
+            error: e.to_string(),
+        }),
+        Err(_) => Err(ProcessFailure::Timeout { program, deadline }),
     }
 }
 
@@ -138,7 +186,7 @@ mod tests {
 
     #[test]
     fn run_timed_returns_the_output_of_a_fast_command() {
-        let out = run_timed(&mut Command::new("echo").arg("hello"), Duration::from_secs(5))
+        let out = run_timed(Command::new("echo").arg("hello"), Duration::from_secs(5))
             .expect("echo must finish");
         assert!(out.status.success());
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hello");
@@ -156,11 +204,8 @@ mod tests {
     #[test]
     fn run_timed_kills_a_command_that_overruns_its_deadline() {
         let started = Instant::now();
-        let err = run_timed(
-            &mut Command::new("sleep").arg("30"),
-            Duration::from_millis(150),
-        )
-        .expect_err("a hung command must not succeed");
+        let err = run_timed(Command::new("sleep").arg("30"), Duration::from_millis(150))
+            .expect_err("a hung command must not succeed");
         assert!(err.contains("did not finish within"), "{err}");
         assert!(
             started.elapsed() < Duration::from_secs(5),
@@ -186,5 +231,82 @@ mod tests {
         assert!(HOST_PROBE_TIMEOUT >= Duration::from_secs(1));
         assert!(SMART_PROBE_TIMEOUT >= HOST_PROBE_TIMEOUT);
         assert!(SMART_PROBE_TIMEOUT <= Duration::from_secs(30));
+    }
+
+    // -- run_timed_async_result (the named failure) ----------------------
+
+    #[tokio::test]
+    async fn run_timed_async_result_returns_the_output_of_a_fast_command() {
+        let mut cmd = tokio::process::Command::new("echo");
+        cmd.arg("hello");
+        let out = run_timed_async_result(&mut cmd, Duration::from_secs(5))
+            .await
+            .expect("echo must finish");
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hello");
+    }
+
+    #[tokio::test]
+    async fn run_timed_async_result_keeps_a_failing_exit_status_instead_of_erroring() {
+        // Same contract as `run_timed`: a non-zero exit is data for the caller.
+        let mut cmd = tokio::process::Command::new("false");
+        let out = run_timed_async_result(&mut cmd, Duration::from_secs(5))
+            .await
+            .expect("false still runs to completion");
+        assert!(!out.status.success());
+    }
+
+    #[tokio::test]
+    async fn run_timed_async_result_names_a_timeout_it_enforced() {
+        let started = std::time::Instant::now();
+        let mut cmd = tokio::process::Command::new("sleep");
+        cmd.arg("30");
+        let err = run_timed_async_result(&mut cmd, Duration::from_millis(150))
+            .await
+            .expect_err("a hung command must not succeed");
+        match &err {
+            ProcessFailure::Timeout { program, deadline } => {
+                assert_eq!(program, "sleep");
+                assert_eq!(deadline, &Duration::from_millis(150));
+            }
+            other => panic!("expected a named timeout, got {other:?}"),
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the deadline must be enforced, not waited out"
+        );
+        assert!(err.to_string().contains("did not finish within 0 seconds"));
+    }
+
+    #[tokio::test]
+    async fn run_timed_async_result_distinguishes_a_missing_program_from_a_timeout() {
+        // The distinction is the point: "not installed" and "too slow" are
+        // different sentences in front of a user.
+        let mut cmd = tokio::process::Command::new("homevault-no-such-binary");
+        let err = run_timed_async_result(&mut cmd, Duration::from_secs(1))
+            .await
+            .expect_err("a missing program is an error");
+        match &err {
+            ProcessFailure::Spawn { program, .. } => {
+                assert_eq!(program, "homevault-no-such-binary")
+            }
+            other => panic!("expected a spawn failure, got {other:?}"),
+        }
+        assert!(err.to_string().starts_with("Failed to run"));
+    }
+
+    #[tokio::test]
+    async fn run_timed_async_still_reduces_to_none_for_probes() {
+        // `run_timed_async` is the "no data" wrapper; it must keep both
+        // failure kinds as `None` rather than growing a third behaviour.
+        let mut missing = tokio::process::Command::new("homevault-no-such-binary");
+        assert!(run_timed_async(&mut missing, Duration::from_secs(1))
+            .await
+            .is_none());
+        let mut hung = tokio::process::Command::new("sleep");
+        hung.arg("30");
+        assert!(run_timed_async(&mut hung, Duration::from_millis(150))
+            .await
+            .is_none());
     }
 }

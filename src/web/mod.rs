@@ -2320,14 +2320,17 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 /// Waits for Ctrl+C (or the equivalent shutdown signal from systemd), then kills
-/// every live terminal session and the aria2 daemon it started, so neither
-/// outlives the process that's supposed to own them (ROADMAP 17.3).
+/// every live terminal session, the aria2 daemon it started and every rclone
+/// mount this process owns, so none of them outlives the process that's
+/// supposed to own them (ROADMAP 17.3, 16.2).
 async fn shutdown_signal(
     pty_manager: Arc<crate::handlers::terminal_pty::PtyManager>,
     downloader: crate::handlers::downloader::Aria2State,
 ) {
     let _ = tokio::signal::ctrl_c().await;
-    tracing::info!("Shutdown signal received, cleaning up terminal sessions and the downloader...");
+    tracing::info!(
+        "Shutdown signal received, cleaning up terminal sessions, the downloader and rclone mounts..."
+    );
     pty_manager.cleanup_all().await;
 
     let mut proc = downloader.lock().await;
@@ -2335,4 +2338,10 @@ async fn shutdown_signal(
         let _ = child.kill().await;
         let _ = child.wait().await;
     }
+    drop(proc);
+
+    // Unmount first, then let each child exit: a stale FUSE mount outliving
+    // the process is the state the old fire-and-forget `rclone --daemon`
+    // guaranteed (ROADMAP 16.2).
+    crate::handlers::rclone::shutdown_mounts().await;
 }

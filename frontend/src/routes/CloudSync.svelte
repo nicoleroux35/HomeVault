@@ -19,7 +19,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { Icon } from '$lib/components/theme';
   import { api } from '$lib/services/api';
-  import { Button, Spinner, Modal } from '$lib/components/theme';
+  import { Button, Spinner, Modal, Alert } from '$lib/components/theme';
   import { PageLayout, ConfirmDialog, StatCard, SectionCard, EmptyState } from '$lib/components/app';
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
   import { cn } from '$lib/utils.js';
@@ -69,6 +69,8 @@
   interface RcloneStatus {
     available: boolean;
     fusermount: boolean;
+    /** Where the server allows mounts (e.g. `/mnt/rclone`); never hardcode it. */
+    mount_base: string;
   }
 
   // ---------------------------------------------------------------------------
@@ -79,11 +81,28 @@
   let providers: Provider[] = [];
   let mounts: Mount[] = [];
   let syncJobs: SyncJob[] = [];
-  let rcloneStatus: RcloneStatus = { available: false, fusermount: false };
+  let rcloneStatus: RcloneStatus = { available: false, fusermount: false, mount_base: '/mnt/rclone' };
 
   let loading = true;
   let syncing = false;
   let activeTab: 'remotes' | 'mounts' | 'sync' = 'remotes';
+
+  /**
+   * The last action or load failure, shown in one page-level alert.
+   *
+   * Every mutating handler below used to swallow its failure in an empty
+   * `else {}`: "Add remote", "Delete", "Mount", "Unmount", "Sync" and "Save
+   * config" all failed silently, so the screen looked like the click had done
+   * nothing (ROADMAP item 16's residual "UI swallows six failures"). The
+   * server's own reason is what makes the failure actionable, so it is shown
+   * verbatim under a plain-language title.
+   */
+  let errorMessage: string | null = null;
+
+  function showFailure(response: { error?: string }) {
+    errorMessage = response.error || translate('rclone.action_failed');
+  }
+
   const dlg = createConfirmState();
 
   // Modal state
@@ -163,6 +182,8 @@
     const response = await api.getRcloneStatus();
     if (response.success && response.data) {
       rcloneStatus = response.data;
+    } else {
+      showFailure(response);
     }
   }
 
@@ -171,7 +192,10 @@
     const response = await api.getCloudRemotes();
     if (response.success && response.data) {
       remotes = response.data;
-    } else {
+    } else if (response.error) {
+      // A broken config or a missing binary used to look exactly like "no
+      // remotes configured" — an empty grid and no explanation.
+      errorMessage = response.error;
     }
     loading = false;
   }
@@ -180,6 +204,8 @@
     const response = await api.getCloudProviders();
     if (response.success && response.data) {
       providers = response.data;
+    } else {
+      showFailure(response);
     }
   }
 
@@ -187,6 +213,8 @@
     const response = await api.getCloudMounts();
     if (response.success && response.data) {
       mounts = response.data;
+    } else {
+      showFailure(response);
     }
   }
 
@@ -203,8 +231,10 @@
         last_run: null,
         stats: { files_synced: 0, bytes_transferred: 0, errors: 0 },
       }));
-    } else {
-      syncJobs = [];
+    } else if (response.error) {
+      // Keep the jobs already on screen: a failed refresh must not look like
+      // "no jobs configured" (the same trap as the remotes list).
+      showFailure(response);
     }
   }
 
@@ -212,6 +242,8 @@
     const response = await api.getCloudConfig();
     if (response.success && response.data) {
       configContent = response.data;
+    } else {
+      showFailure(response);
     }
   }
 
@@ -225,6 +257,7 @@
     }
 
     savingConfig = true;
+    errorMessage = null;
     const response = await api.addCloudRemote({
       name: newRemoteName,
       provider: newRemoteProvider,
@@ -238,6 +271,7 @@
       newRemoteConfig = '';
       await loadRemotes();
     } else {
+      showFailure(response);
     }
     savingConfig = false;
   }
@@ -245,10 +279,12 @@
   async function deleteRemote(name: string) {
     if (!(await dlg.ask(translate('rclone.confirm_delete_remote', { name })))) return;
 
+    errorMessage = null;
     const response = await api.deleteCloudRemote(name);
     if (response.success) {
       await loadRemotes();
     } else {
+      showFailure(response);
     }
   }
 
@@ -256,22 +292,35 @@
   // Mount Actions
   // ---------------------------------------------------------------------------
 
+  /**
+   * The mount point comes from the server's `mount_base`, not from a
+   * hardcoded `/mnt/rclone/…`: the backend validates that every mount lives
+   * under `RCLONE_MOUNT_BASE`, so the screen and the guard cannot disagree.
+   */
+  function mountPointFor(remoteName: string): string {
+    const base = (rcloneStatus.mount_base || '/mnt/rclone').replace(/\/+$/, '');
+    return `${base}/${remoteName}`;
+  }
+
   async function mountRemote(remote: Remote) {
-    const mountPoint = `/mnt/rclone/${remote.name}`;
-    const response = await api.mountCloudRemote(remote.name, mountPoint);
+    errorMessage = null;
+    const response = await api.mountCloudRemote(remote.name, mountPointFor(remote.name));
 
     if (response.success) {
       await loadMounts();
     } else {
+      showFailure(response);
     }
   }
 
   async function unmountRemote(mountPoint: string) {
+    errorMessage = null;
     const response = await api.unmountCloudRemote(mountPoint);
 
     if (response.success) {
       await loadMounts();
     } else {
+      showFailure(response);
     }
   }
 
@@ -281,6 +330,7 @@
 
   async function startSync() {
     syncing = true;
+    errorMessage = null;
 
     const response = await api.syncCloud({
       source_type: syncSourceType,
@@ -297,11 +347,13 @@
     if (response.success) {
       showSyncModal = false;
     } else {
+      showFailure(response);
     }
     syncing = false;
   }
 
   async function saveSyncJob() {
+    errorMessage = null;
     const response = await api.createSyncJob({
       name: `job-${Date.now()}`,
       source_type: syncSourceType,
@@ -314,20 +366,31 @@
     if (response.success) {
       await loadSyncJobs();
       showSyncModal = false;
+    } else {
+      showFailure(response);
     }
   }
 
   async function runSyncJobById(job: SyncJob) {
+    errorMessage = null;
     const response = await api.runSyncJob(job.id);
     job.last_run = new Date().toISOString();
+    // `status` here is the outcome of *this click*, not a server-side run
+    // state: the sync-job table stores the definition only, and the backend
+    // reports the transfer's result in this response (see the known gap in
+    // docs/guides/cloud-sync.md — there is no scheduler yet).
     job.status = response.success ? 'completed' : 'error';
+    if (!response.success) showFailure(response);
     syncJobs = [...syncJobs];
   }
 
   async function deleteSyncJobById(job: SyncJob) {
+    errorMessage = null;
     const response = await api.deleteSyncJob(job.id);
     if (response.success) {
       syncJobs = syncJobs.filter((j) => j.id !== job.id);
+    } else {
+      showFailure(response);
     }
   }
 
@@ -337,11 +400,13 @@
 
   async function saveConfig() {
     savingConfig = true;
+    errorMessage = null;
     const response = await api.saveCloudConfig(configContent);
 
     if (response.success) {
       showConfigModal = false;
     } else {
+      showFailure(response);
     }
     savingConfig = false;
   }
@@ -406,8 +471,10 @@
     showConfigModal = true;
   }
 
-  // Filter remotes by type
-  $: cloudRemotes = remotes.filter(r => !r.type.toLowerCase().includes('local'));
+  // Sync sources/destinations offer *every* configured remote, including
+  // `local`-type ones: the backend's `build_rclone_path` supports them, so
+  // hiding them was a screen-only restriction with no server-side rule behind
+  // it (the old `cloudRemotes` filter).
   $: totalRemotes = remotes.length;
   $: activeMounts = mounts.filter(m => m.is_active).length;
   $: totalSyncJobs = syncJobs.length;
@@ -442,6 +509,25 @@
       <span>{$t('rclone.add_remote')}</span>
     </Button>
   {/snippet}
+
+  <!-- One page-level failure banner for every action on this screen. The
+       server's reason is the body; `common.dismiss` clears it and leaves the
+       screen in its normal state (no action is repeated on dismiss). -->
+  {#if errorMessage}
+    <div data-testid="cloudsync-error" class="mb-4">
+      <Alert variant="error" title={$t('rclone.error_title')}>
+        <span>{errorMessage}</span>
+        <button
+          type="button"
+          class="hv-ic ms-3 align-middle"
+          aria-label={$t('common.dismiss_banner')}
+          onclick={() => (errorMessage = null)}
+        >
+          <IconX size={14} />
+        </button>
+      </Alert>
+    </div>
+  {/if}
 
   {#if loading}
     <div data-testid="cloudsync-loading" class="flex items-center justify-center gap-3 py-16 text-[var(--hv-shell-text)]">
@@ -700,7 +786,7 @@
         {:else}
           <div class="flex flex-col gap-1.5">
             <label for="sync-source-remote" class={fieldLabel}>{$t('rclone.remote')}</label>
-            <select id="sync-source-remote" class={selectCls} bind:value={syncSourceRemote}><option value="">{$t('rclone.select_remote')}</option>{#each cloudRemotes as remote}<option value={remote.name}>{remote.name}</option>{/each}</select>
+            <select id="sync-source-remote" class={selectCls} bind:value={syncSourceRemote}><option value="">{$t('rclone.select_remote')}</option>{#each remotes as remote}<option value={remote.name}>{remote.name}</option>{/each}</select>
           </div>
         {/if}
         <div class="flex flex-col gap-1.5">
@@ -731,7 +817,7 @@
         {:else}
           <div class="flex flex-col gap-1.5">
             <label for="sync-dest-remote" class={fieldLabel}>{$t('rclone.remote')}</label>
-            <select id="sync-dest-remote" class={selectCls} bind:value={syncDestRemote}><option value="">{$t('rclone.select_remote')}</option>{#each cloudRemotes as remote}<option value={remote.name}>{remote.name}</option>{/each}</select>
+            <select id="sync-dest-remote" class={selectCls} bind:value={syncDestRemote}><option value="">{$t('rclone.select_remote')}</option>{#each remotes as remote}<option value={remote.name}>{remote.name}</option>{/each}</select>
           </div>
         {/if}
         <div class="flex flex-col gap-1.5">
