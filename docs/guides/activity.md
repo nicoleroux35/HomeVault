@@ -14,8 +14,10 @@ progress rows above the dock.
 1. **`PROGRESS_MANAGER` jobs** (`src/sse/progress.rs`) whose live state is
    `pending` or `running`.
 2. **aria2 active downloads** — only when the daemon is already up
-   (`state.downloader.lock().child.is_some()`), and only for admins. Read-only
-   `aria2.tellActive` call with a 1.5 s timeout; **never** starts aria2.
+   (`downloader::aria2_is_running`, which reaps a dead child through
+   `try_wait` instead of trusting a stale handle), and only for admins.
+   Read-only `aria2.tellActive` through the shared secret-aware RPC helper
+   (`downloader::aria2_active_tasks`, 1.5 s timeout); **never** starts aria2.
 
 **Owner scoping:** a non-admin sees only jobs whose `owner` equals their
 username; an admin sees every job. Jobs with `owner = None` are

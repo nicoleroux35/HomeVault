@@ -37,7 +37,7 @@
 //! desktop shell).
 
 use crate::handlers::admin_guard::require_auth;
-use crate::handlers::downloader::{Aria2State, Aria2Task};
+use crate::handlers::downloader::{aria2_active_tasks, aria2_is_running, Aria2Task};
 use crate::handlers::AppState;
 use crate::sse::{ActivitySnapshot, JobType, ProgressState, PROGRESS_MANAGER};
 use crate::utils::ResponseHelper;
@@ -48,9 +48,6 @@ use axum::{
 };
 use serde::Serialize;
 use std::sync::Arc;
-use std::time::Duration;
-
-const ARIA2_RPC_URL: &str = "http://localhost:6800/jsonrpc";
 
 /// One row in the desktop taskbar.
 #[derive(Serialize, Debug, PartialEq)]
@@ -85,8 +82,8 @@ pub async fn handle_activity(State(state): State<Arc<AppState>>, headers: Header
         .collect();
 
     // aria2 downloads: admin-only, and only when the daemon is already up.
-    if is_admin && aria2_running(&state.downloader).await {
-        if let Ok(active) = aria2_tell_active().await {
+    if is_admin && aria2_is_running(&state.downloader).await {
+        if let Ok(active) = aria2_active_tasks(&state.downloader).await {
             tasks.extend(active.into_iter().filter_map(activity_task_from_aria2));
         }
     }
@@ -173,44 +170,6 @@ fn aria2_name(t: &Aria2Task) -> String {
         }
     }
     t.gid.clone()
-}
-
-/// Is aria2 already running? Never spawns it (unlike `ensure_aria2_running`).
-async fn aria2_running(downloader: &Aria2State) -> bool {
-    downloader.lock().await.child.is_some()
-}
-
-/// Minimal read-only `aria2.tellActive` call (no secret token in this setup).
-/// Deliberately re-implemented here so the frozen `downloader.rs` stays untouched.
-async fn aria2_tell_active() -> Result<Vec<Aria2Task>, String> {
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": "homevault",
-        "method": "aria2.tellActive",
-        "params": []
-    });
-    let client = reqwest::Client::new();
-    let send = client.post(ARIA2_RPC_URL).json(&body).send();
-    let resp = tokio::time::timeout(Duration::from_millis(1500), send)
-        .await
-        .map_err(|_| "aria2 RPC timeout".to_string())?
-        .map_err(|e| format!("aria2 RPC connection failed: {e}"))?;
-    let json: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("aria2 RPC parse failed: {e}"))?;
-    if let Some(err) = json.get("error") {
-        return Err(err
-            .get("message")
-            .and_then(|m| m.as_str())
-            .unwrap_or("unknown error")
-            .to_string());
-    }
-    let result = json
-        .get("result")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
-    serde_json::from_value(result).map_err(|e| format!("aria2 task decode failed: {e}"))
 }
 
 /// Compact human byte size (`1.4 MB`, `912 KB`, `340 B`).

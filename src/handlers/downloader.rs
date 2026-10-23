@@ -2,14 +2,22 @@
  * File          : downloader.rs
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 10/10/2026 by Nicolas Le Roux
- * Version       : 1.0.0
+ * Last modified : 23/10/2026 by Nicolas Le Roux
+ * Version       : 1.1.0
  *
  * Description:
  *   Download-manager endpoints backed by the aria2 daemon: service status
  *   and start/stop, global and per-task statistics, adding URLs and
  *   torrents, pause/resume/removal, and task details. Every endpoint is
  *   admin-only; aria2 state is shared through Aria2State in AppState.
+ *
+ *   Since ROADMAP 17 nothing the request says reaches the RPC unvalidated:
+ *   links go through a scheme allowlist, `dir` is a relative sub-folder of
+ *   `paths::downloader_dir()` and `out` is a bare file name, all checked
+ *   before the daemon is spawned. The daemon itself runs with a per-process
+ *   `rpc-secret` (kept in a 0600 config file, never on the command line),
+ *   every RPC call is bounded, startup waits for a real health probe, and a
+ *   crashed child is reaped instead of reported as running.
  *
  * Dependencies:
  *   - axum (>= 0.8)
@@ -32,18 +40,264 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Component, Path as FsPath, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use crate::handlers::AppStateArc;
 
 const ARIA2_RPC_URL: &str = "http://localhost:6800/jsonrpc";
 
+/// Hard bound on a single JSON-RPC round-trip. Without it a wedged aria2
+/// leaves every handler awaiting forever (ROADMAP 17.2).
+const ARIA2_RPC_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Bound on the startup health poll. Replaces the old fixed 500 ms sleep that
+/// answered "started" before the RPC port was listening (ROADMAP 17.2).
+const ARIA2_START_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Delay between two startup probes.
+const ARIA2_START_PROBE: Duration = Duration::from_millis(200);
+
+/// Longest accepted download link. aria2's own `--rpc-max-request-size` is 2 MB;
+/// this is about a sane URL, not about what the wire can carry.
+pub const MAX_URI_LEN: usize = 2048;
+
+/// Longest accepted output file name.
+pub const MAX_OUT_LEN: usize = 255;
+
+/// Longest accepted sub-folder path (relative to the download root).
+pub const MAX_SUBFOLDER_LEN: usize = 128;
+
+/// Schemes a download may use. Everything else is refused before aria2 sees it:
+/// `file://` (local read as the service user), `data:`, `javascript:`, and the
+/// `ftp://`-adjacent proxy schemes that turn a download into SSRF (ROADMAP 17.1).
+const ALLOWED_SCHEMES: &[&str] = &["http", "https", "ftp", "sftp", "magnet"];
+
+/// The aria2 daemon handle plus the state its RPC port needs.
 pub struct Aria2Process {
     pub child: Option<tokio::process::Child>,
+    /// `rpc-secret` value for this process. Generated per start, written to a
+    /// 0600 config file and never logged, echoed or returned by an endpoint.
+    secret: String,
+    /// Absolute download root. Every accepted `dir` is confined under it.
+    pub dir: PathBuf,
+}
+
+impl Aria2Process {
+    pub fn new() -> Self {
+        Self {
+            child: None,
+            secret: new_rpc_secret(),
+            dir: crate::config::paths::downloader_dir(),
+        }
+    }
+
+    /// The RPC secret. Crate-visible only: it must never reach a response body.
+    pub(crate) fn rpc_secret(&self) -> &str {
+        &self.secret
+    }
+}
+
+impl Default for Aria2Process {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub type Aria2State = Arc<Mutex<Aria2Process>>;
+
+/// 128 bits of entropy, prefixed so a value seen in a process list or a config
+/// file is recognisable as HomeVault's own.
+fn new_rpc_secret() -> String {
+    format!("hv_{}", uuid::Uuid::new_v4().simple())
+}
+
+// ---------------------------------------------------------------------------
+// Input validation (ROADMAP 17.1)
+//
+// These are pure functions so the refusal matrix is unit-testable without an
+// aria2 process. Every one of them is applied **before** `ensure_aria2_running`
+// so a rejected request can never spawn the daemon.
+// ---------------------------------------------------------------------------
+
+/// Validates a download link and returns it trimmed.
+///
+/// Scheme allowlist only: `dir`/`out` confinement alone would still let
+/// `file:///etc/shadow` be copied into the download folder.
+pub fn validate_uri(raw: &str) -> Result<String, String> {
+    let uri = raw.trim();
+    if uri.is_empty() {
+        return Err("A download link is required".to_string());
+    }
+    if uri.len() > MAX_URI_LEN {
+        return Err(format!(
+            "The link is too long (maximum {MAX_URI_LEN} characters)"
+        ));
+    }
+    if uri.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err("The link must not contain spaces or control characters".to_string());
+    }
+
+    let (scheme, rest) = uri
+        .split_once(':')
+        .ok_or_else(|| "The link must start with a supported scheme (http, https, ftp, sftp, magnet)".to_string())?;
+    if scheme.is_empty()
+        || !scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    {
+        return Err(
+            "The link must start with a supported scheme (http, https, ftp, sftp, magnet)"
+                .to_string(),
+        );
+    }
+    let scheme = scheme.to_ascii_lowercase();
+    if !ALLOWED_SCHEMES.contains(&scheme.as_str()) {
+        return Err(format!(
+            "Unsupported link scheme '{scheme}' — use http, https, ftp, sftp or magnet"
+        ));
+    }
+
+    if scheme == "magnet" {
+        if !rest.contains("xt=") {
+            return Err("A magnet link must contain an 'xt=' parameter".to_string());
+        }
+        return Ok(uri.to_string());
+    }
+
+    // A plain link needs an authority: `http://host/path`.
+    let after_scheme = rest
+        .strip_prefix("//")
+        .ok_or_else(|| "The link must include a host, for example https://example.com/file.iso".to_string())?;
+    let authority = after_scheme.split('/').next().unwrap_or("");
+    if authority.is_empty() {
+        return Err("The link must include a host, for example https://example.com/file.iso".to_string());
+    }
+    Ok(uri.to_string())
+}
+
+/// Validates an optional destination sub-folder, relative to the download root.
+///
+/// Absolute paths, `..`, `.`, backslashes and control characters are refused:
+/// `root.join(sub)` can then only ever land inside the root.
+pub fn validate_subfolder(raw: &str) -> Result<Option<String>, String> {
+    let sub = raw.trim();
+    if sub.is_empty() {
+        return Ok(None);
+    }
+    if sub.len() > MAX_SUBFOLDER_LEN {
+        return Err(format!(
+            "The sub-folder is too long (maximum {MAX_SUBFOLDER_LEN} characters)"
+        ));
+    }
+    if sub.starts_with('/') || sub.starts_with('\\') {
+        return Err("Use a folder inside the download folder, not an absolute path".to_string());
+    }
+    if sub.contains('\\') {
+        return Err("The sub-folder must use '/' as its separator".to_string());
+    }
+    if sub.chars().any(|c| c.is_control()) {
+        return Err("The sub-folder must not contain control characters".to_string());
+    }
+    for part in sub.split('/') {
+        if part.is_empty() || part == "." || part == ".." {
+            return Err("The sub-folder must not contain empty, '.' or '..' segments".to_string());
+        }
+        if part.len() > MAX_OUT_LEN {
+            return Err("A folder name in the sub-folder path is too long".to_string());
+        }
+    }
+    Ok(Some(sub.to_string()))
+}
+
+/// Validates an optional output file name. It is a *name*, never a path.
+pub fn validate_output_name(raw: &str) -> Result<Option<String>, String> {
+    let out = raw.trim();
+    if out.is_empty() {
+        return Ok(None);
+    }
+    if out.len() > MAX_OUT_LEN {
+        return Err(format!(
+            "The file name is too long (maximum {MAX_OUT_LEN} characters)"
+        ));
+    }
+    if out == "." || out == ".." {
+        return Err("The file name must not be '.' or '..'".to_string());
+    }
+    if out.contains('/') || out.contains('\\') {
+        return Err("The file name must not contain a path separator".to_string());
+    }
+    if out.chars().any(|c| c.is_control()) {
+        return Err("The file name must not contain control characters".to_string());
+    }
+    Ok(Some(out.to_string()))
+}
+
+/// Resolves a validated sub-folder against the canonical download root.
+///
+/// The deepest existing ancestor of the result is canonicalised and must still
+/// start with the root, so a symlink planted inside the download folder cannot
+/// redirect a download outside it.
+pub fn resolve_download_dir(root: &FsPath, subfolder: Option<&str>) -> Result<PathBuf, String> {
+    let root = std::fs::canonicalize(root).map_err(|e| {
+        format!(
+            "The download folder {} is not usable: {e}",
+            root.display()
+        )
+    })?;
+
+    let Some(sub) = validate_subfolder(subfolder.unwrap_or(""))? else {
+        return Ok(root);
+    };
+
+    let candidate = root.join(&sub);
+    // `validate_subfolder` already refused `..`, but re-check on the assembled
+    // path so a future caller cannot skip that guarantee.
+    if candidate
+        .components()
+        .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
+    {
+        return Err("The sub-folder must stay inside the download folder".to_string());
+    }
+
+    let mut probe = candidate.clone();
+    loop {
+        if probe.exists() {
+            let real = std::fs::canonicalize(&probe).map_err(|e| {
+                format!("The folder {} is not usable: {e}", probe.display())
+            })?;
+            if !real.starts_with(&root) {
+                return Err("The sub-folder must stay inside the download folder".to_string());
+            }
+            break;
+        }
+        if !probe.pop() {
+            return Err("The sub-folder must stay inside the download folder".to_string());
+        }
+    }
+
+    Ok(candidate)
+}
+
+/// Strips `user:password@` from a link before it reaches the event log
+/// (CLAUDE.md "Secrets never leak").
+pub fn redact_userinfo(uri: &str) -> String {
+    let Some((scheme, rest)) = uri.split_once("://") else {
+        return uri.to_string();
+    };
+    let (authority, tail) = match rest.split_once('/') {
+        Some((a, t)) => (a, format!("/{t}")),
+        None => (rest, String::new()),
+    };
+    match authority.rsplit_once('@') {
+        Some((_, host)) => format!("{scheme}://***@{host}{tail}"),
+        None => uri.to_string(),
+    }
+}
 
 #[derive(Serialize)]
 pub struct ApiResponse<T: Serialize> {
@@ -147,10 +401,29 @@ pub struct GidRequest {
     pub gid: String,
 }
 
+/// One JSON-RPC call to the local aria2 daemon, with the shared secret.
+///
+/// The secret is read from the process handle and prepended as aria2's
+/// `token:<secret>` first parameter, so the RPC port is no longer drivable by
+/// any local process (ROADMAP 17.2).
 async fn aria2_rpc(
+    state: &Aria2State,
     method: &str,
     params: Vec<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
+    let secret = state.lock().await.rpc_secret().to_string();
+    aria2_rpc_with_secret(&secret, method, params, ARIA2_RPC_TIMEOUT).await
+}
+
+async fn aria2_rpc_with_secret(
+    secret: &str,
+    method: &str,
+    params: Vec<serde_json::Value>,
+    timeout: Duration,
+) -> Result<serde_json::Value, String> {
+    let mut params = params;
+    params.insert(0, serde_json::json!(format!("token:{secret}")));
+
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": "homevault",
@@ -158,13 +431,26 @@ async fn aria2_rpc(
         "params": params
     });
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| format!("aria2 client setup failed: {}", e))?;
+
     let resp = client
         .post(ARIA2_RPC_URL)
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("aria2 RPC connection failed: {}", e))?;
+        .map_err(|e| {
+            if e.is_timeout() {
+                format!(
+                    "aria2 did not answer within {} s",
+                    timeout.as_secs().max(1)
+                )
+            } else {
+                format!("aria2 RPC connection failed: {}", e)
+            }
+        })?;
 
     let result: serde_json::Value = resp
         .json()
@@ -183,6 +469,43 @@ async fn aria2_rpc(
         .get("result")
         .cloned()
         .unwrap_or(serde_json::Value::Null))
+}
+
+/// `true` while the child we own is alive. A crashed child is reaped here
+/// instead of being reported as "running" forever (ROADMAP 17.3).
+pub(crate) async fn aria2_is_running(state: &Aria2State) -> bool {
+    let mut proc = state.lock().await;
+    let Some(child) = proc.child.as_mut() else {
+        return false;
+    };
+    match child.try_wait() {
+        Ok(None) => true,
+        Ok(Some(status)) => {
+            tracing::warn!("aria2c exited unexpectedly ({status}); clearing the process handle");
+            proc.child = None;
+            false
+        }
+        Err(e) => {
+            tracing::warn!("could not poll aria2c ({e}); clearing the process handle");
+            proc.child = None;
+            false
+        }
+    }
+}
+
+/// Read-only `aria2.tellActive` for the desktop activity taskbar. Shares the
+/// authenticated RPC path with this module instead of re-implementing it, and
+/// keeps its own short bound: the taskbar polls every few seconds.
+pub(crate) async fn aria2_active_tasks(state: &Aria2State) -> Result<Vec<Aria2Task>, String> {
+    let secret = state.lock().await.rpc_secret().to_string();
+    let value = aria2_rpc_with_secret(
+        &secret,
+        "aria2.tellActive",
+        vec![],
+        Duration::from_millis(1500),
+    )
+    .await?;
+    serde_json::from_value(value).map_err(|e| format!("aria2 task decode failed: {e}"))
 }
 
 async fn find_aria2() -> Option<String> {
@@ -205,42 +528,158 @@ async fn find_aria2() -> Option<String> {
     None
 }
 
-async fn ensure_aria2_running(state: &Aria2State) -> Result<(), String> {
+/// Writes `rpc-secret=<secret>` to aria2's config file with mode 0600.
+///
+/// A command-line `--rpc-secret` would be readable by every local user through
+/// `/proc/<pid>/cmdline`; a 0600 file is the narrowest place aria2 accepts it.
+async fn write_rpc_config(secret: &str) -> Result<PathBuf, String> {
+    let path = crate::config::paths::aria2_conf_path();
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
+            format!(
+                "Could not create aria2's configuration folder {}: {e}",
+                parent.display()
+            )
+        })?;
+    }
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(&path)
+        .await
+        .map_err(|e| format!("Could not write aria2's configuration: {e}"))?;
+    file.write_all(format!("rpc-secret={secret}\n").as_bytes())
+        .await
+        .map_err(|e| format!("Could not write aria2's configuration: {e}"))?;
+    file.flush()
+        .await
+        .map_err(|e| format!("Could not write aria2's configuration: {e}"))?;
+    // `mode` only applies when the file is created, so pin it again in case an
+    // older, looser file was already there.
+    let mut perms = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| format!("Could not read aria2's configuration: {e}"))?
+        .permissions();
+    perms.set_mode(0o600);
+    tokio::fs::set_permissions(&path, perms)
+        .await
+        .map_err(|e| format!("Could not restrict aria2's configuration: {e}"))?;
+    Ok(path)
+}
+
+/// Polls `aria2.getVersion` until the daemon answers, or the child dies, or the
+/// deadline passes. A successful start now means the RPC port really is up.
+async fn wait_until_ready(
+    secret: &str,
+    child: &mut tokio::process::Child,
+) -> Result<(), String> {
+    let deadline = Instant::now() + ARIA2_START_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Err(format!("aria2c exited during startup ({status})"));
+            }
+            Ok(None) => {}
+            Err(e) => return Err(format!("Could not poll aria2c: {e}")),
+        }
+
+        if aria2_rpc_with_secret(
+            secret,
+            "aria2.getVersion",
+            vec![],
+            ARIA2_START_PROBE,
+        )
+        .await
+        .is_ok()
+        {
+            return Ok(());
+        }
+
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "aria2c did not answer its RPC port within {} s",
+                ARIA2_START_TIMEOUT.as_secs()
+            ));
+        }
+        tokio::time::sleep(ARIA2_START_PROBE).await;
+    }
+}
+
+/// Starts aria2 if needed and returns the canonical download root.
+///
+/// Holds the process lock across the bounded startup poll so two concurrent
+/// requests cannot spawn two daemons on the same port.
+async fn ensure_aria2_running(state: &Aria2State) -> Result<PathBuf, String> {
     let mut proc = state.lock().await;
-    if proc.child.is_some() {
-        return Ok(());
+
+    if let Some(child) = proc.child.as_mut() {
+        match child.try_wait() {
+            Ok(None) => return Ok(proc.dir.clone()),
+            Ok(Some(status)) => {
+                tracing::warn!("aria2c exited unexpectedly ({status}); restarting it");
+                proc.child = None;
+            }
+            Err(e) => {
+                tracing::warn!("could not poll aria2c ({e}); restarting it");
+                proc.child = None;
+            }
+        }
     }
 
     let aria2_path = find_aria2().await.ok_or_else(|| {
         "aria2c not found on system. Install with: sudo apt install aria2".to_string()
     })?;
 
-    let _ = tokio::fs::create_dir_all("/tmp/aria2-downloads").await;
+    let root = crate::config::paths::downloader_dir();
+    tokio::fs::create_dir_all(&root).await.map_err(|e| {
+        format!(
+            "Could not create the download folder {}: {e}",
+            root.display()
+        )
+    })?;
+    let root = tokio::fs::canonicalize(&root).await.map_err(|e| {
+        format!(
+            "Could not resolve the download folder {}: {e}",
+            root.display()
+        )
+    })?;
+    proc.dir = root.clone();
 
-    let child = tokio::process::Command::new(&aria2_path)
+    let conf_path = write_rpc_config(proc.rpc_secret()).await?;
+
+    let mut child = tokio::process::Command::new(&aria2_path)
         .args([
-            "--enable-rpc",
-            "--rpc-listen-all=false",
-            "--rpc-listen-port=6800",
-            "--rpc-max-request-size=2M",
-            "--dir=/tmp/aria2-downloads",
-            "--continue=true",
-            "--max-connection-per-server=4",
-            "--split=4",
-            "--min-split-size=1M",
-            "--console-log-level=warn",
-            "--daemon=false",
+            format!("--conf-path={}", conf_path.display()),
+            "--enable-rpc".to_string(),
+            "--rpc-listen-all=false".to_string(),
+            "--rpc-listen-port=6800".to_string(),
+            "--rpc-max-request-size=2M".to_string(),
+            format!("--dir={}", root.display()),
+            "--continue=true".to_string(),
+            "--max-connection-per-server=4".to_string(),
+            "--split=4".to_string(),
+            "--min-split-size=1M".to_string(),
+            "--console-log-level=warn".to_string(),
+            "--daemon=false".to_string(),
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| format!("Failed to start aria2c: {}", e))?;
 
+    if let Err(e) = wait_until_ready(proc.rpc_secret(), &mut child).await {
+        // Never leave a half-started daemon behind: it would hold the RPC port
+        // and the next start would silently talk to it.
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        proc.child = None;
+        return Err(e);
+    }
+
     proc.child = Some(child);
-
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-    Ok(())
+    Ok(root)
 }
 
 pub async fn handle_downloader_status(
@@ -250,18 +689,15 @@ pub async fn handle_downloader_status(
     if let Err((_, msg)) = require_admin_request(&state, &headers).await {
         return Json(ApiResponse::error(&msg));
     }
-    let aria2 = state.downloader.clone();
 
     let available = find_aria2().await.is_some();
-
-    let running = {
-        let proc = aria2.lock().await;
-        proc.child.is_some()
-    };
+    let running = aria2_is_running(&state.downloader).await;
+    let dir = state.downloader.lock().await.dir.display().to_string();
 
     Json(ApiResponse::success(serde_json::json!({
         "available": available,
-        "running": running
+        "running": running,
+        "dir": dir
     })))
 }
 
@@ -273,7 +709,7 @@ pub async fn handle_downloader_start(
         return Json(ApiResponse::error(&msg));
     }
     match ensure_aria2_running(&state.downloader).await {
-        Ok(()) => Json(ApiResponse::success("aria2c started".to_string())),
+        Ok(dir) => Json(ApiResponse::success(dir.display().to_string())),
         Err(e) => Json(ApiResponse::error(&e)),
     }
 }
@@ -306,7 +742,7 @@ pub async fn handle_downloader_global_stat(
         return Json(ApiResponse::error(&e));
     }
 
-    match aria2_rpc("aria2.getGlobalStat", vec![]).await {
+    match aria2_rpc(&state.downloader, "aria2.getGlobalStat", vec![]).await {
         Ok(val) => match serde_json::from_value::<Aria2GlobalStat>(val) {
             Ok(stat) => Json(ApiResponse::success(stat)),
             Err(e) => Json(ApiResponse::error(&format!("parse error: {}", e))),
@@ -337,7 +773,7 @@ pub async fn handle_downloader_tasks(
     let mut last_error: Option<String> = None;
     let mut any_succeeded = false;
 
-    match aria2_rpc("aria2.tellActive", vec![]).await {
+    match aria2_rpc(&state.downloader, "aria2.tellActive", vec![]).await {
         Ok(active) => {
             any_succeeded = true;
             if let Ok(mut active_tasks) = serde_json::from_value::<Vec<Aria2Task>>(active) {
@@ -348,6 +784,7 @@ pub async fn handle_downloader_tasks(
     }
 
     match aria2_rpc(
+        &state.downloader,
         "aria2.tellWaiting",
         vec![serde_json::json!(0), serde_json::json!(50)],
     )
@@ -363,6 +800,7 @@ pub async fn handle_downloader_tasks(
     }
 
     match aria2_rpc(
+        &state.downloader,
         "aria2.tellStopped",
         vec![serde_json::json!(0), serde_json::json!(50)],
     )
@@ -395,26 +833,48 @@ pub async fn handle_downloader_add(
         Ok(u) => u,
         Err((_, msg)) => return Json(ApiResponse::error(&msg)),
     };
-    if let Err(e) = ensure_aria2_running(&state.downloader).await {
-        return Json(ApiResponse::error(&e));
-    }
 
-    let mut options = serde_json::json!({});
-    if let Some(dir) = &req.dir {
-        options["dir"] = serde_json::json!(dir);
-    }
-    if let Some(out) = &req.out {
+    // Validate everything before the daemon is touched: a refused request must
+    // not spawn aria2 as a side effect (ROADMAP 17.1).
+    let uri = match validate_uri(&req.uri) {
+        Ok(uri) => uri,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+    let subfolder = match validate_subfolder(req.dir.as_deref().unwrap_or("")) {
+        Ok(sub) => sub,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+    let out = match validate_output_name(req.out.as_deref().unwrap_or("")) {
+        Ok(out) => out,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+
+    let root = match ensure_aria2_running(&state.downloader).await {
+        Ok(dir) => dir,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+
+    // `dir` is always sent explicitly, so aria2 can never fall back to its own
+    // working directory or to a path the request supplied.
+    let dir = match resolve_download_dir(&root, subfolder.as_deref()) {
+        Ok(dir) => dir,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+
+    let mut options = serde_json::json!({ "dir": dir.display().to_string() });
+    if let Some(out) = &out {
         options["out"] = serde_json::json!(out);
     }
 
-    let params = vec![serde_json::json!([req.uri]), options];
+    let params = vec![serde_json::json!([uri]), options];
 
-    match aria2_rpc("aria2.addUri", params).await {
+    match aria2_rpc(&state.downloader, "aria2.addUri", params).await {
         Ok(val) => {
             let gid = val.as_str().unwrap_or("unknown").to_string();
             crate::events::log_event(format!(
-                "Admin '{}' added a download: '{}'",
-                admin_username, req.uri
+                "Admin '{}' added a download from '{}'",
+                admin_username,
+                redact_userinfo(&uri)
             ));
             Json(ApiResponse::success(gid))
         }
@@ -434,7 +894,7 @@ pub async fn handle_downloader_pause(
         return Json(ApiResponse::error(&e));
     }
 
-    match aria2_rpc("aria2.pause", vec![serde_json::json!(req.gid)]).await {
+    match aria2_rpc(&state.downloader, "aria2.pause", vec![serde_json::json!(req.gid)]).await {
         Ok(val) => {
             let gid = val.as_str().unwrap_or("unknown").to_string();
             Json(ApiResponse::success(gid))
@@ -455,7 +915,7 @@ pub async fn handle_downloader_unpause(
         return Json(ApiResponse::error(&e));
     }
 
-    match aria2_rpc("aria2.unpause", vec![serde_json::json!(req.gid)]).await {
+    match aria2_rpc(&state.downloader, "aria2.unpause", vec![serde_json::json!(req.gid)]).await {
         Ok(val) => {
             let gid = val.as_str().unwrap_or("unknown").to_string();
             Json(ApiResponse::success(gid))
@@ -487,17 +947,18 @@ pub async fn handle_downloader_remove(
     // case a user actually wants to clear (the "Remove" button on a
     // finished download in the UI). `aria2.removeDownloadResult` is the
     // separate RPC method aria2 requires for that case, so it's tried last.
-    match aria2_rpc("aria2.remove", vec![serde_json::json!(req.gid)]).await {
+    match aria2_rpc(&state.downloader, "aria2.remove", vec![serde_json::json!(req.gid)]).await {
         Ok(val) => {
             let gid = val.as_str().unwrap_or("unknown").to_string();
             Json(ApiResponse::success(gid))
         }
-        Err(_) => match aria2_rpc("aria2.forceRemove", vec![serde_json::json!(req.gid)]).await {
+        Err(_) => match aria2_rpc(&state.downloader, "aria2.forceRemove", vec![serde_json::json!(req.gid)]).await {
             Ok(val) => {
                 let gid = val.as_str().unwrap_or("unknown").to_string();
                 Json(ApiResponse::success(gid))
             }
             Err(_) => match aria2_rpc(
+                &state.downloader,
                 "aria2.removeDownloadResult",
                 vec![serde_json::json!(req.gid)],
             )
@@ -522,7 +983,7 @@ pub async fn handle_downloader_task(
         return Json(ApiResponse::error(&e));
     }
 
-    match aria2_rpc("aria2.tellStatus", vec![serde_json::json!(gid)]).await {
+    match aria2_rpc(&state.downloader, "aria2.tellStatus", vec![serde_json::json!(gid)]).await {
         Ok(val) => match serde_json::from_value::<Aria2Task>(val) {
             Ok(task) => Json(ApiResponse::success(task)),
             Err(e) => Json(ApiResponse::error(&format!("parse error: {}", e))),
@@ -565,18 +1026,25 @@ async fn require_admin_request(
 mod tests {
     //! Pure logic/unit tests for the Downloader (aria2) handler module.
     //!
-    //! These cover the one thing in this file that is pure, deterministic and
-    //! bug-prone: the **asymmetric serde mapping** between aria2's real
-    //! JSON-RPC wire format (camelCase: `downloadSpeed`, `totalLength`,
-    //! `errorMessage`, ...) and the snake_case JSON this API re-emits to the
-    //! Svelte frontend (`Aria2Task` / `GlobalStat` in `Downloader.svelte`).
-    //! A regression here is exactly the bug the `#[serde(rename(deserialize =
-    //! ...))]` attributes were added to fix (see the module-level comment on
-    //! `Aria2GlobalStat`): a real aria2 response would silently fail to parse
-    //! and every stat/task lookup would come back empty.
+    //! Two groups:
     //!
-    //! No network, no aria2 process, no filesystem — just serde round-trips
-    //! against fixtures captured verbatim from a live `aria2c` 1.37.0.
+    //! 1. The **asymmetric serde mapping** between aria2's real JSON-RPC wire
+    //!    format (camelCase: `downloadSpeed`, `totalLength`, `errorMessage`,
+    //!    ...) and the snake_case JSON this API re-emits to the Svelte
+    //!    frontend (`Aria2Task` / `GlobalStat` in `Downloader.svelte`).
+    //!    A regression here is exactly the bug the `#[serde(rename(deserialize =
+    //!    ...))]` attributes were added to fix (see the module-level comment on
+    //!    `Aria2GlobalStat`): a real aria2 response would silently fail to parse
+    //!    and every stat/task lookup would come back empty.
+    //! 2. The **input-confinement matrix** added for ROADMAP 17.1 — the scheme
+    //!    allowlist, the sub-folder and output-name validators, the download-root
+    //!    resolver (including a symlink escape), the event-log redaction, and the
+    //!    per-process RPC secret. These are the assertions the feature shipped
+    //!    without: `uri`, `dir` and `out` used to reach aria2 verbatim.
+    //!
+    //! No network and no aria2 process — just serde round-trips against fixtures
+    //! captured verbatim from a live `aria2c` 1.37.0, and pure validators (the
+    //! resolver uses a `tempfile` directory, which is a dev-dependency).
     //!
     //! Run: `cargo test downloader::tests`
 
@@ -774,6 +1242,240 @@ mod tests {
         let req: GidRequest = serde_json::from_str(r#"{"gid":"da9eb6ed9a94ecc2"}"#).unwrap();
         assert_eq!(req.gid, "da9eb6ed9a94ecc2");
         assert!(serde_json::from_str::<GidRequest>(r#"{}"#).is_err());
+    }
+
+    // -- ROADMAP 17.1: link scheme allowlist ------------------------------
+
+    #[test]
+    fn test_validate_uri_accepts_the_supported_schemes() {
+        for uri in [
+            "https://example.com/file.iso",
+            "http://192.168.1.10:8080/share/a.bin",
+            "ftp://mirror.example.org/pub/img.img",
+            "sftp://nas.example.org/export/a.bin",
+            "magnet:?xt=urn:btih:0123456789abcdef&dn=ubuntu.iso",
+        ] {
+            assert_eq!(
+                validate_uri(uri).as_deref(),
+                Ok(uri),
+                "`{uri}` must be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_uri_refuses_local_read_and_injection_schemes() {
+        // `file://` is the local-read primitive ROADMAP 17.1 names, the rest are
+        // the same class: a scheme aria2 would happily hand to a local handler.
+        for uri in [
+            "file:///etc/shadow",
+            "FILE:///etc/shadow",
+            "data:text/plain;base64,SGVsbG8=",
+            "javascript:alert(1)",
+            "vbscript:msgbox(1)",
+            "smb://nas/secret",
+            "ssh://host/etc",
+            "/etc/passwd",
+            "etc/passwd",
+        ] {
+            assert!(
+                validate_uri(uri).is_err(),
+                "`{uri}` must be refused, got {:?}",
+                validate_uri(uri)
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_uri_refuses_empty_whitespace_and_control_characters() {
+        assert!(validate_uri("").is_err());
+        assert!(validate_uri("   ").is_err());
+        assert!(validate_uri("http://example.com/a b").is_err(), "a space splits the link");
+        assert!(validate_uri("http://example.com/a\nb").is_err());
+        assert!(validate_uri("http://example.com/a\u{0}b").is_err());
+    }
+
+    #[test]
+    fn test_validate_uri_refuses_an_over_long_link() {
+        let long = format!("https://example.com/{}", "a".repeat(MAX_URI_LEN));
+        assert!(long.len() > MAX_URI_LEN);
+        assert!(validate_uri(&long).is_err());
+    }
+
+    #[test]
+    fn test_validate_uri_requires_a_host_for_plain_schemes() {
+        for uri in ["http://", "https://", "http:/example.com/a", "ftp://"] {
+            assert!(validate_uri(uri).is_err(), "`{uri}` has no host");
+        }
+    }
+
+    #[test]
+    fn test_validate_uri_requires_xt_on_magnet_links() {
+        assert!(validate_uri("magnet:?dn=ubuntu.iso").is_err());
+        assert!(validate_uri("magnet:?xt=urn:btih:abc").is_ok());
+    }
+
+    #[test]
+    fn test_validate_uri_trims_surrounding_whitespace() {
+        assert_eq!(
+            validate_uri("  https://example.com/a.bin \n").as_deref(),
+            Ok("https://example.com/a.bin")
+        );
+    }
+
+    // -- ROADMAP 17.1: destination confinement ----------------------------
+
+    #[test]
+    fn test_validate_subfolder_accepts_relative_paths() {
+        assert_eq!(validate_subfolder("").unwrap(), None);
+        assert_eq!(validate_subfolder("   ").unwrap(), None);
+        assert_eq!(validate_subfolder("films").unwrap().as_deref(), Some("films"));
+        assert_eq!(
+            validate_subfolder("films/2026/octobre").unwrap().as_deref(),
+            Some("films/2026/octobre")
+        );
+        assert_eq!(
+            validate_subfolder("  films  ").unwrap().as_deref(),
+            Some("films")
+        );
+    }
+
+    #[test]
+    fn test_validate_subfolder_refuses_absolute_and_traversal_paths() {
+        for sub in [
+            "/etc",
+            "/var/lib/homevault/downloads/../../etc",
+            "..",
+            "../etc",
+            "films/../../etc",
+            "films/./x",
+            "films//x",
+            "films\\x",
+            "C:\\Windows",
+        ] {
+            assert!(
+                validate_subfolder(sub).is_err(),
+                "`{sub}` must be refused, got {:?}",
+                validate_subfolder(sub)
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_subfolder_refuses_control_characters_and_oversize() {
+        assert!(validate_subfolder("films\nx").is_err());
+        assert!(validate_subfolder(&"a".repeat(MAX_SUBFOLDER_LEN + 1)).is_err());
+    }
+
+    #[test]
+    fn test_validate_output_name_accepts_a_plain_file_name() {
+        assert_eq!(validate_output_name("").unwrap(), None);
+        assert_eq!(
+            validate_output_name("movie.mkv").unwrap().as_deref(),
+            Some("movie.mkv")
+        );
+        assert_eq!(
+            validate_output_name("  movie.mkv  ").unwrap().as_deref(),
+            Some("movie.mkv")
+        );
+    }
+
+    #[test]
+    fn test_validate_output_name_refuses_a_path() {
+        for out in ["../etc/passwd", "a/b", "/etc/passwd", "a\\b", "..", ".", "a\u{0}b"] {
+            assert!(
+                validate_output_name(out).is_err(),
+                "`{out}` must be refused, got {:?}",
+                validate_output_name(out)
+            );
+        }
+        assert!(validate_output_name(&"a".repeat(MAX_OUT_LEN + 1)).is_err());
+    }
+
+    #[test]
+    fn test_resolve_download_dir_confines_every_path_to_the_root() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let root = tmp.path().join("downloads");
+        std::fs::create_dir_all(&root).unwrap();
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
+
+        // No sub-folder → the root itself.
+        assert_eq!(resolve_download_dir(&root, None).unwrap(), canonical_root);
+        assert_eq!(
+            resolve_download_dir(&root, Some("")).unwrap(),
+            canonical_root
+        );
+
+        // A relative sub-folder → under the root.
+        assert_eq!(
+            resolve_download_dir(&root, Some("films/2026")).unwrap(),
+            canonical_root.join("films/2026")
+        );
+
+        // Absolute and traversal forms never resolve.
+        for sub in ["/etc", "../etc", "films/../../etc"] {
+            assert!(
+                resolve_download_dir(&root, Some(sub)).is_err(),
+                "`{sub}` must not resolve"
+            );
+        }
+    }
+
+    #[test]
+    fn test_resolve_download_dir_refuses_a_symlink_that_leaves_the_root() {
+        // A symlink planted inside the download folder must not redirect a
+        // download outside it.
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let root = tmp.path().join("downloads");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+
+        let err = resolve_download_dir(&root, Some("escape")).expect_err("must refuse");
+        assert!(
+            err.contains("inside the download folder"),
+            "unexpected message: {err}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_download_dir_reports_a_missing_root() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let missing = tmp.path().join("does-not-exist");
+        assert!(resolve_download_dir(&missing, None).is_err());
+    }
+
+    // -- ROADMAP 17.1: event-log redaction --------------------------------
+
+    #[test]
+    fn test_redact_userinfo_strips_embedded_credentials() {
+        assert_eq!(
+            redact_userinfo("https://alice:s3cr3t@example.com/a.bin?x=1"),
+            "https://***@example.com/a.bin?x=1"
+        );
+        assert_eq!(
+            redact_userinfo("ftp://user@mirror.example.org/pub"),
+            "ftp://***@mirror.example.org/pub"
+        );
+        // Nothing to redact.
+        assert_eq!(
+            redact_userinfo("https://example.com/a.bin"),
+            "https://example.com/a.bin"
+        );
+        assert_eq!(redact_userinfo("magnet:?xt=urn:btih:abc"), "magnet:?xt=urn:btih:abc");
+    }
+
+    // -- ROADMAP 17.2: per-process RPC secret -----------------------------
+
+    #[test]
+    fn test_rpc_secret_is_generated_per_process_and_is_not_the_default() {
+        let a = Aria2Process::new();
+        let b = Aria2Process::new();
+        assert!(a.rpc_secret().starts_with("hv_"), "secret shape changed");
+        assert_eq!(a.rpc_secret().len(), 3 + 32, "128 bits of hex expected");
+        assert_ne!(a.rpc_secret(), b.rpc_secret(), "each start needs its own secret");
+        assert!(a.child.is_none());
     }
 
     // -- ApiResponse envelope (the shape the frontend checks) ------------

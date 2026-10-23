@@ -8,6 +8,47 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Downloader (aria2) hardening — validated input, a secret on the RPC port,
+  and a child that is actually owned (2026-10-23, ROADMAP 17).** **Nothing the
+  request says reaches the RPC unvalidated any more.** `uri` goes through a
+  scheme allowlist (`http`, `https`, `ftp`, `sftp`, `magnet`), so `file://`
+  (which read `/etc/shadow` as the service user), `data:`, `javascript:` and
+  `smb:` are refused with a reason; plain links must carry a host, magnet links
+  an `xt=`. `dir` changed meaning: it is now a **relative sub-folder of one
+  configured root**, `<DATA_DIRECTORY>/downloads` (`paths::downloader_dir()`),
+  with absolute paths, `..` and backslashes refused — and
+  `resolve_download_dir` canonicalises the deepest existing ancestor, so a
+  symlink planted inside the root cannot redirect a download outside it. `out`
+  must be a bare file name. All three validators run **before** the daemon is
+  touched, so a refused request never spawns aria2, and `dir` is always sent
+  explicitly so the daemon cannot fall back to its own working directory. The
+  event log redacts `user:pass@` in a link. **The RPC port is no longer open to
+  any local process:** each start generates a fresh `rpc-secret` (`hv_` + 128
+  bits) written to `<DATA_DIRECTORY>/aria2-rpc.conf` with mode 0600 and passed
+  through `--conf-path` — never `--rpc-secret` on the command line, because
+  `/proc/<pid>/cmdline` is world-readable — and every call prepends
+  `token:<secret>` under a 10 s timeout. The fixed 500 ms sleep became a
+  bounded `aria2.getVersion` poll (10 s deadline, 200 ms probe) that kills the
+  child if it exits or never answers, so "started" means the port is up. **The
+  child is reaped and stopped:** a crashed daemon is detected through
+  `try_wait` and reported as `running: false` instead of forever "running",
+  `shutdown_signal` kills and waits it on Ctrl+C/systemd stop, and downloads
+  moved out of `/tmp/aria2-downloads` (wiped on every reboot) into
+  `<DATA_DIRECTORY>/downloads`. `src/handlers/activity.rs` dropped its own
+  unauthenticated RPC copy and uses the shared secret-aware helper. **UI:**
+  opening the app no longer starts the daemon behind the user's back — a
+  stopped daemon shows an explicit "Start the download service" panel; `add`,
+  `pause`, `unpause`, `remove` and `start` failures reach a dismissible alert
+  instead of five empty `else {}` branches; the free folder picker (which
+  offered absolute paths the API now refuses) became a relative "Sub-folder"
+  field with the destination root stated underneath; and a task card is a plain
+  container whose selectable part is a real `<button>` (it used to be
+  `role="button"` wrapping its own action buttons). Tests:
+  `src/handlers/downloader.rs` 15 → **32** unit, `tests/downloader_integration.rs`
+  8 → **13**, `tests/e2e/downloader/downloader.spec.ts` 40 → **46**.
+  **Written but not executed** (per instruction): no unit, integration or E2E
+  suite was run.
+
 - **Disk encryption (LUKS2) production-ready pass (2026-10-23).** The three
   ways the encryption tab could destroy data or wedge itself are gone, and the
   two operations that did not exist now do. **Deletion is gated:** `DELETE

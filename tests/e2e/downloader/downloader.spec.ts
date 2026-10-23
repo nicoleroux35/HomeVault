@@ -29,14 +29,14 @@
  * pattern):** a download is the *intended*, additive, reversible primary use
  * of this page. Section 13 performs one **genuine** download — but of a file
  * the app itself serves (`/wallpapers/hv-01-thumb.webp`, ~25 KB, always
- * present, no internet needed) into a unique throwaway directory under
- * `/tmp`, then removes the task. Nothing else on the host is touched.
- * `test.afterAll` sweeps any download task still referencing the test
- * asset (in case a test failed mid-way). The downloaded *file* itself
- * (~25 KB) stays under `/tmp/hv-dl-e2e-*` — aria2 does not delete files on
- * task removal and the browser cannot reach the server's filesystem; `/tmp`
- * is cleared on reboot. If `aria2c` is not installed the page shows its
- * "not installed" state and the lifecycle tests skip cleanly.
+ * present, no internet needed) into a unique throwaway sub-folder of the
+ * server's download root (`<DATA_DIRECTORY>/downloads/hv-dl-e2e-*`), then
+ * removes the task. Nothing else on the host is touched. `test.afterAll`
+ * sweeps any download task still referencing the test asset (in case a test
+ * failed mid-way). The downloaded *file* itself (~25 KB) stays under that
+ * sub-folder — aria2 does not delete files on task removal and the browser
+ * cannot reach the server's filesystem. If `aria2c` is not installed the page
+ * shows its "not installed" state and the lifecycle tests skip cleanly.
  *
  * All mutating requests go through the CSRF middleware, so the in-page
  * `fetch` helpers send both `x-session-token` and `x-csrf-token` (captured
@@ -172,10 +172,25 @@ async function isNotInstalled(page: Page): Promise<boolean> {
   return (await win(page).locator('[data-testid="downloader-not-available"]').count()) > 0;
 }
 
+/**
+ * The screen never starts the daemon on its own (ROADMAP 17): opening the app
+ * used to spawn aria2c with no consent. A user presses "Start the download
+ * service", so the tests do the same.
+ */
+async function ensureServiceRunning(page: Page) {
+  const stopped = win(page).locator('[data-testid="downloader-service-stopped"]');
+  if ((await stopped.count()) > 0) {
+    await win(page).locator('[data-testid="downloader-start"]').click();
+    await expect(stopped).toHaveCount(0, { timeout: 20_000 });
+  }
+}
+
 async function skipIfNoAria2(page: Page) {
   if (await isNotInstalled(page)) {
     test.skip(true, 'aria2c is not installed on this host — Downloader shows its not-installed state');
+    return;
   }
+  await ensureServiceRunning(page);
 }
 
 // --- in-page authed fetch helpers (CSRF-aware) -----------------------------
@@ -226,6 +241,21 @@ async function apiRemove(page: Page, t: Tokens, gid: string) {
   );
 }
 
+/** Start/stop the daemon through the API (the screen's own start button). */
+async function apiDaemon(page: Page, t: Tokens, action: 'start' | 'stop') {
+  return page.evaluate(
+    async ({ token, csrf, action }) => {
+      const r = await fetch(`/api/downloader/${action}`, {
+        method: 'POST',
+        headers: { 'x-session-token': token, 'x-csrf-token': csrf },
+      });
+      const body = await r.json().catch(() => ({}));
+      return { http: r.status, success: body?.success, error: body?.error };
+    },
+    { token: t.token, csrf: t.csrf, action },
+  );
+}
+
 let adminTokens: Tokens;
 
 test.beforeAll(async ({ playwright }) => {
@@ -258,7 +288,7 @@ test.afterAll(async ({ playwright }) => {
       const refsAsset =
         t.gid &&
         (JSON.stringify(t.files || []).includes('hv-01-thumb.webp') ||
-          String(t.dir || '').includes('/tmp/hv-dl-e2e-'));
+          String(t.dir || '').includes('hv-dl-e2e-'));
       if (refsAsset) {
         await ctx
           .post('/api/downloader/remove', {
@@ -317,6 +347,34 @@ test.describe('1 — Page load', () => {
     await skipIfNoAria2(page);
     await expect(win(page).locator('[data-testid="downloader-section-title"]', { hasText: /active/i }).first()).toBeVisible();
   });
+
+  test('1.7 — opening the app never starts the daemon on its own', async ({ page }) => {
+    // ROADMAP 17: the screen used to spawn aria2c on mount with no consent.
+    // Stop the daemon, reopen the window, and require an explicit start.
+    await gotoDownloader(page, adminTokens);
+    if (await isNotInstalled(page)) {
+      test.skip(true, 'aria2c is not installed — there is no daemon to start');
+    }
+    await apiDaemon(page, adminTokens, 'stop');
+
+    const startCalls: string[] = [];
+    page.on('request', (r) => {
+      if (r.url().includes('/api/downloader/start')) startCalls.push(r.url());
+    });
+
+    await page.locator('.hv-cl-btn-close').first().click();
+    await expect(win(page)).toHaveCount(0, { timeout: 5_000 });
+    await openLaunchpadApp(page, 'Downloader');
+    await page.waitForSelector('[data-testid="downloader-page"]', { timeout: 10_000 });
+
+    await expect(win(page).locator('[data-testid="downloader-service-stopped"]')).toBeVisible({ timeout: 10_000 });
+    expect(startCalls, 'opening the app must not call /downloader/start').toEqual([]);
+
+    // The explicit start is the user's decision, and it works.
+    await win(page).locator('[data-testid="downloader-start"]').click();
+    await expect(win(page).locator('[data-testid="downloader-service-stopped"]')).toHaveCount(0, { timeout: 20_000 });
+    await expect(win(page).locator('[data-testid="downloader-stats"]')).toBeVisible({ timeout: 15_000 });
+  });
 });
 
 // ===========================================================================
@@ -324,7 +382,7 @@ test.describe('1 — Page load', () => {
 // ===========================================================================
 
 test.describe('2 — Form fields', () => {
-  test('2.1 — the Add-link form exposes a URL text input and a folder picker trigger', async ({
+  test('2.1 — the Add-link form exposes a URL field and a sub-folder field', async ({
     page,
   }) => {
     await gotoDownloader(page, adminTokens);
@@ -333,7 +391,12 @@ test.describe('2 — Form fields', () => {
     const form = win(page).locator('[data-testid="downloader-add-form"]');
     await expect(form).toBeVisible();
     await expect(form.locator('input[data-testid="downloader-input"]')).toHaveAttribute('type', 'text');
-    await expect(form.locator('[data-testid="downloader-dir"]')).toBeVisible();
+    await expect(form.locator('input[data-testid="downloader-subfolder"]')).toBeVisible();
+    // Every input carries an accessible name, never a bare placeholder (WCAG 3.3.2).
+    await expect(form.locator('input[data-testid="downloader-input"]')).toHaveAttribute('aria-label', /.+/);
+    await expect(form.locator('input[data-testid="downloader-subfolder"]')).toHaveAttribute('aria-label', /.+/);
+    // The destination is stated, not guessed: it is the server's download root.
+    await expect(form.locator('[data-testid="downloader-destination"]')).toContainText(/downloads/);
   });
 
   test('2.2 — the URL input has a placeholder mentioning the supported schemes', async ({ page }) => {
@@ -425,6 +488,38 @@ test.describe('3 — Validation', () => {
     expect(res.remove.http).toBe(200);
     expect(res.remove.success).toBe(false);
   });
+
+  test('3.4 — a file:// link is refused and the reason is shown', async ({ page }) => {
+    // ROADMAP 17.1: `file://` used to be handed to aria2 and read the file as
+    // the service user. The refusal must be visible, not silent.
+    await gotoDownloader(page, adminTokens);
+    await skipIfNoAria2(page);
+    const before = (await apiTasks(page, adminTokens)).data?.length ?? 0;
+
+    await win(page).locator('[data-testid="downloader-add-toggle"]').click();
+    await win(page).locator('[data-testid="downloader-add-form"] input[data-testid="downloader-input"]').fill('file:///etc/shadow');
+    await win(page).locator('[data-testid="downloader-add-form"] [data-testid="downloader-btn-primary"]').click();
+
+    const alert = win(page).locator('[data-testid="downloader-error"]');
+    await expect(alert).toBeVisible({ timeout: 8_000 });
+    await expect(alert).toContainText(/scheme|http/i);
+    await expect(win(page).locator('[data-testid="downloader-add-form"]')).toBeVisible();
+    expect((await apiTasks(page, adminTokens)).data?.length ?? 0).toBe(before);
+  });
+
+  test('3.5 — a sub-folder that escapes the download root is refused', async ({ page }) => {
+    await gotoDownloader(page, adminTokens);
+    await skipIfNoAria2(page);
+    const before = (await apiTasks(page, adminTokens)).data?.length ?? 0;
+
+    await win(page).locator('[data-testid="downloader-add-toggle"]').click();
+    await win(page).locator('[data-testid="downloader-add-form"] input[data-testid="downloader-input"]').fill(LOCAL_ASSET_URL);
+    await win(page).locator('[data-testid="downloader-add-form"] input[data-testid="downloader-subfolder"]').fill('../etc');
+    await win(page).locator('[data-testid="downloader-add-form"] [data-testid="downloader-btn-primary"]').click();
+
+    await expect(win(page).locator('[data-testid="downloader-error"]')).toBeVisible({ timeout: 8_000 });
+    expect((await apiTasks(page, adminTokens)).data?.length ?? 0).toBe(before);
+  });
 });
 
 // ===========================================================================
@@ -442,15 +537,35 @@ test.describe('4 — All user interactions', () => {
     await expect(win(page).locator('[data-testid="downloader-add-form"]')).toHaveCount(0);
   });
 
-  test('4.2 — the folder-picker trigger opens the FolderPicker dialog', async ({ page }) => {
+  test('4.2 — the optional sub-folder is sent with the add request', async ({ page }) => {
     await gotoDownloader(page, adminTokens);
     await skipIfNoAria2(page);
+    let sent: any = null;
+    let gid: string | null = null;
+    page.on('request', (r) => {
+      if (r.url().includes('/api/downloader/add')) {
+        try {
+          sent = r.postDataJSON();
+        } catch {
+          sent = null;
+        }
+      }
+    });
+    page.on('response', async (r) => {
+      if (r.url().includes('/api/downloader/add')) {
+        const b = await r.json().catch(() => ({}));
+        if (b?.data) gid = b.data;
+      }
+    });
+
     await win(page).locator('[data-testid="downloader-add-toggle"]').click();
-    await win(page).locator('[data-testid="downloader-add-form"] [data-testid="downloader-dir"]').click();
-    // FolderPicker renders a modal/dialog; accept any of the common roots.
-    await expect(
-      page.locator('[role="dialog"], .hv-folder-picker, .hv-modal').first(),
-    ).toBeVisible({ timeout: 5_000 });
+    await win(page).locator('[data-testid="downloader-add-form"] input[data-testid="downloader-input"]').fill(LOCAL_ASSET_URL);
+    await win(page).locator('[data-testid="downloader-add-form"] input[data-testid="downloader-subfolder"]').fill('films/2026');
+    await win(page).locator('[data-testid="downloader-add-form"] [data-testid="downloader-btn-primary"]').click();
+
+    await expect.poll(() => sent?.dir).toBe('films/2026');
+    expect(sent?.uri).toBe(LOCAL_ASSET_URL);
+    if (gid) await apiRemove(page, adminTokens, gid);
   });
 });
 
@@ -497,6 +612,31 @@ test.describe('5 — Submission flows', () => {
     await win(page).locator('[data-testid="downloader-add-form"] [data-testid="downloader-btn-primary"]').click();
     await expect(win(page).locator('[data-testid="downloader-add-form"]')).toHaveCount(0, { timeout: 10_000 });
     if (gid) await apiRemove(page, adminTokens, gid);
+  });
+
+  test('5.3 — a failed add surfaces the server reason instead of silence', async ({ page }) => {
+    // ROADMAP 17: pause/unpause/remove/add failures were swallowed by empty
+    // `else {}` branches, so the UI looked like a no-op.
+    await gotoDownloader(page, adminTokens);
+    await skipIfNoAria2(page);
+    await page.route('**/api/downloader/add', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: false, data: null, error: 'Not enough space on the download volume' }),
+      }),
+    );
+
+    await win(page).locator('[data-testid="downloader-add-toggle"]').click();
+    await win(page).locator('[data-testid="downloader-add-form"] input[data-testid="downloader-input"]').fill(LOCAL_ASSET_URL);
+    await win(page).locator('[data-testid="downloader-add-form"] [data-testid="downloader-btn-primary"]').click();
+
+    const alert = win(page).locator('[data-testid="downloader-error"]');
+    await expect(alert).toBeVisible({ timeout: 8_000 });
+    await expect(alert).toContainText('Not enough space on the download volume');
+    // The form stays open so the user can retry without retyping.
+    await expect(win(page).locator('[data-testid="downloader-add-form"]')).toBeVisible();
+    await page.unroute('**/api/downloader/add');
   });
 });
 
@@ -552,13 +692,29 @@ test.describe('7 — Responsive', () => {
 // ===========================================================================
 
 test.describe('8 — Accessibility', () => {
-  test('8.1 — the folder-picker trigger is keyboard-reachable (role + tabindex)', async ({ page }) => {
+  test('8.1 — the form fields have accessible names and no control nests a button', async ({ page }) => {
     await gotoDownloader(page, adminTokens);
     await skipIfNoAria2(page);
     await win(page).locator('[data-testid="downloader-add-toggle"]').click();
-    const trigger = win(page).locator('[data-testid="downloader-add-form"] [data-testid="downloader-dir"]');
-    await expect(trigger).toHaveAttribute('role', 'button');
-    await expect(trigger).toHaveAttribute('tabindex', '0');
+    const form = win(page).locator('[data-testid="downloader-add-form"]');
+    for (const testid of ['downloader-input', 'downloader-subfolder']) {
+      const field = form.locator(`input[data-testid="${testid}"]`);
+      await expect(field).toBeVisible();
+      const label = await field.getAttribute('aria-label');
+      expect(label && label.trim().length, `${testid} needs an accessible name`).toBeGreaterThan(0);
+      // 44px hit area on every field (sub-pixel scale on the floating window).
+      const box = await field.boundingBox();
+      expect(box?.height ?? 0).toBeGreaterThanOrEqual(43.5);
+    }
+
+    // ROADMAP 17: a card used to be `role="button"` wrapping its own action
+    // buttons. It is now a container with one real select button.
+    const nested = await win(page)
+      .locator(
+        '[data-testid="downloader-card"] [role="button"] button, [data-testid="downloader-card"] button button, [data-testid="downloader-card"] [role="button"] [role="button"]',
+      )
+      .count();
+    expect(nested, 'no interactive control may nest another').toBe(0);
   });
 
   test('8.2 — no duplicate element ids on the page', async ({ page }) => {
@@ -583,6 +739,26 @@ test.describe('8 — Accessibility', () => {
     // header action button always present
     const label = await win(page).locator('[data-testid="downloader-add-toggle"]').innerText();
     expect(label.trim().length).toBeGreaterThan(0);
+  });
+
+  test('8.4 — a download card is selectable from the keyboard', async ({ page }) => {
+    // The card used to be a `role="button"` wrapper, which also swallowed its
+    // own action buttons. Selection is now a real <button>, so Enter works.
+    await gotoDownloader(page, adminTokens);
+    await skipIfNoAria2(page);
+    const added = await apiAdd(page, adminTokens, 'http://127.0.0.1:1/x', '');
+    if (!added.success) test.skip(true, `add failed: ${added.error}`);
+    const gid: string = added.gid;
+
+    try {
+      const select = win(page).locator('[data-testid="downloader-card-select"]').first();
+      await expect(select).toBeVisible({ timeout: 15_000 });
+      await select.focus();
+      await page.keyboard.press('Enter');
+      await expect(win(page).locator('[data-testid="downloader-detail-pane"]')).toBeVisible({ timeout: 5_000 });
+    } finally {
+      await apiRemove(page, adminTokens, gid).catch(() => {});
+    }
   });
 });
 
@@ -734,6 +910,32 @@ test.describe('10 — Security', () => {
     const html = await win(page).locator('[data-testid="downloader-add-form"]').innerHTML();
     expect(html).not.toContain('<img src=x onerror=');
   });
+
+  test('10.6 — the API refuses a file:// link even for an admin', async ({ page }) => {
+    // Defence in depth: the UI is not the gate. A crafted request must be
+    // refused server-side, and the refusal must never echo the secret.
+    await gotoDownloader(page, adminTokens);
+    const res = await page.evaluate(
+      async ({ token, csrf }) => {
+        const r = await fetch('/api/downloader/add', {
+          method: 'POST',
+          headers: {
+            'x-session-token': token,
+            'x-csrf-token': csrf,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ uri: 'file:///etc/passwd' }),
+        });
+        const body = await r.json().catch(() => ({}));
+        return { http: r.status, success: body?.success, error: String(body?.error || '') };
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf },
+    );
+    expect(res.http).toBe(200);
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/scheme/i);
+    expect(res.error).not.toContain('hv_');
+  });
 });
 
 // ===========================================================================
@@ -811,7 +1013,9 @@ test.describe('13 — Real download lifecycle', () => {
     await gotoDownloader(page, adminTokens);
     await skipIfNoAria2(page);
 
-    const dir = `/tmp/hv-dl-e2e-${Date.now().toString(36)}`;
+    // A sub-folder *relative to the server's download root*: the API now
+    // refuses absolute paths and `..` (ROADMAP 17.1).
+    const dir = `hv-dl-e2e-${Date.now().toString(36)}`;
     const uri = LOCAL_ASSET_URL;
     const added = await apiAdd(page, adminTokens, uri, dir);
     if (!added.success) {
@@ -855,7 +1059,9 @@ test.describe('13 — Real download lifecycle', () => {
     await gotoDownloader(page, adminTokens);
     await skipIfNoAria2(page);
 
-    const dir = `/tmp/hv-dl-e2e-${Date.now().toString(36)}`;
+    // A sub-folder *relative to the server's download root*: the API now
+    // refuses absolute paths and `..` (ROADMAP 17.1).
+    const dir = `hv-dl-e2e-${Date.now().toString(36)}`;
     const added = await apiAdd(page, adminTokens, LOCAL_ASSET_URL, dir);
     if (!added.success) test.skip(true, `add failed: ${added.error}`);
     const gid: string = added.gid;
