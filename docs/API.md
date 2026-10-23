@@ -270,12 +270,12 @@ Any refusal answers 400 and keeps the metadata row.
 | GET | `/explorer/preview` | auth | text/image preview; `previewable: false` for non-text binaries |
 | POST | `/explorer/extract` | auth | `?path=&destination=` — members listed + validated pre-flight (no absolute names, no `..`, no symlink members), extracts into a staging dir verified confined below the destination, `.gz` decompresses straight to disk |
 | POST | `/explorer/compress` | auth | JSON body `{ paths: string[], destination, format? }` — `--` separator before the member names (no argv injection) |
-| GET | `/explorer/download` | auth \| ticket | raw file download; `?ticket=` (single-use, from `/explorer/download-ticket`) *or* `x-session-token` header — **never** the session token in a URL; HTTP `Range` (206), `X-Content-Sha256` digest header for files ≤ 64 MB; 429 if the transfer quota is exhausted |
+| GET | `/explorer/download` | auth \| ticket | raw file download; `?ticket=` (single-use, from `/explorer/download-ticket`) *or* `x-session-token` header — **never** the session token in a URL; HTTP `Range` (206), `X-Content-Sha256` digest header for files ≤ 64 MB; 429 if the transfer quota is exhausted, 503 if the quota guard itself cannot answer (fail closed) |
 | POST | `/explorer/download-ticket` | auth | `?path=` — mint a single-use 60 s download ticket (checks path + download quota) |
 | GET | `/explorer/thumbnail` | auth \| ticket | image thumbnail; `?ticket=` (multi-use, directory-scoped) or session header |
 | POST | `/explorer/thumbnail-ticket` | auth | `?path=` — mint a multi-use 5 min thumbnail ticket for a directory |
 | POST | `/explorer/upload` | auth | multipart `file` + `?path=` + `?strategy=`; `fsync`'d before success; SHA-256 in `checksums[]`, `skipped[]` for `strategy=skip`; optional `X-Expected-Sha256` header (single-file) |
-| POST | `/explorer/upload/session` | auth | `?path=&filename=&size=` — open a resumable upload session; owned by the calling user; capped per user (20) and globally (256), 429 beyond |
+| POST | `/explorer/upload/session` | auth | `?path=&filename=&size=` — open a resumable upload session; owned by the calling user; capped per user (20) and globally (256), 429 beyond; 429 over quota, 503 if the quota guard cannot answer |
 | DELETE | `/explorer/upload/session` | auth | `?session_id=` — abort a resumable upload, remove the partial temp file; 403 unless the session belongs to the caller |
 | POST | `/explorer/upload/chunk` | auth | raw body + `?session_id=&offset=` — write one chunk at the server's authoritative offset (409 + current offset on mismatch); 403 unless the session belongs to the caller |
 | POST | `/explorer/upload/complete` | auth | `?session_id=` — fsync + SHA-256 + atomic rename into place, then debit the quota; 403 unless the session belongs to the caller |
@@ -985,13 +985,28 @@ separate system daemons this codebase can't meter). See
 
 | Method | Path | Auth |
 |--------|------|------|
-| GET | `/transfer-quotas/{subject_type}` | auth |
-| GET | `/transfer-quotas/{subject_type}/{subject_name}` | auth |
+| GET | `/transfer-quotas/{subject_type}` | admin |
+| GET | `/transfer-quotas/{subject_type}/{subject_name}` | self or admin |
 | PUT | `/transfer-quotas/{subject_type}/{subject_name}` | admin |
 | DELETE | `/transfer-quotas/{subject_type}/{subject_name}` | admin |
 
 `subject_type` ∈ {`user`, `group`}. A user's own quota and every group they
 belong to are each checked and debited independently.
+
+"Self or admin" means the single-subject `GET` answers only when
+`subject_type = user` **and** the caller is that user, or when the caller is
+an admin — another household user gets a `403`, and no group quota is ever
+readable by a member. The list `GET` is admin-only because its payload carries
+every subject's limits *and* consumed bytes.
+
+A row serialises `period` (`lifetime`\|`day`\|`week`\|`month`),
+`period_started_at` and the computed `period_resets_at` (absent for a
+lifetime quota). `PUT` accepts the same `period`; an unknown value is a named
+error listing the accepted ones, and the field defaults to `lifetime` when
+absent. Changing the period starts a fresh window (counters zeroed); editing
+only a limit keeps the counters. See
+[Transfer Quotas](./guides/transfer-quotas.md) for the calendar-window rules
+and the fail-closed behaviour of the File Explorer guard.
 
 ## UPS / SNMP — `ups/*`, `snmp/*` (all `admin`)
 

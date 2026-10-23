@@ -1050,7 +1050,9 @@ async fn test_purge_group_references_drops_every_display_name_row() {
     let quotas =
         homevault::storage::transfer_quota_repo::TransferQuotaRepository::new(state.db.pool());
     quotas
-        .set_limits("group", "family", true, 1024, true, 2048)
+        .set_limits(homevault::storage::transfer_quota_repo::QuotaLimits::lifetime(
+            "group", "family", true, 1024, true, 2048,
+        ))
         .await
         .expect("quota");
 

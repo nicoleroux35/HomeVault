@@ -2000,6 +2000,11 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     ));
     tokio::spawn(crate::snapshot_scheduler::run_scheduler_loop(state.clone()));
     tokio::spawn(crate::metrics::run_collector_loop(state.db.pool()));
+    // Transfer quotas (ROADMAP 23.2): re-opens the counters of every subject
+    // whose counting window elapsed, so the Quotas/Users screens show a reset
+    // that really happened. Enforcement does not depend on it — a stale row is
+    // settled at check time by `transfer_quota::load_applicable`.
+    tokio::spawn(crate::transfer_quota::run_reset_loop(state.db.pool()));
     // Account-expiry deactivation path (2026-10-20, migration 050): a live
     // session of an account past its `users.expires_at` horizon dies at the
     // next sweep. Sign-in refusal is immediate (`AuthService::authenticate`
