@@ -145,6 +145,11 @@ pub struct SessionRow {
 }
 
 /// A dashboard widget tile with position and size on the grid.
+///
+/// Tiles are per-account (`widgets` is keyed by `(username, id)`), so the
+/// owner is not optional: a tile always belongs to the session that created
+/// it. `wtype` is a terse type tag (`cpu`, `memory`, `uptime`, …) and `size`
+/// the grid footprint (`2x2`) — both validated by the handler.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Widget {
     pub id: String,
@@ -155,7 +160,7 @@ pub struct Widget {
     pub col_pos: u32,
     pub row_span: u32,
     pub col_span: u32,
-    pub username: Option<String>,
+    pub username: String,
 }
 
 impl From<WidgetRow> for Widget {
@@ -184,7 +189,7 @@ pub struct WidgetRow {
     pub col_pos: u32,
     pub row_span: u32,
     pub col_span: u32,
-    pub username: Option<String>,
+    pub username: String,
 }
 
 /// Payload for creating a new user via the API.

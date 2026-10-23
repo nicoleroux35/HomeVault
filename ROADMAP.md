@@ -51,7 +51,8 @@ sites**, **Apps Center / app-proxy**, the **RAID wizard's create path**,
 **Scheduled Tasks** — timezone-aware cron, pausing an unrunnable task, and
 "Run now" off the request — and **Transfer quotas** — failing closed, a
 calendar counting period, and an admin-gated read, and finally **Metrics** —
-nullable series and elapsed-time rates (see Done).
+nullable series and elapsed-time rates, and **Dashboard / Widgets** — per-account
+tiles, deadlines on every host probe, and no fabricated measurement (see Done).
 
 Everything else is still on its original implementation plus incremental
 feature work. The pattern is consistent: **the screens render, the endpoints
@@ -199,74 +200,6 @@ fresh `reqwest::Client::new()` with no timeout per dispatch
 `antivirus_scheduler.rs`, `handlers/power.rs`, `autostart.rs`).
 *Docs:* `docs/guides/antivirus.md`, `docs/guides/settings.md`,
 `docs/guides/notifications.md`.
-
----
-
-### 15. Dashboard / Widgets — global state, expired sessions, fabricated data
-
-- [ ] **15.1 — Widget CRUD is global and unscoped.** `handle_add_widget` /
-      `handle_remove_widget` / `handle_reorder_widgets`
-      (`src/handlers/dashboard.rs:228-281`) only call `require_auth`: no
-      ownership check, no admin check, and `username: None` is hardcoded at
-      `:246`, so widgets are never attributed. Any authenticated household user
-      can delete or reorder every widget on the appliance. `handle_add_widget`
-      also accepts `id/wtype/title/size/row/col` with no validation.
-      Related: `handle_widget_preferences` (`:2274-2283,2328-2337`) hand-rolls
-      `SELECT username FROM sessions WHERE token = ?` with **no `expires_at`
-      predicate**, so an expired token still reads and writes preferences.
-      Both are also wrong on the wire: `json_error` is
-      `StatusCode::BAD_REQUEST` (`src/utils/response.rs:87-93`), so a missing or
-      invalid session comes back as **400**, not 401, and every client that
-      branches on the status mis-reads an auth failure as a validation error.
-      And `monitor_layout` stores the client's `layout_json` verbatim
-      (`src/handlers/monitor_layout.rs:83-91`) — no parse, no schema, no size
-      cap.
-      *Acceptance:* widgets and layouts are per-user; every handler uses
-      `require_auth`; the layout blob is validated and bounded.
-- [ ] **15.2 — Untimed subprocess fan-out every 5 s.** `handle_server_details`
-      is correctly offloaded (`:1439`), but `build_server_details` itself runs
-      `nvidia-smi` (`:1798`), `rocm-smi` (`:1844`), `ip -json addr` (`:1994`),
-      `lsblk` (`:2147`), **one `sudo smartctl -A` per disk** (`:2159`),
-      `sensors` (`:2195`) and `dpkg-query` (`:1686`) with no timeout;
-      `get_disk_health` adds three subprocesses per disk per call
-      (`:815-918`); the browser re-fires every 5 s (`Dashboard.svelte:134`)
-      with no `document.hidden` guard. A hung NFS mount or a spinning disk makes
-      requests pile up.
-      *Acceptance:* timeouts on every command, a shorter poll or SSE, and no
-      polling while the tab is hidden.
-- [ ] **15.3 — Fabricated values are presented as measurements.**
-      `error_score = 10` hardcoded into the health score (`:983`);
-      `has_server_update: false` hardcoded in both the cached and the live
-      branch (`src/handlers/widgets.rs:320,347`);
-      `"last test 2 last checked"` printed literally and a static `UP TO DATE`
-      badge (`Dashboard.svelte:545,488`); `healthHint` always says "ok"
-      regardless of score (`:168`); `GET /dashboard/widget/{id}` knows only
-      `cpu`/`memory`/`uptime` and answers `memory` with the literal string
-      `"/proc/meminfo"` instead of a value (`:186-223`).
-      *Acceptance:* nothing shown as a measurement is a constant.
-      Related: `PREV_STATS` is keyed on the literal `"cpu"` (`widgets.rs:117-123`)
-      and `PREV_NETWORK_STATS` is shared too (`:194,235-240`), so two clients
-      polling concurrently consume each other's delta and see 0 % or garbage;
-      `total_idle - prev_idle` is an unchecked subtraction (`:127`).
-
-Also: the dashboard emits `"critical"` (`src/handlers/dashboard.rs:530,683,1159,1226`)
-while the documented vocabulary is `healthy|warning|unhealthy|unknown`
-(`Health.svelte:29` declares exactly those four), and the value is then dropped:
-`Dashboard.svelte:163` derives `healthStatus` and nothing reads it, because
-`healthHint` is the constant `dashboard.health_hint_ok` (`:168`). CPU % is
-`load1 / cores * 100`
-(`:564`), which can exceed 100 %, while `src/metrics.rs:167` computes real
-`/proc/stat` deltas — two contradicting numbers in one product; the Docker card
-polls an admin-only endpoint every 5 s from every viewer
-(`AppUsageBreakdown.svelte:174` vs `handlers/docker.rs:107`), so non-admins
-issue a failing request every 5 s; `AppUsageBreakdown.svelte:159` uninstalls
-with `force` behind a generic confirmation; `widgetData.ts:114-120` still routes
-`app-update`/`server-update`, removed 2026-07-18; `monitorStore.ts:220-231`
-overwrites local state on every login.
-
-*Tests:* `monitor_layout.rs` **0** unit tests; nothing covers widget ownership
-or session expiry. `TESTING.md` claims 37 Dashboard E2E tests, the spec has 41.
-*Docs:* `docs/guides/dashboard.md`, `docs/guides/widgets.md`.
 
 ---
 
@@ -584,14 +517,21 @@ reuse.
       that way.
 - [ ] **X.2 — No timeout on subprocesses.** Absent from `disk.rs`, `pools.rs`,
       `encryption.rs`, `cache.rs`, `snapshots.rs`, `rclone.rs`,
-      `dashboard.rs`, `health.rs`, `network.rs`, `vpn.rs`, `shares.rs`,
-      `explorer.rs`. Present only in Docker, Firewall, Restic, Syncthing, disk
-      quotas (2026-10-22) and System Journal (2026-10-23, `run_timed` +
-      `JOURNAL_READ_TIMEOUT`) (and `firewall.rs`'s `UFW_TIMEOUT` is the model).
-      A wedged `zpool`/`mdadm`/`smartctl`/`df` currently blocks a handler or a
-      job forever.
+      `health.rs`, `network.rs`, `vpn.rs`, `shares.rs`, `explorer.rs`. Present
+      in Docker, Firewall, Restic, Syncthing, disk quotas (2026-10-22), System
+      Journal (2026-10-23, `JOURNAL_READ_TIMEOUT`), and — since 2026-10-23 —
+      **everything the Dashboard/Widgets surface shells out to**, through the
+      shared `src/utils/process.rs` (`run_timed` / `run_timed_async`,
+      `HOST_PROBE_TIMEOUT` 10 s, `SMART_PROBE_TIMEOUT` 20 s) plus
+      `utils/proc.rs`'s `probe()`. That module is the reference implementation
+      now: a new handler should call it rather than inventing a deadline.
+      A wedged `zpool`/`mdadm`/`smartctl`/`df` still blocks a handler or a job
+      forever in the files listed above.
 - [ ] **X.3 — Empty `else {}` error handling in the UI.** CloudSync (6),
-      Health, Desktop (power), NotificationCenter, Dashboard — *Downloader's 5
+      Health, Desktop (power), NotificationCenter — *Dashboard is fixed
+      (2026-10-23: `AppUsageBreakdown` shows a `role="alert"` band for a failed
+      restart/stop/uninstall and an admin-only notice instead of a silent
+      403 loop); Downloader's 5
       are fixed (2026-10-23: a dismissible `Alert` with the server reason),
       Syncthing's 3 are fixed (2026-10-23: one page-level `Alert`), Explorer's
       11 sites are fixed (2026-10-22, `dlg.notify` + partial-batch messages) and
@@ -611,21 +551,39 @@ reuse.
       *(Metrics gaps — `metrics.md:32` — was on this list and is now enforced,
       see 11 in Done.)*
 - [ ] **X.5 — `TESTING.md` counts drift where the specs grew.** The Dashboard row
-      states "37 runtime tests, recounted on 2026-09-14 via
-      `grep -cE '^\s*test\('`"; the same grep on the spec today returns **41**.
-      Re-count with `npx playwright test --list --project=firefox` (the
-      reference count) and the documented `grep`, never by estimation, and keep
-      the dual figure (runtime vs `grep`) whenever a responsive loop makes them
-      differ — as the Quotas row correctly does (38 runtime / 36 `test(`).
+      stated "37 runtime tests, recounted on 2026-09-14 via
+      `grep -cE '^\s*test\('`". *Re-counted 2026-10-23 with both figures: 48
+      runtime (`npx playwright test --list --project=firefox`) / 45 `test(` (the
+      grep, lower because §5 is a responsive loop).* Keep the dual figure
+      whenever a responsive loop makes them differ — as the Quotas row does
+      (38 runtime / 36 `test(`). The same recount applies to the rows this
+      change touched.
 - [ ] **X.6 — Tests verify shape, not behaviour.** None of the P0 defects is
       caught by the 50+ integration tests around the same code, because they
       assert status codes and `total`. For each item above, the "Tests" line
       names the assertion that would have caught it — add that one first.
-- [ ] **X.7 — Two hand-rolled auth checks bypass `require_auth`.**
-      `dashboard.rs:2274,2328` (no `expires_at`), and the whole
-      `handlers/security.rs` session surface trusts the caller's own token as the
-      scope (14.1/14.2). Audit every handler that reads `x-session-token`
-      manually instead of going through `admin_guard`.
+- [ ] **X.7 — Hand-rolled auth checks that bypass `require_auth`.** The
+      Dashboard's two (`dashboard.rs:2274,2328`, no `expires_at` predicate) are
+      **fixed** (2026-10-23): both preference handlers now go through
+      `require_auth`, so an invalid *or expired* session answers `401` and
+      writes nothing. Still open: the whole `handlers/security.rs` session
+      surface trusts the caller's own token as the scope (14.1/14.2). Audit
+      every handler that reads `x-session-token` manually instead of going
+      through `admin_guard`.
+- [ ] **X.8 — A missing `x-session-token` is `400`, not `401`.** `require_auth`
+      answers `json_error` (`StatusCode::BAD_REQUEST`) when the header is
+      absent, and `401` only for an invalid/expired token
+      (`src/handlers/admin_guard.rs:76-84`, `src/utils/response.rs:87-93`). So a
+      client that branches on the status reads an auth failure as a validation
+      error. Item 15 fixed the *security* half (an expired session was
+      accepted) but deliberately did **not** flip the tree-wide status: the
+      change is one line in `admin_guard` plus a sweep of ~50 assertions across
+      ~25 integration suites (many of them loops that mix guarded endpoints with
+      hand-rolled ones, e.g. `settings_core`, `chat`, `snmp`), and it cannot be
+      validated without running the tests. *Acceptance:* `401` for a missing
+      token in `require_auth`/`require_admin`, every `assert_eq!(… BAD_REQUEST)`
+      on a no-token request flipped to `UNAUTHORIZED`, suites with mixed guards
+      split per endpoint, and `docs/API.md` stating the contract once.
 
 ---
 
@@ -655,6 +613,85 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-23 (o)** — Dashboard / Widgets — tiles belong to an account, every host
+probe has a deadline, and nothing presented as a measurement is a constant.
+**15.1 (widget CRUD was global and unscoped, and an expired session still read
+and wrote preferences):** migration `057_widgets_per_user.sql` rebuilds
+`widgets` with `(username, id)` as the identity, `username NOT NULL` and
+`ON DELETE CASCADE`, copying legacy `username IS NULL` rows to every existing
+account instead of dropping them (they were one grid shared by everybody, and
+no visible tile may disappear on upgrade). `WidgetRepository` lost every
+unscoped method: `find_by_id`/`find_by_username`/`count_for`/`create`/
+`delete_for → bool`/`delete_all_for`/`reorder_for → u64` all take the caller's
+username, which comes from `require_auth` and never from the body; a tile the
+caller does not own is a `404`, not a `403` (the endpoint must not confirm that
+another account owns that id). `POST /dashboard/widget` validates every field
+before SQL (`MAX_WIDGET_ID_LEN` 64, `MAX_WIDGET_TITLE_LEN` 120,
+`MAX_WIDGET_POSITION` 64, `MAX_WIDGET_SPAN` 6, `MAX_WIDGETS_PER_USER` 64,
+`size` = `NxN` with each side `1..=6`, slug charset, no control characters in
+the title, title stored trimmed). `GET /dashboard/widget/{id}` answers `404`
+for an unknown id instead of `200 {"type":"unknown"}`. The two
+widget-preference handlers stopped hand-rolling `SELECT username FROM sessions
+WHERE token = ?` — the statement that had **no `expires_at` predicate** — and go
+through `require_auth`, so an expired session is `401` and writes nothing (a
+test proves the table stays empty). `monitor_layout` validates the blob
+structurally (JSON object, ≤ 16 KiB, depth ≤ 4, ≤ 512 nodes, keys ≤ 64 chars,
+strings ≤ 256) while still storing the accepted bytes **verbatim** — a
+`serde_json::Value` round trip would reorder keys and break the byte-for-byte
+read the frontend relies on. **15.2 (untimed subprocess fan-out every 5 s):**
+new `src/utils/process.rs` (`run_timed`, `run_timed_async`,
+`HOST_PROBE_TIMEOUT` 10 s, `SMART_PROBE_TIMEOUT` 20 s) is now the single
+deadline helper — `utils/proc.rs` wraps all 20 of its probe sites in one private
+`probe()`, `dashboard.rs` wraps its 15 (plus the four `smartctl` calls on the
+wider deadline), and the journal's private copy of `run_timed` was deleted in
+favour of a delegation. `/dashboard/health` serves a 30 s `DISK_HEALTH_TTL`
+snapshot coalesced by a mutex, so the 5 s poll no longer re-forks `lsblk` + `df`
++ 1-3 SMART commands per disk; the browser keeps its 5 s interval (E2E 3.1
+pins it) but skips ticks while `document.hidden` or while a request is in
+flight, and refreshes immediately on `visibilitychange`. **15.3 (fabricated
+values):** the disk score is SMART 40 / temperature 20 / usage 40 — the
+hardcoded `error_score = 10` is gone, so a failed disk scores 0 instead of 10
+and a perfect one reaches 100; the status vocabulary is `healthy | warning |
+unhealthy` (`health_status_for_score`, the single definition — the fifth word
+`critical` nothing rendered is gone; `DiskSummary.critical_count` stays, it is a
+count); CPU % is a per-caller `/proc/stat` delta (shared sampler, bounded at
+256 keys) instead of `load1 / cores`, and the same sampler feeds the health
+endpoint, `/dashboard/widget/cpu` and `/widgets/cpu`, so the Dashboard and
+Metrics cannot disagree; `/dashboard/widget/memory` returns real
+`/proc/meminfo` numbers; `has_server_update` was deleted from
+`UpdateInfoResponse` (constant `false` in both branches, no consumer);
+`PREV_NETWORK_STATS` is keyed per account with a first-sample rate of `0` and
+saturating subtraction; `CpuDetails.usage_percent` was added (mean of
+`per_core_usage`) because the app-usage card read a field that did not exist;
+`Dashboard.svelte` dropped the static `UP TO DATE` badge and the literal
+"last test 2", derives `healthHint` from the real status, computes network rates
+from the actual elapsed time and reads `iface.link_speed_mbps` (it read
+`iface.speed`, always `undefined`); the Docker card is gated on `$isAdmin`
+(admin-only endpoint polled by every viewer before), skips hidden ticks and
+renders a failed action as a `role="alert"` band; `monitorStore` gained
+`savedAt` (last write wins, so a login on a second origin can no longer revert
+a fresh layout); the dead `app-update`/`server-update` routes were removed from
+`widgetData.ts`. Tests: `dashboard.rs` 23 → **40** unit (`monitor_layout.rs`
+0 → **13**, `proc.rs` 0 → **7** for the new CPU samplers, `utils/process.rs`
+**5**), `dashboard_integration.rs` 10 → **19** (per-account scoping, a
+foreign/unknown id is `404`, an expired session is `401` and writes nothing,
+the field-validation matrix, the 64-tile cap, real memory numbers),
+`widgets_integration.rs` 9 → **14** (object/size/depth/key/string rejection, a
+16 KiB boundary blob round-trips, `has_server_update` absent), `dashboard.spec.ts`
+40 → **45** `test(` (health hint follows the status, real SMART footer, no
+`UP TO DATE` badge, hidden-tab polling, admin-only usage card) and
+`widgets.spec.ts` 20 → **22** (the `savedAt` stamp, a malformed blob refused and
+the stored layout untouched). Written on 2026-10-23; **not run yet** (per
+instruction). `docs/guides/dashboard.md` gained *Tiles are per-account*,
+*Host probes run under a deadline* and *Nothing shown as a measurement is a
+constant*; `docs/guides/widgets.md` gained *`savedAt`* and *the blob is
+validated before it is stored*; `docs/API.md` documents the `404`s, the
+per-account scoping, the layout bounds and the removed `has_server_update`.
+The one thing deliberately **not** done is the tree-wide `400 → 401` for a
+*missing* `x-session-token`: it is one line in `admin_guard` plus a ~50-assertion
+sweep across ~25 suites that cannot be validated without running them, so it is
+recorded as **X.8** with the exact scope.
 
 **2026-10-23 (n)** — Metrics — a failed read is a gap instead of a `0.0`, and a
 rate is divided by the real elapsed time. **11.1 (a failed `/proc` read was

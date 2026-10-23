@@ -8,6 +8,73 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Dashboard / Widgets — per-account tiles, deadlines on every host probe, and
+  no fabricated measurement (2026-10-23, ROADMAP 15).** **Widgets belong to an
+  account.** `handle_add_widget` used to hardcode `username: None` and neither
+  handler checked ownership, so any authenticated user could delete or reorder
+  every tile on the appliance; migration `057_widgets_per_user.sql` rebuilds
+  `widgets` with `(username, id)` as the identity, `username NOT NULL` and
+  `ON DELETE CASCADE`, copying the legacy ownerless rows to every existing
+  account (they were one grid shared by everybody — dropping them would have
+  made tiles vanish on upgrade). `WidgetRepository` lost every unscoped method:
+  `find_by_id`, `find_by_username`, `count_for`, `create`, `delete_for → bool`,
+  `delete_all_for`, `reorder_for → u64` all take the caller's username, which
+  comes from `require_auth` and never from the body. A tile the caller does not
+  own is a `404`, not a `403` — the endpoint must not confirm that another
+  account owns that id. `POST /dashboard/widget` now validates every field
+  before it reaches SQL (id/type slugs ≤ 64 chars from `A-Za-z0-9-_.:`, title
+  trimmed and ≤ 120 chars with no control characters, `size` = `NxN` with each
+  side `1..=6`, row/col `1..=64`, spans `1..=6`, 64 tiles per account);
+  `GET /dashboard/widget/{id}` answers `404` for an id no tile uses instead of
+  `200 {"type":"unknown"}`; a reorder list matching none of the caller's tiles
+  is a `404` and the ids it does not own are ignored. The two
+  widget-preference handlers stopped hand-rolling `SELECT username FROM
+  sessions WHERE token = ?` — the statement with **no `expires_at`
+  predicate**, which let an expired session read *and write* preferences — and
+  go through `require_auth` (invalid or expired → `401`). `monitor_layout` now
+  validates the blob structurally (JSON object, ≤ 16 KiB, depth ≤ 4, ≤ 512
+  nodes, keys ≤ 64 chars, strings ≤ 256) while still storing the accepted bytes
+  **verbatim**, because a `serde_json::Value` round trip reorders keys and the
+  frontend relies on a byte-for-byte read. **No host probe runs untimed.** New
+  `src/utils/process.rs` (`run_timed`, `run_timed_async`, `HOST_PROBE_TIMEOUT`
+  10 s, `SMART_PROBE_TIMEOUT` 20 s) is the single deadline helper: `utils/proc.rs`
+  wraps all 20 of its probe sites, `dashboard.rs` wraps its 15 plus the four
+  `smartctl` calls, and the journal's private copy of `run_timed` was deleted in
+  favour of a delegation. `/dashboard/health` serves a 30 s snapshot coalesced
+  by a mutex, so the 5 s poll no longer re-forks `lsblk` + `df` + 1-3 SMART
+  commands per disk; the browser keeps its 5 s interval (E2E 3.1 pins it) but
+  skips ticks while `document.hidden` or while a request is in flight, and
+  refreshes immediately on `visibilitychange`. **Nothing shown as a measurement
+  is a constant any more.** The disk score is SMART 40 / temperature 20 / usage
+  40 — the hardcoded `error_score = 10` that no disk ever earned is gone, so a
+  failing disk no longer starts at 10 and a perfect one reaches 100; the status
+  vocabulary is `healthy | warning | unhealthy` through one
+  `health_status_for_score` (the fifth word `critical` that nothing rendered is
+  gone); CPU % is a per-caller `/proc/stat` delta instead of `load1 / cores`
+  (which can exceed 100 %), shared with the health endpoint and both widget
+  routes so the Dashboard and the Metrics app cannot disagree;
+  `/dashboard/widget/memory` returns real `/proc/meminfo` numbers;
+  `has_server_update` was removed from `UpdateInfoResponse` (constant `false`
+  in both branches, no consumer); `PREV_NETWORK_STATS` is per account with a
+  first-sample rate of `0` and saturating subtraction; `CpuDetails.usage_percent`
+  was added because the app-usage card read a field that did not exist. On the
+  screen: the static `UP TO DATE` badge and the literal "last test 2" are gone,
+  `healthHint` follows the real status, network rates use the real elapsed time
+  and `iface.link_speed_mbps` (it read `iface.speed`, always `undefined`), the
+  Docker card is gated on `$isAdmin` (it used to poll an admin-only endpoint
+  from every viewer every 5 s) and surfaces a failed action in a `role="alert"`
+  band, `monitorStore` gained `savedAt` so a login on a second origin cannot
+  revert a fresh layout, and the dead `app-update`/`server-update` routes were
+  removed from `widgetData.ts`. Tests: `dashboard.rs` 23 → **40** unit,
+  `monitor_layout.rs` 0 → **13**, `proc.rs` 0 → **7**, `utils/process.rs` **5**,
+  `dashboard_integration.rs` 10 → **19**, `widgets_integration.rs` 9 → **14**,
+  `dashboard.spec.ts` 40 → **45** `test(`, `widgets.spec.ts` 20 → **22**.
+  **Written but not executed** (per instruction): no unit, integration or E2E
+  suite was run. The tree-wide `400 → 401` for a *missing* `x-session-token` was
+  deliberately **not** flipped (it is one line in `admin_guard` plus a ~50
+  assertion sweep across ~25 suites that cannot be validated without running
+  them) and is recorded as ROADMAP **X.8** with its exact scope.
+
 - **Downloader (aria2) hardening — validated input, a secret on the RPC port,
   and a child that is actually owned (2026-10-23, ROADMAP 17).** **Nothing the
   request says reaches the RPC unvalidated any more.** `uri` goes through a

@@ -413,7 +413,125 @@ async fn test_monitor_layout_is_scoped_per_account() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. active-sessions-count — auth + distinct/expiry semantics
+// 3. monitor-layout validation — the blob is bounded before it is stored
+//    (ROADMAP 15.1: the handler stored whatever string arrived)
+// ---------------------------------------------------------------------------
+
+/// POST a layout blob and return the status.
+async fn post_layout(router: &mut Router, token: &str, blob: &str) -> (StatusCode, Value) {
+    send(
+        router,
+        Method::POST,
+        "/api/monitor-layout",
+        Some(token),
+        Some(json!({ "layout_json": blob })),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn test_monitor_layout_rejects_an_oversized_blob() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", 1).await;
+    let mut r = widgets_router(state);
+    let token = login(&mut r, "u", "Password123!").await;
+
+    let huge = format!(r#"{{"blob":"{}"}}"#, "x".repeat(20 * 1024));
+    let (status, body) = post_layout(&mut r, &token, &huge).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["success"], json!(false));
+
+    // Nothing was stored.
+    let (_, body) = send(&mut r, Method::GET, "/api/monitor-layout", Some(&token), None).await;
+    assert!(body["data"]["layout_json"].is_null(), "{body}");
+}
+
+#[tokio::test]
+async fn test_monitor_layout_rejects_invalid_json() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", 1).await;
+    let mut r = widgets_router(state);
+    let token = login(&mut r, "u", "Password123!").await;
+
+    for blob in ["", "   ", "{", "not json", r#"{"a":}"#] {
+        let (status, body) = post_layout(&mut r, &token, blob).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{blob:?}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn test_monitor_layout_rejects_a_non_object_payload() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", 1).await;
+    let mut r = widgets_router(state);
+    let token = login(&mut r, "u", "Password123!").await;
+
+    for blob in ["[]", "[1,2]", "42", "null", "\"text\"", "true"] {
+        let (status, body) = post_layout(&mut r, &token, blob).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{blob:?}: {body}");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("JSON object"),
+            "{blob:?}: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_monitor_layout_rejects_deep_nesting_and_huge_keys() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", 1).await;
+    let mut r = widgets_router(state);
+    let token = login(&mut r, "u", "Password123!").await;
+
+    let deep = r#"{"a":{"b":{"c":{"d":{"e":1}}}}}"#;
+    let (status, body) = post_layout(&mut r, &token, deep).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"].as_str().unwrap_or("").contains("nested"),
+        "{body}"
+    );
+
+    let long_key = format!(r#"{{"{}":1}}"#, "k".repeat(65));
+    let (status, body) = post_layout(&mut r, &token, &long_key).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"].as_str().unwrap_or("").contains("key longer"),
+        "{body}"
+    );
+
+    let long_value = format!(r#"{{"note":"{}"}}"#, "v".repeat(257));
+    let (status, body) = post_layout(&mut r, &token, &long_value).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
+async fn test_monitor_layout_accepts_a_16_kib_boundary_blob() {
+    // The cap is exclusive: a blob of exactly MAX_LAYOUT_BYTES still fits.
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", 1).await;
+    let mut r = widgets_router(state);
+    let token = login(&mut r, "u", "Password123!").await;
+
+    // Build `{"note":"…"}` sized to the cap. `{"note":"` + body + `"}`.
+    let overhead = r#"{"note":""}"#.len();
+    let blob = format!(r#"{{"note":"{}"}}"#, "x".repeat(16 * 1024 - overhead));
+    assert_eq!(blob.len(), 16 * 1024);
+    let (status, body) = post_layout(&mut r, &token, &blob).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (_, body) = send(&mut r, Method::GET, "/api/monitor-layout", Some(&token), None).await;
+    assert_eq!(
+        body["data"]["layout_json"].as_str().map(str::len),
+        Some(16 * 1024),
+        "the accepted blob must round-trip byte for byte"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 4. active-sessions-count — auth + distinct/expiry semantics
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -512,7 +630,7 @@ async fn test_active_sessions_count_dedupes_users_and_ignores_expired() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. widgets/update-info — auth + honest "no update known"
+// 5. widgets/update-info — auth + honest "no update known"
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -550,4 +668,11 @@ async fn test_update_info_requires_auth_and_reports_no_false_update() {
         .as_str()
         .unwrap_or("")
         .is_empty());
+    // `has_server_update` was removed: it was the constant `false` in both
+    // branches, i.e. a measurement that was never taken (ROADMAP 15.3), and
+    // no client read it.
+    assert!(
+        data.get("has_server_update").is_none(),
+        "the fabricated field must be gone: {data}"
+    );
 }

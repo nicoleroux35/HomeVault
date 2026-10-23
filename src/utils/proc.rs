@@ -29,10 +29,26 @@
 //! installed-software versions. Everything is parsed on demand from the
 //! running kernel — no daemon, no cache, no state.
 
+use once_cell::sync::Lazy;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fs;
+use std::sync::Mutex;
 
 pub struct ProcParser;
+
+/// Run one host probe under the shared deadline (ROADMAP 15.2).
+///
+/// `ip`, `ethtool`, `dmidecode`, `lspci`, `sensors`, `upsc`, `uname` … can all
+/// block on hardware that stopped answering (a wedged NIC, a disk spinning up,
+/// a UPS daemon that hung). Each call site used a bare `.output()`, so a hung
+/// probe held the caller forever; here it is killed at
+/// [`crate::utils::process::HOST_PROBE_TIMEOUT`] and reported as an I/O error,
+/// which every caller already treats as "no data".
+fn probe(cmd: &mut std::process::Command) -> std::io::Result<std::process::Output> {
+    crate::utils::process::run_timed(cmd, crate::utils::process::HOST_PROBE_TIMEOUT)
+        .map_err(|message| std::io::Error::new(std::io::ErrorKind::TimedOut, message))
+}
 
 impl ProcParser {
     /// Read a single value from a /proc file
@@ -47,6 +63,16 @@ impl ProcParser {
     /// Read entire contents of a /proc file
     pub fn read_proc_file(path: &str) -> String {
         fs::read_to_string(path).unwrap_or_default()
+    }
+
+    /// Parse the aggregate CPU counters from `/proc/stat`.
+    ///
+    /// Returns `(total, idle_plus_iowait)` for the `cpu` line. The dashboard
+    /// and the widgets both report CPU usage from this single source (ROADMAP
+    /// 15.3): `load1 / cores` is a load figure, not a utilisation, and it can
+    /// exceed 100 %.
+    pub fn parse_cpu_totals() -> Option<(u64, u64)> {
+        parse_cpu_totals(&Self::read_proc_file("/proc/stat"))
     }
 
     /// Parse CPU load average from /proc/loadavg
@@ -195,9 +221,9 @@ impl ProcParser {
 
     /// Get interface IPv4 address using ip command
     fn get_interface_ipv4(iface_name: &str) -> Option<String> {
-        let output = std::process::Command::new("ip")
+        let output = probe(std::process::Command::new("ip")
             .args(["-4", "addr", "show", iface_name])
-            .output();
+            );
 
         if let Ok(result) = output {
             if result.status.success() {
@@ -219,9 +245,9 @@ impl ProcParser {
 
     /// Get interface netmask using ip command
     fn get_interface_netmask(iface_name: &str) -> Option<String> {
-        let output = std::process::Command::new("ip")
+        let output = probe(std::process::Command::new("ip")
             .args(["-4", "addr", "show", iface_name])
-            .output();
+            );
 
         if let Ok(result) = output {
             if result.status.success() {
@@ -268,10 +294,10 @@ impl ProcParser {
         }
 
         // Try ethtool for more detailed info
-        if let Ok(output) = std::process::Command::new("ethtool")
+        if let Ok(output) = probe(std::process::Command::new("ethtool")
             .arg("-i")
             .arg(iface_name)
-            .output()
+            )
         {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
@@ -301,9 +327,9 @@ impl ProcParser {
         }
 
         // Try ethtool for speed
-        if let Ok(output) = std::process::Command::new("ethtool")
+        if let Ok(output) = probe(std::process::Command::new("ethtool")
             .arg(iface_name)
-            .output()
+            )
         {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
@@ -345,9 +371,9 @@ impl ProcParser {
 
     /// Get interface IPv6 address using `ip -6 addr show`
     fn get_interface_ipv6(iface_name: &str) -> Option<String> {
-        let output = std::process::Command::new("ip")
+        let output = probe(std::process::Command::new("ip")
             .args(["-6", "addr", "show", iface_name])
-            .output();
+            );
 
         if let Ok(result) = output {
             if result.status.success() {
@@ -371,7 +397,7 @@ impl ProcParser {
 
     /// Get system hostname
     pub fn get_hostname() -> String {
-        if let Ok(output) = std::process::Command::new("hostname").output() {
+        if let Ok(output) = probe(&mut std::process::Command::new("hostname")) {
             if output.status.success() {
                 return String::from_utf8_lossy(&output.stdout).trim().to_string();
             }
@@ -384,9 +410,9 @@ impl ProcParser {
 
     /// Get workgroup/domain from Samba config
     pub fn get_workgroup() -> String {
-        if let Ok(output) = std::process::Command::new("testparm")
+        if let Ok(output) = probe(std::process::Command::new("testparm")
             .args(["-s", "-l"])
-            .output()
+            )
         {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
@@ -415,9 +441,9 @@ impl ProcParser {
 
     /// Get default gateway using `ip route`
     pub fn get_default_gateway() -> String {
-        if let Ok(output) = std::process::Command::new("ip")
+        if let Ok(output) = probe(std::process::Command::new("ip")
             .args(["route", "show", "default"])
-            .output()
+            )
         {
             if output.status.success() {
                 let content = String::from_utf8_lossy(&output.stdout);
@@ -455,9 +481,9 @@ impl ProcParser {
 
     /// Check if a systemd service is running
     fn check_service_status(service_name: &str) -> bool {
-        if let Ok(output) = std::process::Command::new("systemctl")
+        if let Ok(output) = probe(std::process::Command::new("systemctl")
             .args(["is-active", service_name])
-            .output()
+            )
         {
             let stdout_owned = output.stdout.clone();
             let status = String::from_utf8_lossy(&stdout_owned).trim().to_string();
@@ -592,7 +618,7 @@ impl ProcParser {
 
     /// Detect system architecture
     fn detect_architecture() -> String {
-        if let Ok(output) = std::process::Command::new("uname").arg("-m").output() {
+        if let Ok(output) = probe(std::process::Command::new("uname").arg("-m")) {
             if output.status.success() {
                 return String::from_utf8_lossy(&output.stdout).trim().to_string();
             }
@@ -689,9 +715,9 @@ impl ProcParser {
     /// Run dmidecode for a given string keyword, with sudo -n fallback.
     fn run_dmidecode(keyword: &str) -> Option<String> {
         // Try direct command first
-        if let Ok(output) = std::process::Command::new("dmidecode")
+        if let Ok(output) = probe(std::process::Command::new("dmidecode")
             .args(["-s", keyword])
-            .output()
+            )
         {
             if output.status.success() {
                 let val = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -702,9 +728,9 @@ impl ProcParser {
         }
 
         // Fallback: try sudo -n (non-interactive, caches credentials)
-        if let Ok(output) = std::process::Command::new("sudo")
+        if let Ok(output) = probe(std::process::Command::new("sudo")
             .args(["-n", "dmidecode", "-s", keyword])
-            .output()
+            )
         {
             if output.status.success() {
                 let val = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -741,18 +767,18 @@ impl ProcParser {
 
     /// Parse verbose dmidecode --type 17 output for type and speed.
     fn parse_dmidecode_type17(info: &mut RamInfo) {
-        let output = if let Ok(out) = std::process::Command::new("dmidecode")
+        let output = if let Ok(out) = probe(std::process::Command::new("dmidecode")
             .args(["--type", "17"])
-            .output()
+            )
         {
             if out.status.success() {
                 String::from_utf8_lossy(&out.stdout).to_string()
             } else {
                 return;
             }
-        } else if let Ok(out) = std::process::Command::new("sudo")
+        } else if let Ok(out) = probe(std::process::Command::new("sudo")
             .args(["-n", "dmidecode", "--type", "17"])
-            .output()
+            )
         {
             if out.status.success() {
                 String::from_utf8_lossy(&out.stdout).to_string()
@@ -788,9 +814,9 @@ impl ProcParser {
     pub fn get_gpu_info() -> Vec<GpuInfo> {
         let mut gpus = Vec::new();
 
-        if let Ok(output) = std::process::Command::new("lspci")
+        if let Ok(output) = probe(std::process::Command::new("lspci")
             .args(["-nn", "-D"])
-            .output()
+            )
         {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
@@ -846,7 +872,7 @@ impl ProcParser {
     pub fn get_sensor_info() -> SensorInfo {
         let mut info = SensorInfo::default();
 
-        if let Ok(output) = std::process::Command::new("sensors").output() {
+        if let Ok(output) = probe(&mut std::process::Command::new("sensors")) {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let mut current_adapter = String::new();
 
@@ -908,7 +934,7 @@ impl ProcParser {
         let mut info = UpsInfo::default();
 
         // List available UPS devices
-        if let Ok(output) = std::process::Command::new("upsc").args(["-l"]).output() {
+        if let Ok(output) = probe(std::process::Command::new("upsc").args(["-l"])) {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let ups_names: Vec<&str> = stdout.lines().collect();
 
@@ -918,7 +944,7 @@ impl ProcParser {
                 info.available = true;
 
                 // Get UPS status
-                if let Ok(status_output) = std::process::Command::new("upsc").arg(ups_name).output()
+                if let Ok(status_output) = probe(std::process::Command::new("upsc").arg(ups_name))
                 {
                     let status_stdout = String::from_utf8_lossy(&status_output.stdout);
                     for line in status_stdout.lines() {
@@ -971,9 +997,9 @@ impl ProcParser {
         let mut info = SoftwareInfo::default();
 
         // Get OS name and version
-        if let Ok(output) = std::process::Command::new("lsb_release")
+        if let Ok(output) = probe(std::process::Command::new("lsb_release")
             .args(["-a"])
-            .output()
+            )
         {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
@@ -1019,7 +1045,7 @@ impl ProcParser {
         }
 
         // Get kernel version
-        if let Ok(output) = std::process::Command::new("uname").arg("-r").output() {
+        if let Ok(output) = probe(std::process::Command::new("uname").arg("-r")) {
             info.kernel_version = String::from_utf8_lossy(&output.stdout).trim().to_string();
         }
 
@@ -1163,4 +1189,143 @@ pub struct ServiceStatus {
     pub name: String,
     pub display_name: String,
     pub running: bool,
+}
+
+/// Parse the aggregate `cpu` line of `/proc/stat` into
+/// `(total_ticks, idle_plus_iowait_ticks)`.
+///
+/// `None` when the line is missing or unparsable, which the callers report as
+/// "no measurement" rather than `0 %`.
+pub fn parse_cpu_totals(content: &str) -> Option<(u64, u64)> {
+    let line = content.lines().next()?.split_whitespace().collect::<Vec<_>>();
+    if line.len() < 5 || line[0] != "cpu" {
+        return None;
+    }
+    let vals: Vec<u64> = line[1..].iter().filter_map(|v| v.parse().ok()).collect();
+    if vals.len() < 4 {
+        return None;
+    }
+    // user nice system idle iowait irq softirq steal guest guest_nice
+    let idle = vals.get(3).copied().unwrap_or(0) + vals.get(4).copied().unwrap_or(0);
+    let total: u64 = vals.iter().sum();
+    Some((total, idle))
+}
+
+/// Busy percentage between two `/proc/stat` samples.
+///
+/// `None` when the total tick count did not advance (two reads inside the same
+/// kernel tick, or a counter reset): a rate needs two points in time, and a
+/// fabricated `0 %` would look like an idle box.
+pub fn cpu_usage_percent(prev: (u64, u64), cur: (u64, u64)) -> Option<f64> {
+    let (prev_total, prev_idle) = prev;
+    let (total, idle) = cur;
+    let d_total = total.checked_sub(prev_total)?;
+    if d_total == 0 {
+        return None;
+    }
+    let d_idle = idle.saturating_sub(prev_idle).min(d_total);
+    Some((d_total - d_idle) as f64 / d_total as f64 * 100.0)
+}
+
+/// Average usage since boot, used when there is no previous sample yet.
+pub fn cpu_usage_since_boot(totals: (u64, u64)) -> Option<f64> {
+    let (total, idle) = totals;
+    if total == 0 {
+        return None;
+    }
+    Some((total.saturating_sub(idle)) as f64 / total as f64 * 100.0)
+}
+
+/// Last `/proc/stat` sample per caller key.
+///
+/// Keyed (rather than one global slot) so two clients polling concurrently do
+/// not consume each other's delta and read `0 %` (ROADMAP 15.3). The map is
+/// bounded: when it grows past [`MAX_SAMPLE_KEYS`] it is reset to the caller
+/// asking, which costs at most one since-boot average.
+static CPU_SAMPLES: Lazy<Mutex<HashMap<String, (u64, u64)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Most caller keys kept in [`CPU_SAMPLES`].
+pub const MAX_SAMPLE_KEYS: usize = 256;
+
+/// CPU usage % for `key` since its previous sample.
+///
+/// Falls back to the since-boot average on the first sample (or when the
+/// counters did not advance), so a live tile never shows a made-up `0 %`.
+pub fn cpu_usage_percent_since_last_sample(key: &str) -> Option<f64> {
+    let current = ProcParser::parse_cpu_totals()?;
+    let mut samples = match CPU_SAMPLES.lock() {
+        Ok(samples) => samples,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if samples.len() > MAX_SAMPLE_KEYS && !samples.contains_key(key) {
+        samples.clear();
+    }
+    let previous = samples.insert(key.to_string(), current);
+    previous
+        .and_then(|prev| cpu_usage_percent(prev, current))
+        .or_else(|| cpu_usage_since_boot(current))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- /proc/stat CPU sampling (ROADMAP 15.3) ---
+
+    #[test]
+    fn parse_cpu_totals_reads_the_aggregate_line_and_counts_idle_plus_iowait() {
+        let fixture = "cpu  1000 200 300 4000 500 0 0 0 0 0\ncpu0 1 2 3 4 5\n";
+        assert_eq!(parse_cpu_totals(fixture), Some((6_000, 4_500)));
+    }
+
+    #[test]
+    fn parse_cpu_totals_rejects_a_missing_or_foreign_line() {
+        assert_eq!(parse_cpu_totals(""), None);
+        assert_eq!(parse_cpu_totals("intr 12345 0 0"), None);
+        assert_eq!(parse_cpu_totals("cpu 1 2"), None, "too few fields");
+    }
+
+    #[test]
+    fn cpu_usage_percent_is_the_busy_share_of_the_delta() {
+        // 1000 ticks total, 250 of them idle → 75 % busy.
+        assert_eq!(
+            cpu_usage_percent((1_000, 500), (2_000, 750)),
+            Some(75.0)
+        );
+    }
+
+    #[test]
+    fn cpu_usage_percent_is_none_without_a_delta() {
+        // Two reads inside the same kernel tick: no measurement, not 0 %.
+        assert_eq!(cpu_usage_percent((1_000, 500), (1_000, 500)), None);
+    }
+
+    #[test]
+    fn cpu_usage_percent_saturates_when_idle_counters_go_backwards() {
+        // A counter reset must not underflow or report > 100 %.
+        let percent = cpu_usage_percent((1_000, 900), (2_000, 100)).unwrap();
+        assert!((0.0..=100.0).contains(&percent), "{percent}");
+    }
+
+    #[test]
+    fn cpu_usage_since_boot_is_none_for_an_empty_sample() {
+        assert_eq!(cpu_usage_since_boot((0, 0)), None);
+        assert_eq!(cpu_usage_since_boot((4_000, 1_000)), Some(75.0));
+    }
+
+    #[test]
+    fn per_key_samples_do_not_share_one_global_slot() {
+        // Two callers polling concurrently must each get their own delta
+        // (the bug: PREV_STATS keyed on the literal "cpu").
+        let first = cpu_usage_percent_since_last_sample("__test_alpha");
+        let second = cpu_usage_percent_since_last_sample("__test_beta");
+        // First sample for each key falls back to the since-boot average,
+        // which is a real number in [0, 100].
+        for value in [first, second] {
+            if let Some(percent) = value {
+                assert!((0.0..=100.0).contains(&percent), "{percent}");
+            }
+        }
+    }
 }
