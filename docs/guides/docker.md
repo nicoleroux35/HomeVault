@@ -75,7 +75,14 @@ Logic lives in `src/app_catalog/{mod,manifest,store,updates}.rs`.
   `catalog_desc_*` i18n keys).
 - Install writes a `.install.toml` marker (store id, app id, package version,
   host port, `proxy_port`, `proxy_auth_required`) next to the app data; uninstall
-  keeps `apps_dir()` data so a reinstall doesn't lose it.
+  keeps `apps_dir()` data so a reinstall doesn't lose it. **The marker is
+  written before anything runs and its write failure aborts the install
+  (fixed 2026-10-23)** — the result used to be discarded, so a read-only/full
+  apps directory produced an install that looked successful and disappeared
+  after a restart (no marker → no row, no reverse proxy to restore). The same
+  run moved `docker compose up -d`/`stop`, `create_project` and the dependency
+  gate's per-app `get_project` probes onto the blocking pool: a first install
+  pulls images for minutes and pinned a runtime worker for its whole duration.
 
 ### App catalog phase B — dependencies, settings, compatibility (2026-10-13)
 
@@ -127,7 +134,8 @@ dashboard. Now:
   **main origin** — the server-chosen, restricted entry. `/app-auth` validates
   the real `hv_session` (browser navigation), confirms the app has a running
   proxy, sets `hv_app_session` and redirects to the app origin. The token is
-  meaningless against the API and is revoked when the proxy stops or the user
+  meaningless against the API, **bound to that app** (a session minted for app
+  A is refused on app B) and is revoked when *that* proxy stops or the user
   logs out.
 - A request with no valid app session gets a 302 to `/app-auth?app=<ns_id>`,
   never a bare `/login`. **TLS-aware (2026-10-21):** under an active HTTPS
@@ -137,12 +145,23 @@ dashboard. Now:
   *without* `Secure` on purpose: the proxy listener is plain HTTP even under
   an HTTPS dashboard, and a `Secure` cookie would never travel to an
   `http://` origin. Both redirects mint auth cookies, so they carry
-  `Cache-Control: no-store`.
+  `Cache-Control: no-store`. **The `{host}` is never taken from the request's
+  `Host` header as-is (fixed 2026-10-23):** `app_proxy::origin` accepts it only
+  when it names this appliance (`HOMEVAULT_HOST`, `<host>.local`, `localhost`,
+  loopback, the primary LAN address, or a `HOMEVAULT_TRUSTED_HOSTS` entry) and
+  falls back to the canonical host otherwise, so a forged header cannot aim a
+  cookie-carrying redirect at another host.
+- **Stopping one app revokes only that app's sessions (fixed 2026-10-23).**
+  `stop()` used to call a store-wide revoke, so restarting or uninstalling app
+  A logged every user out of apps B..Z and they all had to re-authenticate.
 - **Both** HomeVault cookies (`hv_session`, `hv_app_session`) are stripped from
   the request before it is forwarded upstream, so an installed app never sees
   either credential while its own cookies survive
   (`cookie::strip_homevault_cookies`).
-- `POST /docker/catalog/{id}/proxy` toggles the gate (on by default).
+- `POST /docker/catalog/{id}/proxy` toggles the gate (on by default) and
+  answers `{ auth_required, applied }` — `applied: false` means the app's proxy
+  is not running, so the value was saved and applies when it starts (a marker
+  write failure is an error, never a silent success).
 
 **Deliberate:** the app's own published port stays bound to `0.0.0.0` — the
 proxy is an extra consistent entry point, not a lockdown; do not "harden" by

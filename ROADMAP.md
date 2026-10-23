@@ -55,8 +55,9 @@ retention that prunes, a cleanup that runs) is not enforced or not tested.
 Two structural facts explain most of the list:
 
 1. The test suites verify *shape* (status codes, `total`, DOM presence), not
-   *behaviour*. None of the P0 defects below is caught by the existing
-   50+ integration tests around the same code.
+   *behaviour*. None of the P0 defects closed on 2026-10-23 was caught by the
+   50+ integration tests around the same code — each one needed a new assertion
+   (revoke scope, redirect target, marker write failure) written with its fix.
 2. Blocking work (`std::process::Command`, `std::fs`, `docker compose`) is
    called straight from `async fn` handlers in a dozen modules, while
    `mdns.rs`, `journal.rs`, `transfer_quota.rs` and `docker.rs` show the
@@ -69,7 +70,6 @@ Two structural facts explain most of the list:
 
 | # | Area | Verdict | Blocking items |
 |---|---|---|---|
-| 6 | Apps Center / app-proxy | **P0** | 3 |
 | 7 | Storage | P1 | 3 |
 | 8 | RAID wizard | P1 | 3 |
 | 9 | LUKS2 encryption | P1 | 3 |
@@ -96,55 +96,19 @@ Two structural facts explain most of the list:
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **70** (63 per-area + 7 cross-cutting).
+Total open findings: **67** (60 per-area + 7 cross-cutting).
 
-**Suggested order.** The remaining P0 first (6), then P1 by blast radius —
-12.2/12.3 and 13.4 together, since a UTC-only cron with a stored-but-unapplied
-timezone is one defect seen from two screens.
+**Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
+closed on 2026-10-23. P1 now goes by blast radius, and 12.2/12.3 and 13.4 go
+together, since a UTC-only cron with a stored-but-unapplied timezone is one
+defect seen from two screens.
 
 ---
 
 ## P0 — Broken
 
-### 6. Apps Center / app-proxy — blocking installs, a global logout, an open redirect
-
-`src/handlers/docker_catalog.rs`, `src/app_proxy/mod.rs`,
-`src/handlers/app_auth.rs`.
-
-- [ ] **6.1 — `docker compose up -d` runs on the async runtime.**
-      `src/handlers/docker_catalog.rs:490` calls `ComposeManager::start_project`
-      (synchronous, `LONG_TIMEOUT`, pulls images — `src/compose.rs:349-369`)
-      directly from the async install handler with no `spawn_blocking`; same at
-      `:562` for `stop_project` in uninstall. A first install pins a runtime
-      worker for minutes; concurrent installs starve the runtime. The job is
-      already created for the taskbar at `:484` — only the offload is missing.
-- [ ] **6.2 — Stopping one app logs users out of every app.**
-      `src/app_proxy/mod.rs:128`: `stop()` calls `app_auth::APP_AUTH.revoke_all()`
-      unconditionally, so uninstalling or restarting app A invalidates the
-      sessions of apps B..Z and every user must re-authenticate everywhere.
-      *Acceptance:* revocation is scoped to the proxy being stopped.
-- [ ] **6.3 — Open redirect built from the `Host` header.**
-      `src/handlers/app_auth.rs:118-123` takes `Host`, strips the port and
-      builds `http://{host}:{proxy_port}/` as the `Location` for a response that
-      has just minted an auth cookie. A forged `Host` (or any proxy in front)
-      sends that cookie's redirect to an attacker-controlled host.
-      *Acceptance:* the redirect target is derived from server config, never
-      from a request header.
-
-Also: the proxy binds `0.0.0.0` (`src/app_proxy/mod.rs:159`) with plain HTTP and
-only the app-auth cookie in front; `proxy-config` ignores the `bool` returned by
-`set_auth_required` and reports success (`docker_catalog.rs:868-871`), so the UI
-says "auth required" while the running proxy still serves unauthenticated;
-`write_install_marker` discards its `Result` (`:128-137`), so a read-only apps
-dir produces installs that look successful but do not persist; sync `std::fs`
-on the async path (`:474,496,100`).
-
-*Tests:* `handlers/docker_catalog.rs` has **0** unit tests;
-`tests/app_proxy_integration.rs` has 2. Add integration coverage for the
-revoke scope and the redirect target.
-
-*Docs:* `docs/guides/apps-center.md` ("Known tradeoffs" gains the real list),
-`docs/guides/docker.md`.
+None. Item 6 (Apps Center / app-proxy) was closed on 2026-10-23 — see
+"Done".
 
 ---
 
@@ -981,6 +945,34 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-23 (b)** — Apps Center / app-proxy — the last P0. **6.1:** the
+minutes-long compose calls left the async runtime —
+`start_project`/`stop_project`, `create_project` and the dependency gate's
+per-app `get_project` probes (which shell out to `docker compose` once per
+catalog entry) now run on the blocking pool, so a first install no longer pins
+a worker while it pulls images; the taskbar job still wraps the whole thing.
+**6.2:** an app session is a per-app grant — `APP_AUTH.mint(user, ns_id)`,
+`validate(token, ns_id)`, and `revoke_app(ns_id)` on stop (`revoke_all` is
+gone). Stopping or uninstalling one app no longer signs the household out of
+every other proxied app. **6.3:** both redirects of the round-trip (the gate's
+challenge and `/app-auth`'s answer) resolve their host through the new
+`app_proxy::origin`: the `Host` header is normalised and honoured only when it
+names the appliance (`HOMEVAULT_HOST`, `<host>.local`, `localhost`, loopback,
+the primary LAN address, or a `HOMEVAULT_TRUSTED_HOSTS` entry) and otherwise
+falls back to the canonical host, so a forged header can no longer aim a
+cookie-carrying redirect somewhere else; IPv6 authorities are bracketed.
+Also closed in the same block: `write_install_marker` reports its failure
+instead of discarding it (the marker is written *before* compose starts, and a
+failure after startup stops the app again rather than leaving a state the UI
+cannot describe), `POST …/proxy` answers `applied` and errors on an
+unpersistable marker instead of reporting success, and the install/update
+paths' `std::fs` work moved off the runtime. Tests: `app_proxy::origin` **8**
+(new), `app_auth` 6 → **8**, `serve` 4 → **5**, `handlers/docker_catalog.rs`
+**0 → 4**, `tests/app_proxy_integration.rs` gains three steps (forged `Host`,
+cross-app token refusal, stop-one-app scope). (`docs/guides/apps-center.md`,
+`docs/guides/docker.md`, `docs/API.md`, `docs/BACKEND.md`,
+`docs/ARCHITECTURE.md`, `TESTING.md`.)
 
 **2026-10-23** — AI Assistant / RAG — the knowledge base has a user-facing
 surface and an integrity contract. **4.1:** the computer-visible endpoints

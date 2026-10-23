@@ -75,12 +75,28 @@ port, with an optional auth gate (on by default, toggleable per app via
    proxy listener is plain HTTP even under an HTTPS dashboard, and a `Secure`
    cookie would never be sent to an `http://` origin, breaking every gated
    app. The token is proxy-scoped only — it is meaningless against the API —
-   and is revoked on logout and whenever the app's proxy stops.
+   **and bound to the app it was minted for**: it is refused on any other
+   app's proxy, revoked on logout, and revoked when **that** app's proxy
+   stops (every other app keeps its sessions — stopping app A no longer signs
+   the household out of apps B..Z).
 3. The login screen honours the `next` parameter of the redirect
    (`/login?next=/app-auth?app=…`): after sign-in the browser continues the
    round-trip as a full navigation instead of dead-dropping on the desktop.
    `next` is restricted to same-origin paths — an absolute or scheme-relative
    value would be an open redirect.
+
+**Redirect targets come from server state, not from `Host` (fixed
+2026-10-23).** Both redirects in the round-trip are absolute URLs back to the
+appliance, so their host is resolved by `src/app_proxy/origin.rs`:
+the request's `Host` header is normalised (host name, IPv4 or bracketed IPv6 —
+never a URL, userinfo, path or list) and honoured **only** when it names this
+appliance — `HOMEVAULT_HOST` (defaults to the OS host name), `<host>.local`,
+`localhost`, loopback, the primary LAN address, or an entry listed in
+`HOMEVAULT_TRUSTED_HOSTS`. Anything else falls back to the canonical host, so
+a forged header (or a reverse proxy in front that rewrites it) can no longer
+turn an auth redirect that carries a freshly minted cookie into an open
+redirect. A custom DNS name or a second NIC is declared with
+`HOMEVAULT_TRUSTED_HOSTS=nas.example.org,192.168.1.11` (comma-separated).
 
 **HTTPS deployments (fixed 2026-10-21).** The gate's redirect target is now
 TLS-aware. Under TLS the `hv_session` cookie is `Secure`, so pointing an
@@ -94,6 +110,20 @@ cookie back and the round-trip would loop forever: the redirect now targets
 - The app-session store (`APP_AUTH`) is capped at 512 live sessions — the
   soonest-expiring entry is evicted at the cap — so repeated `/app-auth` hits
   cannot grow the in-memory store without limit between the 12-hour expiries.
+
+### Install and uninstall are honest and off the runtime (fixed 2026-10-23)
+
+- `docker compose up -d` / `stop` / the dependency gate's `get_project` calls
+  run on the **blocking pool**. A first install pulls images for minutes; on a
+  runtime worker it pinned that worker and concurrent installs starved.
+- The `.install.toml` marker is written **before** anything runs and its write
+  failure aborts the install. It used to be discarded, so a read-only or full
+  apps directory produced an install that looked successful, vanished from the
+  list after a restart and lost its reverse proxy (nothing to restore from).
+  The same rule applies to app updates and to
+  `POST /api/docker/catalog/{id}/proxy`, whose response now carries
+  `applied: false` when the app's proxy is not running (the value is saved and
+  takes effect when it next starts) instead of a bare success.
 
 ### Known tradeoffs
 
@@ -135,6 +165,12 @@ cookie back and the round-trip would loop forever: the redirect now targets
 - `hv_app_session` must stay without the `Secure` flag, and the proxy
   listeners must stay plain HTTP: make them consistent together or the gated
   apps become unreachable.
+- Never build a redirect (or any absolute URL back to the appliance) from the
+  request's `Host` header — resolve it through `app_proxy::origin`
+  (`resolve_redirect_host` / `authority`), which only accepts the appliance's
+  own names and otherwise falls back to the configured canonical host.
+- App-session revocation is scoped: `revoke_app(ns_id)` on a proxy stop,
+  `revoke_user` on logout. A `revoke_all`-style sweep belongs nowhere.
 
 ## Related
 

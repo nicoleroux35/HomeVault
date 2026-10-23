@@ -477,8 +477,14 @@ proxy does **not** trust it: it accepts only an app-proxy-scoped
 origin (`src/handlers/app_auth.rs`, `src/app_proxy/app_auth.rs`). `/app-auth`
 validates the real session, mints the scoped token and redirects to the app
 origin; the proxy then strips both HomeVault cookies before forwarding
-upstream. The scoped token grants proxy access only and is revoked on logout
-or when the proxy stops. The gate's redirect to `/app-auth` is TLS-aware
+upstream. The scoped token grants proxy access only, is **bound to the app it
+was minted for** (a token for app A is refused on app B) and is revoked on
+logout or when **that** proxy stops (2026-10-23 — it used to be a store-wide
+revoke, so stopping one app signed every other app out). Both redirects of the
+round-trip resolve their host through `src/app_proxy/origin.rs`, which accepts
+only the appliance's own names and otherwise falls back to the canonical host,
+so a forged `Host` cannot turn a cookie-carrying redirect into an open
+redirect. The gate's redirect to `/app-auth` is TLS-aware
 (2026-10-21): under an active HTTPS listener it targets the TLS main entry,
 because the `hv_session` cookie is `Secure` there and would never be re-sent
 over plain HTTP. See [guides/docker.md](./guides/docker.md).
