@@ -65,6 +65,12 @@ Handlers in `src/handlers/settings.rs`. Persistence via
   as its own option so the field never silently rewrites the setting. The
   hint under the field says what the zone drives — the server clock and every
   scheduled task without its own `timezone`.
+- The grouping is shared, not duplicated: `frontend/src/lib/utils/timezones.ts`
+  (`groupTimezones`, `timezoneIsListed`, `SERVER_TIMEZONE`) is what both this
+  card and the scheduled-task form render, so the two pickers cannot drift
+  apart again (the task form was a free-text `Europe/Paris` placeholder while
+  this card offered a 14-zone shortlist — one of them refused nothing and the
+  other accepted almost nothing).
 - `settings::effective_timezone()` is the value the rest of the app reads —
   notably the scheduled-task engine, which evaluates every task without its
   own `timezone` in it (see [Scheduled Tasks](./scheduled-tasks.md)). It is a

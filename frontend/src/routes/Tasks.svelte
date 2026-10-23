@@ -37,6 +37,7 @@
   import { PageLayout, DataTable, EmptyState, SectionCard, ConfirmDialog } from '$lib/components/app';
   import { Modal, Button, Input, Select, Switch, Badge } from '$lib/components/theme';
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
+  import { groupTimezones, timezoneIsListed, SERVER_TIMEZONE, type TimezoneGroup } from '$lib/utils/timezones';
   import { IconClock, IconPlus, IconPlayerPlay, IconHistory, IconTrash } from '@tabler/icons-svelte';
 
   type TaskType = 'command' | 'snapshot' | 'smart_test' | 'power';
@@ -111,12 +112,28 @@
   /** Pending "Run now" poll (see `pollRun`). */
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /** The same IANA list the Settings General card renders
+   *  (`GET /settings/timezones`, cached for an hour): a zone the server
+   *  accepts must never be unpickable here. This field used to be free text
+   *  with a `Europe/Paris` placeholder — a typo was only caught on save, and
+   *  the list of valid names was invisible. */
+  let timezoneGroups: TimezoneGroup[] = [];
+
+  async function loadTimezones() {
+    const res = await api.getTimezones();
+    const names = res.data?.timezones;
+    if (res.success && Array.isArray(names) && names.length) {
+      timezoneGroups = groupTimezones(names);
+    }
+  }
+
   onMount(() => {
     if (!$isAdmin) {
       window.location.href = '/desktop';
       return;
     }
     load();
+    loadTimezones();
     return onAppVisible(load);
   });
 
@@ -547,13 +564,27 @@
       placeholder="0 3 * * *"
       helper={$t('tasks.field_cron_help')}
     />
-    <Input
-      label={$t('tasks.field_timezone')}
-      id="taskTimezone"
-      bind:value={form.timezone}
-      placeholder="Europe/Paris"
-      helper={$t('tasks.field_timezone_help')}
-    />
+    <div class="hv-form-group">
+      <label class="hv-form-label" for="taskTimezone">{$t('tasks.field_timezone')}</label>
+      <select
+        id="taskTimezone"
+        class="hv-form-input w-full"
+        bind:value={form.timezone}
+        aria-describedby="taskTimezoneHelp"
+      >
+        <option value={SERVER_TIMEZONE}>{$t('tasks.timezone_server')}</option>
+        <option value="UTC">UTC</option>
+        {#if !timezoneIsListed(timezoneGroups, form.timezone)}
+          <option value={form.timezone}>{form.timezone}</option>
+        {/if}
+        {#each timezoneGroups as group}
+          <optgroup label={group.region}>
+            {#each group.zones as zone}<option value={zone}>{zone}</option>{/each}
+          </optgroup>
+        {/each}
+      </select>
+      <span id="taskTimezoneHelp" class="hv-form-helper">{$t('tasks.field_timezone_help')}</span>
+    </div>
 
     {#if form.task_type === 'command'}
       <Input label={$t('tasks.field_command')} id="taskCommand" bind:value={form.command} placeholder="/usr/local/bin/script.sh" helper={$t('tasks.field_command_help')} />

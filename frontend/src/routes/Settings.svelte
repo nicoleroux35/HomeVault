@@ -51,6 +51,7 @@
   import { Alert, Switch } from '$lib/components/theme';
   import { PageLayout, ConfirmDialog } from '$lib/components/app';
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
+  import { groupTimezones, timezoneIsListed, type TimezoneGroup } from '$lib/utils/timezones';
   import { cn } from '$lib/utils.js';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
   import WindowSidebarItem from '$lib/components/desktop/WindowSidebarItem.svelte';
@@ -181,26 +182,11 @@
   ];
 
   // Timezones — every zone the server can evaluate, grouped by region for
-  // the picker. The screen used to hardcode 14 zones, so an admin in Lisbon
-  // or Casablanca could not pick their zone even though the backend accepted
-  // it (`GET /settings/timezones`).
-  let timezoneGroups: { region: string; zones: string[] }[] = [];
-
-  function groupTimezones(names: string[]): { region: string; zones: string[] }[] {
-    const groups = new Map<string, string[]>();
-    for (const name of names) {
-      const slash = name.indexOf('/');
-      // `UTC` carries no region: it renders as a plain first option.
-      if (slash === -1) continue;
-      const region = name.slice(0, slash);
-      const zones = groups.get(region);
-      if (zones) zones.push(name);
-      else groups.set(region, [name]);
-    }
-    return [...groups.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([region, zones]) => ({ region, zones }));
-  }
+  // the picker. The list is shared with the scheduled-task form
+  // (`$lib/utils/timezones`), so both screens offer the same zones: this
+  // card used to hardcode 14 of them while the backend accepted any IANA
+  // name, and the task form was a free-text field on top of that.
+  let timezoneGroups: TimezoneGroup[] = [];
 
   async function loadTimezones() {
     const res = await api.getTimezones();
@@ -208,13 +194,6 @@
     if (res.success && Array.isArray(names) && names.length) {
       timezoneGroups = groupTimezones(names);
     }
-  }
-
-  /** The current value is always selectable, even when the list failed to
-   *  load or holds a legacy alias (`CET`) the picker does not offer — the
-   *  field must never silently show (and then save) a different zone. */
-  function timezoneIsListed(value: string): boolean {
-    return value === 'UTC' || timezoneGroups.some((g) => g.zones.includes(value));
   }
 
   // AI / Ollama
@@ -1006,7 +985,7 @@
                 bind:value={draft.general.timezone}
                 aria-describedby="timezoneHint"
               >
-                {#if !timezoneIsListed(draft.general.timezone)}
+                {#if !timezoneIsListed(timezoneGroups, draft.general.timezone)}
                   <option value={draft.general.timezone}>{draft.general.timezone}</option>
                 {/if}
                 <option value="UTC">UTC</option>
