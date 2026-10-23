@@ -22,6 +22,8 @@
 //! Physical disk service (inventory, SMART, format/mount, mdadm RAID).
 
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 use thiserror::Error;
 use tokio::process::Command;
 
@@ -34,6 +36,20 @@ pub enum DiskError {
     Parse(String),
     #[error("Command '{command}' failed: {stderr}")]
     CommandFailed { command: String, stderr: String },
+    /// A privileged tool outlived its deadline. Distinct from
+    /// `CommandFailed` because the tool may still have been doing the right
+    /// thing — the caller reports "took too long", not "refused".
+    #[error("Command '{command}' did not finish within {secs}s")]
+    Timeout { command: String, secs: u64 },
+    /// A freshly created md array never reported a usable state in sysfs, so
+    /// the setup stopped instead of formatting a device that was still
+    /// assembling.
+    #[error("Array {device} did not become usable within {secs}s (last kernel state: '{state}')")]
+    ArrayNotReady {
+        device: String,
+        secs: u64,
+        state: String,
+    },
     #[error("Device not found: {0}")]
     DeviceNotFound(String),
     #[error("SMART not available: {0}")]
@@ -111,6 +127,37 @@ pub static CREATE_LOCK: once_cell::sync::Lazy<tokio::sync::Mutex<()>> =
 pub static PERSIST_LOCK: once_cell::sync::Lazy<tokio::sync::Mutex<()>> =
     once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(()));
 
+// ---------------------------------------------------------------------------
+// Deadlines for the privileged tools of the virtual-disk path (ROADMAP 8.3).
+//
+// Every `mdadm` / `mkfs` / `mount` / `blkid` / `zpool` call used to be a bare
+// `.output().await` with no deadline. A wedged tool therefore held
+// `CREATE_LOCK` for the life of the process: every later create answered
+// "already running" and only a service restart could clear it. Each value
+// below is generous for the slowest honest case (a multi-terabyte `mkfs`) and
+// short enough that a hung tool becomes a visible, retryable failure.
+// ---------------------------------------------------------------------------
+
+/// One `mdadm` invocation (`--create`, `--detail`, `--stop`, `--zero-superblock`).
+pub const MDADM_TIMEOUT: Duration = Duration::from_secs(120);
+/// `mkfs.*` on a large device, possibly with discard/TRIM.
+pub const MKFS_TIMEOUT: Duration = Duration::from_secs(900);
+/// `mount`, `umount` and `mkdir -p` on the array's mount point.
+pub const MOUNT_TIMEOUT: Duration = Duration::from_secs(60);
+/// `blkid` / `findmnt` metadata reads.
+pub const BLKID_TIMEOUT: Duration = Duration::from_secs(30);
+/// `zpool create`.
+pub const ZPOOL_TIMEOUT: Duration = Duration::from_secs(120);
+/// `update-initramfs -u` / `dracut -f` — slow on a full boot image, still bounded.
+pub const INITRAMFS_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long a freshly created md array may stay unusable before the creation
+/// fails and tears it down. ROADMAP 8.2: this used to give up after 20 s and
+/// run `mkfs` + `mount` on the still-initialising device anyway.
+pub const ARRAY_READY_TIMEOUT: Duration = Duration::from_secs(120);
+/// Poll interval while waiting for `array_state` (a healthy create reports
+/// `clean`/`active` in well under a second).
+pub const ARRAY_READY_POLL: Duration = Duration::from_millis(500);
+
 /// Minimum device count per RAID level (mirror of the frontend's minDisks).
 fn min_devices_for_level(level: &str) -> usize {
     match level {
@@ -122,15 +169,61 @@ fn min_devices_for_level(level: &str) -> usize {
 }
 
 /// How many member slots a level may start deliberately degraded (the
-/// `missing` placeholder count mdadm accepts at `--create` time). raid0 has
-/// no redundancy to degrade; raid10's layout makes missing-slot creation
-/// fragile, so both are refused.
+/// `missing` placeholder count mdadm accepts at `--create` time).
+///
+/// This is the **single** policy table: `create_raid` and
+/// `validate_virtual_disk_request` both read it, so the API gate and the job
+/// can never disagree about what a degraded create means.
+///
+/// - `raid0` — no redundancy to degrade; a missing slot is just a smaller
+///   array that mdadm would create without warning.
+/// - `raid1` / `raid5` — one mirror leg / one parity unit may be absent.
+/// - `raid6` — two parity units may be absent.
+/// - `raid10` — deliberately **0**. mdadm only accepts `missing` for raid10
+///   with an explicit `--layout`, and the resulting slot placement depends on
+///   the layout it picks; guessing one here would silently produce a mirror
+///   geometry the wizard never showed. Refusing is the honest answer: add the
+///   disk before creating. (ROADMAP 8 documented this as an inconsistency
+///   with raid5/6; the difference is intentional and now stated in one place,
+///   `docs/guides/raid.md` and the level's own error message.)
 fn max_missing_for_level(level: &str) -> usize {
     match level {
         "raid1" | "raid5" => 1,
         "raid6" => 2,
         _ => 0,
     }
+}
+
+/// Human explanation for a level that refuses degraded creation, so the 400
+/// names the reason instead of only the number of slots.
+fn degraded_refusal_reason(level: &str) -> &'static str {
+    match level {
+        "raid0" => "a RAID 0 array has no redundancy to degrade",
+        "raid10" => {
+            "mdadm only places a missing slot in RAID 10 with an explicit layout — \
+             add the disk before creating"
+        }
+        _ => "this level cannot start degraded",
+    }
+}
+
+/// The one error both validators return when a request asks for more missing
+/// slots than the level's budget allows.
+fn degraded_budget_error(level: &str) -> DiskError {
+    let budget = max_missing_for_level(level);
+    let message = if budget == 0 {
+        format!(
+            "RAID {} cannot start degraded: {}",
+            level,
+            degraded_refusal_reason(level)
+        )
+    } else {
+        format!(
+            "RAID {} cannot start degraded by more than {} device(s)",
+            level, budget
+        )
+    };
+    DiskError::Parse(message)
 }
 
 /// How many mdadm "member slots" a request implies: the real members plus the
@@ -142,6 +235,350 @@ fn md_member_slots(req: &VirtualDiskRequest) -> usize {
     }
     let min = min_devices_for_level(&req.level);
     usize::max(req.members.len(), min)
+}
+
+// ---------------------------------------------------------------------------
+// Privileged command execution (ROADMAP 8.3)
+// ---------------------------------------------------------------------------
+
+/// Run `program args…` under a deadline, capturing stdout/stderr.
+///
+/// `kill_on_drop(true)` is the part that matters: a plain `Command::output()`
+/// future dropped on timeout leaves the child running, so "timed out" would
+/// only stop us from waiting while the wedged `mdadm` kept holding the
+/// devices (and the next create collided with it). Here the child is killed
+/// when the deadline expires.
+async fn run_timed(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<std::process::Output, DiskError> {
+    let child = Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(e)) => Err(DiskError::Io(e)),
+        Err(_) => Err(DiskError::Timeout {
+            command: display_command(program, args),
+            secs: timeout.as_secs(),
+        }),
+    }
+}
+
+/// [`run_timed`] behind `sudo` — every privileged call in this module is
+/// sudo-wrapped, so the deadline belongs on the same argv.
+async fn sudo_timed(args: &[&str], timeout: Duration) -> Result<std::process::Output, DiskError> {
+    run_timed("sudo", args, timeout).await
+}
+
+/// `program arg1 arg2 …` for error messages and logs.
+fn display_command(program: &str, args: &[&str]) -> String {
+    let mut rendered = program.to_string();
+    for arg in args {
+        rendered.push(' ');
+        rendered.push_str(arg);
+    }
+    rendered
+}
+
+// ---------------------------------------------------------------------------
+// Array identity (ROADMAP 8.1)
+// ---------------------------------------------------------------------------
+
+/// What `mdadm --detail <device>` says about an array: its metadata label, its
+/// superblock UUID and the devices the kernel currently reports as members.
+///
+/// The teardown needs all three to answer "is this still the array *this job*
+/// assembled?" before it touches a single device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArrayIdentity {
+    /// Bare metadata label — `Name : hostname:label` reduced to `label`.
+    pub name: String,
+    /// `UUID : <uuid>` as printed, when mdadm printed one.
+    pub uuid: Option<String>,
+    /// Member device paths, in the order mdadm lists them.
+    pub members: Vec<String>,
+}
+
+/// Parse the text form of `mdadm --detail`.
+///
+/// Two shapes matter:
+/// * the `Name :` / `UUID :` header lines, and
+/// * the device table, whose rows end with the member's device path
+///   (`… active sync   /dev/sda1`, `… spare   /dev/sdc`). A `removed` or
+///   `missing` slot carries no path, so "the last token starts with `/dev/`"
+///   is the whole rule — no column counting (counting columns is exactly what
+///   broke the SMART attribute parser, ROADMAP 7.4).
+pub fn parse_mdadm_detail(output: &str) -> Option<ArrayIdentity> {
+    let mut name: Option<String> = None;
+    let mut uuid: Option<String> = None;
+    let mut members: Vec<String> = Vec::new();
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("Name :") {
+            let raw = rest.trim();
+            // `hostname:label` → `label`; a name without a colon is used as-is.
+            name = Some(raw.rsplit(':').next().unwrap_or(raw).to_string());
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("UUID :") {
+            let raw = rest.trim();
+            if !raw.is_empty() {
+                uuid = Some(raw.to_string());
+            }
+            continue;
+        }
+        // Device-table row: `0   8   1   0   active sync   /dev/sda1`.
+        let mut tokens = trimmed.split_whitespace();
+        let Some(first) = tokens.next() else {
+            continue;
+        };
+        if !first.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let last = tokens.last().unwrap_or(first);
+        if last.starts_with("/dev/") {
+            members.push(last.to_string());
+        }
+    }
+
+    name.map(|name| ArrayIdentity {
+        name,
+        uuid,
+        members,
+    })
+}
+
+/// Read an array's identity through `mdadm --detail`.
+///
+/// `None` when the array does not exist (mdadm exits non-zero) or could not
+/// answer within [`MDADM_TIMEOUT`].
+async fn array_identity(device: &str) -> Option<ArrayIdentity> {
+    let output = sudo_timed(&["mdadm", "--detail", device], MDADM_TIMEOUT)
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_mdadm_detail(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// What a failed setup may do to the array it was building.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TeardownPlan {
+    /// The array is gone already: nothing to undo, nothing to touch.
+    NothingToDo,
+    /// The node under that name is **not** the array this job assembled
+    /// (different label/UUID, or its identity could not be captured). Neither
+    /// stop it nor wipe a device: the failure is ours, the array is not.
+    Foreign(String),
+    /// The array is ours but its identity could not be verified: stop it and
+    /// erase **nothing**.
+    StopOnly(String),
+    /// The array is ours and verified: stop it, then zero exactly these
+    /// members (the intersection of what we handed to `--create` and what the
+    /// kernel reports as members now).
+    StopAndWipe {
+        device: String,
+        members: Vec<String>,
+    },
+}
+
+/// Decide what a failed setup may touch — the whole point of ROADMAP 8.1.
+///
+/// `created` is the identity captured right after *our* `mdadm --create`
+/// succeeded, `current` the identity read back at teardown time. The rule is
+/// conservative on purpose: anything we cannot positively identify as our own
+/// array is left alone, because the cost of a wrong wipe (a device belonging
+/// to an exported or concurrent array losing its metadata) is unrecoverable,
+/// while the cost of a missed wipe is an orphan array the admin can delete.
+pub fn plan_teardown(
+    device: &str,
+    created: Option<&ArrayIdentity>,
+    current: Option<&ArrayIdentity>,
+    requested_members: &[String],
+) -> TeardownPlan {
+    let Some(current) = current else {
+        return TeardownPlan::NothingToDo;
+    };
+    let Some(created) = created else {
+        // We created an array but could not read its identity back. The name
+        // was verified free and `CREATE_LOCK` is held, so the node can only be
+        // ours — but without an identity no device may be touched.
+        return TeardownPlan::StopOnly(device.to_string());
+    };
+    if !identities_match(created, current) {
+        return TeardownPlan::Foreign(format!(
+            "the array at {} is not the one this job created \
+             (created {}/{}, found {}/{})",
+            device,
+            created.name,
+            created.uuid.as_deref().unwrap_or("no uuid"),
+            current.name,
+            current.uuid.as_deref().unwrap_or("no uuid")
+        ));
+    }
+    TeardownPlan::StopAndWipe {
+        device: device.to_string(),
+        members: wipe_targets(requested_members, &current.members),
+    }
+}
+
+/// Same array? The label is pinned by `--name` at create time; the UUID is the
+/// stronger check when both reads printed one.
+fn identities_match(created: &ArrayIdentity, current: &ArrayIdentity) -> bool {
+    if created.name != current.name {
+        return false;
+    }
+    match (&created.uuid, &current.uuid) {
+        (Some(created_uuid), Some(current_uuid)) => created_uuid == current_uuid,
+        // One of the two reads carried no UUID: fall back to the label.
+        _ => true,
+    }
+}
+
+/// Devices this job handed to `mdadm --create` **and** that the array still
+/// reports as members — the only ones a failed setup may zero.
+fn wipe_targets(requested: &[String], current_members: &[String]) -> Vec<String> {
+    current_members
+        .iter()
+        .filter(|member| {
+            let wanted = device_basename(member);
+            requested
+                .iter()
+                .any(|candidate| device_basename(candidate) == wanted)
+        })
+        .cloned()
+        .collect()
+}
+
+/// `/dev/sda` and `sda` name the same device; `/dev/disk/by-id/…` deliberately
+/// does not compare equal to `/dev/sda`, which keeps the wipe conservative.
+fn device_basename(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Build the argv of `zpool create` for a virtual disk.
+///
+/// Pure so the two rules that once broke ZFS creation live are pinned by a
+/// test: the **pool name precedes the vdev type** (passing the type first made
+/// zpool read the name as a device, so every mirror/raidzN create failed
+/// outright — only raid0 worked), and there is **no `-f`** (a device carrying a
+/// pool signature is a conflict the free-device gate already reports, never one
+/// to overwrite — ROADMAP 8).
+///
+/// raid10 becomes one `mirror` group per device pair (a stripe of mirrors);
+/// every other level is a single vdev group.
+fn zfs_create_args(
+    name: &str,
+    raid_level: &str,
+    devices: &[String],
+    mount_point: &str,
+) -> Vec<String> {
+    let mut args: Vec<String> = vec!["zpool".into(), "create".into()];
+    args.push("-m".into());
+    args.push(mount_point.to_string());
+    // One shared root-dataset policy; kept mirrored with
+    // `pools.rs::create_zfs_advanced_pool` so every ZFS volume the appliance
+    // creates behaves the same for the shares' ACL tooling.
+    for kv in [
+        "compression=lz4",
+        "atime=off",
+        "acltype=posixacl",
+        "xattr=sa",
+    ] {
+        args.push("-O".into());
+        args.push(kv.into());
+    }
+    args.push(name.to_string());
+
+    let vdev_type = match raid_level {
+        "raid1" | "raid10" => "mirror",
+        "raid5" => "raidz1",
+        "raid6" => "raidz2",
+        // raid0 is a plain stripe: no vdev keyword at all.
+        _ => "",
+    };
+    if !vdev_type.is_empty() && raid_level != "raid10" {
+        args.push(vdev_type.to_string());
+    }
+
+    let device_path = |device: &String| {
+        if device.starts_with("/dev/") {
+            device.clone()
+        } else {
+            format!("/dev/{}", device)
+        }
+    };
+
+    if raid_level == "raid10" {
+        // `zpool create tank mirror d1 d2 mirror d3 d4 …`
+        for pair in devices.chunks(2) {
+            args.push("mirror".to_string());
+            for device in pair {
+                args.push(device_path(device));
+            }
+        }
+    } else {
+        args.extend(devices.iter().map(device_path));
+    }
+    args
+}
+
+// ---------------------------------------------------------------------------
+// Waiting for a fresh array (ROADMAP 8.2)
+// ---------------------------------------------------------------------------
+
+/// What `/sys/block/mdX/md/array_state` means for a setup in progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArrayReadiness {
+    /// The kernel holds a usable array: `mkfs`/`mount` may proceed.
+    Ready,
+    /// Still assembling: keep polling.
+    Pending,
+    /// The kernel holds no array under that name — polling cannot fix it.
+    Missing,
+}
+
+/// Classify one `array_state` value.
+///
+/// `readonly` is a *usable* degraded array, and `read-write` is the state the
+/// kernel reports once the array is openable but not yet idle — both are safe
+/// to format. `clear` is what the attribute reads when no array exists, which
+/// no amount of waiting will change.
+pub fn classify_array_state(raw: &str) -> ArrayReadiness {
+    match raw.trim() {
+        "clean" | "active" | "active-idle" | "readonly" | "read-write" => ArrayReadiness::Ready,
+        "clear" => ArrayReadiness::Missing,
+        _ => ArrayReadiness::Pending,
+    }
+}
+
+/// Percent of a running resync/rebuild/check, when one is in progress.
+///
+/// `sync_action` is `idle` most of the time and `sync_completed` then reads
+/// `none`; both mean "nothing to report", not "0 %".
+pub fn resync_percent(sync_action: &str, sync_completed: &str) -> Option<f64> {
+    if !matches!(
+        sync_action.trim(),
+        "resync" | "rebuild" | "check" | "repair"
+    ) {
+        return None;
+    }
+    let mut fields = sync_completed.split_whitespace();
+    let position: f64 = fields.next()?.parse().ok()?;
+    let total: f64 = fields.next()?.parse().ok()?;
+    if total.is_finite() && total > 0.0 {
+        Some(((position / total) * 100.0).clamp(0.0, 100.0))
+    } else {
+        None
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiskInfo {
@@ -902,11 +1339,7 @@ impl DiskService {
         }
 
         if missing_slots > max_missing_for_level(&req.level) {
-            return Err(DiskError::Parse(format!(
-                "RAID {} cannot start degraded by more than {} device(s)",
-                req.level,
-                max_missing_for_level(&req.level)
-            )));
+            return Err(degraded_budget_error(&req.level));
         }
 
         // RAID 10 is a stripe of mirror pairs — a clean pair split is required.
@@ -1020,24 +1453,69 @@ impl DiskService {
             args.push(device);
         }
 
-        let output = Command::new("sudo")
-            .arg("mdadm")
-            .args(&args)
-            .output()
-            .await?;
+        let output = {
+            // `sudo mdadm <args…>` under the deadline (ROADMAP 8.3).
+            let mut sudo_args: Vec<&str> = Vec::with_capacity(args.len() + 1);
+            sudo_args.push("mdadm");
+            sudo_args.extend(args.iter().copied());
+            sudo_timed(&sudo_args, MDADM_TIMEOUT).await
+        };
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DiskError::CommandFailed {
-                command: format!("mdadm --create {}", raid_device),
-                stderr: friendly_tool_error("Array creation", &stderr),
-            });
+        let create_error = match output {
+            Ok(out) if out.status.success() => None,
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                Some(DiskError::CommandFailed {
+                    command: format!("mdadm --create {}", raid_device),
+                    stderr: friendly_tool_error("Array creation", &stderr),
+                })
+            }
+            Err(e) => Some(e),
+        };
+        if let Some(error) = create_error {
+            // A failed `mdadm --create` can still leave a half-assembled array
+            // behind: mdadm writes each member's metadata as it goes, so a
+            // failure on the fourth device leaves the first three holding a
+            // superblock that points at an array nothing will ever assemble.
+            // Clean up whatever is actually there — under the same identity
+            // gate as every other teardown (ROADMAP 8.1).
+            let created = array_identity(&raid_device).await;
+            Self::teardown_failed_array(
+                &raid_device,
+                created.as_ref(),
+                &members,
+                &error.to_string(),
+            )
+            .await;
+            return Err(error);
+        }
+
+        // Capture the array's identity *now*, before anything else can touch
+        // it: the teardown compares against this instead of trusting the
+        // request, so a device or a name that changed hands in between is
+        // never wiped by us (ROADMAP 8.1).
+        let created = array_identity(&raid_device).await;
+        if created.is_none() {
+            tracing::warn!(
+                "Array {} was created but `mdadm --detail` could not report its identity: \
+                 if this setup fails, the array will be stopped but no device superblock erased",
+                raid_device
+            );
         }
 
         // Wait for the array to become active, streaming the initial resync
         // percent when one starts. Replaces the blind 2 s sleep: the array is
         // ready as soon as the kernel says so, whatever the hardware.
-        Self::wait_for_array_ready(&raid_device, progress).await;
+        //
+        // This *fails* when the array never becomes usable (ROADMAP 8.2). It
+        // used to give up after 20 s and continue anyway, which ran `mkfs` and
+        // `mount` against a device the kernel was still assembling — the
+        // realistic path to "RAID creation destroyed my disks".
+        if let Err(e) = Self::wait_for_array_ready(&raid_device, progress).await {
+            Self::teardown_failed_array(&raid_device, created.as_ref(), &members, &e.to_string())
+                .await;
+            return Err(e);
+        }
 
         // Format with filesystem. If this (or the mount below) fails, tear
         // the array back down rather than propagating the error with `?` —
@@ -1051,7 +1529,8 @@ impl DiskService {
             p.report(55, &format!("Writing the {} filesystem", filesystem));
         }
         if let Err(e) = Self::format_device(&raid_device, filesystem).await {
-            Self::teardown_failed_array(&raid_device, &members, &e.to_string()).await;
+            Self::teardown_failed_array(&raid_device, created.as_ref(), &members, &e.to_string())
+                .await;
             return Err(e);
         }
 
@@ -1062,7 +1541,8 @@ impl DiskService {
             p.report(75, "Mounting and persisting to boot config");
         }
         if let Err(e) = Self::mount_and_persist_raid(&raid_device, &req.name, filesystem).await {
-            Self::teardown_failed_array(&raid_device, &members, &e.to_string()).await;
+            Self::teardown_failed_array(&raid_device, created.as_ref(), &members, &e.to_string())
+                .await;
             return Err(e);
         }
 
@@ -1071,95 +1551,216 @@ impl DiskService {
 
     /// Blocks (bounded) until a freshly created md array reports a usable
     /// state in `/sys/block/mdX/md/array_state`, streaming the initial
-    /// resync percent through `progress` while it runs. Tolerates a missing
-    /// sysfs path (very old md): it simply returns after the timeout.
-    async fn wait_for_array_ready(raid_device: &str, progress: Option<&dyn CreateProgress>) {
-        let md = std::fs::canonicalize(raid_device)
-            .ok()
-            .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()));
-        let Some(md) = md else { return };
-        let state_path = format!("/sys/block/{}/md/array_state", md);
-        let sync_path = format!("/sys/block/{}/md/sync_action", md);
-        let completed_path = format!("/sys/block/{}/md/sync_completed", md);
-
-        // 40 polls × 500 ms = a hard 20 s ceiling; a healthy create reports
-        // "clean"/"active" in well under a second.
-        for poll in 0..40 {
-            match tokio::fs::read_to_string(&state_path).await {
-                Ok(state) => {
-                    let state = state.trim();
-                    if matches!(state, "clean" | "active" | "active-idle" | "readonly") {
-                        // Resync (initial parity build) may already be racing in
-                        // the background: surface its percent while we're here.
-                        if let Some(p) = progress {
-                            if let Ok(action) = tokio::fs::read_to_string(&sync_path).await {
-                                let action = action.trim();
-                                if matches!(action, "resync" | "rebuild" | "check" | "repair") {
-                                    if let Ok(done) =
-                                        tokio::fs::read_to_string(&completed_path).await
-                                    {
-                                        let done = done.trim();
-                                        let pos = done.split_whitespace().next().unwrap_or("0");
-                                        let total = done.split_whitespace().nth(1).unwrap_or("1");
-                                        if let (Ok(pos), Ok(total)) =
-                                            (pos.parse::<f64>(), total.parse::<f64>())
-                                        {
-                                            if total > 0.0 {
-                                                let pct = ((pos / total) * 100.0).clamp(0.0, 100.0);
-                                                p.report(
-                                                    10 + (pct * 0.3) as u8,
-                                                    &format!("Initial resync running: {:.0}%", pct),
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        return;
-                    }
-                }
-                Err(_) => {}
+    /// resync percent through `progress` while it runs.
+    ///
+    /// Returns an error when the array never becomes usable (ROADMAP 8.2).
+    /// The previous version polled 40 × 500 ms and then **continued anyway**
+    /// with `mkfs` + `mount` on a device the kernel was still assembling —
+    /// which, combined with the old teardown, is the realistic path to "RAID
+    /// creation destroyed my disks". The ceiling is now
+    /// [`ARRAY_READY_TIMEOUT`], and running out of it fails the creation.
+    ///
+    /// A device node that does not resolve yet is *polled*, not rejected: the
+    /// `/dev/md/<name>` symlink can lag the successful `mdadm --create` by a
+    /// udev tick, and failing instantly there would tear down a perfectly
+    /// healthy array.
+    async fn wait_for_array_ready(
+        raid_device: &str,
+        progress: Option<&dyn CreateProgress>,
+    ) -> Result<(), DiskError> {
+        // The `/dev/md/<name>` symlink is created by mdadm, but udev may need a
+        // moment to publish the matching `/sys/block/mdX` entry — so a missing
+        // node is a *pending* state, not an instant failure. Only the shared
+        // deadline decides when to give up.
+        let deadline = tokio::time::Instant::now() + ARRAY_READY_TIMEOUT;
+        loop {
+            if let Some(md) = std::fs::canonicalize(raid_device)
+                .ok()
+                .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
+            {
+                let base = PathBuf::from("/sys/block").join(&md).join("md");
+                return Self::wait_for_array_state(
+                    raid_device,
+                    &base.join("array_state"),
+                    &base.join("sync_action"),
+                    &base.join("sync_completed"),
+                    deadline - tokio::time::Instant::now(),
+                    ARRAY_READY_POLL,
+                    progress,
+                )
+                .await;
             }
-            let _ = poll;
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        }
-        // Not ready within 20 s: mdadm create already succeeded, so continue
-        // anyway (format/mount failures are handled separately) — but the
-        // array may still be syncing in the background.
-        if let Some(p) = progress {
-            p.report(40, "Array is assembling; continuing setup");
+            if tokio::time::Instant::now() >= deadline {
+                return Err(DiskError::ArrayNotReady {
+                    device: raid_device.to_string(),
+                    secs: ARRAY_READY_TIMEOUT.as_secs(),
+                    state: "no /sys/block entry for the device".to_string(),
+                });
+            }
+            tokio::time::sleep(ARRAY_READY_POLL).await;
         }
     }
 
-    /// Stops and wipes a just-created array whose own setup (format/mount)
-    /// failed partway through, so a failed `create_raid` doesn't leave a
-    /// live array holding the member devices hostage. Best-effort — errors
-    /// here are secondary to the original failure already being returned;
-    /// they are logged so a stuck teardown is diagnosable from the journal.
-    async fn teardown_failed_array(raid_device: &str, devices: &[String], cause: &str) {
-        tracing::warn!(
-            "Virtual disk setup failed ({}): tearing down {} to release {} device(s)",
-            cause,
-            raid_device,
-            devices.len()
-        );
-        if let Err(e) = Command::new("sudo")
-            .arg("mdadm")
-            .args(["--stop", raid_device])
-            .output()
-            .await
-        {
-            tracing::warn!("Failed to stop broken array {}: {}", raid_device, e);
+    /// [`wait_for_array_ready`] over explicit sysfs paths and deadline, so the
+    /// polling contract is testable against a temporary directory instead of
+    /// a real md device.
+    async fn wait_for_array_state(
+        raid_device: &str,
+        state_path: &Path,
+        sync_path: &Path,
+        completed_path: &Path,
+        timeout: Duration,
+        poll: Duration,
+        progress: Option<&dyn CreateProgress>,
+    ) -> Result<(), DiskError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut last_state = String::from("unreadable");
+        loop {
+            if let Ok(raw) = tokio::fs::read_to_string(state_path).await {
+                last_state = raw.trim().to_string();
+                match classify_array_state(&last_state) {
+                    ArrayReadiness::Ready => {
+                        // Resync (initial parity build) may already be racing
+                        // in the background: surface its percent while here.
+                        if let Some(p) = progress {
+                            if let (Ok(action), Ok(completed)) = (
+                                tokio::fs::read_to_string(sync_path).await,
+                                tokio::fs::read_to_string(completed_path).await,
+                            ) {
+                                if let Some(pct) = resync_percent(&action, &completed) {
+                                    p.report(
+                                        10 + (pct * 0.3) as u8,
+                                        &format!("Initial resync running: {:.0}%", pct),
+                                    );
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                    ArrayReadiness::Missing => {
+                        // The kernel holds no array under that name: polling
+                        // cannot bring it back.
+                        return Err(DiskError::ArrayNotReady {
+                            device: raid_device.to_string(),
+                            secs: timeout.as_secs(),
+                            state: last_state,
+                        });
+                    }
+                    ArrayReadiness::Pending => {}
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(DiskError::ArrayNotReady {
+                    device: raid_device.to_string(),
+                    secs: timeout.as_secs(),
+                    state: last_state,
+                });
+            }
+            tokio::time::sleep(poll).await;
         }
-        for device in devices {
-            if let Err(e) = Command::new("sudo")
-                .arg("mdadm")
-                .args(["--zero-superblock", device])
-                .output()
-                .await
-            {
-                tracing::warn!("Failed to zero superblock on {}: {}", device, e);
+    }
+
+    /// Stops a just-created array whose own setup (format/mount) failed
+    /// partway through, so a failed `create_raid` doesn't leave a live array
+    /// holding the member devices hostage.
+    ///
+    /// Scoped by identity (ROADMAP 8.1): the array is stopped, and **only** the
+    /// devices the kernel still reports as members of *that* array — and that
+    /// this job handed to `mdadm --create` — have their superblocks zeroed.
+    /// The old version zeroed every device of the request with no identity
+    /// check, so a device claimed by another array in the meantime (or one
+    /// that belonged to an exported array) lost its metadata as a side effect
+    /// of an unrelated formatting error.
+    ///
+    /// `mdadm --stop` must succeed before anything is wiped: a failed stop
+    /// means the array is still live — typically still mounted, which is the
+    /// case when the failure happened *after* the mount — and erasing a live
+    /// array's metadata is unrecoverable. Best-effort otherwise: errors here
+    /// are secondary to the original failure already being returned, but they
+    /// are logged so a stuck teardown is diagnosable from the journal.
+    async fn teardown_failed_array(
+        raid_device: &str,
+        created: Option<&ArrayIdentity>,
+        requested_members: &[String],
+        cause: &str,
+    ) {
+        let current = array_identity(raid_device).await;
+        match plan_teardown(raid_device, created, current.as_ref(), requested_members) {
+            TeardownPlan::NothingToDo => {
+                tracing::info!(
+                    "Virtual disk setup failed ({}) but {} no longer exists — nothing to tear down",
+                    cause,
+                    raid_device
+                );
+            }
+            TeardownPlan::Foreign(why) => {
+                tracing::error!(
+                    "Virtual disk setup failed ({}): NOT touching {} — {}",
+                    cause,
+                    raid_device,
+                    why
+                );
+            }
+            TeardownPlan::StopOnly(device) => {
+                tracing::warn!(
+                    "Virtual disk setup failed ({}): the identity of {} could not be verified, \
+                     so the array is stopped but no device superblock is erased",
+                    cause,
+                    device
+                );
+                Self::stop_array(&device, cause).await;
+            }
+            TeardownPlan::StopAndWipe { device, members } => {
+                tracing::warn!(
+                    "Virtual disk setup failed ({}): tearing down {} to release {} device(s)",
+                    cause,
+                    device,
+                    members.len()
+                );
+                if !Self::stop_array(&device, cause).await {
+                    return;
+                }
+                for member in &members {
+                    match sudo_timed(&["mdadm", "--zero-superblock", member], MDADM_TIMEOUT).await {
+                        Ok(out) if out.status.success() => {}
+                        Ok(out) => tracing::warn!(
+                            "Failed to zero the superblock on {} ({}): {}",
+                            member,
+                            out.status,
+                            String::from_utf8_lossy(&out.stderr).trim()
+                        ),
+                        Err(e) => {
+                            tracing::warn!("Failed to zero the superblock on {}: {}", member, e)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Stop an md array. `true` when the kernel no longer holds it — the
+    /// precondition for touching any member device.
+    async fn stop_array(device: &str, cause: &str) -> bool {
+        match sudo_timed(&["mdadm", "--stop", device], MDADM_TIMEOUT).await {
+            Ok(out) if out.status.success() => true,
+            Ok(out) => {
+                tracing::warn!(
+                    "Failed to stop {} after '{}': {} — it is still live (mounted?), \
+                     so no device superblock was erased",
+                    device,
+                    cause,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+                false
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to stop {} after '{}': {} — no device superblock was erased",
+                    device,
+                    cause,
+                    e
+                );
+                false
             }
         }
     }
@@ -1180,11 +1781,7 @@ impl DiskService {
 
         // `sudo mkdir`, not `tokio::fs::create_dir_all` — `/mnt` is root-owned
         // and the unprivileged homevault process cannot create subdirectories there.
-        let mkdir_output = Command::new("sudo")
-            .arg("mkdir")
-            .args(["-p", &mount_point])
-            .output()
-            .await?;
+        let mkdir_output = sudo_timed(&["mkdir", "-p", &mount_point], MOUNT_TIMEOUT).await?;
         if !mkdir_output.status.success() {
             let stderr = String::from_utf8_lossy(&mkdir_output.stderr);
             return Err(DiskError::Parse(format!(
@@ -1207,18 +1804,25 @@ impl DiskService {
         // mount instead of failing the whole array creation: the UI then
         // reports "not enforced" with the real reason, which is honest.
         let quota_options = crate::quota::QuotaService::quota_mount_options(filesystem);
-        let mount = |options: Option<&str>| {
-            let mut cmd = Command::new("sudo");
-            cmd.arg("mount");
+        // Nested fn (not a closure): the future borrows its arguments, which a
+        // closure cannot express without capping their lifetime.
+        async fn mount_with(
+            raid_device: &str,
+            mount_point: &str,
+            options: Option<&str>,
+        ) -> Result<std::process::Output, DiskError> {
+            let mut args: Vec<&str> = vec!["mount"];
             if let Some(opts) = options {
-                cmd.args(["-o", opts]);
+                args.push("-o");
+                args.push(opts);
             }
-            cmd.args([raid_device, &mount_point]);
-            cmd.output()
-        };
+            args.push(raid_device);
+            args.push(mount_point);
+            sudo_timed(&args, MOUNT_TIMEOUT).await
+        }
         let mut mount_output = match quota_options {
-            Some(opts) => mount(Some(opts)).await?,
-            None => mount(None).await?,
+            Some(opts) => mount_with(raid_device, &mount_point, Some(opts)).await?,
+            None => mount_with(raid_device, &mount_point, None).await?,
         };
         let mut mounted_with_quota = quota_options.is_some() && mount_output.status.success();
         if !mount_output.status.success() && quota_options.is_some() {
@@ -1229,7 +1833,7 @@ impl DiskService {
                 mount_point,
                 first_error.trim()
             );
-            mount_output = mount(None).await?;
+            mount_output = mount_with(raid_device, &mount_point, None).await?;
             mounted_with_quota = false;
         }
         if !mount_output.status.success() {
@@ -1255,12 +1859,7 @@ impl DiskService {
         // come back after a reboot, and the fstab entry added below then has
         // nothing to mount. The old code dropped both the append result and
         // the scan status on the floor (`let _ =`).
-        match Command::new("sudo")
-            .arg("mdadm")
-            .args(["--detail", "--scan", raid_device])
-            .output()
-            .await
-        {
+        match sudo_timed(&["mdadm", "--detail", "--scan", raid_device], MDADM_TIMEOUT).await {
             Ok(scan_output) if scan_output.status.success() => {
                 let array_line = String::from_utf8_lossy(&scan_output.stdout)
                     .trim()
@@ -1311,11 +1910,11 @@ impl DiskService {
 
         // Add an fstab entry keyed by UUID so the array mounts automatically on boot.
         // `nofail` keeps boot from hanging if the array can't be assembled for some reason.
-        if let Ok(uuid_output) = Command::new("sudo")
-            .arg("blkid")
-            .args(["-s", "UUID", "-o", "value", raid_device])
-            .output()
-            .await
+        if let Ok(uuid_output) = sudo_timed(
+            &["blkid", "-s", "UUID", "-o", "value", raid_device],
+            BLKID_TIMEOUT,
+        )
+        .await
         {
             let uuid = String::from_utf8_lossy(&uuid_output.stdout)
                 .trim()
@@ -1341,11 +1940,7 @@ impl DiskService {
                 // --verify` parses /etc/fstab exactly like mount does;
                 // if verification fails, undo the append so the host boots
                 // normally, and fail the creation.
-                let verify = Command::new("sudo")
-                    .arg("findmnt")
-                    .args(["--verify", "--fstab"])
-                    .output()
-                    .await;
+                let verify = sudo_timed(&["findmnt", "--verify", "--fstab"], BLKID_TIMEOUT).await;
                 match verify {
                     Ok(v) if v.status.success() => {}
                     Ok(v) => {
@@ -1390,13 +1985,22 @@ impl DiskService {
         // (Debian's update-initramfs, dracut elsewhere); a missing tool or a
         // failed regeneration must not fail the creation — the fstab entry
         // still mounts the array once mdadm.conf is picked up by any later
-        // initramfs rebuild.
-        let _ = Command::new("sudo")
-            .arg("update-initramfs")
-            .arg("-u")
-            .output()
-            .await;
-        let _ = Command::new("sudo").arg("dracut").arg("-f").output().await;
+        // initramfs rebuild. Bounded (ROADMAP 8.3) so a wedged hook script
+        // cannot hold the job, and therefore `CREATE_LOCK`, forever.
+        if let Err(e) = sudo_timed(&["update-initramfs", "-u"], INITRAMFS_TIMEOUT).await {
+            tracing::warn!(
+                "Could not refresh the boot image after adding '{}' to mdadm.conf: {}",
+                name,
+                e
+            );
+        }
+        if let Err(e) = sudo_timed(&["dracut", "-f"], INITRAMFS_TIMEOUT).await {
+            tracing::debug!(
+                "dracut fallback for '{}' did not run: {} (expected on Debian-style hosts)",
+                name,
+                e
+            );
+        }
 
         Ok(())
     }
@@ -1458,6 +2062,10 @@ impl DiskService {
 
     /// Write content to a root-owned file via `sudo tee`, since the
     /// unprivileged homevault process cannot write to system files directly.
+    ///
+    /// Bounded like every other privileged call (ROADMAP 8.3): `sudo tee` on a
+    /// system path can block on a slow filesystem or a locked file, and this
+    /// runs inside the array-creation job while `PERSIST_LOCK` is held.
     async fn write_file_as_root(path: &str, content: &str) -> Result<(), DiskError> {
         use tokio::io::AsyncWriteExt;
         let mut child = Command::new("sudo")
@@ -1465,6 +2073,7 @@ impl DiskService {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
             .spawn()
             .map_err(|e| DiskError::Parse(format!("Failed to spawn sudo tee: {}", e)))?;
         if let Some(mut stdin) = child.stdin.take() {
@@ -1472,10 +2081,21 @@ impl DiskService {
                 DiskError::Parse(format!("Failed to write to sudo tee stdin: {}", e))
             })?;
         }
-        let output = child
-            .wait_with_output()
-            .await
-            .map_err(|e| DiskError::Parse(format!("Failed to wait for sudo tee: {}", e)))?;
+        let output = match tokio::time::timeout(MOUNT_TIMEOUT, child.wait_with_output()).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(e)) => {
+                return Err(DiskError::Parse(format!(
+                    "Failed to wait for sudo tee: {}",
+                    e
+                )))
+            }
+            Err(_) => {
+                return Err(DiskError::Timeout {
+                    command: format!("sudo tee {}", path),
+                    secs: MOUNT_TIMEOUT.as_secs(),
+                })
+            }
+        };
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(DiskError::Parse(format!("sudo tee failed: {}", stderr)));
@@ -1537,15 +2157,7 @@ impl DiskService {
         // raidz1: single parity (like raid5)
         // raidz2: double parity (like raid6)
         // mirror: 2-disk mirror (like raid1) / striped mirrors (like raid10)
-        let pool_type = match raid_level {
-            "raid0" => "",
-            "raid1" => "mirror",
-            "raid5" => "raidz1",
-            "raid6" => "raidz2",
-            "raid10" => "mirror",
-            _ => "",
-        };
-
+        // (`zfs_create_args` owns the mapping so the argv is unit-testable.)
         if raid_level == "raid10" && devices.len() % 2 != 0 {
             return Err(DiskError::Parse(
                 "A ZFS raid10 pool needs pairs of devices (even count)".to_string(),
@@ -1555,11 +2167,7 @@ impl DiskService {
         let mount_point = format!("{}/{}", crate::config::paths::RAID_MOUNT_BASE, name);
         // `sudo mkdir` — /mnt is root-owned (same reasoning as
         // mount_and_persist_raid below); zfs mounts over it happily.
-        let mkdir_output = Command::new("sudo")
-            .arg("mkdir")
-            .args(["-p", &mount_point])
-            .output()
-            .await?;
+        let mkdir_output = sudo_timed(&["mkdir", "-p", &mount_point], MOUNT_TIMEOUT).await?;
         if !mkdir_output.status.success() {
             let stderr = String::from_utf8_lossy(&mkdir_output.stderr);
             return Err(DiskError::CommandFailed {
@@ -1568,61 +2176,23 @@ impl DiskService {
             });
         }
 
-        // `zpool create [-f] [-m mountpoint] [-O props] <poolname> <layout>`
+        // `zpool create [-m mountpoint] [-O props] <poolname> <layout>`
         // — the pool name comes BEFORE the vdev type. Passing the type first
         // made zpool read the pool name as a device ("cannot open '<name>':
         // no such device in /dev"), so every redundant level (mirror /
         // raidzN) failed outright — only raid0 (empty type) ever worked.
-        let mut args: Vec<String> = vec!["zpool".into(), "create".into(), "-f".into()];
-        args.push("-m".into());
-        args.push(mount_point.clone());
-        // One shared root-dataset policy; kept mirrored with
-        // `pools.rs::create_zfs_advanced_pool` so every ZFS volume the
-        // appliance creates behaves the same for the shares' ACL tooling.
-        for kv in [
-            "compression=lz4",
-            "atime=off",
-            "acltype=posixacl",
-            "xattr=sa",
-        ] {
-            args.push("-O".into());
-            args.push(kv.into());
-        }
-        args.push(name.to_string());
-
-        if !pool_type.is_empty() && raid_level != "raid10" {
-            args.push(pool_type.to_string());
-        }
-
-        // raid10: one `mirror` keyword group per device pair:
-        // `zpool create -f tank mirror d1 d2 mirror d3 d4 …`
-        if raid_level == "raid10" {
-            for pair in devices.chunks(2) {
-                args.push("mirror".to_string());
-                for device in pair {
-                    args.push(if device.starts_with("/dev/") {
-                        device.clone()
-                    } else {
-                        format!("/dev/{}", device)
-                    });
-                }
-            }
-        } else {
-            let device_refs: Vec<String> = devices
-                .iter()
-                .map(|s| {
-                    if s.starts_with("/dev/") {
-                        s.clone()
-                    } else {
-                        format!("/dev/{}", s)
-                    }
-                })
-                .collect();
-            args.extend(device_refs);
-        }
+        //
+        // Deliberately **without `-f`** (ROADMAP 8, matching the decision taken
+        // for `create_zfs_pool` in 7.4): `zpool create -f` overwrites whatever
+        // pool signature a device already carries, including an exported pool
+        // that only *looks* free. `validate_pool_devices` already refuses a
+        // device with a ZFS signature, so the flag could only ever turn a
+        // conflict into silent destruction. Pinned by
+        // `test_zfs_create_args_*`.
+        let args = zfs_create_args(name, raid_level, &devices, &mount_point);
 
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let output = Command::new("sudo").args(&arg_refs).output().await?;
+        let output = sudo_timed(&arg_refs, ZPOOL_TIMEOUT).await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1669,11 +2239,13 @@ impl DiskService {
         // confirmed live against a device with realistic 660 root:disk
         // permissions). This is reached from the encryption feature to
         // format a freshly-opened /dev/mapper/* LUKS device.
-        let output = Command::new("sudo")
-            .arg(command)
-            .args(&args)
-            .output()
-            .await?;
+        //
+        // [`MKFS_TIMEOUT`] bounds it: `mkfs` on a multi-terabyte device with
+        // discard enabled is minutes, not milliseconds, but it must never be
+        // unbounded (ROADMAP 8.3).
+        let mut sudo_args = vec![command];
+        sudo_args.extend(args.iter().copied());
+        let output = sudo_timed(&sudo_args, MKFS_TIMEOUT).await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1699,10 +2271,7 @@ impl DiskService {
         // pool signature the device already carries, including an array that
         // was only *exported* — refusing instead surfaces the conflict to the
         // admin rather than silently destroying a pool (ROADMAP 7.4).
-        let output = Command::new("sudo")
-            .args(["zpool", "create", pool_name, device])
-            .output()
-            .await?;
+        let output = sudo_timed(&["zpool", "create", pool_name, device], ZPOOL_TIMEOUT).await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2825,11 +3394,7 @@ impl DiskService {
                 ));
             }
             if slots > max_missing_for_level(&req.level) {
-                return Err(DiskError::Parse(format!(
-                    "RAID {} cannot start degraded by more than {} device(s)",
-                    req.level,
-                    max_missing_for_level(&req.level)
-                )));
+                return Err(degraded_budget_error(&req.level));
             }
             if slots_total > min {
                 return Err(DiskError::Parse(
@@ -3580,6 +4145,585 @@ recommended polling time: \t (   5) minutes.
             DiskService::parse_smart_polling_minutes(CAPABILITIES, "Offline"),
             None
         );
+    }
+
+    // -- ROADMAP 8.1: a failed setup may only undo its own array -------------
+    //
+    // The teardown used to zero the superblock of every device in the
+    // *request*, with no identity check, so a device claimed by another array
+    // in the meantime lost its metadata as a side effect of an unrelated
+    // formatting error. The decision is pure (`plan_teardown`) precisely so
+    // it can be pinned here without a real array.
+
+    /// A realistic `mdadm --detail` body: header lines, a state block, the
+    /// device table, and a `removed` slot that carries no device path.
+    const MDADM_DETAIL: &str = "\
+/dev/md/hvtest:
+           Version : 1.2
+     Creation Time : Tue Oct 20 10:00:00 2026
+        Raid Level : raid5
+        Array Size : 1953260544 (1862.79 GiB 2000.14 GB)
+      Raid Devices : 4
+     Total Devices : 4
+       Persistence : Superblock is persistent
+
+       Update Time : Tue Oct 20 10:05:00 2026
+             State : clean, degraded
+    Active Devices : 3
+   Working Devices : 3
+    Failed Devices : 0
+     Spare Devices : 0
+
+              Name : homevault:hvtest
+              UUID : 3f2a1b4c:8d9e0f12:3456789a:bcdef012
+            Events : 17
+
+    Number   Major   Minor   RaidDevice State
+       0       8        1        0      active sync   /dev/sda1
+       1       8       17        1      active sync   /dev/sdb1
+       2       8       33        2      active sync   /dev/sdc1
+
+       3       0        0        3      removed
+";
+
+    fn identity(name: &str, uuid: Option<&str>, members: &[&str]) -> ArrayIdentity {
+        ArrayIdentity {
+            name: name.to_string(),
+            uuid: uuid.map(String::from),
+            members: members.iter().map(|m| m.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn test_parse_mdadm_detail_reads_label_uuid_and_members() {
+        let parsed = parse_mdadm_detail(MDADM_DETAIL).expect("a detail body must parse");
+        // `Name : hostname:label` → the bare label the create pinned.
+        assert_eq!(parsed.name, "hvtest");
+        assert_eq!(
+            parsed.uuid.as_deref(),
+            Some("3f2a1b4c:8d9e0f12:3456789a:bcdef012")
+        );
+        // The `removed` slot carries no path and must not become a member.
+        assert_eq!(
+            parsed.members,
+            vec![
+                "/dev/sda1".to_string(),
+                "/dev/sdb1".to_string(),
+                "/dev/sdc1".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_mdadm_detail_needs_a_name_line() {
+        // Without the `Name :` header there is no identity to compare, so the
+        // caller must get `None` (and therefore never wipe a device).
+        assert!(parse_mdadm_detail("mdadm: cannot open /dev/md/nope: No such file").is_none());
+        assert!(parse_mdadm_detail("").is_none());
+    }
+
+    #[test]
+    fn test_parse_mdadm_detail_keeps_a_spare_and_skips_a_missing_slot() {
+        let body = "\
+/dev/md0:
+              Name : host:data
+              UUID : aaaa:bbbb
+
+    Number   Major   Minor   RaidDevice State
+       0       8        1        0      active sync   /dev/sda1
+       1       0        0        1      removed
+       2       8       33        2      spare   /dev/sdc1
+";
+        let parsed = parse_mdadm_detail(body).expect("must parse");
+        assert_eq!(parsed.name, "data");
+        assert_eq!(
+            parsed.members,
+            vec!["/dev/sda1".to_string(), "/dev/sdc1".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_plan_teardown_wipes_only_the_members_this_job_assembled() {
+        // We created the array with sda+sdb. Since then sdc joined it (another
+        // job, a spare add) and sdd was requested but never assembled: only
+        // the intersection may be zeroed.
+        let created = identity("hvtest", Some("uuid-a"), &["/dev/sda", "/dev/sdb"]);
+        let current = identity(
+            "hvtest",
+            Some("uuid-a"),
+            &["/dev/sda", "/dev/sdb", "/dev/sdc"],
+        );
+        let requested = vec![
+            "/dev/sda".to_string(),
+            "/dev/sdb".to_string(),
+            "/dev/sdd".to_string(),
+        ];
+
+        assert_eq!(
+            plan_teardown("/dev/md/hvtest", Some(&created), Some(&current), &requested),
+            TeardownPlan::StopAndWipe {
+                device: "/dev/md/hvtest".to_string(),
+                members: vec!["/dev/sda".to_string(), "/dev/sdb".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn test_plan_teardown_refuses_a_different_array_under_the_same_name() {
+        // Same label, different superblock: the node was recreated by someone
+        // else between our failure and the teardown. Nothing may be touched.
+        let created = identity("hvtest", Some("uuid-a"), &["/dev/sda"]);
+        let current = identity("hvtest", Some("uuid-b"), &["/dev/sda"]);
+        let requested = vec!["/dev/sda".to_string()];
+
+        match plan_teardown("/dev/md/hvtest", Some(&created), Some(&current), &requested) {
+            TeardownPlan::Foreign(reason) => {
+                assert!(reason.contains("not the one this job created"), "{reason}");
+            }
+            other => panic!("expected a Foreign plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_plan_teardown_refuses_a_renamed_node() {
+        // A different metadata label is a different array, whatever the path
+        // says: `/dev/md/<name>` is only a symlink.
+        let created = identity("hvtest", Some("uuid-a"), &["/dev/sda"]);
+        let current = identity("other", Some("uuid-a"), &["/dev/sda"]);
+        let requested = vec!["/dev/sda".to_string()];
+
+        assert!(matches!(
+            plan_teardown("/dev/md/hvtest", Some(&created), Some(&current), &requested),
+            TeardownPlan::Foreign(_)
+        ));
+    }
+
+    #[test]
+    fn test_plan_teardown_stops_without_wiping_when_no_identity_was_captured() {
+        // `mdadm --detail` never answered after the create: the array is
+        // stopped (it can only be ours — the name was free and CREATE_LOCK was
+        // held) but no superblock is erased.
+        let current = identity("hvtest", None, &["/dev/sda"]);
+        let requested = vec!["/dev/sda".to_string()];
+
+        assert_eq!(
+            plan_teardown("/dev/md/hvtest", None, Some(&current), &requested),
+            TeardownPlan::StopOnly("/dev/md/hvtest".to_string())
+        );
+    }
+
+    #[test]
+    fn test_plan_teardown_does_nothing_when_the_array_is_already_gone() {
+        let created = identity("hvtest", Some("uuid-a"), &["/dev/sda"]);
+        let requested = vec!["/dev/sda".to_string()];
+
+        assert_eq!(
+            plan_teardown("/dev/md/hvtest", Some(&created), None, &requested),
+            TeardownPlan::NothingToDo
+        );
+    }
+
+    #[test]
+    fn test_plan_teardown_falls_back_to_the_label_when_no_uuid_was_printed() {
+        // `mdadm --detail` did not print a UUID on one of the two reads: the
+        // `--name` label is the identity we have.
+        let created = identity("hvtest", None, &["/dev/sda"]);
+        let current = identity("hvtest", Some("uuid-a"), &["/dev/sda"]);
+        let requested = vec!["/dev/sda".to_string()];
+
+        assert!(matches!(
+            plan_teardown("/dev/md/hvtest", Some(&created), Some(&current), &requested),
+            TeardownPlan::StopAndWipe { .. }
+        ));
+    }
+
+    #[test]
+    fn test_wipe_targets_matches_device_basenames_and_stays_conservative() {
+        // `/dev/sda` and `sda` name the same device.
+        assert_eq!(
+            wipe_targets(&["sda".to_string()], &["/dev/sda".to_string()]),
+            vec!["/dev/sda".to_string()]
+        );
+        // A by-id path is not the same name: the intersection is empty, which
+        // means "wipe nothing" rather than "wipe the wrong device".
+        assert!(wipe_targets(
+            &["/dev/disk/by-id/ata-ST1000-x".to_string()],
+            &["/dev/sda".to_string()]
+        )
+        .is_empty());
+    }
+
+    // -- ROADMAP 8.2: a silent array fails the create -------------------------
+
+    #[test]
+    fn test_classify_array_state_matrix() {
+        for state in ["clean", "active", "active-idle", "readonly", "read-write"] {
+            assert_eq!(
+                classify_array_state(state),
+                ArrayReadiness::Ready,
+                "{state} is usable"
+            );
+        }
+        // Whitespace and the trailing newline sysfs adds are irrelevant.
+        assert_eq!(
+            classify_array_state(" active\n"),
+            ArrayReadiness::Ready,
+            "sysfs values are trimmed"
+        );
+        // `clear` means the kernel holds no array at all: waiting cannot fix it.
+        assert_eq!(classify_array_state("clear"), ArrayReadiness::Missing);
+        for state in ["inactive", "suspended", "broken"] {
+            assert_eq!(
+                classify_array_state(state),
+                ArrayReadiness::Pending,
+                "{state} is still assembling"
+            );
+        }
+    }
+
+    #[test]
+    fn test_resync_percent_only_reports_a_running_sync() {
+        assert_eq!(resync_percent("resync", "30 100"), Some(30.0));
+        assert_eq!(resync_percent("rebuild", "1 3"), Some(100.0 / 3.0));
+        // `idle`/`none` is the steady state, not "0 %".
+        assert_eq!(resync_percent("idle", "none"), None);
+        assert_eq!(resync_percent("resync", "none"), None);
+        // A zero total (or a garbage body) must not divide.
+        assert_eq!(resync_percent("resync", "0 0"), None);
+        assert_eq!(resync_percent("check", ""), None);
+        // Never above 100 %, whatever the kernel reports.
+        assert_eq!(resync_percent("resync", "200 100"), Some(100.0));
+    }
+
+    /// Records the last milestone so the polling loop's progress reporting is
+    /// observable.
+    struct RecordingProgress(std::sync::Mutex<Vec<(u8, String)>>);
+
+    impl CreateProgress for RecordingProgress {
+        fn report(&self, percent: u8, message: &str) {
+            self.0.lock().unwrap().push((percent, message.to_string()));
+        }
+    }
+
+    /// Three sysfs stand-ins in a temp directory (the real paths are
+    /// `/sys/block/mdX/md/*`).
+    fn sysfs_fixture(
+        dir: &std::path::Path,
+        state: Option<&str>,
+        sync: &str,
+        completed: &str,
+    ) -> (PathBuf, PathBuf, PathBuf) {
+        let state_path = dir.join("array_state");
+        let sync_path = dir.join("sync_action");
+        let completed_path = dir.join("sync_completed");
+        if let Some(state) = state {
+            std::fs::write(&state_path, state).unwrap();
+        }
+        std::fs::write(&sync_path, sync).unwrap();
+        std::fs::write(&completed_path, completed).unwrap();
+        (state_path, sync_path, completed_path)
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_array_state_accepts_an_array_that_becomes_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, sync, completed) =
+            sysfs_fixture(dir.path(), Some("inactive\n"), "idle", "none");
+
+        // The kernel flips the state a moment later, like a real create.
+        let writer = {
+            let state = state.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                tokio::fs::write(&state, "active\n").await.unwrap();
+            })
+        };
+
+        let result = DiskService::wait_for_array_state(
+            "/dev/md/hvtest",
+            &state,
+            &sync,
+            &completed,
+            Duration::from_secs(2),
+            Duration::from_millis(10),
+            None,
+        )
+        .await;
+        writer.await.unwrap();
+        assert!(
+            result.is_ok(),
+            "an array that becomes active must be accepted: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_array_state_reports_the_resync_percent() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, sync, completed) =
+            sysfs_fixture(dir.path(), Some("active\n"), "resync\n", "30 100\n");
+        let progress = RecordingProgress(std::sync::Mutex::new(Vec::new()));
+
+        DiskService::wait_for_array_state(
+            "/dev/md/hvtest",
+            &state,
+            &sync,
+            &completed,
+            Duration::from_secs(1),
+            Duration::from_millis(10),
+            Some(&progress),
+        )
+        .await
+        .expect("an active array is ready");
+
+        let reported = progress.0.lock().unwrap().clone();
+        assert_eq!(reported.len(), 1, "{reported:?}");
+        // The 0-100 resync window is mapped into the 10-40 band of the job.
+        assert_eq!(reported[0].0, 19, "{reported:?}");
+        assert!(reported[0].1.contains("30%"), "{reported:?}");
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_array_state_fails_fast_when_the_kernel_has_no_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, sync, completed) = sysfs_fixture(dir.path(), Some("clear\n"), "idle", "none");
+        let started = std::time::Instant::now();
+
+        let error = DiskService::wait_for_array_state(
+            "/dev/md/hvtest",
+            &state,
+            &sync,
+            &completed,
+            // A long deadline on purpose: a `clear` state must not be polled
+            // until it expires — the array does not exist and never will.
+            Duration::from_secs(30),
+            Duration::from_millis(10),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        match error {
+            DiskError::ArrayNotReady { ref state, .. } => assert_eq!(state, "clear"),
+            other => panic!("expected ArrayNotReady, got {other:?}"),
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a `clear` array state must fail immediately, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_array_state_times_out_instead_of_continuing() {
+        // No `array_state` at all: this is the case that used to fall through
+        // to `mkfs` on a device the kernel was still assembling.
+        let dir = tempfile::tempdir().unwrap();
+        let (state, sync, completed) = sysfs_fixture(dir.path(), None, "idle", "none");
+        let started = std::time::Instant::now();
+
+        let error = DiskService::wait_for_array_state(
+            "/dev/md/hvtest",
+            &state,
+            &sync,
+            &completed,
+            Duration::from_millis(150),
+            Duration::from_millis(10),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(error, DiskError::ArrayNotReady { .. }), "{error}");
+        assert!(
+            started.elapsed() >= Duration::from_millis(150),
+            "must wait for the deadline before failing, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    // -- ROADMAP 8.3: every privileged call has a deadline -------------------
+
+    #[tokio::test]
+    async fn test_run_timed_returns_the_output_of_a_fast_command() {
+        let output = run_timed("printf", &["ok"], Duration::from_secs(5))
+            .await
+            .expect("printf answers immediately");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "ok");
+    }
+
+    #[tokio::test]
+    async fn test_run_timed_gives_up_on_a_command_that_never_returns() {
+        let started = std::time::Instant::now();
+        let error = run_timed("sleep", &["30"], Duration::from_millis(120))
+            .await
+            .unwrap_err();
+
+        match error {
+            DiskError::Timeout { ref command, .. } => assert_eq!(command, "sleep 30"),
+            other => panic!("expected Timeout, got {other:?}"),
+        }
+        // The deadline is enforced, not merely reported: the test does not
+        // sit through the child's own 30 s.
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the command must be killed at the deadline, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    // -- ROADMAP 8: one degraded-create policy -------------------------------
+
+    #[test]
+    fn test_max_missing_slots_is_the_single_policy_table() {
+        assert_eq!(max_missing_for_level("raid1"), 1);
+        assert_eq!(max_missing_for_level("raid5"), 1);
+        assert_eq!(max_missing_for_level("raid6"), 2);
+        // Deliberate refusals, not oversights: raid0 has no redundancy, and
+        // mdadm only places a raid10 `missing` slot with an explicit layout.
+        assert_eq!(max_missing_for_level("raid0"), 0);
+        assert_eq!(max_missing_for_level("raid10"), 0);
+        assert_eq!(max_missing_for_level("unknown"), 0);
+    }
+
+    #[test]
+    fn test_degraded_refusal_names_the_reason() {
+        let raid0 = degraded_budget_error("raid0").to_string();
+        assert!(raid0.contains("cannot start degraded"), "{raid0}");
+        assert!(raid0.contains("no redundancy"), "{raid0}");
+
+        let raid10 = degraded_budget_error("raid10").to_string();
+        assert!(raid10.contains("cannot start degraded"), "{raid10}");
+        assert!(raid10.contains("explicit layout"), "{raid10}");
+    }
+
+    #[tokio::test]
+    async fn test_both_validators_agree_on_a_degraded_create() {
+        // The API gate (`validate_virtual_disk_request`) and the job
+        // (`create_raid`) read the same table, so a request that one refuses
+        // can never reach `mdadm` through the other.
+        for (level, members) in [
+            ("raid0", vec!["/dev/null"]),
+            ("raid10", vec!["/dev/null", "/dev/null", "/dev/null"]),
+        ] {
+            let request = VirtualDiskRequest {
+                name: "hvtest".to_string(),
+                level: level.to_string(),
+                members: members.iter().map(|m| m.to_string()).collect(),
+                spares: Vec::new(),
+                allow_missing: true,
+                filesystem: "ext4".to_string(),
+            };
+            let gate = DiskService::validate_virtual_disk_request(&request)
+                .expect_err("the API gate must refuse this degraded create");
+            let job = DiskService::create_raid(
+                &MdadmRaidRequest {
+                    name: "hvtest".to_string(),
+                    level: level.to_string(),
+                    members: members.iter().map(|m| m.to_string()).collect(),
+                    spares: Vec::new(),
+                    allow_missing: true,
+                    filesystem: "ext4".to_string(),
+                },
+                None,
+            )
+            .await
+            .expect_err("the job must refuse the same request");
+            assert_eq!(
+                gate.to_string(),
+                job.to_string(),
+                "{level}: the API gate and the job must return the same refusal"
+            );
+        }
+    }
+
+    // -- ROADMAP 8: the ZFS argv, without `-f` -------------------------------
+
+    fn zfs_args(level: &str, devices: &[&str]) -> Vec<String> {
+        let devices: Vec<String> = devices.iter().map(|d| d.to_string()).collect();
+        zfs_create_args("hvpool", level, &devices, "/mnt/hvpool")
+    }
+
+    #[test]
+    fn test_zfs_create_args_puts_the_pool_name_before_the_vdev_type() {
+        // The historical bug: `zpool create mirror <name> <devices>` — zpool
+        // read the pool name as a device, so every redundant level failed and
+        // only raid0 ever worked.
+        for (level, vdev) in [
+            ("raid1", "mirror"),
+            ("raid5", "raidz1"),
+            ("raid6", "raidz2"),
+        ] {
+            let args = zfs_args(level, &["/dev/sda", "/dev/sdb", "/dev/sdc"]);
+            let name_at = args
+                .iter()
+                .position(|a| a == "hvpool")
+                .expect("the pool name must be present");
+            let vdev_at = args
+                .iter()
+                .position(|a| a == vdev)
+                .expect("the vdev type must be present");
+            assert!(
+                name_at < vdev_at,
+                "{level}: pool name must come first: {args:?}"
+            );
+        }
+
+        // raid0 is a plain stripe: no vdev keyword at all, devices straight
+        // after the name.
+        let raid0 = zfs_args("raid0", &["/dev/sda", "/dev/sdb"]);
+        assert!(
+            !raid0
+                .iter()
+                .any(|a| a == "mirror" || a == "raidz1" || a == "raidz2"),
+            "{raid0:?}"
+        );
+        assert_eq!(
+            raid0.last().map(String::as_str),
+            Some("/dev/sdb"),
+            "{raid0:?}"
+        );
+    }
+
+    #[test]
+    fn test_zfs_create_args_never_forces_creation() {
+        // `-f` overwrites a pool signature the free-device gate already
+        // refused — it must not come back (ROADMAP 8, matching 7.4).
+        for level in ["raid0", "raid1", "raid5", "raid6", "raid10"] {
+            let args = zfs_args(level, &["/dev/sda", "/dev/sdb", "/dev/sdc", "/dev/sdd"]);
+            assert!(
+                !args.iter().any(|a| a == "-f" || a == "--force"),
+                "{level}: zpool create must never force: {args:?}"
+            );
+            assert_eq!(args[0], "zpool");
+            assert_eq!(args[1], "create");
+            // The root-dataset policy travels with every pool.
+            assert!(
+                args.iter().any(|a| a == "compression=lz4"),
+                "{level}: {args:?}"
+            );
+            assert!(args.iter().any(|a| a == "/mnt/hvpool"), "{level}: {args:?}");
+        }
+    }
+
+    #[test]
+    fn test_zfs_create_args_stripes_mirrors_for_raid10() {
+        let args = zfs_args("raid10", &["/dev/sda", "/dev/sdb", "/dev/sdc", "/dev/sdd"]);
+        let tail: Vec<&str> = args
+            .iter()
+            .rev()
+            .take(6)
+            .rev()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            tail,
+            vec!["mirror", "/dev/sda", "/dev/sdb", "mirror", "/dev/sdc", "/dev/sdd"],
+            "{args:?}"
+        );
+        // A bare device name still gets its `/dev/` prefix.
+        let bare = zfs_args("raid1", &["sda", "sdb"]);
+        assert!(bare.iter().any(|a| a == "/dev/sda"), "{bare:?}");
     }
 }
 

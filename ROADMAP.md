@@ -44,7 +44,9 @@ The areas that have had a full "production-ready" pass are out of scope here:
 auth under HTTPS** (all 2026-10-21), and **Health** (2026-10-22) — followed by
 **Health's numbered follow-ups**, the **File Explorer security pass**, the
 **Account / Security pass**, **disk quotas** and the **AI Assistant / RAG pass**
-(all 2026-10-22, see Done).
+(all 2026-10-22), and on 2026-10-23 **Storage's sudoers scoping + residual call
+sites**, **Apps Center / app-proxy** and the **RAID wizard's create path** (see
+Done).
 
 Everything else is still on its original implementation plus incremental
 feature work. The pattern is consistent: **the screens render, the endpoints
@@ -70,7 +72,6 @@ Two structural facts explain most of the list:
 
 | # | Area | Verdict | Blocking items |
 |---|---|---|---|
-| 8 | RAID wizard | P1 | 3 |
 | 9 | LUKS2 encryption | P1 | 3 |
 | 10b | File Explorer — residual hardening | P2 | 3 |
 | 11 | Metrics | P1 | 2 |
@@ -95,12 +96,14 @@ Two structural facts explain most of the list:
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **64** (57 per-area + 7 cross-cutting).
+Total open findings: **61** (54 per-area + 7 cross-cutting).
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23. P1 now goes by blast radius, and 12.2/12.3 and 13.4 go
 together, since a UTC-only cron with a stored-but-unapplied timezone is one
-defect seen from two screens.
+defect seen from two screens. **9 (LUKS2) is next**: 9.2 erases key material
+while the volume can still be mounted, which is the same class of
+unrecoverable loss as 8.1.
 
 ---
 
@@ -112,40 +115,6 @@ None. Item 6 (Apps Center / app-proxy) was closed on 2026-10-23 — see
 ---
 
 ## P1 — Needs work
-
-### 8. RAID wizard — a failed format destroys every listed device
-
-- [ ] **8.1 — `teardown_failed_array` zeroes the superblock of *all* members.**
-      `src/disk.rs:1176-1201`: after `mdadm --stop`, it runs
-      `--zero-superblock` for every device in the **request**, with no
-      confirmation and no check that those are the devices *this* create
-      actually assembled. A device claimed concurrently — or one that belonged
-      to an existing exported array — loses its metadata as a side effect of an
-      unrelated formatting error.
-      *Acceptance:* teardown only touches devices this job assembled, and only
-      after verifying the array identity.
-- [ ] **8.2 — `wait_for_array_ready` gives up after 20 s and continues anyway.**
-      `src/disk.rs:1112-1166`: 40 polls × 500 ms, then "Not ready within 20 s:
-      mdadm create already succeeded, so continue anyway" — and `mkfs` + `mount`
-      run against a still-initialising device. Combined with 8.1, this is the
-      realistic path to "RAID creation destroyed my disks".
-- [ ] **8.3 — No command timeouts.** `mdadm --create`, `mkfs.*`, `mount`,
-      `blkid`, `update-initramfs`/`dracut` are all `.output().await` with no
-      deadline, so a hung job holds `CREATE_LOCK` forever and every later create
-      answers "already running" with no way out short of a service restart.
-
-Also: `raid10` with a missing member is refused while `raid5/6` allow it
-(inconsistent degraded-create policy in `validate_virtual_disk_request`); the
-ZFS branch passes `-f` (`:1513`); the wizard's filesystem list and
-`format_device`'s accepted list have already drifted (`ntfs`).
-
-*Tests:* `tests/raid_integration.rs` has 5 tests, **all** auth-gate and
-validation — **nothing covers the create path**. The only lifecycle coverage is
-opt-in E2E (`tests/e2e/raid/raid.spec.ts` `13.x`, gated on `RAID_E2E_DEVICES`).
-*Docs:* `docs/guides/raid.md` has no "not tested" section, which overstates
-readiness — add one.
-
----
 
 ### 9. LUKS2 encryption — a multi-minute operation inside an HTTP request
 
@@ -886,6 +855,59 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-23 (f)** — RAID wizard — a failed setup can no longer destroy a
+device it never assembled. **8.1:** `teardown_failed_array` now decides from an
+identity captured right after *its own* `mdadm --create` (`mdadm --detail` →
+label + UUID + members, parsed by the new `parse_mdadm_detail`) instead of
+trusting the request: it zeroes only the intersection of (request members) ×
+(devices the kernel reports as members **now**), wipes nothing when the
+identity is unknown, refuses to touch a node whose label/UUID changed (a
+concurrent job recreated it), and requires `mdadm --stop` to succeed before any
+superblock is erased — a failed stop means the array is still live, typically
+still mounted, which is exactly the case when the failure happened *after* the
+mount. A non-zero exit from `--zero-superblock` is now reported instead of
+being mistaken for a spawn error, and a failed `mdadm --create` goes through the
+same teardown (a create that dies on the fourth device used to leave three
+superblocks pointing at an array nothing would assemble). **8.2:**
+`wait_for_array_ready` returns `Result`: the ceiling went 20 s → 120 s
+(`ARRAY_READY_TIMEOUT`), a `clear` `array_state` fails immediately (the kernel
+holds no array — polling cannot fix it), and running out of the deadline fails
+the job and tears the array down instead of running `mkfs` + `mount` on a device
+the kernel is still assembling. **8.3:** every privileged call of the create
+path goes through one `run_timed` helper (`spawn` + `kill_on_drop` +
+`tokio::time::timeout`, so a timed-out tool really dies) with the deadlines
+`MDADM_TIMEOUT` 120 s, `MKFS_TIMEOUT` 900 s, `MOUNT_TIMEOUT` 60 s,
+`BLKID_TIMEOUT` 30 s, `ZPOOL_TIMEOUT` 120 s, `INITRAMFS_TIMEOUT` 300 s; a
+timeout is the distinct `DiskError::Timeout` ("did not finish within Ns")
+because the tool may have been doing the right thing. Also closed in the same
+block: the degraded-create policy is **one** table (`max_missing_for_level`)
+read by both the API gate and the job, so raid0/raid10 refusals now name their
+reason ("no redundancy" / "mdadm only places a missing slot in RAID 10 with an
+explicit layout") instead of only a slot count — the raid5/6-vs-raid10
+difference is deliberate and documented rather than incidental; and the ZFS
+branch dropped its `-f` (matching the decision taken for `create_zfs_pool` in
+7.4): a device carrying a pool signature is a conflict the free-device gate
+already reports, never one to overwrite. The `ntfs` drift named by the item was
+already closed in 7.4. Tests (`src/disk.rs` 42 → **66**, `tests/raid_integration.rs`
+5 → **6**): `parse_mdadm_detail` (standard body, `removed`/`missing` rows never
+become members, no `Name :` line → `None`), `plan_teardown` × 6 (only this job's
+members, foreign UUID, renamed node, unknown identity → stop-only, array gone,
+label fallback), `wipe_targets`, `classify_array_state`, `resync_percent`, four
+`wait_for_array_state` cases against a temp sysfs (becomes active, resync percent
+mapped into the 10-40 band, `clear` fails fast, silent kernel times out),
+`run_timed` (fast command, hung command killed at the deadline), the policy
+table, the refusal wording, a test proving both validators return the same
+message, and three `zfs_create_args` cases (pool name before the vdev type,
+no `-f` on any level, one `mirror` group per pair for raid10); the
+integration test drives `POST /api/storage/raid` with a degraded raid0 and a
+degraded raid10 and asserts the 400 names the reason and starts no job.
+`docs/guides/raid.md` gained the "What is *not* covered by tests" section the
+item asked for; `docs/guides/storage.md` needed no edit (its `-f` statement is
+about `create_zfs_pool`, which already lost it in 7.4). **Not run** (per
+instruction): the tests above were written and compile
+(`cargo check --lib --tests`), `cargo fmt` is clean, but no unit, integration
+or E2E suite was executed.
 
 **2026-10-23 (e)** — Storage — the residual privileged call sites are fixed and
 the rest of the sudoers file is scoped. **7.4:** (a) `disk.rs`'s four
