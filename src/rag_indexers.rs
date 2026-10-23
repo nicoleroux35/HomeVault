@@ -754,7 +754,7 @@ The point is to absorb bursts of writes on fast media and let the slower array c
 - Devices: the known devices with their connection state, adding a device, and managing which ones are accepted.
 - The daemon itself can be restarted from the screen.
 
-Syncthing keeps running independently of HomeVault — this screen is a management view over it, not a replacement. Folder paths and device keys are sensitive, so every action here requires an administrator. If the daemon is not installed or not running, the screen says so instead of failing silently."#.to_string(),
+Syncthing keeps running independently of HomeVault — this screen is a management view over it, not a replacement. Folder paths and device keys are sensitive, so every action here requires an administrator. If the daemon is not reachable, or if its own configuration needs attention (for example an API key that HomeVault cannot use), the screen explains what to fix instead of failing silently."#.to_string(),
         },
         FeatureDoc {
             id: "downloader".to_string(),

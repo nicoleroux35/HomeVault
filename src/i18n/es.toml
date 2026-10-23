@@ -2723,6 +2723,8 @@ pending_stat_label = "Pendiente"
 none_label = "Ninguno"
 scan_button = "Escanear"
 no_folders_desc = "Añade carpetas en Syncthing para empezar a sincronizar archivos."
+error_title = "Syncthing ha notificado un problema"
+action_failed = "La solicitud ha sido rechazada"
 restarting = "Syncthing se está reiniciando..."
 
 [widgets]

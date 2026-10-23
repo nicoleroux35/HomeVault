@@ -624,6 +624,16 @@ where none of these handlers validated a session at all; see
 | POST | `/syncthing/resume` | resume one device |
 | POST | `/syncthing/scan` | rescan one folder |
 
+Every handler answers HTTP 200 with `{"success":false,"error":…, "data":null}`
+on failure (module convention, like Downloader / Cloud Sync). One error is worth
+naming because it is a *configuration* fault rather than a transport one: when
+the `<apikey>` in the daemon's `config.xml` cannot be sent as a header — a
+control character, a non-ASCII byte, or a key the old code would have panicked
+on — every endpoint answers
+`{"success":false,"error":"Syncthing API key …"}` and `GET /syncthing/status`
+reports it instead of `available:false`. A blank `<apikey>` is "no key
+configured" (no header sent), and a pretty-printed, indented key is accepted.
+
 ## Downloader — `downloader/*` (`aria2`, all `admin`)
 
 Every Downloader endpoint calls `require_admin_request`, so **all** are

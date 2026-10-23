@@ -2723,6 +2723,8 @@ pending_stat_label = "Pending"
 none_label = "None"
 scan_button = "Scan"
 no_folders_desc = "Add folders in Syncthing to start syncing files."
+error_title = "Syncthing reported a problem"
+action_failed = "The request was refused"
 restarting = "Syncthing is restarting..."
 
 [widgets]
