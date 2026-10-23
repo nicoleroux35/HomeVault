@@ -39,6 +39,14 @@
 //! daemon) are left to `tests/e2e/syncthing/syncthing.spec.ts`, and even
 //! there stay read-only unless a disposable instance is wired up.
 //!
+//! Section 3 covers ROADMAP 18.2: the `<apikey>` in `config.xml` is
+//! user-editable file content interpolated into an outbound header, and a
+//! malformed value used to **panic the request task**. A temporary
+//! `config.xml` under `DATA_DIRECTORY` drives the real handlers with a
+//! newline in the key, with a pretty-printed key and with a blank one; the
+//! expected answers are a named `success:false` error, an accepted header
+//! and "no key configured" respectively — never a panic.
+//!
 //! Note on status codes: these handlers always return HTTP 200 and signal
 //! failure in the body (`{"success":false,"error":…}`), like Downloader /
 //! Cloud Sync. Assertions match that.
@@ -299,19 +307,143 @@ async fn test_pause_resume_scan_reject_missing_field_with_422() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. status success shape (admin) — read-only, safe
+// 3. The API key read from config.xml (ROADMAP 18.2)
+// ---------------------------------------------------------------------------
+//
+// `config.xml` is a file an administrator can edit by hand, and its `<apikey>`
+// is interpolated into an outbound header. `HeaderValue::from_str(..).unwrap()`
+// used to sit on that path, so a key holding a control character or a
+// non-ASCII byte **panicked the request task** (and, with `panic = "abort"` in
+// the release profile, the whole appliance). These tests drive the real
+// handlers: a panic anywhere in the task fails the test, and a `success:false`
+// envelope with a named reason is the expected answer.
+
+/// Write a `config.xml` where the DATA_DIRECTORY probe finds it first.
+fn write_config_xml(tmp: &tempfile::TempDir, key_body: &str) {
+    let dir = tmp.path().join("syncthing");
+    std::fs::create_dir_all(&dir).expect("syncthing dir");
+    std::fs::write(
+        dir.join("config.xml"),
+        format!(
+            "<configuration version=\"37\">\n  <gui enabled=\"true\">\n    \
+             <address>127.0.0.1:8384</address>\n    <apikey>{}</apikey>\n  </gui>\n</configuration>",
+            key_body
+        ),
+    )
+    .expect("write config.xml");
+}
+
+#[tokio::test]
+async fn test_malformed_api_key_is_a_named_error_not_a_panic() {
+    let (state, tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = syncthing_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    // A newline in the key: `HeaderValue::from_str` refuses it, and the old
+    // `.unwrap()` turned that into a panic.
+    write_config_xml(&tmp, "abc\ndef");
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/syncthing/config",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "module convention: 200 + envelope");
+    denied(&body, "not a valid HTTP header value");
+    denied(&body, "Syncthing API key");
+
+    // The status endpoint reports the same fault when the binary is installed,
+    // instead of the misleading "Installed but not running".
+    let (_, st) = send(
+        &mut router,
+        Method::GET,
+        "/api/syncthing/status",
+        Some(&token),
+        None,
+    )
+    .await;
+    if st["success"] == true {
+        // No `syncthing` binary on this host: "not available" is the right
+        // answer and the key is never read.
+        assert_eq!(st["data"]["available"], false);
+    } else {
+        denied(&st, "not a valid HTTP header value");
+    }
+}
+
+#[tokio::test]
+async fn test_pretty_printed_api_key_is_accepted() {
+    // Indented XML puts a newline and spaces around the value. Trimming is what
+    // makes a hand-formatted (or GUI-rewritten) config work.
+    let (state, tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = syncthing_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    write_config_xml(&tmp, "\n      abcDEF123456\n    ");
+
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/syncthing/config",
+        Some(&token),
+        None,
+    )
+    .await;
+    let err = body["error"].as_str().unwrap_or_default();
+    assert!(
+        !err.contains("Syncthing API key"),
+        "an indented key must not be blamed: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_blank_api_key_is_not_a_configuration_error() {
+    // `<apikey></apikey>` means "no key configured": no header is sent, and the
+    // failure that follows is a transport one, never a key error.
+    let (state, tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = syncthing_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    write_config_xml(&tmp, "");
+
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/syncthing/connections",
+        Some(&token),
+        None,
+    )
+    .await;
+    let err = body["error"].as_str().unwrap_or_default();
+    assert!(
+        !err.contains("Syncthing API key"),
+        "a blank key is 'no key', not a broken one: {body}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 4. status success shape (admin) — read-only, safe
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_status_for_admin_returns_a_well_formed_envelope() {
     // `handle_syncthing_status` runs `syncthing --version` then best-effort
-    // pings 127.0.0.1:8384. Whether or not a daemon is up, it must answer a
+    // pings 127.0.0.1:8384. With a well-formed API key on disk it must answer a
     // `{"success":true,"data":{...available:bool...}}` envelope — never an
-    // error and never a panic.
-    let (state, _tmp, _g) = setup_state().await;
+    // error and never a panic — whether or not a daemon is up. (The key is
+    // written explicitly so the result does not depend on whatever
+    // `/root/.config/syncthing/config.xml` holds on the host.)
+    let (state, tmp, _g) = setup_state().await;
     create_test_user(&state, "admin1", "Password123!", 2).await;
     let mut router = syncthing_router(state);
     let token = login(&mut router, "admin1", "Password123!").await;
+    write_config_xml(&tmp, "abcDEF123456ghiJKL7890mnoPQR");
 
     let (status, body) = send(
         &mut router,

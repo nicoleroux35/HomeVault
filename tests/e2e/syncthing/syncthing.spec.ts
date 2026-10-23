@@ -382,6 +382,84 @@ test.describe('4 — Validation', () => {
     expect(r.success).toBe(true);
     expect(typeof r.data?.available).toBe('boolean');
   });
+
+  test('4.4 — an unsendable API key is explained, not turned into "install Syncthing"', async ({
+    page,
+  }) => {
+    // ROADMAP 18.2: the key in config.xml used to panic the handler (a control
+    // character or a non-ASCII byte), and `status` reported the daemon as "not
+    // running". The server now answers a named error and the screen shows it —
+    // and must not simultaneously offer to install a daemon that is installed.
+    const reason =
+      'Syncthing API key in config.xml is not a valid HTTP header value (it contains control characters or non-ASCII bytes); regenerate it in Syncthing\'s GUI or remove the <apikey> line';
+    await page.route('**/api/syncthing/status*', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: false, data: null, error: reason }),
+      }),
+    );
+    try {
+      await gotoSyncthing(page, adminTokens);
+      const alert = win(page).locator('[data-testid="syncthing-error"]');
+      await expect(alert).toBeVisible({ timeout: 8_000 });
+      await expect(alert).toContainText('not a valid HTTP header value');
+      await expect(win(page).locator('[data-testid="syncthing-empty"]')).toHaveCount(0);
+    } finally {
+      await page.unroute('**/api/syncthing/status*');
+    }
+  });
+
+  test('4.5 — a refused scan shows the server reason instead of doing nothing', async ({ page }) => {
+    // ROADMAP 18.2 / X.3: scanFolder's `else {}` was empty, so a refusal was
+    // indistinguishable from a slow request.
+    const ok = (body: unknown) =>
+      JSON.stringify({ success: true, data: body, error: null });
+    await page.route('**/api/syncthing/status*', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: ok({ available: true, version: 'v1.27.2', my_id: 'AAAA-BBBB', uptime: 3600, last_seen: null }),
+      }),
+    );
+    await page.route('**/api/syncthing/devices*', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: ok([]) }),
+    );
+    await page.route('**/api/syncthing/folders*', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: ok([
+          {
+            id: 'default', label: 'Default Folder', path: '/srv/sync/default', paused: false,
+            global_bytes: 1000, global_files: 10, local_bytes: 1000, local_files: 10,
+            need_bytes: 0, need_files: 0, in_sync_files: 10, receive_only: false, devices: [],
+          },
+        ]),
+      }),
+    );
+    await page.route('**/api/syncthing/scan*', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: false, data: null, error: 'Syncthing API error (500): scan refused' }),
+      }),
+    );
+    try {
+      await gotoSyncthing(page, adminTokens);
+      const scan = win(page).locator('[data-testid="syncthing-action-btn"]').first();
+      await expect(scan).toBeVisible({ timeout: 8_000 });
+      await scan.click();
+      const alert = win(page).locator('[data-testid="syncthing-error"]');
+      await expect(alert).toBeVisible({ timeout: 8_000 });
+      await expect(alert).toContainText('scan refused');
+    } finally {
+      await page.unroute('**/api/syncthing/status*');
+      await page.unroute('**/api/syncthing/devices*');
+      await page.unroute('**/api/syncthing/folders*');
+      await page.unroute('**/api/syncthing/scan*');
+    }
+  });
 });
 
 // ===========================================================================

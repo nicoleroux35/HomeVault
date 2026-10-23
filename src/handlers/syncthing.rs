@@ -25,7 +25,11 @@
 
 //! Syncthing integration endpoints (proxying the local REST API) — admin-only.
 
-use axum::{extract::State, http::HeaderMap, Json};
+use axum::{
+    extract::State,
+    http::{HeaderMap, HeaderValue},
+    Json,
+};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -33,6 +37,17 @@ use std::collections::HashMap;
 use crate::handlers::AppStateArc;
 
 const SYNCTHING_ADDR: &str = "http://127.0.0.1:8384";
+
+/// Bound on every request to the local daemon. Syncthing answers on loopback,
+/// so a reply that takes longer than this means the daemon is wedged — there is
+/// nothing to wait for.
+const HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Prefix of every error produced while reading or applying the daemon's API
+/// key. It lets a caller tell a *configuration* fault (fix `config.xml`) from a
+/// *transport* fault (the daemon is not running) without parsing a free-form
+/// sentence — and it is what the screen keys its banner on.
+const KEY_ERROR: &str = "Syncthing API key";
 
 /// Require a valid, authenticated **admin** session. Every handler in this
 /// file had no auth check at all before this fix — not even a "header is
@@ -273,72 +288,127 @@ fn extract_api_key(config_xml: &str) -> Option<String> {
     Some(config_xml[value_start..value_start + end].to_string())
 }
 
+/// Read the daemon's API key off disk. Blocking I/O — callers must go through
+/// [`read_api_key`], never straight from an async handler body.
 fn get_api_key() -> Option<String> {
     let xml = find_syncthing_config()?;
     extract_api_key(&xml)
 }
 
-fn http_client() -> reqwest::Client {
-    Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .danger_accept_invalid_certs(true)
-        .build()
-        .unwrap_or_default()
+/// Turn the raw `<apikey>` text read from `config.xml` into an HTTP header
+/// value.
+///
+/// The key comes from a file an administrator can edit by hand, so it is
+/// untrusted input, and `HeaderValue::from_str(..).unwrap()` used to sit here:
+/// a key holding a control character or a non-ASCII byte **panicked the request
+/// task** instead of answering with an error. With `panic = "abort"` in the
+/// release profile that is not a failed request, it is a dead appliance. Every
+/// outcome is a `Result` now.
+///
+/// The value is trimmed first: XML pretty-printing indents the element
+/// (`<apikey>\n  abc\n</apikey>`), and that leading newline alone is enough to
+/// make a header value invalid — so the trim is not cosmetic, it is the fix for
+/// the most likely way a hand-edited config breaks.
+///
+/// `Ok(None)` means "no key configured" (blank element) and sends no header,
+/// which is what a daemon with the GUI API key disabled expects. The error
+/// message never contains the key.
+fn api_key_header(raw: &str) -> Result<Option<HeaderValue>, String> {
+    let key = raw.trim();
+    if key.is_empty() {
+        return Ok(None);
+    }
+    HeaderValue::from_str(key).map(Some).map_err(|_| {
+        format!(
+            "{KEY_ERROR} in config.xml is not a valid HTTP header value (it contains \
+             control characters or non-ASCII bytes); regenerate it in Syncthing's \
+             GUI (Actions → Settings → GUI) or remove the <apikey> line"
+        )
+    })
 }
 
-fn build_headers() -> reqwest::header::HeaderMap {
-    let mut headers = reqwest::header::HeaderMap::new();
-    if let Some(key) = get_api_key() {
-        headers.insert(
-            "X-API-Key",
-            reqwest::header::HeaderValue::from_str(&key).unwrap(),
-        );
+/// Build the outgoing header set from an already-read key.
+fn build_headers(key: Option<&str>) -> Result<HeaderMap, String> {
+    let mut headers = HeaderMap::new();
+    if let Some(raw) = key {
+        if let Some(value) = api_key_header(raw)? {
+            headers.insert("X-API-Key", value);
+        }
     }
-    headers
+    Ok(headers)
+}
+
+/// Read the daemon's API key on the blocking pool.
+///
+/// `find_syncthing_config` probes up to four paths and reads the first that
+/// exists. That is blocking file I/O, and it used to run inside every handler's
+/// async body — once per proxied request (ROADMAP X.1). Same shape as
+/// `mdns.rs` / `transfer_quota.rs`.
+async fn read_api_key() -> Result<Option<String>, String> {
+    tokio::task::spawn_blocking(get_api_key)
+        .await
+        .map_err(|e| format!("{KEY_ERROR}: the config read task failed ({e})"))
+}
+
+/// Resolve the headers for one request to the daemon.
+async fn request_headers() -> Result<HeaderMap, String> {
+    let key = read_api_key().await?;
+    build_headers(key.as_deref())
+}
+
+/// Client for the local daemon.
+///
+/// Certificate verification used to be switched off unconditionally here, so
+/// any impostor answering on the configured address over TLS was trusted. The
+/// address is a loopback constant today ([`SYNCTHING_ADDR`]), which is why the
+/// flag was inert — but it is one configuration knob away from a real
+/// man-in-the-middle, and a security flag that only happens to be harmless is
+/// still a bug. Verification is the default again; if the daemon address ever
+/// becomes configurable and a self-signed certificate has to be accepted, that
+/// must be an explicit, documented, admin-chosen opt-in — never a constant in
+/// the client builder. A unit test in this module fails if the escape-hatch
+/// flag comes back (reqwest exposes no read-back for it).
+fn http_client() -> Client {
+    Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        // Unreachable: the builder carries a static timeout and nothing else —
+        // no user input, no TLS backend options. Written as `expect` rather than
+        // the former `.unwrap_or_default()`, which silently returned a client
+        // with **no timeout** at all.
+        .expect("static Syncthing HTTP client configuration is valid")
+}
+
+async fn syncthing_request(method: reqwest::Method, endpoint: &str) -> Result<String, String> {
+    let url = format!("{}/rest/{}", SYNCTHING_ADDR, endpoint);
+    // Resolve the key before the request: a broken `config.xml` is a
+    // configuration error, reported as such, not a connection error.
+    let headers = request_headers().await?;
+    let response = http_client()
+        .request(method, &url)
+        .headers(headers)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to Syncthing: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Syncthing API error ({}): {}", status, body));
+    }
+
+    response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read response: {}", e))
 }
 
 async fn syncthing_get(endpoint: &str) -> Result<String, String> {
-    let url = format!("{}/rest/{}", SYNCTHING_ADDR, endpoint);
-    let client = http_client();
-    let response = client
-        .get(&url)
-        .headers(build_headers())
-        .send()
-        .await
-        .map_err(|e| format!("Failed to connect to Syncthing: {}", e))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("Syncthing API error ({}): {}", status, body));
-    }
-
-    response
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read response: {}", e))
+    syncthing_request(reqwest::Method::GET, endpoint).await
 }
 
 async fn syncthing_post(endpoint: &str) -> Result<String, String> {
-    let url = format!("{}/rest/{}", SYNCTHING_ADDR, endpoint);
-    let client = http_client();
-    let response = client
-        .post(&url)
-        .headers(build_headers())
-        .send()
-        .await
-        .map_err(|e| format!("Failed to connect to Syncthing: {}", e))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("Syncthing API error ({}): {}", status, body));
-    }
-
-    response
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read response: {}", e))
+    syncthing_request(reqwest::Method::POST, endpoint).await
 }
 
 // ---------------------------------------------------------------------------
@@ -367,6 +437,14 @@ pub async fn handle_syncthing_status(
             uptime: None,
             last_seen: None,
         }));
+    }
+
+    // Resolve the API key before pinging. A `config.xml` whose key cannot be
+    // sent as a header is a configuration fault, and reporting it here keeps
+    // the screen from claiming "Installed but not running" for a daemon that is
+    // running perfectly well.
+    if let Err(e) = request_headers().await {
+        return Json(ApiResponse::error(&e));
     }
 
     // Try to ping the API
@@ -682,6 +760,11 @@ mod tests {
     //! `certName` on the device list) — pin them with fixtures captured from
     //! syncthing v1.27/v1.29.
     //!
+    //! `api_key_header` / `build_headers` (ROADMAP 18.2) turn that same
+    //! user-editable file content into an outbound header, which is where a
+    //! malformed key used to panic the request task; they are pure, so the
+    //! whole matrix is unit-testable.
+    //!
     //! No HTTP, no `syncthing` process.
     //!
     //! Run: `cargo test handlers::syncthing::tests`
@@ -715,6 +798,97 @@ mod tests {
     #[test]
     fn test_extract_api_key_empty_value() {
         assert_eq!(extract_api_key("<apikey></apikey>").as_deref(), Some(""));
+    }
+
+    // -- API key → header (ROADMAP 18.2) --------------------------------
+    //
+    // The key is user-editable file content and it is interpolated into an
+    // outbound header. `HeaderValue::from_str(..).unwrap()` used to panic the
+    // request task on a malformed value, so every case below is a panic that
+    // used to reach the handler.
+
+    #[test]
+    fn test_api_key_header_accepts_a_realistic_key() {
+        let hv = api_key_header("abcDEF123456ghiJKL7890mnoPQR")
+            .expect("a well-formed key must be accepted")
+            .expect("a non-blank key yields a header");
+        assert_eq!(hv, "abcDEF123456ghiJKL7890mnoPQR");
+    }
+
+    #[test]
+    fn test_api_key_header_trims_the_xml_indentation() {
+        // Pretty-printed config.xml: the extracted value starts with a newline,
+        // which is not a valid header value on its own. Without the trim this
+        // is exactly the "panic on a perfectly valid config" case.
+        let xml = "<configuration>\n  <gui>\n    <apikey>\n      abcDEF\n    </apikey>\n  </gui>\n</configuration>";
+        let raw = extract_api_key(xml).expect("key present");
+        assert_eq!(raw, "\n      abcDEF\n    ");
+        assert_eq!(
+            api_key_header(&raw).expect("must be accepted").unwrap(),
+            "abcDEF"
+        );
+    }
+
+    #[test]
+    fn test_api_key_header_rejects_control_characters_without_panicking() {
+        for bad in ["abc\ndef", "abc\rdef", "abc\u{0}def", "abc\u{7f}def"] {
+            let err = api_key_header(bad).expect_err("must be an error, not a panic");
+            assert!(err.starts_with(KEY_ERROR), "{err}");
+            assert!(err.contains("not a valid HTTP header value"), "{err}");
+            assert!(
+                !err.contains(bad.trim()),
+                "the key itself must never be echoed back: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_api_key_header_rejects_non_ascii() {
+        let err = api_key_header("clé-secrète").expect_err("non-ASCII must be refused");
+        assert!(err.starts_with(KEY_ERROR), "{err}");
+        assert!(!err.contains("clé-secrète"), "{err}");
+    }
+
+    #[test]
+    fn test_api_key_header_blank_means_no_header() {
+        // A blank `<apikey></apikey>` is "no key configured", not an error: the
+        // daemon with the GUI API key disabled expects no header at all.
+        assert_eq!(api_key_header("").unwrap(), None);
+        assert_eq!(api_key_header("   \n\t ").unwrap(), None);
+    }
+
+    #[test]
+    fn test_build_headers_sets_or_omits_the_header() {
+        let with = build_headers(Some("k3y")).expect("valid key");
+        assert_eq!(with.get("X-API-Key").unwrap(), "k3y");
+
+        assert!(build_headers(None).expect("no key").is_empty());
+        assert!(build_headers(Some("   ")).expect("blank key").is_empty());
+
+        // The former `.unwrap()` panic path, one level up.
+        assert!(build_headers(Some("bad\nkey")).is_err());
+    }
+
+    /// TLS verification must stay on (ROADMAP 18.2).
+    ///
+    /// The client builder used to switch certificate verification off
+    /// unconditionally. reqwest exposes no way to read that setting back from a
+    /// built `Client`, so the guard is a source scan of this module — the same
+    /// technique `dependencies.rs` uses for the installer. The forbidden
+    /// identifier is assembled at run time so neither this doc comment nor the
+    /// needle itself can satisfy the search.
+    #[test]
+    fn test_http_client_never_disables_certificate_verification() {
+        let source = include_str!("syncthing.rs");
+        let forbidden = concat!("danger_accept_invalid", "_certs");
+        assert!(
+            !source.contains(forbidden),
+            "http_client() must not disable certificate verification: the flag was inert \
+             only because SYNCTHING_ADDR is loopback, and it becomes a man-in-the-middle \
+             the day the address is configurable"
+        );
+        // And the client still builds (with its timeout) without that flag.
+        let _ = http_client();
     }
 
     // -- system/config parsing -----------------------------------------

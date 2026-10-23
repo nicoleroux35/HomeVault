@@ -2722,6 +2722,8 @@ pending_stat_label = "Ausstehend"
 none_label = "Keine"
 scan_button = "Scannen"
 no_folders_desc = "Fügen Sie Ordner in Syncthing hinzu, um mit der Dateisynchronisierung zu beginnen."
+error_title = "Syncthing hat ein Problem gemeldet"
+action_failed = "Die Anfrage wurde abgelehnt"
 restarting = "Syncthing wird neu gestartet..."
 
 [widgets]
