@@ -55,6 +55,16 @@ Handlers in `src/handlers/settings.rs`. Persistence via
   `spawn_blocking` so the handler never blocks the runtime). A failure to
   apply does **not** silently look like success: the save still returns
   `200` but carries `timezone_notice`, shown as a warning `Alert`.
+- The picker offers the **whole IANA database**, not a shortlist: the screen
+  renders `GET /settings/timezones` (every region-prefixed name `chrono-tz`
+  ships, plus `UTC`, sorted) grouped by region, so a zone the backend accepts
+  can never be unpickable in the UI. Legacy aliases without a region (`CET`,
+  `GB-Eire`) stay accepted on write but are kept out of the list, where they
+  would duplicate every entry under a name nobody looks for; a value that is
+  not in the list (an externally-set alias, or a failed fetch) is still shown
+  as its own option so the field never silently rewrites the setting. The
+  hint under the field says what the zone drives — the server clock and every
+  scheduled task without its own `timezone`.
 - `settings::effective_timezone()` is the value the rest of the app reads —
   notably the scheduled-task engine, which evaluates every task without its
   own `timezone` in it (see [Scheduled Tasks](./scheduled-tasks.md)). It is a
@@ -188,7 +198,7 @@ wording already exists there — no duplicated string.
 > on this screen and have no `flipSwitch()` contract.
 
 - `frontend/src/lib/services/api.ts`: `getAllSettings`, `getPublicSettings`,
-  `getGeneralSettings`/`updateGeneralSettings`, `getLanguage`/`setLanguage`,
+  `getTimezones` (the picker's IANA list), `getGeneralSettings`/`updateGeneralSettings`, `getLanguage`/`setLanguage`,
   `getEmailSettings`/..., `getNotificationSettings`/..., `getAppearanceSettings`/...,
   `getUpdateSettings`/..., `checkForUpdates`, `exportSettings`/`importSettings`/
   `resetSettings`, `getSnmpSettings`/..., `getUpsList`/`getUpsStatus`/

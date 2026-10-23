@@ -684,6 +684,42 @@ pub async fn handle_general_settings_get(
     }))
 }
 
+/// Every zone name the scheduler can actually evaluate, so the Settings
+/// screen offers the whole IANA database instead of a hardcoded shortlist.
+///
+/// The shortlist was the last place where the UI lied: the backend accepted
+/// any name (`validate_timezone`), so an admin in Lisbon or Toulouse simply
+/// had no way to pick their zone. `require_auth`, not admin: the list is the
+/// public IANA database and the task editor reads the same names — the
+/// *setting* itself stays admin-only.
+pub async fn handle_timezones_get(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = crate::handlers::admin_guard::require_auth(&state, &headers).await {
+        return response;
+    }
+
+    ResponseHelper::json_success(serde_json::json!({ "timezones": timezone_names() }))
+}
+
+/// The names the picker offers: everything that carries a region prefix
+/// (`Europe/Paris`, `America/New_York`, `Etc/GMT+5`) plus `UTC`, sorted.
+///
+/// Legacy aliases without a region (`CET`, `GB-Eire`, `EST5EDT`…) are still
+/// **accepted** on write — they are only kept out of the picker, where they
+/// would duplicate every entry under a name nobody looks for.
+fn timezone_names() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = chrono_tz::TZ_VARIANTS
+        .iter()
+        .map(|tz| tz.name())
+        .filter(|name| name.contains('/') || *name == "UTC")
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
 /// Body for enabling/disabling start-on-boot.
 #[derive(Debug, Deserialize)]
 pub struct AutostartRequest {
@@ -1793,5 +1829,50 @@ mod tests {
         let g = GeneralSettings::default();
         assert_eq!(g.server_name.as_deref(), Some("HomeVault"));
         assert_eq!(g.timezone.as_deref(), Some("UTC"));
+    }
+
+    // -- timezone_names (the picker's list) -----------------------------
+
+    #[test]
+    fn test_timezone_names_cover_the_zones_the_shortlist_missed() {
+        let names = timezone_names();
+        // The zones the Settings screen used to hardcode stay offered…
+        for expected in ["UTC", "Europe/Paris", "America/New_York", "Asia/Tokyo"] {
+            assert!(names.contains(&expected), "{expected} must be offered");
+        }
+        // …and so do the ones a 14-entry shortlist made unpickable.
+        for expected in ["Europe/Lisbon", "Africa/Casablanca", "America/Sao_Paulo"] {
+            assert!(names.contains(&expected), "{expected} must be offered");
+        }
+        assert!(
+            names.len() > 300,
+            "the picker must offer the IANA database, got {}",
+            names.len()
+        );
+    }
+
+    #[test]
+    fn test_timezone_names_are_sorted_unique_and_parsable() {
+        let names = timezone_names();
+        // Sorted and unique in one assertion: every neighbour is strictly
+        // smaller, so a duplicate (which would render twice) fails too.
+        assert!(
+            names.windows(2).all(|w| w[0] < w[1]),
+            "the list must be sorted and deduplicated"
+        );
+        // Everything offered must be a name the scheduler can evaluate —
+        // otherwise the screen would offer a value `validate_timezone`
+        // refuses (the exact mismatch this endpoint exists to remove).
+        for name in &names {
+            assert!(
+                name.parse::<chrono_tz::Tz>().is_ok(),
+                "{name} must parse as an IANA zone"
+            );
+        }
+        // Legacy aliases without a region are accepted on write but kept out
+        // of the picker (they would duplicate every entry under a name
+        // nobody looks for).
+        assert!(!names.contains(&"CET"));
+        assert!(!names.contains(&"GB-Eire"));
     }
 }

@@ -33,6 +33,7 @@
 //!     POST /api/settings/language
 //!   Any session:
 //!     GET  /api/settings/language
+//!     GET  /api/settings/timezones
 //!   Public (no auth):
 //!     GET  /api/settings/public
 //!
@@ -69,9 +70,10 @@ use homevault::handlers::settings::{
     handle_check_version_now, handle_email_settings_get, handle_email_settings_update,
     handle_get_language, handle_notification_settings_get, handle_notification_settings_update,
     handle_public_settings_get, handle_set_language, handle_settings_export,
-    handle_settings_import, handle_settings_reset, handle_update_settings_get,
-    handle_update_settings_update, handle_version_info, update_check_attempts, UpdateFrequency,
-    CACHED_UPDATE_RESULT, LAST_UPDATE_CHECK, UPDATE_SETTINGS,
+    handle_settings_import, handle_settings_reset, handle_timezones_get,
+    handle_update_settings_get, handle_update_settings_update, handle_version_info,
+    update_check_attempts, UpdateFrequency, CACHED_UPDATE_RESULT, LAST_UPDATE_CHECK,
+    UPDATE_SETTINGS,
 };
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{auth::handle_login, AppState};
@@ -150,6 +152,7 @@ fn settings_router(state: Arc<AppState>) -> Router {
             "/api/settings/language",
             get(handle_get_language).post(handle_set_language),
         )
+        .route("/api/settings/timezones", get(handle_timezones_get))
         .route("/api/settings/export", get(handle_settings_export))
         .route("/api/settings/import", post(handle_settings_import))
         .route("/api/settings/reset", post(handle_settings_reset))
@@ -348,6 +351,59 @@ async fn test_get_language_allows_any_session_but_still_needs_one() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["data"]["language"].is_string());
+}
+
+#[tokio::test]
+async fn test_timezones_offer_the_full_iana_database_to_any_session() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "regular", "Password123!", 1).await;
+    let mut router = settings_router(state);
+
+    // A read, but not an admin one: the list is the public IANA database.
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/timezones",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "no token");
+
+    let token = login(&mut router, "regular", "Password123!").await;
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/timezones",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let names: Vec<&str> = body["data"]["timezones"]
+        .as_array()
+        .expect("timezones array")
+        .iter()
+        .map(|v| v.as_str().expect("zone name"))
+        .collect();
+
+    // The 14-zone shortlist this endpoint replaced left most of the world
+    // unpickable; the picker must now offer the whole database.
+    assert!(names.len() > 300, "got {} zones", names.len());
+    for expected in ["UTC", "Europe/Paris", "Europe/Lisbon", "Africa/Casablanca"] {
+        assert!(names.contains(&expected), "{expected} must be offered");
+    }
+    // Sorted and unique: a duplicate would render twice in the picker.
+    assert!(names.windows(2).all(|w| w[0] < w[1]), "sorted and unique");
+    // Everything offered is a name `validate_timezone` accepts, so the screen
+    // cannot offer a value the write endpoint would refuse.
+    for name in &names {
+        assert!(
+            name.parse::<chrono_tz::Tz>().is_ok(),
+            "{name} must parse as an IANA zone"
+        );
+    }
 }
 
 #[tokio::test]

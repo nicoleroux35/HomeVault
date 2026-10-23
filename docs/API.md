@@ -79,6 +79,7 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 | GET | `/settings` | auth | aggregate of all categories |
 | GET | `/settings/public` | public | safe subset (server name, language, theme) |
 | GET/PUT | `/settings/general` | auth / admin | server name, timezone — the timezone is validated (IANA) and applied to the host with `timedatectl`; a failed apply returns `timezone_notice` |
+| GET | `/settings/timezones` | auth | every zone name the scheduler can evaluate (`chrono-tz`'s IANA database, region-prefixed names + `UTC`), sorted — what the Settings picker renders |
 | GET/POST | `/settings/language` | auth | set UI language (persisted) |
 | GET | `/translations` | auth | returns flattened `locale → key → string` map (`handle_get_translations`, `src/handlers/settings.rs`; mounted at `/api/translations`) |
 | GET/PUT | `/settings/email` | auth / admin | SMTP |

@@ -838,6 +838,13 @@ class ApiClient {
     return this.get('/settings/public', { ttl: 10000, cache: false });
   }
 
+  /** Every IANA zone name the server can evaluate — the Settings picker's
+   *  list, and the same names a task's own `timezone` accepts. Cached for an
+   *  hour: it is the IANA database, not user data. */
+  async getTimezones() {
+    return this.get<{ timezones: string[] }>('/settings/timezones', { ttl: 3_600_000 });
+  }
+
   // General
 
   async updateGeneralSettings(data: { server_name?: string; timezone?: string }) {
