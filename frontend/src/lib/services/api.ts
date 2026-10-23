@@ -2294,6 +2294,28 @@ class ApiClient {
   // RAG Knowledge Base
   // ==============================================
 
+  /** Index status (any session): last indexed, doc/chunk counts, state. */
+  async ragStatus() {
+    // Never cached: the status is polled while a reindex runs and must not
+    // report a stale `idle` after it finishes.
+    return this.get('/rag/status', { cache: false });
+  }
+
+  /** Trigger a full reindex in the background (admin only). */
+  async ragIndex() {
+    return this.post('/rag/index', {});
+  }
+
+  /** Semantic search over the index, for debugging grounding (admin only). */
+  async ragSearch(query: string, topK = 5) {
+    return this.post('/rag/search', { query, top_k: topK });
+  }
+
+  /** List the indexed documents (admin only). */
+  async ragDocuments() {
+    return this.get('/rag/documents', { cache: false });
+  }
+
   // ==============================================
   // External Agents (MCP server)
   // ==============================================

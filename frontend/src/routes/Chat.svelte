@@ -17,8 +17,9 @@
      Opened as a desktop window app.
      ======================================================================== -->
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { api } from '$lib/services/api';
+  import { isAdmin } from '$lib/stores/auth';
   import { languageStore, t, translate } from '$lib/stores/i18n';
   import { IconBrain, IconSend, IconSparkles, IconTrash, IconHistory, IconPlus, IconCopy, IconCheck, IconRefresh, IconSquare } from '@tabler/icons-svelte';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
@@ -57,6 +58,14 @@
   // "Online" that stayed green even when every message failed.
   let ollamaStatus: 'checking' | 'online' | 'offline' | 'nomodel' = 'checking';
 
+  // Knowledge base (RAG) state — the assistant grounds its answers in the
+  // indexed docs. When the index is empty it answers "I don't know" even for
+  // shipped features, so that state is surfaced instead of staying invisible
+  // (ROADMAP 4.1).
+  let kbEmpty = false;
+  let kbIndexing = false;
+  let kbPoll: ReturnType<typeof setInterval> | null = null;
+
   $: if (messagesContainer && messages.length > 0) {
     scrollToBottom();
   }
@@ -64,7 +73,47 @@
   onMount(() => {
     loadConversations();
     checkOllama();
+    checkKnowledgeBase();
   });
+
+  onDestroy(stopKbPoll);
+
+  function startKbPoll() {
+    if (!kbPoll) kbPoll = setInterval(checkKnowledgeBase, 2000);
+  }
+
+  function stopKbPoll() {
+    if (kbPoll) {
+      clearInterval(kbPoll);
+      kbPoll = null;
+    }
+  }
+
+  async function checkKnowledgeBase() {
+    try {
+      const res: any = await api.ragStatus();
+      if (res?.success) {
+        kbEmpty = (res.data?.total_documents ?? 0) === 0;
+        kbIndexing = res.data?.status === 'indexing';
+      }
+    } catch {
+      // Best-effort: a status failure must not disturb the chat.
+    }
+    if (kbIndexing) startKbPoll();
+    else stopKbPoll();
+  }
+
+  async function indexKnowledgeBase() {
+    const res: any = await api.ragIndex();
+    if (res?.success) {
+      // The poll is what clears the notice, once the index actually has
+      // documents — a failed reindex keeps it actionable. It is armed here,
+      // not read from the status: the background task may not have flipped
+      // the status to `indexing` yet.
+      kbIndexing = true;
+      startKbPoll();
+    }
+  }
 
   async function checkOllama() {
     try {
@@ -472,6 +521,14 @@
               <p class="m-0 text-sm text-[var(--hv-warning)]">{ollamaStatus === 'nomodel' ? $t('chat.nomodel_hint') : $t('chat.offline_hint')}</p>
             {:else}
               <p class="m-0 text-sm text-[var(--hv-shell-text)]">{$t('chat.empty_desc', { model: modelName })}</p>
+            {/if}
+            {#if kbEmpty}
+              <div data-testid="chat-kb-notice" class="flex flex-col items-center gap-2 w-full max-w-[420px] px-4 py-3 rounded-lg border border-[var(--hv-warning)] bg-[var(--hv-warning-bg)] text-left">
+                <p class="m-0 text-sm text-[var(--hv-shell-text-strong)]" role="status">{$t('chat.rag_no_index')}</p>
+                {#if $isAdmin}
+                  <button data-testid="chat-kb-index" class="self-start px-3 py-1.5 rounded-lg border-none bg-[var(--hv-primary)] text-white text-xs font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-default" onclick={indexKnowledgeBase} disabled={kbIndexing}>{kbIndexing ? $t('chat.rag_indexing') : $t('chat.rag_index_start')}</button>
+                {/if}
+              </div>
             {/if}
             <div class="grid gap-2 w-full max-w-[420px] mt-2">
               {#each suggestions as suggestion}

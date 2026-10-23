@@ -215,19 +215,30 @@ fn session_error_message(language: &str) -> &'static str {
 async fn system_prompt_with_rag(language: &str, message: &str, pool: &sqlx::SqlitePool) -> String {
     let base = system_prompt(language);
 
-    // Try to generate query embedding and search
+    // Try to generate query embedding and search. A RAG failure degrades to
+    // the plain prompt (chat must still work), but it is logged so an empty
+    // knowledge base and a broken one are tellable apart in the logs.
     let context = match crate::rag::generate_embeddings(&[message.to_string()]).await {
         Ok(embeddings) => {
             if let Some(query_emb) = embeddings.first() {
                 match crate::rag::search_similar(pool, query_emb, 5).await {
                     Ok(results) => crate::rag::build_rag_context(&results),
-                    Err(_) => String::new(),
+                    Err(e) => {
+                        tracing::warn!("RAG search failed, answering without context: {}", e);
+                        String::new()
+                    }
                 }
             } else {
                 String::new()
             }
         }
-        Err(_) => String::new(),
+        Err(e) => {
+            tracing::warn!(
+                "RAG query embedding failed, answering without context: {}",
+                e
+            );
+            String::new()
+        }
     };
 
     if context.is_empty() {
@@ -320,16 +331,13 @@ async fn send_to_ollama(req: &OllamaChatRequest) -> Result<OllamaChatResponse, S
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(format!(
-            "Ollama a répondu avec le statut {}: {}",
-            status, body
-        ));
+        return Err(format!("Ollama responded with status {}: {}", status, body));
     }
 
     response
         .json::<OllamaChatResponse>()
         .await
-        .map_err(|e| format!("Erreur de parsing de la réponse Ollama: {}", e))
+        .map_err(|e| format!("Failed to parse the Ollama response: {}", e))
 }
 
 /// Streaming counterpart of `handle_chat_send`: proxies Ollama's
@@ -547,7 +555,7 @@ pub async fn handle_chat_models_list(
                     current: AI_MODEL.read().clone(),
                     ollama_running: true,
                 }),
-                error: Some(format!("Erreur de parsing: {}", e)),
+                error: Some(format!("Failed to parse the Ollama response: {}", e)),
             }),
         },
         Ok(_) => Json(ModelsListResponse {
@@ -557,7 +565,7 @@ pub async fn handle_chat_models_list(
                 current: AI_MODEL.read().clone(),
                 ollama_running: false,
             }),
-            error: Some("Ollama ne répond pas".to_string()),
+            error: Some("Ollama is not responding".to_string()),
         }),
         Err(e) => Json(ModelsListResponse {
             success: false,
@@ -619,7 +627,7 @@ pub async fn handle_chat_models_pull(
 
     let model_name = req.name.trim().to_string();
     if model_name.is_empty() {
-        return ResponseHelper::json_error("Nom de modèle requis".to_string());
+        return ResponseHelper::json_error("Model name is required".to_string());
     }
 
     let client = match reqwest::Client::builder()
@@ -627,7 +635,7 @@ pub async fn handle_chat_models_pull(
         .build()
     {
         Ok(c) => c,
-        Err(e) => return ResponseHelper::json_error(format!("Erreur client HTTP: {}", e)),
+        Err(e) => return ResponseHelper::json_error(format!("HTTP client error: {}", e)),
     };
 
     // Register a progress job so the download shows in the desktop activity
@@ -655,11 +663,11 @@ pub async fn handle_chat_models_pull(
         Ok(resp) => {
             let body = resp.text().await.unwrap_or_default();
             crate::sse::PROGRESS_MANAGER.fail_job(&job, &body);
-            return ResponseHelper::json_error(format!("Échec de l'installation: {}", body));
+            return ResponseHelper::json_error(format!("Model installation failed: {}", body));
         }
         Err(e) => {
             crate::sse::PROGRESS_MANAGER.fail_job(&job, &e.to_string());
-            return ResponseHelper::json_error(format!("Erreur de connexion à Ollama: {}", e));
+            return ResponseHelper::json_error(format!("Could not reach Ollama: {}", e));
         }
     };
 
@@ -706,13 +714,13 @@ pub async fn handle_chat_models_pull(
 
     if let Some(err) = stream_error {
         crate::sse::PROGRESS_MANAGER.fail_job(&job, &err);
-        return ResponseHelper::json_error(format!("Échec de l'installation: {}", err));
+        return ResponseHelper::json_error(format!("Model installation failed: {}", err));
     }
 
-    crate::sse::PROGRESS_MANAGER.complete_job(&job, &format!("{} installé", model_name));
+    crate::sse::PROGRESS_MANAGER.complete_job(&job, &format!("{} installed", model_name));
     ResponseHelper::json_success(serde_json::json!({
         "success": true,
-        "message": format!("Modèle '{}' installé avec succès", model_name),
+        "message": format!("Model '{}' installed successfully", model_name),
     }))
 }
 
@@ -1164,7 +1172,20 @@ pub async fn handle_chat_models_recommend(
         });
     }
 
-    let specs = detect_system_specs();
+    // `detect_system_specs` reads /proc and shells out to `nvidia-smi` /
+    // `rocm-smi`; both block, so they run on the blocking pool rather than on
+    // the async runtime (same shape as the MCP docker call).
+    let specs = tokio::task::spawn_blocking(detect_system_specs)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("system spec probe failed: {}", e);
+            SystemSpecs {
+                total_ram_gb: 0,
+                has_gpu: false,
+                gpu_name: None,
+                gpu_vram_gb: None,
+            }
+        });
     let recommendations = recommend_models(&specs);
 
     Json(RecommendResponse {

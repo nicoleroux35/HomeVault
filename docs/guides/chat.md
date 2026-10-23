@@ -59,9 +59,18 @@ See [RAG Knowledge Base](./rag.md) for the RAG endpoints (`/api/rag/*`).
   reply to `language: "de"` is German. A past bug hardcoded French.
 - `system_prompt_with_rag()` embeds the user's query and searches the RAG knowledge
   base for relevant context. Falls back to plain `system_prompt()` on embedding
-  failure — the chat must never break because RAG is unavailable.
+  failure — the chat must never break because RAG is unavailable — **and logs
+  the failure**, so a broken index is not mistaken for an empty one.
+- When the knowledge base has zero documents, the Chat empty state shows a
+  notice (and, for an admin, an "index now" action) instead of silently
+  answering "I don't know" for shipped features; the status card lives in
+  Settings → AI Assistant ([RAG](./rag.md)).
 - The chat page and Settings AI card must use the `chat.*` / `settings.ai_*`
   translation keys in all four locales.
+- Server-side chat messages — the `/chat/*` error strings and the pull
+  success message — are **English**; the UI owns the localised copy. They used
+  to be French-only (`src/handlers/chat.rs`), which leaked French into a German
+  or Spanish session.
 - `handle_chat_models_pull` streams Ollama's `POST /api/pull` NDJSON
   (`stream: true`), emitting a **determinate** `ollama_pull` `PROGRESS_MANAGER`
   job (`completed`/`total` → `%`) for the desktop [activity taskbar](./activity.md).
@@ -92,6 +101,11 @@ entries span 0.4 GB (`qwen3:0.6b`, 1 GB RAM floor) to 5.2 GB (`qwen3:8b`,
 `…_never_puts_a_model_that_does_not_fit_first`,
 `…_always_returns_five_even_on_a_tiny_host`, `…_prefers_vram_fit`,
 `catalog_names_are_unique_and_sized`).
+
+**Known gap:** each entry's `description` and `speed` are still French-only
+strings carried by `MODEL_CATALOG`; the card renders them as-is, so a non-French
+operator reads French copy in the recommendation list. The names, RAM/VRAM
+floors and sizes — the actionable parts — are language-neutral.
 
 The embedding model used by the knowledge base is separate
 (`nomic-embed-text`, see [RAG](./rag.md)) — it is not part of the five, and the

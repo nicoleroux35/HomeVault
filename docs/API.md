@@ -412,19 +412,23 @@ Read endpoints `auth`; config/state/WiFi mutations `admin`.
 
 The system prompt is built per the request `language` (defaults to English); replies
 respect the user's UI language. When the RAG knowledge base is indexed, the system
-prompt is automatically enriched with relevant context chunks.
+prompt is automatically enriched with relevant context chunks; a RAG failure
+degrades to the plain prompt and is logged (it never fails the chat).
 
 ## RAG Knowledge Base — `rag/*`
 
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
-| GET | `/rag/status` | auth | index status: last indexed timestamp, doc/chunk counts, embedding model |
-| POST | `/rag/index` | admin | triggers full background reindex (catalog + features + i18n) |
-| POST | `/rag/search` | admin | semantic search test — `{ query, top_k }` → results + context string |
-| GET | `/rag/documents` | admin | list all indexed documents (id, source, title, language) |
+| GET | `/rag/status` | auth | index status: last indexed timestamp (only advances on a completed run), doc/chunk counts (only replaced by a completed run), `embedding_model` (always the model the index needs), `status` (`idle`/`indexing`/`error`) |
+| POST | `/rag/index` | admin | full background reindex **and reconcile** (catalog + features + i18n); answers `{"success":false}` when a reindex is already running |
+| POST | `/rag/search` | admin | semantic search test — `{ query, top_k }` → results + context string; an embedding error is returned as `{"success":false, "error":…}`, never as an empty result |
+| GET | `/rag/documents` | admin | list all indexed documents (id, source, title, language); a DB error is `success:false`, never an empty list |
 
 Embedding model is `nomic-embed-text` (hardcoded). Admin must pull it before
-indexing. Embeddings stored as f32 BLOBs; similarity search is cosine in Rust.
+indexing (Settings → AI Assistant → Knowledge Base). Embeddings stored as f32
+BLOBs; similarity search is cosine in Rust. A reindex removes documents a
+source no longer produces, and an embedding failure fails the run (`status =
+error`) instead of storing chunks a search can never match.
 
 ## External Agents (MCP) — `mcp/*` + `POST /mcp`
 
