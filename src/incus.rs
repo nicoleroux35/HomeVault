@@ -36,10 +36,36 @@ use hyper::body::Bytes;
 use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::Duration;
 use thiserror::Error;
 use tokio::net::UnixStream;
 
 const SOCKET_PATH: &str = "/var/lib/incus/unix.socket";
+
+/// Ceiling for one Incus round-trip (a read or a one-shot write). On a healthy
+/// daemon these answer in milliseconds, so this only ever fires when the
+/// daemon is wedged — a stuck Incus must never hang a handler (the machine
+/// list used to freeze forever).
+///
+/// It is deliberately **not** the ceiling for `/wait`: an operation can
+/// legitimately take minutes, and it has its own budget — see
+/// [`wait_budget`]. Wrapping a `/wait` in this value is what made every VM
+/// create report a false failure at 45 s while Incus kept building the
+/// instance (ROADMAP 19.1).
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// Slack added on top of an operation's own `?timeout=` before our transport
+/// gives up. Our deadline must sit *above* Incus', so Incus' answer (success or
+/// its own timeout reason) arrives first and we report what it says instead of
+/// guessing.
+const WAIT_GRACE_SECS: u64 = 10;
+
+/// How long the transport may wait for `GET <op>/wait?timeout=<timeout_secs>`.
+/// Pure so the "the create wait outlives the default timeout" invariant is
+/// unit-tested without a daemon.
+fn wait_budget(timeout_secs: u64) -> Duration {
+    Duration::from_secs(timeout_secs.saturating_add(WAIT_GRACE_SECS))
+}
 
 /// Incus happily sends `"field": null` where a map/array is expected (e.g.
 /// `state.disk` on a VM with no disk stats yet). Plain `#[serde(default)]` only
@@ -77,6 +103,11 @@ pub enum IncusError {
     Serde(#[from] serde_json::Error),
     #[error("connection to Incus failed: {0}")]
     Transport(String),
+    /// Our own deadline expired before Incus answered. Kept distinct from
+    /// [`IncusError::Operation`] because a timed-out `/wait` means "still
+    /// running", not "the operation failed".
+    #[error("Incus did not respond within {0} seconds")]
+    Timeout(u64),
 }
 
 impl IncusError {
@@ -84,11 +115,84 @@ impl IncusError {
     /// the VM handlers currently answer 200/`{success:false}` like Docker.
     pub fn status_code(&self) -> u16 {
         match self {
-            IncusError::NotAvailable | IncusError::Io(_) | IncusError::Transport(_) => 503,
+            IncusError::NotAvailable
+            | IncusError::Io(_)
+            | IncusError::Transport(_)
+            | IncusError::Timeout(_) => 503,
             IncusError::InstanceNotFound(_) => 404,
             IncusError::Http(code, _) => *code,
             IncusError::Operation(_) | IncusError::Serde(_) => 500,
         }
+    }
+}
+
+// ── Operations ──────────────────────────────────────────────────────────────
+
+/// The result of following an Incus operation to its end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WaitOutcome {
+    /// Incus reports the operation finished successfully.
+    Completed,
+    /// Our deadline expired while the operation was still running. **Not a
+    /// failure**: the instance keeps being built, so the caller must not
+    /// report an error, retry, or clean up the half-built machine.
+    StillRunning { operation_id: String },
+}
+
+/// Where an operation reply says the operation is. Pure classification of the
+/// wire shape, so every branch is unit-tested without a daemon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperationState {
+    Succeeded,
+    StillRunning,
+    Failed(String),
+}
+
+/// Classify a full Incus reply (`{"type":…,"metadata":{…}}`).
+///
+/// Two shapes must both work:
+///
+/// * **async** — `metadata.status_code` is the *operation's* code: `200` for
+///   success, `100/101/103/104` while it runs, `107` on failure. Incus also
+///   puts the human reason in `metadata.err`.
+/// * **sync** — a reply with no `operation` field, where `metadata` is the
+///   resource and carries no operation status at all. The request itself
+///   already succeeded (a failure is turned into `IncusError::Http` by
+///   [`IncusService::request_json`]), so this must classify as `Succeeded` —
+///   the old code read the missing code as `0`, i.e. "the operation did not
+///   complete", and reported a successful synchronous call as failed.
+pub fn classify_operation(reply: &serde_json::Value) -> OperationState {
+    let meta = reply.get("metadata").unwrap_or(&serde_json::Value::Null);
+    let reason = meta
+        .get("err")
+        .and_then(|e| e.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if !reason.is_empty() {
+        return OperationState::Failed(reason);
+    }
+    let status = meta.get("status").and_then(|s| s.as_str()).unwrap_or("");
+    match meta.get("status_code").and_then(|c| c.as_u64()) {
+        Some(200) | Some(106) => OperationState::Succeeded,
+        // OperationCreated / Started / Running / Cancelling
+        Some(100) | Some(101) | Some(103) | Some(104) => OperationState::StillRunning,
+        Some(105) => OperationState::Failed("the operation was cancelled".to_string()),
+        Some(102) => OperationState::Failed("the operation was stopped".to_string()),
+        Some(107) => OperationState::Failed("the operation failed".to_string()),
+        Some(code) => OperationState::Failed(if status.is_empty() {
+            format!("the operation ended with status {code}")
+        } else {
+            status.to_string()
+        }),
+        // No `status_code`: a synchronous reply (nothing to wait for), or an
+        // older Incus that omits it on `/wait`. Never invent a failure here —
+        // only a status that explicitly says so counts.
+        None => match status {
+            "Failure" | "Failed" => OperationState::Failed("the operation failed".to_string()),
+            "Running" | "Pending" | "Started" | "Cancelling" => OperationState::StillRunning,
+            _ => OperationState::Succeeded,
+        },
     }
 }
 
@@ -541,35 +645,69 @@ impl IncusService {
 
     // ---- operations ----
 
-    /// Block until `op_id` finishes. `op_id` is what `create_instance` etc.
-    /// return (`/1.0/operations/<uuid>`). A non-200 operation status becomes
-    /// `IncusError::Operation(reason)`.
-    pub async fn wait_for_operation(op_id: &str, timeout_secs: u64) -> Result<(), IncusError> {
+    /// Block until `op_id` finishes, up to `timeout_secs`. `op_id` is what
+    /// `create_instance` etc. return (`/1.0/operations/<uuid>`).
+    ///
+    /// Two things this deliberately does **not** do:
+    ///
+    /// * it does not use [`DEFAULT_TIMEOUT`] — the transport ceiling is the
+    ///   operation's own budget plus [`WAIT_GRACE_SECS`] ([`wait_budget`]),
+    ///   so a 900 s image pull is not cut off at 45 s;
+    /// * it does not turn our own deadline into an error. Expiring means
+    ///   "still running", which the caller reports as such with the operation
+    ///   id — the instance is fine, it is just slow (ROADMAP 19.1).
+    ///
+    /// A real failure (an `err`, a `107`, a cancelled operation) is still an
+    /// [`IncusError::Operation`] carrying Incus' own reason.
+    pub async fn wait_for_operation(
+        op_id: &str,
+        timeout_secs: u64,
+    ) -> Result<WaitOutcome, IncusError> {
+        Self::wait_for_operation_at(SOCKET_PATH, op_id, timeout_secs).await
+    }
+
+    /// [`wait_for_operation`] against an explicit socket, so the contract is
+    /// unit-tested over a throwaway Unix socket instead of a real daemon.
+    async fn wait_for_operation_at(
+        socket: &str,
+        op_id: &str,
+        timeout_secs: u64,
+    ) -> Result<WaitOutcome, IncusError> {
         let path = format!(
             "{}/wait?timeout={}",
             op_id.trim_end_matches('/'),
             timeout_secs
         );
-        let v = Self::request_json("GET", &path, None).await?;
-        let meta = v
-            .get("metadata")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
-        let code = meta
-            .get("status_code")
-            .and_then(|c| c.as_u64())
-            .unwrap_or(0);
-        if code == 200 {
-            return Ok(());
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Ok(WaitOutcome::StillRunning {
+                    operation_id: op_id.to_string(),
+                });
+            }
+            let budget = wait_budget(remaining.as_secs());
+            let v = match Self::request_json_at(socket, "GET", &path, None, budget).await {
+                Ok(v) => v,
+                // Our ceiling fired: the daemon is slow, not broken.
+                Err(IncusError::Timeout(_)) => {
+                    return Ok(WaitOutcome::StillRunning {
+                        operation_id: op_id.to_string(),
+                    })
+                }
+                Err(e) => return Err(e),
+            };
+            match classify_operation(&v) {
+                OperationState::Succeeded => return Ok(WaitOutcome::Completed),
+                OperationState::StillRunning => {
+                    // Incus answered "still running" instead of holding the
+                    // request open (an older daemon, or `?timeout=` ignored):
+                    // ask again, but never in a hot loop.
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                OperationState::Failed(reason) => return Err(IncusError::Operation(reason)),
+            }
         }
-        let reason = meta
-            .get("err")
-            .and_then(|e| e.as_str())
-            .filter(|s| !s.is_empty())
-            .or_else(|| meta.get("status").and_then(|s| s.as_str()))
-            .unwrap_or("the operation did not complete")
-            .to_string();
-        Err(IncusError::Operation(reason))
     }
 
     // ---- interactive console ----
@@ -651,28 +789,45 @@ impl IncusService {
         path: &str,
         body: Option<&[u8]>,
     ) -> Result<serde_json::Value, IncusError> {
-        // Never let a slow/stuck Incus hang a HomeVault request forever.
-        // (`create_instance` etc. return an operation URL immediately; the
-        // long wait is `wait_for_operation`, which has its own `?timeout=`.)
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(45),
-            Self::request_json_inner(method, path, body),
-        )
-        .await
+        Self::request_json_with_timeout(method, path, body, DEFAULT_TIMEOUT).await
+    }
+
+    /// Same call with an explicit transport ceiling. Every caller is bounded:
+    /// [`DEFAULT_TIMEOUT`] for ordinary reads/writes, [`wait_budget`] for a
+    /// `/wait` (which is allowed to take as long as the operation does).
+    async fn request_json_with_timeout(
+        method: &str,
+        path: &str,
+        body: Option<&[u8]>,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, IncusError> {
+        Self::request_json_at(SOCKET_PATH, method, path, body, timeout).await
+    }
+
+    /// The transport with an explicit socket path, so the `/wait` contract can
+    /// be exercised against a throwaway socket in the unit tests.
+    async fn request_json_at(
+        socket: &str,
+        method: &str,
+        path: &str,
+        body: Option<&[u8]>,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, IncusError> {
+        match tokio::time::timeout(timeout, Self::request_json_inner(socket, method, path, body))
+            .await
         {
             Ok(r) => r,
-            Err(_) => Err(IncusError::Transport(
-                "Incus did not respond in time".to_string(),
-            )),
+            Err(_) => Err(IncusError::Timeout(timeout.as_secs())),
         }
     }
 
     async fn request_json_inner(
+        socket: &str,
         method: &str,
         path: &str,
         body: Option<&[u8]>,
     ) -> Result<serde_json::Value, IncusError> {
-        let stream = match UnixStream::connect(SOCKET_PATH).await {
+        let stream = match UnixStream::connect(socket).await {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Err(IncusError::NotAvailable)
@@ -762,12 +917,27 @@ impl IncusService {
         serde_json::from_value(meta).map_err(IncusError::Serde)
     }
 
+    /// The operation URL to follow, or `""` when Incus already finished the
+    /// work synchronously (nothing to wait for).
+    ///
+    /// An **async** reply with no `operation` field is an error: returning
+    /// `""` there would tell every caller "already done" about a request whose
+    /// outcome nobody knows — that is how a successful create used to be
+    /// reported as failed, and a failed one as complete.
     fn operation_id(v: &serde_json::Value) -> Result<String, IncusError> {
-        Ok(v.get("operation")
+        if let Some(op) = v
+            .get("operation")
             .and_then(|o| o.as_str())
             .filter(|s| !s.is_empty())
-            .unwrap_or("")
-            .to_string())
+        {
+            return Ok(op.to_string());
+        }
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("sync") => Ok(String::new()),
+            _ => Err(IncusError::Operation(
+                "Incus accepted the request but did not return an operation to follow".to_string(),
+            )),
+        }
     }
 }
 
@@ -882,8 +1052,239 @@ mod tests {
             IncusService::operation_id(&v).unwrap(),
             "/1.0/operations/abc-123"
         );
+        // A synchronous reply has nothing to follow — `""` is honest here.
         let v = json!({"type": "sync"});
         assert_eq!(IncusService::operation_id(&v).unwrap(), "");
+    }
+
+    #[test]
+    fn operation_id_refuses_an_async_reply_without_an_operation() {
+        // ROADMAP 19.1: this used to return `""`, which every caller reads as
+        // "already finished" — a request whose outcome is unknown was reported
+        // as done.
+        for v in [
+            json!({"type": "async"}),
+            json!({"type": "async", "operation": ""}),
+            json!({"metadata": {}}),
+        ] {
+            let e = IncusService::operation_id(&v).unwrap_err();
+            assert!(
+                matches!(e, IncusError::Operation(_)),
+                "expected a named error, got {e:?}"
+            );
+            assert!(e.to_string().contains("did not return an operation"));
+        }
+    }
+
+    #[test]
+    fn classify_operation_reads_the_async_status_codes() {
+        // success
+        assert_eq!(
+            classify_operation(&json!({"type": "async", "metadata": {"status": "Success", "status_code": 200}})),
+            OperationState::Succeeded
+        );
+        // an operation that is still working (100/101/103/104)
+        for code in [100, 101, 103, 104] {
+            assert_eq!(
+                classify_operation(&json!({"metadata": {"status": "Running", "status_code": code}})),
+                OperationState::StillRunning,
+                "status_code {code} must read as still running"
+            );
+        }
+        // terminal failures, each with Incus' own wording when it gives one
+        assert_eq!(
+            classify_operation(&json!({"metadata": {"status": "Failure", "status_code": 107, "err": "not enough disk"}})),
+            OperationState::Failed("not enough disk".to_string())
+        );
+        assert_eq!(
+            classify_operation(&json!({"metadata": {"status_code": 105}})),
+            OperationState::Failed("the operation was cancelled".to_string())
+        );
+        assert_eq!(
+            classify_operation(&json!({"metadata": {"status_code": 107}})),
+            OperationState::Failed("the operation failed".to_string())
+        );
+        assert_eq!(
+            classify_operation(&json!({"metadata": {"status_code": 999, "status": "Weird"}})),
+            OperationState::Failed("Weird".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_operation_never_invents_a_failure() {
+        // ROADMAP 19.1: a *synchronous* reply carries no operation status at
+        // all. The old code read the missing code as 0 and answered "the
+        // operation did not complete" — a successful create reported as failed.
+        assert_eq!(
+            classify_operation(&json!({"type": "sync", "status_code": 200, "metadata": {"name": "web"}})),
+            OperationState::Succeeded
+        );
+        assert_eq!(
+            classify_operation(&json!({"type": "sync", "metadata": {"name": "web"}})),
+            OperationState::Succeeded
+        );
+        assert_eq!(classify_operation(&json!({"metadata": null})), OperationState::Succeeded);
+        // ...but an explicit failure is still a failure.
+        assert_eq!(
+            classify_operation(&json!({"metadata": {"status": "Failure"}})),
+            OperationState::Failed("the operation failed".to_string())
+        );
+        // An `err` wins over any status code.
+        assert_eq!(
+            classify_operation(&json!({"metadata": {"status_code": 200, "err": "boom"}})),
+            OperationState::Failed("boom".to_string())
+        );
+    }
+
+    #[test]
+    fn wait_budget_outlives_the_operation_timeout() {
+        // The 19.1 regression: a 900 s create wait was wrapped in the 45 s
+        // default transport timeout, so every create "failed" at 45 s while
+        // Incus kept building. Our ceiling must always sit above Incus' own.
+        assert!(wait_budget(900) > Duration::from_secs(900));
+        assert!(wait_budget(900) > DEFAULT_TIMEOUT);
+        assert_eq!(wait_budget(45), Duration::from_secs(45 + WAIT_GRACE_SECS));
+        assert_eq!(wait_budget(0), Duration::from_secs(WAIT_GRACE_SECS));
+        // No overflow on a silly value.
+        assert!(wait_budget(u64::MAX) >= Duration::from_secs(u64::MAX / 2));
+    }
+
+    // ── /wait against a throwaway Unix socket ───────────────────────────────
+    //
+    // The point of these is that the *contract*, not just the pure classifier,
+    // holds: a slow or still-running operation is never reported as a failure,
+    // and a synchronous reply is never reported as a failure either.
+
+    /// Serve `body` (HTTP 200, one reply per connection) on a fresh temp socket.
+    /// Returns the socket path and the directory to clean up.
+    async fn fake_incus(body: serde_json::Value) -> (std::path::PathBuf, String) {
+        use hyper::service::service_fn;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+
+        let dir = std::env::temp_dir().join(format!(
+            "hv-incus-test-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("unix.socket");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let payload = body.to_string();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let payload = payload.clone();
+                tokio::spawn(async move {
+                    let io = TokioIo::new(stream);
+                    let svc = service_fn(move |_req: hyper::Request<hyper::body::Incoming>| {
+                        let payload = payload.clone();
+                        async move {
+                            Ok::<_, std::convert::Infallible>(
+                                hyper::Response::builder()
+                                    .status(200)
+                                    .header("content-type", "application/json")
+                                    .body(http_body_util::Full::new(Bytes::from(payload)))
+                                    .unwrap(),
+                            )
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, svc)
+                        .await;
+                });
+            }
+        });
+        let socket = path.to_string_lossy().to_string();
+        (dir, socket)
+    }
+
+    #[tokio::test]
+    async fn wait_reports_completed_on_an_async_success() {
+        let (dir, socket) = fake_incus(json!({
+            "type": "async",
+            "metadata": {"status": "Success", "status_code": 200, "err": ""}
+        }))
+        .await;
+        assert_eq!(
+            IncusService::wait_for_operation_at(&socket, "/1.0/operations/abc", 5)
+                .await
+                .unwrap(),
+            WaitOutcome::Completed
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The exact 19.1 regression, end to end: a *synchronous* reply has no
+    /// operation status, and it used to be read as "the operation did not
+    /// complete" — a successful create reported as failed.
+    #[tokio::test]
+    async fn wait_reads_a_synchronous_reply_as_completed() {
+        let (dir, socket) = fake_incus(json!({
+            "type": "sync", "status_code": 200, "metadata": {"name": "web"}
+        }))
+        .await;
+        assert_eq!(
+            IncusService::wait_for_operation_at(&socket, "/1.0/operations/abc", 5)
+                .await
+                .unwrap(),
+            WaitOutcome::Completed
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An operation that never finishes must come back as `StillRunning` with
+    /// the id — after its own deadline, not as an error, and not hanging.
+    #[tokio::test]
+    async fn wait_reports_still_running_when_the_deadline_expires() {
+        let (dir, socket) = fake_incus(json!({
+            "type": "async",
+            "metadata": {"status": "Running", "status_code": 103}
+        }))
+        .await;
+        let started = std::time::Instant::now();
+        let out = IncusService::wait_for_operation_at(&socket, "/1.0/operations/slow-1", 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            out,
+            WaitOutcome::StillRunning {
+                operation_id: "/1.0/operations/slow-1".to_string()
+            }
+        );
+        // Bounded by the deadline (1 s) plus the in-flight 500 ms poll gap.
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the wait must give up at its deadline"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A real Incus failure still fails, carrying Incus' own reason.
+    #[tokio::test]
+    async fn wait_keeps_a_real_failure_a_failure() {
+        let (dir, socket) = fake_incus(json!({
+            "type": "async",
+            "metadata": {"status": "Failure", "status_code": 107, "err": "not enough disk"}
+        }))
+        .await;
+        let e = IncusService::wait_for_operation_at(&socket, "/1.0/operations/abc", 5)
+            .await
+            .unwrap_err();
+        assert!(matches!(e, IncusError::Operation(_)));
+        assert_eq!(e.to_string(), "not enough disk");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A socket nobody listens on is `NotAvailable` (the "Incus is not
+    /// installed" path), never a panic or a hang.
+    #[tokio::test]
+    async fn wait_on_a_missing_socket_is_not_available() {
+        let missing = format!("/tmp/hv-no-such-incus-{}.socket", std::process::id());
+        let e = IncusService::wait_for_operation_at(&missing, "/1.0/operations/x", 2)
+            .await
+            .unwrap_err();
+        assert!(matches!(e, IncusError::NotAvailable), "got {e:?}");
     }
 
     #[test]

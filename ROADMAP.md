@@ -46,7 +46,8 @@ auth under HTTPS** (all 2026-10-21), and **Health** (2026-10-22) — followed by
 **Account / Security pass**, **disk quotas** and the **AI Assistant / RAG pass**
 (all 2026-10-22), and on 2026-10-23 **Storage's sudoers scoping + residual call
 sites**, **Apps Center / app-proxy**, the **RAID wizard's create path**,
-**LUKS2 encryption** and the **System Journal's privilege + read semantics**
+**LUKS2 encryption**, the **System Journal's privilege + read semantics**,
+**Downloader**, **Syncthing's REST client** and **Virtual Machines (Incus)**
 (see Done).
 
 Everything else is still on its original implementation plus incremental
@@ -80,7 +81,6 @@ Two structural facts explain most of the list:
 | 15 | Dashboard / Widgets | P1 | 3 |
 | 16 | Cloud Sync (rclone) | P1 | 3 |
 | 18 | Syncthing | P1 | 1 |
-| 19 | Virtual Machines (Incus) | P1 | 2 |
 | 21 | Notifications | P1 | 3 |
 | 22 | DB backup | P1 | 2 |
 | 23 | Transfer quotas | P1 | 3 |
@@ -92,6 +92,7 @@ Two structural facts explain most of the list:
 | 29 | mDNS | P2 | 2 |
 | 30 | Quotas app | P2 | 1 |
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
+| 32 | Virtual Machines — residual | P2 | 2 |
 | — | Cross-cutting (7 systemic) | — | 7 |
 
 Total open findings: **51** (44 per-area + 7 cross-cutting).
@@ -106,10 +107,14 @@ day**: `uri`/`dir`/`out` are now validated against an allowlist and a confined
 root, the RPC port carries a per-process secret, and the child is reaped and
 killed on shutdown. **18.2 closed on 2026-10-23**: a malformed API key is a
 named error instead of a panicking handler, certificate verification is back on,
-and the key read left the runtime. Next: **19.1 (Incus VM)** — every create
-aborts at 45 s while Incus keeps building the instance, so the user sees a false
-failure, the instance is orphaned and a retry duplicates it; nothing else on the
-P1 list breaks its feature's primary action that reliably.
+and the key read left the runtime. **19 (Virtual Machines) closed on
+2026-10-23**: a `/wait` now gets the operation's own budget instead of the
+45 s transport default, an expired wait reports "still running" with the
+operation id instead of a false failure, and the blocking filesystem/socket
+work left the async runtime. Next: **12.2 + 12.3 + 13.4** — a UTC-only cron,
+a bad cron that retries every tick and a `timezone` setting nothing applies is
+one defect seen from two screens, and it is the last P1 that silently makes a
+scheduled action fire at the wrong time.
 
 ---
 
@@ -376,43 +381,6 @@ Syncthing has no bulk call). The HTTP client has a real 10 s timeout
 
 ---
 
-### 19. Virtual Machines (Incus) — every create fails at 45 s
-
-- [ ] **19.1 — The 45 s transport timeout kills the 900 s create wait.**
-      `src/incus.rs:653-668` wraps **every** `request_json` in a 45 s
-      `tokio::time::timeout`, including
-      `wait_for_operation(op, CREATE_WAIT_SECS)` — and `CREATE_WAIT_SECS` is
-      **900** (`src/handlers/vm.rs:81`). Incus holds `/wait?timeout=900` open for
-      the whole operation, so the client aborts at 45 s with
-      "Incus did not respond in time" while the daemon keeps creating the
-      instance: a user-visible false failure plus an orphaned instance and a
-      duplicate on retry. The comment at `:654-656` says the long wait is
-      `wait_for_operation` "which has its own `?timeout=`" — the wrapper does not
-      know that.
-      *Acceptance:* the transport timeout is per-call (short for reads, the
-      operation timeout for `/wait`), and a timed-out wait reports "still
-      running" with the operation id rather than a failure.
-- [ ] **19.2 — Blocking filesystem and socket work on the async runtime, and a
-      racy port allocation.** `std::fs` and `TcpListener::bind` are called
-      inside `async fn`s: display-port probing/binding
-      (`src/handlers/vm.rs:318-328,1341-1359,1382-1408,1577`), plus
-      `swtpm_available()` / `ovmf_secureboot_available()`. The probe
-      `5900+N` for N in `20..=119` with a 60 s reservation is a
-      check-then-bind TOCTOU, so two concurrent creates can pick the same port.
-
-Also: sync responses are mis-mapped — `operation_id` returns `""`
-(`src/incus.rs:765-771`) and `wait_for_operation` treats a non-200 as
-`IncusError::Operation` (`:547-573`), so a successful synchronous create can be
-reported as failed; the screen relay is a raw TCP pipe with no framing or
-heartbeat (`handlers/vm.rs:1253-1318`); an ISO download runs to completion
-before the 10 MB floor is checked (`:1411-1554`).
-
-*Tests:* 24 integration, **0 unit** in `handlers/vm.rs` and `incus.rs`, 44 E2E.
-*Docs:* `docs/guides/vm.md` documents none of the timeout, the port range or the
-ISO floor.
-
----
-
 ### 21. Notifications — blocking email in the loop, no per-user state
 
 - [ ] **21.1 — Blocking email send and an untimed webhook inside the async
@@ -660,6 +628,23 @@ reuse.
       methods and ~100 rewritten call sites, with `docker.spec.ts` (58 tests) as
       the only net. If taken up: one tab at a time, E2E green between each.
 
+### 32. Virtual Machines — residual (leftovers of the closed item 19)
+
+- [ ] **32.1 — The screen relay is a raw TCP pipe with no framing or
+      heartbeat.** `screen_relay` (`src/handlers/vm.rs:1380-1482`) pipes
+      whatever arrives on the WebSocket to `127.0.0.1:5900+N` and back, so a
+      half-open connection (laptop lid closed, Wi-Fi dropped) leaves the task
+      and the qemu VNC session alive until TCP gives up — there is no ping and
+      no idle timeout. *Acceptance:* a heartbeat plus an idle deadline that
+      closes both sides, or a framed protocol.
+- [ ] **32.2 — An ISO download runs to completion before the 10 MB floor is
+      checked.** `run_iso_download` (`:1650-1742`) streams the whole body to
+      disk and only then calls `finalise_iso`, so a link that returns a
+      multi-GB wrong file is fully written before it is rejected. The floor now
+      runs on the blocking pool (2026-10-23) but not *before* the bytes land.
+      *Acceptance:* stop the stream as soon as the declared length is below the
+      floor, and cap the body at a sane ISO size.
+
 ---
 
 ## Cross-cutting — fix once, unblocks many
@@ -673,12 +658,12 @@ reuse.
       Notifications (`notification_engine.rs:345`),
       Antivirus/Power (`handlers/antivirus.rs:50`, `handlers/power.rs:49`),
       Explorer (`explorer.rs:665,2628,2659`), rclone (`rclone.rs:253,932`),
-      VM (`handlers/vm.rs:318,1341,1382,1577`),
       DB backup (`db_backup.rs:178,222,229,236,241,270`).
       **Reference implementations already in the tree:** `src/mdns.rs:449`,
       `src/handlers/journal.rs:171`, `src/transfer_quota.rs:136`,
-      `src/handlers/docker.rs`, `src/handlers/mcp.rs:588`, and
-      `src/handlers/syncthing.rs::read_api_key` (2026-10-23).
+      `src/handlers/docker.rs`, `src/handlers/mcp.rs:588`,
+      `src/handlers/syncthing.rs::read_api_key` (2026-10-23) and
+      `src/handlers/vm.rs::blocking_io` (2026-10-23).
       *Acceptance:* zero `std::process::Command` / blocking `std::fs` reachable
       from a handler's async body. A CI grep (or a clippy lint) would keep it
       that way.
@@ -754,6 +739,71 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-23 (k)** — Virtual Machines (Incus) — a wait now gets the operation's
+own budget, an expired wait is "still running" instead of a failure, and no
+blocking filesystem or socket call is left on the runtime. **19.1 (the 45 s
+wrapper killed the 900 s create wait):** `request_json` split into
+`request_json` (the ordinary `DEFAULT_TIMEOUT` of 45 s) and
+`request_json_with_timeout`; `wait_for_operation` uses `wait_budget(secs)` =
+`secs + WAIT_GRACE_SECS` (10), so our ceiling always sits **above** Incus' own
+`?timeout=` and the daemon's answer arrives first. Its return type is now
+`WaitOutcome` (`Completed` | `StillRunning { operation_id }`) instead of
+`Result<()>`: an expired wait — or an Incus reply that says "Running" — is
+`StillRunning`, **never** `Err`, so the create job completes with
+`"…" is still being created — Incus is taking longer than usual (operation …)`
+and does **not** delete the instance or trip the TPM self-heal (that branch
+keys on `outcome.is_err()`, which is exactly what used to orphan the machine
+and duplicate it on retry); `start`/`stop`/`restart`/`delete`/snapshot
+create/restore answer `{success:true}` with the same wording and the operation
+id, and "still running" after the graceful stop window now triggers the forced
+retry instead of skipping it. **Sync replies:** `classify_operation` (pure,
+unit-tested) reads the async status codes (200/106 success, 100/101/103/104
+still running, 105/107/102/other failure, `metadata.err` wins) and treats a
+`"type":"sync"` reply — which carries **no** operation status — as
+`Succeeded`; the old `unwrap_or(0)` read the missing code as "the operation did
+not complete", i.e. a successful synchronous create reported as failed.
+`operation_id` now answers `""` only for a real sync reply and returns a named
+`IncusError::Operation` for an async reply with no `operation` field. A
+transport deadline is its own `IncusError::Timeout(secs)` ("Incus did not
+answer within N seconds"), no longer indistinguishable from an operation
+failure. **19.2 (blocking work + a racy port allocation):** every `std::fs`
+call in `handlers/vm.rs` — `ensure_iso_dir`, the store listing (`read_dir` + a
+`stat` per entry, extracted as `read_iso_entries`), `validate_local_iso` /
+`ensure_readable_by_qemu`, `ovmf_secureboot_available` / `swtpm_available` /
+`which`, the ISO delete (`is_file` + `remove_file`) and the download's
+size-floor + `chmod` (`finalise_iso`) — goes through a new `blocking_io()`
+(`spawn_blocking`, the `mdns.rs` / `transfer_quota.rs` shape), and
+`start_iso_download` became `async`. `alloc_vnc_display` is `async` and
+**claims the slot before it probes it**, both under one lock, so two
+concurrent creates can never pick the same display; the claim lasts
+`VNC_RESERVATION_TTL` (= `CREATE_WAIT_SECS` + 60 s) instead of a fixed 60 s
+that expired mid-create, a rejected candidate is released, and the create job
+hands its claim back (`release_vnc_display`) once the machine is up or has
+failed. The bind probe itself (`display_is_free`) runs on the blocking pool,
+including the `start` path's "this port is taken, move the display" check.
+Tests (`src/incus.rs` 13 → **22**: `operation_id` refuses an async reply with
+no operation, the `classify_operation` matrix, "a sync reply is never a
+failure", `wait_budget` > the operation timeout, and four `/wait` tests over a
+throwaway Unix socket — `fake_incus` serves a fixed JSON reply, so `Completed`,
+`StillRunning` at the deadline and a real `err` are asserted through the real
+transport; `src/handlers/vm.rs` 15 → **21**: three concurrent allocations
+never collide, the reservation outlives a create, a bound port reads as taken,
+`blocking_io` passes values and messages through, the store lists only
+`.iso` files, the 10 MB floor still removes a bad body; `vm_integration.rs`
+24 → **26**: the ISO refusals keep their sentences through the blocking hop,
+and `GET`/`DELETE /api/vm/isos` list/remove for real; `vm.spec.ts` 43 → **45**
+`test(` (47 runtime): section 15, fully stubbed, proves a `start` whose wait
+expired shows the server's "still starting … (operation …)" sentence in the
+success banner, and that a genuine refusal still shows the server reason).
+`docs/guides/vm.md` gained *Timeouts, and what "still running" means* (the two
+ceilings table + the `WaitOutcome` contract) and the new display/allocation and
+`blocking_io` invariants. **Not run** (per instruction): no unit, integration or
+E2E suite was executed; `cargo check --all-targets` and `cargo clippy
+--all-targets` are clean for both files. **Left open on purpose:** the two
+residual defects the item-19 pass did not touch are now **32.1** (the screen
+relay has no framing or heartbeat) and **32.2** (an ISO download is fully
+written before the 10 MB floor is checked) in the P2 list.
 
 **2026-10-23 (j)** — Syncthing — a malformed API key is a named error instead of
 a dead request task, certificate verification is back on, and the key read left

@@ -67,9 +67,10 @@ use homevault::handlers::{
     auth::handle_login,
     vm::{
         handle_console_ticket, handle_screen_ticket, handle_vm_available, handle_vm_config,
-        handle_vm_create, handle_vm_delete, handle_vm_get, handle_vm_list, handle_vm_os_options,
-        handle_vm_restart, handle_vm_snapshot_create, handle_vm_snapshot_delete,
-        handle_vm_snapshot_restore, handle_vm_snapshots, handle_vm_start, handle_vm_stop,
+        handle_vm_create, handle_vm_delete, handle_vm_get, handle_vm_iso_delete, handle_vm_isos,
+        handle_vm_list, handle_vm_os_options, handle_vm_restart, handle_vm_snapshot_create,
+        handle_vm_snapshot_delete, handle_vm_snapshot_restore, handle_vm_snapshots,
+        handle_vm_start, handle_vm_stop,
     },
     AppState,
 };
@@ -128,6 +129,8 @@ fn vm_router(state: Arc<AppState>) -> Router {
         .route("/api/vm/create", post(handle_vm_create))
         .route("/api/vm/console/ticket", post(handle_console_ticket))
         .route("/api/vm/{name}/screen/ticket", post(handle_screen_ticket))
+        .route("/api/vm/isos", get(handle_vm_isos))
+        .route("/api/vm/isos/{name}", delete(handle_vm_iso_delete))
         .route("/api/vm/{name}", get(handle_vm_get))
         .route("/api/vm/{name}", delete(handle_vm_delete))
         .route("/api/vm/{name}/start", put(handle_vm_start))
@@ -552,9 +555,100 @@ async fn create_iso_rejects_relative_and_non_iso_paths() {
     assert!(msg.to_lowercase().contains("not found"), "{msg}");
 }
 
+/// ROADMAP 19.2: `validate_local_iso` (canonicalise + stat + chmod walk) now
+/// runs on the blocking pool. The offload must not change a single word the
+/// person reads — each refusal keeps its own sentence.
 #[tokio::test]
-async fn create_rejects_both_os_and_iso() {
-    let (state, _tmp, _guard) = setup_state().await;
+async fn create_iso_still_names_why_the_file_is_refused() {
+    let (state, tmp, _guard) = setup_state().await;
+    let mut router = vm_router(state.clone());
+    let token = admin_token(&state, &mut router).await;
+
+    // a directory that ends in .iso
+    let dir_iso = tmp.path().join("folder.iso");
+    std::fs::create_dir_all(&dir_iso).unwrap();
+    let msg = create_err(
+        &mut router,
+        &token,
+        json!({"name": "winbox", "iso_path": dir_iso.to_str().unwrap(), "iso_os": "windows"}),
+    )
+    .await;
+    assert!(msg.to_lowercase().contains("not a file"), "{msg}");
+
+    // a real file that is far too small to be an installation ISO
+    let tiny = tmp.path().join("tiny.iso");
+    std::fs::write(&tiny, b"nope").unwrap();
+    let msg = create_err(
+        &mut router,
+        &token,
+        json!({"name": "winbox", "iso_path": tiny.to_str().unwrap(), "iso_os": "windows"}),
+    )
+    .await;
+    assert!(msg.to_lowercase().contains("too small"), "{msg}");
+}
+
+/// ROADMAP 19.2: the ISO store's `read_dir` + per-entry `stat`, and the delete
+/// path's `is_file` + `remove_file`, all moved to the blocking pool. The
+/// observable behaviour is unchanged: only `.iso` files are listed, the size is
+/// reported, and deleting one that is not there says so.
+#[tokio::test]
+async fn iso_store_lists_and_deletes_through_the_blocking_pool() {
+    let (state, tmp, _guard) = setup_state().await;
+    let mut router = vm_router(state.clone());
+    let token = admin_token(&state, &mut router).await;
+
+    let store = tmp.path().join("vm").join("isos");
+    std::fs::create_dir_all(&store).unwrap();
+    std::fs::write(store.join("ubuntu-24.04.iso"), vec![0u8; 16]).unwrap();
+    std::fs::write(store.join("notes.txt"), b"not an iso").unwrap();
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/vm/isos",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let list = body["data"].as_array().expect("a list");
+    assert_eq!(list.len(), 1, "only .iso files are listed: {body}");
+    assert_eq!(list[0]["name"], "ubuntu-24.04.iso");
+    assert_eq!(list[0]["size"], 16);
+    assert_eq!(list[0]["virtio"], false);
+
+    let (status, body) = send(
+        &mut router,
+        Method::DELETE,
+        "/api/vm/isos/ubuntu-24.04.iso",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        !store.join("ubuntu-24.04.iso").exists(),
+        "the file must really be gone"
+    );
+
+    let (status, body) = send(
+        &mut router,
+        Method::DELETE,
+        "/api/vm/isos/ubuntu-24.04.iso",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["success"], false);
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("not in the store"));
+}
+
+#[tokio::test]
+async fn create_rejects_both_os_and_iso() {    let (state, _tmp, _guard) = setup_state().await;
     let mut router = vm_router(state.clone());
     let token = admin_token(&state, &mut router).await;
     let msg = create_err(
@@ -576,8 +670,7 @@ async fn create_rejects_neither_os_nor_iso() {
 }
 
 #[tokio::test]
-async fn create_iso_with_real_file_reaches_incus() {
-    let (state, tmp, _guard) = setup_state().await;
+async fn create_iso_with_real_file_reaches_incus() {    let (state, tmp, _guard) = setup_state().await;
     let mut router = vm_router(state.clone());
     let token = admin_token(&state, &mut router).await;
     // Only meaningful on a host without Incus: with a live daemon this would
