@@ -19,7 +19,8 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';
   import { t, translate } from '$lib/stores/i18n';
-  import { Modal, Button } from '$lib/components/theme';
+  import { isAdmin } from '$lib/stores/auth';
+  import { Modal, Button, Alert } from '$lib/components/theme';
   import { PageLayout } from '$lib/components/app';
   import { cn } from '$lib/utils.js';
   import { IconNotes, IconSearch, IconFilter, IconTrash, IconAlertTriangle, IconSettings } from '@tabler/icons-svelte';
@@ -55,6 +56,20 @@
   let cleanupEnabled = false;
   let cleanupIntervalDays = 30;
   let savingCleanupSettings = false;
+
+  /**
+   * A failed load is not an empty log. `loadError` replaces the entry list
+   * (with a Retry) so "nothing matched" and "the read failed" never look the
+   * same, and `actionError` carries a failed Clear / Save back to the user
+   * instead of closing the modal as if it had worked.
+   */
+  let loadError = '';
+  let actionError = '';
+  /** Set when the source list itself failed, so a later entries success does
+   *  not clear the message while the source picker is still empty. */
+  let sourcesFailed = false;
+  /** True when the backend only searched a bounded window (ROADMAP 20.2). */
+  let searchTruncated = false;
 
   const priorityOptions: Array<{ value: number; key: string }> = [
     { value: 0, key: 'journal.prio_emerg' },
@@ -131,13 +146,22 @@
     const res = await api.getJournalSources();
     if (res.success && res.data) {
       sources = res.data;
+      sourcesFailed = false;
+      // A source that disappeared (or an admin demoted to a regular user)
+      // must not leave the screen pointing at a source it can no longer read.
+      if (!sources.some((s) => s.id === selectedSource)) {
+        selectedSource = sources[0]?.id ?? 'app';
+      }
     } else {
+      sourcesFailed = true;
+      loadError = res.error || res.message || translate('journal.load_failed');
     }
     loadingSources = false;
   }
 
   async function loadEntries() {
     loading = true;
+    if (!sourcesFailed) loadError = '';
     const res = await api.getJournalEntries({
       source: selectedSource,
       unit: selectedSource === 'system' ? unitFilter || undefined : undefined,
@@ -147,9 +171,20 @@
     });
     if (res.success && res.data) {
       entries = res.data;
+      // The backend scans a bounded window wider than the page; when it filled
+      // up under a search, older matches exist beyond it and the screen says so.
+      searchTruncated = !!res.meta?.search_truncated;
     } else {
+      entries = [];
+      searchTruncated = false;
+      loadError = res.error || res.message || translate('journal.load_failed');
     }
     loading = false;
+  }
+
+  async function retryLoad() {
+    await loadSources();
+    await loadEntries();
   }
 
   function applyFilters() {
@@ -168,14 +203,18 @@
 
   async function confirmClearLogs() {
     clearing = true;
+    actionError = '';
     const res = await api.clearJournalLogs();
     clearing = false;
-    showClearConfirm = false;
     if (res.success) {
+      showClearConfirm = false;
       if (selectedSource === 'app') {
         await loadEntries();
       }
     } else {
+      // Keep the dialog open: closing it on a refusal is what made a rejected
+      // clear look like a successful one.
+      actionError = res.error || res.message || translate('journal.clear_failed');
     }
   }
 
@@ -184,11 +223,14 @@
     if (res.success && res.data) {
       cleanupEnabled = !!res.data.auto_cleanup_enabled;
       cleanupIntervalDays = res.data.interval_days || 30;
+    } else {
+      actionError = res.error || res.message || translate('journal.cleanup_load_failed');
     }
   }
 
   async function saveCleanupSettings() {
     savingCleanupSettings = true;
+    actionError = '';
     const days = Math.max(1, Math.floor(cleanupIntervalDays) || 1);
     const res = await api.updateJournalCleanupSettings({
       auto_cleanup_enabled: cleanupEnabled,
@@ -199,6 +241,7 @@
       cleanupIntervalDays = days;
       showCleanupSettings = false;
     } else {
+      actionError = res.error || res.message || translate('journal.cleanup_save_failed');
     }
   }
 
@@ -226,14 +269,19 @@
   {/snippet}
 
   <!-- Page-level actions: a WindowToolbar row under the header, never inside
-       it (the header bar is icon + title + window controls only). -->
+       it (the header bar is icon + title + window controls only).
+       Both are admin-only on the wire (`DELETE /journal/clear` and
+       `PUT /journal/cleanup-settings`), so a non-admin is never shown a
+       control that can only answer 403 (ROADMAP 20.1). -->
   {#snippet toolbarRight()}
-    <Button variant="danger" onclick={() => (showClearConfirm = true)} data-testid="journal-clear">
-      <IconTrash size="14" /> {$t('journal.clear')}
-    </Button>
-    <Button variant="ghost" onclick={() => (showCleanupSettings = true)} data-testid="journal-settings">
-      <IconSettings size="14" /> {$t('journal.cleanup_settings')}
-    </Button>
+    {#if $isAdmin}
+      <Button variant="danger" onclick={() => { actionError = ''; showClearConfirm = true; }} data-testid="journal-clear">
+        <IconTrash size="14" /> {$t('journal.clear')}
+      </Button>
+      <Button variant="ghost" onclick={() => { actionError = ''; showCleanupSettings = true; }} data-testid="journal-settings">
+        <IconSettings size="14" /> {$t('journal.cleanup_settings')}
+      </Button>
+    {/if}
   {/snippet}
 
   {#snippet toolbarLeft()}
@@ -280,6 +328,12 @@
     </div>
   {/snippet}
 
+  {#if actionError}
+    <div class="pb-2" data-testid="journal-action-error">
+      <Alert variant="error" dismissible ondismiss={() => (actionError = '')}>{actionError}</Alert>
+    </div>
+  {/if}
+
   {#if loading}
     <div data-testid="journal-loading" class="flex flex-col" role="status">
       <span class="sr-only">{$t('journal.loading')}</span>
@@ -290,9 +344,24 @@
         </div>
       {/each}
     </div>
+  {:else if loadError}
+    <!-- A failed read is not an empty log: say what failed and offer the
+         retry, instead of the empty state (ROADMAP 20's "failed load
+         rendered as the empty state"). -->
+    <div data-testid="journal-error" class="flex flex-col items-start gap-3 py-6">
+      <Alert variant="error">{loadError}</Alert>
+      <Button variant="secondary" onclick={retryLoad} data-testid="journal-retry">
+        {$t('journal.retry')}
+      </Button>
+    </div>
   {:else if entries.length === 0}
     <div data-testid="journal-empty" class="py-8 text-center text-muted-foreground">{$t('journal.empty')}</div>
   {:else}
+    {#if searchTruncated}
+      <div class="pb-2" data-testid="journal-search-truncated">
+        <Alert variant="warning">{$t('journal.search_truncated')}</Alert>
+      </div>
+    {/if}
     <div data-testid="journal-list" class="flex flex-col">
       {#each entries as entry, i (i + '-' + entry.timestamp + '-' + entry.message.slice(0, 20) + '-' + entry.pid)}
         <div
@@ -330,7 +399,12 @@
     <IconAlertTriangle size="28" stroke={2} />
   {/snippet}
   {#snippet children()}
-    <p class="m-0 text-center text-[var(--hv-text-secondary)] text-c-md leading-relaxed">{$t('journal.clear_confirm_message')}</p>
+    <div class="flex flex-col gap-3">
+      {#if actionError}
+        <div data-testid="journal-clear-error"><Alert variant="error">{actionError}</Alert></div>
+      {/if}
+      <p class="m-0 text-center text-[var(--hv-text-secondary)] text-c-md leading-relaxed">{$t('journal.clear_confirm_message')}</p>
+    </div>
   {/snippet}
   {#snippet footer()}
     <Button variant="secondary" onclick={() => (showClearConfirm = false)} disabled={clearing}>
@@ -348,6 +422,9 @@
   {/snippet}
   {#snippet children()}
     <div class="flex flex-col gap-3">
+      {#if actionError}
+        <div data-testid="journal-cleanup-error"><Alert variant="error">{actionError}</Alert></div>
+      {/if}
       <label data-testid="journal-cleanup-toggle" class="flex items-center gap-2 text-c-md text-foreground cursor-pointer">
         <input type="checkbox" class="accent-[var(--hv-primary)]" bind:checked={cleanupEnabled} />
         {$t('journal.cleanup_enable')}

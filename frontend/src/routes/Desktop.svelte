@@ -20,7 +20,7 @@
      Rendered by App.svelte once the app gate selects the desktop.
      ======================================================================== -->
 <script lang="ts">
-  import { authStore } from '$lib/stores/auth';
+  import { authStore, isAdmin } from '$lib/stores/auth';
   import { appGate } from '$lib/stores/appGate';
   import { api } from '$lib/services/api';
   import { windowManager } from '$lib/stores/windowManager';
@@ -1030,6 +1030,13 @@
     updateMonitorPosition(type, monitorCurrentX, monitorCurrentY);
   }
 
+  // Applications whose backend is administrator-only. A non-admin session
+  // gets a 403 from every route of these apps, so the tile is not offered at
+  // all — neither in the launcher, the global search, nor as a reopenable
+  // dock entry (ROADMAP 20.1: the System Journal reads host logs, which
+  // include every account name, source address and sudo attempt).
+  const ADMIN_ONLY_APP_IDS = new Set(['journal']);
+
   // Applications configuration. Structural fields (id/icon/color/category/
   // component) never change; `name`/`desc` below are the English fallback
   // only — the reactive `apps` derived below is what's actually rendered
@@ -1085,12 +1092,14 @@
     return _color || APP_ACCENT_GRAD;
   }
 
-  $: apps = appDefs.map(a => ({
-    ...a,
-    name: appField(a.id, 'name', a.name, $t),
-    desc: appField(a.id, 'desc', a.desc, $t),
-    iconBg: appIconBg(a.id, a.color),
-  }));
+  $: apps = appDefs
+    .filter(a => $isAdmin || !ADMIN_ONLY_APP_IDS.has(a.id))
+    .map(a => ({
+      ...a,
+      name: appField(a.id, 'name', a.name, $t),
+      desc: appField(a.id, 'desc', a.desc, $t),
+      iconBg: appIconBg(a.id, a.color),
+    }));
 
   // Installed Docker catalog apps, surfaced as Launchpad tiles (fetched
   // below). They all live under one "Docker Apps" category and never open

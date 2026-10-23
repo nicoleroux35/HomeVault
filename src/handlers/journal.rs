@@ -28,13 +28,21 @@
 //! from `/var/log`, and HomeVault's own rotating application log files
 //! under `crate::config::paths::logs_dir()` (source id `app`, written by
 //! the `tracing-appender` file layer set up in `src/web/mod.rs::run()`).
-//! Unlike the host-level sources, `app` needs no `sudo`/journald access —
-//! the homevault process owns those files directly. This is a privileged,
-//! host-sensitive read: it reveals real process names, service errors, IPs
-//! in connection logs, etc. — the same sensitivity class as the
-//! Dashboard/Health endpoints, so every read handler requires a valid
-//! session. Clearing the `app` source's files is destructive and therefore
-//! admin-gated.
+//!
+//! Two privilege levels, and they follow the data rather than the screen
+//! (ROADMAP 20.1):
+//!
+//! - **Session** — the `app` source. Those files belong to this process, so
+//!   reading them grants the caller nothing it did not already have.
+//! - **Admin** — every host source: `system` and the `/var/log/*` text
+//!   logs. `/var/log/auth.log` alone lists every account name, source
+//!   address and sudo attempt on the box, so a non-admin session must not
+//!   reach it. `GET /journal/sources` only advertises what the caller may
+//!   actually read, so the screen never offers a source the backend will
+//!   refuse.
+//!
+//! Clearing the `app` source's files is destructive and therefore
+//! admin-gated too.
 
 use axum::{
     extract::State,
@@ -44,10 +52,45 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::process::Command;
+use std::io::{Read as _, Seek as _, SeekFrom};
+use std::process::{Command, Stdio};
+use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
 
 use crate::handlers::AppStateArc;
 use crate::storage::journal_cleanup_repo::JournalCleanupRepository;
+use crate::utils::ResponseHelper;
+
+/// Deadline for one `journalctl` / `tail` read. A wedged journald (or a
+/// `/var/log` file on a stalled NFS mount) must not hold a handler forever.
+pub const JOURNAL_READ_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Upper bound on concurrently running host reads. Each one forks `sudo`;
+/// a burst of auto-refreshing desktops must not turn into a fork bomb.
+const MAX_CONCURRENT_READS: usize = 4;
+
+/// Hard cap on how many raw lines one filtered read may examine. `limit` is
+/// clamped to 2000 by the handler, so `limit * SCAN_FACTOR` alone could
+/// reach 40 000 — this is the ceiling that keeps a search bounded.
+const MAX_SCAN_LINES: usize = 10_000;
+
+/// How many raw lines to scan per requested entry when a search filter is
+/// active. Searching happens *before* the limit is applied (ROADMAP 20.2),
+/// so the window has to be wider than the page — otherwise a rare term is
+/// invisible as soon as it is older than the last `limit` lines.
+const SCAN_FACTOR: usize = 20;
+
+/// Largest slice of one application log file read for a single query. The
+/// reader takes the **tail**, so the newest entries are always kept; the cap
+/// only bounds the memory a single request can allocate (ROADMAP 20.2).
+const MAX_APP_LOG_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Longest systemd unit filter accepted (systemd's own unit-name limit).
+const MAX_UNIT_NAME_LEN: usize = 256;
+
+/// The read slots every request must hold while it runs a host command.
+static READ_PERMITS: LazyLock<Arc<tokio::sync::Semaphore>> =
+    LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_READS)));
 
 /// One journal entry as returned to the frontend.
 #[derive(Serialize, Clone, Debug)]
@@ -104,25 +147,117 @@ fn priority_text(p: u8) -> &'static str {
     }
 }
 
-/// List the available log sources.
+/// One page of entries plus what the read actually covered.
+struct JournalRead {
+    entries: Vec<JournalEntry>,
+    /// How many raw lines (or journal records) were examined.
+    scanned: usize,
+    /// True when the scan window filled up while a search filter was active,
+    /// i.e. older matching entries may exist beyond what was examined. The
+    /// screen says so instead of showing an unexplained short list.
+    search_truncated: bool,
+}
+
+/// Which privilege level a source needs (see the module doc).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SourceKind {
+    /// HomeVault's own log files — session-level.
+    App,
+    /// journald and the `/var/log` text files — admin only.
+    Host,
+}
+
+/// Resolve a source id to its privilege level, or `None` if it is not a
+/// source this module can read at all.
+fn source_kind(source: &str) -> Option<SourceKind> {
+    match source {
+        "app" => Some(SourceKind::App),
+        "system" | "syslog" | "auth" | "kern" | "daemon" => Some(SourceKind::Host),
+        _ => None,
+    }
+}
+
+/// How many raw lines a read with this page size may examine.
+///
+/// `min`/`max` rather than `clamp`: `clamp` panics when the floor exceeds the
+/// ceiling, and a caller asking for more than `MAX_SCAN_LINES` entries must
+/// still get a window at least as large as its page.
+fn scan_limit(limit: usize) -> usize {
+    limit
+        .saturating_mul(SCAN_FACTOR)
+        .min(MAX_SCAN_LINES)
+        .max(limit)
+}
+
+/// Validate a systemd unit filter before it becomes `-u<value>` in
+/// `journalctl`'s argv. It is not an injection (the value is one argv
+/// entry), but a typo currently surfaces as raw `journalctl` stderr; a 400
+/// naming the accepted characters is the honest answer.
+fn validate_unit_filter(unit: &str) -> Result<&str, String> {
+    let unit = unit.trim();
+    if unit.is_empty() {
+        return Err("Unit filter is empty".to_string());
+    }
+    if unit.len() > MAX_UNIT_NAME_LEN {
+        return Err(format!(
+            "Unit filter is longer than {} characters",
+            MAX_UNIT_NAME_LEN
+        ));
+    }
+    if !unit
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@' | ':' | '\\'))
+    {
+        return Err(
+            "Unit filter may only contain letters, digits, '.', '-', '_', '@' and ':'".to_string(),
+        );
+    }
+    Ok(unit)
+}
+
+/// Turn the per-file failures of a clear into one result: `Ok` only when
+/// every file was handled, so a partial clear is reported as a failure
+/// instead of being silently recorded as done (ROADMAP 20.3's shape).
+fn clear_outcome(failures: Vec<String>) -> Result<(), String> {
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+
+/// List the log sources this caller may read.
+///
+/// A non-admin only ever sees `app`: the host sources are not just refused
+/// on read, they are not advertised at all — the screen must not offer a
+/// source the backend will answer 403 for (ROADMAP 20.1).
 pub async fn handle_journal_sources(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(resp) = crate::handlers::admin_guard::require_auth(&state, &headers).await {
-        return resp;
+    let username = match crate::handlers::admin_guard::require_auth(&state, &headers).await {
+        Ok(u) => u,
+        Err(resp) => return resp,
+    };
+
+    let mut sources = vec![JournalSource {
+        id: "app".to_string(),
+        label: "HomeVault Application Log".to_string(),
+    }];
+
+    if !state.auth.is_admin(&username).await {
+        return Json(json!({
+            "success": true,
+            "data": sources
+        }))
+        .into_response();
     }
 
-    let mut sources = vec![
-        JournalSource {
-            id: "app".to_string(),
-            label: "HomeVault Application Log".to_string(),
-        },
-        JournalSource {
-            id: "system".to_string(),
-            label: "System (journald)".to_string(),
-        },
-    ];
+    sources.push(JournalSource {
+        id: "system".to_string(),
+        label: "System (journald)".to_string(),
+    });
 
     // Only advertise a /var/log text source if the file actually exists on
     // this host — `installer/install.sh` doesn't install/require rsyslog,
@@ -154,29 +289,69 @@ pub async fn handle_journal_sources(
 }
 
 /// List journal entries for a given source with optional filters.
+///
+/// The `app` source is session-level; every host source is admin-only
+/// (ROADMAP 20.1). An unknown source is a 400 rather than a silent empty
+/// page, and an unusable unit filter is a 400 rather than raw `journalctl`
+/// stderr surfacing in the UI.
 pub async fn handle_journal_entries(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<JournalQuery>,
 ) -> Response {
-    if let Err(resp) = crate::handlers::admin_guard::require_auth(&state, &headers).await {
-        return resp;
-    }
+    let username = match crate::handlers::admin_guard::require_auth(&state, &headers).await {
+        Ok(u) => u,
+        Err(resp) => return resp,
+    };
 
     let source = query.source.clone().unwrap_or_else(|| "app".to_string());
+    let kind = match source_kind(&source) {
+        Some(kind) => kind,
+        None => return ResponseHelper::json_error(format!("Unknown log source: {}", source)),
+    };
+    if kind == SourceKind::Host && !state.auth.is_admin(&username).await {
+        return ResponseHelper::json_forbidden(
+            "Host log sources are restricted to administrators".to_string(),
+        );
+    }
+
+    // Validate before the value reaches `journalctl`'s argv.
+    if let Some(unit) = query.unit.as_deref() {
+        if !unit.trim().is_empty() {
+            if let Err(msg) = validate_unit_filter(unit) {
+                return ResponseHelper::json_error(msg);
+            }
+        }
+    }
+
     let limit = query.limit.unwrap_or(200).clamp(1, 2000);
     let search = query.search.clone().filter(|s| !s.trim().is_empty());
 
-    // Run the blocking subprocess work off the async worker.
+    // Run the blocking subprocess work off the async worker, and hold one of
+    // the read slots for its whole duration.
+    let permit = match READ_PERMITS.clone().acquire_owned().await {
+        Ok(p) => p,
+        Err(_) => {
+            return ResponseHelper::json_internal_error(
+                "Journal reader is unavailable".to_string(),
+            )
+        }
+    };
     let result = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         read_entries(&source, &query, limit, search.as_deref())
     })
     .await;
 
     match result {
-        Ok(Ok(entries)) => Json(json!({
+        Ok(Ok(read)) => Json(json!({
             "success": true,
-            "data": entries
+            "data": read.entries,
+            "meta": {
+                "scanned": read.scanned,
+                "limit": limit,
+                "search_truncated": read.search_truncated,
+            }
         }))
         .into_response(),
         Ok(Err(e)) => Json(json!({
@@ -307,7 +482,20 @@ pub(crate) fn clear_app_logs() -> Result<(), String> {
     // only actually delete the older, already-rotated files.
     let active_name = format!("homevault.log.{}", chrono::Utc::now().format("%Y-%m-%d"));
 
-    for entry in read_dir.filter_map(|e| e.ok()) {
+    // Every failure is collected instead of returning on the first one: the
+    // caller (the admin button and the cleanup scheduler) must learn that the
+    // clear was only partial, and the files after the failing one must still
+    // be handled.
+    let mut failures: Vec<String> = Vec::new();
+
+    for entry in read_dir {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                failures.push(format!("Failed to read a logs directory entry: {}", e));
+                continue;
+            }
+        };
         let path = entry.path();
         let name = match path.file_name().and_then(|n| n.to_str()) {
             Some(n) if is_app_log_filename(n) => n.to_string(),
@@ -320,20 +508,62 @@ pub(crate) fn clear_app_logs() -> Result<(), String> {
                 .truncate(true)
                 .open(&path)
             {
-                return Err(format!("Failed to truncate {}: {}", path.display(), e));
+                failures.push(format!("Failed to truncate {}: {}", path.display(), e));
             }
         } else if let Err(e) = std::fs::remove_file(&path) {
-            return Err(format!("Failed to remove {}: {}", path.display(), e));
+            failures.push(format!("Failed to remove {}: {}", path.display(), e));
         }
     }
 
-    Ok(())
+    clear_outcome(failures)
 }
 
-/// Read the most recent `limit` lines (after `search`) from HomeVault's own
-/// application log files in `logs_dir()`, newest file first, without
-/// necessarily loading the entire on-disk history into memory.
-fn read_app_log_entries(limit: usize, search: Option<&str>) -> Result<Vec<JournalEntry>, String> {
+/// Read at most the last `max_bytes` of a log file.
+///
+/// The whole-file `read_to_string` this replaces had no cap at all, so one
+/// request could materialise a multi-hundred-megabyte file (ROADMAP 20.2).
+/// When the file is longer than the cap the seek can land mid-line, so the
+/// first (partial) line is dropped rather than parsed as a message.
+fn read_file_tail(path: &std::path::Path, max_bytes: u64) -> Result<String, String> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
+    let len = file
+        .metadata()
+        .map_err(|e| format!("Failed to stat {}: {}", path.display(), e))?
+        .len();
+
+    let truncated = len > max_bytes;
+    if truncated {
+        file.seek(SeekFrom::Start(len - max_bytes))
+            .map_err(|e| format!("Failed to seek {}: {}", path.display(), e))?;
+    }
+
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+    let text = String::from_utf8_lossy(&buf).into_owned();
+
+    if !truncated {
+        return Ok(text);
+    }
+    // Drop the partial first line the seek created.
+    Ok(match text.split_once('\n') {
+        Some((_, rest)) => rest.to_string(),
+        None => String::new(),
+    })
+}
+
+/// Read the most recent entries from HomeVault's own application log files in
+/// `logs_dir()`, newest file first, without loading the entire on-disk
+/// history into memory.
+///
+/// The search filter runs **before** the page is cut, and the scan window is
+/// `scan_limit(limit)` lines — so a rare term is still found when it is older
+/// than the last `limit` lines (ROADMAP 20.2). When the window fills up the
+/// caller is told (`search_truncated`) instead of being shown a short list
+/// with no explanation.
+fn read_app_log_entries(limit: usize, search: Option<&str>) -> Result<JournalRead, String> {
+    let scan = scan_limit(limit);
     let dir = crate::config::paths::logs_dir();
     let mut files: Vec<std::path::PathBuf> = match std::fs::read_dir(&dir) {
         Ok(rd) => rd
@@ -347,7 +577,10 @@ fn read_app_log_entries(limit: usize, search: Option<&str>) -> Result<Vec<Journa
             })
             .collect(),
         // Nothing logged to disk yet (fresh install / just started).
-        Err(_) => Vec::new(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        // A real read failure is reported, not folded into "no entries":
+        // permission denied and "nothing logged yet" must stay distinguishable.
+        Err(e) => return Err(format!("Failed to read logs directory: {}", e)),
     };
     // tracing-appender's daily rotation suffixes filenames with an
     // ISO-8601 date (`homevault.log.2026-07-17`), so a plain lexicographic
@@ -355,18 +588,27 @@ fn read_app_log_entries(limit: usize, search: Option<&str>) -> Result<Vec<Journa
     files.sort();
 
     let mut collected: Vec<String> = Vec::new();
-    for path in files.iter().rev() {
-        let content = std::fs::read_to_string(path).unwrap_or_default();
+    let mut truncated = false;
+    for (idx, path) in files.iter().rev().enumerate() {
+        let content = read_file_tail(path, MAX_APP_LOG_FILE_BYTES)?;
         let mut file_lines: Vec<String> = content.lines().map(String::from).collect();
         file_lines.extend(collected);
         collected = file_lines;
-        // Comfortably more raw lines than `limit` even after a restrictive
-        // search filter removes most of them — stop reading further back.
-        if collected.len() >= limit.saturating_mul(4).max(limit) {
+        if collected.len() >= scan {
+            if collected.len() > scan {
+                // Older lines are dropped: only the newest `scan` may be
+                // examined, and the caller is told so.
+                truncated = true;
+                let start = collected.len() - scan;
+                collected = collected.split_off(start);
+            }
+            // Any file behind this one is older and therefore unread.
+            truncated = truncated || files.len() > idx + 1;
             break;
         }
     }
 
+    let scanned = collected.len();
     let mut entries: Vec<JournalEntry> = Vec::new();
     for line in collected {
         if line.trim().is_empty() {
@@ -385,7 +627,11 @@ fn read_app_log_entries(limit: usize, search: Option<&str>) -> Result<Vec<Journa
         entries = entries.split_off(start);
     }
 
-    Ok(entries)
+    Ok(JournalRead {
+        entries,
+        scanned,
+        search_truncated: search.is_some() && truncated,
+    })
 }
 
 /// Parse one line of our own `tracing_subscriber::fmt` output
@@ -464,15 +710,88 @@ fn strip_target_prefix(msg: &str) -> (Option<String>, String) {
     (None, msg.to_string())
 }
 
+/// Run one command under a deadline.
+///
+/// Both pipes are drained on their own threads: a child that writes more than
+/// a pipe buffer (a 10 000-line `journalctl` dump easily does) would block on
+/// write and never reach `try_wait`, so the deadline could not fire at all.
+/// On timeout the child is killed, so a wedged `journalctl` does not survive
+/// the request (ROADMAP 20's "no timeout" finding).
+fn run_timed(mut cmd: Command, deadline: Duration) -> Result<std::process::Output, String> {
+    let program = cmd.get_program().to_string_lossy().into_owned();
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to run {}: {}", program, e))?;
+
+    let mut out_pipe = child.stdout.take();
+    let mut err_pipe = child.stderr.take();
+    let out_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(pipe) = out_pipe.as_mut() {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(pipe) = err_pipe.as_mut() {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if started.elapsed() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = out_reader.join();
+                    let _ = err_reader.join();
+                    return Err(format!(
+                        "{} did not finish within {} seconds",
+                        program,
+                        deadline.as_secs()
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = out_reader.join();
+                let _ = err_reader.join();
+                return Err(format!("Failed to wait for {}: {}", program, e));
+            }
+        }
+    };
+
+    Ok(std::process::Output {
+        status,
+        stdout: out_reader.join().unwrap_or_default(),
+        stderr: err_reader.join().unwrap_or_default(),
+    })
+}
+
 fn read_entries(
     source: &str,
     query: &JournalQuery,
     limit: usize,
     search: Option<&str>,
-) -> Result<Vec<JournalEntry>, String> {
+) -> Result<JournalRead, String> {
     if source == "app" {
         return read_app_log_entries(limit, search);
     }
+
+    // Scan a window wider than the page so the filter runs before the cut
+    // (ROADMAP 20.2). The window is bounded, and `search_truncated` tells the
+    // caller when it filled up.
+    let scan = scan_limit(limit);
 
     let output = match source {
         "system" => {
@@ -489,18 +808,16 @@ fn read_entries(
             if let Some(p) = query.priority {
                 cmd.arg(format!("-p{}", p.clamp(0, 7)));
             }
-            cmd.arg(format!("-n{}", limit));
+            cmd.arg(format!("-n{}", scan));
             cmd.arg("--output-fields=__REALTIME_TIMESTAMP,_SYSTEMD_UNIT,PRIORITY,_PID,MESSAGE");
-            cmd.output()
-                .map_err(|e| format!("Failed to run journalctl: {}", e))?
+            run_timed(cmd, JOURNAL_READ_TIMEOUT)?
         }
         _ => {
             // Text log from /var/log — only allow the whitelisted names.
             let path = text_log_path(source)?;
             let mut cmd = Command::new("sudo");
-            cmd.arg("tail").arg("-n").arg(limit.to_string()).arg(path);
-            cmd.output()
-                .map_err(|e| format!("Failed to read log: {}", e))?
+            cmd.arg("tail").arg("-n").arg(scan.to_string()).arg(path);
+            run_timed(cmd, JOURNAL_READ_TIMEOUT)?
         }
     };
 
@@ -511,12 +828,14 @@ fn read_entries(
 
     let raw = String::from_utf8_lossy(&output.stdout);
     let mut entries = Vec::new();
+    let mut scanned = 0usize;
 
     if source == "system" {
         for line in raw.lines() {
             if line.trim().is_empty() {
                 continue;
             }
+            scanned += 1;
             match serde_json::from_str::<serde_json::Value>(line) {
                 Ok(v) => {
                     let message = v
@@ -561,6 +880,7 @@ fn read_entries(
             if line.trim().is_empty() {
                 continue;
             }
+            scanned += 1;
             if let Some(s) = search {
                 if !line.to_lowercase().contains(&s.to_lowercase()) {
                     continue;
@@ -577,7 +897,16 @@ fn read_entries(
         }
     }
 
-    Ok(entries)
+    if entries.len() > limit {
+        let start = entries.len() - limit;
+        entries = entries.split_off(start);
+    }
+
+    Ok(JournalRead {
+        entries,
+        scanned,
+        search_truncated: search.is_some() && scanned >= scan,
+    })
 }
 
 /// Map a text-log source id to its absolute path. Only these are allowed.
@@ -739,5 +1068,152 @@ mod tests {
         let s = seconds_to_iso(1_609_459_200_000_000);
         assert!(s.starts_with("2021-01-01T00:00:00"), "got {s}");
         assert_eq!(seconds_to_iso(0), "1970-01-01T00:00:00+00:00");
+    }
+
+    // --- source_kind: which privilege level a source needs (ROADMAP 20.1) ---
+
+    #[test]
+    fn test_source_kind_puts_only_our_own_log_at_session_level() {
+        assert_eq!(source_kind("app"), Some(SourceKind::App));
+        for host in ["system", "syslog", "auth", "kern", "daemon"] {
+            assert_eq!(source_kind(host), Some(SourceKind::Host), "{host}");
+        }
+        // Anything else is not a source at all — the handler answers 400
+        // instead of letting `text_log_path` produce the error later.
+        for bogus in ["notreal", "", "../etc/passwd", "APP"] {
+            assert_eq!(source_kind(bogus), None, "{bogus}");
+        }
+    }
+
+    // --- scan_limit: the search window is wider than the page, but bounded ---
+
+    #[test]
+    fn test_scan_limit_is_wider_than_the_page_and_capped() {
+        // A small page scans SCAN_FACTOR times its size, so a rare term older
+        // than the page is still found (ROADMAP 20.2).
+        assert_eq!(scan_limit(10), 200);
+        assert_eq!(scan_limit(200), 4_000);
+        // The handler clamps `limit` to 2000; the window still stops at the
+        // hard ceiling rather than growing to 40 000.
+        assert_eq!(scan_limit(2_000), MAX_SCAN_LINES);
+        // Never smaller than the page itself, even for a huge limit.
+        assert!(scan_limit(20_000) >= 20_000);
+    }
+
+    // --- validate_unit_filter: reject a bad unit before it reaches argv ---
+
+    #[test]
+    fn test_validate_unit_filter_accepts_real_unit_names() {
+        for ok in [
+            "homevault.service",
+            "systemd-journald.service",
+            "docker@edge-1.service",
+            "user@1000.slice",
+            "nginx",
+        ] {
+            assert_eq!(validate_unit_filter(ok).unwrap(), ok, "{ok}");
+        }
+        // Surrounding whitespace is trimmed, not rejected.
+        assert_eq!(validate_unit_filter("  nginx.service ").unwrap(), "nginx.service");
+    }
+
+    #[test]
+    fn test_validate_unit_filter_rejects_shell_metacharacters_and_junk() {
+        for bad in [
+            "nginx; rm -rf /",
+            "nginx service",
+            "nginx && id",
+            "$(id)",
+            "nginx|cat",
+            "",
+            "   ",
+        ] {
+            assert!(validate_unit_filter(bad).is_err(), "{bad:?} should be refused");
+        }
+        // The 256-character systemd ceiling is enforced.
+        let long = "a".repeat(MAX_UNIT_NAME_LEN + 1);
+        assert!(validate_unit_filter(&long).is_err());
+        let at_limit = "a".repeat(MAX_UNIT_NAME_LEN);
+        assert!(validate_unit_filter(&at_limit).is_ok());
+    }
+
+    // --- clear_outcome: a partial clear is a failure, never a success ---
+
+    #[test]
+    fn test_clear_outcome_reports_every_failure() {
+        assert!(clear_outcome(Vec::new()).is_ok());
+        let err = clear_outcome(vec![
+            "Failed to remove /a: Permission denied".to_string(),
+            "Failed to truncate /b: Read-only file system".to_string(),
+        ])
+        .unwrap_err();
+        // Both failures survive: the caller must not see a partial clear as a
+        // success (ROADMAP 20.3's shape at the file level).
+        assert!(err.contains("/a"), "{err}");
+        assert!(err.contains("/b"), "{err}");
+    }
+
+    // --- run_timed: a wedged child is killed, a normal one returns its output ---
+
+    #[test]
+    fn test_run_timed_returns_a_fast_command_output() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "printf 'hello' && exit 0"]);
+        let out = run_timed(cmd, Duration::from_secs(5)).expect("command should run");
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "hello");
+    }
+
+    #[test]
+    fn test_run_timed_keeps_the_failing_exit_code_and_stderr() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "printf 'nope' >&2 && exit 3"]);
+        let out = run_timed(cmd, Duration::from_secs(5)).expect("command should run");
+        assert!(!out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stderr), "nope");
+    }
+
+    #[test]
+    fn test_run_timed_kills_a_hung_command_at_the_deadline() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let started = Instant::now();
+        let err = run_timed(cmd, Duration::from_millis(150)).unwrap_err();
+        assert!(err.contains("did not finish within"), "{err}");
+        // The deadline is honoured instead of waiting out the child.
+        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+    }
+
+    // --- read_file_tail: bounded read, newest lines kept ---
+
+    #[test]
+    fn test_read_file_tail_returns_the_whole_file_when_it_fits() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("homevault.log");
+        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        assert_eq!(read_file_tail(&path, 1024).unwrap(), "one\ntwo\nthree\n");
+    }
+
+    #[test]
+    fn test_read_file_tail_drops_the_line_cut_by_the_seek() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("homevault.log");
+        // 40 bytes; a 20-byte cap seeks into the middle of a line.
+        std::fs::write(&path, "aaaaaaaaaa\nbbbbbbbbbb\ncccccccccc\n").unwrap();
+        let tail = read_file_tail(&path, 20).unwrap();
+        assert!(!tail.contains("aaaaaaaaaa"), "the cut line must be dropped: {tail:?}");
+        assert!(tail.contains("cccccccccc"), "{tail:?}");
+        assert!(tail.len() <= 20, "{tail:?}");
+    }
+
+    #[test]
+    fn test_read_file_tail_reports_an_unreadable_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let missing = dir.path().join("gone.log");
+        let err = read_file_tail(&missing, 1024).unwrap_err();
+        // A missing/permission-denied file is an error, not an empty log —
+        // the caller must not render it as "no entries" (ROADMAP 20.2).
+        assert!(err.contains("Failed to open"), "{err}");
+        assert!(err.contains("gone.log"), "{err}");
     }
 }

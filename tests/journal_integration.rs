@@ -21,8 +21,8 @@
 #![allow(clippy::await_holding_lock)]
 //! Integration tests for the System Journal API (`crate::handlers::journal`):
 //!
-//!   GET    /api/journal/sources           (list log sources — any session)
-//!   GET    /api/journal/entries           (read entries — any session)
+//!   GET    /api/journal/sources           (what this caller may read — session)
+//!   GET    /api/journal/entries           (`app` = session, host sources = admin)
 //!   DELETE /api/journal/clear             (wipe our own app logs — admin)
 //!   GET    /api/journal/cleanup-settings  (auto-cleanup config — any session)
 //!   PUT    /api/journal/cleanup-settings  (auto-cleanup config — admin)
@@ -36,9 +36,9 @@
 //! `tempfile::tempdir()`. The `system` / `/var/log` sources shell out to
 //! `sudo journalctl` / `sudo tail`; those are only exercised far enough to
 //! confirm a clean `{"success":false}` (never a 500) when `sudo` is not
-//! available — the real host read is `tests/e2e/journal/journal.spec.ts`'s
-//! job. `DELETE /api/journal/clear` is safe here: it only ever deletes
-//! `homevault.log*` inside the test's temp `logs/` dir.
+//! available, and that a non-admin session is refused **before** anything is
+//! run (ROADMAP 20.1). `DELETE /api/journal/clear` is safe here: it only ever
+//! deletes `homevault.log*` inside the test's temp `logs/` dir.
 //!
 //! Run:
 //!   cargo test --test journal_integration
@@ -256,7 +256,7 @@ async fn test_write_endpoints_require_an_admin() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_sources_always_lists_app_and_system() {
+async fn test_sources_lists_only_our_own_log_to_a_non_admin() {
     let h = setup().await;
     create_test_user(&h.state, "u", "Password123!", 1).await;
     let mut r = journal_router(h.state.clone());
@@ -278,9 +278,94 @@ async fn test_sources_always_lists_app_and_system() {
         .iter()
         .filter_map(|s| s["id"].as_str())
         .collect();
+    assert_eq!(ids, vec!["app"], "{ids:?}");
+}
+
+#[tokio::test]
+async fn test_sources_lists_the_host_sources_to_an_admin() {
+    let h = setup().await;
+    create_test_user(&h.state, "admin1", "Password123!", 2).await;
+    let mut r = journal_router(h.state.clone());
+    let token = login(&mut r, "admin1", "Password123!").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/journal/sources",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let ids: Vec<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["id"].as_str())
+        .collect();
     assert!(ids.contains(&"app"), "{ids:?}");
     assert!(ids.contains(&"system"), "{ids:?}");
     // A /var/log text source is only advertised if the file exists — never asserted here.
+}
+
+// ---------------------------------------------------------------------------
+// 2b. Host sources are admin-only (ROADMAP 20.1)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_non_admin_cannot_read_a_host_source() {
+    let h = setup().await;
+    create_test_user(&h.state, "u", "Password123!", 1).await;
+    let mut r = journal_router(h.state.clone());
+    let token = login(&mut r, "u", "Password123!").await;
+
+    // `/var/log/auth.log` alone lists every account name, source address and
+    // sudo attempt on the box — a non-admin session must never reach it.
+    for source in ["auth", "system", "syslog", "kern", "daemon"] {
+        let (status, body) = send(
+            &mut r,
+            Method::GET,
+            &format!("/api/journal/entries?source={source}"),
+            Some(&token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "source={source}");
+        assert_eq!(body["success"], json!(false), "source={source}");
+    }
+
+    // The same session still reads its own application log.
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/journal/entries?source=app",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["success"], json!(true));
+}
+
+#[tokio::test]
+async fn test_admin_reaches_a_host_source() {
+    let h = setup().await;
+    create_test_user(&h.state, "admin1", "Password123!", 2).await;
+    let mut r = journal_router(h.state.clone());
+    let token = login(&mut r, "admin1", "Password123!").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/journal/entries?source=system",
+        Some(&token),
+        None,
+    )
+    .await;
+    // The read itself may fail on a box without passwordless sudo, but an
+    // admin must never be refused *by the gate*.
+    assert_ne!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_ne!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
 }
 
 // ---------------------------------------------------------------------------
@@ -378,9 +463,123 @@ async fn test_entries_unknown_source_fails_cleanly() {
         None,
     )
     .await;
-    // Never a 500 — a clean `{"success":false}`.
-    assert_ne!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    // Never a 500 — an unknown source is a clean 400 with `success: false`.
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["success"], json!(false));
+}
+
+// ---------------------------------------------------------------------------
+// 3b. Search runs before the page limit (ROADMAP 20.2)
+// ---------------------------------------------------------------------------
+
+/// `total` well-formed application log lines, with `needle_at` (1-based)
+/// carrying a unique marker.
+fn numbered_log(needle_at: usize, total: usize) -> String {
+    (1..=total)
+        .map(|i| {
+            if i == needle_at {
+                format!(
+                    "2026-07-17T10:00:00Z  INFO homevault::x: needle-{} here\n",
+                    i
+                )
+            } else {
+                format!("2026-07-17T10:00:00Z  INFO homevault::x: filler line {}\n", i)
+            }
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn test_search_reaches_an_entry_older_than_the_page() {
+    let h = setup().await;
+    create_test_user(&h.state, "u", "Password123!", 1).await;
+    // 300 lines; a page of 10 scans the newest 200 (lines 101..300), so the
+    // needle sits inside the scan window but far outside the page. The old
+    // implementation truncated to `limit` first, so it answered 0 entries.
+    h.write_log("homevault.log", &numbered_log(150, 300));
+    let mut r = journal_router(h.state.clone());
+    let token = login(&mut r, "u", "Password123!").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/journal/entries?source=app&limit=10&search=needle",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["success"], json!(true), "{body}");
+    let entries = body["data"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{body}");
+    assert_eq!(entries[0]["message"], "needle-150 here");
+}
+
+#[tokio::test]
+async fn test_search_reports_when_the_scan_window_filled_up() {
+    let h = setup().await;
+    create_test_user(&h.state, "u", "Password123!", 1).await;
+    h.write_log("homevault.log", &numbered_log(0, 300));
+    let mut r = journal_router(h.state.clone());
+    let token = login(&mut r, "u", "Password123!").await;
+
+    // No match, and 100 older lines were never examined: the caller must be
+    // told instead of being shown an unexplained empty list.
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/journal/entries?source=app&limit=10&search=zzz-no-such-term",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"].as_array().unwrap().len(), 0);
+    assert_eq!(body["meta"]["scanned"], json!(200), "{body}");
+    assert_eq!(body["meta"]["limit"], json!(10), "{body}");
+    assert_eq!(body["meta"]["search_truncated"], json!(true), "{body}");
+
+    // Without a search there is nothing to truncate — the page is just the
+    // newest 10 of the 200 examined lines.
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/journal/entries?source=app&limit=10",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"].as_array().unwrap().len(), 10);
+    assert_eq!(body["meta"]["search_truncated"], json!(false), "{body}");
+    assert_eq!(body["meta"]["scanned"], json!(200), "{body}");
+}
+
+#[tokio::test]
+async fn test_an_invalid_unit_filter_is_a_clean_400() {
+    let h = setup().await;
+    create_test_user(&h.state, "admin1", "Password123!", 2).await;
+    let mut r = journal_router(h.state.clone());
+    let token = login(&mut r, "admin1", "Password123!").await;
+
+    // A space is not part of a unit name; the request is refused with the
+    // accepted characters instead of surfacing journalctl's own stderr.
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/journal/entries?source=system&unit=nginx%20service",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["success"], json!(false));
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Unit filter"),
+        "{body}"
+    );
 }
 
 // ---------------------------------------------------------------------------

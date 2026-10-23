@@ -45,8 +45,9 @@ auth under HTTPS** (all 2026-10-21), and **Health** (2026-10-22) — followed by
 **Health's numbered follow-ups**, the **File Explorer security pass**, the
 **Account / Security pass**, **disk quotas** and the **AI Assistant / RAG pass**
 (all 2026-10-22), and on 2026-10-23 **Storage's sudoers scoping + residual call
-sites**, **Apps Center / app-proxy**, the **RAID wizard's create path** and
-**LUKS2 encryption** (see Done).
+sites**, **Apps Center / app-proxy**, the **RAID wizard's create path**,
+**LUKS2 encryption** and the **System Journal's privilege + read semantics**
+(see Done).
 
 Everything else is still on its original implementation plus incremental
 feature work. The pattern is consistent: **the screens render, the endpoints
@@ -81,7 +82,6 @@ Two structural facts explain most of the list:
 | 17 | Downloader (aria2) | P1 | 3 |
 | 18 | Syncthing | P1 | 2 |
 | 19 | Virtual Machines (Incus) | P1 | 2 |
-| 20 | System Journal | P1 | 3 |
 | 21 | Notifications | P1 | 3 |
 | 22 | DB backup | P1 | 2 |
 | 23 | Transfer quotas | P1 | 3 |
@@ -95,16 +95,19 @@ Two structural facts explain most of the list:
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **58** (51 per-area + 7 cross-cutting).
+Total open findings: **55** (48 per-area + 7 cross-cutting).
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
-closed on 2026-10-23. P1 now goes by blast radius, and 12.2/12.3 and 13.4 go
-together, since a UTC-only cron with a stored-but-unapplied timezone is one
-defect seen from two screens. **9 (LUKS2) was closed on 2026-10-23.** Next:
-**20.1 (System Journal)** — a non-admin session can read the host's
-`/var/log/auth.log`, i.e. every username, source address and sudo attempt on
-the box: it is the remaining P1 whose blast radius is a data leak rather than a
-broken feature.
+closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
+host sources are now admin-only, so the remaining P1 list has no data leak
+left. P1 now goes by blast radius, and 12.2/12.3 and 13.4 go together, since
+a UTC-only cron with a stored-but-unapplied timezone is one defect seen from
+two screens. **9 (LUKS2) was closed on 2026-10-23.** Next: **17.1
+(Downloader)** — `uri`, `dir` and `out` reach aria2's RPC unvalidated, so any
+session gets arbitrary file write (traversal) and `file://` local read as the
+service user, and 17.2's missing `--rpc-secret` lets any local process drive
+the same RPC port. It is the remaining P1 whose blast radius is writing files
+rather than a broken feature.
 
 ---
 
@@ -438,46 +441,6 @@ ISO floor.
 
 ---
 
-### 20. System Journal — any user can read `/var/log/auth.log`
-
-- [ ] **20.1 — Reads are `require_auth`, so a non-admin reads host auth logs.**
-      `src/handlers/journal.rs:162` (`entries`) and `:112` (`sources`) accept
-      any session, and the text-source branch runs
-      `sudo tail -n <limit> /var/log/auth.log` (`:500-501`, whitelist at
-      `:584-593`). The app sits in the launcher unconditionally
-      (`frontend/src/routes/Desktop.svelte:1060`) with no admin gate, so this is
-      reachable by a normal household user. The module comment (`:30-37`)
-      justifies the read level; it contradicts the least-privilege rule.
-      *Acceptance:* host sources are admin-only (the `app` source may stay
-      session-level, since the process owns those files); the tile is hidden for
-      non-admins.
-- [ ] **20.2 — Search runs after the line limit.** `-n{limit}` truncates first
-      (`:492`), then the substring filter runs per line (`:527-531`), so
-      searching a rare term returns 0 entries with no paging and no hint.
-      `read_app_log_entries` has the same shape (`:365-381`) and reads each log
-      file **whole** with `read_to_string` (`:359`) — no size cap.
-- [ ] **20.3 — A failed cleanup records itself as done.**
-      `src/journal_cleanup_scheduler.rs:81-96`: on `Err(e)` it logs and then
-      unconditionally calls `repo.set_last_cleanup(&now)`, so the failure is not
-      retried until a full `interval_days` later.
-
-Also: `sudo journalctl` and `sudo tail` have no timeout and no concurrency cap
-(the blocking work *is* correctly inside `spawn_blocking` at `:171`); `-u{unit}`
-is built from unvalidated input (`:486` — not injection, but a raw `journalctl`
-stderr surfaces to the user); `clear_app_logs` returns on the first failure
-(`:323,326`), leaving partial state; `read_app_log_entries` uses
-`read_to_string(...).unwrap_or_default()` (`:359`), so permission-denied is
-indistinguishable from empty; `Journal.svelte` renders a failed load as the
-empty state (`:148-151,132-135`) and shows the Clear button to every user
-(`:231`) although the endpoint is admin-only, guaranteeing a 403.
-
-*Tests:* 9 unit, 11 integration, 27 E2E. `journal_cleanup_scheduler.rs` has **0**.
-*Docs:* `docs/guides/journal.md:78-83` is stale — it describes clearing as
-unlinking the active log, while the code now truncates in place
-(`journal.rs:308-324`) precisely so new events keep appearing.
-
----
-
 ### 21. Notifications — blocking email in the loop, no per-user state
 
 - [ ] **21.1 — Blocking email send and an untimed webhook inside the async
@@ -749,14 +712,17 @@ reuse.
 - [ ] **X.2 — No timeout on subprocesses.** Absent from `disk.rs`, `pools.rs`,
       `encryption.rs`, `cache.rs`, `snapshots.rs`, `rclone.rs`,
       `dashboard.rs`, `health.rs`, `network.rs`, `vpn.rs`, `shares.rs`,
-      `explorer.rs`, `journal.rs`. Present only in Docker, Firewall, Restic,
-      Syncthing, disk quotas (2026-10-22) (and `firewall.rs`'s `UFW_TIMEOUT` is
-      the model). A wedged `zpool`/`mdadm`/`smartctl`/`df` currently blocks a
-      handler or a job forever.
+      `explorer.rs`. Present only in Docker, Firewall, Restic, Syncthing, disk
+      quotas (2026-10-22) and System Journal (2026-10-23, `run_timed` +
+      `JOURNAL_READ_TIMEOUT`) (and `firewall.rs`'s `UFW_TIMEOUT` is the model).
+      A wedged `zpool`/`mdadm`/`smartctl`/`df` currently blocks a handler or a
+      job forever.
 - [ ] **X.3 — Empty `else {}` error handling in the UI.** CloudSync (6),
-      Syncthing, Downloader, Health, Journal, Desktop (power),
+      Syncthing, Downloader, Health, Desktop (power),
       NotificationCenter, Dashboard — *Explorer's 11 sites are fixed
-      (2026-10-22, `dlg.notify` + partial-batch messages)*. Direct violation of
+      (2026-10-22, `dlg.notify` + partial-batch messages) and the Journal's 5
+      are fixed (2026-10-23: error state + Retry, in-modal errors, a
+      page-level banner)*. Direct violation of
       simplicity rule 5 ("every action gives visible feedback"). A shared
       `notifyError()` helper already exists (`Settings.svelte` uses
       `notifySettings`) — use it.
@@ -814,6 +780,53 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-23 (h)** — System Journal — the privilege level now follows the data,
+the search runs before the page is cut, and a failed cleanup is retried instead
+of being recorded as done. **20.1 (host logs were readable by any session):**
+`source_kind` is the single decision — `app` stays session-level (the process
+owns those files), `system`/`syslog`/`auth`/`kern`/`daemon` are admin-only, and
+an unknown source is a 400 rather than a silent empty page. The gate runs
+**before** any subprocess: a non-admin asking for `/var/log/auth.log` gets 403
+without a `sudo tail` ever being forked. `GET /journal/sources` advertises only
+what the caller may read, so a non-admin sees `["app"]` and the screen never
+offers a source the backend will refuse; the desktop hides the app entirely
+through `ADMIN_ONLY_APP_IDS` (launcher, global search and dock all read the one
+filtered `apps` list). **20.2 (search ran after the line limit):** the filter
+now runs over a bounded window — `scan_limit(limit)` = `limit × 20`, hard-capped
+at `MAX_SCAN_LINES` = 10 000 — so a page of 10 scans the newest 200 lines and a
+rare term older than the page is found. The response gained
+`meta.scanned`/`meta.limit`/`meta.search_truncated`, and `Journal.svelte`
+renders `journal.search_truncated` above the list instead of presenting an
+unexplained short list. Application log reads are bounded too: `read_file_tail`
+takes at most the last 8 MiB of each file (the whole-file `read_to_string` had
+no cap) and drops the partial line its seek cuts; a file that cannot be opened
+is an **error**, not an empty log. **20.3 (a failed cleanup recorded itself as
+done):** the tick is now the pure `plan_tick` (`Disabled | Baseline | Due |
+NotDue`) and `last_cleanup_at` advances **only on success** — a failure returns
+`Err`, the loop logs it, and the next hourly tick retries instead of waiting out
+a whole `interval_days`. The never-run branch still only writes a baseline
+(cleaning there wiped the current day's audit log on every restart). Residuals
+closed in the same pass: `run_timed` bounds every `journalctl`/`tail` call
+(`JOURNAL_READ_TIMEOUT` 20 s, child killed on expiry) and drains both pipes on
+their own threads — a 10 000-line dump overflows a pipe buffer, and a child
+blocked on `write` never reaches `try_wait`, so the deadline could not fire at
+all; a 4-slot `READ_PERMITS` semaphore caps concurrent forks;
+`validate_unit_filter` answers 400 naming the accepted characters instead of
+surfacing raw `journalctl` stderr (the value was always a single argv entry, so
+never an injection); `clear_app_logs` collects every per-file failure
+(`clear_outcome`) instead of returning on the first one, so a partial clear can
+no longer look like a success; and the UI's five empty `else {}` branches became
+an error state + Retry, in-modal errors that keep the dialog open on failure,
+and a page-level banner, with Clear/Auto-cleanup gated on `$isAdmin`. Tests
+(`src/handlers/journal.rs` 9 → **20** unit, `src/journal_cleanup_scheduler.rs`
+0 → **4**, `journal_integration.rs` 11 → **17**, `journal.spec.ts` 27 → **30**
+`test(`); `docs/guides/journal.md` rewritten (per-source privileges, the read
+bounds table, failure semantics, the corrected truncate-vs-unlink invariant),
+`docs/API.md` gained the per-source auth table and the `meta` contract. **Not
+run** (per instruction): everything above compiles (`cargo check
+--all-targets`, `npm run check` clean) but no unit, integration or E2E suite was
+executed.
 
 **2026-10-23 (g)** — LUKS2 encryption — the three ways it could destroy data or
 wedge itself are gone, and the two operations that did not exist exist.
