@@ -252,15 +252,153 @@ async fn empty_database_yields_all_null_points() {
         );
     }
 
-    // latest on an empty DB is a clean error, not a panic.
-    let (status, _) = send(
+    // latest on an empty DB is a normal first-boot state, not a client error:
+    // 200 with `data: null` (ROADMAP 11).
+    let (status, body) = send(
         &mut router,
         Method::GET,
         "/api/metrics/latest",
         Some(&admin),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::OK, "no sample yet is not a bad request");
+    assert!(
+        body["data"].is_null(),
+        "nothing collected yet is `data: null`, got {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_read_is_a_gap_not_a_zero() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    let now = chrono::Utc::now().timestamp();
+
+    // Two stored samples: one where every /proc read failed (all NULL) and one
+    // from a genuinely idle host (all 0.0). They must not look alike.
+    sqlx::query(
+        "INSERT INTO metric_samples (ts, cpu, mem, load1, net_rx, net_tx, temp) \
+         VALUES (?, NULL, NULL, NULL, NULL, NULL, NULL)",
+    )
+    .bind(now - 300)
+    .execute(&*state.db.pool())
+    .await
+    .expect("insert all-null sample");
+    sqlx::query(
+        "INSERT INTO metric_samples (ts, cpu, mem, load1, net_rx, net_tx, temp) \
+         VALUES (?, 0.0, 0.0, 0.0, 0.0, 0.0, NULL)",
+    )
+    .bind(now - 120)
+    .execute(&*state.db.pool())
+    .await
+    .expect("insert zero sample");
+
+    let mut router = metrics_router(state);
+    let admin = login(&mut router, "admin", "AdminPass123!").await;
+
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/metrics/history?range=1h",
+        Some(&admin),
+    )
+    .await;
+    let points = body["data"]["points"].as_array().expect("points");
+
+    let values: Vec<&Value> = points.iter().filter(|p| !p["cpu"].is_null()).collect();
+    assert_eq!(
+        values.len(),
+        1,
+        "only the idle sample is a value; the failed read is a gap"
+    );
+    assert_eq!(values[0]["cpu"], json!(0.0), "a real zero stays a zero");
+
+    let failed_bucket = ((now - 300) / 60) * 60;
+    let gap = points
+        .iter()
+        .find(|p| p["ts"].as_i64() == Some(failed_bucket))
+        .expect("the failed sample's bucket is in the window");
+    assert!(
+        gap["cpu"].is_null(),
+        "the failed read must come back as null, not 0"
+    );
+}
+
+#[tokio::test]
+async fn a_null_series_does_not_drag_down_its_neighbours() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    let now = chrono::Utc::now().timestamp();
+    // Both rows land in the same 1-minute bucket: the first carried a CPU
+    // reading but no thermal zone, the second the reverse.
+    let bucket = ((now - 180) / 60) * 60;
+    for (ts, cpu, temp) in [
+        (bucket + 1, Some(50.0), None),
+        (bucket + 2, None, Some(40.0)),
+    ] {
+        sqlx::query(
+            "INSERT OR REPLACE INTO metric_samples (ts, cpu, mem, load1, net_rx, net_tx, temp) \
+             VALUES (?, ?, NULL, NULL, NULL, NULL, ?)",
+        )
+        .bind(ts)
+        .bind(cpu)
+        .bind(temp)
+        .execute(&*state.db.pool())
+        .await
+        .expect("seed sample");
+    }
+
+    let mut router = metrics_router(state);
+    let admin = login(&mut router, "admin", "AdminPass123!").await;
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/metrics/history?range=1h",
+        Some(&admin),
+    )
+    .await;
+    let points = body["data"]["points"].as_array().expect("points");
+    let point = points
+        .iter()
+        .find(|p| p["ts"].as_i64() == Some(bucket))
+        .expect("the seeded bucket");
+
+    assert_eq!(
+        point["cpu"],
+        json!(50.0),
+        "one CPU reading must not be halved by the missing temperature"
+    );
+    assert_eq!(point["temp"], json!(40.0));
+    assert!(point["mem"].is_null(), "a series nobody measured is a gap");
+}
+
+#[tokio::test]
+async fn latest_keeps_a_null_series_null() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO metric_samples (ts, cpu, mem, load1, net_rx, net_tx, temp) \
+         VALUES (?, NULL, 42.5, NULL, NULL, NULL, NULL)",
+    )
+    .bind(now - 60)
+    .execute(&*state.db.pool())
+    .await
+    .expect("seed sample");
+
+    let mut router = metrics_router(state);
+    let admin = login(&mut router, "admin", "AdminPass123!").await;
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/metrics/latest",
+        Some(&admin),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["data"]["cpu"].is_null(), "{body}");
+    assert_eq!(body["data"]["mem"], json!(42.5));
 }
 
 #[tokio::test]

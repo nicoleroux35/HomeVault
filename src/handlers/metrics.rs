@@ -22,7 +22,7 @@
 
 use crate::handlers::admin_guard::require_auth;
 use crate::handlers::AppState;
-use crate::metrics::{bucket_samples, MetricsRange};
+use crate::metrics::{bucket_samples, MetricsRange, RawSample};
 use crate::utils::ResponseHelper;
 use axum::{
     extract::{Query, State},
@@ -55,7 +55,7 @@ pub async fn handle_metrics_history(
     let now = chrono::Utc::now().timestamp();
     let since = now - window;
 
-    let result = sqlx::query_as::<_, (i64, f64, f64, f64, f64, f64, Option<f64>)>(
+    let result = sqlx::query_as::<_, RawSample>(
         "SELECT ts, cpu, mem, load1, net_rx, net_tx, temp FROM metric_samples \
          WHERE ts >= ? AND ts <= ? ORDER BY ts ASC",
     )
@@ -82,6 +82,11 @@ pub async fn handle_metrics_history(
 }
 
 /// GET /api/metrics/latest — the most recent stored sample (widgets).
+///
+/// A fresh install has collected nothing yet. That is a normal first-boot
+/// state, not a client error: the answer is `200` with `data: null`, so the
+/// caller can tell "nothing measured yet" apart from "your request was wrong"
+/// (`ROADMAP 11`).
 pub async fn handle_metrics_latest(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -89,25 +94,23 @@ pub async fn handle_metrics_latest(
     if let Err(resp) = require_auth(&state, &headers).await {
         return resp;
     }
-    match sqlx::query_as::<_, (i64, f64, f64, f64, f64, f64, Option<f64>)>(
+    match sqlx::query_as::<_, RawSample>(
         "SELECT ts, cpu, mem, load1, net_rx, net_tx, temp FROM metric_samples \
          ORDER BY ts DESC LIMIT 1",
     )
     .fetch_optional(state.db.pool().as_ref())
     .await
     {
-        Ok(Some((ts, cpu, mem, load1, net_rx, net_tx, temp))) => {
-            ResponseHelper::json_success(serde_json::json!({
-                "ts": ts,
-                "cpu": cpu,
-                "mem": mem,
-                "load1": load1,
-                "net_rx": net_rx,
-                "net_tx": net_tx,
-                "temp": temp,
-            }))
-        }
-        Ok(None) => ResponseHelper::json_error("No metrics collected yet".to_string()),
+        Ok(Some(sample)) => ResponseHelper::json_success(serde_json::json!({
+            "ts": sample.ts,
+            "cpu": sample.cpu,
+            "mem": sample.mem,
+            "load1": sample.load1,
+            "net_rx": sample.net_rx,
+            "net_tx": sample.net_tx,
+            "temp": sample.temp,
+        })),
+        Ok(None) => ResponseHelper::json_success(serde_json::Value::Null),
         Err(e) => ResponseHelper::json_error(format!("Failed to read metrics: {e}")),
     }
 }

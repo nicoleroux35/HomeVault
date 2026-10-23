@@ -1078,10 +1078,12 @@ power actions). See [guides/scheduled-tasks.md](./guides/scheduled-tasks.md).
 
 | Method | Path | Auth | Handler |
 |--------|------|------|---------|
-| GET | `/metrics/history?range=1h\|24h\|7d` | auth | `handle_metrics_history` — bucketed averages (`bucket_seconds` + `points[]`, gaps as `null`s) |
-| GET | `/metrics/latest` | auth | `handle_metrics_latest` — newest stored sample |
+| GET | `/metrics/history?range=1h\|24h\|7d` | auth | `handle_metrics_history` — bucketed averages (`bucket_seconds` + `points[]`); every series is nullable and a gap is `null`, never `0` |
+| GET | `/metrics/latest` | auth | `handle_metrics_latest` — newest stored sample; `200` with `data: null` when nothing has been collected yet (fresh install, not a client error) |
 
-Read-only: samples are written only by the `metrics` collector loop.
+Read-only: samples are written only by the `metrics` collector loop. A series
+is `null` when its `/proc` (or thermal-zone) read failed — see
+[guides/metrics.md](./guides/metrics.md#null-semantics--a-gap-is-not-a-zero).
 
 ## Host power — `power/*` (admin)
 

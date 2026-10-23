@@ -28,6 +28,8 @@
  *   3. Accessibility: charts expose aria-labels, range buttons are a
  *      toggle group (aria-pressed)
  *   4. The screen renders for non-admin users too (auth-level endpoint)
+ *   5. Null semantics (ROADMAP 11): a series nobody measured is a gap, and a
+ *      slow range answer cannot repaint a newer one
  *
  * A freshly provisioned instance may have no samples yet — the suite
  * accepts both the empty state and the charts, and only asserts what is
@@ -169,4 +171,78 @@ test('4.1 — The screen opens for non-admin users (auth-level endpoint)', async
 
   await openMetrics(page, { username, password: 'NonAdmin123!', ...userLogin });
   await expect(win(page)).toBeVisible();
+});
+
+// =============================================================================
+// 5. Null semantics (ROADMAP 11) — a gap is not a zero, a stale answer is not
+//    an answer
+// =============================================================================
+
+/** One point of a stubbed history answer; every series is optional. */
+function point(ts: number, values: Partial<Record<'cpu' | 'mem' | 'load1' | 'net_rx' | 'net_tx' | 'temp', number>>) {
+  return {
+    ts,
+    cpu: values.cpu ?? null,
+    mem: values.mem ?? null,
+    load1: values.load1 ?? null,
+    net_rx: values.net_rx ?? null,
+    net_tx: values.net_tx ?? null,
+    temp: values.temp ?? null,
+  };
+}
+
+function historyBody(points: unknown[]) {
+  return JSON.stringify({
+    success: true,
+    data: { range: '1h', bucket_seconds: 60, points },
+  });
+}
+
+test('5.1 — A temperature-only dataset renders the charts, not "no data"', async ({ page }) => {
+  const now = Math.floor(Date.now() / 1000);
+  await page.route('**/api/metrics/history*', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: historyBody([
+        point(now - 120, { temp: 41 }),
+        point(now - 60, { temp: 44 }),
+        point(now, { temp: 46 }),
+      ]),
+    }),
+  );
+
+  await openMetrics(page, adminTokens);
+  // The old empty-state heuristic only looked at cpu/mem, so a host with a
+  // working thermal zone and nothing else rendered "no data".
+  await expect(win(page).locator('[data-testid="metrics-empty"]')).toHaveCount(0);
+  await expect(win(page).locator('[data-testid="metrics-card-temp"]')).toBeVisible();
+  await expect(win(page).locator('[data-testid="metrics-current-temp"]')).toHaveText('46 °C');
+  // A series nobody measured shows an em dash, never a fabricated 0.
+  await expect(win(page).locator('[data-testid="metrics-current-cpu"]')).toHaveText('—');
+});
+
+test('5.2 — A slow 24h answer cannot repaint the newer 1h range', async ({ page }) => {
+  const now = Math.floor(Date.now() / 1000);
+  await page.route('**/api/metrics/history*', async (route) => {
+    const range = new URL(route.request().url()).searchParams.get('range');
+    // The 24h answer is deliberately slower than the 1h one.
+    if (range === '24h') await new Promise((resolve) => setTimeout(resolve, 1500));
+    const cpu = range === '24h' ? 90 : 11;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: historyBody([point(now - 60, { cpu }), point(now, { cpu })]),
+    });
+  });
+
+  await openMetrics(page, adminTokens);
+  const group = win(page).locator('[data-testid="metrics-ranges"]');
+  await group.locator('[data-testid="metrics-range-24h"]').click();
+  await group.locator('[data-testid="metrics-range-1h"]').click();
+
+  // Wait past the 24h delay: the screen must still show the 1h figure.
+  await page.waitForTimeout(2000);
+  await expect(group.locator('[data-testid="metrics-range-1h"]')).toHaveAttribute('aria-pressed', 'true');
+  await expect(win(page).locator('[data-testid="metrics-current-cpu"]')).toHaveText('11.0 %');
 });
