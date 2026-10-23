@@ -197,8 +197,8 @@ use crate::handlers::{
         handle_retention_policy_delete, handle_retention_policy_update,
     },
     scheduled_tasks::{
-        handle_task_create, handle_task_delete, handle_task_run_now, handle_task_runs,
-        handle_task_update, handle_tasks_list,
+        handle_task_create, handle_task_delete, handle_task_get, handle_task_run_now,
+        handle_task_runs, handle_task_set_enabled, handle_task_update, handle_tasks_list,
     },
     security::{
         handle_get_active_sessions_count, handle_get_login_history, handle_get_my_sessions,
@@ -1061,13 +1061,18 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/scheduled-tasks", post(handle_task_create))
         .route(
             "/api/scheduled-tasks/{id}",
-            axum::routing::put(handle_task_update),
+            get(handle_task_get)
+                .put(handle_task_update)
+                .delete(handle_task_delete),
         )
-        .route(
-            "/api/scheduled-tasks/{id}",
-            axum::routing::delete(handle_task_delete),
-        )
+        // "Run now" answers 202 + a run id; the execution continues on its
+        // own (ROADMAP 12.4), and the task row / `{id}/runs` report the
+        // outcome.
         .route("/api/scheduled-tasks/{id}/run", post(handle_task_run_now))
+        .route(
+            "/api/scheduled-tasks/{id}/enabled",
+            post(handle_task_set_enabled),
+        )
         .route("/api/scheduled-tasks/{id}/runs", get(handle_task_runs))
         // Snapshot schedules: cron-driven pool snapshots with GFS retention
         // (admin-only; see docs/guides/snapshots.md).

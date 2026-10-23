@@ -47,8 +47,9 @@ auth under HTTPS** (all 2026-10-21), and **Health** (2026-10-22) — followed by
 (all 2026-10-22), and on 2026-10-23 **Storage's sudoers scoping + residual call
 sites**, **Apps Center / app-proxy**, the **RAID wizard's create path**,
 **LUKS2 encryption**, the **System Journal's privilege + read semantics**,
-**Downloader**, **Syncthing's REST client** and **Virtual Machines (Incus)**
-(see Done).
+**Downloader**, **Syncthing's REST client**, **Virtual Machines (Incus)** and
+**Scheduled Tasks** — timezone-aware cron, pausing an unrunnable task, and
+"Run now" off the request (see Done).
 
 Everything else is still on its original implementation plus incremental
 feature work. The pattern is consistent: **the screens render, the endpoints
@@ -76,7 +77,6 @@ Two structural facts explain most of the list:
 |---|---|---|---|
 | 10b | File Explorer — residual hardening | P2 | 3 |
 | 11 | Metrics | P1 | 2 |
-| 12 | Scheduled Tasks | P1 | 3 |
 | 13 | Settings — remaining cards | P1 | 4 |
 | 15 | Dashboard / Widgets | P1 | 3 |
 | 16 | Cloud Sync (rclone) | P1 | 3 |
@@ -95,26 +95,28 @@ Two structural facts explain most of the list:
 | 32 | Virtual Machines — residual | P2 | 2 |
 | — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **51** (44 per-area + 7 cross-cutting).
+Total open findings: **48** (41 per-area + 7 cross-cutting).
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
 host sources are now admin-only, so the remaining P1 list has no data leak
-left. P1 now goes by blast radius, and 12.2/12.3 and 13.4 go together, since
-a UTC-only cron with a stored-but-unapplied timezone is one defect seen from
-two screens. **9 (LUKS2) was closed on 2026-10-23**, and **17 (Downloader) closed the same
-day**: `uri`/`dir`/`out` are now validated against an allowlist and a confined
-root, the RPC port carries a per-process secret, and the child is reaped and
-killed on shutdown. **18.2 closed on 2026-10-23**: a malformed API key is a
-named error instead of a panicking handler, certificate verification is back on,
-and the key read left the runtime. **19 (Virtual Machines) closed on
+left. P1 now goes by blast radius. **9 (LUKS2) was closed on 2026-10-23**,
+and **17 (Downloader) closed the same day**: `uri`/`dir`/`out` are now
+validated against an allowlist and a confined root, the RPC port carries a
+per-process secret, and the child is reaped and killed on shutdown. **18.2
+closed on 2026-10-23**: a malformed API key is a named error instead of a
+panicking handler, certificate verification is back on, and the key read left
+the runtime. **19 (Virtual Machines) closed on
 2026-10-23**: a `/wait` now gets the operation's own budget instead of the
 45 s transport default, an expired wait reports "still running" with the
 operation id instead of a false failure, and the blocking filesystem/socket
-work left the async runtime. Next: **12.2 + 12.3 + 13.4** — a UTC-only cron,
-a bad cron that retries every tick and a `timezone` setting nothing applies is
-one defect seen from two screens, and it is the last P1 that silently makes a
-scheduled action fire at the wrong time.
+work left the async runtime. **12 (Scheduled Tasks) closed on 2026-10-23**,
+together with 13.4's timezone half: a cron now runs in its task's own IANA
+timezone (blank = the appliance zone, applied to the host with `timedatectl`),
+an unparseable one pauses the task instead of retrying every 30 s, and "Run
+now" answers `202` while the run continues outside the request. Next: **23
+(transfer quotas)** — its check fails open, which is the last P1 that lets a
+request through when the guard itself cannot answer.
 
 ---
 
@@ -158,48 +160,6 @@ Nothing asserts null-on-failure or elapsed-time-based rates.
 
 ---
 
-### 12. Scheduled Tasks — UTC-only cron, and a bad cron fails every tick
-
-- [ ] **12.2 — Cron is UTC-only, with no timezone and no disclosure.**
-      `src/handlers/scheduled_tasks.rs:217,272-286` (8-day cap) evaluates
-      against UTC; a user setting "02:00 daily" gets 02:00 UTC. Combined with
-      13.4 (the `timezone` setting is stored and never applied), scheduling is
-      unpredictable in the UI.
-      *Acceptance:* a timezone per task or a clearly labelled UTC mode, plus the
-      setting from 13.4 actually applied.
-- [ ] **12.3 — An unparseable stored cron generates a failed run every tick.**
-      `:229-245`: no backoff, no auto-disable, so the run-history table grows
-      without bound and the UI fills with noise.
-- [ ] **12.4 — "Run now" runs inside the HTTP request, so a dropped
-      connection orphans the run.** `handle_task_run_now` awaits
-      `run_task_now` (`src/handlers/scheduled_tasks.rs:177`), which holds the
-      `TaskRunGuard` on the request future; `perform` starts the child with
-      `tokio::process::Command` **without** `kill_on_drop`
-      (`src/scheduled_tasks_scheduler.rs:395-399`). If the client goes away,
-      hyper drops the response future → the guard is released while the child
-      keeps running, so the next start is accepted and the same binary runs
-      twice — the state 12.1 was about. The row also stays `running`
-      (`mark_started` at `:363-364` has no counterpart on drop).
-      *Acceptance:* start the task in a spawned task that owns the guard and
-      answer `202` with the run id (the taskbar/job pattern already used by
-      the Docker and Backup passes), or kill the child on drop and close the
-      row; a status endpoint must then report the outcome. *Tests:* an
-      integration test that drops the response future mid-run and asserts the
-      task is not startable twice.
-
-Also: the frontend splits command arguments on whitespace
-(`Tasks.svelte:166`), so a path containing a space silently becomes two argv
-entries; `toggleEnabled` re-submits the whole task and resets the run summary
-(`:208-225`), so toggling a checkbox loses the displayed last-run output.
-
-*Tests:* `scheduled_tasks_scheduler.rs` **8** unit tests (two of them the
-overlap guard, added with 12.1), `tests/scheduled_tasks_integration.rs` 6
-(one of them the concurrent-start refusal), `tasks.spec.ts` 8.
-*Docs:* `docs/guides/scheduled-tasks.md` (12.2's UTC-only disclosure),
-`docs/guides/settings.md` (13.4's `timezone`).
-
----
-
 ### 13. Settings — the remaining cards
 
 - [ ] **13.2 — `restart_nut()` cannot succeed.** `src/ups.rs:517-521` runs
@@ -219,12 +179,16 @@ overlap guard, added with 12.1), `tests/scheduled_tasks_integration.rs` 6
       `which` three times per call (`:385-401`).
       *Acceptance:* either drive msmtp from the saved settings (or a real SMTP
       client) or remove the fields and say so.
-- [ ] **13.4 — `timezone` is stored and never applied; language is not
-      persisted.** `GeneralSettings.timezone` (`handlers/settings.rs:451-452`)
-      is written to `settings.json`; nothing runs `timedatectl` or writes
-      `/etc/localtime`. `handle_set_language` mutates only the in-process locale
-      (`:376`) and `save_all_settings` has no language field, so the choice
-      reverts to `en` on restart.
+- [ ] **13.4 — The UI language is not persisted.** `handle_set_language`
+      mutates only the in-process locale (`handlers/settings.rs:376`) and
+      `save_all_settings` has no language field, so the choice reverts to `en`
+      on restart. *(The `timezone` half of this finding closed with ROADMAP 12
+      on 2026-10-23: the setting is validated as an IANA name, applied with
+      `timedatectl set-timezone`, seeded from the host on a fresh install, and
+      is what the scheduled-task engine evaluates every task without a zone of
+      its own in.)*
+      *Acceptance:* the chosen language survives a restart and is applied
+      before the first page renders.
 - [ ] **13.5 — Dead and half-wired settings.** `scan_archives` (antivirus) is
       persisted (`handlers/antivirus.rs:81,109`;
       `storage/antivirus_repo.rs:34,117-131`) but `run_clamscan` never reads it
@@ -739,6 +703,54 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-23 (l)** — Scheduled Tasks — the cron now runs in a real timezone, an
+unrunnable task is paused instead of failing every tick, and "Run now" no longer
+runs inside the request. **12.2 (UTC-only cron):** `scheduled_tasks` gained a
+`timezone` column (`054_scheduled_task_timezone.sql`, `NULL` = follow the
+appliance), validated as an IANA name on write (`validate_timezone`, canonical
+`Europe/Paris`, `400` naming a bad value) and again at run time
+(`parse_timezone`). Evaluation goes through `next_run_at`: the reference instant
+is converted into the task's zone, the `cron` crate finds the next local
+occurrence, and the result is converted back to UTC — so `0 2 * * *` in
+`Europe/Paris` is 00:00 UTC in July and 01:00 UTC in January (both asserted),
+and the day-of-week normalisation still holds across the hop. `chrono-tz`
+supplies the database; `restic_scheduler`'s parser was extracted as
+`parse_schedule` so there is one parser, not two. The appliance zone comes from
+`settings::effective_timezone()` (pure in-memory read — no `/etc` access on the
+30 s tick), which is what **13.4's timezone half** now makes real: the Settings
+value is validated before it is persisted, applied with `timedatectl
+set-timezone` through `spawn_blocking` under a scoped sudoers grant, reported
+with `timezone_notice` when the apply fails (it used to look like a success),
+and seeded from the host at startup on a fresh install. `system_timezone()` is
+now one implementation shared with the Dashboard. **12.3 (a bad cron failed
+every tick):** `pause_unrunnable` records **one** failed run explaining the
+error, then `pause_with_error` disables the task, clears `next_run_at` and keeps
+the sentence in `last_error` — the history table can no longer grow one row per
+30 s. **12.4 ("Run now" inside the request):** the handler claims the task,
+opens the run row, moves the guard **and** the execution into a spawned task and
+answers `202` + `{run_id, task_id, status}`; a dropped connection can no longer
+release the claim while the child runs (the same task starting twice, the row
+stuck on `running`). The child is `kill_on_drop(true)`, `close_interrupted_runs`
+closes rows a restart orphaned, and `GET /scheduled-tasks/{id}` is the status
+endpoint the caller polls. **Also:** the args field honours double quotes
+(`--out "/mnt/my disk/f"` is two argv entries, not three, and re-quotes on
+edit), and `POST /{id}/enabled` flips the switch without re-submitting the task,
+so pausing no longer wipes the last-run output the row is showing. Tests:
+`scheduled_tasks_scheduler.rs` 8 → **12** (`parse_timezone` matrix, winter vs
+summer Paris, appliance-zone fallback, unknown zone/cron is an error, weekday
+hop), `storage/scheduled_task_repo.rs` 4 → **8** (timezone round-trip,
+`set_enabled` keeps the summary, `pause_with_error`, `close_interrupted_runs`),
+`handlers/scheduled_tasks.rs` 2 → **4**, `setup.rs` **+1** (the
+`timedatectl set-timezone *` grant is scoped), `scheduled_tasks_integration.rs`
+6 → **8** (`202` + run id then the row reaches `success`, a failing command is a
+run failure, timezone validation/storage, enable toggle keeps the summary),
+`tasks.spec.ts` 8 → **11** (timezone field, asynchronous run-now, quoted
+argument). Written on 2026-10-23; **not run yet** (per instruction), so the
+counts above are the test functions added, not a green run.
+`docs/guides/scheduled-tasks.md` gained *Timezones* and the rewritten
+invariants; `docs/guides/settings.md` documents the applied timezone;
+`docs/API.md` the new routes and the `202`.
 
 **2026-10-23 (k)** — Virtual Machines (Incus) — a wait now gets the operation's
 own budget, an expired wait is "still running" instead of a failure, and no

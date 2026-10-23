@@ -20,6 +20,10 @@ reqwest = { version = "0.13", features = ["json", "stream"] }
 axum = { version = "0.8", features = ["macros", "ws", "multipart"] }
 axum-macros = "0.5"
 chrono = { version = "0.4", features = ["serde"] }
+# IANA timezone database (ROADMAP 12.2): a cron expression is only meaningful
+# with the zone it is evaluated in, and a per-task timezone has to stay
+# DST-correct — a fixed offset would drift by an hour twice a year.
+chrono-tz = "0.10"
 argon2 = { version = "0.6", features = ["password-hash", "rand_core"] }
 hostname = "0.4"
 http = "1"

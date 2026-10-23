@@ -197,6 +197,39 @@ test('2.2 — Create rejects a missing name with an inline error', async ({ page
   await page.keyboard.press('Escape');
 });
 
+test('2.3 — A task keeps the timezone it was created with', async ({ page }) => {
+  // ROADMAP 12.2: the cron is evaluated in this zone, and the row says which.
+  await openTasks(page, adminTokens);
+  await win(page).locator('[data-testid="tasks-new-btn"]').click();
+
+  const name = `E2E timezone ${Date.now()}`;
+  await page.locator('#taskName').fill(name);
+  await page.locator('#taskPool').fill('e2e-pool');
+  await page.locator('#taskCron').fill('0 3 * * *');
+  await page.locator('#taskTimezone').fill('Europe/Paris');
+  await page.locator('[data-testid="tasks-save-btn"]').click();
+
+  const row = win(page).locator('[data-testid="tasks-list"] table tbody tr', { hasText: name });
+  await expect(row).toBeVisible({ timeout: 10_000 });
+  await expect(row).toContainText('Europe/Paris');
+
+  // The server stored it (the UI is only convenience) — then clean up.
+  const toggle = row.locator('[data-testid^="tasks-toggle-"]').first();
+  const testId = await toggle.getAttribute('data-testid');
+  const id = testId ? testId.replace('tasks-toggle-', '') : '';
+  if (id) {
+    const res = await page.request.get(`${BASE}/api/scheduled-tasks`, {
+      headers: { 'x-session-token': adminTokens.token },
+    });
+    const body = await res.json().catch(() => ({}));
+    const created = (body?.data?.tasks || []).find((t2: { id: string }) => t2.id === id);
+    expect(created?.timezone).toBe('Europe/Paris');
+    await page.request.delete(`${BASE}/api/scheduled-tasks/${id}`, {
+      headers: { 'x-session-token': adminTokens.token, 'x-csrf-token': adminTokens.csrf },
+    });
+  }
+});
+
 test('3.1 — Edit repopulates the per-type payload fields', async ({ page }) => {
   test.skip(!createdTaskId, 'task not created');
   await openTasks(page, adminTokens);
@@ -233,6 +266,72 @@ test('4.1 — Run now flips the status and records a run', async ({ page }) => {
   // Run history drawer records the execution.
   await row.locator('[data-testid^="tasks-runs-"]').click();
   await expect(page.locator('[data-testid="tasks-runs-list"] > div').first()).toBeVisible({ timeout: 10_000 });
+});
+
+test('4.2 — Run now returns immediately and the row follows the run', async ({ page }) => {
+  test.skip(!createdTaskId, 'task not created');
+  // ROADMAP 12.4: the POST answers 202 while the run is still going, so the
+  // screen must show "Running" and then settle on its own. A command long
+  // enough that the first poll (3 s) still sees it in flight.
+  const put = await page.request.put(`${BASE}/api/scheduled-tasks/${createdTaskId}`, {
+    headers: { 'x-session-token': adminTokens.token, 'x-csrf-token': adminTokens.csrf },
+    data: {
+      name: 'E2E snapshot',
+      task_type: 'command',
+      cron: '0 3 * * 1',
+      payload: { command: '/bin/sleep', args: ['5'] },
+      enabled: true,
+    },
+  });
+  expect(put.ok()).toBeTruthy();
+
+  await openTasks(page, adminTokens);
+  const row = win(page).locator('[data-testid="tasks-list"] table tbody tr', { hasText: 'E2E snapshot' });
+  await row.locator('[data-testid^="tasks-run-"]').click();
+
+  // The request came back before the run ended: the row is in flight.
+  await expect(row.locator('[data-testid^="tasks-status-"]')).toContainText(
+    /Running|En cours|En ejecución|Läuft/i,
+    { timeout: 5_000 },
+  );
+  // …and the bounded poll settles it without a page reload.
+  await expect(row.locator('[data-testid^="tasks-status-"]')).toContainText(
+    /Success|Réussite|Erfolg|Éxito/i,
+    { timeout: 20_000 },
+  );
+});
+
+test('4.3 — An argument containing a space stays one argument', async ({ page }) => {
+  test.skip(!createdTaskId, 'task not created');
+  // The form used to split on whitespace, so a path with a space silently
+  // became two argv entries.
+  const put = await page.request.put(`${BASE}/api/scheduled-tasks/${createdTaskId}`, {
+    headers: { 'x-session-token': adminTokens.token, 'x-csrf-token': adminTokens.csrf },
+    data: {
+      name: 'E2E snapshot',
+      task_type: 'command',
+      cron: '0 3 * * 1',
+      payload: { command: '/bin/true', args: ['--out', '/tmp/my file.txt'] },
+      enabled: true,
+    },
+  });
+  expect(put.ok()).toBeTruthy();
+
+  await openTasks(page, adminTokens);
+  const row = win(page).locator('[data-testid="tasks-list"] table tbody tr', { hasText: 'E2E snapshot' });
+  await row.locator('[data-testid^="tasks-edit-"]').click();
+  // The form shows the argument quoted, so it can round-trip…
+  await expect(page.locator('#taskArgs')).toHaveValue('--out "/tmp/my file.txt"');
+  // …and saving keeps it as one argv entry.
+  await page.locator('[data-testid="tasks-save-btn"]').click();
+  await expect(row).toBeVisible({ timeout: 10_000 });
+  const res = await page.request.get(`${BASE}/api/scheduled-tasks`, {
+    headers: { 'x-session-token': adminTokens.token },
+  });
+  const body = await res.json().catch(() => ({}));
+  const saved = (body?.data?.tasks || []).find((t2: { id: string }) => t2.id === createdTaskId);
+  const payload = JSON.parse(saved?.payload || '{}');
+  expect(payload.args).toEqual(['--out', '/tmp/my file.txt']);
 });
 
 test('5.1 — Disable / enable through the row switch', async ({ page }) => {

@@ -26,7 +26,7 @@
    * same gate runs server-side on every create/update — the client form is
    * convenience, not security).
    */
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { get } from 'svelte/store';
   import { api, type ScheduledTask, type ScheduledTaskRun } from '$lib/services/api';
   import { onAppVisible } from '$lib/utils/autoRevalidate';
@@ -47,6 +47,8 @@
     task_type: TaskType;
     cron: string;
     enabled: boolean;
+    /** IANA zone; empty = follow the appliance timezone. */
+    timezone: string;
     // command
     command: string;
     args: string;
@@ -66,6 +68,7 @@
     task_type: 'snapshot',
     cron: '0 3 * * *',
     enabled: true,
+    timezone: '',
     command: '',
     args: '',
     pool: '',
@@ -74,6 +77,13 @@
     test_type: 'short',
     action: 'reboot',
   };
+
+  /** How long "Run now" keeps polling the task row after a start. The run
+   *  happens on the server (ROADMAP 12.4), so the row is what reports the
+   *  outcome — bounded, so a 30-minute command cannot turn this screen into a
+   *  permanent 3 s poller. */
+  const RUN_POLL_MS = 3000;
+  const RUN_POLL_ATTEMPTS = 10;
 
   const TASK_TYPES: { id: TaskType; label: string }[] = [
     { id: 'snapshot', label: 'tasks.type_snapshot' },
@@ -98,6 +108,8 @@
   let runsLoading = false;
   const dlg = createConfirmState();
   let busyId = '';
+  /** Pending "Run now" poll (see `pollRun`). */
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
   onMount(() => {
     if (!$isAdmin) {
@@ -108,8 +120,10 @@
     return onAppVisible(load);
   });
 
-  async function load() {
-    loading = true;
+  onDestroy(() => clearPoll());
+
+  async function load(silent = false) {
+    if (!silent) loading = true;
     loadError = false;
     try {
       const res = await api.getScheduledTasks();
@@ -123,7 +137,7 @@
       loadError = true;
       tasks = [];
     } finally {
-      loading = false;
+      if (!silent) loading = false;
     }
   }
 
@@ -146,8 +160,9 @@
       task_type: task.task_type as TaskType,
       cron: task.cron,
       enabled: task.enabled,
+      timezone: task.timezone ?? '',
       command: String(payload.command ?? ''),
-      args: Array.isArray(payload.args) ? payload.args.join(' ') : '',
+      args: Array.isArray(payload.args) ? payload.args.map((a) => (/\s/.test(String(a)) ? `"${a}"` : String(a))).join(' ') : '',
       pool: String(payload.pool ?? ''),
       recursive: payload.recursive === true,
       device: String(payload.device ?? ''),
@@ -158,12 +173,44 @@
     showForm = true;
   }
 
+  /**
+   * Splits the arguments field the way argv really is: whitespace separates,
+   * and double quotes group — `--out "/mnt/my disk/file"` is two arguments,
+   * not three. The old split on whitespace silently turned a path containing a
+   * space into two argv entries.
+   */
+  function parseArgs(raw: string): string[] {
+    const args: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    let started = false;
+    for (const ch of raw) {
+      if (ch === '"') {
+        inQuotes = !inQuotes;
+        started = true;
+        continue;
+      }
+      if (!inQuotes && /\s/.test(ch)) {
+        if (started) {
+          args.push(current);
+          current = '';
+          started = false;
+        }
+        continue;
+      }
+      current += ch;
+      started = true;
+    }
+    if (started) args.push(current);
+    return args;
+  }
+
   function buildPayload(): Record<string, unknown> {
     switch (form.task_type) {
       case 'command':
         return {
           command: form.command.trim(),
-          args: form.args.trim() ? form.args.trim().split(/\s+/) : [],
+          args: parseArgs(form.args),
         };
       case 'snapshot':
         return { pool: form.pool.trim(), recursive: form.recursive };
@@ -187,6 +234,8 @@
       cron: form.cron.trim(),
       payload: buildPayload(),
       enabled: form.enabled,
+      // Empty means "follow the appliance timezone" — send null, not "".
+      timezone: form.timezone.trim() || null,
     };
     try {
       const res = form.id
@@ -208,20 +257,53 @@
   async function toggleEnabled(task: ScheduledTask, enabled: boolean) {
     busyId = task.id;
     try {
-      const payload: Record<string, unknown> = JSON.parse(task.payload);
-      await api.updateScheduledTask(task.id, {
-        name: task.name,
-        task_type: task.task_type,
-        cron: task.cron,
-        payload,
-        enabled,
-      });
-      await load();
+      // Dedicated endpoint: a full PUT would reset the run summary and the
+      // last-run output the row is showing.
+      const res = await api.setScheduledTaskEnabled(task.id, enabled);
+      if (!res.success) {
+        notificationsStore.add({
+          title: translate('desktop.app_tasks_name'),
+          message: res.message || translate('tasks.error_toggle'),
+          type: 'error',
+        });
+      }
     } catch {
-      await load();
+      notificationsStore.add({
+        title: translate('desktop.app_tasks_name'),
+        message: translate('tasks.error_toggle'),
+        type: 'error',
+      });
     } finally {
+      await load();
       busyId = '';
     }
+  }
+
+  function clearPoll() {
+    if (pollTimer !== null) {
+      clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  /**
+   * The run happens on the server, so the row is polled until it leaves
+   * `running` — bounded by RUN_POLL_ATTEMPTS, and paused while the tab is
+   * hidden (no background polling).
+   */
+  function pollRun(taskId: string) {
+    clearPoll();
+    let attempts = 0;
+    const tick = async () => {
+      pollTimer = null;
+      attempts += 1;
+      await load(true);
+      const stillRunning = tasks.find((t2) => t2.id === taskId)?.last_status === 'running';
+      if (!stillRunning) return;
+      if (attempts >= RUN_POLL_ATTEMPTS || document.hidden) return;
+      pollTimer = setTimeout(tick, RUN_POLL_MS);
+    };
+    pollTimer = setTimeout(tick, RUN_POLL_MS);
   }
 
   async function runNow(task: ScheduledTask) {
@@ -229,9 +311,26 @@
     try {
       const res = await api.runScheduledTaskNow(task.id);
       if (!res.success) {
-        notificationsStore.add({ title: translate('desktop.app_tasks_name'), message: res.message || translate('tasks.error_save'), type: 'error' });
+        notificationsStore.add({
+          title: translate('desktop.app_tasks_name'),
+          message: res.message || translate('tasks.error_run'),
+          type: 'error',
+        });
+        return;
       }
-      await load();
+      notificationsStore.add({
+        title: translate('desktop.app_tasks_name'),
+        message: translate('tasks.run_started', { name: task.name }),
+        type: 'success',
+      });
+      await load(true);
+      pollRun(task.id);
+    } catch {
+      notificationsStore.add({
+        title: translate('desktop.app_tasks_name'),
+        message: translate('tasks.error_run'),
+        type: 'error',
+      });
     } finally {
       busyId = '';
     }
@@ -359,7 +458,12 @@
             {:else if column.id === 'type'}
               {$t(`tasks.type_${row.task_type}`)}
             {:else if column.id === 'cron'}
-              <code class="text-c-label">{row.cron}</code>
+              <div class="flex flex-col">
+                <code class="text-c-label">{row.cron}</code>
+                <span class="text-c-label text-[var(--hv-shell-text-2)]">
+                  {row.timezone || $t('tasks.timezone_server')}
+                </span>
+              </div>
             {:else if column.id === 'status'}
               {@const badge = statusBadge(row.last_status)}
               <div class="flex flex-col items-start gap-1">
@@ -430,7 +534,7 @@
     {#if formError}
       <p data-testid="tasks-form-error" role="alert" class="m-0 text-c-label text-[var(--hv-danger)]">{formError}</p>
     {/if}
-    <Input label={$t('tasks.field_name')} bind:value={form.name} maxlength={120} />
+    <Input label={$t('tasks.field_name')} id="taskName" bind:value={form.name} maxlength={120} />
     <Select
       label={$t('tasks.field_type')}
       bind:value={form.task_type}
@@ -438,19 +542,27 @@
     />
     <Input
       label={$t('tasks.field_cron')}
+      id="taskCron"
       bind:value={form.cron}
       placeholder="0 3 * * *"
       helper={$t('tasks.field_cron_help')}
     />
+    <Input
+      label={$t('tasks.field_timezone')}
+      id="taskTimezone"
+      bind:value={form.timezone}
+      placeholder="Europe/Paris"
+      helper={$t('tasks.field_timezone_help')}
+    />
 
     {#if form.task_type === 'command'}
-      <Input label={$t('tasks.field_command')} bind:value={form.command} placeholder="/usr/local/bin/script.sh" helper={$t('tasks.field_command_help')} />
-      <Input label={$t('tasks.field_args')} bind:value={form.args} helper={$t('tasks.field_args_help')} />
+      <Input label={$t('tasks.field_command')} id="taskCommand" bind:value={form.command} placeholder="/usr/local/bin/script.sh" helper={$t('tasks.field_command_help')} />
+      <Input label={$t('tasks.field_args')} id="taskArgs" bind:value={form.args} helper={$t('tasks.field_args_help')} />
     {:else if form.task_type === 'snapshot'}
-      <Input label={$t('tasks.field_pool')} bind:value={form.pool} placeholder="tank/data" helper={$t('tasks.field_pool_help')} />
+      <Input label={$t('tasks.field_pool')} id="taskPool" bind:value={form.pool} placeholder="tank/data" helper={$t('tasks.field_pool_help')} />
       <Switch bind:checked={form.recursive} label={$t('tasks.field_recursive')} />
     {:else if form.task_type === 'smart_test'}
-      <Input label={$t('tasks.field_device')} bind:value={form.device} placeholder="sda" helper={$t('tasks.field_device_help')} />
+      <Input label={$t('tasks.field_device')} id="taskDevice" bind:value={form.device} placeholder="sda" helper={$t('tasks.field_device_help')} />
       <Select
         label={$t('tasks.field_test_type')}
         bind:value={form.test_type}

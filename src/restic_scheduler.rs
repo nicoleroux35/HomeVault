@@ -37,8 +37,8 @@ use std::time::Duration;
 const POLL_INTERVAL_SECS: u64 = 30;
 
 /// Parses a standard 5-field cron expression (minute hour day-of-month month
-/// day-of-week, the crontab format users are used to) and returns the next
-/// occurrence strictly after `after`.
+/// day-of-week, the crontab format users are used to) into the schedule the
+/// rest of the code iterates.
 ///
 /// Two normalisations bridge the gap to the underlying `cron` crate:
 ///  * a leading `"0 "` (seconds = 0) is prepended — the crate wants a
@@ -50,14 +50,23 @@ const POLL_INTERVAL_SECS: u64 = 30;
 ///    rejected outright and every other weekday number was off by one — a
 ///    schedule set for "every Monday" (`* * 1`) actually ran on Sunday.
 ///    Symbolic names (`SUN`, `MON`, …) already work and pass through.
+///
+/// Crate-visible rather than private because the generic scheduled-task engine
+/// evaluates the *same* expression in a caller-chosen timezone (ROADMAP 12.2)
+/// and must not grow a second, divergent parser.
+pub(crate) fn parse_schedule(cron_expression: &str) -> Result<cron::Schedule, String> {
+    let normalized = normalize_crontab_dow(cron_expression.trim());
+    let full_expr = format!("0 {}", normalized);
+    cron::Schedule::from_str(&full_expr).map_err(|e| e.to_string())
+}
+
+/// Returns the next occurrence of `cron_expression` strictly after `after`,
+/// evaluated in UTC.
 pub fn compute_next_run(
     cron_expression: &str,
     after: chrono::DateTime<Utc>,
 ) -> Result<Option<chrono::DateTime<Utc>>, String> {
-    let normalized = normalize_crontab_dow(cron_expression.trim());
-    let full_expr = format!("0 {}", normalized);
-    let schedule = cron::Schedule::from_str(&full_expr).map_err(|e| e.to_string())?;
-    Ok(schedule.after(&after).next())
+    Ok(parse_schedule(cron_expression)?.after(&after).next())
 }
 
 /// Rewrites the day-of-week field (5th field) of a 5-field crontab expression

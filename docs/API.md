@@ -78,7 +78,7 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 |--------|------|------|-------|
 | GET | `/settings` | auth | aggregate of all categories |
 | GET | `/settings/public` | public | safe subset (server name, language, theme) |
-| GET/PUT | `/settings/general` | auth / admin | server name, timezone |
+| GET/PUT | `/settings/general` | auth / admin | server name, timezone — the timezone is validated (IANA) and applied to the host with `timedatectl`; a failed apply returns `timezone_notice` |
 | GET/POST | `/settings/language` | auth | set UI language (persisted) |
 | GET | `/translations` | auth | returns flattened `locale → key → string` map (`handle_get_translations`, `src/handlers/settings.rs`; mounted at `/api/translations`) |
 | GET/PUT | `/settings/email` | auth / admin | SMTP |
@@ -1050,10 +1050,12 @@ power actions). See [guides/scheduled-tasks.md](./guides/scheduled-tasks.md).
 | Method | Path | Auth | Handler |
 |--------|------|------|---------|
 | GET | `/scheduled-tasks` | admin | `handle_tasks_list` |
-| POST | `/scheduled-tasks` | admin | `handle_task_create` — payload validated at creation |
-| PUT | `/scheduled-tasks/{id}` | admin | `handle_task_update` (also enable/disable) |
+| POST | `/scheduled-tasks` | admin | `handle_task_create` — payload validated at creation; optional `timezone` (IANA name) |
+| GET | `/scheduled-tasks/{id}` | admin | `handle_task_get` — one task, the status endpoint of a started run |
+| PUT | `/scheduled-tasks/{id}` | admin | `handle_task_update` — resets the run summary |
+| POST | `/scheduled-tasks/{id}/enabled` | admin | `handle_task_set_enabled` — `{"enabled": bool}`, toggles only (keeps the run summary) |
 | DELETE | `/scheduled-tasks/{id}` | admin | `handle_task_delete` |
-| POST | `/scheduled-tasks/{id}/run` | admin | `handle_task_run_now` — runs regardless of cron; `409` when a run of the same task is already in progress (process-wide single-flight guard shared with the scheduler tick) |
+| POST | `/scheduled-tasks/{id}/run` | admin | `handle_task_run_now` — runs regardless of cron; **`202 Accepted`** with `{run_id, task_id, status:"running"}` (the execution continues outside the request — ROADMAP 12.4); `409` when a run of the same task is already in progress (process-wide single-flight guard shared with the scheduler tick) |
 | GET | `/scheduled-tasks/{id}/runs` | admin | `handle_task_runs` — 50 newest |
 
 ## Metrics history — `metrics/*` (auth)
