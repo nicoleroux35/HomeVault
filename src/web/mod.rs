@@ -1951,7 +1951,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let admin_rate_limiter = Arc::new(crate::middleware::rate_limit::RateLimitState::new(10, 60));
     let pty_manager = Arc::new(crate::handlers::terminal_pty::PtyManager::new());
     let downloader = Arc::new(tokio::sync::Mutex::new(
-        crate::handlers::downloader::Aria2Process { child: None },
+        crate::handlers::downloader::Aria2Process::new(),
     ));
     let (ransomware_watch_tx, ransomware_watch_rx) =
         tokio::sync::mpsc::unbounded_channel::<crate::ransomware_watcher::WatchCommand>();
@@ -2298,17 +2298,29 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal(state.pty_manager.clone()))
+    .with_graceful_shutdown(shutdown_signal(
+        state.pty_manager.clone(),
+        state.downloader.clone(),
+    ))
     .await?;
 
     Ok(())
 }
 
-/// Waits for Ctrl+C (or the equivalent shutdown signal from systemd) and kills
-/// every live terminal session before letting the server actually stop, so
-/// shells never outlive the process that's supposed to own them.
-async fn shutdown_signal(pty_manager: Arc<crate::handlers::terminal_pty::PtyManager>) {
+/// Waits for Ctrl+C (or the equivalent shutdown signal from systemd), then kills
+/// every live terminal session and the aria2 daemon it started, so neither
+/// outlives the process that's supposed to own them (ROADMAP 17.3).
+async fn shutdown_signal(
+    pty_manager: Arc<crate::handlers::terminal_pty::PtyManager>,
+    downloader: crate::handlers::downloader::Aria2State,
+) {
     let _ = tokio::signal::ctrl_c().await;
-    tracing::info!("Shutdown signal received, cleaning up terminal sessions...");
+    tracing::info!("Shutdown signal received, cleaning up terminal sessions and the downloader...");
     pty_manager.cleanup_all().await;
+
+    let mut proc = downloader.lock().await;
+    if let Some(mut child) = proc.child.take() {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    }
 }

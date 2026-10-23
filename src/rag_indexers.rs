@@ -761,9 +761,10 @@ Syncthing keeps running independently of HomeVault — this screen is a manageme
             title: "Downloader (aria2)".to_string(),
             content: r#"A download manager backed by aria2: paste a link and let the server fetch it.
 
-- Add a download, optionally choosing the destination folder and the output name; then pause, resume or remove it.
+- Start the download service from the screen when it is stopped — opening the app never starts a background process on its own.
+- Add a download, optionally choosing a sub-folder inside the download folder and the output file name; then pause, resume or remove it.
+- Accepted links are http, https, ftp, sftp and magnet. Local paths (file://) and other schemes are refused, and every file is saved inside the server's download folder — a sub-folder can be named but cannot escape it.
 - Follow progress live: percentage, speed, size and connection count.
-- Start and stop the download daemon itself from the screen.
 - Global statistics: the overall speed, and how many downloads are active, waiting or stopped.
 - Two panes: the list of downloads on the left, the detail of the selected one on the right, re-resolved on every poll so it follows a download as it progresses.
 - Active downloads also appear in the desktop activity taskbar.

@@ -2,8 +2,8 @@
      File          : Downloader.svelte
      Author        : Nicolas Le Roux
      Created       : 28/09/2026
-     Last modified : 28/09/2026 by Nicolas Le Roux
-     Version       : 1.0.0
+     Last modified : 23/10/2026 by Nicolas Le Roux
+     Version       : 1.1.0
 
      Description:
      The Downloader app: aria2-backed download queue — add URLs/torrents,
@@ -19,13 +19,10 @@
   import { onMount, onDestroy } from 'svelte';
   import { api } from '$lib/services/api';
   import { t, translate } from '$lib/stores/i18n';
-  import { Spinner, Button, Modal } from '$lib/components/theme';
+  import { Spinner, Button, Alert } from '$lib/components/theme';
   import { PageLayout, iconBtn, iconBtnDanger, StatCard } from '$lib/components/app';
   import { cn } from '$lib/utils.js';
-  import { activateOnEnterOrSpace } from '$lib/utils/activateOnEnterOrSpace';
-  import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
-  import { IconDownload, IconLink, IconFolderOpen, IconPlayerPlay, IconPlayerPause, IconTrash, IconLoader, IconArrowDown, IconArrowUp, IconFile, IconCircleCheck, IconCircleX, IconClock, IconAlertCircle, IconActivity, IconFolder } from '@tabler/icons-svelte';
-  import FolderPicker from '$lib/components/theme/FolderPicker.svelte';
+  import { IconDownload, IconLink, IconPlayerPlay, IconPlayerPause, IconTrash, IconLoader, IconArrowDown, IconArrowUp, IconFile, IconCircleCheck, IconCircleX, IconClock, IconAlertCircle, IconActivity, IconPower } from '@tabler/icons-svelte';
 
   interface Aria2Task {
     gid: string;
@@ -64,20 +61,24 @@
   let aria2Available = $state(false);
   let aria2Running = $state(false);
   let newUrl = $state('');
-  let downloadDir = $state('');
+  let subfolder = $state('');
+  /** Absolute folder the server writes downloads to (reported by `/status`). */
+  let downloadRoot = $state('');
   let showAddForm = $state(false);
   let addingUrl = $state(false);
-  let showFolderPicker = $state(false);
+  let startingService = $state(false);
+  /** Last failed action, shown in a dismissible alert (never swallowed). */
+  let actionError = $state<string | null>(null);
   let pollInterval: ReturnType<typeof setInterval> | null = null;
 
   onMount(async () => {
     await checkStatus();
-    if (aria2Available && !aria2Running) {
-      await startAria2();
-    }
+    // The daemon is never started behind the user's back: opening the app used
+    // to spawn aria2c with no consent (ROADMAP 17). The start panel below owns
+    // that decision.
     if (aria2Running) {
       await loadData();
-      pollInterval = setInterval(loadData, 2000);
+      startPolling();
     }
     loading = false;
 
@@ -91,28 +92,42 @@
   });
 
   onDestroy(() => {
-    if (pollInterval) clearInterval(pollInterval);
+    stopPolling();
     splitRO?.disconnect();
   });
+
+  function startPolling() {
+    if (!pollInterval) pollInterval = setInterval(loadData, 2000);
+  }
+
+  function stopPolling() {
+    if (pollInterval) clearInterval(pollInterval);
+    pollInterval = null;
+  }
 
   async function checkStatus() {
     const res = await api.getDownloaderStatus();
     if (res.success && res.data) {
       aria2Available = res.data.available;
       aria2Running = res.data.running;
+      downloadRoot = res.data.dir ?? '';
+    } else if (res.error) {
+      actionError = res.error;
     }
   }
 
   async function startAria2() {
+    actionError = null;
+    startingService = true;
     const res = await api.startDownloader();
-    if (res.success) {
-      aria2Running = true;
-      if (!pollInterval) {
-        pollInterval = setInterval(loadData, 2000);
-      }
-      await loadData();
-    } else {
+    startingService = false;
+    if (!res.success) {
+      actionError = res.error || translate('downloader.action_failed');
+      return;
     }
+    aria2Running = true;
+    startPolling();
+    await loadData();
   }
 
   async function loadData() {
@@ -122,45 +137,59 @@
     ]);
     if (statRes.success && statRes.data) {
       globalStat = statRes.data;
+    } else if (statRes.error) {
+      actionError = statRes.error;
     }
     if (tasksRes.success && tasksRes.data) {
       tasks = tasksRes.data;
+    } else if (tasksRes.error) {
+      actionError = tasksRes.error;
     }
   }
 
   async function addUrl() {
     if (!newUrl.trim()) return;
     addingUrl = true;
-    const dir = downloadDir.trim() || undefined;
-    const res = await api.addDownloaderUrl(newUrl.trim(), dir);
+    actionError = null;
+    const res = await api.addDownloaderUrl(newUrl.trim(), subfolder.trim() || undefined);
     if (res.success) {
       newUrl = '';
-      downloadDir = '';
+      subfolder = '';
       showAddForm = false;
       await loadData();
     } else {
+      actionError = res.error || translate('downloader.action_failed');
     }
     addingUrl = false;
   }
 
   async function pauseTask(gid: string) {
+    actionError = null;
     const res = await api.pauseDownloader(gid);
     if (res.success) {
       await loadData();
+    } else {
+      actionError = res.error || translate('downloader.action_failed');
     }
   }
 
   async function unpauseTask(gid: string) {
+    actionError = null;
     const res = await api.unpauseDownloader(gid);
     if (res.success) {
       await loadData();
+    } else {
+      actionError = res.error || translate('downloader.action_failed');
     }
   }
 
   async function removeTask(gid: string) {
+    actionError = null;
     const res = await api.removeDownloader(gid);
     if (res.success) {
       await loadData();
+    } else {
+      actionError = res.error || translate('downloader.action_failed');
     }
   }
 
@@ -256,10 +285,15 @@
   <!-- Page-level primary action: a WindowToolbar row under the header, never
        inside it (the header bar is icon + title + window controls only). -->
   {#snippet toolbarRight()}
-    <Button variant="primary" data-testid="downloader-add-toggle" onclick={() => (showAddForm = !showAddForm)}>
-      <IconLink size={16} />
-      <span>{$t('downloader.add_link')}</span>
-    </Button>
+    <!-- Only offered when the service is running: the form cannot do anything
+         without it, and adding a link would start a background process the
+         user has not asked for. -->
+    {#if aria2Available && aria2Running}
+      <Button variant="primary" data-testid="downloader-add-toggle" onclick={() => (showAddForm = !showAddForm)}>
+        <IconLink size={16} />
+        <span>{$t('downloader.add_link')}</span>
+      </Button>
+    {/if}
   {/snippet}
 
   {#if loading}
@@ -275,6 +309,25 @@
       <code class="px-3 py-1.5 rounded-lg bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)] text-xs font-[family-name:var(--hv-font-mono)]">sudo apt install aria2</code>
     </div>
   {:else}
+    {#if actionError}
+      <div data-testid="downloader-error" class="mb-4">
+        <Alert variant="error" title={$t('downloader.action_failed')} dismissible ondismiss={() => (actionError = null)}>
+          {actionError}
+        </Alert>
+      </div>
+    {/if}
+
+    {#if !aria2Running}
+      <div data-testid="downloader-service-stopped" class="flex flex-col items-center gap-3 py-16 text-center">
+        <IconPower size={44} class="text-[var(--hv-shell-border-strong)]" />
+        <h2 class="m-0 text-lg font-semibold text-[var(--hv-shell-text-strong)]">{$t('downloader.service_stopped_title')}</h2>
+        <p class="m-0 max-w-[46ch] text-sm text-[var(--hv-shell-text)]">{$t('downloader.service_stopped_desc')}</p>
+        <Button variant="primary" data-testid="downloader-start" onclick={startAria2} disabled={startingService}>
+          {#if startingService}<IconLoader size={16} class="dl-spin" />{:else}<IconPower size={16} />{/if}
+          <span>{$t('downloader.start_service')}</span>
+        </Button>
+      </div>
+    {:else}
     {#if globalStat}
       <div data-testid="downloader-stats" class="grid grid-cols-2 @min-[880px]:grid-cols-4 gap-3 mb-5">
         <StatCard data-testid="downloader-stat-card" label={$t('downloader.stat_active')} value={`${globalStat.num_active}`} tone={'info'}>
@@ -298,25 +351,33 @@
           <input
             data-testid="downloader-input"
             type="text"
+            aria-label={$t('downloader.url_label')}
             class="flex-1 min-w-[200px] h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]"
             placeholder={$t('downloader.url_placeholder')}
             bind:value={newUrl}
             onkeydown={(e) => e.key === 'Enter' && addUrl()}
           />
-          <div data-testid="downloader-dir" class="flex items-center gap-2 h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm cursor-pointer hover:bg-[var(--hv-shell-border)]" onclick={() => (showFolderPicker = true)} role="button" tabindex="0" onkeydown={(e) => activateOnEnterOrSpace(e, () => (showFolderPicker = true))}>
-            <IconFolder size={16} class="text-[var(--hv-shell-text-2)]" />
-            <span class="max-w-[160px] truncate text-[var(--hv-shell-text-strong)]">{downloadDir || $t('downloader.destination_dir_placeholder')}</span>
-            <span class="text-c-xs font-bold uppercase text-[var(--hv-primary)]">{ $t('downloader.browse')}</span>
-          </div>
+          <input
+            data-testid="downloader-subfolder"
+            type="text"
+            aria-label={$t('downloader.subfolder_label')}
+            class="w-[190px] h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]"
+            placeholder={$t('downloader.subfolder_placeholder')}
+            bind:value={subfolder}
+            onkeydown={(e) => e.key === 'Enter' && addUrl()}
+          />
           <Button variant="primary" data-testid="downloader-btn-primary" onclick={addUrl} disabled={addingUrl || !newUrl.trim()}>
             {#if addingUrl}<IconLoader size={16} class="dl-spin" />{:else}<IconDownload size={16} />{/if}
             <span>{$t('downloader.download_button')}</span>
           </Button>
         </div>
+        {#if downloadRoot}
+          <p data-testid="downloader-destination" class="mt-2 mb-0 text-xs text-[var(--hv-shell-text-2)]">
+            {$t('downloader.destination_root', { path: downloadRoot })}
+          </p>
+        {/if}
       </div>
     {/if}
-
-    <FolderPicker open={showFolderPicker} value={downloadDir} onselect={(path) => { downloadDir = path; showFolderPicker = false; }} onclose={() => { showFolderPicker = false; }} />
 
     <div data-testid="downloader-split" bind:this={splitEl} class="flex flex-1 min-h-0">
       {#if !(narrow && selectedTask)}
@@ -337,15 +398,18 @@
                 {#each activeTasks as task (task.gid)}
                   <div
                     data-testid="downloader-card"
-                    class:active={selectedTask?.gid === task.gid}
-                    aria-current={selectedTask?.gid === task.gid ? 'true' : undefined}
-                    onclick={() => { selectedTaskGid = task.gid; }}
-                    role="button"
-                    tabindex="0"
-                    onkeydown={(e) => activateOnEnterOrSpace(e, () => (selectedTaskGid = task.gid))}
-                    class={cn('px-3 py-2.5 rounded-xl bg-[var(--hv-shell-card)] border cursor-pointer transition-colors hover:border-[var(--hv-primary)]/40', selectedTask?.gid === task.gid ? 'border-[var(--hv-primary)]' : 'border-[var(--hv-shell-border)]')}
+                    class={cn('px-3 py-2.5 rounded-xl bg-[var(--hv-shell-card)] border transition-colors hover:border-[var(--hv-primary)]/40', selectedTask?.gid === task.gid ? 'border-[var(--hv-primary)]' : 'border-[var(--hv-shell-border)]')}
                   >
-                    <div class="flex items-center justify-between gap-3">
+                    <!-- The card is a container, not a button: the selectable
+                         part is a real <button> so it never wraps the action
+                         buttons (WCAG 4.1.2 — no nested interactive controls). -->
+                    <button
+                      type="button"
+                      data-testid="downloader-card-select"
+                      aria-current={selectedTask?.gid === task.gid ? 'true' : undefined}
+                      class="flex w-full items-center justify-between gap-3 bg-transparent border-0 p-0 text-left cursor-pointer rounded-lg"
+                      onclick={() => { selectedTaskGid = task.gid; }}
+                    >
                       <div class="flex items-center gap-2.5 min-w-0">
                         <IconFile size={16} class="text-[var(--hv-shell-text-2)] flex-none" />
                         <div class="min-w-0">
@@ -354,16 +418,16 @@
                         </div>
                       </div>
                       <span class="text-c-xs font-bold text-[var(--hv-shell-text-strong)] flex-none">{getProgress(task)}%</span>
-                    </div>
+                    </button>
                     <div class="mt-2 flex items-center gap-2">
                       <div class={progressTrack}><div class={cn('h-full rounded-full', task.status === 'complete' ? 'bg-[var(--hv-success)]' : 'bg-[var(--hv-primary)]')} style="width: {getProgress(task)}%"></div></div>
-                      <div class="flex gap-1 flex-none" onclick={(e) => e.stopPropagation()} role="none">
+                      <div class="flex gap-1 flex-none">
                         {#if task.status === 'paused'}
-                          <button data-testid="downloader-action" class={iconBtn} onclick={() => unpauseTask(task.gid)} title={$t('downloader.resume_title')} aria-label={$t('downloader.resume_title')}><IconPlayerPlay size={13} /></button>
+                          <button type="button" data-testid="downloader-action" class={iconBtn} onclick={() => unpauseTask(task.gid)} title={$t('downloader.resume_title')} aria-label={$t('downloader.resume_title')}><IconPlayerPlay size={13} /></button>
                         {:else if task.status === 'active' || task.status === 'waiting'}
-                          <button data-testid="downloader-action" class={iconBtn} onclick={() => pauseTask(task.gid)} title={$t('downloader.pause_title')} aria-label={$t('downloader.pause_title')}><IconPlayerPause size={13} /></button>
+                          <button type="button" data-testid="downloader-action" class={iconBtn} onclick={() => pauseTask(task.gid)} title={$t('downloader.pause_title')} aria-label={$t('downloader.pause_title')}><IconPlayerPause size={13} /></button>
                         {/if}
-                        <button data-testid="downloader-action-danger" class={iconBtnDanger} onclick={() => removeTask(task.gid)} title={$t('downloader.delete_title')} aria-label={$t('downloader.delete_title')}><IconTrash size={13} /></button>
+                        <button type="button" data-testid="downloader-action-danger" class={iconBtnDanger} onclick={() => removeTask(task.gid)} title={$t('downloader.delete_title')} aria-label={$t('downloader.delete_title')}><IconTrash size={13} /></button>
                       </div>
                     </div>
                   </div>
@@ -382,15 +446,15 @@
                 {#each completedTasks as task (task.gid)}
                   <div
                     data-testid="downloader-card"
-                    class:active={selectedTask?.gid === task.gid}
-                    aria-current={selectedTask?.gid === task.gid ? 'true' : undefined}
-                    onclick={() => { selectedTaskGid = task.gid; }}
-                    role="button"
-                    tabindex="0"
-                    onkeydown={(e) => activateOnEnterOrSpace(e, () => (selectedTaskGid = task.gid))}
-                    class={cn('px-3 py-2.5 rounded-xl bg-[var(--hv-shell-card)] border cursor-pointer transition-colors hover:border-[var(--hv-primary)]/40', selectedTask?.gid === task.gid ? 'border-[var(--hv-primary)]' : 'border-[var(--hv-shell-border)]')}
+                    class={cn('flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--hv-shell-card)] border transition-colors hover:border-[var(--hv-primary)]/40', selectedTask?.gid === task.gid ? 'border-[var(--hv-primary)]' : 'border-[var(--hv-shell-border)]')}
                   >
-                    <div class="flex items-center justify-between gap-3">
+                    <button
+                      type="button"
+                      data-testid="downloader-card-select"
+                      aria-current={selectedTask?.gid === task.gid ? 'true' : undefined}
+                      class="flex flex-1 min-w-0 items-center justify-between gap-3 bg-transparent border-0 p-0 text-left cursor-pointer rounded-lg"
+                      onclick={() => { selectedTaskGid = task.gid; }}
+                    >
                       <div class="flex items-center gap-2.5 min-w-0">
                         <IconFile size={16} class="text-[var(--hv-shell-text-2)] flex-none" />
                         <div class="min-w-0">
@@ -399,8 +463,8 @@
                         </div>
                       </div>
                       <span class={cn('px-2 py-0.5 rounded-full text-c-xs font-bold uppercase flex-none', task.status === 'complete' ? 'bg-[var(--hv-success-bg)] text-[var(--hv-success)]' : 'bg-[var(--hv-error-bg)] text-[var(--hv-error)]')}>{statusLabel(task.status)}</span>
-                      <button data-testid="downloader-action-danger" class={iconBtnDanger} onclick={() => removeTask(task.gid)} title={$t('downloader.delete_title')} aria-label={$t('downloader.delete_title')}><IconTrash size={13} /></button>
-                    </div>
+                    </button>
+                    <button type="button" data-testid="downloader-action-danger" class={iconBtnDanger} onclick={() => removeTask(task.gid)} title={$t('downloader.delete_title')} aria-label={$t('downloader.delete_title')}><IconTrash size={13} /></button>
                   </div>
                 {/each}
               </div>
@@ -449,6 +513,7 @@
         </div>
       {/if}
     </div>
+    {/if}
   {/if}
 
   {#snippet footer()}

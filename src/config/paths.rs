@@ -121,6 +121,26 @@ pub fn restic_cache_dir() -> PathBuf {
     data_dir().join("restic-cache")
 }
 
+/// Root folder every Downloader (aria2) file is confined to.
+///
+/// Under `base_dir()` rather than `/tmp` so a download survives a reboot on an
+/// appliance (ROADMAP 17.3): the old `/tmp/aria2-downloads` was wiped on every
+/// restart. `src/handlers/downloader.rs` canonicalises this directory, passes it
+/// to aria2 as `--dir`, and refuses any request path that resolves outside it
+/// (ROADMAP 17.1).
+pub fn downloader_dir() -> PathBuf {
+    base_dir().join("downloads")
+}
+
+/// aria2's RPC configuration file, holding `rpc-secret`.
+///
+/// The secret is written here (mode 0600) instead of being passed as
+/// `--rpc-secret` on the command line, because `/proc/<pid>/cmdline` is
+/// world-readable — see CLAUDE.md "Secrets never hit a command line".
+pub fn aria2_conf_path() -> PathBuf {
+    data_dir().join("aria2-rpc.conf")
+}
+
 /// Directory holding the Syncthing configuration.
 pub fn syncthing_dir() -> PathBuf {
     base_dir().join("syncthing")

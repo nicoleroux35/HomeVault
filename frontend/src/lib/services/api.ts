@@ -2506,7 +2506,9 @@ class ApiClient {
   // ==============================================
 
   async getDownloaderStatus() {
-    return this.get<{ available: boolean; running: boolean }>('/downloader/status', { cache: false });
+    // `dir` is the server's download root: every accepted download is confined
+    // under it, and the screen shows it so the destination is never a guess.
+    return this.get<{ available: boolean; running: boolean; dir?: string }>('/downloader/status', { cache: false });
   }
 
   // ==============================================
@@ -2561,6 +2563,11 @@ class ApiClient {
     return this.get('/downloader/tasks', { cache: false });
   }
 
+  /**
+   * Enqueue a download. `dir` is a sub-folder **relative to the server's
+   * download root** (the server refuses absolute paths and `..`), `out` is a
+   * bare file name — never a path.
+   */
   async addDownloaderUrl(uri: string, dir?: string, out?: string) {
     return this.post('/downloader/add', { uri, dir, out });
   }
