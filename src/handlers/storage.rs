@@ -309,32 +309,6 @@ pub async fn handle_raid_create(
     }))
 }
 
-/// Tears down a RAID array by name.
-#[axum_macros::debug_handler]
-pub async fn handle_raid_delete(
-    State(state): State<Arc<AppState>>,
-    axum::extract::Path(name): axum::extract::Path<String>,
-    headers: HeaderMap,
-) -> Response {
-    let admin_username = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(response) => return response,
-    };
-
-    match DiskService::delete_raid(&name).await {
-        Ok(_) => {
-            crate::events::log_event_warn(format!(
-                "Admin '{}' deleted RAID array '{}'",
-                admin_username, name
-            ));
-            ResponseHelper::json_success(
-                serde_json::json!({ "message": "RAID array deleted successfully" }),
-            )
-        }
-        Err(e) => ResponseHelper::json_error(format!("Failed to delete RAID: {}", e)),
-    }
-}
-
 /// Returns block devices available for RAID creation (unpartitioned, unused).
 #[axum_macros::debug_handler]
 pub async fn handle_raid_available_devices(
@@ -493,6 +467,28 @@ fn vd_name(raw: &str) -> String {
         .to_string()
 }
 
+/// The `/dev` path an mdadm virtual-disk name maps to before it is
+/// canonicalised (`/dev/md/storage` is a udev symlink to `/dev/md127`).
+fn md_device_candidate(name: &str) -> String {
+    if name.starts_with("/dev/") {
+        name.to_string()
+    } else {
+        format!("/dev/md/{}", name)
+    }
+}
+
+/// `sudo mdadm --action check <device>` — the consistency check `mdadm`
+/// offers (`--action check` is the documented equivalent of writing `check`
+/// to `/sys/block/mdX/md/sync_action`, without needing a shell).
+///
+/// A `Command` rather than an argv vector so the caller cannot accidentally
+/// reintroduce a shell: the grant covers `mdadm` only.
+fn mdadm_check_command(md_device: &std::path::Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new("sudo");
+    cmd.arg("mdadm").args(["--action", "check"]).arg(md_device);
+    cmd
+}
+
 /// Lists every virtual disk on the host — mdadm arrays, ZFS pools and Btrfs
 /// filesystems together, in one shape (`crate::pools::PoolInfo`).
 #[axum_macros::debug_handler]
@@ -579,7 +575,7 @@ pub async fn handle_virtual_disk_delete(
 }
 
 /// Starts a data-consistency check on a virtual disk (ZFS/Btrfs `scrub`,
-/// mdadm `check` via `sync_action`).
+/// mdadm `check` via `mdadm --action check`).
 #[axum_macros::debug_handler]
 pub async fn handle_virtual_disk_scrub(
     State(state): State<Arc<AppState>>,
@@ -603,20 +599,19 @@ pub async fn handle_virtual_disk_scrub(
                 crate::pools::PoolService::start_scrub(&n, kind).map_err(|e| e.to_string())
             }
             crate::pools::PoolType::Mdadm => {
-                // Resolve the array device → mdX, then ask the kernel to check.
-                let dev = if n.starts_with("/dev/") {
-                    n.clone()
-                } else {
-                    format!("/dev/md/{}", n)
-                };
+                // Resolve the array device → mdX, then ask mdadm to check it.
+                //
+                // `mdadm --action check`, not the historical
+                // `sudo bash -c "echo check > /sys/block/<md>/md/sync_action"`:
+                // `bash` is not in the sudoers grant (nor should it be), so
+                // "Scrub" on an mdadm virtual disk always failed with a sudo
+                // prompt, while `mdadm` is granted for the RAID page and is
+                // the same call `DiskService::rebuild_raid` already makes on a
+                // healthy array — one implementation, one grant.
+                let dev = md_device_candidate(&n);
                 let md = std::fs::canonicalize(&dev)
-                    .ok()
-                    .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
-                    .ok_or_else(|| format!("Could not resolve md device for '{}'", n))?;
-                let out = std::process::Command::new("sudo")
-                    .arg("bash")
-                    .arg("-c")
-                    .arg(format!("echo check > /sys/block/{}/md/sync_action", md))
+                    .map_err(|_| format!("Could not resolve md device for '{}'", n))?;
+                let out = mdadm_check_command(&md)
                     .output()
                     .map_err(|e| e.to_string())?;
                 if !out.status.success() {
@@ -890,5 +885,50 @@ mod tests {
         assert!(!scrub_in_progress("No scrub in progress"));
         assert!(!scrub_in_progress("Not available"));
         assert!(!scrub_in_progress("Unsupported"));
+    }
+
+    // -- mdadm consistency check (ROADMAP 7.2) -------------------------------
+    //
+    // "Scrub" on an mdadm virtual disk used to run
+    // `sudo bash -c "echo check > /sys/block/<md>/md/sync_action"`; `bash` is
+    // not in the sudoers grant (nor should it be), so it always failed with a
+    // password prompt. It now goes through the already-granted `mdadm`.
+
+    #[test]
+    fn test_md_device_candidate_keeps_a_dev_path() {
+        assert_eq!(md_device_candidate("/dev/md127"), "/dev/md127");
+        assert_eq!(md_device_candidate("/dev/md/storage"), "/dev/md/storage");
+    }
+
+    #[test]
+    fn test_md_device_candidate_expands_a_bare_name() {
+        assert_eq!(md_device_candidate("storage"), "/dev/md/storage");
+        assert_eq!(md_device_candidate("md127"), "/dev/md/md127");
+    }
+
+    #[test]
+    fn test_mdadm_check_command_runs_mdadm_and_never_a_shell() {
+        let cmd = mdadm_check_command(std::path::Path::new("/dev/md127"));
+        assert_eq!(cmd.get_program(), "sudo");
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec!["mdadm", "--action", "check", "/dev/md127"]);
+        // A shell would need a `-c` and a `bash`/`sh` grant: neither exists.
+        assert!(!args.iter().any(|a| a == "-c" || a == "bash" || a == "sh"));
+    }
+
+    #[test]
+    fn test_mdadm_check_command_targets_the_canonical_device() {
+        // The handler canonicalises the udev symlink first, because `mdadm`
+        // is invoked on the kernel node the kernel reports.
+        let cmd = mdadm_check_command(std::path::Path::new("/dev/md/storage"));
+        assert_eq!(
+            cmd.get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["mdadm", "--action", "check", "/dev/md/storage"]
+        );
     }
 }

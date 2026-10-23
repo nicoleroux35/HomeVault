@@ -271,7 +271,17 @@ home-folder root and the first admin's real Linux account at setup. Consequences
 - The `sudo` wrappers on the individual commands (`mdadm`, `zfs`/`zpool`,
   `cryptsetup`, `useradd`/`groupadd`, `setquota`, `ufw`, `journalctl`, `mount`,
   `setfacl`, …) **stay** — they succeed against the distro-default
-  `root ALL=(ALL:ALL) ALL` and keep a future non-root mode possible.
+  `root ALL=(ALL:ALL) ALL` and keep a future non-root mode possible. That
+  mode's own policy (`configure_sudoers`) is scoped per subcommand, per flag
+  shape and per path since 2026-10-23 (ROADMAP 7.1 and 7.4), so it would never
+  grant more than the code actually runs: the Storage/LUKS block is rendered
+  from `StorageBins`, and the VPN, interface-control, firewall, `mdadm` and
+  read-only diagnostics lines from `HostBins` (same file). Both tables are
+  covered by unit tests, so a grant cannot quietly become a bare binary again.
+  Two residuals are documented rather than fixed, because sudoers cannot
+  express them: `chpasswd` (it reads stdin) and `kill -TERM <pid>` (the pid
+  cannot be constrained; the signal is pinned and the pid is validated
+  numeric by the caller).
 - On a dev box the binary is typically run directly as an unprivileged user
   (e.g. `nicolas`), so `sudo`-needing features WARN at startup and degrade
   gracefully; that is expected in development.

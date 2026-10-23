@@ -74,6 +74,17 @@ Design decisions worth keeping:
   `cat /etc/netplan/99-homevault-*.yaml` shapes are scoped in the sudoers
   file (`src/setup.rs::configure_sudoers`) for the legacy non-root service
   mode; the root systemd service routes through sudo transparently.
+- **The interface-control grants are scoped too (ROADMAP 7.4).** `ip` is
+  granted per object — `addr *`, `-4 addr *`, `-4 route *`, `-6 addr *`,
+  `-6 route *`, `link *` — so the network feature can rewrite addresses and
+  routes but cannot reach `ip netns`/`ip tunnel`/`ip rule`. `dhclient` is
+  granted (`-r <if>` release + `<if>` renew): `ip_sudo("dhclient")` was used
+  for DHCP renew/release but the binary had **no grant at all**, so a DHCP
+  interface could never be renewed as the service account. `wpa_cli` gets one
+  entry per subcommand the module runs (`list_networks`, `status`, `scan`,
+  `scan_results`, `add_network`, `set_network`, `enable_network`,
+  `select_network`, `save_config`, `remove_network`) rather than `-i * *`,
+  which would also delegate `terminate`.
 - `netplan.io` is an optional dependency (`src/dependencies.rs`,
   `installer/install.sh`): Ubuntu always ships it, Debian hosts without it
   fall through to ifupdown or stay temporary-only.

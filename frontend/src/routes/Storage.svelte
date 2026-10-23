@@ -524,7 +524,10 @@
   }
 
   async function destroyVirtualDisk(v: VirtualDisk) {
-    if (!(await dlg.ask(translate('storage.vd_destroy_confirm', { name: v.name })))) return;
+    // Irreversible: every file on the disk is lost and the member superblocks
+    // are erased, so the confirmation names the disk and requires its name to
+    // be typed before the button enables (ROADMAP 7.3).
+    if (!(await dlg.ask(translate('storage.vd_destroy_confirm', { name: v.name }), { requireText: v.name }))) return;
     virtualBusy = v.name;
     const r = await api.deleteVirtualDisk(v.name);
     virtualBusy = '';

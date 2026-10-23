@@ -207,13 +207,12 @@ but reported as not enforced (with a `reason_code`), never as applied. See
 | GET | `/storage/raid/devices` | auth | `handle_raid_available_devices` — candidate physical disks for the RAID creation wizard. **Every** non-system disk is listed; `inUse` is facts-based (partitions, filesystem, mount point, md/ZFS/Btrfs superblock, system disk), in-use rows carry a human `reason`, and every row reports SMART overall health (`smart_status`: `Healthy` / `Failed` / `Unknown`) |
 | POST | `/storage/raid` | admin | `handle_raid_create` — creates one virtual disk **as a tracked background job**: `{message, job_id}` immediately, milestones + completion/failure on the progress SSE of `job_id`. Body: `{ name, level (raid0|raid1|raid5|raid6|raid10), devices, filesystem (ext4|xfs|btrfs|zfs), spares? (mdadm hot spares), allow_missing? (degraded create, mdadm redundant levels only) }`. Gates answer 400 synchronously: pure request-shape validation, **server-side device gate** (every device must exist, not host the system disk, and be entirely free) and name-collision pre-check |
 | GET | `/storage/virtual-disks` | auth | `handle_virtual_disks_list` — **all** virtual disks (mdadm + ZFS + Btrfs) |
-| DELETE | `/storage/virtual-disks/{name}` | admin | `handle_virtual_disk_delete` — dispatches mdadm vs ZFS/Btrfs |
-| POST | `/storage/virtual-disks/{name}/scrub` | admin | `handle_virtual_disk_scrub` |
+| DELETE | `/storage/virtual-disks/{name}` | admin | `handle_virtual_disk_delete` — dispatches mdadm vs ZFS/Btrfs. mdadm: unmount failures abort the destroy before `mdadm --stop`/`--zero-superblock` |
+| POST | `/storage/virtual-disks/{name}/scrub` | admin | `handle_virtual_disk_scrub` — ZFS/Btrfs scrub, mdadm `sudo mdadm --action check` |
 | GET | `/storage/virtual-disks/{name}/scrub` | auth | `handle_virtual_disk_scrub_status` — current scrub state + `in_progress` |
 | GET | `/storage/importable-pools` | auth | `handle_importable_pools_list` — foreign ZFS/Btrfs pools on attached disks |
 | POST | `/storage/import-pool` | admin | `handle_import_pool` — `{ name, pool_type, new_name? }`, ZFS `zpool import` / Btrfs mount |
 | GET | `/storage/raid` | auth | `handle_raid_arrays_list` — legacy; Storage's Virtual-disks tab is preferred |
-| DELETE | `/storage/raid/{name}` | admin | `handle_raid_delete` — legacy |
 | POST | `/storage/raid/{name}/rebuild` | admin | `handle_raid_rebuild` — reused by Storage's Rebuild button; the optional `replacement_device` passes the same free-device gate as creation |
 | POST | `/storage/virtual-disks/{name}/grow` | admin | `handle_virtual_disk_grow` — mdadm only: `{ device }` (a free whole disk) → `mdadm --add` + `--grow --raid-devices N+1`; the reshape runs in the background (raid0/raid10 and non-mdadm technologies refused) |
 | GET | `/storage/available-home-disks` | auth | `handle_available_home_disks` (valid session, not admin) |
