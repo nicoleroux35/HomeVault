@@ -81,7 +81,7 @@ Two structural facts explain most of the list:
 | 10b | File Explorer — residual hardening | P2 | 3 |
 | 16.4 | Cloud Sync (rclone) — no scheduler | P2 | 1 |
 | 18 | Syncthing | P1 | 1 |
-| 21 | Notifications | P1 | 3 |
+| 21 | Notifications | P1 | 2 |
 | 22 | DB backup | P1 | 2 |
 | 24 | Server control | P1 | 2 |
 | 25 | Autostart | P1 | 2 |
@@ -92,9 +92,9 @@ Two structural facts explain most of the list:
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | 32 | Virtual Machines — residual | P2 | 2 |
 | 33 | Transfer quotas — residual | P2 | 1 |
-| — | Cross-cutting (7 systemic) | — | 7 |
+| — | Cross-cutting (8 systemic) | — | 8 |
 
-Total open findings: **34** (27 per-area + 7 cross-cutting).
+Total open findings: **34** (26 per-area + 8 cross-cutting).
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
@@ -130,8 +130,9 @@ mount is owned by this process and unmounted at shutdown, the credential file is
 written `0600` and edited as parsed sections, and the screen no longer swallows a
 failure. Only the missing *scheduler* is left, as P2 **16.4**. **13 (Settings)
 closed on 2026-10-23** too (see Done), so **21 (Notifications)** is the next
-P1: the email/webhook transport is now off the request loop, but the read
-state is still shared and the throttle/dedup state still resets on restart.
+P1 — with 21.1 already gone (the transport left the request loop with item 13):
+the read state is still shared and the throttle/dedup state still resets on
+restart.
 
 ---
 
@@ -195,15 +196,13 @@ Syncthing has no bulk call). The HTTP client has a real 10 s timeout
 
 ---
 
-### 21. Notifications — blocking email in the loop, no per-user state
+### 21. Notifications — no per-user read state, no pagination
 
-- [ ] **21.1 — Blocking email send and an untimed webhook inside the async
-      engine.** `src/notification_engine.rs:345` calls
-      `EmailService::send_system_alert`, which shells out with
-      `std::process::Command` + `wait_with_timeout` (`src/email.rs:181-253`), on
-      the runtime with no `spawn_blocking`; `:362-365` builds a fresh
-      `reqwest::Client::new()` per dispatch with no timeout. A slow MTA or a
-      black-holed webhook stalls the notification loop.
+21.1 (a blocking `EmailService::send_system_alert` on the runtime, and a fresh
+untimed `reqwest::Client` per webhook) was closed with item 13 on 2026-10-23 —
+see Done: the send runs in `spawn_blocking` and every dispatch reuses
+`webhook_client()` (10 s total, 5 s connect).
+
 - [ ] **21.2 — There is no per-user read state, although the code says there is.**
       `src/storage/notification_repo.rs:10,19` claim it, but `read_at` is a
       single global column (`sqlx/migrations/015_notifications.sql:13`) and
@@ -223,10 +222,11 @@ Syncthing has no bulk call). The HTTP client has a real 10 s timeout
       (`stores/notifications.ts:163`) — a failure looks like a success until the
       next poll.
 
-*Tests:* `notification_engine.rs` **0**, `handlers/notifications.rs` **0**,
-integration 18, no dedicated E2E.
+*Tests:* `notification_engine.rs` **2** (2026-10-23 — the shared client carries
+a deadline, an unvalidated URL is never dispatched), `handlers/notifications.rs`
+**0**, integration 18, no dedicated E2E.
 *Docs:* `docs/guides/notifications.md` (`:125` already documents the
-in-memory dedup reset as accepted debt — keep, but fix 21.1–21.3).
+in-memory dedup reset as accepted debt — keep, but fix 21.2–21.3).
 
 ---
 
@@ -439,10 +439,10 @@ reuse.
       Chat (`chat.rs:989,1021,1040`), Cache (`handlers/cache.rs:97,165,252,457`),
       Encryption (`handlers/encryption.rs:210,345`), Autostart
       (`handlers/settings.rs:566,595`), Apps Center (`docker_catalog.rs:490,562`),
-      Notifications (`notification_engine.rs:345`),
-      Antivirus/Power (`handlers/antivirus.rs:50`, `handlers/power.rs:49`),
-      Explorer (`explorer.rs:665,2628,2659`), rclone (`rclone.rs:253,932`),
+      Explorer (`explorer.rs:665,2628,2659`),
       DB backup (`db_backup.rs:178,222,229,236,241,270`).
+      *(Notifications, Antivirus, Power and rclone were on this list and are
+      closed — items 13 and 16, 2026-10-23.)*
       **Reference implementations already in the tree:** `src/mdns.rs:449`,
       `src/handlers/journal.rs:171`, `src/transfer_quota.rs:136`,
       `src/handlers/docker.rs`, `src/handlers/mcp.rs:588`,
@@ -452,8 +452,9 @@ reuse.
       from a handler's async body. A CI grep (or a clippy lint) would keep it
       that way.
 - [ ] **X.2 — No timeout on subprocesses.** Absent from `disk.rs`, `pools.rs`,
-      `encryption.rs`, `cache.rs`, `snapshots.rs`, `rclone.rs`,
-      `health.rs`, `network.rs`, `vpn.rs`, `shares.rs`, `explorer.rs`. Present
+      `encryption.rs`, `cache.rs`, `snapshots.rs`, `health.rs`, `network.rs`,
+      `vpn.rs`, `shares.rs`, `explorer.rs` (*rclone left this list with item 16,
+      2026-10-23*). Present
       in Docker, Firewall, Restic, Syncthing, disk quotas (2026-10-22), System
       Journal (2026-10-23, `JOURNAL_READ_TIMEOUT`), and — since 2026-10-23 —
       **everything the Dashboard/Widgets surface shells out to**, through the
@@ -477,15 +478,17 @@ reuse.
       `notifyError()` helper already exists (`Settings.svelte` uses
       `notifySettings`) — use it.
 - [ ] **X.4 — Documented invariants the code does not enforce.** DB-backup
-      serialisation (`backup-restic.md:43`), the scheduled-task overlap guard
-      (`scheduled-tasks.md`), "RAID never destroys" (`raid.md:3` vs
-      `web/mod.rs:952`), the update check being opt-in (`settings.md:33`), the
-      single-flight cache mover (`cache.md`), per-user notification read state
-      (`notification_repo.rs:10`), "one row per (pool, prefix)"
-      (`046_snapshot_schedules.sql:5`, no unique index). Each is part of the
+      serialisation (`backup-restic.md:43`, item 22.1) and per-user notification
+      read state (`notification_repo.rs:10`, item 21.2). Each is part of the
       corresponding item above; this line exists so the pattern is not lost.
-      *(Metrics gaps — `metrics.md:32` — was on this list and is now enforced,
-      see 11 in Done.)*
+      *(Now enforced, so removed from this list: the scheduled-task overlap
+      guard — Done 2026-10-22 (g); "RAID never destroys" — the legacy
+      `DELETE /api/storage/raid/{name}` route is gone, Done 2026-10-23 (c); the
+      update check being opt-in — Done 2026-10-22 (d); the single-flight cache
+      mover — `MOVER_RUNNING`/`MoverRunGuard` in `cache.rs` guards
+      `run_mover`, the only entry point; "one row per (pool, prefix)" — migration
+      `053_snapshot_schedule_unique_prefix.sql`, Done 2026-10-22 (f); metrics
+      gaps — see 11 in Done.)*
 - [ ] **X.5 — `TESTING.md` counts drift where the specs grew.** The Dashboard row
       stated "37 runtime tests, recounted on 2026-09-14 via
       `grep -cE '^\s*test\('`". *Re-counted 2026-10-23 with both figures: 48
@@ -603,6 +606,9 @@ and refuses a newer schema.
 `spawn_blocking`-backed `*_async` helpers) and carries a `run_timed` deadline;
 `antivirus_scheduler`'s due decision became the pure, tested
 `is_due(cron, last_scan_at)`.
+**21.1 closed as a side effect:** the notification engine's email send is now
+`spawn_blocking` and its webhook reuses the timed `webhook_client()`, so the
+item was removed from section 21 rather than re-opened.
 Tests: `handlers/settings.rs` 17 → **25**, `settings_persistence.rs` 7 → **13**,
 `ups.rs` 7 → **14**, `antivirus.rs` 8 → **11**, `snmp.rs` 5 → **9**,
 `email.rs` 0 → **9**, `notification_engine.rs` 0 → **2**,
