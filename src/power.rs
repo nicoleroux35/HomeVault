@@ -155,7 +155,7 @@ pub fn host_power_action(action: PowerAction) -> Result<(), String> {
     // Bounded (ROADMAP X.2): a `systemctl reboot` that is waiting on a stuck
     // unit must still answer, not hold the request open.
     let output = run_timed(
-        std::process::Command::new("sudo").args(["systemctl", action.systemctl_verb()]),
+        &mut host_power_command(action),
         Duration::from_secs(30),
     )
     .map_err(|e| e.to_string())?;
@@ -168,6 +168,26 @@ pub fn host_power_action(action: PowerAction) -> Result<(), String> {
             String::from_utf8_lossy(&output.stderr).trim()
         ))
     }
+}
+
+/// The one argv every host power action uses, `sudo` included.
+///
+/// `/api/power/*` and `/api/server/*` both end up here on purpose: two
+/// divergent privilege paths for the same button meant one endpoint worked and
+/// the other was refused on a host where the service user may not run bare
+/// `shutdown` (ROADMAP 24.2). The sudoers grant in `setup.rs` names
+/// `systemctl` verbs, so nothing here may call `shutdown` directly.
+pub fn host_power_argv(action: PowerAction) -> [&'static str; 3] {
+    ["sudo", "systemctl", action.systemctl_verb()]
+}
+
+/// The `Command` built from [`host_power_argv`]. Split out so the argv contract
+/// is unit-testable without touching the host.
+pub fn host_power_command(action: PowerAction) -> std::process::Command {
+    let [program, subcommand, verb] = host_power_argv(action);
+    let mut cmd = std::process::Command::new(program);
+    cmd.arg(subcommand).arg(verb);
+    cmd
 }
 
 /// Per-disk spindown configuration: APM level (1–255, 1 = most aggressive
@@ -284,6 +304,29 @@ mod tests {
         assert!(PowerAction::parse("format").is_none());
         assert_eq!(PowerAction::Shutdown.systemctl_verb(), "poweroff");
         assert_eq!(PowerAction::Suspend.systemctl_verb(), "suspend");
+    }
+
+    /// ROADMAP 24.2: there is exactly **one** privilege path. `sudo systemctl
+    /// <verb>` — never a bare `shutdown -r now`, which a service user without a
+    /// sudoers grant cannot run.
+    #[test]
+    fn every_power_action_goes_through_sudo_systemctl() {
+        for (action, verb) in [
+            (PowerAction::Reboot, "reboot"),
+            (PowerAction::Shutdown, "poweroff"),
+            (PowerAction::Suspend, "suspend"),
+        ] {
+            let argv = host_power_argv(action);
+            assert_eq!(argv, ["sudo", "systemctl", verb]);
+
+            let cmd = host_power_command(action);
+            assert_eq!(cmd.get_program(), "sudo");
+            let args: Vec<_> = cmd
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(args, ["systemctl", verb]);
+        }
     }
 
     #[test]

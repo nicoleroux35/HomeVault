@@ -102,9 +102,29 @@
 
   async function restart() {
     restarting = true;
-    await api.restartServer();
-    // The server goes away; the page will reconnect on its own.
-    setTimeout(() => (restarting = false), 8000);
+    error = '';
+    try {
+      const res = await api.restartServer();
+      // `api.post` reports a transport failure through `error` and a host
+      // refusal through `message`; only the second one means the reload was
+      // refused. ROADMAP 24.1: showing nothing would look like a swap.
+      if (!res.success && !res.error) {
+        error = res.message || $t('settings.tls_restart_failed');
+        return;
+      }
+      // The server goes away; the page will reconnect on its own.
+      setTimeout(() => (restarting = false), 8000);
+    } catch (err) {
+      // A thrown request is a dead connection, not a refusal: the process is
+      // already going away, which is exactly what the button asked for.
+      if (err instanceof Error && !/fetch|network/i.test(err.message)) {
+        error = err.message;
+      } else {
+        setTimeout(() => (restarting = false), 8000);
+      }
+    } finally {
+      if (error) restarting = false;
+    }
   }
 
   const expiryLabel = $derived(
@@ -141,7 +161,7 @@
     <p class={settingsHint}>{$t('common.loading')}</p>
   {:else}
     {#if error}
-      <div class="tls-alert tls-alert-error">{error}</div>
+      <div class="tls-alert tls-alert-error" role="alert">{error}</div>
     {/if}
     {#if tls.saveResult?.requires_restart}
       <div class="tls-alert tls-alert-warning">

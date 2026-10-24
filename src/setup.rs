@@ -1124,6 +1124,15 @@ homevault ALL=(root) NOPASSWD: {timedatectl} set-timezone *
 # which could otherwise enable/disable/start/stop any unit on the host.
 homevault ALL=(root) NOPASSWD: {systemctl} enable homevault, {systemctl} disable homevault
 
+# Host power actions (`src/power.rs::host_power_action`, ROADMAP 24.2) -
+# reached from `/api/power/reboot|shutdown|suspend`, `/api/server/*` and the
+# MCP `system.reboot` tool. Exactly the three verbs `systemctl_verb()` maps
+# to: the bare `shutdown` binary is deliberately **not** granted, so there is
+# one privilege path for the same button and one place the grant can be
+# audited. The call is bounded (30 s, `run_timed`) in the process itself; a
+# sudoers timeout is neither needed nor available here.
+homevault ALL=(root) NOPASSWD: {power_grants}
+
 # Settings page "UPS" card (`src/ups.rs`, ROADMAP 13.2) - writing the device
 # sections of `/etc/nut/ups.conf` and reloading the two units that read them.
 # See the comment above where `ups_conf` is resolved for why the file and the
@@ -1168,6 +1177,7 @@ homevault ALL=(root) NOPASSWD: {systemctl} enable homevault, {systemctl} disable
             hostnamectl = hostnamectl,
             timedatectl = timedatectl,
             nut_grants = nut_sudoers,
+            power_grants = power_grants(&systemctl),
         );
 
         match std::fs::write("/etc/sudoers.d/homevault", sudoers_content) {
@@ -1497,6 +1507,22 @@ fn nut_grants(systemctl: &str, tee: &str, ups_conf: &str) -> Vec<String> {
         grants.push(grant(systemctl, &format!("restart {unit}")));
     }
     grants
+}
+
+/// The sudoers entry for host power actions (ROADMAP 24.2).
+///
+/// Exactly the verbs [`crate::power::PowerAction::systemctl_verb`] returns,
+/// built from the same enum so the grant and the executed command cannot
+/// drift. The bare `shutdown` binary is deliberately absent: the old
+/// `/api/server/*` handlers ran `shutdown -r now` without `sudo`, which a
+/// service user has no right to do — one verb set, one privilege path.
+fn power_grants(systemctl: &str) -> String {
+    use crate::power::PowerAction;
+    [PowerAction::Reboot, PowerAction::Shutdown, PowerAction::Suspend]
+        .iter()
+        .map(|action| grant(systemctl, action.systemctl_verb()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]
@@ -2239,6 +2265,39 @@ mod tests {
             "the grant must name the subcommand, not the binary alone"
         );
         assert!(!grant.ends_with("/usr/bin/timedatectl"));
+    }
+
+    /// ROADMAP 24.2 — the power grant names exactly the verbs the shared
+    /// primitive runs, and never the bare `shutdown` binary the old
+    /// `/api/server/*` handlers used. The verbs come from `PowerAction`, so a
+    /// new action cannot be added without showing up here.
+    #[test]
+    fn test_power_grant_names_the_systemctl_verbs_only() {
+        use crate::power::PowerAction;
+
+        let grants = power_grants("/usr/bin/systemctl");
+        assert_eq!(
+            grants,
+            "/usr/bin/systemctl reboot, /usr/bin/systemctl poweroff, /usr/bin/systemctl suspend"
+        );
+
+        for action in [
+            PowerAction::Reboot,
+            PowerAction::Shutdown,
+            PowerAction::Suspend,
+        ] {
+            let argv = crate::power::host_power_argv(action);
+            assert!(
+                grants.contains(&format!("/usr/bin/systemctl {}", action.systemctl_verb())),
+                "the grant must cover `systemctl {}` ({argv:?})",
+                action.systemctl_verb()
+            );
+        }
+
+        assert!(
+            !grants.split(", ").any(|g| g.ends_with("/shutdown") || g.contains(" shutdown")),
+            "the bare `shutdown` binary must not be granted: {grants}"
+        );
     }
 
     /// ROADMAP 13.2: saving a UPS section writes `/etc/nut/ups.conf` through

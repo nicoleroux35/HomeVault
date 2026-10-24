@@ -28,6 +28,9 @@
 //!   - GET  /api/power/spindown
 //!   - PUT  /api/power/spindown
 //!   - POST /api/power/spindown/apply
+//!   - POST /api/server/restart, /api/server/shutdown (ROADMAP 24.2: same
+//!     admin gate and the same `power::host_power_action` primitive as
+//!     `/api/power/{action}`, so the two families cannot diverge again)
 
 use axum::{routing::get, Router};
 use http::{Method, Request, StatusCode};
@@ -115,6 +118,15 @@ fn power_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/power/spindown/apply",
             axum::routing::post(handle_power_spindown_apply),
+        )
+        // ROADMAP 24.2: the server-control family shares the power primitive.
+        .route(
+            "/api/server/restart",
+            axum::routing::post(homevault::handlers::system::handle_server_restart),
+        )
+        .route(
+            "/api/server/shutdown",
+            axum::routing::post(homevault::handlers::system::handle_server_shutdown),
         )
         .with_state(state)
 }
@@ -261,6 +273,136 @@ async fn all_endpoints_are_admin_only() {
     assert!(body["data"]["available_governors"].is_array());
     assert!(body["data"]["governor_supported"].is_boolean());
     assert!(body["data"]["spindown_supported"].is_boolean());
+}
+
+/// ROADMAP 24.2 — `/api/server/*` and `/api/power/*` must answer the same
+/// authorization contract. They used to run different commands through
+/// different privilege paths (bare `shutdown` vs `sudo systemctl`), so one
+/// worked and the other was refused on a normal install.
+///
+/// Only the refusal paths are exercised: an admin call on any of these four
+/// routes really takes the host down, which is why no test below sends one.
+#[tokio::test]
+async fn server_control_and_power_share_one_admin_gate() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    create_test_user(&state, "user", "UserPass123!", USER_ROLE_ID).await;
+    let mut router = power_router(state);
+    let _admin = login(&mut router, "admin", "AdminPass123!").await;
+    let user = login(&mut router, "user", "UserPass123!").await;
+
+    for uri in [
+        "/api/server/restart",
+        "/api/server/shutdown",
+        "/api/power/reboot",
+        "/api/power/shutdown",
+    ] {
+        // Anonymous: the two families do not answer the same status yet —
+        // `/api/server/*` checks the token inline (401) while `/api/power/*`
+        // goes through `require_admin`, which answers 400 for a missing header
+        // (tracked tree-wide as ROADMAP X.8). What matters here is that both
+        // refuse, and that neither lets the request through.
+        let (status, body) = send(&mut router, Method::POST, uri, None, None).await;
+        assert!(
+            status == StatusCode::UNAUTHORIZED || status == StatusCode::BAD_REQUEST,
+            "{uri} must reject an anonymous caller, got {status}: {body}"
+        );
+
+        let (status, body) = send(&mut router, Method::POST, uri, Some(&user), None).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{uri} must be admin-only: {body}"
+        );
+    }
+}
+
+/// Both families must reject a bogus session the same way, and neither may
+/// fall through to the host command on a failed lookup. (An invalid token is
+/// `401` in both: `/api/server/*` checks it inline, `require_admin` answers
+/// `401` for an unknown session too — only the *missing* header differs, see
+/// ROADMAP X.8.)
+#[tokio::test]
+async fn an_invalid_session_is_rejected_on_every_power_route() {
+    let (state, _tmp, _guard) = setup_state().await;
+    let mut router = power_router(state);
+
+    for uri in [
+        "/api/server/restart",
+        "/api/server/shutdown",
+        "/api/power/reboot",
+        "/api/power/shutdown",
+        "/api/power/suspend",
+    ] {
+        let (status, body) = send(&mut router, Method::POST, uri, Some("not-a-session"), None).await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{uri} must reject an unknown session before any host call: {body}"
+        );
+        assert_eq!(body["success"], false, "{uri}: {body}");
+    }
+}
+
+/// The server-control routes are POST-only (a `GET` must not be a way in, and
+/// it documents them as actions rather than resources).
+#[tokio::test]
+async fn server_control_routes_only_answer_post() {
+    let (state, _tmp, _guard) = setup_state().await;
+    let mut router = power_router(state);
+
+    for uri in ["/api/server/restart", "/api/server/shutdown"] {
+        let (status, _) = send(&mut router, Method::GET, uri, None, None).await;
+        assert_eq!(
+            status,
+            StatusCode::METHOD_NOT_ALLOWED,
+            "{uri} must only accept POST"
+        );
+    }
+}
+
+/// ROADMAP 24.1 — the refusal must reach the client body, not only the log.
+///
+/// This asserts the handler's response mapper directly instead of POSTing as
+/// an admin: an admin request on any of these routes really takes the test
+/// host down, and a `PATH` shim would be process-global (the suite runs in
+/// parallel). The mapper is the exact seam `handle_server_*` uses, so the
+/// wire contract is still the thing under test.
+#[test]
+fn a_refused_host_command_reaches_the_response_body() {
+    use homevault::handlers::system::power_outcome;
+    use homevault::power::PowerAction;
+
+    let reason = "systemctl reboot failed: Interactive authentication required";
+    let (status, body) = power_outcome(
+        PowerAction::Reboot,
+        "restart",
+        &Err(reason.to_string()),
+    );
+
+    // A refusal is a failure the screen renders as a `role="alert"`, carrying
+    // the host's own words — the desktop shows `message` verbatim.
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["success"], false);
+    assert!(
+        body["message"].as_str().unwrap_or_default().contains(reason),
+        "the refusal reason must reach the body: {body}"
+    );
+    assert!(body.get("data").is_none());
+}
+
+/// …and an accepted command answers the status the desktop announces before
+/// the socket drops (`restarting` / `shutting_down`).
+#[test]
+fn an_accepted_host_command_answers_its_status() {
+    use homevault::handlers::system::power_outcome;
+    use homevault::power::PowerAction;
+
+    let (status, body) = power_outcome(PowerAction::Shutdown, "shutdown", &Ok(()));
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["status"], "shutting_down");
+    assert_eq!(body["data"]["message"], "Server shutdown initiated");
 }
 
 #[tokio::test]

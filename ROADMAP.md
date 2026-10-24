@@ -83,7 +83,6 @@ Two structural facts explain most of the list:
 |---|---|---|---|
 | 10b | File Explorer — residual hardening | P2 | 3 |
 | 16.4 | Cloud Sync (rclone) — no scheduler | P2 | 1 |
-| 24 | Server control | P1 | 2 |
 | 25 | Autostart | P1 | 2 |
 | 26 | Wallpapers / Themes | P1 | 2 |
 | 27 | Web shortcuts | P1 | 2 |
@@ -94,7 +93,7 @@ Two structural facts explain most of the list:
 | 33 | Transfer quotas — residual | P2 | 1 |
 | — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **28** (21 per-area + 7 cross-cutting).
+Total open findings: **26** (19 per-area + 7 cross-cutting).
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
@@ -136,9 +135,11 @@ on 2026-10-24** — see Done: the snapshot lock is process-wide, a failed attemp
 keeps its reason for the card, and retention no longer eats the pre-migration
 restore point. **18 (Syncthing) closed on 2026-10-24**: 18.1 was the last
 finding, and it was the one a user hit first — a share or a peer could not be
-onboarded from HomeVault at all. The next P1 is therefore **24 (Server
-control)**, where a rejected `shutdown`/`reboot` is indistinguishable from a
-slow one.
+onboarded from HomeVault at all. **24 (Server control) closed on 2026-10-24**:
+a refused `restart`/`shutdown` now says why, a successful one says it is going
+down, and every power button (desktop, Settings, MCP) runs one bounded
+`sudo systemctl` primitive. The next P1 is **25 (Autostart)**, where a blocking
+`systemctl` runs on the async runtime and its error is thrown away.
 
 ---
 
@@ -180,24 +181,11 @@ covered by unit/integration tests, never by a live FUSE mount.
 
 ### 24. Server control — the user cannot tell success from refusal
 
-- [ ] **24.1 — Empty success and error branches in the power flow.**
-      `frontend/src/routes/Desktop.svelte:1224-1234`:
-      `if (response.success) { } else { }` for **both** restart and shutdown.
-      On failure the modal closes and nothing happens; a rejected command is
-      indistinguishable from a slow one. `docs/guides/server-control.md:25-26`
-      already specifies the intended behaviour ("redirect to login or show a
-      'server unavailable' state") — the code does not implement it.
-- [ ] **24.2 — Two divergent privilege paths for the same button.**
-      `src/handlers/system.rs:68,128` run `shutdown -r now` / `shutdown -h now`
-      via `tokio::process::Command` with **no `sudo`**, while
-      `src/power.rs:151-165` runs `sudo systemctl reboot`. On a box where the
-      service user cannot call `shutdown`, one endpoint fails and the other
-      works. `/api/server/restart` and `/api/power/reboot` are duplicates; the UI
-      uses one, so the other is an untested second path.
-
-*Tests:* `handlers/system.rs` **0** unit, `power_integration.rs` 4,
-`settings/power.spec.ts` 4. *Docs:* `docs/guides/server-control.md`,
-`docs/guides/power.md`.
+Closed on 2026-10-24 — see Done. Both findings were fixed in one pass and the
+contract now lives in [guides/server-control.md](docs/guides/server-control.md)
+(UI feedback) and [guides/power.md](docs/guides/power.md) (one primitive, one
+sudoers grant). Tests: `handlers/system.rs` 0 → 4 unit, `power_integration.rs`
+4 → 9, new `tests/e2e/desktop/power.spec.ts`.
 
 ---
 
@@ -471,6 +459,31 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-24 (b)** — Server control — a refused `restart`/`shutdown` is now
+visible, and every power button runs the same privileged command (items 24.1
+and 24.2). The desktop power menu's two branches were `if (response.success) {
+} else { }`: the modal closed before the call, so a command refused for lack of
+a sudoers grant was indistinguishable from a slow restart, and a successful one
+said nothing. The desktop now disables confirm/cancel for the duration (no
+double submit) and renders a dismissible band: `role="status"` on acceptance
+(“Restarting… the connection will drop”), `role="alert"` with the server's own
+reason on refusal, the power menu staying usable. A connection that drops
+before the answer is reported as “may still have been accepted”, never as a
+refusal. The Settings → HTTPS card surfaces a refused restart (`role="alert"`)
+because the new certificate is not live until the process restarts. Under
+that, the two privilege paths were unsound: `/api/server/*` ran a bare
+`shutdown -r now` with no `sudo` and no deadline while `/api/power/*` ran
+`sudo systemctl reboot`; now both — and the MCP `system.reboot` tool, a third
+copy — call `power::host_power_action` inside `spawn_blocking`, so the argv
+(`sudo systemctl reboot|poweroff|suspend`), the 30 s `run_timed` deadline and
+the refusal shape are one. The sudoers template grants exactly those three
+verbs (`src/setup.rs::power_grants`, built from `PowerAction`) and no longer
+the `shutdown` binary. Tests: `handlers/system.rs` 0 → **4**, `power.rs` 5 →
+**6**, `setup.rs` +1, `power_integration.rs` 4 → **9**, new
+`tests/e2e/desktop/power.spec.ts` (**5 `test(` / 10 runtime**, mocked routes —
+never a real reboot). Docs: [guides/server-control.md](docs/guides/server-control.md),
+[guides/power.md](docs/guides/power.md), [API.md](docs/API.md). Written, not run.
 
 **2026-10-24** — Syncthing — a folder and a device can be added and removed from
 HomeVault (item 18.1, the last finding of the area). Until now the screen was a

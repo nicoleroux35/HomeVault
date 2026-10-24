@@ -45,7 +45,7 @@ which exposes the internal RAG base to agents.
 | `files.list_directory` | `files` scope (`all` minus the system denylist, or explicit absolute prefixes; symlinks canonicalized and re-checked) |
 | `vms.list`, `vms.start/stop/restart` | `vms` scope (`all` or VM names, via `IncusService`) |
 | `knowledge.search` | `rag` — embeds the query and searches the RAG chunks (top 5) |
-| `system.reboot` | `manage_system` — same delayed `shutdown -r now` shape as the power menu |
+| `system.reboot` | `manage_system` — the same `power::host_power_action` primitive as the power menu and `/api/power/*` (`sudo systemctl reboot`, 30 s deadline); a refusal is returned to the caller |
 
 File content is never embedded in tool results beyond a directory listing.
 Every mutation is event-logged with the calling token id

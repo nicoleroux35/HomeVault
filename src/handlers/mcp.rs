@@ -757,16 +757,22 @@ async fn call_tool(
         }
         "system.reboot" => {
             crate::events::log_event(format!("{} initiated a system reboot", actor));
-            let actor_clone = actor.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                tracing::info!("Executing system reboot (requested by {})", actor_clone);
-                let _ = tokio::process::Command::new("shutdown")
-                    .args(["-r", "now"])
-                    .output()
-                    .await;
+            // ROADMAP 24.2: this tool used to spawn its own bare `shutdown -r
+            // now` (no sudo, no deadline) while both HTTP families ran
+            // `sudo systemctl reboot`. One primitive, one privilege path, one
+            // bounded call — and a refusal is returned to the caller instead
+            // of being swallowed by a fire-and-forget task.
+            let outcome = tokio::task::spawn_blocking(|| {
+                crate::power::host_power_action(crate::power::PowerAction::Reboot)
+            })
+            .await
+            .unwrap_or_else(|join_err| {
+                Err(format!("the host task could not run: {join_err}"))
             });
-            Ok("Server restart initiated".to_string())
+            match outcome {
+                Ok(()) => Ok("Server restart initiated".to_string()),
+                Err(reason) => Err(format!("Server restart refused: {reason}")),
+            }
         }
         _ => Err(format!("Unknown tool '{name}'")),
     }
