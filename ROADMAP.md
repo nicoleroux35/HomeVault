@@ -88,11 +88,12 @@ Two structural facts explain most of the list:
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | 32 | Virtual Machines — residual | P2 | 2 |
 | 33 | Transfer quotas — residual | P2 | 1 |
-| — | Cross-cutting (7 systemic) | — | 7 |
+| — | Cross-cutting (6 systemic) | — | 6 |
 
-Total open findings: **20** (13 per-area + 7 cross-cutting). Item 27 (2
+Total open findings: **19** (13 per-area + 6 cross-cutting). Item 27 (2
 findings) left the open list on 2026-10-24 — see Done — and with it the last
-P1.
+P1; **X.1 closed the same day** (Explorer was its last module — see Done
+2026-10-24 (f)), which also bounded every subprocess of that module.
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
@@ -150,15 +151,17 @@ and the client resolves through a validating resolver, so the connection is
 pinned to an address that was just checked. **No P1 is left.**
 
 **Suggested order from here.** Every remaining finding is P2 or
-cross-cutting, so the order is the one the Process section gives: X.1/X.2
-first, because they turn a defect into an outage. The only module still
-reaching the runtime with blocking work is `handlers/explorer.rs` (see X.1 —
-`cache.rs`, `encryption.rs`, `chat.rs`, `docker_catalog.rs` and Health left the
-list without the entry being updated), so X.1 + X.2 on Explorer unblocks
-10.5/10.6/10.7 with no extra risk. Then 28/29 (small, self-contained), then
-32/33 (residuals of closed items), then 16.4 (the only remaining *feature*:
-a scheduler for persisted sync jobs) and 31 (pure maintainability, do it last,
-one tab at a time).
+cross-cutting, so the order is the one the Process section gives: X.2 first,
+because a missing deadline turns a defect into an outage — and it is now the
+only systemic item left that can wedge a request. Explorer left that list on
+2026-10-24 (X.1 closed, and its subprocesses bounded with it), so the next
+module group is `disk.rs` / `pools.rs` / `snapshots.rs` (the storage paths a
+home user actually waits on), then `encryption.rs` / `cache.rs`, then
+`network.rs` / `vpn.rs` / `shares.rs` / `health.rs`. After that: 28/29 (small,
+self-contained), 10b (10.5/10.6/10.7 — the residual hardening), 32/33
+(residuals of closed items), 16.4 (the only remaining *feature*: a scheduler
+for persisted sync jobs) and 31 (pure maintainability, do it last, one tab at a
+time).
 
 ---
 
@@ -326,27 +329,14 @@ covered by unit/integration tests, never by a live FUSE mount.
 
 ## Cross-cutting — fix once, unblocks many
 
-- [ ] **X.1 — Blocking work on the async runtime.** `std::process::Command`,
-      `std::fs` and `docker compose` are called straight from `async fn` in:
-      Health (`web/mod.rs:322`), Dashboard (`dashboard.rs:1686,1798,1844,1994,2147,2159,2195`),
-      Chat (`chat.rs:989,1021,1040`), Cache (`handlers/cache.rs:97,165,252,457`),
-      Encryption (`handlers/encryption.rs:210,345`), Apps Center
-      (`docker_catalog.rs:490,562`), Explorer (`explorer.rs:665,2628,2659`).
-      *(Re-checked on 2026-10-24: this list is stale except for Explorer. Health's
-      `web/mod.rs` holds no `Command::new` any more; the Dashboard calls stay
-      inside `spawn_blocking` (`build_server_details` → `run_probe_blocking`);
-      Chat's `detect_system_specs` is handed to `spawn_blocking`; Cache and
-      Encryption hold no `std::process::Command` at all; Apps Center wraps its
-      `docker compose` and its file reads in `spawn_blocking`. In
-      `handlers/explorer.rs` the calls at `:702`, `:3120`, `:3764` and `:3902`
-      are still reached from an async body.)*
-      *(Autostart left this list with item 25, 2026-10-24 — `is_enabled` /
-      `set_enabled` run in `spawn_blocking`, and the two `sudo` shell-outs they
-      sit next to in `handlers/settings.rs` — `hostnamectl set-hostname` and
-      `timedatectl set-timezone` — followed in the same change: both moved to
-      `spawn_blocking` with a 30 s `run_timed` deadline, so no
-      `std::process::Command` of that module is reachable from an async body
-      any more. That also closed X.2 for `settings.rs`.)*
+**X.1 — Blocking work on the async runtime.** Closed on 2026-10-24 — see Done
+(2026-10-24 (f)). `handlers/explorer.rs` was the last module on the list and is
+now clean, with two source guards in the file plus an integration test that
+fails if the disk scan blocks the runtime again. *(History: the module list this
+item carried had gone stale — Health, Dashboard, Chat, Cache, Encryption and
+Apps Center had already been fixed or wrapped — and Explorer was the only
+remaining entry when it was picked up. Autostart and Settings left the list with
+items 25/13.)*
       *(Notifications, Antivirus, Power and rclone were on this list and are
       closed — items 13 and 16, 2026-10-23; DB backup left it on 2026-10-24 with
       item 22 — every `std::fs` call of `db_backup.rs` now runs on
@@ -361,8 +351,11 @@ covered by unit/integration tests, never by a live FUSE mount.
       that way.
 - [ ] **X.2 — No timeout on subprocesses.** Absent from `disk.rs`, `pools.rs`,
       `encryption.rs`, `cache.rs`, `snapshots.rs`, `health.rs`, `network.rs`,
-      `vpn.rs`, `shares.rs`, `explorer.rs` (*rclone left this list with item 16,
-      2026-10-23*). Present
+      `vpn.rs`, `shares.rs` (*rclone left this list with item 16, 2026-10-23;
+      `explorer.rs` and `src/browser.rs` left it on 2026-10-24 with X.1 — their
+      `lsblk`/`df`/`tar`/`zip`/`7z`/`gunzip`/`chmod`/`umount`/`udisksctl`/
+      `zfs`/`wipefs`/`mkfs`/neighbour calls all run under `run_timed`, and
+      `ARCHIVE_TIMEOUT` (30 min, a ceiling) joined the shared module).* Present
       in Docker, Firewall, Restic, Syncthing, disk quotas (2026-10-22), System
       Journal (2026-10-23, `JOURNAL_READ_TIMEOUT`), and — since 2026-10-23 —
       **everything the Dashboard/Widgets surface shells out to**, through the
@@ -458,6 +451,57 @@ covered by unit/integration tests, never by a live FUSE mount.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-24 (f)** — File Explorer — no blocking work on the runtime and no
+unbounded subprocess (X.1 closed, X.2 for this module; the last item of the
+cross-cutting blocking pair to be reachable from a user screen). **X.1:**
+`handlers/explorer.rs` was the only module left on the list, and it held four
+kinds of it. The disk scan — `/proc/mounts`, a `stat` per mount, one `lsblk`
+pass, one `df -B1` per mount — was a straight loop inside the `async fn`; it is
+now `collect_disks()`, called through `spawn_blocking`, and answers a
+`join` failure as a named error instead of a panic. The path stats of the
+download, upload, copy, move, save, roots, thumbnail and ticket handlers
+(`exists`, `is_file`, `is_dir`, `std::fs::metadata`, `std::fs::read`,
+`std::fs::canonicalize`) became `tokio::fs` through three helpers —
+`path_exists` / `path_is_file` / `path_is_dir`. `resolve_dest` (it stats, and
+`keep_both` probes for a free name) now runs on the blocking pool at both call
+sites, as do the four `FileBrowser::fsync_parent_dir` durability calls and the
+`cleanup_created_paths` sweep of a failed tracked copy/move (that job runs on
+the async runtime). The upload-session prune releases its `parking_lot` guard
+before the unlink and unlinks with `tokio::fs`, and the `upload_complete`
+"skipped" unlink no longer blocks the worker. **X.2 (this module and
+`src/browser.rs`):** every `.output()` became `run_timed` — `lsblk`/`df`/`df -T`
+/`chmod`/`which` at `HOST_PROBE_TIMEOUT` (10 s), archive work
+(`tar`/`unzip`/`7z`/`gunzip`, listing passes included) at the new
+`ARCHIVE_TIMEOUT` (30 min, a ceiling for a first extraction of a large library),
+`sudo umount` + `udisksctl power-off` at `UMOUNT_TIMEOUT` (30 s), `sudo zfs list`
+at `ZFS_QUERY_TIMEOUT` (30 s), `wipefs`/`mkfs.ext4`/`mkfs.exfat` at
+`DISK_OPERATION_TIMEOUT` (10 min) and the neighbour sweep at `NEIGHBOUR_TIMEOUT`
+(20 s). `gunzip` keeps writing into its file: `run_timed` gained
+`run_timed_to_file`, because overriding a caller's stdout would have sent the
+decompressed data to a pipe nobody reads (the previous shape captured the whole
+archive in RAM — the reason the `.gz` branch had been rewritten in item 10 —
+and the naive `run_timed` wrapping would have silently undone it).
+`FileBrowser::compress_items` and `detect_filesystem_sync` were bounded in
+`src/browser.rs` so the Explorer's compress path cannot wedge either. Tests:
+`handlers/explorer.rs` 34 → **38** unit — `path_exists`/`path_is_file`/
+`path_is_dir` on a file, a directory and a missing path, the module deadline
+ordering, and **two source guards**: `test_no_blocking_work_is_reachable_from_an_async_body`
+(walks the file, fails on a blocking token inside an `async fn` but outside a
+`spawn_blocking` closure — the class of defect 64 integration tests could not
+see, because a wedged disk still answers `200`) and
+`test_every_subprocess_of_this_module_carries_a_deadline` (no `.output()` /
+`.spawn()` / `.status()` in production code); `src/browser.rs` 16 → **17** (the
+subprocess half of the guard); `src/utils/process.rs` 10 → **12**
+(`run_timed_keeps_a_caller_supplied_stdout`, `archive_deadline_is_a_ceiling_not_a_probe_budget`);
+`tests/explorer_integration.rs` 64 → **65** —
+`test_disk_scan_does_not_block_the_runtime` puts a shim `lsblk` (sleeping 2 s)
+first on `PATH`, starts `GET /explorer/disks`, and requires a second request to
+be served **before** it returns on the single-threaded test runtime (the old
+shape could not serve anything until the scan came back), then asserts the scan
+really reached the shim. **Written, not run** (per instruction). Docs:
+[guides/explorer.md](docs/guides/explorer.md) (*Blocking work and deadlines*,
+*Invariants*), `CHANGELOG.md`, `TESTING.md`.
 
 **2026-10-24 (e)** — Web shortcuts — the cap bounds the read, and a redirect
 chain is walked hop by hop (items 27.1 and 27.2, the last P1). **27.1:**
