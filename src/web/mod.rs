@@ -1936,7 +1936,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // the interval. Best-effort — the appliance must still boot if the backup
     // directory is unwritable.
     if database_existed {
-        let backup_service = crate::db_backup::DbBackupService::new(db.clone());
+        let backup_service = crate::db_backup::DbBackupService::load(db.clone()).await;
         backup_service.backup_if_due().await;
     }
 
@@ -1992,7 +1992,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tokio::spawn(crate::restic_scheduler::run_scheduler_loop(state.clone()));
     // Snapshots of HomeVault's own database (WAL mode: the `.db` file alone is
     // not restorable) plus the periodic WAL checkpoint that keeps `-wal` bounded.
-    tokio::spawn(crate::db_backup::DbBackupService::new(db.clone()).run_scheduler_loop());
+    let scheduler_db = db.clone();
+    tokio::spawn(async move {
+        crate::db_backup::DbBackupService::load(scheduler_db)
+            .await
+            .run_scheduler_loop()
+            .await;
+    });
     tokio::spawn(crate::cache_scheduler::run_scheduler_loop(state.clone()));
     tokio::spawn(crate::antivirus_scheduler::run_scheduler_loop(
         state.clone(),

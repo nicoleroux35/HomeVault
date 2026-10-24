@@ -3254,3 +3254,45 @@ root), and `PROPFIND` is authenticated. Per-member `share` grants from
 - `cargo test` on 2026-10-14: full suite green; `shares_integration` **20/20**;
   `cargo clippy --lib` shows only the pre-existing `pools.rs` /
   `handlers/auth.rs` warnings.
+
+**2026-10-24 — DB backup: the serialisation is process-wide, a failure is
+visible, and retention spares the restore point (ROADMAP 22).** Three
+behavioural assertions were added, each one aimed at the defect it closes —
+neither was reachable with the previous "auth + list shape" tests.
+
+- **`src/db_backup.rs` 5 → 11 unit tests.** New:
+  `test_pre_migration_name_is_recognised` (the marker, including a `_2`
+  duplicate), `test_retention_never_prunes_the_pre_migration_restore_point`
+  (a restore point older than the kept window survives, and the regular
+  snapshot above it is the one deleted),
+  `test_retention_does_not_count_the_restore_point_against_retain` (it used to
+  consume one of the `retain` slots, so `retain = 2` kept only one real
+  snapshot), `test_pre_migration_restore_points_are_bounded_separately` (six
+  restore points → the newest three, with `retain = 100`),
+  `test_unique_snapshot_name_keeps_the_sort_order` (a same-second duplicate is
+  `_2`, and still sorts newest-first), and
+  `test_a_snapshot_waits_for_the_process_wide_lock` — it holds the module
+  static and proves `snapshot_into` blocks on it, from a **different service
+  instance** than the one holding the lock (which is what every handler
+  builds). That test fails against the old per-instance `Arc<Mutex<()>>`.
+- **`tests/db_backup_integration.rs` 12 → 15.** New, all over the real Axum
+  router + a file-backed SQLite (a `VACUUM INTO` from `:memory:` writes
+  nothing, so a file is what exercises the path):
+  `test_retention_never_prunes_the_pre_migration_restore_point` (three manual
+  snapshots at `retain = 2` with a restore point planted on disk → two regular
+  files + the restore point, flagged `is_pre_migration`),
+  `test_pre_migration_restore_points_are_bounded_separately` (six planted
+  files + a settings save → the newest three survive),
+  `test_a_failed_snapshot_is_reported_and_cleared_by_the_next_success` (the
+  backup directory is replaced by a plain file → `POST /now` is `500`,
+  `GET` reports `last_error` naming the directory, removing the obstruction
+  makes the next attempt succeed **and** clears the field). `last_error` was a
+  hardcoded `None` before, so the second half of that test could not pass.
+- **`settings.spec.ts` §15 3 → 4 `test(`.** New: 15.4 — a status carrying
+  `last_error` renders a `role="alert"` line with the server's own words
+  (`page.route` on `GET /api/settings/backup/db`, so it does not need a broken
+  volume).
+- **Not covered:** no test performs a real concurrent `VACUUM INTO` against a
+  live appliance; the lock invariant is pinned by the unit test holding the
+  static, and by the router tests that go through it. Written on 2026-10-24,
+  **not run** (per instruction).

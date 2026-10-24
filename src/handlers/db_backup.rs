@@ -2,15 +2,21 @@
  * File          : db_backup.rs
  * Author        : Nicolas Le Roux
  * Created       : 17/10/2026
- * Last modified : 17/10/2026 by Nicolas Le Roux
- * Version       : 1.0.0
+ * Last modified : 24/10/2026 by Nicolas Le Roux
+ * Version       : 1.1.0
  *
  * Description:
  *   Admin endpoints for HomeVault's own database snapshots: read the current
- *   state (settings, existing snapshots, total size), take a snapshot on
- *   demand, and change the retention/interval. The database runs in WAL mode,
- *   so a snapshot is the only thing an operator can copy and restore — the
- *   `.db` file alone contains no tables.
+ *   state (settings, existing snapshots, total size, the reason the last
+ *   attempt failed), take a snapshot on demand, and change the
+ *   retention/interval. The database runs in WAL mode, so a snapshot is the
+ *   only thing an operator can copy and restore — the `.db` file alone contains
+ *   no tables.
+ *
+ *   Every handler loads a fresh service (the schedule lives in
+ *   `data/db_backup.json`) but the snapshot itself is serialised by a
+ *   process-wide lock inside `DbBackupService`, so a manual click during a
+ *   scheduled run waits instead of producing a second `VACUUM INTO`.
  *
  * Dependencies:
  *   - axum (>= 0.8), serde (>= 1.0)
@@ -46,8 +52,8 @@ pub async fn handle_db_backup_status(
         return resp;
     }
 
-    let service = DbBackupService::new(state.db.clone());
-    ResponseHelper::json_success(service.status())
+    let service = DbBackupService::load(state.db.clone()).await;
+    ResponseHelper::json_success(service.status().await)
 }
 
 /// Takes a snapshot immediately.
@@ -59,7 +65,7 @@ pub async fn handle_db_backup_now(
         return resp;
     }
 
-    let service = DbBackupService::new(state.db.clone());
+    let service = DbBackupService::load(state.db.clone()).await;
     match service.backup_now().await {
         Ok(entry) => {
             crate::events::log_event(format!(
@@ -68,7 +74,7 @@ pub async fn handle_db_backup_now(
             ));
             ResponseHelper::json_success(serde_json::json!({
                 "backup": entry,
-                "status": service.status(),
+                "status": service.status().await,
             }))
         }
         Err(e) => {
@@ -88,17 +94,17 @@ pub async fn handle_db_backup_settings_update(
         return resp;
     }
 
-    let service = DbBackupService::new(state.db.clone());
+    let service = DbBackupService::load(state.db.clone()).await;
     let next = DbBackupSettings {
         interval_hours: req.interval_hours,
         retain: req.retain,
     };
-    match service.update_settings(next) {
+    match service.update_settings(next).await {
         Ok(()) => {
             // Applying a lower retention immediately is what an operator
             // expects after saving the form.
-            service.prune(service.settings().retain);
-            ResponseHelper::json_success(service.status())
+            service.prune(service.settings().retain).await;
+            ResponseHelper::json_success(service.status().await)
         }
         Err(e) => ResponseHelper::json_error(e),
     }

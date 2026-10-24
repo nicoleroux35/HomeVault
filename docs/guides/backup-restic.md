@@ -24,7 +24,7 @@ single **self-contained** file — restoring one needs neither `-wal` nor `-shm`
 
 | Endpoint | Auth | Notes |
 |----------|------|-------|
-| `GET /settings/backup/db` | admin | settings + every snapshot on disk + total size |
+| `GET /settings/backup/db` | admin | settings + every snapshot on disk + total size + `last_error` |
 | `PUT /settings/backup/db` | admin | update the interval / retention (applies the new retention immediately) |
 | `POST /settings/backup/db/now` | admin | take a snapshot now |
 
@@ -37,12 +37,71 @@ Behaviour:
 - **Before any migration** — when pending migrations exist, a
   `homevault-…pre-migration.db` snapshot is written first, so an upgrade always
   has a point to come back to.
-- **Retention** — only the newest `retain` snapshots are kept (default 7,
-  1–100); pruning runs after every snapshot. Settings changes persist in
-  `data/db_backup.json` and survive restarts.
-- **Serialised** — a manual click while the scheduler is snapshotting waits
-  rather than producing two files; the write goes to a `.tmp` name and is
-  renamed into place, so an interrupted snapshot never looks restorable.
+- **Retention** — only the newest `retain` *regular* snapshots are kept (default
+  7, 1–100); pruning runs after every snapshot and immediately after a settings
+  change. Settings persist in `data/db_backup.json` and survive restarts.
+- **Serialised process-wide** — see below.
+- **A failed attempt leaves its reason behind** — see below.
+
+### Only one snapshot runs at a time (2026-10-24)
+
+Every HTTP request builds its own `DbBackupService` (the schedule lives in
+`data/db_backup.json`), so a per-instance lock serialises nothing: a manual click
+landing while the scheduler was snapshotting used to produce **two concurrent
+`VACUUM INTO`s**, which is exactly what this guide promised could not happen
+(ROADMAP 22.1). The lock is now a module static in `src/db_backup.rs`
+(`RUNNING`), shared by every handler, the scheduler loop, the startup snapshot
+and the pre-migration primitive. A unit test holds the lock and proves a
+snapshot waits for it.
+
+The write still goes to a `.tmp` name and is renamed into place, so an
+interrupted snapshot never looks restorable. Two snapshots can legitimately
+share a second (a click right after a scheduled run); the second one is named
+`homevault-…_2.db` rather than overwriting the first, and the `_` suffix keeps
+the reverse-name sort reading as reverse-chronological.
+
+### Retention never eats the pre-upgrade restore point (2026-10-24)
+
+`retain` bounds the **regular** snapshots only. The old `prune` kept the newest
+`retain` *files by name*, without a marker filter, so a
+forced `homevault-<ts>.pre-migration.db` — the only copy of the pre-upgrade
+state — could be deleted like any other snapshot, and it also consumed one of
+the retention slots (ROADMAP 22.2).
+
+Pruning now partitions the directory:
+
+| Kind | Bounded by |
+|---|---|
+| regular snapshots (scheduled, manual) | `retain` (1–100, default 7) |
+| `.pre-migration.db` restore points | `PRE_MIGRATION_RETAIN` = 3, newest first |
+
+A restore point is never removed by the `retain` pass, so an upgrade always has a
+point to come back to even when the operator keeps two snapshots. They are still
+bounded: an appliance that upgrades every week cannot fill the data volume with
+them. `DbBackupEntry.is_pre_migration` marks them in the API, and the Settings
+card labels them *Before upgrade*.
+
+### A failure is remembered
+
+`DbBackupStatus.last_error` used to be hardcoded `None`, so an unwritable
+directory, a full disk or a locked file looked identical to "no snapshot yet" —
+the card could never show a failed attempt (ROADMAP 22.2). The reason of the
+most recent failed attempt is now kept in a process-wide slot, served by
+`GET /settings/backup/db`, cleared by the next success and by a restart, and
+displayed on the card as a `role="alert"` line quoting the server's own message.
+It is in-process on purpose: the status is built by a throw-away service per
+request, and the card that offers the button is where the failure has to be
+visible.
+
+### Nothing blocks the async runtime (2026-10-24)
+
+Every `std::fs` call of the service (`create_dir_all`, the stale `.tmp` removal,
+the final `rename`, `metadata`, `read_dir`, `remove_file` in the retention pass,
+and the `data/db_backup.json` read/save/delete) runs on `spawn_blocking`
+(ROADMAP X.1), and `status()` / `list()` / `prune()` / `is_due()` are `async`
+because they reach the filesystem. `DbBackupService::load(db).await` is the
+constructor handlers use — `new()` keeps the shipped defaults in memory and does
+no I/O, which is what the unit tests use.
 
 ### Restoring
 

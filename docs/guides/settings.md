@@ -358,16 +358,21 @@ manual backup silently produces nothing restorable. The card surfaces:
 - the last snapshot time (or "Never"),
 - the schedule (`interval_hours`, including "manual only") and retention
   (`retain`, 1–100),
-- every snapshot on disk with its size, newest first,
+- every snapshot on disk with its size, newest first, and a *Before upgrade*
+  badge on a `.pre-migration` restore point (those are outside `retain` and the
+  pruning pass never removes them),
 - **Snapshot now** and **Save schedule** buttons.
 
 State lives in `Settings.svelte` (`dbBackup`, `dbBackupInterval`,
 `dbBackupRetain`, `dbBackupBusy`, `dbBackupError`), loaded in `onMount` through
 `loadDbBackup()`; `handleBackupNow()` and `handleSaveDbBackup()` call the two
-mutating endpoints. A failure renders in an `role="alert"` row
-(`data-testid="db-backup-error"`) instead of being swallowed. See
+mutating endpoints. A failure of *this screen's* call renders in a `role="alert"`
+row (`data-testid="db-backup-error"`) instead of being swallowed, and a failure
+of a *scheduled* attempt — which the screen never sees happen — is served in
+`last_error` and rendered by `data-testid="db-backup-last-error"` until the next
+success clears it (2026-10-24, ROADMAP 22.2). See
 [backup-restic.md](./backup-restic.md) → *HomeVault's own database* for the
-mechanics and the restore procedure.
+mechanics, the process-wide serialisation and the restore procedure.
 
 ## Widgets category — real monitors + refresh interval
 
