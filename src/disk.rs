@@ -131,7 +131,7 @@ pub static PERSIST_LOCK: once_cell::sync::Lazy<tokio::sync::Mutex<()>> =
 // Deadlines for the privileged tools of the virtual-disk path (ROADMAP 8.3).
 //
 // Every `mdadm` / `mkfs` / `mount` / `blkid` / `zpool` call used to be a bare
-// `.output().await` with no deadline. A wedged tool therefore held
+// `output()` call awaited with no deadline. A wedged tool therefore held
 // `CREATE_LOCK` for the life of the process: every later create answered
 // "already running" and only a service restart could clear it. Each value
 // below is generous for the slowest honest case (a multi-terabyte `mkfs`) and
@@ -150,6 +150,9 @@ pub const BLKID_TIMEOUT: Duration = Duration::from_secs(30);
 pub const ZPOOL_TIMEOUT: Duration = Duration::from_secs(120);
 /// `update-initramfs -u` / `dracut -f` — slow on a full boot image, still bounded.
 pub const INITRAMFS_TIMEOUT: Duration = Duration::from_secs(300);
+/// `smartctl` reads (`-A`, `-H`, `-c`, `-l selftest`, `-t`). Re-exported from the
+/// shared module so this file and `utils::process` cannot drift.
+pub const SMART_TIMEOUT: Duration = crate::utils::process::SMART_PROBE_TIMEOUT;
 /// How long a freshly created md array may stay unusable before the creation
 /// fails and tears it down. ROADMAP 8.2: this used to give up after 20 s and
 /// run `mkfs` + `mount` on the still-initialising device anyway.
@@ -253,21 +256,51 @@ async fn run_timed(
     args: &[&str],
     timeout: Duration,
 ) -> Result<std::process::Output, DiskError> {
-    let child = Command::new(program)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()?;
-    match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(e)) => Err(DiskError::Io(e)),
-        Err(_) => Err(DiskError::Timeout {
+    match bounded(Command::new(program).args(args), timeout).await {
+        // The shared helper only knows the program name; a timeout is the one
+        // error a user sees as "which command?", so the full argv goes back in.
+        Err(DiskError::Timeout { secs, .. }) => Err(DiskError::Timeout {
             command: display_command(program, args),
-            secs: timeout.as_secs(),
+            secs,
         }),
+        other => other,
     }
+}
+
+/// The same deadline, for a command built with the builder API (`.arg(…)`,
+/// `.env(…)`, a `crate::smart::tokio_command(…)`).
+///
+/// Delegates to the shared [`crate::utils::process::run_timed_async_result`],
+/// which is the reference implementation of "never wait for a host command
+/// forever" — `kill_on_drop` plus a `tokio::time::timeout`, with the failure
+/// named. Keeping one implementation is the point: this module used to carry
+/// its own copy, and every other call in it still awaited its output bare.
+async fn bounded(cmd: &mut Command, timeout: Duration) -> Result<std::process::Output, DiskError> {
+    use crate::utils::process::{run_timed_async_result, ProcessFailure};
+    let program = cmd.as_std().get_program().to_string_lossy().into_owned();
+    match run_timed_async_result(cmd, timeout).await {
+        Ok(output) => Ok(output),
+        Err(ProcessFailure::Timeout { deadline, .. }) => Err(DiskError::Timeout {
+            command: program,
+            secs: deadline.as_secs(),
+        }),
+        // "Not installed" and "refused to start" keep their own sentence: a
+        // missing `zfs`/`mdadm` is not a timeout, and the caller must not read
+        // it as one.
+        Err(ProcessFailure::Spawn { program, error }) => Err(DiskError::Io(std::io::Error::other(
+            format!("Failed to run {program}: {error}"),
+        ))),
+    }
+}
+
+/// [`bounded`] for a command handed over **by value** — `crate::smart::tokio_command`
+/// builds and returns one, while tokio's builder methods (`args`, `arg`) yield
+/// `&mut Command` and go straight to [`bounded`].
+async fn bounded_owned(
+    mut cmd: Command,
+    timeout: Duration,
+) -> Result<std::process::Output, DiskError> {
+    bounded(&mut cmd, timeout).await
 }
 
 /// [`run_timed`] behind `sudo` — every privileged call in this module is
@@ -670,16 +703,17 @@ impl DiskService {
         // `split_whitespace()` (confirmed live: MODEL/SERIAL/TRAN all came
         // out wrong for a real disk). Same fix `list_partitions` already
         // uses, via the same `parse_lsblk_pairs` helper.
-        let lsblk_output = Command::new("lsblk")
-            .args([
+        let lsblk_output = bounded(
+            Command::new("lsblk").args([
                 "-d",
                 "-n",
                 "-P",
                 "-o",
                 "NAME,SIZE,TYPE,VENDOR,MODEL,SERIAL,TRAN",
-            ])
-            .output()
-            .await?;
+            ]),
+            BLKID_TIMEOUT,
+        )
+        .await?;
 
         for line in String::from_utf8_lossy(&lsblk_output.stdout).lines() {
             let fields = Self::parse_lsblk_pairs(line);
@@ -752,10 +786,11 @@ impl DiskService {
         // home-folder disk picker as a selectable "mounted" disk. `-P`
         // always emits every requested key, even with an empty value, so a
         // missing column can no longer shift the rest.
-        let lsblk_output = Command::new("lsblk")
-            .args(["-n", "-P", "-o", "NAME,SIZE,FSTYPE,MOUNTPOINT,UUID"])
-            .output()
-            .await?;
+        let lsblk_output = bounded(
+            Command::new("lsblk").args(["-n", "-P", "-o", "NAME,SIZE,FSTYPE,MOUNTPOINT,UUID"]),
+            BLKID_TIMEOUT,
+        )
+        .await?;
 
         for line in String::from_utf8_lossy(&lsblk_output.stdout).lines() {
             let fields = Self::parse_lsblk_pairs(line);
@@ -828,11 +863,13 @@ impl DiskService {
     pub async fn list_raid_arrays() -> Result<Vec<RaidArray>, DiskError> {
         let mut arrays = Vec::new();
 
-        let mdadm_output = Command::new("sudo")
-            .arg("mdadm")
-            .args(["--detail", "--scan"])
-            .output()
-            .await?;
+        let mdadm_output = bounded(
+            Command::new("sudo")
+                .arg("mdadm")
+                .args(["--detail", "--scan"]),
+            MDADM_TIMEOUT,
+        )
+        .await?;
 
         for line in String::from_utf8_lossy(&mdadm_output.stdout).lines() {
             if line.contains("ARRAY") {
@@ -885,15 +922,16 @@ impl DiskService {
     pub async fn list_removable_disks() -> Result<Vec<RemovableDisk>, DiskError> {
         let mut removable_disks = Vec::new();
 
-        let output = Command::new("lsblk")
-            .args([
+        let output = bounded(
+            Command::new("lsblk").args([
                 "-P",
                 "-n",
                 "-o",
                 "NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL,UUID,TRAN",
-            ])
-            .output()
-            .await?;
+            ]),
+            BLKID_TIMEOUT,
+        )
+        .await?;
 
         for line in String::from_utf8_lossy(&output.stdout).lines() {
             let fields = Self::parse_lsblk_pairs(line);
@@ -947,7 +985,8 @@ impl DiskService {
     /// Returns `(status, read_errors, write_errors, bad_sectors)`.
     async fn get_smart_details(device_name: &str) -> (String, u64, u64, u64) {
         let device = format!("/dev/{}", device_name);
-        let output = crate::smart::tokio_command(&device, &["-A"]).output().await;
+        let output =
+            bounded_owned(crate::smart::tokio_command(&device, &["-A"]), SMART_TIMEOUT).await;
 
         if output.is_err() {
             return ("Unknown".to_string(), 0, 0, 0);
@@ -978,7 +1017,9 @@ impl DiskService {
         }
 
         // Get overall health status
-        if let Ok(health_output) = crate::smart::tokio_command(&device, &["-H"]).output().await {
+        if let Ok(health_output) =
+            bounded_owned(crate::smart::tokio_command(&device, &["-H"]), SMART_TIMEOUT).await
+        {
             let health_stdout = String::from_utf8_lossy(&health_output.stdout);
             if health_stdout.contains("PASSED") || health_stdout.contains("OK") {
                 status = "Healthy".to_string();
@@ -1032,9 +1073,8 @@ impl DiskService {
     /// Read the disk temperature from SMART attribute `Temperature_Celsius` or `Airflow_Temperature_Cel`.
     async fn get_disk_temperature(device_name: &str) -> Result<f64, DiskError> {
         let device = format!("/dev/{}", device_name);
-        let output = crate::smart::tokio_command(&device, &["-A"])
-            .output()
-            .await?;
+        let output =
+            bounded_owned(crate::smart::tokio_command(&device, &["-A"]), SMART_TIMEOUT).await?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
@@ -1050,11 +1090,13 @@ impl DiskService {
     /// Detect the role of a disk by checking RAID membership, ZFS, Btrfs, and mount points.
     async fn detect_disk_role(device_name: &str) -> String {
         // Check if disk is part of a RAID array
-        if let Ok(mdadm_output) = Command::new("sudo")
-            .arg("mdadm")
-            .args(["--examine", &format!("/dev/{}", device_name)])
-            .output()
-            .await
+        if let Ok(mdadm_output) = bounded(
+            Command::new("sudo")
+                .arg("mdadm")
+                .args(["--examine", &format!("/dev/{}", device_name)]),
+            MDADM_TIMEOUT,
+        )
+        .await
         {
             let stdout = String::from_utf8_lossy(&mdadm_output.stdout);
             if stdout.contains("raid") {
@@ -1066,10 +1108,11 @@ impl DiskService {
         // bare `zpool status <name>` both needs root and takes a vdev path,
         // so it always failed and a ZFS member was reported as a plain disk
         // (ROADMAP 7.4).
-        if let Ok(zpool_output) = Command::new("sudo")
-            .args(["zpool", "status", &format!("/dev/{}", device_name)])
-            .output()
-            .await
+        if let Ok(zpool_output) = bounded(
+            Command::new("sudo").args(["zpool", "status", &format!("/dev/{}", device_name)]),
+            ZPOOL_TIMEOUT,
+        )
+        .await
         {
             if zpool_output.status.success() {
                 return "ZFS Pool".to_string();
@@ -1077,15 +1120,16 @@ impl DiskService {
         }
 
         // Check if disk is part of Btrfs filesystem — same `sudo` reason.
-        if let Ok(btrfs_output) = Command::new("sudo")
-            .args([
+        if let Ok(btrfs_output) = bounded(
+            Command::new("sudo").args([
                 "btrfs",
                 "filesystem",
                 "show",
                 &format!("/dev/{}", device_name),
-            ])
-            .output()
-            .await
+            ]),
+            ZPOOL_TIMEOUT,
+        )
+        .await
         {
             if btrfs_output.status.success() {
                 return "Btrfs".to_string();
@@ -1093,10 +1137,16 @@ impl DiskService {
         }
 
         // Check mount points to determine role
-        if let Ok(lsblk_output) = Command::new("lsblk")
-            .args(["-n", "-o", "MOUNTPOINT", &format!("/dev/{}", device_name)])
-            .output()
-            .await
+        if let Ok(lsblk_output) = bounded(
+            Command::new("lsblk").args([
+                "-n",
+                "-o",
+                "MOUNTPOINT",
+                &format!("/dev/{}", device_name),
+            ]),
+            BLKID_TIMEOUT,
+        )
+        .await
         {
             let stdout = String::from_utf8_lossy(&lsblk_output.stdout);
             let mount_point = stdout.trim();
@@ -1112,10 +1162,11 @@ impl DiskService {
 
     /// Count partitions on a disk by subtracting the device line from `lsblk` output.
     async fn count_partitions(device_name: &str) -> usize {
-        if let Ok(output) = Command::new("lsblk")
-            .args(["-n", "-o", "NAME", &format!("/dev/{}", device_name)])
-            .output()
-            .await
+        if let Ok(output) = bounded(
+            Command::new("lsblk").args(["-n", "-o", "NAME", &format!("/dev/{}", device_name)]),
+            BLKID_TIMEOUT,
+        )
+        .await
         {
             let lines = String::from_utf8_lossy(&output.stdout).lines().count();
             lines.saturating_sub(1)
@@ -1126,7 +1177,7 @@ impl DiskService {
 
     /// Query `df -B1` for used and available bytes of a partition.
     async fn get_partition_usage(path: &str) -> (u64, u64) {
-        if let Ok(output) = Command::new("df").args(["-B1", path]).output().await {
+        if let Ok(output) = bounded(Command::new("df").args(["-B1", path]), BLKID_TIMEOUT).await {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let lines: Vec<&str> = stdout.lines().collect();
             if lines.len() >= 2 {
@@ -1146,11 +1197,11 @@ impl DiskService {
     async fn get_raid_detail(
         name: &str,
     ) -> Result<(u64, u64, Vec<String>, String, String), DiskError> {
-        let output = Command::new("sudo")
-            .arg("mdadm")
-            .args(["--detail", name])
-            .output()
-            .await?;
+        let output = bounded(
+            Command::new("sudo").arg("mdadm").args(["--detail", name]),
+            MDADM_TIMEOUT,
+        )
+        .await?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut size = 0u64;
@@ -1233,7 +1284,7 @@ impl DiskService {
     /// Returns the system disk device (where root / is mounted).
     /// This is used to exclude the OS disk from RAID selection.
     pub async fn get_system_disk() -> Result<String, DiskError> {
-        let output = Command::new("df").args(["-h", "/"]).output().await?;
+        let output = bounded(Command::new("df").args(["-h", "/"]), BLKID_TIMEOUT).await?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let lines: Vec<&str> = stdout.lines().collect();
@@ -2067,35 +2118,22 @@ impl DiskService {
     /// system path can block on a slow filesystem or a locked file, and this
     /// runs inside the array-creation job while `PERSIST_LOCK` is held.
     async fn write_file_as_root(path: &str, content: &str) -> Result<(), DiskError> {
-        use tokio::io::AsyncWriteExt;
-        let mut child = Command::new("sudo")
-            .args(["tee", path])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| DiskError::Parse(format!("Failed to spawn sudo tee: {}", e)))?;
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(content.as_bytes()).await.map_err(|e| {
-                DiskError::Parse(format!("Failed to write to sudo tee stdin: {}", e))
-            })?;
-        }
-        let output = match tokio::time::timeout(MOUNT_TIMEOUT, child.wait_with_output()).await {
-            Ok(Ok(output)) => output,
-            Ok(Err(e)) => {
-                return Err(DiskError::Parse(format!(
-                    "Failed to wait for sudo tee: {}",
-                    e
-                )))
+        use crate::utils::process::{run_timed_async_with_stdin, ProcessFailure};
+        let output = run_timed_async_with_stdin(
+            Command::new("sudo").args(["tee", path]),
+            MOUNT_TIMEOUT,
+            content.as_bytes(),
+        )
+        .await
+        .map_err(|failure| match failure {
+            ProcessFailure::Timeout { deadline, .. } => DiskError::Timeout {
+                command: format!("sudo tee {}", path),
+                secs: deadline.as_secs(),
+            },
+            ProcessFailure::Spawn { error, .. } => {
+                DiskError::Parse(format!("Failed to run sudo tee: {}", error))
             }
-            Err(_) => {
-                return Err(DiskError::Timeout {
-                    command: format!("sudo tee {}", path),
-                    secs: MOUNT_TIMEOUT.as_secs(),
-                })
-            }
-        };
+        })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(DiskError::Parse(format!("sudo tee failed: {}", stderr)));
@@ -2303,13 +2341,15 @@ impl DiskService {
 
         // Check if the RAID exists before trying to delete
         let raid_exists = std::path::Path::new(&device).exists()
-            || Command::new("sudo")
-                .arg("mdadm")
-                .args(["--detail", "--scan"])
-                .output()
-                .await
-                .map(|o| String::from_utf8_lossy(&o.stdout).contains(&device))
-                .unwrap_or(false);
+            || bounded(
+                Command::new("sudo")
+                    .arg("mdadm")
+                    .args(["--detail", "--scan"]),
+                MDADM_TIMEOUT,
+            )
+            .await
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains(&device))
+            .unwrap_or(false);
 
         if !raid_exists {
             return Err(DiskError::DeviceNotFound(format!(
@@ -2335,11 +2375,11 @@ impl DiskService {
         // which is unrecoverable at the next remount. A failed unmount now
         // aborts before anything is stopped or wiped.
         for mount_point in Self::raid_mount_points(&device).await {
-            let unmount = Command::new("sudo")
-                .arg("umount")
-                .arg(&mount_point)
-                .output()
-                .await?;
+            let unmount = bounded(
+                Command::new("sudo").arg("umount").arg(&mount_point),
+                MOUNT_TIMEOUT,
+            )
+            .await?;
             if !unmount.status.success() {
                 let stderr = String::from_utf8_lossy(&unmount.stderr);
                 return Err(DiskError::CommandFailed {
@@ -2353,11 +2393,11 @@ impl DiskService {
         // when something is still mounted from it (or when nothing is, which
         // is the normal case). Anything else means the array is still in use
         // and must not be stopped, let alone have its members zeroed.
-        let unmount = Command::new("sudo")
-            .arg("umount")
-            .arg(&device)
-            .output()
-            .await?;
+        let unmount = bounded(
+            Command::new("sudo").arg("umount").arg(&device),
+            MOUNT_TIMEOUT,
+        )
+        .await?;
         if !unmount.status.success() {
             let stderr = String::from_utf8_lossy(&unmount.stderr);
             if !Self::not_mounted_error(&stderr) {
@@ -2369,11 +2409,11 @@ impl DiskService {
         }
 
         // Stop the array
-        let stop_output = Command::new("sudo")
-            .arg("mdadm")
-            .args(["--stop", &device])
-            .output()
-            .await?;
+        let stop_output = bounded(
+            Command::new("sudo").arg("mdadm").args(["--stop", &device]),
+            MDADM_TIMEOUT,
+        )
+        .await?;
 
         if !stop_output.status.success() {
             let stderr = String::from_utf8_lossy(&stop_output.stderr);
@@ -2397,22 +2437,24 @@ impl DiskService {
 
         // Remove the mount point directory (now empty after unmount).
         let mount_point = format!("{}/{}", crate::config::paths::RAID_MOUNT_BASE, marker_name);
-        let _ = Command::new("sudo")
-            .arg("rmdir")
-            .arg(&mount_point)
-            .output()
-            .await;
+        let _ = bounded(
+            Command::new("sudo").arg("rmdir").arg(&mount_point),
+            MOUNT_TIMEOUT,
+        )
+        .await;
 
         // Get device list before zeroing (in case we need cleanup)
         let devices = Self::get_raid_devices_for_wipe(name).await;
 
         // Zero superblock on all devices
         for device_path in devices {
-            let _ = Command::new("sudo")
-                .arg("mdadm")
-                .args(["--zero-superblock", &device_path])
-                .output()
-                .await;
+            let _ = bounded(
+                Command::new("sudo")
+                    .arg("mdadm")
+                    .args(["--zero-superblock", &device_path]),
+                MDADM_TIMEOUT,
+            )
+            .await;
         }
 
         Ok(())
@@ -2537,15 +2579,16 @@ impl DiskService {
         // One inventory pass over the whole tree: disks AND their children
         // (partitions, LUKS, LVM…), with `PKNAME` linking each child to its
         // parent. No SMART probes here — the free/busy verdict needs none.
-        let lsblk_output = Command::new("lsblk")
-            .args([
+        let lsblk_output = bounded(
+            Command::new("lsblk").args([
                 "-n",
                 "-P",
                 "-o",
                 "NAME,TYPE,SIZE,VENDOR,MODEL,PKNAME,MOUNTPOINT,FSTYPE",
-            ])
-            .output()
-            .await?;
+            ]),
+            BLKID_TIMEOUT,
+        )
+        .await?;
 
         let mut rows: Vec<LsblkRow> = Vec::new();
         for line in String::from_utf8_lossy(&lsblk_output.stdout).lines() {
@@ -2623,25 +2666,29 @@ impl DiskService {
                 // mdadm requires root even for a read (`list_raid_arrays`'s
                 // comment), while `zpool status` and `btrfs show` reject
                 // non-members with a non-zero exit, so success means "member".
-                if let Ok(out) = Command::new("sudo")
-                    .arg("mdadm")
-                    .args(["--examine", &device_path])
-                    .output()
-                    .await
+                if let Ok(out) = bounded(
+                    Command::new("sudo")
+                        .arg("mdadm")
+                        .args(["--examine", &device_path]),
+                    MDADM_TIMEOUT,
+                )
+                .await
                 {
                     facts.md_member = String::from_utf8_lossy(&out.stdout).contains("raid");
                 }
-                if let Ok(out) = Command::new("sudo")
-                    .args(["zpool", "status", &device_path])
-                    .output()
-                    .await
+                if let Ok(out) = bounded(
+                    Command::new("sudo").args(["zpool", "status", &device_path]),
+                    ZPOOL_TIMEOUT,
+                )
+                .await
                 {
                     facts.zfs_member = out.status.success();
                 }
-                if let Ok(out) = Command::new("sudo")
-                    .args(["btrfs", "filesystem", "show", &device_path])
-                    .output()
-                    .await
+                if let Ok(out) = bounded(
+                    Command::new("sudo").args(["btrfs", "filesystem", "show", &device_path]),
+                    ZPOOL_TIMEOUT,
+                )
+                .await
                 {
                     facts.btrfs_member = out.status.success();
                 }
@@ -2676,9 +2723,11 @@ impl DiskService {
     /// the device reports nothing intelligible. Used by the wizard's disk
     /// step so a failing disk surfaces before it enters a new array.
     async fn get_smart_status(device_name: &str) -> String {
-        match crate::smart::tokio_command(&format!("/dev/{}", device_name), &["-H"])
-            .output()
-            .await
+        match bounded_owned(
+            crate::smart::tokio_command(&format!("/dev/{}", device_name), &["-H"]),
+            SMART_TIMEOUT,
+        )
+        .await
         {
             Ok(o) => {
                 let stdout = String::from_utf8_lossy(&o.stdout);
@@ -2761,10 +2810,17 @@ impl DiskService {
         // One tree-level pass: the device's own row first, then every
         // descendant (partitions, LUKS, LVM…). Children automatically
         // disqualify — a pool member must be a bare leaf block device.
-        if let Ok(output) = Command::new("lsblk")
-            .args(["-n", "-P", "-o", "NAME,TYPE,MOUNTPOINT,FSTYPE", device_path])
-            .output()
-            .await
+        if let Ok(output) = bounded(
+            Command::new("lsblk").args([
+                "-n",
+                "-P",
+                "-o",
+                "NAME,TYPE,MOUNTPOINT,FSTYPE",
+                device_path,
+            ]),
+            BLKID_TIMEOUT,
+        )
+        .await
         {
             let mut first_row = true;
             for line in String::from_utf8_lossy(&output.stdout).lines() {
@@ -2794,25 +2850,29 @@ impl DiskService {
         // requires root even for a read (`list_raid_arrays`'s comment),
         // while `zpool status` and `btrfs show` reject non-members with a
         // non-zero exit, so success means "member".
-        if let Ok(out) = Command::new("sudo")
-            .arg("mdadm")
-            .args(["--examine", device_path])
-            .output()
-            .await
+        if let Ok(out) = bounded(
+            Command::new("sudo")
+                .arg("mdadm")
+                .args(["--examine", device_path]),
+            MDADM_TIMEOUT,
+        )
+        .await
         {
             facts.md_member = String::from_utf8_lossy(&out.stdout).contains("raid");
         }
-        if let Ok(out) = Command::new("sudo")
-            .args(["zpool", "status", device_path])
-            .output()
-            .await
+        if let Ok(out) = bounded(
+            Command::new("sudo").args(["zpool", "status", device_path]),
+            ZPOOL_TIMEOUT,
+        )
+        .await
         {
             facts.zfs_member = out.status.success();
         }
-        if let Ok(out) = Command::new("sudo")
-            .args(["btrfs", "filesystem", "show", device_path])
-            .output()
-            .await
+        if let Ok(out) = bounded(
+            Command::new("sudo").args(["btrfs", "filesystem", "show", device_path]),
+            ZPOOL_TIMEOUT,
+        )
+        .await
         {
             facts.btrfs_member = out.status.success();
         }
@@ -2889,11 +2949,13 @@ impl DiskService {
         }
 
         // Get array state to determine whether it's actually missing a device.
-        let state_output = Command::new("sudo")
-            .arg("mdadm")
-            .args(["--detail", &device])
-            .output()
-            .await?;
+        let state_output = bounded(
+            Command::new("sudo")
+                .arg("mdadm")
+                .args(["--detail", &device]),
+            MDADM_TIMEOUT,
+        )
+        .await?;
 
         let state = String::from_utf8_lossy(&state_output.stdout);
         let is_degraded = state.contains("degraded") || state.contains("recovery");
@@ -2919,11 +2981,16 @@ impl DiskService {
                 return Err(e);
             }
 
-            let output = Command::new("sudo")
-                .arg("mdadm")
-                .args(["--manage", &device, "--add", &replacement_path])
-                .output()
-                .await?;
+            let output = bounded(
+                Command::new("sudo").arg("mdadm").args([
+                    "--manage",
+                    &device,
+                    "--add",
+                    &replacement_path,
+                ]),
+                MDADM_TIMEOUT,
+            )
+            .await?;
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2943,11 +3010,13 @@ impl DiskService {
         }
 
         // Healthy array: run an integrity scrub.
-        let output = Command::new("sudo")
-            .arg("mdadm")
-            .args(["--action", "check", &device])
-            .output()
-            .await?;
+        let output = bounded(
+            Command::new("sudo")
+                .arg("mdadm")
+                .args(["--action", "check", &device]),
+            MDADM_TIMEOUT,
+        )
+        .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2984,11 +3053,13 @@ impl DiskService {
         }
 
         // Current level + member count, from `mdadm --detail`.
-        let detail = Command::new("sudo")
-            .arg("mdadm")
-            .args(["--detail", &device])
-            .output()
-            .await?;
+        let detail = bounded(
+            Command::new("sudo")
+                .arg("mdadm")
+                .args(["--detail", &device]),
+            MDADM_TIMEOUT,
+        )
+        .await?;
         let detail_text = String::from_utf8_lossy(&detail.stdout).to_string();
         let mut raid_devices: Option<usize> = None;
         let mut level: Option<String> = None;
@@ -3033,11 +3104,13 @@ impl DiskService {
         // degraded array --add starts recovery onto it immediately; --grow
         // is what raises the member count (an no-op change for raid1 sizes,
         // but it is how raid5/6 restripes).
-        let add = Command::new("sudo")
-            .arg("mdadm")
-            .args(["--manage", &device, "--add", &new_path])
-            .output()
-            .await?;
+        let add = bounded(
+            Command::new("sudo")
+                .arg("mdadm")
+                .args(["--manage", &device, "--add", &new_path]),
+            MDADM_TIMEOUT,
+        )
+        .await?;
         if !add.status.success() {
             let stderr = String::from_utf8_lossy(&add.stderr);
             return Err(DiskError::CommandFailed {
@@ -3047,11 +3120,13 @@ impl DiskService {
         }
 
         let count = (raid_devices + 1).to_string();
-        let grow = Command::new("sudo")
-            .arg("mdadm")
-            .args(["--grow", &device, "--raid-devices", &count])
-            .output()
-            .await?;
+        let grow = bounded(
+            Command::new("sudo")
+                .arg("mdadm")
+                .args(["--grow", &device, "--raid-devices", &count]),
+            MDADM_TIMEOUT,
+        )
+        .await?;
         if !grow.status.success() {
             let stderr = String::from_utf8_lossy(&grow.stderr);
             return Err(DiskError::CommandFailed {
@@ -3066,7 +3141,8 @@ impl DiskService {
     /// Check SMART capabilities for a device via `smartctl -c`.
     pub async fn get_smart_capabilities(device_name: &str) -> SmartCapabilities {
         let device = format!("/dev/{}", device_name);
-        let output = crate::smart::tokio_command(&device, &["-c"]).output().await;
+        let output =
+            bounded_owned(crate::smart::tokio_command(&device, &["-c"]), SMART_TIMEOUT).await;
 
         let stdout = match output {
             Ok(o) => {
@@ -3121,9 +3197,11 @@ impl DiskService {
         };
 
         let device = format!("/dev/{}", device_name);
-        let output = crate::smart::tokio_command(&device, &["-t", flag])
-            .output()
-            .await?;
+        let output = bounded_owned(
+            crate::smart::tokio_command(&device, &["-t", flag]),
+            SMART_TIMEOUT,
+        )
+        .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3142,9 +3220,11 @@ impl DiskService {
     /// Get the current (or last completed) SMART self-test status via `smartctl -l selftest`.
     pub async fn get_smart_test_status(device_name: &str) -> SmartTestStatus {
         let device = format!("/dev/{}", device_name);
-        let output = crate::smart::tokio_command(&device, &["-l", "selftest"])
-            .output()
-            .await;
+        let output = bounded_owned(
+            crate::smart::tokio_command(&device, &["-l", "selftest"]),
+            SMART_TIMEOUT,
+        )
+        .await;
 
         let stdout = match output {
             Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
@@ -3220,7 +3300,7 @@ impl DiskService {
     /// The device's own advertised duration, in minutes, for a self-test kind
     /// (`Short`, `Extended`, `Conveyance`), read from `smartctl -c`.
     async fn smart_test_total_minutes(device: &str, test_kind: &str) -> u32 {
-        match crate::smart::tokio_command(device, &["-c"]).output().await {
+        match bounded_owned(crate::smart::tokio_command(device, &["-c"]), SMART_TIMEOUT).await {
             Ok(o) => {
                 let stdout = String::from_utf8_lossy(&o.stdout);
                 Self::parse_smart_polling_minutes(&stdout, test_kind).unwrap_or(0)
@@ -3267,7 +3347,8 @@ impl DiskService {
     /// Resolve remaining SMART test minutes from `smartctl -c` output for a known test type.
     pub async fn get_smart_test_remaining(device_name: &str) -> u32 {
         let device = format!("/dev/{}", device_name);
-        let output = crate::smart::tokio_command(&device, &["-c"]).output().await;
+        let output =
+            bounded_owned(crate::smart::tokio_command(&device, &["-c"]), SMART_TIMEOUT).await;
 
         let stdout = match output {
             Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
@@ -3422,11 +3503,13 @@ impl DiskService {
             return true;
         }
         // Metadata names look like `hostname:label` — compare the bare label.
-        if let Ok(out) = Command::new("sudo")
-            .arg("mdadm")
-            .args(["--detail", "--scan"])
-            .output()
-            .await
+        if let Ok(out) = bounded(
+            Command::new("sudo")
+                .arg("mdadm")
+                .args(["--detail", "--scan"]),
+            MDADM_TIMEOUT,
+        )
+        .await
         {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
                 for token in line.split_whitespace() {
@@ -4553,6 +4636,41 @@ recommended polling time: \t (   5) minutes.
     }
 
     #[tokio::test]
+    async fn test_bounded_keeps_a_missing_tool_distinct_from_a_timeout() {
+        // ROADMAP X.2 — "zfs is not installed" and "zfs took too long" are two
+        // different sentences in front of an admin, and the wizard branches on
+        // them: the first offers the dependency check, the second offers a
+        // retry. They must not collapse into one.
+        let error = bounded(&mut Command::new("homevault-no-such-binary"), BLKID_TIMEOUT)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, DiskError::Io(_)),
+            "a missing tool is not a timeout: {error:?}"
+        );
+        assert!(!error.to_string().contains("did not finish within"));
+    }
+
+    #[tokio::test]
+    async fn test_bounded_reports_the_program_it_waited_for() {
+        let started = std::time::Instant::now();
+        let error = bounded(
+            Command::new("sleep").args(["30"]),
+            Duration::from_millis(120),
+        )
+        .await
+        .unwrap_err();
+        match error {
+            DiskError::Timeout { ref command, secs } => {
+                assert_eq!(command, "sleep");
+                assert_eq!(secs, 0, "120 ms rounds to 0 whole seconds");
+            }
+            other => panic!("expected Timeout, got {other:?}"),
+        }
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
     async fn test_run_timed_gives_up_on_a_command_that_never_returns() {
         let started = std::time::Instant::now();
         let error = run_timed("sleep", &["30"], Duration::from_millis(120))
@@ -4724,6 +4842,39 @@ recommended polling time: \t (   5) minutes.
         // A bare device name still gets its `/dev/` prefix.
         let bare = zfs_args("raid1", &["sda", "sdb"]);
         assert!(bare.iter().any(|a| a == "/dev/sda"), "{bare:?}");
+    }
+
+    // -- ROADMAP X.2: no subprocess of this module runs unbounded ------------
+
+    /// The defect class this guards against is invisible to a behavioural
+    /// test: a bare `.output()` still answers correctly on an idle box and
+    /// only pins the calling `spawn_blocking` thread when a pool or a disk
+    /// stops answering. So the invariant is asserted at the source.
+    ///
+    /// `concat!` keeps each pattern out of this file's own source, so the
+    /// assertion cannot count itself.
+    #[test]
+    fn test_no_subprocess_of_this_module_runs_without_a_deadline() {
+        let src = include_str!("disk.rs");
+        let production = src.split("#[cfg(test)]").next().unwrap_or(src);
+        for unbounded in [
+            concat!(".", "output()"),
+            concat!(".", "spawn()"),
+            concat!(".", "status()"),
+            concat!("wait_with_", "output()"),
+        ] {
+            assert!(
+                !production.contains(unbounded),
+                "`{unbounded}` waits without a deadline — use `run_timed` (ROADMAP X.2)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_deadlines_are_bounded_and_ordered() {
+        assert!(BLKID_TIMEOUT >= std::time::Duration::from_secs(5));
+        assert!(MKFS_TIMEOUT >= BLKID_TIMEOUT);
+        assert!(MKFS_TIMEOUT <= std::time::Duration::from_secs(60 * 60));
     }
 }
 

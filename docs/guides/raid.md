@@ -178,6 +178,23 @@ Health surfaces arrays too: the `raid_arrays` check (ids `health.raid_arrays`)
 reports degraded/failed mdadm arrays as a warning/error, and raises
 notifications through the standard health-event catalog.
 
+## Deadlines on the privileged tools (2026-10-24, ROADMAP X.2)
+
+`disk.rs` already bounded the virtual-disk *create* path (ROADMAP 8.3); the
+2026-10-24 pass bounded **everything else** in the module — the scans and
+probes the RAID screen runs on every poll: `lsblk`, `df`, `sudo mdadm --detail
+--scan`, `sudo mdadm --examine`, `sudo zpool status`, `sudo btrfs filesystem
+show` and every `smartctl` read. `run_timed`/`bounded` now delegate to
+`crate::utils::process::run_timed_async_result` (one implementation of
+"kill the child at the deadline"), so a wedged probe is a named
+`DiskError::Timeout` naming the program, never a `spawn_blocking` thread held
+for the life of the process. `sudo tee` — how `/etc/fstab` and
+`/etc/mdadm/mdadm.conf` are persisted — goes through
+`run_timed_async_with_stdin`, which keeps the deadline **and** the stdin the
+plain helper closes (a closed stdin would make `tee` truncate the file to
+nothing). The deadline table lives in
+[storage.md](./storage.md#deadlines-on-every-host-tool-2026-10-24-roadmap-x2).
+
 ## Frontend
 
 - `frontend/src/routes/Raid.svelte` — a 3-step wizard rendered inline (Type ·
