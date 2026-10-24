@@ -18,7 +18,8 @@
      ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { translationsReady } from '$lib/stores/i18n';
+  import { toast } from 'svelte-sonner';
+  import { translationsReady, translate } from '$lib/stores/i18n';
   import { wallpaperStore } from '$lib/stores/wallpaper';
   import { api } from '$lib/services/api';
   import { appGate } from '$lib/stores/appGate';
@@ -27,34 +28,46 @@
   import Desktop from './routes/Desktop.svelte';
   import SetupWizard from './routes/SetupWizard.svelte';
 
-  // Wallpaper/accent color are saved server-side (per-account, via the Settings
-  // page) but the local wallpaperStore only ever hydrates from this browser's
-  // own localStorage. Since localStorage is scoped per origin (host:port), the
-  // same account accessed from two different addresses (e.g. a LAN IP and a
-  // public IP forwarded to the same server) each keep their own independent
-  // copy and can show a different wallpaper/accent color. Fetching the
-  // server's real saved values once per boot keeps every origin in sync.
+  // Wallpaper/accent color are saved server-side, once for the whole
+  // appliance (an admin saves them from Settings → Appearance), but the local
+  // wallpaperStore only ever hydrates from this browser's own localStorage.
+  // Since localStorage is scoped per origin (host:port), the same account
+  // accessed from two different addresses (e.g. a LAN IP and a public IP
+  // forwarded to the same server) each keep their own independent copy and
+  // could show a different wallpaper/accent color. Fetching the server's
+  // real values once per boot keeps every origin in sync.
+  //
+  // ROADMAP 26.1: this used to call `getAllSettings()`, which is admin-only,
+  // so a non-admin's hydration failed and the error was swallowed — the
+  // desktop silently kept that browser's stale copy. It now calls the
+  // session-readable `GET /settings/appearance` (wallpaper + accent only),
+  // and a failure is reported once instead of disappearing.
   async function hydrateAppearanceFromServer() {
     try {
-      const response = await api.getAllSettings();
-      if (response.success && response.data) {
-        const appearance = response.data.appearance;
-        if (appearance?.accent_color) {
-          document.documentElement.style.setProperty('--hv-primary', appearance.accent_color);
-        }
-        if (appearance?.wallpaper) {
-          try {
-            // normalizeWallpaper (inside applyRaw) keeps only a bundled
-            // /wallpapers/ image and falls back to the default gradient for
-            // anything else (legacy colours, gradients, custom uploads).
-            wallpaperStore.applyRaw(JSON.parse(appearance.wallpaper));
-          } catch {
-            wallpaperStore.reset();
-          }
+      const response = await api.getAppearanceSettings();
+      if (!response.success || !response.data) {
+        throw new Error(response.message || 'appearance unavailable');
+      }
+      if (response.data.accent_color) {
+        document.documentElement.style.setProperty('--hv-primary', response.data.accent_color);
+      }
+      if (response.data.wallpaper) {
+        try {
+          // normalizeWallpaper (inside applyRaw) keeps only a bundled
+          // /wallpapers/ image and falls back to the default photo for
+          // anything else. The server already validates on save (ROADMAP
+          // 26.1), so this catch is a safety net, not the only check.
+          wallpaperStore.applyRaw(JSON.parse(response.data.wallpaper));
+        } catch {
+          wallpaperStore.reset();
         }
       }
-    } catch {
-      // Non-fatal: fall back to whatever this origin's localStorage already has.
+    } catch (error) {
+      // Non-fatal — the desktop keeps this origin's localStorage value — but
+      // no longer silent: the user is told the appliance look could not be
+      // loaded, so a stale wallpaper has an explanation.
+      console.warn('Could not load the appliance appearance:', error);
+      toast.error(translate('settings.appearance_load_failed'));
     }
   }
 

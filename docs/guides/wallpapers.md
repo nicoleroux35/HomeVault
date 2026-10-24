@@ -63,8 +63,43 @@ wallpaper_thumbnails_dir}`, the `user_wallpapers` table (migration `030`), and
   **not** read the wallpaper store — a photo wallpaper does not show on the login
   screen (out of scope for both screens).
 
+## Who reads and writes the choice (ROADMAP 26, 2026-10-24)
+
+The wallpaper is part of the appliance's single global look (see
+[Settings → Appearance](./settings.md#appearance--one-appliance-look-roadmap-26-2026-10-24)):
+
+- **Written** by an admin through the Appearance grid — the tile stages
+  `JSON.stringify($wallpaperStore)` into the draft and the rail-footer Save
+  PUTs `/api/settings/appearance`.
+- **Read** by every signed-in account: `App.svelte` calls
+  `GET /settings/appearance` once per boot and applies the value, so two
+  origins of the same account no longer disagree (they used to, because the
+  hydration called the admin-only aggregate and swallowed the failure). A
+  failed hydration shows a toast and keeps the browser's last known value.
+- **Read-only for a non-admin**: the grid still renders (they can see the
+  look) with `data-readonly="true"`, every tile `disabled`, and the line
+  "Managed by the administrator".
+
+### Validation (the server owns it now)
+
+`PUT /settings/appearance` accepts `""` (never picked), `/wallpapers/hv-NN.webp`,
+`hv-NN`, a bare JSON string, or the `WallpaperConfig` JSON
+(`{"type":"image","value":…}`; the legacy `{"type":"default"}` becomes `hv-01`)
+— and stores the **bare** `/wallpapers/hv-NN.webp` URL. Anything else
+(`hv-00`, `hv-45`, a custom upload, a data URL, a gradient, another host) is a
+`400` whose message starts `wallpaper:`. The same rule is applied on load
+(`apply_loaded_settings`), so a hand-edited `settings.json` cannot inject a
+value either. `validate_wallpaper_field` in `src/handlers/settings.rs` is the
+single implementation (unit-tested against every accepted and refused shape).
+
+The two frontend readers keep a `try/catch`, but as a **safety net**, not the
+only check: a value that is not JSON at all (a hand-edited export) still falls
+back to the default photo instead of breaking the desktop.
+
 Adding a wallpaper: drop `hv-NN.webp` + `hv-NN-thumb.webp` into
-`frontend/public/wallpapers/` and bump the count in `BUNDLED_WALLPAPERS`.
+`frontend/public/wallpapers/`, bump `BUNDLED_WALLPAPERS` in
+`frontend/src/lib/stores/wallpaper.ts` **and** `BUNDLED_WALLPAPER_COUNT` in
+`src/handlers/settings.rs` — the validator refuses any `hv-NN` past that count.
 
 ## Related
 

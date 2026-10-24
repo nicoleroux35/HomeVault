@@ -22,14 +22,15 @@ Handlers in `src/handlers/settings.rs`. Persistence via
 | Endpoint | Auth | Notes |
 |----------|------|-------|
 | `GET /settings` | auth | aggregate of all categories |
-| `GET /settings/public` | public | safe subset (server name, language, theme) |
+| `GET /settings/public` | public | safe subset (server name, language, version) |
 | `GET/PUT /settings/general` | auth / admin | server name, timezone — the timezone is validated and **applied to the host** (see below) |
 | `GET/POST /settings/language` | auth | set UI language — persisted as `general.language` and re-applied at boot before the first page renders (ROADMAP 13.4) |
 | `GET /translations` | auth | flattened translation map (mounted at `/api/translations`; see [i18n](../I18N.md)) |
 | `GET/PUT /settings/email` | auth / admin | SMTP relay; validated before it is stored and used to generate the `msmtp` configuration (ROADMAP 13.3) |
 | `POST /settings/email/test` | admin | sends a real test email via `EmailService::send_test_email` to `NOTIFICATION_SETTINGS.email` (previously a stub that only logged and always reported success) |
 | `GET/PUT /settings/notifications` | auth / admin | alert email, threshold, `webhook_url`/`webhook_enabled`; the URL is validated at save time and again at dispatch |
-| `GET/PUT /settings/appearance` | auth / admin | theme, wallpaper (one of the 44 bundled — no upload), accent, density (accent/density fields still round-trip but have no UI) |
+| `GET /settings/appearance` | **any session** | the appliance look: `wallpaper` (one of the 44 bundled — no upload) + `accent_color`. Read by every account's boot hydration (ROADMAP 26.1); carries nothing else — no e-mail, SMTP, update or notification field |
+| `PUT /settings/appearance` | admin | same two fields, validated (see below). `theme` / `density` no longer exist (ROADMAP 26.2) |
 | `GET/PUT /settings/update` | auth / admin | update-check frequency — **default `Manual`** since 2026-09-07 (G2: no automatic outbound call to GitHub) |
 | `GET /settings/version` | auth | current version + last **cached** check. Contacts the update endpoint only when the saved frequency says a scheduled check is due — opening Settings is never an outbound call by itself |
 | `POST /settings/version/check` | admin | "Check now": the only path that **forces** an outbound check, whatever the saved frequency |
@@ -407,6 +408,72 @@ use) — see **Invariants** for why the class is not called
     notifications) stay on their own fixed intervals — they are not "widget
     refresh".
 
+## Appearance — one appliance look (ROADMAP 26, 2026-10-24)
+
+**Decision (option A of ROADMAP 26).** The look — **wallpaper + accent colour** —
+is a *single, appliance-wide* value an admin saves from Settings → Appearance.
+It is **readable by any signed-in session** and **writable by an admin only**.
+Appearance is deliberately *not* per-account: "the look of the appliance" stays
+an admin decision, and the data model (one global `APPEARANCE_SETTINGS`) already
+said so.
+
+### Who reads what
+
+| Caller | Call | Result |
+|---|---|---|
+| any session (boot hydration, `App.svelte`) | `GET /settings/appearance` | `200` + `{ wallpaper, accent_color }` |
+| admin (Settings window) | `GET /settings` (aggregate) | `200` + every family, `appearance` inside |
+| non-admin (Settings window) | `GET /settings` (aggregate) | `400 "Admin access required"` — unchanged |
+| admin | `PUT /settings/appearance` | `200`, validated |
+| non-admin | `PUT /settings/appearance` | `400 "Admin access required"`, nothing mutated |
+
+Before 2026-10-24 the hydration called the admin-only aggregate, so for a
+non-admin it failed, the `catch` swallowed it, and the desktop kept that
+origin's `localStorage` copy: two origins, two wallpapers, no explanation. It
+now calls the appearance endpoint; a failure is **reported once**
+(`toast.error(settings.appearance_load_failed)`) and the desktop keeps the last
+known value, which is now an explained fallback instead of a silent one.
+
+The read endpoint carries **only** those two fields — no e-mail, SMTP, webhook,
+update or notification setting — so making it session-readable adds no leak
+(asserted in `tests/settings_core_integration.rs`,
+`test_appearance_is_readable_by_a_non_admin_session`).
+
+### Validation (`PUT /settings/appearance`)
+
+Both fields are validated **before** anything is stored, so a refusal never
+leaves the blob half-written:
+
+- `wallpaper` — `""` (never picked), `/wallpapers/hv-NN.webp`, `hv-NN`, a bare
+  JSON string, or the `WallpaperConfig` JSON the store round-trips
+  (`{"type":"image","value":…}`; the legacy `{"type":"default"}` maps to
+  `hv-01`). Everything is normalised to the **bare** `/wallpapers/hv-NN.webp`
+  URL. `hv-00`, `hv-45`, a custom upload, a data URL, a gradient, a
+  non-bundled host — all refused with `400` and a message starting
+  `wallpaper:` that names the allowed set (`validate_wallpaper_field`).
+- `accent_color` — `#rgb`, `#rrggbb` or `#rrggbbaa` only
+  (`validate_accent_color_field`). The value is written into the
+  `--hv-primary` custom property in the browser, so anything that could close
+  the declaration is refused. `#4a90d9` is still rewritten to HomeVault Blue
+  (`normalize_accent`).
+
+The same wallpaper rule runs on load (`apply_loaded_settings`): a stored value
+that does not name a bundled photo — a legacy custom upload, a hand-edited
+`settings.json` — is dropped to `""` instead of being handed to a desktop that
+would silently reset it.
+
+### `theme` and `density` are gone
+
+Both fields were persisted and round-tripped but consumed by **nothing**
+(`grep -rn "data-theme\|data-density" frontend/src` → 0 hits; no dark theme
+exists in the tree). They were removed from `AppearanceSettings`, from both
+appearance handlers, from the aggregate, from the draft store and from the
+i18n catalog — a user can no longer save a theme that changes nothing. The
+persisted blob stays backward compatible: `PersistedAppearance` still *reads*
+the two keys (so an older `data/settings.json` loads), but never writes them,
+and the reader ignores them. An old client that still sends them is accepted
+(serde ignores unknown fields) and they are not echoed back.
+
 ## Save button (no auto-save)
 
 Since 2026-09-15 the Settings window has **one Save button**, in the rail
@@ -511,7 +578,11 @@ shows a state the host refused; the rail-footer Save button parks on
 ## Invariants
 
 - `/settings/public` is the only settings endpoint callable without a session
-  (used by the login page to know server name/language/theme).
+  (used by the login page to know server name/language/version). It carries
+  **no appearance**: `GET /settings/appearance` is session-readable but still
+  requires a session (ROADMAP 26.1).
+- Appearance is one global value: any session reads it, only an admin writes
+  it, and both writers and the load path validate it (see *Appearance* above).
 - **The update check is opt-in and enforced server-side** (`CLAUDE.md` →
   Compliance, point 1). `is_check_due` (`handlers/settings.rs`) is the single
   gate: `Manual`, `Disabled` and an absent preference never contact the update

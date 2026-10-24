@@ -25,6 +25,7 @@
   import { api } from '$lib/services/api';
   import type { DbBackupStatus } from '$lib/types/api';
   import { notificationsStore } from '$lib/stores/notifications';
+  import { isAdmin } from '$lib/stores/auth';
   import { wallpaperStore, BUNDLED_WALLPAPERS } from '$lib/stores/wallpaper';
   import { monitorStore, REFRESH_INTERVAL_OPTIONS } from '$lib/stores/monitorStore';
   import { WIDGET_DEFS } from '$lib/stores/widgetCatalog';
@@ -88,7 +89,7 @@
   import SnmpCard from '$lib/components/settings/SnmpCard.svelte';
   import McpCard from '$lib/components/settings/McpCard.svelte';
   import KnowledgeBaseCard from '$lib/components/settings/KnowledgeBaseCard.svelte';
-  import { IconAlertTriangle, IconCookie, IconShield, IconCheck, IconSettings, IconWifiOff, IconRefresh, IconMapPin, IconPencil } from '@tabler/icons-svelte';
+  import { IconAlertTriangle, IconCookie, IconShield, IconCheck, IconSettings, IconWifiOff, IconRefresh, IconMapPin, IconPencil, IconLock } from '@tabler/icons-svelte';
 
   // Sidebar categories — 8 grouped entries instead of a 12-item flat list.
   // The list itself is the single source of truth in
@@ -404,10 +405,8 @@
           webhook_format: data.notifications?.webhook_format || 'generic'
         };
         draft.appearance = {
-          theme: data.appearance?.theme || 'auto',
           wallpaper: '',
-          accent_color: data.appearance?.accent_color || '#1E62AE',
-          density: data.appearance?.density || 'comfortable'
+          accent_color: data.appearance?.accent_color || '#1E62AE'
         };
 
         // Apply the persisted accent color and wallpaper live — the desktop
@@ -416,10 +415,12 @@
         if (data.appearance?.wallpaper) {
           try {
             // applyRaw keeps only a bundled /wallpapers/ image; anything else
-            // (legacy colour / gradient / custom upload) resolves to default.
+            // resolves to the default photo. The server validates the value
+            // on save and on load (ROADMAP 26.1), so this catch is a safety
+            // net rather than the only check.
             wallpaperStore.applyRaw(JSON.parse(data.appearance.wallpaper));
           } catch {
-            // Pre-existing values may not be JSON-encoded; ignore.
+            // A value that is not JSON at all (hand-edited export).
           }
         }
         // The wallpaper draft is the live store's JSON — the same value the
@@ -484,6 +485,11 @@
   // marks that group dirty — but only after the initial load has baselined it.
   let wallpaperDirtySync = false;
   $: if (wallpaperDirtySync) draft.appearance.wallpaper = JSON.stringify($wallpaperStore);
+  // ROADMAP 26.1 (option A): the appliance look is one global value an admin
+  // saves. A non-admin reads it (the boot hydration paints it) but cannot
+  // write it — the grid is shown read-only with an explanatory line instead
+  // of a control that appears to save and does not.
+  $: appearanceReadOnly = !$isAdmin;
 
   // Keep the widgets + weather drafts in step with their live stores — the
   // sync helpers no-op while the group is dirty, so a late server sync can
@@ -1070,13 +1076,22 @@
           <div class={settingsRowStacked}>
             <span class={settingsLabel} id="wallpaperLabel">{$t('settings.wallpaper')}</span>
             <p class={settingsHint}>{$t('settings.wallpaper_hint')}</p>
+            <!-- ROADMAP 26.1 (option A): the look is one global value written
+                 by an admin PUT. A non-admin gets the grid read-only plus the
+                 reason, never a control that appears to save and does not. -->
+            {#if appearanceReadOnly}
+              <p class="settings-hint text-xs leading-4 text-[var(--hv-settings-label)]" data-testid="appearance-read-only">
+                <IconLock size={14} stroke={2} class="inline-block align-[-2px] mr-1" />
+                {$t('settings.wallpaper_managed_by_admin')}
+              </p>
+            {/if}
             <!-- Container query, not a viewport breakpoint: the grid follows
                  the width the window actually gives it. 3 columns normally,
                  2 once the card is narrower than 380px. -->
             <div class="@container">
-              <div class="settings-wallpaper-grid grid grid-cols-3 @max-[380px]:grid-cols-2 gap-3 mt-1" role="radiogroup" aria-labelledby="wallpaperLabel">
+              <div class="settings-wallpaper-grid grid grid-cols-3 @max-[380px]:grid-cols-2 gap-3 mt-1" role="radiogroup" aria-labelledby="wallpaperLabel" aria-readonly={appearanceReadOnly} aria-disabled={appearanceReadOnly} data-readonly={appearanceReadOnly}>
                 {#each BUNDLED_WALLPAPERS as w, i (w.id)}
-                  <button type="button" class="settings-wallpaper-tile relative block w-full p-0 border-0 bg-transparent cursor-pointer" class:is-selected={w.url === selectedWpUrl} role="radio" aria-checked={w.url === selectedWpUrl} aria-label={`${$t('settings.wallpaper')} ${i + 1}`} onclick={() => wallpaperStore.setWallpaper({ type: 'image', value: w.url })}>
+                  <button type="button" class="settings-wallpaper-tile relative block w-full p-0 border-0 bg-transparent cursor-pointer" class:is-selected={w.url === selectedWpUrl} role="radio" aria-checked={w.url === selectedWpUrl} aria-disabled={appearanceReadOnly} disabled={appearanceReadOnly} aria-label={`${$t('settings.wallpaper')} ${i + 1}`} onclick={() => wallpaperStore.setWallpaper({ type: 'image', value: w.url })}>
                     <!-- `aspect-[8/5]` is the equaliser: the bundled thumbs are
                          not all the same shape (3:2, 4:3 and 16:9 all occur,
                          they follow the source photo), so a height derived
