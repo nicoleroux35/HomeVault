@@ -131,6 +131,11 @@ is active.
   components, control chars, and non-readable / non-file targets.
 - `validate_settings()` rejects `https_port == 0` and `https_port == PORT`.
 - `tls.json` never contains key material.
+- The card's restart button calls the same primitive as the power menu
+  (`/api/server/restart` → `sudo systemctl reboot`, ROADMAP 24). A refused
+  restart is shown on the card as a `role="alert"` with the host's reason —
+  the saved certificate is not live until the process restarts, so silence
+  there would read as a successful swap.
 
 ## Not covered / later
 

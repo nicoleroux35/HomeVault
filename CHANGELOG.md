@@ -390,6 +390,44 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Server control — a refused power command is now visible, and every power
+  button runs one privileged command (2026-10-24, ROADMAP 24.1/24.2).** The
+  desktop power menu's two branches were literally empty
+  (`if (response.success) { } else { }`): the confirmation modal closed before
+  the call, so a `systemctl` refused for lack of a sudoers grant looked exactly
+  like a slow restart — the appliance appeared stuck with no explanation — and
+  a successful one said nothing either. The desktop now keeps the request in
+  flight (confirm and cancel disabled, so no double submit), then renders a
+  dismissible band: `role="status"` (“Restarting the server… the connection
+  will drop”) on acceptance, `role="alert"` carrying the server's own words on
+  refusal (the power menu stays usable, so retry works). A connection that
+  drops before the answer is **not** reported as a refusal — the band says the
+  command may still have been accepted, because a box already going down never
+  flushes its reply. The Settings → HTTPS card no longer fires and forgets: a
+  refused restart is a `role="alert"` on the card, because the new certificate
+  is not live until the process restarts. Under that, **the two privilege
+  paths were unsound**: `/api/server/restart|shutdown` ran a bare
+  `shutdown -r now` (no `sudo`, no deadline) while `/api/power/*` ran
+  `sudo systemctl reboot` through `run_timed` — on a normal install the top-bar
+  restart always failed while Settings worked. Both families (and the MCP
+  `system.reboot` tool, which had a third copy) now call the single
+  `power::host_power_action` primitive inside `spawn_blocking`: one
+  `sudo systemctl reboot|poweroff|suspend` argv, one 30 s deadline, one
+  refusal shape. The sudoers template gains exactly those three verbs
+  (`src/setup.rs::power_grants`, built from `PowerAction`), and the bare
+  `shutdown` binary is no longer granted or listed as a dependency. The
+  `/api/server/*` handlers answer before the box goes down, so a refusal is
+  still answerable; `/api/server/*` and `/api/power/*` stay two JSON shapes
+  over the same primitive, documented as aliases in `docs/API.md`. Tests:
+  `handlers/system.rs` 0 → **4** unit, `power.rs` 5 → **6**, `setup.rs` +1,
+  `power_integration.rs` 4 → **9**, new `tests/e2e/desktop/power.spec.ts`
+  (**5 `test(` / 10 runtime**, every `POST /api/server/*` mocked — never a real
+  reboot). i18n: `desktop.power_restarting|power_shutting_down|power_failed|power_no_answer`
+  and `settings.tls_restart_failed` in the four locales. Docs:
+  `docs/guides/server-control.md`, `docs/guides/power.md`, `docs/guides/mcp.md`,
+  `docs/API.md`, `TESTING.md`, `ROADMAP.md`. **Written but not executed** (per
+  instruction): no suite was run.
+
 - **Metrics — a failed read is a gap, not a `0.0`, and a rate is divided by the
   real elapsed time (2026-10-23, ROADMAP 11).** The collector used
   `.unwrap_or(0.0)` for memory, load and CPU while `044_metrics_history.sql`

@@ -132,6 +132,12 @@
     void api.markWhatsNewSeen();
   }
   let logoutAction: 'logout' | 'restart' | 'shutdown' | null = null;
+  // Result of the last power request, rendered as a dismissible band over the
+  // desktop (ROADMAP 24.1: the two `if/else` branches used to be empty, so a
+  // refused `systemctl` was indistinguishable from a slow one and a successful
+  // restart gave no feedback at all).
+  let powerNotice: { tone: 'ok' | 'error'; text: string } | null = null;
+  let powerBusy = false;
   let systemUpdateAvailable = false;
 
   // ── Desktop chrome effects (dock + topbar) ──────────────────────────────
@@ -1222,27 +1228,63 @@
     logoutAction = 'shutdown';
   }
 
+  // What the desktop says once the host accepted the command. The session dies
+  // with the process, so this has to be on screen *before* the socket drops.
+  function powerAcceptedText(action: 'restart' | 'shutdown'): string {
+    return translate(
+      action === 'restart' ? 'desktop.power_restarting' : 'desktop.power_shutting_down'
+    );
+  }
+
   // Execute the user's chosen action after they confirm via the modal dialog
   async function confirmLogoutAction() {
     const action = logoutAction;
-    logoutAction = null;
+    // The confirm button is disabled while a request is in flight; this guard
+    // closes the remaining window (a keyboard Enter landing before the repaint).
+    if (!action || powerBusy) return;
+    powerNotice = null;
 
     if (action === 'logout') {
+      logoutAction = null;
       await handleLogout();
-    } else if (action === 'restart') {
-      const response = await api.restartServer();
+      return;
+    }
+
+    // Keep the modal open for the duration so the confirm button stays
+    // disabled and the user sees the request is in flight.
+    powerBusy = true;
+    try {
+      const response = action === 'restart'
+        ? await api.restartServer()
+        : await api.shutdownServer();
       if (response.success) {
+        powerNotice = { tone: 'ok', text: powerAcceptedText(action) };
+      } else if (response.message) {
+        // The host answered and refused (missing sudoers grant, polkit, a
+        // systemd error): show its own words and leave the power menu usable,
+        // so the user can retry instead of staring at a desktop that looks
+        // inert (ROADMAP 24.1).
+        powerNotice = { tone: 'error', text: response.message };
+      } else if (response.error) {
+        // No answer at all (`api.post` turns a transport failure into this):
+        // the connection dropped, usually because the box is already going
+        // down. Never report that as a refusal.
+        powerNotice = { tone: 'ok', text: translate('desktop.power_no_answer') };
       } else {
+        powerNotice = { tone: 'error', text: translate('desktop.power_failed') };
       }
-    } else if (action === 'shutdown') {
-      const response = await api.shutdownServer();
-      if (response.success) {
-      } else {
-      }
+    } catch {
+      // Same reasoning as `response.error`: an exception here is a dead
+      // connection, not a refused command.
+      powerNotice = { tone: 'ok', text: translate('desktop.power_no_answer') };
+    } finally {
+      powerBusy = false;
+      logoutAction = null;
     }
   }
 
   function cancelLogoutAction() {
+    if (powerBusy) return;
     logoutAction = null;
   }
 
@@ -2593,6 +2635,33 @@
         </button>
       </div>
     {/if}
+    {#if powerNotice}
+      <!-- ROADMAP 24.1 — success is announced, a refusal is an alert with the
+           host's own reason, and both stay until dismissed. -->
+      <div
+        class="hv-power-banner"
+        class:hv-power-banner--error={powerNotice.tone === 'error'}
+        role={powerNotice.tone === 'error' ? 'alert' : 'status'}
+        data-testid="power-notice"
+      >
+        {#if powerNotice.tone === 'ok'}
+          <IconCheck size={16} stroke={2} aria-hidden="true" />
+        {:else}
+          <IconAlertCircle size={16} stroke={2} aria-hidden="true" />
+        {/if}
+        <span>{powerNotice.text}</span>
+        <button
+          type="button"
+          class="hv-power-banner__dismiss"
+          aria-label={$t('common.close')}
+          onclick={() => (powerNotice = null)}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6L6 18"/>
+          </svg>
+        </button>
+      </div>
+    {/if}
     <!-- Pinned web shortcuts (per-account, metadata fetched server-side). -->
     <DesktopShortcuts />
     {#each $windowManager as window (window.id)}
@@ -2708,6 +2777,7 @@
       tabindex="-1"
       aria-modal="true"
       aria-labelledby="confirm-modal-title"
+      aria-busy={powerBusy}
       use:focusTrap={{ escape: cancelLogoutAction }}
     >
       <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -2731,7 +2801,7 @@
               {/if}
             </span>
           </div>
-          <button class="hv-power-close" onclick={cancelLogoutAction} aria-label={$t('common.close')}>
+          <button class="hv-power-close" onclick={cancelLogoutAction} aria-label={$t('common.close')} disabled={powerBusy}>
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M6 6l12 12M18 6L6 18"/>
             </svg>
@@ -2749,12 +2819,13 @@
           </p>
         </div>
         <div class="hv-power-footer">
-          <button class="hv-power-btn hv-power-btn-secondary" onclick={cancelLogoutAction}>{$t('common.cancel')}</button>
+          <button class="hv-power-btn hv-power-btn-secondary" onclick={cancelLogoutAction} disabled={powerBusy}>{$t('common.cancel')}</button>
           <button
             class="hv-power-btn"
             class:hv-power-btn-danger={logoutAction === 'shutdown'}
             class:hv-power-btn-warning={logoutAction === 'restart'}
             onclick={confirmLogoutAction}
+            disabled={powerBusy}
           >
             {#if logoutAction === 'logout'}
               {$t('desktop.logout')}
@@ -3039,6 +3110,59 @@
     color: var(--hv-warning-text);
     font-size: var(--hv-font-size-sm);
     box-shadow: var(--hv-shell-shadow-card);
+  }
+
+  /* Power request outcome (ROADMAP 24.1). Sits under the contract banner when
+     both are on screen, and is dismissible because a refusal is not fatal. */
+  .hv-power-banner {
+    position: fixed;
+    top: calc(var(--hv-space-8) + var(--hv-space-6));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 99999;
+    display: flex;
+    align-items: center;
+    gap: var(--hv-space-3);
+    max-width: min(92vw, 640px);
+    padding: var(--hv-space-2) var(--hv-space-3) var(--hv-space-2) var(--hv-space-4);
+    background: var(--hv-success-bg);
+    border: 1px solid var(--hv-success);
+    border-radius: var(--hv-radius-md);
+    color: var(--hv-success-text);
+    font-size: var(--hv-font-size-sm);
+    font-weight: var(--hv-font-weight-medium);
+    box-shadow: var(--hv-shell-shadow-card);
+  }
+
+  .hv-power-banner--error {
+    background: var(--hv-error-bg);
+    border-color: var(--hv-error);
+    color: var(--hv-error-text);
+  }
+
+  /* 44px hit area for the icon-only dismiss, per the design-system rule. */
+  .hv-power-banner__dismiss {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: var(--hv-touch-target-min);
+    height: var(--hv-touch-target-min);
+    margin: calc(-1 * var(--hv-space-1)) calc(-1 * var(--hv-space-1)) calc(-1 * var(--hv-space-1)) 0;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: var(--hv-radius-control);
+    color: inherit;
+    cursor: pointer;
+  }
+
+  .hv-power-banner__dismiss:hover {
+    background: color-mix(in oklch, currentColor 12%, transparent);
+  }
+
+  .hv-power-banner__dismiss:focus-visible {
+    outline: none;
+    box-shadow: var(--hv-focus-ring);
   }
 
   .hv-contract-reload {
