@@ -119,6 +119,48 @@ still binding:
   same `zpool create` invocation style already proven by the RAID Manager's
   ZFS pool path in `disk.rs`.
 
+## Deadlines on every host tool (2026-10-24, ROADMAP X.2)
+
+`PoolService` (`src/pools.rs`), `SnapshotService` (`src/snapshots.rs`) and the
+scan side of `DiskService` (`src/disk.rs`) shell out to `zpool`, `btrfs`,
+`mdadm`, `smartctl`, `df`, `blkid`, `mount`/`umount`, `wipefs` and `mkfs.*`.
+Every one of those calls used to be a bare `.output()` — a wedged pool command
+held the `spawn_blocking` thread behind it, and therefore the request or the
+snapshot job, for the life of the process. They all go through
+`crate::utils::process` now (the one reference implementation):
+
+| Module | Reads | Writes |
+|---|---|---|
+| `pools.rs` | `POOL_QUERY_TIMEOUT` 30 s (`zpool list/status/get`, `btrfs filesystem show/df`, `df`, `blkid`) | `POOL_WRITE_TIMEOUT` 900 s (`zpool create/destroy/import`, `mkfs.btrfs`, `mount`, `umount`, `wipefs`, `rmdir`) |
+| `snapshots.rs` | `SNAPSHOT_QUERY_TIMEOUT` 30 s (`zfs list/get`, `btrfs subvolume list`) | `SNAPSHOT_WRITE_TIMEOUT` 600 s (`zfs snapshot/destroy/rollback -R`, `btrfs subvolume snapshot/delete`, `sudo mkdir -p`) |
+| `disk.rs` | `BLKID_TIMEOUT` 30 s (`lsblk`, `df`, `blkid`), `SMART_TIMEOUT` 20 s (`smartctl`) | `MDADM_TIMEOUT` 120 s, `MKFS_TIMEOUT` 900 s, `MOUNT_TIMEOUT` 60 s, `ZPOOL_TIMEOUT` 120 s, `INITRAMFS_TIMEOUT` 300 s |
+
+The values are **ceilings, not estimates**: a multi-terabyte `mkfs` or a
+recursive `zfs rollback -R` legitimately takes minutes, so a tight probe budget
+would break the honest path. What the deadline buys is that a *wedged* tool
+becomes a visible, retryable failure instead of a silent stall — and the
+message says which: `zpool did not finish within 900 seconds`.
+
+Two shapes worth knowing:
+
+- **`sudo tee` keeps its stdin.** Persisting a mount point means writing
+  `/etc/fstab` as root, which is `sudo tee <path>` with the content on stdin.
+  `run_timed` closes stdin by design, so that path uses
+  `run_timed_with_stdin` (blocking) / `run_timed_async_with_stdin` (async) —
+  otherwise `tee` would write an **empty** file and truncate the target. The
+  input is written from its own thread, so a child that never reads it cannot
+  deadlock the caller before the deadline loop starts.
+- **"Not installed" is not "too slow".** The async helper reports a named
+  `ProcessFailure::{Spawn, Timeout}`, and `disk.rs` maps them to
+  `DiskError::Io` and `DiskError::Timeout` respectively, so the wizard can
+  offer the dependency check or a retry — not one merged "failed".
+
+`test_no_subprocess_of_this_module_runs_without_a_deadline` in each of the three
+modules fails if a bare `.output()` / `.spawn()` / `.status()` /
+`wait_with_output()` ever comes back into production code: a behavioural test
+cannot see this defect, because an unbounded call still answers correctly on an
+idle box.
+
 ## Frontend
 
 - `frontend/src/routes/Storage.svelte` — 6 tabs: Disks, Partitions,

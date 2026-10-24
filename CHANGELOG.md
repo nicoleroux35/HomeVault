@@ -390,6 +390,37 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Storage tools — every `zpool`/`btrfs`/`mdadm`/`smartctl`/`df` call is
+  bounded (2026-10-24, ROADMAP X.2).** `disk.rs` bounded its virtual-disk
+  *create* path in ROADMAP 8.3 and left every other call bare: the scans the
+  RAID/Storage screens run on each poll (`lsblk`, `df`, `mdadm --detail --scan`,
+  `mdadm --examine`, `zpool status`, `btrfs filesystem show`, `smartctl
+  -A/-H/-c/-l selftest`) and the mutations (`umount`, `--stop`,
+  `--zero-superblock`, `rmdir`, `--add`, `--grow`, `--action check`) could hold
+  the calling `spawn_blocking` thread forever. `pools.rs` (34 sites) and
+  `snapshots.rs` (9 sites) were **entirely** unbounded, because they are
+  synchronous. All three modules now go through `crate::utils::process` with
+  named ceilings: `POOL_QUERY_TIMEOUT` 30 s / `POOL_WRITE_TIMEOUT` 900 s,
+  `SNAPSHOT_QUERY_TIMEOUT` 30 s / `SNAPSHOT_WRITE_TIMEOUT` 600 s, and disk's
+  existing `BLKID`/`SMART`/`MDADM`/`MKFS`/`MOUNT`/`ZPOOL`/`INITRAMFS` values.
+  `disk.rs` also dropped its private deadline implementation in favour of the
+  shared helper, keeping "not installed" (`DiskError::Io`) distinct from "too
+  slow" (`DiskError::Timeout`). The stdin trap: persisting a mount point is
+  `sudo tee /etc/fstab`, and `run_timed` closes stdin by design — routing that
+  through it would make `tee` write an empty file and truncate the target. So
+  `utils::process` gained `run_timed_with_stdin` and
+  `run_timed_async_with_stdin`, which write the input from their own thread
+  (a child that never reads it cannot deadlock the caller before the deadline
+  loop starts); `disk.rs`'s hand-rolled spawn and `pools.rs`'s unbounded
+  `wait_with_output()` both use them. Tests: `disk.rs` 66 → **70**,
+  `pools.rs` 33 → **35**, `snapshots.rs` 4 → **6** (a source guard per module —
+  no bare `.output()`/`.spawn()`/`.status()`/`wait_with_output()` in production
+  code — plus the deadline-ordering and `bounded` failure-mapping checks),
+  `utils/process.rs` 12 → **16**, `storage_integration.rs` 28 → **29** (a shim
+  `sudo` that answers in 300 ms must be waited for, not skipped or killed
+  early). Docs: [guides/storage.md](docs/guides/storage.md),
+  [guides/raid.md](docs/guides/raid.md),
+  [guides/snapshots.md](docs/guides/snapshots.md).
 - **File Explorer — no blocking work on the async runtime, and every host
   command bounded (2026-10-24, ROADMAP X.1/X.2).** `handlers/explorer.rs` was
   the last module reaching a Tokio worker with blocking work. The disk scan

@@ -59,7 +59,21 @@ pub const ARCHIVE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// error string names the program and the deadline, which is what the caller
 /// logs — a probe that times out is a *gap*, never a fabricated value.
 pub fn run_timed(cmd: &mut Command, deadline: Duration) -> Result<Output, String> {
-    run_timed_inner(cmd, deadline, None)
+    run_timed_inner(cmd, deadline, StdinInput::Closed, true)
+}
+
+/// [`run_timed`], feeding `input` to the child's stdin.
+///
+/// `sudo tee /etc/fstab` is why this exists: the content is small, and routing
+/// it through a temp file would leave a copy of a system config on disk. It
+/// cannot go through [`run_timed`] either — that one closes stdin, and `tee`
+/// would then write an **empty** file, silently truncating the target.
+pub fn run_timed_with_stdin(
+    cmd: &mut Command,
+    deadline: Duration,
+    input: &[u8],
+) -> Result<Output, String> {
+    run_timed_inner(cmd, deadline, StdinInput::Bytes(input), true)
 }
 
 /// [`run_timed`] with the child's stdout pointed at a file instead of a pipe.
@@ -72,29 +86,56 @@ pub fn run_timed_to_file(
     deadline: Duration,
     sink: std::fs::File,
 ) -> Result<Output, String> {
-    run_timed_inner(cmd, deadline, Some(Stdio::from(sink)))
+    cmd.stdout(Stdio::from(sink));
+    // stdout is the caller's file, not a pipe to drain.
+    run_timed_inner(cmd, deadline, StdinInput::Closed, false)
+}
+
+/// How the child's stdin is fed: closed, or a byte slice written by a thread.
+enum StdinInput<'a> {
+    Closed,
+    Bytes(&'a [u8]),
 }
 
 fn run_timed_inner(
     cmd: &mut Command,
     deadline: Duration,
-    stdout: Option<Stdio>,
+    stdin: StdinInput<'_>,
+    pipe_stdout: bool,
 ) -> Result<Output, String> {
     let program = cmd.get_program().to_string_lossy().into_owned();
-    cmd.stdin(Stdio::null());
-    match stdout {
-        Some(sink) => {
-            cmd.stdout(sink);
+    match stdin {
+        StdinInput::Bytes(_) => {
+            cmd.stdin(Stdio::piped());
         }
-        None => {
-            cmd.stdout(Stdio::piped());
+        StdinInput::Closed => {
+            cmd.stdin(Stdio::null());
         }
+    }
+    // `run_timed_to_file` has already pointed stdout at its sink; leave it be.
+    if pipe_stdout {
+        cmd.stdout(Stdio::piped());
     }
     cmd.stderr(Stdio::piped());
 
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to run {}: {}", program, e))?;
+
+    // The input is written by its own thread: a child that reads nothing (or
+    // dies first) would otherwise block this one on a full pipe before the
+    // deadline loop ever starts.
+    if let StdinInput::Bytes(input) = stdin {
+        let mut pipe = child.stdin.take();
+        let owned = input.to_vec();
+        std::thread::spawn(move || {
+            use std::io::Write as _;
+            if let Some(pipe) = pipe.as_mut() {
+                let _ = pipe.write_all(&owned);
+            }
+            // Dropping the handle closes stdin, which is what `tee` waits for.
+        });
+    }
 
     let mut out_pipe = child.stdout.take();
     let mut err_pipe = child.stderr.take();
@@ -190,6 +231,47 @@ impl std::fmt::Display for ProcessFailure {
 
 impl std::error::Error for ProcessFailure {}
 
+/// [`run_timed_async_result`], feeding `input` to the child's stdin.
+///
+/// The async twin of [`run_timed_with_stdin`], for `sudo tee /etc/fstab` inside
+/// an `async fn` (the RAID/pool persistence path). Same deadline, same
+/// `kill_on_drop`: a `sudo tee` that never returns must not outlive the job
+/// that started it while holding `PERSIST_LOCK`.
+pub async fn run_timed_async_with_stdin(
+    cmd: &mut tokio::process::Command,
+    deadline: Duration,
+    input: &[u8],
+) -> Result<Output, ProcessFailure> {
+    use tokio::io::AsyncWriteExt as _;
+
+    let program = cmd.as_std().get_program().to_string_lossy().into_owned();
+    cmd.kill_on_drop(true)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|e| ProcessFailure::Spawn {
+        program: program.clone(),
+        error: e.to_string(),
+    })?;
+    if let Some(mut pipe) = child.stdin.take() {
+        // A child that exits before reading everything turns this into a
+        // broken pipe; that is not the failure we are reporting, the exit
+        // status is.
+        let _ = pipe.write_all(input).await;
+        let _ = pipe.shutdown().await;
+    }
+
+    match tokio::time::timeout(deadline, child.wait_with_output()).await {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(e)) => Err(ProcessFailure::Spawn {
+            program,
+            error: e.to_string(),
+        }),
+        Err(_) => Err(ProcessFailure::Timeout { program, deadline }),
+    }
+}
+
 /// [`run_timed_async`], but keeping *why* it failed.
 ///
 /// Same contract — `kill_on_drop` plus `tokio::time::timeout`, output drained
@@ -260,28 +342,74 @@ mod tests {
     }
 
     #[test]
-    fn run_timed_keeps_a_caller_supplied_stdout() {
-        // `gunzip -c archive > out_file` (and the Explorer's extraction) hands
-        // the child a file as stdout. Filling in `piped()` unconditionally
-        // would silently send the data to a pipe nobody reads and leave an
-        // empty file behind.
+    fn run_timed_to_file_does_not_pipe_stdout_back() {
+        // The `.gz` extraction path: `gunzip -c archive` writes to the sink, so
+        // there is nothing to drain on our side and the caller reads the file.
         let dir = tempfile::tempdir().expect("temp dir");
-        let sink = dir.path().join("out.txt");
+        let sink = dir.path().join("out.bin");
         let file = std::fs::File::create(&sink).expect("create sink");
         let mut cmd = Command::new("echo");
-        cmd.arg("redirected");
-
-        let out =
-            run_timed_to_file(&mut cmd, Duration::from_secs(5), file).expect("echo must finish");
+        cmd.arg("streamed");
+        let out = run_timed_to_file(&mut cmd, Duration::from_secs(5), file).expect("echo finishes");
         assert!(out.status.success());
-        assert!(
-            out.stdout.is_empty(),
-            "nothing is left to drain on our side"
-        );
+        assert!(out.stdout.is_empty());
         assert_eq!(
             std::fs::read_to_string(&sink).expect("read sink").trim(),
-            "redirected"
+            "streamed"
         );
+    }
+
+    #[test]
+    fn run_timed_with_stdin_feeds_the_child_and_keeps_stdout_piped() {
+        // `sudo tee /etc/fstab` is the caller: `tee` copies stdin to stdout, so
+        // the content must both reach the child and come back on our pipe.
+        let mut cmd = Command::new("cat");
+        let out = run_timed_with_stdin(&mut cmd, Duration::from_secs(5), b"# marker\nentry\n")
+            .expect("cat must finish");
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "# marker\nentry\n");
+    }
+
+    #[test]
+    fn run_timed_with_stdin_does_not_deadlock_when_the_child_ignores_stdin() {
+        // The input is written by its own thread: a child that never reads it
+        // must still be waited out (and killed) instead of blocking the caller
+        // on a full pipe before the deadline loop even starts.
+        let started = Instant::now();
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let err = run_timed_with_stdin(&mut cmd, Duration::from_millis(150), &[b'x'; 256 * 1024])
+            .expect_err("a hung child must not succeed");
+        assert!(err.contains("did not finish within"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn run_timed_async_with_stdin_feeds_the_child_and_bounds_it() {
+        // The `sudo tee /etc/fstab` path of the RAID/pool persistence code: the
+        // content reaches the child, and a child that never reads it is killed
+        // at the deadline instead of holding the job that started it.
+        let mut cmd = tokio::process::Command::new("cat");
+        let out = run_timed_async_with_stdin(&mut cmd, Duration::from_secs(5), b"a\nb\n")
+            .await
+            .expect("cat must finish");
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "a\nb\n");
+
+        let mut cmd = tokio::process::Command::new("sleep");
+        cmd.arg("30");
+        let err = run_timed_async_with_stdin(&mut cmd, Duration::from_millis(120), &[b'x'; 65536])
+            .await
+            .expect_err("a hung child must not succeed");
+        assert!(matches!(err, ProcessFailure::Timeout { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn run_timed_with_stdin_reports_a_missing_program() {
+        let mut cmd = Command::new("homevault-no-such-binary");
+        let err = run_timed_with_stdin(&mut cmd, Duration::from_secs(1), b"x")
+            .expect_err("a missing program is an error");
+        assert!(err.contains("Failed to run"), "{err}");
     }
 
     #[test]

@@ -154,10 +154,11 @@ pinned to an address that was just checked. **No P1 is left.**
 cross-cutting, so the order is the one the Process section gives: X.2 first,
 because a missing deadline turns a defect into an outage — and it is now the
 only systemic item left that can wedge a request. Explorer left that list on
-2026-10-24 (X.1 closed, and its subprocesses bounded with it), so the next
-module group is `disk.rs` / `pools.rs` / `snapshots.rs` (the storage paths a
-home user actually waits on), then `encryption.rs` / `cache.rs`, then
-`network.rs` / `vpn.rs` / `shares.rs` / `health.rs`. After that: 28/29 (small,
+2026-10-24 (X.1 closed, and its subprocesses bounded with it), and the storage
+group — `disk.rs`, `pools.rs`, `snapshots.rs` — followed the same day, so what
+is left of X.2 is `encryption.rs` / `cache.rs` (a LUKS2 create that never
+returns still holds the encryption card's request), then `network.rs` /
+`vpn.rs` / `shares.rs` / `health.rs`. After that: 28/29 (small,
 self-contained), 10b (10.5/10.6/10.7 — the residual hardening), 32/33
 (residuals of closed items), 16.4 (the only remaining *feature*: a scheduler
 for persisted sync jobs) and 31 (pure maintainability, do it last, one tab at a
@@ -349,13 +350,14 @@ items 25/13.)*
       *Acceptance:* zero `std::process::Command` / blocking `std::fs` reachable
       from a handler's async body. A CI grep (or a clippy lint) would keep it
       that way.
-- [ ] **X.2 — No timeout on subprocesses.** Absent from `disk.rs`, `pools.rs`,
-      `encryption.rs`, `cache.rs`, `snapshots.rs`, `health.rs`, `network.rs`,
-      `vpn.rs`, `shares.rs` (*rclone left this list with item 16, 2026-10-23;
-      `explorer.rs` and `src/browser.rs` left it on 2026-10-24 with X.1 — their
-      `lsblk`/`df`/`tar`/`zip`/`7z`/`gunzip`/`chmod`/`umount`/`udisksctl`/
-      `zfs`/`wipefs`/`mkfs`/neighbour calls all run under `run_timed`, and
-      `ARCHIVE_TIMEOUT` (30 min, a ceiling) joined the shared module).* Present
+- [ ] **X.2 — No timeout on subprocesses.** Absent from `encryption.rs`,
+      `cache.rs`, `health.rs`, `network.rs`, `vpn.rs`, `shares.rs`
+      (*rclone left this list with item 16, 2026-10-23; `explorer.rs` and
+      `src/browser.rs` left it on 2026-10-24 with X.1; **`disk.rs`, `pools.rs`
+      and `snapshots.rs` left it the same day** — every `lsblk`/`df`/`blkid`/
+      `mdadm`/`zpool`/`btrfs`/`smartctl`/`mount`/`umount`/`wipefs`/`mkfs`/
+      `sudo tee` call of those three modules now runs under a deadline, with
+      three source guards that fail if a bare `.output()` comes back).* Present
       in Docker, Firewall, Restic, Syncthing, disk quotas (2026-10-22), System
       Journal (2026-10-23, `JOURNAL_READ_TIMEOUT`), and — since 2026-10-23 —
       **everything the Dashboard/Widgets surface shells out to**, through the
@@ -451,6 +453,54 @@ items 25/13.)*
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-24 (g)** — Storage tools — no `zpool`/`btrfs`/`mdadm`/`smartctl`/`df`
+call of the storage group runs without a deadline (X.2 for `disk.rs`,
+`pools.rs`, `snapshots.rs`; the group a home user actually waits on).
+`disk.rs` already bounded its virtual-disk *create* path (ROADMAP 8.3) but left
+**every other** call bare — the scans and probes the RAID and Storage screens
+run on each poll: `lsblk`, `df`, `mdadm --detail --scan`, `mdadm --examine`,
+`zpool status`, `btrfs filesystem show`, `smartctl -A/-H/-c/-l selftest`, plus
+`umount`, `--stop`, `--zero-superblock`, `rmdir`, `--add`, `--grow` and
+`--action check`. All 42 of them now go through one helper (`bounded`), which
+delegates to the shared `crate::utils::process::run_timed_async_result`, so the
+module no longer carries its own copy of "kill the child at the deadline" —
+`run_timed` is a thin argv wrapper over it, and the two failure kinds stay
+distinct (`ProcessFailure::Spawn` → `DiskError::Io`, `Timeout` →
+`DiskError::Timeout`, so "not installed" is never reported as "too slow").
+`pools.rs` (34 sites) and `snapshots.rs` (9 sites) were entirely unbounded
+because they are synchronous; they now call the blocking `run_timed` with
+`POOL_QUERY_TIMEOUT` 30 s / `POOL_WRITE_TIMEOUT` 900 s and
+`SNAPSHOT_QUERY_TIMEOUT` 30 s / `SNAPSHOT_WRITE_TIMEOUT` 600 s. Every value is
+a **ceiling, not an estimate** — a multi-terabyte `mkfs`, a recursive
+`zfs rollback -R` or a `zpool import` label scan legitimately takes minutes.
+**The stdin trap:** persisting a mount point is `sudo tee /etc/fstab` with the
+content on stdin, and `run_timed` closes stdin by design — routing that call
+through it would make `tee` write an **empty** file and truncate the target.
+`utils::process` gained `run_timed_with_stdin` (blocking) and
+`run_timed_async_with_stdin` (async), both writing the input from their own
+thread so a child that never reads it cannot deadlock the caller before the
+deadline loop starts; `disk.rs::write_file_as_root` (which had a hand-rolled
+`spawn` + `tokio::time::timeout`) and `pools.rs::write_file_as_root` (which had
+**no** bound at all) both use them. Tests: `src/disk.rs` 66 → **70** —
+`test_bounded_keeps_a_missing_tool_distinct_from_a_timeout` and
+`test_bounded_reports_the_program_it_waited_for`, plus
+`test_no_subprocess_of_this_module_runs_without_a_deadline` (a source guard:
+no bare `.output()`/`.spawn()`/`.status()`/`wait_with_output()` in production
+code — a behavioural test cannot see this defect, an unbounded call still
+answers correctly on an idle box); `src/pools.rs` 33 → **35** and
+`src/snapshots.rs` 4 → **6** (the same guard + a deadline-ordering check);
+`src/utils/process.rs` 12 → **16** (`run_timed_with_stdin` feeds the child and
+keeps stdout piped; a child that ignores 256 KB of stdin is still killed at the
+deadline instead of deadlocking; `run_timed_to_file` leaves nothing to drain;
+the async twin does both); `tests/storage_integration.rs` 28 → **29** —
+`test_a_slow_host_tool_is_waited_out_not_dropped` puts a shim `sudo` (300 ms)
+on `PATH` and requires the importable-pools scan to come back as an array
+*after* really waiting for it, which pins the bound without a 30 s test.
+**Written, not run** (per instruction). Docs:
+[guides/storage.md](docs/guides/storage.md#deadlines-on-every-host-tool-2026-10-24-roadmap-x2)
+(the deadline table), [guides/raid.md](docs/guides/raid.md),
+[guides/snapshots.md](docs/guides/snapshots.md), `CHANGELOG.md`, `TESTING.md`.
 
 **2026-10-24 (f)** — File Explorer — no blocking work on the runtime and no
 unbounded subprocess (X.1 closed, X.2 for this module; the last item of the

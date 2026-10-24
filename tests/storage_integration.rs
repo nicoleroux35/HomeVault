@@ -883,6 +883,58 @@ async fn test_importable_pools_list_returns_an_array() {
     assert!(body["data"].is_array());
 }
 
+/// ROADMAP X.2 — a host tool that answers *slowly* is waited out, not dropped.
+///
+/// `PoolService` shells out to `sudo zpool` / `sudo btrfs` / `df` for every
+/// scan. Those calls used to be unbounded; they are now bounded by
+/// `POOL_QUERY_TIMEOUT`, and the failure mode that matters is the one this
+/// test pins: a bounded call must still return the tool's answer when the tool
+/// is merely slow (a spun-down pool, a busy sudo). A shim `sudo` sleeps 300 ms
+/// and prints nothing useful, so the list must come back as an array — not as
+/// an error, and not as a hang.
+#[tokio::test]
+async fn test_a_slow_host_tool_is_waited_out_not_dropped() {
+    let (mut router, token, _tmp, _guard) = admin_router().await;
+
+    let shim_dir = tempfile::tempdir().expect("shim dir");
+    let shim = shim_dir.path().join("sudo");
+    std::fs::write(
+        &shim,
+        "#!/bin/sh\n# A bounded call must wait for a slow tool, not kill it early.\nsleep 0.3\nexit 1\n",
+    )
+    .expect("write shim");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).expect("chmod shim");
+    }
+    let previous_path = std::env::var("PATH").ok();
+    std::env::set_var("PATH", shim_dir.path());
+
+    let started = std::time::Instant::now();
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/storage/importable-pools",
+        Some(&token),
+        None,
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    if let Some(path) = previous_path {
+        std::env::set_var("PATH", path);
+    }
+
+    // A refused `zpool import` is "no importable pools", never an error.
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["data"].is_array(), "{body}");
+    assert!(
+        elapsed >= std::time::Duration::from_millis(250),
+        "the shim was never actually waited for ({elapsed:?}) — the scan skipped it"
+    );
+}
+
 #[tokio::test]
 async fn test_import_pool_rejects_unsupported_type_before_any_command() {
     let (mut router, token, _tmp, _guard) = admin_router().await;

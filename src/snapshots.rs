@@ -25,8 +25,23 @@
 
 use serde::{Deserialize, Serialize};
 use std::process::Command;
+use std::time::Duration;
 use thiserror::Error;
 use tracing::info;
+
+use crate::utils::process::run_timed;
+
+/// Deadline for a metadata read (`zfs list`, `btrfs subvolume list`, `zfs get`).
+/// Cheap on a healthy pool, and a pool whose disks have spun down still answers
+/// well inside it.
+pub const SNAPSHOT_QUERY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Deadline for a mutating snapshot call (`zfs snapshot|destroy|rollback -R`,
+/// `btrfs subvolume snapshot|delete`, `sudo mkdir -p`). A recursive rollback
+/// on a large dataset is the slowest honest case; `kill_on_drop` bounds the
+/// rest. ROADMAP X.2: none of these had a deadline, so a wedged `zfs` held the
+/// calling `spawn_blocking` thread — and the request or scheduler tick behind
+/// it — for the life of the process.
+pub const SNAPSHOT_WRITE_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Errors that can occur during snapshot operations.
 #[derive(Error, Debug)]
@@ -181,9 +196,8 @@ impl SnapshotService {
     }
 
     fn list_zfs_snapshots(pool: &str) -> Result<Vec<Snapshot>, SnapError> {
-        let output = Command::new("sudo")
-            .arg("zfs")
-            .args([
+        let output = run_timed(
+            Command::new("sudo").arg("zfs").args([
                 "list",
                 "-t",
                 "snapshot",
@@ -191,9 +205,10 @@ impl SnapshotService {
                 "name,used,referenced,creation",
                 "-r",
                 pool,
-            ])
-            .output()
-            .map_err(|e| SnapError::CommandFailed(e.to_string()))?;
+            ]),
+            SNAPSHOT_QUERY_TIMEOUT,
+        )
+        .map_err(SnapError::CommandFailed)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -219,11 +234,13 @@ impl SnapshotService {
     fn list_btrfs_snapshots(pool: &str) -> Result<Vec<Snapshot>, SnapError> {
         let mount_point = Self::resolve_btrfs_mount(pool)?;
 
-        let output = Command::new("sudo")
-            .arg("btrfs")
-            .args(["subvolume", "list", "-s", &mount_point])
-            .output()
-            .map_err(|e| SnapError::CommandFailed(e.to_string()))?;
+        let output = run_timed(
+            Command::new("sudo")
+                .arg("btrfs")
+                .args(["subvolume", "list", "-s", &mount_point]),
+            SNAPSHOT_QUERY_TIMEOUT,
+        )
+        .map_err(SnapError::CommandFailed)?;
 
         if !output.status.success() {
             return Err(SnapError::CommandFailed(
@@ -273,11 +290,11 @@ impl SnapshotService {
         }
         args.push(snapshot_name.clone());
 
-        let output = Command::new("sudo")
-            .arg("zfs")
-            .args(&args)
-            .output()
-            .map_err(|e| SnapError::CommandFailed(e.to_string()))?;
+        let output = run_timed(
+            Command::new("sudo").arg("zfs").args(&args),
+            SNAPSHOT_WRITE_TIMEOUT,
+        )
+        .map_err(SnapError::CommandFailed)?;
 
         if !output.status.success() {
             return Err(SnapError::CommandFailed(
@@ -301,11 +318,13 @@ impl SnapshotService {
         // root is owned by root (it was formatted and mounted as root, via
         // sudo, in create_btrfs_advanced_pool), so the unprivileged
         // homevault process can't create a directory under it directly.
-        let mkdir_output = Command::new("sudo")
-            .arg("mkdir")
-            .args(["-p", &snapshots_dir])
-            .output()
-            .map_err(|e| SnapError::CommandFailed(e.to_string()))?;
+        let mkdir_output = run_timed(
+            Command::new("sudo")
+                .arg("mkdir")
+                .args(["-p", &snapshots_dir]),
+            SNAPSHOT_WRITE_TIMEOUT,
+        )
+        .map_err(SnapError::CommandFailed)?;
         if !mkdir_output.status.success() {
             return Err(SnapError::CommandFailed(
                 String::from_utf8_lossy(&mkdir_output.stderr).to_string(),
@@ -317,11 +336,11 @@ impl SnapshotService {
         args.push(source.to_string());
         args.push(snapshot_path.clone());
 
-        let output = Command::new("sudo")
-            .arg("btrfs")
-            .args(&args)
-            .output()
-            .map_err(|e| SnapError::CommandFailed(e.to_string()))?;
+        let output = run_timed(
+            Command::new("sudo").arg("btrfs").args(&args),
+            SNAPSHOT_WRITE_TIMEOUT,
+        )
+        .map_err(SnapError::CommandFailed)?;
 
         if !output.status.success() {
             return Err(SnapError::CommandFailed(
@@ -352,11 +371,13 @@ impl SnapshotService {
             format!("{}@{}", pool, name)
         };
 
-        let output = Command::new("sudo")
-            .arg("zfs")
-            .args(["destroy", &snapshot_name])
-            .output()
-            .map_err(|e| SnapError::CommandFailed(e.to_string()))?;
+        let output = run_timed(
+            Command::new("sudo")
+                .arg("zfs")
+                .args(["destroy", &snapshot_name]),
+            SNAPSHOT_WRITE_TIMEOUT,
+        )
+        .map_err(SnapError::CommandFailed)?;
 
         if !output.status.success() {
             return Err(SnapError::CommandFailed(
@@ -372,11 +393,13 @@ impl SnapshotService {
         let mount_point = Self::resolve_btrfs_mount(pool)?;
         let path = format!("{}/.snapshots/{}", mount_point, name);
 
-        let output = Command::new("sudo")
-            .arg("btrfs")
-            .args(["subvolume", "delete", &path])
-            .output()
-            .map_err(|e| SnapError::CommandFailed(e.to_string()))?;
+        let output = run_timed(
+            Command::new("sudo")
+                .arg("btrfs")
+                .args(["subvolume", "delete", &path]),
+            SNAPSHOT_WRITE_TIMEOUT,
+        )
+        .map_err(SnapError::CommandFailed)?;
 
         if !output.status.success() {
             return Err(SnapError::CommandFailed(
@@ -402,11 +425,13 @@ impl SnapshotService {
             format!("{}@{}", pool, name)
         };
 
-        let output = Command::new("sudo")
-            .arg("zfs")
-            .args(["rollback", "-R", &snapshot_name])
-            .output()
-            .map_err(|e| SnapError::CommandFailed(e.to_string()))?;
+        let output = run_timed(
+            Command::new("sudo")
+                .arg("zfs")
+                .args(["rollback", "-R", &snapshot_name]),
+            SNAPSHOT_WRITE_TIMEOUT,
+        )
+        .map_err(SnapError::CommandFailed)?;
 
         if !output.status.success() {
             return Err(SnapError::CommandFailed(
@@ -453,9 +478,8 @@ impl SnapshotService {
             format!("{}@{}", pool, name)
         };
 
-        let output = Command::new("sudo")
-            .arg("zfs")
-            .args([
+        let output = run_timed(
+            Command::new("sudo").arg("zfs").args([
                 "get",
                 "-H",
                 "-o",
@@ -463,9 +487,10 @@ impl SnapshotService {
                 "-p",
                 "all",
                 &snapshot_name,
-            ])
-            .output()
-            .map_err(|e| SnapError::CommandFailed(e.to_string()))?;
+            ]),
+            SNAPSHOT_QUERY_TIMEOUT,
+        )
+        .map_err(SnapError::CommandFailed)?;
 
         if !output.status.success() {
             return Err(SnapError::NotFound(name.to_string()));
@@ -697,5 +722,38 @@ mod tests {
         // `/` is always mounted; an invented path never is.
         assert!(mount_fstype("/").is_some());
         assert!(mount_fstype("/nonexistent-hv-mount").is_none());
+    }
+
+    // -- ROADMAP X.2: no subprocess of this module runs unbounded ------------
+
+    /// The defect class this guards against is invisible to a behavioural
+    /// test: a bare `.output()` still answers correctly on an idle box and
+    /// only pins the calling `spawn_blocking` thread when a pool or a disk
+    /// stops answering. So the invariant is asserted at the source.
+    ///
+    /// `concat!` keeps each pattern out of this file's own source, so the
+    /// assertion cannot count itself.
+    #[test]
+    fn test_no_subprocess_of_this_module_runs_without_a_deadline() {
+        let src = include_str!("snapshots.rs");
+        let production = src.split("#[cfg(test)]").next().unwrap_or(src);
+        for unbounded in [
+            concat!(".", "output()"),
+            concat!(".", "spawn()"),
+            concat!(".", "status()"),
+            concat!("wait_with_", "output()"),
+        ] {
+            assert!(
+                !production.contains(unbounded),
+                "`{unbounded}` waits without a deadline — use `run_timed` (ROADMAP X.2)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_deadlines_are_bounded_and_ordered() {
+        assert!(SNAPSHOT_QUERY_TIMEOUT >= std::time::Duration::from_secs(5));
+        assert!(SNAPSHOT_WRITE_TIMEOUT >= SNAPSHOT_QUERY_TIMEOUT);
+        assert!(SNAPSHOT_WRITE_TIMEOUT <= std::time::Duration::from_secs(60 * 60));
     }
 }
