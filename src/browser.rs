@@ -29,6 +29,8 @@ use std::process::Command;
 use thiserror::Error;
 use tokio::sync::RwLock;
 
+use crate::utils::process::{run_timed, ARCHIVE_TIMEOUT, HOST_PROBE_TIMEOUT};
+
 /// Name of the per-root trash directory files are moved into on delete.
 pub const TRASH_DIR_NAME: &str = ".homevault-trash";
 
@@ -585,7 +587,9 @@ impl FileBrowser {
     }
 
     fn detect_filesystem_sync(path: &str) -> Option<String> {
-        let output = Command::new("df").args(["-T", path]).output().ok()?;
+        // Bounded like every other host probe: a hung network mount must not
+        // stall the directory listing that triggered the `df`.
+        let output = run_timed(Command::new("df").args(["-T", path]), HOST_PROBE_TIMEOUT).ok()?;
 
         if !output.status.success() {
             return None;
@@ -1017,27 +1021,32 @@ impl FileBrowser {
             })
             .collect();
 
-        let output = if format == "zip" {
-            Command::new("zip")
-                .arg("-r")
+        // Bounded by the archive ceiling: this runs inside `spawn_blocking`
+        // from the Explorer's compress endpoint, and a wedged `tar`/`zip` used
+        // to hold that thread — and the archive job — for good.
+        let mut cmd = if format == "zip" {
+            let mut cmd = Command::new("zip");
+            cmd.arg("-r")
                 .arg(destination)
                 // `--` stops option parsing: a file store-named "-o" or "-czf"
                 // could otherwise be swallowed as a flag (and "-e"... etc.),
                 // i.e. argv injection through a crafted file name.
                 .arg("--")
                 .args(&names)
-                .current_dir(&parent)
-                .output()?
+                .current_dir(&parent);
+            cmd
         } else {
-            Command::new("tar")
-                .arg("-czf")
+            let mut cmd = Command::new("tar");
+            cmd.arg("-czf")
                 .arg(destination)
                 .arg("-C")
                 .arg(&parent)
                 .arg("--")
-                .args(&names)
-                .output()?
+                .args(&names);
+            cmd
         };
+        let output = run_timed(&mut cmd, ARCHIVE_TIMEOUT)
+            .map_err(|e| BrowserError::Io(std::io::Error::other(e)))?;
 
         if !output.status.success() {
             return Err(BrowserError::Io(std::io::Error::other(
@@ -1698,5 +1707,33 @@ mod collision_tests {
             non_colliding_path(&taken),
             dir.path().join("archive.tar (1).gz")
         );
+    }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    /// ROADMAP X.2 — no subprocess of this module may run without a deadline.
+    ///
+    /// `FileBrowser` is the engine behind the Explorer's list and compress
+    /// paths: `df -T` on a hung network mount, or a `tar` that never returns,
+    /// used to hold the `spawn_blocking` thread (and the request or job
+    /// behind it) forever. Both now go through `crate::utils::process`.
+    #[test]
+    fn test_every_subprocess_carries_a_deadline() {
+        let src = include_str!("browser.rs");
+        let production = src.split("#[cfg(test)]").next().unwrap_or(src);
+        for unbounded in [
+            // `concat!` keeps the pattern out of this file's own source.
+            concat!(".", "output()"),
+            concat!(".", "spawn()"),
+            concat!(".", "status()"),
+        ] {
+            assert!(
+                !production.contains(unbounded),
+                "`{unbounded}` waits without a deadline — use `run_timed` (ROADMAP X.2)"
+            );
+        }
+        assert!(production.contains("run_timed("));
+        assert!(production.contains("ARCHIVE_TIMEOUT"));
     }
 }

@@ -1438,6 +1438,86 @@ async fn test_disks_returns_the_six_categories() {
     }
 }
 
+/// ROADMAP X.1 — the disk scan runs on the blocking pool, not on the runtime.
+///
+/// The scan reads `/proc/mounts`, stats every mount, and shells out to `lsblk`
+/// and `df`; all of it used to happen straight inside the async handler, so a
+/// slow disk parked a Tokio worker for the whole scan. A shim stands in for
+/// `lsblk` here: the scan is started, and a second request must be served
+/// **before** it finishes. On the single-threaded test runtime the old shape
+/// could not serve anything until the scan returned, so the assertion pins the
+/// offload rather than a timing threshold.
+#[tokio::test]
+async fn test_disk_scan_does_not_block_the_runtime() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "bob", "Password123!").await;
+
+    // Only the shim is on PATH: `df` is missing (usage figures fall back to 0)
+    // and `lsblk` answers after a pause.
+    let shim_dir = tempfile::tempdir().expect("shim dir");
+    let shim = shim_dir.path().join("lsblk");
+    std::fs::write(
+        &shim,
+        "#!/bin/sh\nPATH=/usr/bin:/bin\nsleep 2\necho 'PATH=\"/dev/sdz1\" NAME=\"sdz1\" TYPE=\"disk\"'\n",
+    )
+    .expect("write shim");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).expect("chmod shim");
+    }
+    let previous_path = std::env::var("PATH").ok();
+    std::env::set_var("PATH", shim_dir.path());
+    let scan_started = std::time::Instant::now();
+
+    let mut disks_router = r.clone();
+    let disks_token = token.clone();
+    let disks = tokio::spawn(async move {
+        send(
+            &mut disks_router,
+            Method::GET,
+            "/api/explorer/disks",
+            Some(&disks_token),
+            None,
+        )
+        .await
+    });
+
+    // Let the scan reach its `lsblk` call, then serve another request.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let list_uri = format!("/api/explorer/list?path={}", h.root.to_string_lossy());
+    let (status, _) = send(&mut r, Method::GET, &list_uri, Some(&token), None).await;
+    let scan_still_running = !disks.is_finished();
+
+    if let Some(path) = previous_path {
+        std::env::set_var("PATH", path);
+    }
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        scan_still_running,
+        "the list request was only served after the disk scan returned — the \
+         scan is blocking the async runtime (ROADMAP X.1)"
+    );
+
+    let (status, body) = disks.await.expect("disk scan task");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    for key in ["system", "internal", "raid", "external", "cloud", "network"] {
+        assert!(
+            body["data"][key].is_array(),
+            "missing category {key}: {body}"
+        );
+    }
+    // And the scan really went through the subprocess path (the shim slept),
+    // so the offload assertion above is not passing on a no-op scan.
+    assert!(
+        scan_started.elapsed() >= std::time::Duration::from_millis(1500),
+        "the disk scan never reached `lsblk` — the shim was not on PATH"
+    );
+}
+
 #[tokio::test]
 async fn test_list_defaults_to_root_for_admin() {
     let h = setup().await;
