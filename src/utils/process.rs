@@ -43,6 +43,14 @@ pub const HOST_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// cheap probes stay snappy while SMART still gets a fair chance to answer.
 pub const SMART_PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Deadline for archive tools (`tar`, `zip`, `7z`, `gunzip`).
+///
+/// A ceiling, not an estimate: the first extraction of a large library
+/// legitimately takes minutes on a spinning disk, so this cannot be a probe
+/// budget — but a wedged tool must not hold its `spawn_blocking` thread (and
+/// the job behind it) forever.
+pub const ARCHIVE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
 /// Run a blocking command with a hard deadline.
 ///
 /// Output is drained on dedicated threads (a child that fills a pipe buffer
@@ -51,10 +59,38 @@ pub const SMART_PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 /// error string names the program and the deadline, which is what the caller
 /// logs — a probe that times out is a *gap*, never a fabricated value.
 pub fn run_timed(cmd: &mut Command, deadline: Duration) -> Result<Output, String> {
+    run_timed_inner(cmd, deadline, None)
+}
+
+/// [`run_timed`] with the child's stdout pointed at a file instead of a pipe.
+///
+/// Extracting a `.gz` archive means `gunzip -c archive > out_file`: the data
+/// must not be drained through this process. `Output.stdout` is therefore
+/// empty by construction and the caller reads the file.
+pub fn run_timed_to_file(
+    cmd: &mut Command,
+    deadline: Duration,
+    sink: std::fs::File,
+) -> Result<Output, String> {
+    run_timed_inner(cmd, deadline, Some(Stdio::from(sink)))
+}
+
+fn run_timed_inner(
+    cmd: &mut Command,
+    deadline: Duration,
+    stdout: Option<Stdio>,
+) -> Result<Output, String> {
     let program = cmd.get_program().to_string_lossy().into_owned();
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.stdin(Stdio::null());
+    match stdout {
+        Some(sink) => {
+            cmd.stdout(sink);
+        }
+        None => {
+            cmd.stdout(Stdio::piped());
+        }
+    }
+    cmd.stderr(Stdio::piped());
 
     let mut child = cmd
         .spawn()
@@ -221,6 +257,39 @@ mod tests {
         )
         .expect_err("a missing program is an error");
         assert!(err.contains("Failed to run"), "{err}");
+    }
+
+    #[test]
+    fn run_timed_keeps_a_caller_supplied_stdout() {
+        // `gunzip -c archive > out_file` (and the Explorer's extraction) hands
+        // the child a file as stdout. Filling in `piped()` unconditionally
+        // would silently send the data to a pipe nobody reads and leave an
+        // empty file behind.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let sink = dir.path().join("out.txt");
+        let file = std::fs::File::create(&sink).expect("create sink");
+        let mut cmd = Command::new("echo");
+        cmd.arg("redirected");
+
+        let out =
+            run_timed_to_file(&mut cmd, Duration::from_secs(5), file).expect("echo must finish");
+        assert!(out.status.success());
+        assert!(
+            out.stdout.is_empty(),
+            "nothing is left to drain on our side"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&sink).expect("read sink").trim(),
+            "redirected"
+        );
+    }
+
+    #[test]
+    fn archive_deadline_is_a_ceiling_not_a_probe_budget() {
+        // Long enough for a real extraction, still finite so a wedged tool
+        // cannot pin a blocking thread forever.
+        assert!(ARCHIVE_TIMEOUT >= Duration::from_secs(60));
+        assert!(ARCHIVE_TIMEOUT <= Duration::from_secs(2 * 60 * 60));
     }
 
     #[test]

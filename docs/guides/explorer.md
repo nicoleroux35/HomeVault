@@ -337,6 +337,49 @@ This pass closed the four blocking File Explorer findings.
   trash — the rest failed"), and the resource fetch error path is also
   reported.
 
+## Blocking work and deadlines (2026-10-24, ROADMAP X.1/X.2)
+
+The Explorer was the last module still reaching the async runtime with blocking
+work, and the last one whose host commands had no deadline.
+
+- **Every handler is off the runtime now.** The disk scan
+  (`GET /explorer/disks`: `/proc/mounts`, a `stat` per mount, one `lsblk` pass,
+  one `df -B1` per mount) moved into `collect_disks()` behind
+  `spawn_blocking`; the existence/type stats of download, upload, copy, move,
+  save, roots, thumbnail and ticket paths go through `tokio::fs`
+  (`path_exists` / `path_is_file` / `path_is_dir`); `resolve_dest` — which
+  stats the destination and, for `keep_both`, probes for a free name — runs on
+  the blocking pool; so do the durability fsyncs
+  (`FileBrowser::fsync_parent_dir`); the upload-session prune unlinks with
+  `tokio::fs`; and the `upload_complete` "skipped" unlink no longer blocks the
+  worker. The tracked copy/move cleanup of a failed run (`cleanup_created_paths`)
+  moved too, because that job runs on the async runtime.
+- **Every subprocess carries a deadline** (`crate::utils::process::run_timed`):
+  `lsblk` and `df` (`HOST_PROBE_TIMEOUT`, 10 s), `chmod` (10 s),
+  `tar`/`unzip`/`7z`/`gunzip` including the listing passes (`ARCHIVE_TIMEOUT`,
+  30 min — a ceiling for a legitimate first extraction, not an estimate),
+  `sudo umount` + `udisksctl power-off` (`UMOUNT_TIMEOUT`, 30 s),
+  `sudo zfs list` (`ZFS_QUERY_TIMEOUT`, 30 s), `wipefs`/`mkfs.ext4`/
+  `mkfs.exfat` (`DISK_OPERATION_TIMEOUT`, 10 min) and the neighbour sweep
+  (`NEIGHBOUR_TIMEOUT`, 20 s). `FileBrowser::compress_items` and its `df -T`
+  probe were bounded in the same pass, so nothing reachable from this screen
+  can wait forever.
+- **`gunzip` writes into its file, not through this process**:
+  `run_timed_to_file` hands the child a file as stdout (a `.gz` extraction used
+  to capture the whole decompressed archive in RAM).
+- **Two source guards keep it that way** — X.1/X.2 cannot be asserted
+  behaviourally, because a blocking call still answers `200` on an idle box:
+  `test_no_blocking_work_is_reachable_from_an_async_body` walks this file and
+  fails on any blocking token inside an `async fn` but outside a
+  `spawn_blocking` closure; `test_every_subprocess_of_this_module_carries_a_deadline`
+  fails on any `.output()` / `.spawn()` / `.status()` in production code.
+  `src/browser.rs` carries the subprocess half of the guard.
+- **The integration net**:
+  `test_disk_scan_does_not_block_the_runtime` puts a shim `lsblk` (sleeping
+  2 s) first on `PATH`, starts `GET /explorer/disks`, and requires a second
+  request to be served **before** it returns — on the single-threaded test
+  runtime the old shape could not serve anything until the scan came back.
+
 ## Frontend
 
 - `frontend/src/routes/Explorer.svelte` — fully wired through `$t()`/
@@ -412,11 +455,14 @@ This pass closed the four blocking File Explorer findings.
 - The session token is **never** accepted in a URL. Downloads and thumbnails
   are authenticated by short-lived tickets (`src/media_ticket.rs`); the
   `?token=` query param is gone.
-- `mkdir`/`delete`/`rename`/`copy`/`move`/`extract`/`permissions`/`preview`
-  handlers all wrap their synchronous filesystem/`Command` work in
-  `tokio::task::spawn_blocking`, matching `list_directory`/`search`'s
-  existing pattern — a real bug found live testing had these blocking a
-  Tokio worker thread directly inside the `async fn` instead.
+- **No handler blocks the runtime, and no subprocess runs without a
+  deadline.** Synchronous filesystem work (including `Path::exists`/`is_dir`,
+  `resolve_dest` and the fsyncs) goes through `tokio::fs` or a sync helper
+  called via `tokio::task::spawn_blocking`; every `Command` goes through
+  `run_timed` / `run_timed_to_file`. This is enforced by two source guards (see
+  "Blocking work and deadlines") — a real bug found in live testing had these
+  blocking a Tokio worker directly inside the `async fn`, and none of the 64
+  integration tests caught it because a wedged disk still answers `200` slowly.
 - Downloads **reserve** transfer-quota usage at stream start (under the
   per-subject quota lock) and **refund** it if the client disconnects before
   the body completes — so an abandoned download is not left charged, while a

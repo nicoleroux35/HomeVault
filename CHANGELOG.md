@@ -390,6 +390,37 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **File Explorer — no blocking work on the async runtime, and every host
+  command bounded (2026-10-24, ROADMAP X.1/X.2).** `handlers/explorer.rs` was
+  the last module reaching a Tokio worker with blocking work. The disk scan
+  (`/proc/mounts`, a `stat` per mount, one `lsblk` pass, one `df -B1` per mount)
+  ran as a loop inside the `async fn` — a slow or hung disk parked a worker for
+  every open Explorer window; it now runs as `collect_disks()` on the blocking
+  pool. The path stats of the download, upload, copy, move, save, roots,
+  thumbnail and ticket handlers go through `tokio::fs`
+  (`path_exists`/`path_is_file`/`path_is_dir`), `resolve_dest` (which stats and,
+  for `keep_both`, probes for a free name) runs on the blocking pool, so do the
+  four durability fsyncs and the cleanup sweep of a failed tracked copy/move,
+  and the upload-session prune no longer holds its lock across an unlink. Every
+  subprocess of the module (and of `src/browser.rs`) now goes through
+  `run_timed`: `lsblk`/`df`/`chmod`/`which` at 10 s, archives
+  (`tar`/`unzip`/`7z`/`gunzip`) at the new `ARCHIVE_TIMEOUT` (30 min — a ceiling
+  for a legitimate first extraction, not an estimate), `sudo umount` at 30 s,
+  `sudo zfs list` at 30 s, `wipefs`/`mkfs.*` at 10 min and the neighbour sweep
+  at 20 s. Two details worth naming: `run_timed` gained `run_timed_to_file`
+  because `gunzip` must write **into** its output file (the plain wrapping would
+  have sent the decompressed data to a pipe nobody reads, silently undoing the
+  `.gz` streaming rewrite of item 10), and `run_timed` now keeps a caller-set
+  stdout instead of overwriting it. Tests: `handlers/explorer.rs` 34 → **38**
+  unit (the path helpers, the deadline ordering, and two **source guards** — no
+  blocking token in an `async fn` outside a `spawn_blocking` closure, and no
+  `.output()`/`.spawn()`/`.status()` in production code), `src/browser.rs` 16 →
+  **17**, `src/utils/process.rs` 10 → **12**,
+  `tests/explorer_integration.rs` 64 → **65**
+  (`test_disk_scan_does_not_block_the_runtime`: a shim `lsblk` sleeping 2 s on
+  `PATH`, and a second request that must be served before the scan returns on
+  the single-threaded test runtime). Docs:
+  [guides/explorer.md](docs/guides/explorer.md).
 - **Web shortcuts — the 512 KB cap now bounds the read, and a redirect chain is
   walked hop by hop (2026-10-24, ROADMAP 27.1/27.2).** The metadata fetcher
   awaited `Response::bytes()` and only then sliced the body to

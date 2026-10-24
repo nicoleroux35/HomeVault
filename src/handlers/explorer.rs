@@ -53,7 +53,46 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use crate::browser::{FileBrowser, TRASH_DIR_NAME};
 use crate::handlers::admin_guard::{require_admin, require_auth};
 use crate::handlers::AppState;
+use crate::utils::process::{run_timed, run_timed_to_file, ARCHIVE_TIMEOUT, HOST_PROBE_TIMEOUT};
 use crate::utils::ResponseHelper;
+
+/// Deadline for the destructive disk operations of this module (`sudo
+/// wipefs`, `sudo mkfs.*`). A full format of a multi-TB drive legitimately
+/// takes minutes, so this is a ceiling — but a refused or wedged `mkfs` must
+/// not hold the blocking thread (and the wizard's request) forever.
+const DISK_OPERATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// Deadline for ejecting a removable drive (`sudo umount`, then the best-effort
+/// `udisksctl power-off`). Same order of magnitude as rclone's unmount budget:
+/// an unmount that has not settled in 30 s is stuck, not busy.
+const UMOUNT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Deadline for `sudo zfs list` behind the snapshot/history views. `zfs list`
+/// is cheap, but it goes through `sudo`, which can queue on the PAM stack.
+const ZFS_QUERY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Deadline for zero-config neighbour discovery (`avahi-browse`, `ip neigh`).
+/// The tools have their own timeout; this one bounds the whole sweep.
+const NEIGHBOUR_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// `path.exists()`, off the async runtime (`std::fs::metadata` is a blocking
+/// syscall, and a hung network mount would park a Tokio worker).
+async fn path_exists(path: &std::path::Path) -> bool {
+    tokio::fs::try_exists(path).await.unwrap_or(false)
+}
+
+/// `path.is_file()`, off the async runtime.
+async fn path_is_file(path: &std::path::Path) -> bool {
+    tokio::fs::metadata(path)
+        .await
+        .map(|m| m.is_file())
+        .unwrap_or(false)
+}
+
+/// `path.is_dir()`, off the async runtime.
+async fn path_is_dir(path: &std::path::Path) -> bool {
+    tokio::fs::metadata(path)
+        .await
+        .map(|m| m.is_dir())
+        .unwrap_or(false)
+}
 
 /// Disk identity triple `(model, transport, size)` keyed by bare kernel name.
 type DiskIdentity = (Option<String>, Option<String>, Option<String>);
@@ -515,11 +554,19 @@ async fn run_tracked_copy(
         // The copy failed partway: remove exactly the paths this run created
         // (children before parents, deepest-first) so the destination isn't
         // left with a misleading half-populated tree. Anything that existed
-        // before the copy started is left untouched.
-        cleanup_created_paths(&mut created);
+        // before the copy started is left untouched. The unlinks happen on the
+        // blocking pool — this job runs on the async runtime.
+        let partial = std::mem::take(&mut created);
+        let cleaned = tokio::task::spawn_blocking(move || {
+            let mut paths = partial;
+            cleanup_created_paths(&mut paths);
+            paths.len()
+        })
+        .await
+        .unwrap_or(0);
         tracing::warn!(
             "Tracked copy/move failed; cleaned {} partial destination path(s): {}",
-            created.len(),
+            cleaned,
             e
         );
     }
@@ -699,15 +746,17 @@ fn collect_block_device_meta() -> std::collections::HashMap<String, BlockDeviceM
         }
     };
 
-    let output = match std::process::Command::new("lsblk")
-        .args([
+    let output = match run_timed(
+        std::process::Command::new("lsblk").args([
             "-P",
             "-o",
             "PATH,NAME,PKNAME,TYPE,LABEL,MODEL,SERIAL,VENDOR",
-        ])
-        .output()
-    {
+        ]),
+        HOST_PROBE_TIMEOUT,
+    ) {
         Ok(o) if o.status.success() => o,
+        // No answer, no lsblk or a wedged probe: the caller gets an empty map
+        // and the rest of the disk list still renders.
         _ => return out,
     };
     let text = String::from_utf8_lossy(&output.stdout);
@@ -1039,10 +1088,10 @@ pub async fn handle_explorer_download(
         (session.username, validated)
     };
 
-    if !file_path.exists() {
+    if !path_exists(&file_path).await {
         return (StatusCode::NOT_FOUND, "File not found".to_string()).into_response();
     }
-    if file_path.is_dir() {
+    if path_is_dir(&file_path).await {
         return (
             StatusCode::BAD_REQUEST,
             "Cannot download directory".to_string(),
@@ -1192,11 +1241,14 @@ pub async fn handle_explorer_download_ticket(
             "Access denied: path outside allowed directory".to_string(),
         );
     };
-    if !path.is_file() {
+    if !path_is_file(&path).await {
         return ResponseHelper::json_error("File not found".to_string());
     }
 
-    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let size = tokio::fs::metadata(&path)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
     // A quota that cannot be loaded refuses the ticket (fail closed).
     let quotas = match load_quotas_or_refuse(&state, &session.username, false).await {
         Ok(q) => q,
@@ -1207,7 +1259,8 @@ pub async fn handle_explorer_download_ticket(
         return (StatusCode::TOO_MANY_REQUESTS, exceeded.to_string()).into_response();
     }
 
-    let canonical = std::fs::canonicalize(&path)
+    let canonical = tokio::fs::canonicalize(&path)
+        .await
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| path.to_string_lossy().into_owned());
     let ticket = crate::media_ticket::issue_download_ticket(&session.username, &canonical);
@@ -1269,11 +1322,11 @@ pub async fn handle_explorer_upload(
     }
     let mut session_upload_bytes: u64 = 0;
 
-    if !upload_path.exists() {
+    if !path_exists(&upload_path).await {
         return ResponseHelper::json_error(format!("Upload path does not exist: {}", params.path));
     }
 
-    if !upload_path.is_dir() {
+    if !path_is_dir(&upload_path).await {
         return ResponseHelper::json_error("Upload path must be a directory".to_string());
     }
 
@@ -1321,9 +1374,11 @@ pub async fn handle_explorer_upload(
         }
 
         // Apply the caller's collision strategy for a name that already
-        // exists in the target directory.
+        // exists in the target directory. The stat is taken once, off the
+        // runtime, because a `match` guard cannot await.
+        let target_exists = path_exists(&file_path).await;
         match collision_strategy {
-            crate::browser::CollisionStrategy::Skip if file_path.exists() => {
+            crate::browser::CollisionStrategy::Skip if target_exists => {
                 // Drain this field's body so the multipart parser can advance.
                 while let Ok(Some(_)) = field.chunk().await {}
                 skipped_files.push(filename);
@@ -1442,7 +1497,11 @@ pub async fn handle_explorer_upload(
                 filename, e
             ));
         }
-        FileBrowser::fsync_parent_dir(&file_path);
+        // Durability fsync: a blocking syscall, so it runs on the blocking
+        // pool rather than on this request's worker.
+        let fsync_path = file_path.clone();
+        let _ =
+            tokio::task::spawn_blocking(move || FileBrowser::fsync_parent_dir(&fsync_path)).await;
 
         // Only count bytes that actually landed on disk under their final
         // name — an aborted/failed field above never reaches here.
@@ -1518,18 +1577,22 @@ static UPLOAD_SESSIONS: LazyLock<ParkingMutex<HashMap<String, UploadSession>>> =
 
 /// Removes expired sessions and their leftover temp files. Called opportunistically
 /// on every session-touching endpoint so stale state never accumulates.
-fn prune_upload_sessions() {
+async fn prune_upload_sessions() {
     let now = Instant::now();
-    let mut map = UPLOAD_SESSIONS.lock();
-    let expired: Vec<String> = map
-        .iter()
-        .filter(|(_, s)| now.duration_since(s.created_at) >= UPLOAD_SESSION_TTL)
-        .map(|(k, _)| k.clone())
-        .collect();
-    for key in expired {
-        if let Some(s) = map.remove(&key) {
-            let _ = std::fs::remove_file(&s.tmp_path);
-        }
+    let expired: Vec<UploadSession> = {
+        let mut map = UPLOAD_SESSIONS.lock();
+        let keys: Vec<String> = map
+            .iter()
+            .filter(|(_, s)| now.duration_since(s.created_at) >= UPLOAD_SESSION_TTL)
+            .map(|(k, _)| k.clone())
+            .collect();
+        keys.into_iter().filter_map(|k| map.remove(&k)).collect()
+    };
+    // The lock is released before the unlink: `tokio::fs::remove_file` hops to
+    // the blocking pool, and holding a `parking_lot` guard across an await
+    // point would park a worker for the duration of a filesystem call.
+    for session in expired {
+        let _ = tokio::fs::remove_file(&session.tmp_path).await;
     }
 }
 
@@ -1563,7 +1626,7 @@ pub async fn handle_explorer_upload_session_start(
     Query(params): Query<UploadSessionQuery>,
     headers: HeaderMap,
 ) -> Response {
-    prune_upload_sessions();
+    prune_upload_sessions().await;
 
     let session_token = headers
         .get("x-session-token")
@@ -1588,7 +1651,7 @@ pub async fn handle_explorer_upload_session_start(
             );
         }
     };
-    if !dir.is_dir() {
+    if !path_is_dir(&dir).await {
         return ResponseHelper::json_error("Upload path must be a directory".to_string());
     }
     let Some(filename) = sanitize_upload_filename(&params.filename) else {
@@ -1666,7 +1729,7 @@ pub async fn handle_explorer_upload_chunk(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    prune_upload_sessions();
+    prune_upload_sessions().await;
 
     let caller = match crate::handlers::admin_guard::require_auth(&state, &headers).await {
         Ok(username) => username,
@@ -1756,7 +1819,7 @@ pub async fn handle_explorer_upload_complete(
     Query(params): Query<UploadSessionIdQuery>,
     headers: HeaderMap,
 ) -> Response {
-    prune_upload_sessions();
+    prune_upload_sessions().await;
 
     let caller = match crate::handlers::admin_guard::require_auth(&state, &headers).await {
         Ok(username) => username,
@@ -1871,7 +1934,7 @@ pub async fn handle_explorer_upload_complete(
 
     if file_path.as_os_str().is_empty() {
         // Collision strategy said "skip" — nothing to keep.
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = tokio::fs::remove_file(&tmp_path).await;
         UPLOAD_SESSIONS.lock().remove(&params.session_id);
         return ResponseHelper::json_success(serde_json::json!({
             "skipped": true,
@@ -1882,7 +1945,8 @@ pub async fn handle_explorer_upload_complete(
     if let Err(e) = tokio::fs::rename(&tmp_path, &file_path).await {
         return ResponseHelper::json_error(format!("Failed to finalize upload: {}", e));
     }
-    FileBrowser::fsync_parent_dir(&file_path);
+    let fsync_path = file_path.clone();
+    let _ = tokio::task::spawn_blocking(move || FileBrowser::fsync_parent_dir(&fsync_path)).await;
 
     // Only now debit — the file is durable under its final name.
     crate::transfer_quota::record_usage(state.db.pool(), &upload_quotas, total_bytes, true).await;
@@ -1975,7 +2039,11 @@ pub async fn handle_explorer_rename(
     let new_name = new_path.to_string_lossy().into_owned();
     match tokio::task::spawn_blocking(move || FileBrowser::rename_item(&path, &new_name)).await {
         Ok(Ok(_)) => {
-            FileBrowser::fsync_parent_dir(&new_path);
+            // The rename's durability fsync is a blocking syscall: it rides the
+            // blocking pool, best-effort, exactly like the rename itself.
+            let fsync_path = new_path.clone();
+            let _ = tokio::task::spawn_blocking(move || FileBrowser::fsync_parent_dir(&fsync_path))
+                .await;
             ResponseHelper::json_success(
                 serde_json::json!({"message": "Item renamed successfully"}),
             )
@@ -1993,6 +2061,9 @@ enum ResolvedDest {
     Skip,
 }
 
+/// Blocking by nature (`KeepBoth` probes for a free name), so it must only be
+/// called from the blocking pool — the handlers wrap it in `spawn_blocking`
+/// rather than calling it on a Tokio worker (ROADMAP X.1).
 fn resolve_dest(destination: &str, strategy: Option<&str>) -> ResolvedDest {
     use crate::browser::CollisionStrategy;
     let dest = std::path::Path::new(destination);
@@ -2046,20 +2117,29 @@ pub async fn handle_explorer_copy(
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
 
-    let destination = match resolve_dest(&destination, params.strategy.as_deref()) {
-        ResolvedDest::Skip => {
-            return ResponseHelper::json_success(serde_json::json!({
-                "skipped": true,
-                "message": "Destination already exists — skipped"
-            }));
-        }
-        ResolvedDest::Write(d) => d,
-    };
+    // `resolve_dest` stats the destination (and, for `keep_both`, probes for a
+    // free name), so it runs on the blocking pool, not on this worker.
+    let strategy = params.strategy.clone();
+    let destination =
+        match tokio::task::spawn_blocking(move || resolve_dest(&destination, strategy.as_deref()))
+            .await
+        {
+            Ok(ResolvedDest::Skip) => {
+                return ResponseHelper::json_success(serde_json::json!({
+                    "skipped": true,
+                    "message": "Destination already exists — skipped"
+                }));
+            }
+            Ok(ResolvedDest::Write(d)) => d,
+            Err(e) => {
+                return ResponseHelper::json_error(format!("Failed to resolve destination: {e}"))
+            }
+        };
 
     // Directories go through the tracked-progress job path (see
     // `spawn_tracked_copy_job`) since a large tree can take a long time;
     // single files stay on the fast synchronous path.
-    if std::path::Path::new(&source).is_dir() {
+    if path_is_dir(std::path::Path::new(&source)).await {
         let (job_id, sse_url) = spawn_tracked_copy_job(source, destination, username);
         return ResponseHelper::json_success(serde_json::json!({
             "job_id": job_id,
@@ -2115,21 +2195,30 @@ pub async fn handle_explorer_move(
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
 
-    let destination = match resolve_dest(&destination, params.strategy.as_deref()) {
-        ResolvedDest::Skip => {
-            return ResponseHelper::json_success(serde_json::json!({
-                "skipped": true,
-                "message": "Destination already exists — skipped"
-            }));
-        }
-        ResolvedDest::Write(d) => d,
-    };
+    // `resolve_dest` stats the destination (and, for `keep_both`, probes for a
+    // free name), so it runs on the blocking pool, not on this worker.
+    let strategy = params.strategy.clone();
+    let destination =
+        match tokio::task::spawn_blocking(move || resolve_dest(&destination, strategy.as_deref()))
+            .await
+        {
+            Ok(ResolvedDest::Skip) => {
+                return ResponseHelper::json_success(serde_json::json!({
+                    "skipped": true,
+                    "message": "Destination already exists — skipped"
+                }));
+            }
+            Ok(ResolvedDest::Write(d)) => d,
+            Err(e) => {
+                return ResponseHelper::json_error(format!("Failed to resolve destination: {e}"))
+            }
+        };
 
     // For directories, try the atomic rename first (instant regardless of
     // size on the same filesystem); only fall back to the tracked-progress
     // copy+delete job (see `spawn_tracked_move_job`) if that fails, e.g.
     // cross-filesystem.
-    if std::path::Path::new(&source).is_dir() {
+    if path_is_dir(std::path::Path::new(&source)).await {
         let rename_src = source.clone();
         let rename_dst = destination.clone();
         let rename_result =
@@ -2263,8 +2352,10 @@ pub async fn handle_explorer_permissions(
 
         let path = validated_path.to_string_lossy().into_owned();
         let result = tokio::task::spawn_blocking(move || {
-            use std::process::Command;
-            Command::new("chmod").arg(&mode).arg(&path).output()
+            run_timed(
+                std::process::Command::new("chmod").arg(&mode).arg(&path),
+                HOST_PROBE_TIMEOUT,
+            )
         })
         .await;
 
@@ -2569,11 +2660,12 @@ pub async fn handle_explorer_extract(
             ArchiveKind::SevenZip => "7z",
             ArchiveKind::Gz => "gunzip",
         };
-        if Command::new("which")
-            .arg(required_tool)
-            .output()
-            .map(|o| !o.status.success())
-            .unwrap_or(true)
+        if run_timed(
+            Command::new("which").arg(required_tool),
+            HOST_PROBE_TIMEOUT,
+        )
+        .map(|o| !o.status.success())
+        .unwrap_or(true)
         {
             return Err(format!(
                 "Cannot extract this archive: '{}' is not installed on this server",
@@ -2596,11 +2688,9 @@ pub async fn handle_explorer_extract(
         match kind {
             ArchiveKind::Gz => {} // single output file with a known name; no members
             ArchiveKind::Tar => {
-                let listing = listing_command("tar")
-                    .arg("-tf")
-                    .arg(archive)
-                    .output()
-                    .map_err(|e| e.to_string())?;
+                let mut listing_cmd = listing_command("tar");
+                listing_cmd.arg("-tf").arg(archive);
+                let listing = run_timed(&mut listing_cmd, ARCHIVE_TIMEOUT)?;
                 if !listing.status.success() {
                     return Err(format!(
                         "Cannot list archive members: {}",
@@ -2614,11 +2704,9 @@ pub async fn handle_explorer_extract(
                     }
                 }
                 // Same refusal for link members whose *target* escapes.
-                let verbose = listing_command("tar")
-                    .arg("-tvf")
-                    .arg(archive)
-                    .output()
-                    .map_err(|e| e.to_string())?;
+                let mut verbose_cmd = listing_command("tar");
+                verbose_cmd.arg("-tvf").arg(archive);
+                let verbose = run_timed(&mut verbose_cmd, ARCHIVE_TIMEOUT)?;
                 if verbose.status.success() {
                     for line in String::from_utf8_lossy(&verbose.stdout).lines() {
                         if let Some(target) = tar_listing_link_target(line) {
@@ -2633,11 +2721,9 @@ pub async fn handle_explorer_extract(
                 }
             }
             ArchiveKind::Zip => {
-                let listing = listing_command("unzip")
-                    .arg("-Z1")
-                    .arg(archive)
-                    .output()
-                    .map_err(|e| e.to_string())?;
+                let mut listing_cmd = listing_command("unzip");
+                listing_cmd.arg("-Z1").arg(archive);
+                let listing = run_timed(&mut listing_cmd, ARCHIVE_TIMEOUT)?;
                 if !listing.status.success() {
                     return Err(format!(
                         "Cannot list archive members: {}",
@@ -2650,22 +2736,17 @@ pub async fn handle_explorer_extract(
                         return Err(member_error(name));
                     }
                 }
-                let verbose = listing_command("unzip")
-                    .arg("-Zv")
-                    .arg(archive)
-                    .output()
-                    .map_err(|e| e.to_string())?;
+                let mut verbose_cmd = listing_command("unzip");
+                verbose_cmd.arg("-Zv").arg(archive);
+                let verbose = run_timed(&mut verbose_cmd, ARCHIVE_TIMEOUT)?;
                 if verbose.status.success() && zip_listing_has_symlink(&String::from_utf8_lossy(&verbose.stdout)) {
                     return Err(link_error());
                 }
             }
             ArchiveKind::SevenZip => {
-                let technical = listing_command("7z")
-                    .arg("l")
-                    .arg("-slt")
-                    .arg(archive)
-                    .output()
-                    .map_err(|e| e.to_string())?;
+                let mut technical_cmd = listing_command("7z");
+                technical_cmd.arg("l").arg("-slt").arg(archive);
+                let technical = run_timed(&mut technical_cmd, ARCHIVE_TIMEOUT)?;
                 if !technical.status.success() {
                     return Err(format!(
                         "Cannot list archive members: {}",
@@ -2702,12 +2783,13 @@ pub async fn handle_explorer_extract(
             })?;
             let sink = std::fs::File::create(&out_file)
                 .map_err(|e| format!("Failed to create output file: {}", e))?;
-            let output = Command::new("gunzip")
-                .arg("-c")
-                .arg(archive)
-                .stdout(Stdio::from(sink))
-                .output()
-                .map_err(|e| e.to_string())?;
+            // `run_timed` only fills in the stdio the caller left open, so the
+            // child still writes straight into the output file.
+            let output = run_timed_to_file(
+                Command::new("gunzip").arg("-c").arg(archive),
+                ARCHIVE_TIMEOUT,
+                sink,
+            )?;
             if !output.status.success() {
                 // Never leave a partial decompression behind.
                 let _ = std::fs::remove_file(&out_file);
@@ -2731,48 +2813,40 @@ pub async fn handle_explorer_extract(
         }
 
         let staged = (|| -> Result<(), String> {
-            let extraction = match kind {
-                ArchiveKind::Tar if is_tar_gz || extension == "gz" => Command::new("tar")
-                    .arg("-xzf")
-                    .arg(archive)
-                    .arg("-C")
-                    .arg(&staging)
-                    .output(),
-                ArchiveKind::Tar => match extension.as_str() {
-                    "bz2" => Command::new("tar")
-                        .arg("-xjf")
+            let mut extraction = match kind {
+                ArchiveKind::Tar if is_tar_gz || extension == "gz" => {
+                    let mut cmd = Command::new("tar");
+                    cmd.arg("-xzf").arg(archive).arg("-C").arg(&staging);
+                    cmd
+                }
+                ArchiveKind::Tar => {
+                    let flag = match extension.as_str() {
+                        "bz2" => "-xjf",
+                        "xz" => "-xJf",
+                        _ => "-xf",
+                    };
+                    let mut cmd = Command::new("tar");
+                    cmd.arg(flag).arg(archive).arg("-C").arg(&staging);
+                    cmd
+                }
+                ArchiveKind::Zip => {
+                    let mut cmd = Command::new("unzip");
+                    cmd.arg("-o").arg(archive).arg("-d").arg(&staging);
+                    cmd
+                }
+                ArchiveKind::SevenZip => {
+                    let mut cmd = Command::new("7z");
+                    cmd.arg("x")
                         .arg(archive)
-                        .arg("-C")
-                        .arg(&staging)
-                        .output(),
-                    "xz" => Command::new("tar")
-                        .arg("-xJf")
-                        .arg(archive)
-                        .arg("-C")
-                        .arg(&staging)
-                        .output(),
-                    _ => Command::new("tar")
-                        .arg("-xf")
-                        .arg(archive)
-                        .arg("-C")
-                        .arg(&staging)
-                        .output(),
-                },
-                ArchiveKind::Zip => Command::new("unzip")
-                    .arg("-o")
-                    .arg(archive)
-                    .arg("-d")
-                    .arg(&staging)
-                    .output(),
-                ArchiveKind::SevenZip => Command::new("7z")
-                    .arg("x")
-                    .arg(archive)
-                    .arg(format!("-o{}", staging.display()))
-                    .output(),
+                        .arg(format!("-o{}", staging.display()));
+                    cmd
+                }
                 ArchiveKind::Gz => unreachable!("handled above"),
             };
 
-            let output = extraction.map_err(|e| e.to_string())?;
+            // Bounded: see `ARCHIVE_TIMEOUT` — a ceiling for a real extraction,
+            // not an estimate.
+            let output = run_timed(&mut extraction, ARCHIVE_TIMEOUT)?;
             if !output.status.success() {
                 return Err(format!(
                     "Extraction failed: {}",
@@ -2890,7 +2964,7 @@ pub async fn handle_explorer_thumbnail(
         (validated, session.username)
     };
 
-    if !file_path.exists() {
+    if !path_exists(&file_path).await {
         return (StatusCode::NOT_FOUND, "File not found".to_string()).into_response();
     }
 
@@ -2908,7 +2982,7 @@ pub async fn handle_explorer_thumbnail(
     // SVGs are already small vectors — serve them directly rather than
     // trying to rasterize them.
     if extension == "svg" {
-        return match std::fs::read(&file_path) {
+        return match tokio::fs::read(&file_path).await {
             Ok(contents) => Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "image/svg+xml")
@@ -2986,10 +3060,11 @@ pub async fn handle_explorer_thumbnail_ticket(
             "Access denied: path outside allowed directory".to_string(),
         );
     };
-    if !dir.is_dir() {
+    if !path_is_dir(&dir).await {
         return ResponseHelper::json_error("Ticket scope must be a directory".to_string());
     }
-    let canonical = std::fs::canonicalize(&dir)
+    let canonical = tokio::fs::canonicalize(&dir)
+        .await
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| dir.to_string_lossy().into_owned());
     let ticket = crate::media_ticket::issue_thumbnail_ticket(
@@ -3074,6 +3149,20 @@ pub async fn handle_explorer_disks(
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     }
 
+    // The scan blocks: `/proc` reads, a `stat` per mount, one `lsblk` pass and
+    // one `df` per mount. It runs on the blocking pool — a disk that stops
+    // answering must not park a Tokio worker for every open Explorer window.
+    match tokio::task::spawn_blocking(collect_disks).await {
+        Ok(response) => ResponseHelper::json_success(response),
+        Err(e) => ResponseHelper::json_error(format!("Failed to list disks: {e}")),
+    }
+}
+
+/// The disk scan behind `GET /explorer/disks`, blocking by design (only ever
+/// reached through `spawn_blocking`). Every subprocess goes through
+/// `run_timed`, so a wedged `df`/`lsblk` costs one bounded probe, never the
+/// request.
+fn collect_disks() -> DisksResponse {
     let mut response = DisksResponse {
         system: vec![],
         internal: vec![],
@@ -3114,11 +3203,14 @@ pub async fn handle_explorer_disks(
                     continue;
                 }
 
-                // Get disk usage
+                // Get disk usage. `df` runs under the shared deadline: a hung
+                // network mount must not pin this scan forever.
                 let (size_bytes, used_bytes) = match std::fs::metadata(mount_point) {
                     Ok(_) => {
-                        use std::process::Command;
-                        match Command::new("df").arg("-B1").arg(mount_point).output() {
+                        match run_timed(
+                            std::process::Command::new("df").arg("-B1").arg(mount_point),
+                            HOST_PROBE_TIMEOUT,
+                        ) {
                             Ok(output) => {
                                 let output_str = String::from_utf8_lossy(&output.stdout);
                                 let lines: Vec<&str> = output_str.lines().collect();
@@ -3206,7 +3298,7 @@ pub async fn handle_explorer_disks(
         }
     }
 
-    ResponseHelper::json_success(response)
+    response
 }
 
 #[derive(Debug, Deserialize)]
@@ -3278,11 +3370,12 @@ pub async fn handle_explorer_compress(
 
     let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
         if format == "zip" {
-            let has_zip = std::process::Command::new("which")
-                .arg("zip")
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
+            let has_zip = run_timed(
+                std::process::Command::new("which").arg("zip"),
+                HOST_PROBE_TIMEOUT,
+            )
+            .map(|o| o.status.success())
+            .unwrap_or(false);
             if !has_zip {
                 return Err(
                     "Cannot create a .zip archive: 'zip' is not installed on this server"
@@ -3572,14 +3665,14 @@ pub async fn handle_explorer_save(
         return ResponseHelper::json_error("File is too large to edit here".to_string());
     }
 
-    if target.is_dir() {
+    if path_is_dir(&target).await {
         return ResponseHelper::json_error("Cannot write to a directory".to_string());
     }
     let parent = match target.parent() {
         Some(p) => p.to_path_buf(),
         None => return ResponseHelper::json_error("Invalid path".to_string()),
     };
-    if !parent.is_dir() {
+    if !path_is_dir(&parent).await {
         return ResponseHelper::json_error("Parent directory does not exist".to_string());
     }
 
@@ -3659,7 +3752,7 @@ pub async fn handle_explorer_roots(
     let mut roots: Vec<ExplorerRoot> = Vec::new();
 
     let home = format!("/home/{}", session.username);
-    if std::path::Path::new(&home).is_dir() {
+    if path_is_dir(std::path::Path::new(&home)).await {
         roots.push(ExplorerRoot {
             path: home,
             kind: "home".to_string(),
@@ -3761,11 +3854,12 @@ pub async fn handle_explorer_eject(
             return Err("Not an external or removable drive".to_string());
         }
 
-        let out = std::process::Command::new("sudo")
-            .arg("umount")
-            .arg(&mount_point)
-            .output()
-            .map_err(|e| e.to_string())?;
+        let out = run_timed(
+            std::process::Command::new("sudo")
+                .arg("umount")
+                .arg(&mount_point),
+            UMOUNT_TIMEOUT,
+        )?;
         if !out.status.success() {
             let msg = String::from_utf8_lossy(&out.stderr);
             return Err(if msg.trim().is_empty() {
@@ -3778,12 +3872,14 @@ pub async fn handle_explorer_eject(
         // Best effort: power the device down so it's safe to unplug.
         let bare = device.strip_prefix("/dev/").unwrap_or(&device);
         let disk = strip_partition_suffix(bare);
-        let _ = std::process::Command::new("sudo")
-            .arg("udisksctl")
-            .arg("power-off")
-            .arg("-b")
-            .arg(format!("/dev/{}", disk))
-            .output();
+        let _ = run_timed(
+            std::process::Command::new("sudo")
+                .arg("udisksctl")
+                .arg("power-off")
+                .arg("-b")
+                .arg(format!("/dev/{}", disk)),
+            UMOUNT_TIMEOUT,
+        );
         Ok(())
     })
     .await;
@@ -3899,22 +3995,24 @@ fn list_zfs_snapshots_sync(target: &str) -> Vec<ExplorerSnapshot> {
         .trim_start_matches('/')
         .to_string();
 
-    let out = std::process::Command::new("sudo")
-        .args([
-            "zfs",
-            "list",
-            "-H",
-            "-p",
-            "-t",
-            "snapshot",
-            "-o",
-            "name,creation",
-            "-r",
-            "-d",
-            "1",
-        ])
-        .arg(&dataset)
-        .output();
+    let out = run_timed(
+        std::process::Command::new("sudo")
+            .args([
+                "zfs",
+                "list",
+                "-H",
+                "-p",
+                "-t",
+                "snapshot",
+                "-o",
+                "name,creation",
+                "-r",
+                "-d",
+                "1",
+            ])
+            .arg(&dataset),
+        ZFS_QUERY_TIMEOUT,
+    );
     let Ok(out) = out else {
         return Vec::new();
     };
@@ -4401,16 +4499,20 @@ pub(crate) fn parse_avahi_line(line: &str) -> Option<(String, String)> {
 }
 
 fn discover_neighbours_sync() -> Vec<NetworkNeighbour> {
-    use std::time::Duration;
     let mut out: Vec<NetworkNeighbour> = Vec::new();
 
+    // Every sweep is bounded twice: the tools get their own `timeout 8` when
+    // that binary exists, and `run_timed` kills the whole call at
+    // `NEIGHBOUR_TIMEOUT` even when it does not (`timeout` missing, or a tool
+    // that ignores its own budget).
     let run = |prog: &str, args: &[&str]| {
-        std::process::Command::new(prog)
-            .args(args)
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        run_timed(
+            std::process::Command::new(prog).args(args),
+            NEIGHBOUR_TIMEOUT,
+        )
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
     };
 
     // SMB workgroup tree. `timeout 8` bounds the whole call including
@@ -4418,7 +4520,6 @@ fn discover_neighbours_sync() -> Vec<NetworkNeighbour> {
     if let Some(text) =
         run("timeout", &["8", "smbtree", "-N", "-b"]).or_else(|| run("smbtree", &["-N", "-b"]))
     {
-        let _ = Duration::from_secs(0);
         for line in text.lines() {
             if let Some((host, share)) = parse_smbtree_line(line) {
                 out.push(NetworkNeighbour {
@@ -4548,7 +4649,7 @@ pub async fn handle_explorer_format(
     // Refuse devices mounted at system locations — formatting the boot disk
     // from the file manager must be impossible, not just unlikely.
     const PROTECTED_MOUNTS: [&str; 5] = ["/", "/boot", "/boot/efi", "/etc", "/var"];
-    if let Ok(mounts) = std::fs::read_to_string("/proc/mounts") {
+    if let Ok(mounts) = tokio::fs::read_to_string("/proc/mounts").await {
         for line in mounts.lines() {
             let mut it = line.split_whitespace();
             let (Some(dev), Some(mp)) = (it.next(), it.next()) else {
@@ -4565,10 +4666,11 @@ pub async fn handle_explorer_format(
     let fstype = req.fstype.to_ascii_lowercase();
     let label = req.label.clone().unwrap_or_default();
     let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let wipe = std::process::Command::new("sudo")
-            .args(["wipefs", "-a", &device])
-            .output()
-            .map_err(|e| format!("wipefs failed to start: {e}"))?;
+        let wipe = run_timed(
+            std::process::Command::new("sudo").args(["wipefs", "-a", &device]),
+            DISK_OPERATION_TIMEOUT,
+        )
+        .map_err(|e| format!("wipefs failed to start: {e}"))?;
         if !wipe.status.success() {
             return Err(format!(
                 "wipefs failed: {}",
@@ -4584,11 +4686,13 @@ pub async fn handle_explorer_format(
                     args.push(label.clone());
                 }
                 args.push(device.clone());
-                let mk = std::process::Command::new("sudo")
-                    .arg("mkfs.ext4")
-                    .args(&args)
-                    .output()
-                    .map_err(|e| format!("mkfs.ext4 failed to start: {e}"))?;
+                let mk = run_timed(
+                    std::process::Command::new("sudo")
+                        .arg("mkfs.ext4")
+                        .args(&args),
+                    DISK_OPERATION_TIMEOUT,
+                )
+                .map_err(|e| format!("mkfs.ext4 failed to start: {e}"))?;
                 if !mk.status.success() {
                     return Err(format!(
                         "mkfs.ext4 failed: {}",
@@ -4602,11 +4706,13 @@ pub async fn handle_explorer_format(
                     args.push(label.clone());
                 }
                 args.push(device.clone());
-                let mk = std::process::Command::new("sudo")
-                    .arg("mkfs.exfat")
-                    .args(&args)
-                    .output()
-                    .map_err(|e| format!("mkfs.exfat failed to start: {e}"))?;
+                let mk = run_timed(
+                    std::process::Command::new("sudo")
+                        .arg("mkfs.exfat")
+                        .args(&args),
+                    DISK_OPERATION_TIMEOUT,
+                )
+                .map_err(|e| format!("mkfs.exfat failed to start: {e}"))?;
                 if !mk.status.success() {
                     return Err(format!(
                         "mkfs.exfat failed: {}",
@@ -5073,5 +5179,165 @@ Path = stage/inside/link\nFolder = -\nAttributes =  lrwxrwxrwx\n\n";
              (found {loads} call sites) — a direct call that handles the error \
              itself can silently fall back to an unlimited transfer"
         );
+    }
+
+    // --- ROADMAP X.1/X.2: blocking work and deadlines ---------------------
+
+    /// Tokens that must never appear in an `async fn` body outside a
+    /// `spawn_blocking` closure: a blocking `std::fs`/`Command` call or one of
+    /// the synchronous `FileBrowser`/`resolve_dest` helpers (they stat, unlink
+    /// and spawn). Matching on the call and not on the module keeps the guard
+    /// honest when a helper moves.
+    const BLOCKING_TOKENS: [&str; 19] = [
+        "std::fs::",
+        "std::process::Command",
+        "resolve_dest(",
+        "FileBrowser::delete_item",
+        "FileBrowser::create_directory",
+        "FileBrowser::rename_item",
+        "FileBrowser::copy_item",
+        "FileBrowser::move_item",
+        "FileBrowser::preview_file",
+        "FileBrowser::compress_items",
+        "FileBrowser::trash_item",
+        "FileBrowser::list_trash",
+        "FileBrowser::restore_trash_item",
+        "FileBrowser::purge_trash_item",
+        "FileBrowser::empty_trash",
+        "FileBrowser::fsync_parent_dir",
+        "FileBrowser::count_files",
+        "FileBrowser::copy_dir_all_tracked",
+        "FileBrowser::format_permissions",
+    ];
+
+    /// ROADMAP X.1 — every blocking call of this module sits behind
+    /// `spawn_blocking`.
+    ///
+    /// The defect this protects against is invisible to a behavioural test: a
+    /// handler that stats or shells out directly still answers `200` on an
+    /// idle box, and only parks a Tokio worker when a mount or a disk is slow.
+    /// So the invariant is asserted where it is enforced — at the source — by
+    /// walking the file and failing on any blocking token that appears inside
+    /// an `async fn` but outside a `spawn_blocking` closure (the span from the
+    /// line that opens one to the `})` closing at the same indentation).
+    #[test]
+    fn test_no_blocking_work_is_reachable_from_an_async_body() {
+        let src = include_str!("explorer.rs");
+        let lines: Vec<&str> = src.lines().collect();
+        let indent = |l: &str| l.len() - l.trim_start().len();
+
+        let mut spans: Vec<(usize, usize)> = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains("spawn_blocking(") || line.trim_start().starts_with("//") {
+                continue;
+            }
+            let open = indent(line);
+            let end = lines
+                .iter()
+                .enumerate()
+                .skip(i + 1)
+                .find(|(_, l)| l.trim_start().starts_with("})") && indent(l) == open)
+                .map(|(j, _)| j)
+                .unwrap_or(lines.len() - 1);
+            spans.push((i, end));
+        }
+        let inside_blocking = |i: usize| spans.iter().any(|&(a, b)| a <= i && i <= b);
+
+        let mut in_async: Option<&str> = None;
+        let mut offenders: Vec<String> = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            // A top-level item starts at column 0; the test module resets the
+            // scan so the assertions below are never counted as offenders.
+            if indent(line) == 0 {
+                if trimmed.starts_with("mod ") {
+                    in_async = None;
+                } else if line.contains("fn ") {
+                    let name = line
+                        .split("fn ")
+                        .nth(1)
+                        .and_then(|r| r.split(['(', '<']).next())
+                        .unwrap_or("?");
+                    in_async = line.contains("async ").then_some(name);
+                }
+            }
+            let Some(name) = in_async else { continue };
+            if inside_blocking(i) {
+                continue;
+            }
+            if BLOCKING_TOKENS.iter().any(|tok| line.contains(tok)) {
+                offenders.push(format!("explorer.rs:{} in `{name}`: {}", i + 1, trimmed));
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "blocking work in an async body (ROADMAP X.1) — move it into a sync \
+             helper called through `spawn_blocking`, or use `tokio::fs`:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    /// ROADMAP X.2 — no subprocess of this module can run without a deadline.
+    ///
+    /// `.output()` / `.spawn()` / `.status()` wait forever; every host command
+    /// here goes through `run_timed` (or `run_timed_to_file` for `gunzip -c`),
+    /// which kills the child at its deadline instead of holding the blocking
+    /// thread — and the request behind it — indefinitely.
+    #[test]
+    fn test_every_subprocess_of_this_module_carries_a_deadline() {
+        let src = include_str!("explorer.rs");
+        let production = src.split("#[cfg(test)]").next().unwrap_or(src);
+        for unbounded in [
+            // `concat!` keeps the searched pattern out of this file's own
+            // source, so the assertion cannot match itself.
+            concat!(".", "output()"),
+            concat!(".", "spawn()"),
+            concat!(".", "status()"),
+        ] {
+            assert!(
+                !production.contains(unbounded),
+                "`{unbounded}` waits without a deadline — use `run_timed` \
+                 (ROADMAP X.2)"
+            );
+        }
+        assert!(
+            production.matches("run_timed(").count() >= 15,
+            "the module lost its bounded subprocesses"
+        );
+        assert!(production.contains("run_timed_to_file("));
+    }
+
+    #[test]
+    fn test_module_deadlines_are_bounded_and_ordered() {
+        assert!(UMOUNT_TIMEOUT >= Duration::from_secs(5));
+        assert!(ZFS_QUERY_TIMEOUT >= HOST_PROBE_TIMEOUT);
+        assert!(DISK_OPERATION_TIMEOUT > ZFS_QUERY_TIMEOUT);
+        assert!(DISK_OPERATION_TIMEOUT <= Duration::from_secs(60 * 60));
+        assert!(ARCHIVE_TIMEOUT <= Duration::from_secs(2 * 60 * 60));
+        assert!(NEIGHBOUR_TIMEOUT <= ZFS_QUERY_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn test_path_helpers_see_files_dirs_and_a_missing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let missing = dir.path().join("nope");
+
+        assert!(path_exists(&file).await);
+        assert!(path_is_file(&file).await);
+        assert!(!path_is_dir(&file).await);
+        assert!(path_is_dir(dir.path()).await);
+        assert!(!path_is_file(dir.path()).await);
+        // A missing path is `false` for all three instead of an error: these
+        // helpers replace the `Path::exists/is_file/is_dir` calls the handlers
+        // used to make, and those never errored either.
+        assert!(!path_exists(&missing).await);
+        assert!(!path_is_file(&missing).await);
+        assert!(!path_is_dir(&missing).await);
     }
 }
