@@ -1976,6 +1976,38 @@ class ApiClient {
     return this.post('/syncthing/scan', { folder });
   }
 
+  /**
+   * Add a folder to the daemon's configuration (ROADMAP 18.1).
+   *
+   * The server owns every rule (ID charset, absolute path inside a managed
+   * storage root, sync mode, known devices), so the screen sends what the last
+   * dialog choice was and shows the refusal verbatim.
+   */
+  async createSyncthingFolder(body: {
+    id: string;
+    label: string;
+    path: string;
+    type: string;
+    devices: string[];
+  }) {
+    return this.post<{ id: string }>('/syncthing/folders', body);
+  }
+
+  /** Remove a folder from the daemon's configuration; files on disk are kept. */
+  async deleteSyncthingFolder(id: string) {
+    return this.delete(`/syncthing/folders/${encodeURIComponent(id)}`);
+  }
+
+  /** Pair a device by its 56-character ID (dashes optional, case-insensitive). */
+  async createSyncthingDevice(body: { device_id: string; name: string }) {
+    return this.post<{ device_id: string }>('/syncthing/devices', body);
+  }
+
+  /** Remove a pairing; folders and their files on disk are kept. */
+  async deleteSyncthingDevice(deviceId: string) {
+    return this.delete(`/syncthing/devices/${encodeURIComponent(deviceId)}`);
+  }
+
   // ==============================================
   // System Journal (centralized host logs & events)
   // ==============================================

@@ -758,11 +758,15 @@ The point is to absorb bursts of writes on fast media and let the slower array c
             content: r#"Continuous, peer-to-peer file synchronization, driven through the Syncthing daemon running on the same machine.
 
 - Overview: whether the daemon is running, transfer statistics, and how many errors it has recorded.
-- Folders: the synchronized folders with their state, adding a folder, pausing and resuming one, and triggering a rescan.
-- Devices: the known devices with their connection state, adding a device, and managing which ones are accepted.
+- Folders: the synchronized folders with their state. A folder can be added, paused, resumed, rescanned, and removed.
+- Devices: the known devices with their connection state, and pairing or removing one.
+- Sharing: a new folder is shared with the devices you tick, two-way by default; a send-only or receive-only mode is available, and leaving every device unticked keeps the folder on this appliance.
+- The folder path must be inside a storage location HomeVault manages. Syncthing creates the directory, so a folder that does not exist yet is fine — but nothing outside those locations is accepted.
+- A device is paired by pasting the 56-character ID the other device shows under Actions, then Show ID. Dashes and lower-case are accepted.
+- Removing a folder or a device only changes Syncthing's configuration: files already on disk are kept, and a removed device can be paired again later.
 - The daemon itself can be restarted from the screen.
 
-Syncthing keeps running independently of HomeVault — this screen is a management view over it, not a replacement. Folder paths and device keys are sensitive, so every action here requires an administrator. If the daemon is not reachable, or if its own configuration needs attention (for example an API key that HomeVault cannot use), the screen explains what to fix instead of failing silently."#.to_string(),
+Syncthing keeps running independently of HomeVault — this screen is a management view over it, not a replacement. Folder paths and device keys are sensitive, so every action here requires an administrator. If the daemon is not reachable, or if its own configuration needs attention (for example an API key that HomeVault cannot use), the screen explains what to fix instead of failing silently. A rejected value is reported next to the field that is wrong, with what you typed still in place."#.to_string(),
         },
         FeatureDoc {
             id: "downloader".to_string(),

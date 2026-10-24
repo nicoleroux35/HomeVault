@@ -21,8 +21,9 @@
 #![allow(clippy::await_holding_lock)]
 //! Integration tests for the Syncthing API — `crate::handlers::syncthing`.
 //!
-//! 10 endpoints: status, config, devices, folders, connections, errors
-//! (read) + restart, pause, resume, scan (mutating).
+//! 14 endpoints: status, config, devices, folders, connections, errors (read) +
+//! restart, pause, resume, scan, create folder/device, remove folder/device
+//! (mutating).
 //!
 //! Fresh in-memory SQLite + all migrations per test, a minimal Axum router,
 //! `tower::ServiceExt` — no real server.
@@ -32,12 +33,12 @@
 //! auth check whatsoever** — `restart` (full daemon restart) and
 //! pause/resume (disrupt any paired device) included, plus read access to
 //! every device ID/IP and folder path. Every handler now requires an
-//! **admin** session; this suite locks that in on all 10, plus the
-//! malformed-body 422 on the three that take a JSON body. The admin
+//! **admin** session; this suite locks that in on all 14, plus the
+//! malformed-body 422 on the ones that take a JSON body. The admin
 //! success paths (which issue a real HTTP call to `127.0.0.1:8384`, and
-//! for `restart`/`pause`/`resume`/`scan` would actually mutate a running
-//! daemon) are left to `tests/e2e/syncthing/syncthing.spec.ts`, and even
-//! there stay read-only unless a disposable instance is wired up.
+//! for the mutating routes would actually change a running daemon's
+//! configuration) are left to `tests/e2e/syncthing/syncthing.spec.ts`, and
+//! even there stay read-only unless a disposable instance is wired up.
 //!
 //! Section 3 covers ROADMAP 18.2: the `<apikey>` in `config.xml` is
 //! user-editable file content interpolated into an outbound header, and a
@@ -46,6 +47,13 @@
 //! newline in the key, with a pretty-printed key and with a blank one; the
 //! expected answers are a named `success:false` error, an accepted header
 //! and "no key configured" respectively — never a panic.
+//!
+//! Section 5 covers ROADMAP 18.1 (folder and device management). Its rule is
+//! the one the 2026-10-23 audits kept restating: the assertion has to be about
+//! *behaviour*, not shape. Every refused field is proved to be refused **before
+//! any call to the daemon** (the error must not be the transport one), and a
+//! valid body is proved to get *past* validation (it must reach the transport),
+//! so neither direction can regress into "200 with an envelope".
 //!
 //! Note on status codes: these handlers always return HTTP 200 and signal
 //! failure in the body (`{"success":false,"error":…}`), like Downloader /
@@ -56,7 +64,7 @@
 //!   cargo test --test syncthing_integration -- --nocapture
 
 use axum::{
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use http::{Method, Request, StatusCode};
@@ -72,10 +80,12 @@ use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{
     auth::handle_login,
     syncthing::{
-        handle_syncthing_config, handle_syncthing_connections, handle_syncthing_devices,
-        handle_syncthing_errors, handle_syncthing_folders, handle_syncthing_pause_device,
-        handle_syncthing_restart, handle_syncthing_resume_device, handle_syncthing_scan_folder,
-        handle_syncthing_status,
+        handle_syncthing_config, handle_syncthing_connections,
+        handle_syncthing_create_device, handle_syncthing_create_folder,
+        handle_syncthing_delete_device, handle_syncthing_delete_folder,
+        handle_syncthing_devices, handle_syncthing_errors, handle_syncthing_folders,
+        handle_syncthing_pause_device, handle_syncthing_restart,
+        handle_syncthing_resume_device, handle_syncthing_scan_folder, handle_syncthing_status,
     },
     AppState,
 };
@@ -129,8 +139,22 @@ fn syncthing_router(state: Arc<AppState>) -> Router {
         .route("/api/auth/login", post(handle_login))
         .route("/api/syncthing/status", get(handle_syncthing_status))
         .route("/api/syncthing/config", get(handle_syncthing_config))
-        .route("/api/syncthing/devices", get(handle_syncthing_devices))
-        .route("/api/syncthing/folders", get(handle_syncthing_folders))
+        .route(
+            "/api/syncthing/devices",
+            get(handle_syncthing_devices).post(handle_syncthing_create_device),
+        )
+        .route(
+            "/api/syncthing/devices/{device_id}",
+            delete(handle_syncthing_delete_device),
+        )
+        .route(
+            "/api/syncthing/folders",
+            get(handle_syncthing_folders).post(handle_syncthing_create_folder),
+        )
+        .route(
+            "/api/syncthing/folders/{folder_id}",
+            delete(handle_syncthing_delete_folder),
+        )
         .route(
             "/api/syncthing/connections",
             get(handle_syncthing_connections),
@@ -217,36 +241,60 @@ fn denied(body: &Value, fragment: &str) {
     );
 }
 
+/// A structurally valid device ID: 56 base-32 characters in eight groups.
+const DEVICE_ID: &str = "AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
+
 /// (method, uri, body) for every endpoint, with a body valid for its extractor.
-fn all_endpoints() -> Vec<(Method, &'static str, Option<Value>)> {
+fn all_endpoints() -> Vec<(Method, String, Option<Value>)> {
     vec![
-        (Method::GET, "/api/syncthing/status", None),
-        (Method::GET, "/api/syncthing/config", None),
-        (Method::GET, "/api/syncthing/devices", None),
-        (Method::GET, "/api/syncthing/folders", None),
-        (Method::GET, "/api/syncthing/connections", None),
-        (Method::GET, "/api/syncthing/errors", None),
-        (Method::POST, "/api/syncthing/restart", None),
+        (Method::GET, "/api/syncthing/status".to_string(), None),
+        (Method::GET, "/api/syncthing/config".to_string(), None),
+        (Method::GET, "/api/syncthing/devices".to_string(), None),
+        (Method::GET, "/api/syncthing/folders".to_string(), None),
+        (Method::GET, "/api/syncthing/connections".to_string(), None),
+        (Method::GET, "/api/syncthing/errors".to_string(), None),
+        (Method::POST, "/api/syncthing/restart".to_string(), None),
         (
             Method::POST,
-            "/api/syncthing/pause",
+            "/api/syncthing/pause".to_string(),
             Some(json!({"device": "AAAA-BBBB"})),
         ),
         (
             Method::POST,
-            "/api/syncthing/resume",
+            "/api/syncthing/resume".to_string(),
             Some(json!({"device": "AAAA-BBBB"})),
         ),
         (
             Method::POST,
-            "/api/syncthing/scan",
+            "/api/syncthing/scan".to_string(),
             Some(json!({"folder": "default"})),
+        ),
+        // ROADMAP 18.1 — folder and device management.
+        (
+            Method::POST,
+            "/api/syncthing/folders".to_string(),
+            Some(json!({"id": "e2e", "path": "/tmp/syncthing-e2e"})),
+        ),
+        (
+            Method::DELETE,
+            "/api/syncthing/folders/e2e".to_string(),
+            None,
+        ),
+        (
+            Method::POST,
+            "/api/syncthing/devices".to_string(),
+            Some(json!({"device_id": DEVICE_ID})),
+        ),
+        (
+            Method::DELETE,
+            format!("/api/syncthing/devices/{DEVICE_ID}"),
+            None,
         ),
     ]
 }
 
 // ---------------------------------------------------------------------------
-// 1. Auth — all 10 endpoints are admin-only
+// 1. Auth — all 14 endpoints are admin-only
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -254,7 +302,7 @@ async fn test_all_endpoints_reject_missing_token() {
     let (state, _tmp, _g) = setup_state().await;
     let mut router = syncthing_router(state);
     for (m, u, b) in all_endpoints() {
-        let (status, body) = send(&mut router, m.clone(), u, None, b).await;
+        let (status, body) = send(&mut router, m.clone(), &u, None, b).await;
         assert_eq!(status, StatusCode::OK, "{m} {u}");
         denied(&body, "No session token provided");
     }
@@ -265,7 +313,7 @@ async fn test_all_endpoints_reject_bogus_token() {
     let (state, _tmp, _g) = setup_state().await;
     let mut router = syncthing_router(state);
     for (m, u, b) in all_endpoints() {
-        let (_, body) = send(&mut router, m.clone(), u, Some("nope"), b).await;
+        let (_, body) = send(&mut router, m.clone(), &u, Some("nope"), b).await;
         denied(&body, "Invalid or expired session");
     }
 }
@@ -280,7 +328,7 @@ async fn test_all_endpoints_reject_non_admin_session() {
     let mut router = syncthing_router(state);
     let token = login(&mut router, "regular", "Password123!").await;
     for (m, u, b) in all_endpoints() {
-        let (_, body) = send(&mut router, m.clone(), u, Some(&token), b).await;
+        let (_, body) = send(&mut router, m.clone(), &u, Some(&token), b).await;
         denied(&body, "Admin privileges required");
     }
 }
@@ -300,6 +348,8 @@ async fn test_pause_resume_scan_reject_missing_field_with_422() {
         ("/api/syncthing/pause", json!({"not_device": "x"})),
         ("/api/syncthing/resume", json!({})),
         ("/api/syncthing/scan", json!({"not_folder": "x"})),
+        ("/api/syncthing/folders", json!({"id": "x"})),
+        ("/api/syncthing/devices", json!({"name": "x"})),
     ] {
         let (status, _) = send(&mut router, Method::POST, uri, Some(&token), Some(bad)).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{uri}");
@@ -460,4 +510,181 @@ async fn test_status_for_admin_returns_a_well_formed_envelope() {
         "status must report an `available` bool, got {}",
         body["data"]
     );
+}
+
+// ---------------------------------------------------------------------------
+// 5. Config edits — folder and device management (ROADMAP 18.1)
+// ---------------------------------------------------------------------------
+//
+// The screen could read the daemon's topology and pause/resume a paired
+// device, but it could not add or remove a folder or a device at all. The four
+// new handlers validate **before** anything reaches the daemon, which is what
+// these tests pin: a refused field is a `success:false` envelope naming the
+// rule, with no connection attempt, so the daemon being down (the normal state
+// of this test host) cannot mask a validation hole.
+
+/// A valid `POST /api/syncthing/folders` body for the test guard (`/tmp`).
+fn folder_body() -> Value {
+    json!({
+        "id": "e2e",
+        "label": "E2E",
+        "path": "/tmp/syncthing-e2e",
+        "type": "sendreceive",
+        "devices": [],
+    })
+}
+
+#[tokio::test]
+async fn test_create_folder_refuses_bad_fields_before_any_daemon_call() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = syncthing_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let mut cases: Vec<(Value, &str)> = vec![
+        (
+            json!({"id": "", "path": "/tmp/syncthing-e2e"}),
+            "Folder ID must not be empty",
+        ),
+        (
+            json!({"id": "a/b", "path": "/tmp/syncthing-e2e"}),
+            "may only contain letters, digits",
+        ),
+        (
+            json!({"id": "e2e", "path": "relative/path"}),
+            "must be an absolute path",
+        ),
+        (
+            json!({"id": "e2e", "path": "/tmp/../etc"}),
+            "must not contain '..'",
+        ),
+        (
+            json!({"id": "e2e", "path": "/etc"}),
+            "must be inside a storage location",
+        ),
+        (
+            json!({"id": "e2e", "path": "/tmp/syncthing-e2e", "type": "receiveencrypted"}),
+            "is not supported",
+        ),
+        (
+            json!({"id": "e2e", "path": "/tmp/syncthing-e2e", "devices": ["not-a-device"]}),
+            "56 characters",
+        ),
+    ];
+    // A path longer than the cap is refused too, without building it in the
+    // (readable) table above.
+    cases.push((
+        json!({"id": "e2e", "path": format!("/tmp/{}", "a".repeat(1100))}),
+        "too long",
+    ));
+
+    for (body, fragment) in cases {
+        let (status, res) = send(
+            &mut router,
+            Method::POST,
+            "/api/syncthing/folders",
+            Some(&token),
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        denied(&res, fragment);
+        let err = res["error"].as_str().unwrap_or_default();
+        assert!(
+            !err.contains("Failed to connect"),
+            "validation must run before the daemon call, got {err:?} for {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_create_device_refuses_a_bad_id_before_any_daemon_call() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = syncthing_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    for (device, fragment) in [
+        (json!({"device_id": ""}), "must not be empty"),
+        (json!({"device_id": "AAAA-BBBB"}), "56 characters"),
+        (json!({"device_id": "0".repeat(56)}), "letters A-Z and digits 2-7"),
+        (
+            json!({"device_id": DEVICE_ID, "name": "bad\nname"}),
+            "control characters",
+        ),
+    ] {
+        let (_, res) = send(
+            &mut router,
+            Method::POST,
+            "/api/syncthing/devices",
+            Some(&token),
+            Some(device.clone()),
+        )
+        .await;
+        denied(&res, fragment);
+        assert!(
+            !res["error"].as_str().unwrap_or_default().contains("Failed to connect"),
+            "validation must run before the daemon call, got {res}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_delete_endpoints_refuse_an_invalid_parameter_before_the_call() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = syncthing_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    // The ID is re-validated after URL decoding: `..` and `a/b` must never be
+    // interpolated into the daemon's REST path.
+    for (uri, fragment) in [
+        ("/api/syncthing/folders/a%2Fb", "may only contain"),
+        ("/api/syncthing/folders/..", "not a usable identifier"),
+        ("/api/syncthing/devices/nope", "56 characters"),
+    ] {
+        let (status, res) = send(&mut router, Method::DELETE, uri, Some(&token), None).await;
+        assert_eq!(status, StatusCode::OK, "{uri} {res}");
+        denied(&res, fragment);
+        assert!(
+            !res["error"].as_str().unwrap_or_default().contains("Failed to connect"),
+            "{uri}: validation must run before the daemon call, got {res}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_valid_config_edits_pass_validation_and_reach_the_transport() {
+    // A body that passes every rule must get as far as the HTTP call. On a host
+    // with no daemon that is the named transport error — *not* a validation
+    // message — which is what proves the rules are not refusing valid input.
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = syncthing_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    for (method, uri, body) in [
+        (Method::POST, "/api/syncthing/folders", Some(folder_body())),
+        (
+            Method::POST,
+            "/api/syncthing/devices",
+            Some(json!({"device_id": DEVICE_ID.to_lowercase(), "name": "Laptop"})),
+        ),
+        (Method::DELETE, "/api/syncthing/folders/e2e", None),
+        (Method::DELETE, "/api/syncthing/devices/AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH", None),
+    ] {
+        let (status, res) = send(&mut router, method, uri, Some(&token), body).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        let err = res["error"].as_str().unwrap_or_default();
+        if res["success"] == true {
+            // A real daemon answered on 127.0.0.1:8384 — the call was accepted,
+            // which is the strongest possible form of this assertion.
+            continue;
+        }
+        assert!(
+            err.contains("Failed to connect to Syncthing")
+                || err.contains("Syncthing API error"),
+            "{uri}: a valid body must reach the daemon, got {res}"
+        );
+    }
 }
