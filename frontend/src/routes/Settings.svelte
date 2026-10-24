@@ -46,6 +46,8 @@
     clearHostnameNotice,
     clearTimezoneNotice,
     clearLanguageNotice,
+    setAutostartNotice,
+    clearAutostartNotice,
     type SettingsGroup
   } from '$lib/stores/settingsDraft.svelte';
   import SettingsSaveButton from '$lib/components/settings/SettingsSaveButton.svelte';
@@ -155,6 +157,9 @@
   let loading = true;
   let testingEmail = false;
   let checkingUpdate = false;
+  // ROADMAP 25.2: the host could not answer the start-on-boot probe, so the
+  // switch must not pretend to know the current state. The alert says why.
+  let autostartUnavailable = false;
 
   // Database snapshots (HomeVault's own SQLite database). The database runs in
   // WAL mode, so the `.db` file alone is NOT restorable — the backend writes
@@ -353,6 +358,14 @@
     const res = await api.getAutostart();
     if (res.success && res.data) {
       seedAutostart(!!(res.data as any).enabled);
+      // A host that answered is a host that can be toggled again.
+      autostartUnavailable = false;
+      clearAutostartNotice();
+    } else {
+      // ROADMAP 25.2: "the host could not answer" is not "disabled" — show
+      // the reason and disable the switch instead of displaying a false off.
+      autostartUnavailable = true;
+      setAutostartNotice(res.message || translate('settings.autostart_update_failed'));
     }
   }
 
@@ -1015,7 +1028,7 @@
               <p id="timezoneHint" class={cn(settingsRowHint, 'max-w-[280px]')}>{$t('settings.timezone_hint')}</p>
             </div>
           </div>
-          <div class={settingsRow}>
+          <div class={settingsRow} data-testid="settings-autostart-row">
             <div class="min-w-0">
               <span class={settingsRowLabel}>{$t('settings.autostart_label')}</span>
               <p class={settingsRowHint}>{$t('settings.autostart_description')}</p>
@@ -1023,9 +1036,21 @@
             <Switch
               bind:checked={draft.autostart.enabled}
               accent={activeCat.accent}
+              disabled={autostartUnavailable}
               ariaLabel={$t('settings.autostart_label')}
+              data-testid="settings-autostart"
             />
           </div>
+          {#if notices.autostart}
+            <div class="py-3 border-t-[1.45px] border-[var(--hv-settings-hairline)]" data-testid="autostart-error">
+              <Alert variant="error" dismissible ondismiss={clearAutostartNotice}>
+                {$t(
+                  autostartUnavailable ? 'settings.autostart_read_failed' : 'settings.autostart_error',
+                  { reason: notices.autostart }
+                )}
+              </Alert>
+            </div>
+          {/if}
         </div>
       {/if}
       {#if activeCategory === 'security'}

@@ -225,10 +225,15 @@ export const notices = $state<{
    *  (ROADMAP 13.4) — without this the selector would look saved and revert
    *  on the next restart. */
   language: string | null;
+  /** The start-on-boot call could not be read or changed (ROADMAP 25.2) —
+   *  the server's own reason (host stderr), shown with `role="alert"` so a
+   *  refused `sudo systemctl` is distinguishable from a silent success. */
+  autostart: string | null;
 }>({
   hostname: null,
   timezone: null,
   language: null,
+  autostart: null,
 });
 
 export function clearHostnameNotice() {
@@ -241,6 +246,15 @@ export function clearTimezoneNotice() {
 
 export function clearLanguageNotice() {
   notices.language = null;
+}
+
+/** Record/clear the start-on-boot refusal reason (ROADMAP 25.2). */
+export function setAutostartNotice(reason: string | null) {
+  notices.autostart = reason;
+}
+
+export function clearAutostartNotice() {
+  notices.autostart = null;
 }
 
 /** TLS save result surfaced to the TlsCard (restart banner + cert info). */
@@ -408,7 +422,21 @@ async function saveGroup(group: SettingsGroup): Promise<void> {
     }
     case 'autostart': {
       const res = await api.setAutostart(draft.autostart.enabled);
-      if (!res.success) throw new Error(group);
+      if (!res.success) {
+        // ROADMAP 25.2: the host's own reason, not a generic label. The
+        // generic sentence is the UI's (settings.autostart_error).
+        notices.autostart = res.message || translate('settings.autostart_update_failed');
+        // The refusal means the staged flip did NOT happen: put the switch
+        // back on the server-accepted value instead of leaving it showing a
+        // state the host refused (no optimistic flip that lies). `baselines`
+        // still holds the last successful server value.
+        const accepted = baselines['autostart'];
+        if (accepted !== undefined) {
+          draft.autostart = JSON.parse(accepted);
+        }
+        throw new Error(group);
+      }
+      notices.autostart = null;
       break;
     }
     case 'ai': {
@@ -486,6 +514,7 @@ export async function saveAll(): Promise<number> {
   notices.hostname = null;
   notices.timezone = null;
   notices.language = null;
+  notices.autostart = null;
   setTlsSaveResult(null);
   let failed = 0;
   for (const group of dirty) {

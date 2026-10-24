@@ -470,6 +470,44 @@ screen:
   stores into the draft — but no-op while the group is dirty, so a late server
   sync never clobbers staged edits.
 
+## Autostart card (System)
+
+The **Start on boot** toggle drives `systemctl enable|disable homevault`
+through `src/autostart.rs`. It is admin-only, and the sudoers grant is scoped
+to exactly `systemctl enable homevault` / `systemctl disable homevault` —
+never the bare `systemctl` (see [power.md](power.md)).
+
+**Both host calls are bounded and off the async runtime** (ROADMAP 25.1):
+`is_enabled` and `set_enabled` run their `std::process::Command` inside
+`spawn_blocking` with a `run_timed` deadline (`AUTOSTART_PROBE_TIMEOUT` 10 s,
+`AUTOSTART_UPDATE_TIMEOUT` 30 s). `sudo systemctl enable` can block for
+seconds on the sudo PAM stack or on a systemd job ordering; parking a Tokio
+worker on it would also park the whole settings save.
+
+**“The host cannot answer” is not “disabled”** (ROADMAP 25.2). The probe is
+tri-state:
+
+| Host answer | `is_enabled()` | `GET /settings/autostart` | Card |
+|---|---|---|---|
+| exit 0 | `Ok(true)` | `200 {enabled:true}` | switch on |
+| exit 1, clean stderr (`disabled`, `masked`, `static`, …) | `Ok(false)` | `200 {enabled:false}` | switch off |
+| exit 1, non-empty stderr (container, no systemd, unit missing) | `Err(reason)` | `500 {success:false, message:<reason>}` | switch **disabled**, `role="alert"` naming the reason |
+
+Before this, the `unwrap_or(false)` collapsed the third row into “off”, so an
+admin on a non-systemd host saw a switch that lied. A failed **read** disables
+the switch until a later read succeeds (`autostartUnavailable`), so it cannot
+stage a change against an unknown baseline.
+
+**A refusal shows the host's reason and changes nothing.** `set_enabled`
+returns the stderr tail (`polkit refused: no authorization`, `sudo: a password
+is required`, `Failed to get unit file state…`); the handler relays it as the
+`500` body's `message`, and the card renders it as an error `Alert`
+(`role="alert"`, dismissible, `data-testid="autostart-error"`) wrapped in the
+localised sentence `settings.autostart_error`. The staged flip is reverted to
+the last server-accepted value (`baselines['autostart']`) so the switch never
+shows a state the host refused; the rail-footer Save button parks on
+`data-state="error"`.
+
 ## Invariants
 
 - `/settings/public` is the only settings endpoint callable without a session

@@ -97,7 +97,7 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 | GET | `/settings/backup/db` | admin | snapshots of HomeVault's own database — settings, files on disk, total size and `last_error` (the reason the last attempt failed, cleared by the next success). The DB is WAL, so the `.db` alone is not restorable |
 | PUT | `/settings/backup/db` | admin | update `interval_hours` / `retain`; a lower retention prunes immediately. `retain` bounds regular snapshots only — a `.pre-migration` restore point is never pruned by it and is bounded separately (3) |
 | POST | `/settings/backup/db/now` | admin | take a `VACUUM INTO` snapshot now → `{ backup, status }`. Serialised process-wide: it waits for a snapshot already running instead of starting a second `VACUUM INTO` |
-| GET/PUT | `/settings/autostart` | admin | start-on-boot (systemd) for `homevault.service` |
+| GET/PUT | `/settings/autostart` | admin | start-on-boot (systemd) for `homevault.service`. Both calls are bounded (`run_timed`) and run off the async runtime. GET answers `200 {enabled}` or `500 {success:false, message:<host reason>}` when the host cannot answer (container / no systemd / unit missing) — it never reports a false `enabled:false`. PUT answers `200 {enabled, message}` or `500` with the host's own stderr (`polkit refused: …`, `sudo: a password is required`, `Failed to get unit file state…`); a refusal changes nothing |
 
 ## Security — `security/*` (auth)
 
