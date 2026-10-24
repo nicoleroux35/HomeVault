@@ -1,6 +1,6 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-24 — current version: 1.0.0
+Last updated: 2026-10-24 (item 26 closed) — current version: 1.0.0
 
 ## How to read this file
 
@@ -83,16 +83,16 @@ Two structural facts explain most of the list:
 |---|---|---|---|
 | 10b | File Explorer — residual hardening | P2 | 3 |
 | 16.4 | Cloud Sync (rclone) — no scheduler | P2 | 1 |
-| 26 | Wallpapers / Themes | P1 | 2 |
 | 27 | Web shortcuts | P1 | 2 |
 | 28 | Activity taskbar | P2 | 3 |
 | 29 | mDNS | P2 | 2 |
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | 32 | Virtual Machines — residual | P2 | 2 |
 | 33 | Transfer quotas — residual | P2 | 1 |
-| — | Cross-cutting (7 systemic) | — | 7 |
+| — | Cross-cutting (6 systemic) | — | 6 |
 
-Total open findings: **24** (17 per-area + 7 cross-cutting).
+Total open findings: **22** (16 per-area + 6 cross-cutting). Item 26 (2
+findings) left the open list on 2026-10-24 — see Done.
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
@@ -140,9 +140,12 @@ down, and every power button (desktop, Settings, MCP) runs one bounded
 `sudo systemctl` primitive. **25 (Autostart) closed on 2026-10-24**: every
 `systemctl` call is off the async runtime with a deadline, a host that cannot
 answer is no longer reported as "disabled", and a refusal carries the host's
-own reason. The next P1 is **26 (Wallpapers / Themes)**, where a non-admin
-never receives the server appearance and `theme`/`density` are persisted
-no-ops.
+own reason. **26 (Wallpapers / Themes) closed on 2026-10-24** (see Done): the appliance
+look is now readable by every session, so a non-admin's boot hydration paints
+it, the wallpaper is validated server-side, and the two persisted no-ops
+(`theme`, `density`) are deleted. The next P1 is **27 (Web shortcuts)**, where
+the 512 KB cap does not bound the read and the redirect guard stops after one
+hop.
 
 ---
 
@@ -194,26 +197,16 @@ sudoers grant). Tests: `handlers/system.rs` 0 → 4 unit, `power_integration.rs`
 
 ### 26. Wallpapers / Themes — a non-admin never receives the server appearance
 
-- [ ] **26.1 — Hydration calls an admin-only endpoint.** `App.svelte:39` calls
-      `api.getAllSettings()`, whose handler is admin-only
-      (`src/handlers/settings.rs:1189-1191`). For a non-admin the call fails, the
-      `catch` swallows it (`App.svelte:54-56`), and the desktop silently keeps
-      that browser's `localStorage` values — two users on one appliance see
-      different wallpapers with no explanation. `PUT /settings/appearance` is
-      also admin-only (`:1106`), so a non-admin cannot change their own accent.
-      *Acceptance:* a non-admin-readable appearance endpoint (or per-user
-      appearance), consumed by the boot hydration.
-- [ ] **26.2 — `theme` and `density` are persisted no-ops.** Written and
-      round-tripped (`handlers/settings.rs:1111,1120,1163,1166`) but nothing
-      consumes them — `grep -r "data-theme\|data-density" frontend/src` returns
-      **zero** hits. A user can save a "theme" that changes nothing.
-      *Acceptance:* wire them, or delete the fields and the round-trip.
-
-Also: the wallpaper is stored as a JSON string inside the settings blob
-(`:1115`) and both readers parse with a `try/catch` fallback
-(`Settings.svelte:392-405`, `App.svelte:45-52`), so one malformed value silently
-resets the user's wallpaper instead of reporting corruption.
-*Docs:* `docs/guides/wallpapers.md`, `docs/guides/settings.md`.
+Closed on 2026-10-24 — see Done. Both findings were fixed in one pass (option
+**A**: one appliance-wide look, readable by every session, written by an admin);
+the contract now lives in
+[guides/settings.md](docs/guides/settings.md#appearance--one-appliance-look-roadmap-26-2026-10-24),
+[guides/themes.md](docs/guides/themes.md) (rewritten — it documented a
+`ThemeToggle.svelte` that never existed) and
+[guides/wallpapers.md](docs/guides/wallpapers.md). Tests:
+`handlers/settings.rs` 25 → 29 unit, `settings_persistence.rs` 13 → 15,
+`src/i18n.rs` 8 → 9, `settings_core_integration.rs` 24 → 28, `settings.spec.ts`
+104 → 111.
 
 ---
 
@@ -367,7 +360,10 @@ reuse.
       A wedged `zpool`/`mdadm`/`smartctl`/`df` still blocks a handler or a job
       forever in the files listed above.
 - [ ] **X.3 — Empty `else {}` error handling in the UI.** CloudSync (6),
-      Health, Desktop (power), NotificationCenter — *Dashboard is fixed
+      Health, Desktop (power), NotificationCenter — *the boot hydration's two
+      are fixed (2026-10-24, item 26: `App.svelte` no longer swallows the
+      appearance read — a failure is one `toast.error` and the desktop keeps
+      its last known value, as an explained fallback)* — *Dashboard is fixed
       (2026-10-23: `AppUsageBreakdown` shows a `role="alert"` band for a failed
       restart/stop/uninstall and an admin-only notice instead of a silent
       403 loop); Downloader's 5
@@ -449,6 +445,41 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-24 (d)** — Wallpapers / Themes — one appliance look every account can
+read, a validated wallpaper, and two no-op fields deleted (items 26.1 and 26.2,
+plus the wallpaper-parse debt recorded under 26.1). **Decision (option A):**
+appearance is a single appliance-wide value — wallpaper + accent — written by an
+admin and **read by every signed-in session**; it is not per-account. 26.1 —
+`App.svelte` hydrated from `api.getAllSettings()`, an admin-only handler, so for
+a non-admin the call failed, the `catch` swallowed it and the desktop kept that
+origin's `localStorage` copy: two origins, two wallpapers, no explanation.
+`GET /api/settings/appearance` is now session-readable and returns **exactly**
+`{ wallpaper, accent_color }` (no e-mail, SMTP, webhook, update or notification
+field — the aggregate stays admin-only), the hydration calls it and a failure
+is **reported once** instead of disappearing; the Settings → Appearance grid is
+rendered **read-only** for a non-admin (`data-readonly`, every tile `disabled`,
+"Managed by the administrator") because `PUT` stays admin-only. The wallpaper
+used to be stored verbatim and parsed behind a `try/catch` in two readers; it is
+now validated at save **and** on load (`validate_wallpaper_field`: `""`,
+`/wallpapers/hv-NN.webp`, `hv-NN`, a bare JSON string or the `WallpaperConfig`
+JSON, normalised to the bare URL, 1 ≤ N ≤ 44) — anything else is a `400` whose
+message starts `wallpaper:`, with the stored value untouched, and an off-list
+value on disk is dropped to `""`. `validate_accent_color_field` refuses
+non-hex accents (closing a CSS-injection vector into `--hv-primary`). 26.2 —
+`theme` and `density` were persisted, round-tripped and consumed by nothing
+(`grep -rn "data-theme\|data-density" frontend/src` → 0 hits, no dark theme in
+the tree); they are deleted from the model, both handlers, the aggregate, the
+draft store, the API type and all four i18n files, and only *read* from an older
+`settings.json` for backward compatibility. Detail:
+[guides/settings.md](docs/guides/settings.md#appearance--one-appliance-look-roadmap-26-2026-10-24),
+[guides/themes.md](docs/guides/themes.md) (rewritten — it documented a
+`ThemeToggle.svelte` and a theme registry that never existed),
+[guides/wallpapers.md](docs/guides/wallpapers.md). Tests: `handlers/settings.rs`
+25 → 29 unit, `settings_persistence.rs` 13 → 15, `src/i18n.rs` 8 → 9 key-parity,
+`settings_core_integration.rs` 24 → 28 (the non-admin read is the assertion that
+would have caught 26.1), `settings.spec.ts` 104 → 111 — written, not run in this
+pass.
 
 **2026-10-24 (c)** — Autostart — the `systemctl` calls left the async runtime
 and a refusal now says why (items 25.1 and 25.2). `is_enabled()` /

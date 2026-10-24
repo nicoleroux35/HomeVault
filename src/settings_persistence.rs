@@ -120,6 +120,13 @@ pub struct PersistedNotifications {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// The on-disk appearance block (settings.json).
+///
+/// ROADMAP 26.2: `theme` and `density` were persisted no-ops and are no
+/// longer written. The two fields stay in the **reader** so that a
+/// `data/settings.json` left by an older release still loads (serde ignores
+/// any key without a field, and keeps theirs), and they are dropped from the
+/// live model (`AppearanceSettings`) and from every response.
 pub struct PersistedAppearance {
     pub theme: Option<String>,
     pub wallpaper: Option<String>,
@@ -177,13 +184,11 @@ impl PersistedSettings {
 
     pub fn to_appearance(&self) -> AppearanceSettings {
         AppearanceSettings {
-            theme: self.appearance.as_ref().and_then(|a| a.theme.clone()),
             wallpaper: self.appearance.as_ref().and_then(|a| a.wallpaper.clone()),
             accent_color: self
                 .appearance
                 .as_ref()
                 .and_then(|a| a.accent_color.clone()),
-            density: self.appearance.as_ref().and_then(|a| a.density.clone()),
         }
     }
 }
@@ -238,10 +243,12 @@ impl SettingsPersistence {
                 webhook_format: notifications.webhook_format.clone(),
             }),
             appearance: Some(PersistedAppearance {
-                theme: appearance.theme.clone(),
+                // Never written again (ROADMAP 26.2); the reader keeps the
+                // fields so an older settings.json still loads.
+                theme: None,
                 wallpaper: appearance.wallpaper.clone(),
                 accent_color: appearance.accent_color.clone(),
-                density: appearance.density.clone(),
+                density: None,
             }),
             ai: None,
         };
@@ -584,23 +591,26 @@ fn apply_loaded_settings(loaded: &PersistedSettings) {
     }
 
     // Appearance settings
-    if let Some(appearance) = &loaded.appearance {
+    if let Some(appearance) = loaded.appearance.as_ref() {
         use crate::handlers::settings::APPEARANCE_SETTINGS;
         let mut settings = APPEARANCE_SETTINGS.write();
-        if let Some(theme) = &appearance.theme {
-            settings.theme = Some(theme.clone());
-        }
         if let Some(wallpaper) = &appearance.wallpaper {
-            settings.wallpaper = Some(wallpaper.clone());
+            // ROADMAP 26.1: a value that does not name a bundled photo (a
+            // legacy custom upload, a gradient, a hand-edited file) is
+            // dropped to "never picked" instead of being handed to the
+            // desktop, where it used to reset silently on a failed JSON
+            // parse.
+            settings.wallpaper = Some(
+                crate::handlers::settings::validate_wallpaper_field(wallpaper).unwrap_or_default(),
+            );
         }
         if let Some(accent) = &appearance.accent_color {
             // Startup load *and* import funnel through here: rewrite the
             // legacy non-compliant default (see `handlers::settings::normalize_accent`).
             settings.accent_color = Some(crate::handlers::settings::normalize_accent(accent));
         }
-        if let Some(density) = &appearance.density {
-            settings.density = Some(density.clone());
-        }
+        // `appearance.theme` / `appearance.density` are read for
+        // backward compatibility and deliberately ignored (ROADMAP 26.2).
     }
 }
 
@@ -665,10 +675,12 @@ pub fn save_all_settings() {
                 webhook_format: notifications.webhook_format.clone(),
             }),
             appearance: Some(PersistedAppearance {
-                theme: appearance.theme.clone(),
+                // Never written again (ROADMAP 26.2); the reader keeps the
+                // fields so an older settings.json still loads.
+                theme: None,
                 wallpaper: appearance.wallpaper.clone(),
                 accent_color: appearance.accent_color.clone(),
-                density: appearance.density.clone(),
+                density: None,
             }),
             // Filled below from `AI_MODEL` (`settings_with_ai`): the model is
             // written by `save_ai_model`, not held in a settings static.
@@ -837,10 +849,8 @@ mod tests {
     fn test_import_round_trips_the_appearance_block() {
         let (p, _dir) = persistence();
         let appearance = AppearanceSettings {
-            theme: Some("dark".to_string()),
             wallpaper: Some("/wallpapers/hv-07.webp".to_string()),
             accent_color: Some("#e2725b".to_string()),
-            density: Some("compact".to_string()),
         };
         save(&p, &EmailSettings::default(), &appearance);
 
@@ -849,10 +859,8 @@ mod tests {
         let imported = p2.import(&exported).expect("import");
 
         let a = imported.to_appearance();
-        assert_eq!(a.theme.as_deref(), Some("dark"));
         assert_eq!(a.wallpaper.as_deref(), Some("/wallpapers/hv-07.webp"));
         assert_eq!(a.accent_color.as_deref(), Some("#e2725b"));
-        assert_eq!(a.density.as_deref(), Some("compact"));
 
         // …and it landed on p2's disk.
         assert_eq!(
@@ -862,6 +870,77 @@ mod tests {
                 .as_deref(),
             Some("#e2725b")
         );
+    }
+
+    /// ROADMAP 26.2: `theme` and `density` are no longer written, and a
+    /// `settings.json` left by an older release (which still carries them)
+    /// must keep loading — they are simply ignored, never applied.
+    #[test]
+    fn test_legacy_theme_and_density_on_disk_load_and_are_ignored() {
+        let (p, _dir) = persistence();
+        let legacy = serde_json::json!({
+            "schema_version": 1,
+            "appearance": {
+                "theme": "dark",
+                "density": "compact",
+                "wallpaper": "/wallpapers/hv-05.webp",
+                "accent_color": "#123456"
+            }
+        });
+        p.import(&legacy.to_string())
+            .expect("a legacy blob must import");
+
+        let loaded = p.load_all().appearance.expect("appearance block");
+        // Read for compatibility…
+        assert_eq!(loaded.theme.as_deref(), Some("dark"));
+        assert_eq!(loaded.density.as_deref(), Some("compact"));
+        // …but the live model has no such field, and a re-export stops
+        // writing them.
+        let reapplied = p.export().expect("export");
+        let value: serde_json::Value = serde_json::from_str(&reapplied).unwrap();
+        assert!(value["appearance"].get("theme").is_none(), "{value}");
+        assert!(value["appearance"].get("density").is_none(), "{value}");
+        assert_eq!(value["appearance"]["wallpaper"], "/wallpapers/hv-05.webp");
+        assert_eq!(value["appearance"]["accent_color"], "#123456");
+    }
+
+    /// ROADMAP 26.1: a stored wallpaper that does not name a bundled photo
+    /// is dropped on load rather than handed to a desktop that would silently
+    /// reset it. The accent is untouched.
+    #[test]
+    fn test_apply_loaded_settings_drops_an_off_list_wallpaper() {
+        let saved = APPEARANCE_SETTINGS.read().clone();
+
+        apply_loaded_settings(&PersistedSettings {
+            appearance: Some(PersistedAppearance {
+                theme: None,
+                wallpaper: Some("https://evil.example/x.webp".to_string()),
+                accent_color: Some("#123456".to_string()),
+                density: None,
+            }),
+            ..Default::default()
+        });
+
+        let appearance = APPEARANCE_SETTINGS.read().clone();
+        assert_eq!(appearance.wallpaper.as_deref(), Some(""));
+        assert_eq!(appearance.accent_color.as_deref(), Some("#123456"));
+
+        // A valid stored value survives, normalised to the bare URL.
+        apply_loaded_settings(&PersistedSettings {
+            appearance: Some(PersistedAppearance {
+                theme: None,
+                wallpaper: Some("  /wallpapers/hv-09.webp ".to_string()),
+                accent_color: None,
+                density: None,
+            }),
+            ..Default::default()
+        });
+        assert_eq!(
+            APPEARANCE_SETTINGS.read().wallpaper.as_deref(),
+            Some("/wallpapers/hv-09.webp")
+        );
+
+        *APPEARANCE_SETTINGS.write() = saved;
     }
 
     #[test]
@@ -879,7 +958,7 @@ mod tests {
         let email = empty.to_email();
         assert!(email.smtp_server.is_none() && email.smtp_password.is_none());
         let appearance = empty.to_appearance();
-        assert!(appearance.theme.is_none() && appearance.accent_color.is_none());
+        assert!(appearance.wallpaper.is_none() && appearance.accent_color.is_none());
     }
 
     // -- apply_loaded_settings preserves a redacted password -------

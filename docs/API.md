@@ -77,7 +77,7 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
 | GET | `/settings` | auth | aggregate of all categories |
-| GET | `/settings/public` | public | safe subset (server name, language, theme) |
+| GET | `/settings/public` | public | safe subset (server name, language, version — no appearance) |
 | GET/PUT | `/settings/general` | auth / admin | server name, timezone — the timezone is validated (IANA) and applied to the host with `timedatectl`; a failed apply returns `timezone_notice` |
 | GET | `/settings/timezones` | auth | every zone name the scheduler can evaluate (`chrono-tz`'s IANA database, region-prefixed names + `UTC`), sorted — what the Settings picker renders |
 | GET/POST | `/settings/language` | auth | set UI language — persisted as `general.language` and applied at boot before the first page renders; unsupported tags answer `400` |
@@ -85,7 +85,24 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 | GET/PUT | `/settings/email` | auth / admin | SMTP relay; validated before it is stored (From: address, port) and used to generate the `msmtp` configuration |
 | POST | `/settings/email/test` | admin | send test email |
 | GET/PUT | `/settings/notifications` | auth / admin | alert e-mail, threshold, `webhook_url`/`webhook_enabled`/`webhook_format`; the URL must be `http(s)` with a host and no embedded credentials (`400` otherwise) and is validated again at dispatch (`validate_webhook_url`) |
-| GET/PUT | `/settings/appearance` | auth / admin | theme, wallpaper, accent, density |
+| GET | `/settings/appearance` | any session | the appliance look: `{ wallpaper, accent_color }` only — read by every account's boot hydration (ROADMAP 26.1) |
+| PUT | `/settings/appearance` | admin | `wallpaper` + `accent_color`, validated before anything is stored |
+
+**`PUT /settings/appearance` validation (both fields optional, both checked
+first — a refusal writes nothing):**
+
+- `wallpaper` — `""`, `/wallpapers/hv-NN.webp`, `hv-NN` (1–44), a bare JSON
+  string, or the `WallpaperConfig` JSON `{"type":"image","value":…}` (legacy
+  `{"type":"default"}` → `hv-01`). Always stored as the bare
+  `/wallpapers/hv-NN.webp` URL.
+- `accent_color` — `#rgb`, `#rrggbb` or `#rrggbbaa` (the legacy `#4a90d9` is
+  rewritten to `#1E62AE`).
+
+A refusal is `400` with `{"success": false, "message": "wallpaper: '…' is not
+one of the 44 bundled wallpapers (…)"}` — the message starts with the field
+name. `theme` and `density` no longer exist on this resource (ROADMAP 26.2);
+an old client that still sends them is accepted and they are ignored. |
+
 | GET/PUT | `/settings/update` | auth / admin | update-check frequency |
 | GET | `/settings/version` | auth | current version + last cached check (never forces an outbound call) |
 | POST | `/settings/version/check` | admin | "Check now" — the only path that forces the outbound update check |
