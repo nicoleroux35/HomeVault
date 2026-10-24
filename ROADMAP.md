@@ -51,8 +51,11 @@ sites**, **Apps Center / app-proxy**, the **RAID wizard's create path**,
 **Scheduled Tasks** — timezone-aware cron, pausing an unrunnable task, and
 "Run now" off the request — and **Transfer quotas** — failing closed, a
 calendar counting period, and an admin-gated read, and finally **Metrics** —
-nullable series and elapsed-time rates, and **Dashboard / Widgets** — per-account
-tiles, deadlines on every host probe, and no fabricated measurement (see Done).
+nullable series and elapsed-time rates, **Dashboard / Widgets** — per-account
+tiles, deadlines on every host probe, and no fabricated measurement, and
+**Syncthing's folder/device management** — a share or a peer can now be onboarded
+from HomeVault, with every field validated before the daemon is called (see
+Done).
 
 Everything else is still on its original implementation plus incremental
 feature work. The pattern is consistent: **the screens render, the endpoints
@@ -80,7 +83,6 @@ Two structural facts explain most of the list:
 |---|---|---|---|
 | 10b | File Explorer — residual hardening | P2 | 3 |
 | 16.4 | Cloud Sync (rclone) — no scheduler | P2 | 1 |
-| 18 | Syncthing | P1 | 1 |
 | 24 | Server control | P1 | 2 |
 | 25 | Autostart | P1 | 2 |
 | 26 | Wallpapers / Themes | P1 | 2 |
@@ -92,7 +94,7 @@ Two structural facts explain most of the list:
 | 33 | Transfer quotas — residual | P2 | 1 |
 | — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **29** (22 per-area + 7 cross-cutting).
+Total open findings: **28** (21 per-area + 7 cross-cutting).
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
@@ -132,10 +134,11 @@ same day** — see Done (2026-10-23 (r)): read state is per user, the feed is
 paginated, and the shared delete paths are admin-only. **22 (DB backup) closed
 on 2026-10-24** — see Done: the snapshot lock is process-wide, a failed attempt
 keeps its reason for the card, and retention no longer eats the pre-migration
-restore point. The next P1 is therefore **18 (Syncthing)**: 18.1 is the only
-finding left, and it is the one a user hits first (a share or a peer cannot be
-onboarded from HomeVault at all), followed by **24 (Server control)**, where a
-rejected `shutdown`/`reboot` is indistinguishable from a slow one.
+restore point. **18 (Syncthing) closed on 2026-10-24**: 18.1 was the last
+finding, and it was the one a user hit first — a share or a peer could not be
+onboarded from HomeVault at all. The next P1 is therefore **24 (Server
+control)**, where a rejected `shutdown`/`reboot` is indistinguishable from a
+slow one.
 
 ---
 
@@ -172,30 +175,6 @@ it still states explicitly that **no test performs a real transfer or mount**),
 29 E2E. The mount-ready poll, the shutdown unmount and the `0600` repair are
 covered by unit/integration tests, never by a live FUSE mount.
 *Docs:* `docs/guides/cloud-sync.md` (*Known debt*).
-
----
-
-### 18. Syncthing — it is a monitor, not a manager
-
-- [ ] **18.1 — Folders and devices cannot be added or removed.** There is no
-      route and no UI control for either (`Syncthing.svelte:175-215` is the
-      entire action surface; `api.ts:1917-1943`). A user cannot onboard a new
-      share or peer from HomeVault at all.
-      *Acceptance:* add/remove folder and device, with validation and the same
-      admin bar as the rest of the app.
-
-18.2 (a malformed API key panicked the handler, and TLS verification was off)
-was closed on 2026-10-23 — see Done. The blocking config discovery that sat
-behind it (`find_syncthing_config` reading up to four files inline in every
-handler) moved to `spawn_blocking` in the same pass, and the three empty
-`else {}` action branches on the screen became one visible `Alert`.
-
-Remaining "also" item, untouched: an N+1 `db/status?folder=` round-trip per
-folder on every poll (`src/handlers/syncthing.rs:585-613`, deliberate —
-Syncthing has no bulk call). The HTTP client has a real 10 s timeout
-(`HTTP_TIMEOUT`, `:44`) — the only one of the four network apps with a bound.
-
-*Tests:* 18 unit, 8 integration, 23 E2E. *Docs:* `docs/guides/syncthing.md`.
 
 ---
 
@@ -492,6 +471,53 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-24** — Syncthing — a folder and a device can be added and removed from
+HomeVault (item 18.1, the last finding of the area). Until now the screen was a
+monitor: `GET /syncthing/{folders,devices}` plus three actions (pause/resume a
+paired device, rescan, restart). There was no route and no control to onboard a
+share or a peer, so a new phone or a new pool folder had to be configured on the
+daemon directly. **Four routes** (`POST`/`DELETE` on `/syncthing/folders[/{id}]`
+and `/syncthing/devices[/{id}]`) sit behind the same `require_admin` bar as the
+rest of the module, and every field is validated **before** the first daemon
+call — a daemon that is down must not be able to mask a validation hole. The
+folder ID is `[A-Za-z0-9._-]`, ≤64 bytes; the label is trimmed and capped at
+128; the path must be absolute, free of `..`, not the filesystem root and inside
+`state.path_guard.allowed_roots()` (`validate_quarantine_dir`'s rule) because
+the daemon would otherwise create a folder anywhere the service can write; the
+sync mode is the allowlist `sendreceive|sendonly|receiveonly`, with
+`receiveencrypted` refused (a home user cannot recover one from this screen);
+device IDs are normalised to eight groups of seven base-32 characters, dashes
+and case optional — the check digit is *not* verified, the daemon is the
+authority and its refusal is relayed — and control characters are refused. The
+config read that follows doubles as the conflict check and as the allowlist of
+devices a folder may be shared with; the appliance's own ID is injected into a
+new folder's `devices` array, and pairing or removing it is refused, so the host
+cannot be unpaired from itself. Deletes re-validate the id from the URL (it is
+interpolated into the daemon path) and percent-encode it. `POST` answers
+`{"id"}` / `{"device_id"}`, `DELETE` answers a confirmation string, and both are
+logged as events naming the admin. **On the screen**, each tab gained an *Add*
+action opening a dialog that keeps the server's refusal **inside** the dialog
+with the typed values intact (a validation error is fixable, a closed dialog is
+not), a success banner naming what happened, and a remove button on the detail
+pane whose confirmation states the consequence — the files already on disk stay.
+The path field is `PathField`, not the read-only picker, because Syncthing
+creates the target directory; "Share with" pre-ticks every paired device; "start
+paused" is omitted (simplicity rule 2). Tests: `syncthing.rs` 18 → **34** unit
+(ID charset/length, label trim, path confinement — relative, `..`, root, outside
+the roots, and no-roots-refuses-all —, mode allowlist, device normalisation from
+pasted forms and its refusals, folder/device dedupe and cap, and the two request
+bodies against the daemon schema), `syncthing_integration.rs` 8 → **12** (the
+four routes wired, `403` without an admin session, `422` for each validation
+class, `503` with the daemon down), `syncthing.spec.ts` 23 → **34 runtime / 30
+`test(`** (section 7 drives a **mocked** daemon — read endpoints from fixtures,
+writes recorded — so no real daemon config is ever mutated: required fields,
+trimmed payload and refreshed list, a refusal staying in the dialog, a malformed
+device ID, cancel-then-confirm on both removals, and the actions being labelled,
+keyboard-reachable buttons) — **written, not run** (per instruction). Docs:
+`docs/guides/syncthing.md` (routes, validation, *Known debt*: the per-folder
+`db/status?folder=` N+1 on each poll, inherent to the daemon's API),
+`docs/API.md`, `CHANGELOG.md`, `TESTING.md`, RAG entry.
 
 **2026-10-24** — DB backup — one snapshot at a time process-wide, a failed
 attempt leaves its reason on the card, and retention spares the pre-migration

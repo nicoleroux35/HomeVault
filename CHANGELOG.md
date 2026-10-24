@@ -8,6 +8,43 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Syncthing — a folder and a device can be added and removed from HomeVault
+  (2026-10-24, ROADMAP 18.1).** The screen was a monitor: it could show the
+  daemon's topology and pause/resume/rescan, but there was no route and no
+  control to add or remove a folder or a device, so a new phone or a new pool
+  folder had to be configured on the daemon directly. Four routes now exist —
+  `POST`/`DELETE` on `/syncthing/folders[/{id}]` and `/syncthing/devices[/{id}]`
+  — behind the same `require_admin` bar as the rest of the module, and every
+  field is validated **before** the first daemon call, because a stopped daemon
+  would otherwise answer a transport error and hide the fact that the request
+  was never valid. The folder ID is confined to `[A-Za-z0-9._-]` and 64 bytes;
+  the label is trimmed and capped at 128; **the path must be absolute, free of
+  `..`, not `/`, and inside `state.path_guard.allowed_roots()`** — Syncthing
+  creates the directory, so an unconfined path would let an admin write anywhere
+  the service can; the sync mode is the allowlist
+  `sendreceive|sendonly|receiveonly`, with `receiveencrypted` refused; a device
+  ID is normalised to eight groups of seven base-32 characters with dashes and
+  case optional (the check digit is left to the daemon, which is the authority,
+  and its refusal is relayed) and control characters are refused. The config
+  read that follows doubles as the duplicate check and as the allowlist of
+  devices a folder may be shared with; the appliance's own ID is injected into a
+  new folder's `devices` array and pairing or removing it is refused, so the
+  host cannot be unpaired from itself. Deletes re-validate the id from the URL
+  and percent-encode it before it reaches the daemon's REST path. On the screen,
+  each tab gained an *Add* action opening a dialog that keeps the server's
+  refusal **inside** the dialog with the typed values intact, a success banner
+  naming what happened, and a *Remove* button on the detail pane whose
+  confirmation states the consequence (the files already on disk stay). The path
+  field is `PathField` rather than the read-only picker because Syncthing
+  creates the target directory; "Share with" pre-ticks every paired device;
+  "start paused" is omitted (simplicity rule 2). Tests: `syncthing.rs` 18 → **34**
+  unit, `syncthing_integration.rs` 8 → **12**, `syncthing.spec.ts` 23 → **34
+  runtime / 30 `test(`** (section 7 drives a mocked daemon, so no real daemon
+  configuration is ever mutated). **Written but not executed** (per instruction):
+  no suite was run. Docs: `docs/guides/syncthing.md` (validation table, *Known
+  debt*), `docs/API.md`, `ROADMAP.md` (item 18 closed, 29 → 28 open findings),
+  `TESTING.md`, the RAG entry, and the four `src/i18n/*.toml`.
+
 - **DB backup — one snapshot at a time process-wide, a failure that is visible,
   and a restore point that survives retention (2026-10-24, ROADMAP 22).** **Two
   concurrent `VACUUM INTO`s were possible.** Every HTTP handler built its own

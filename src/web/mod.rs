@@ -255,9 +255,12 @@ use crate::handlers::{
         handle_virtual_disk_scrub, handle_virtual_disk_scrub_status, handle_virtual_disks_list,
     },
     syncthing::{
-        handle_syncthing_config, handle_syncthing_connections, handle_syncthing_devices,
-        handle_syncthing_errors, handle_syncthing_folders, handle_syncthing_pause_device,
-        handle_syncthing_restart, handle_syncthing_resume_device, handle_syncthing_scan_folder,
+        handle_syncthing_config, handle_syncthing_connections,
+        handle_syncthing_create_device, handle_syncthing_create_folder,
+        handle_syncthing_delete_device, handle_syncthing_delete_folder,
+        handle_syncthing_devices, handle_syncthing_errors, handle_syncthing_folders,
+        handle_syncthing_pause_device, handle_syncthing_restart,
+        handle_syncthing_resume_device, handle_syncthing_scan_folder,
         handle_syncthing_status,
     },
     system::{handle_server_restart, handle_server_shutdown},
@@ -1458,8 +1461,22 @@ pub fn create_app(state: AppStateArc) -> Router {
         // Syncthing
         .route("/api/syncthing/status", get(handle_syncthing_status))
         .route("/api/syncthing/config", get(handle_syncthing_config))
-        .route("/api/syncthing/devices", get(handle_syncthing_devices))
-        .route("/api/syncthing/folders", get(handle_syncthing_folders))
+        .route(
+            "/api/syncthing/devices",
+            get(handle_syncthing_devices).post(handle_syncthing_create_device),
+        )
+        .route(
+            "/api/syncthing/devices/{device_id}",
+            delete(handle_syncthing_delete_device),
+        )
+        .route(
+            "/api/syncthing/folders",
+            get(handle_syncthing_folders).post(handle_syncthing_create_folder),
+        )
+        .route(
+            "/api/syncthing/folders/{folder_id}",
+            delete(handle_syncthing_delete_folder),
+        )
         .route(
             "/api/syncthing/connections",
             get(handle_syncthing_connections),

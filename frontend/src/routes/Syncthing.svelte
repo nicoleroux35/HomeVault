@@ -19,11 +19,11 @@
   import { onMount, onDestroy } from 'svelte';
   import { api } from '$lib/services/api';
   import { t, translate } from '$lib/stores/i18n';
-  import { Spinner, Button, Alert } from '$lib/components/theme';
+  import { Spinner, Button, Alert, Modal, Checkbox, PathField } from '$lib/components/theme';
   import { PageLayout, StatCard, EmptyState } from '$lib/components/app';
   import { cn } from '$lib/utils.js';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
-  import { IconRefresh, IconPlayerPause, IconPlayerPlay, IconFolder, IconDeviceMobile, IconServer, IconCircleCheck, IconAlertCircle, IconClock, IconActivity } from '@tabler/icons-svelte';
+  import { IconRefresh, IconPlayerPause, IconPlayerPlay, IconFolder, IconDeviceMobile, IconServer, IconCircleCheck, IconAlertCircle, IconClock, IconActivity, IconPlus, IconTrash } from '@tabler/icons-svelte';
 
   // ---------------------------------------------------------------------------
   // Types
@@ -83,8 +83,31 @@
   // branches, so a refused pause/scan/restart was indistinguishable from a
   // slow one (simplicity rule 5).
   let errorMessage: string | null = null;
+  // A confirmation of the last completed edit. It replaces nothing: an error
+  // still wins, and a successful poll never clears it (only the next action
+  // does), so a message cannot disappear before it has been read.
+  let savedMessage: string | null = null;
   let activeTab: 'overview' | 'devices' | 'folders' = 'overview';
   let refreshInterval: ReturnType<typeof setInterval>;
+
+  // ---------------------------------------------------------------------------
+  // Folder / device management (ROADMAP 18.1)
+  // ---------------------------------------------------------------------------
+  //
+  // Until this landed the screen was read-only over the daemon's topology: it
+  // could pause a paired device and rescan a folder, but not add either, so a
+  // share or a peer could not be onboarded from HomeVault at all.
+  //
+  // The server owns every rule (ID charset, a path inside a managed storage
+  // root, the sync-mode allowlist, a known device ID) and its refusal is shown
+  // *inside* the dialog, so the typed values stay in place instead of being
+  // thrown away with the dialog.
+  let showFolderModal = false;
+  let showDeviceModal = false;
+  let formError: string | null = null;
+  let newFolder = { id: '', label: '', path: '', type: 'sendreceive', devices: [] as string[] };
+  let newDevice = { device_id: '', name: '' };
+  let removeTarget: { kind: 'folder' | 'device'; id: string; name: string } | null = null;
 
   // Master-detail split — the devices/folders tabs show a compact list (left)
   // + a detail pane (right); narrow collapses to a single pane.
@@ -178,6 +201,7 @@
   async function toggleDevice(device: DeviceWithStatus) {
     acting = true;
     errorMessage = null;
+    savedMessage = null;
     const res = device.paused
       ? await api.resumeSyncthingDevice(device.device_id)
       : await api.pauseSyncthingDevice(device.device_id);
@@ -192,6 +216,7 @@
   async function scanFolder(folderId: string) {
     acting = true;
     errorMessage = null;
+    savedMessage = null;
     const res = await api.scanSyncthingFolder(folderId);
     if (res.success) {
       await loadFolders();
@@ -204,6 +229,7 @@
   async function restartSyncthing() {
     acting = true;
     errorMessage = null;
+    savedMessage = null;
     const res = await api.restartSyncthing();
     if (res.success) {
       await loadStatus();
@@ -211,6 +237,120 @@
       errorMessage = res.error || $t('syncthing.action_failed');
     }
     acting = false;
+  }
+
+  // --- add a folder -------------------------------------------------------
+
+  function openFolderModal() {
+    // Defaults that make the common case one dialog: two-way sync, shared with
+    // every device already paired (that is what "sync this folder" means to a
+    // home user), no label required.
+    newFolder = {
+      id: '',
+      label: '',
+      path: '',
+      type: 'sendreceive',
+      devices: devices.map((d) => d.device_id),
+    };
+    formError = null;
+    showFolderModal = true;
+  }
+
+  function toggleFolderDevice(deviceId: string, checked: boolean) {
+    newFolder.devices = checked
+      ? [...newFolder.devices, deviceId]
+      : newFolder.devices.filter((id) => id !== deviceId);
+  }
+
+  async function createFolder() {
+    acting = true;
+    formError = null;
+    // Trim here as well as on the server: the payload is then exactly what the
+    // daemon stores, so the success message cannot quote a padded name.
+    const created = {
+      id: newFolder.id.trim(),
+      label: newFolder.label.trim(),
+      path: newFolder.path.trim(),
+      type: newFolder.type,
+      devices: newFolder.devices,
+    };
+    const res = await api.createSyncthingFolder(created);
+    acting = false;
+    if (!res.success) {
+      // Stay open with the values intact: this is a validation error the user
+      // can fix, not a dead end.
+      formError = res.error || $t('syncthing.action_failed');
+      return;
+    }
+    showFolderModal = false;
+    savedMessage = translate('syncthing.folder_added', { name: created.label || created.id });
+    await loadData();
+  }
+
+  // --- pair a device ------------------------------------------------------
+
+  function openDeviceModal() {
+    newDevice = { device_id: '', name: '' };
+    formError = null;
+    showDeviceModal = true;
+  }
+
+  async function createDevice() {
+    acting = true;
+    formError = null;
+    // Same trim as the folder dialog: the payload is what the daemon stores,
+    // and dashes/case are the server's job to normalise.
+    const paired = { device_id: newDevice.device_id.trim(), name: newDevice.name.trim() };
+    const res = await api.createSyncthingDevice(paired);
+    acting = false;
+    if (!res.success) {
+      formError = res.error || $t('syncthing.action_failed');
+      return;
+    }
+    showDeviceModal = false;
+    savedMessage = translate('syncthing.device_added', {
+      name: paired.name || paired.device_id,
+    });
+    await loadData();
+  }
+
+  // --- remove -------------------------------------------------------------
+
+  function askRemoveFolder(folder: FolderStatus) {
+    removeTarget = { kind: 'folder', id: folder.id, name: folder.label || folder.id };
+  }
+
+  function askRemoveDevice(device: DeviceWithStatus) {
+    removeTarget = {
+      kind: 'device',
+      id: device.device_id,
+      name: device.name || $t('syncthing.unnamed_device'),
+    };
+  }
+
+  async function confirmRemove() {
+    const target = removeTarget;
+    if (!target) return;
+    acting = true;
+    const res =
+      target.kind === 'folder'
+        ? await api.deleteSyncthingFolder(target.id)
+        : await api.deleteSyncthingDevice(target.id);
+    acting = false;
+    removeTarget = null;
+    if (!res.success) {
+      // A removal is destructive, so a refusal is reported on the page (it has
+      // no dialog left to stay in) rather than swallowed.
+      errorMessage = res.error || $t('syncthing.action_failed');
+      return;
+    }
+    if (target.kind === 'folder') selectedFolder = null;
+    else selectedDevice = null;
+    savedMessage = translate(
+      target.kind === 'folder' ? 'syncthing.folder_removed' : 'syncthing.device_removed',
+      { name: target.name },
+    );
+    await loadData();
   }
 
   // ---------------------------------------------------------------------------
@@ -258,6 +398,22 @@
   const detailLabel = 'text-xs text-[var(--hv-shell-text-2)]';
   const detailValue = 'text-sm font-semibold text-[var(--hv-shell-text-strong)]';
   const progressTrack = 'h-2 rounded-full bg-[var(--hv-shell-border-soft)] overflow-hidden';
+  // Dialog form styling — the same field/label/input triple the other app
+  // dialogs use (Shares, Users), so a form looks the same wherever it opens.
+  const field = 'flex flex-col gap-2';
+  const fieldLabel = 'text-c-base font-semibold text-[var(--hv-shell-text-strong)]';
+  const fieldHelp = 'text-xs text-[var(--hv-shell-text-2)]';
+  const inp =
+    'w-full box-border h-12 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] ' +
+    'text-[var(--hv-shell-text-strong)] text-c-card-title transition-colors ' +
+    'focus-visible:outline-none focus-visible:shadow-[var(--hv-focus-ring)] disabled:opacity-60';
+  $: canCreateFolder = newFolder.id.trim().length > 0 && newFolder.path.trim().length > 0 && !acting;
+  $: canCreateDevice = newDevice.device_id.trim().length > 0 && !acting;
+  $: folderTypeOptions = [
+    { value: 'sendreceive', label: $t('syncthing.type_sendreceive') },
+    { value: 'sendonly', label: $t('syncthing.type_sendonly') },
+    { value: 'receiveonly', label: $t('syncthing.type_receiveonly') },
+  ];
 </script>
 <PageLayout
   title="Syncthing"
@@ -286,6 +442,14 @@
     <div data-testid="syncthing-error" class="mb-4">
       <Alert variant="error" title={$t('syncthing.error_title')}>
         {errorMessage}
+      </Alert>
+    </div>
+  {/if}
+
+  {#if savedMessage}
+    <div data-testid="syncthing-success" class="mb-4">
+      <Alert variant="success" title={$t('syncthing.success_title')} dismissible ondismiss={() => (savedMessage = null)}>
+        {savedMessage}
       </Alert>
     </div>
   {/if}
@@ -368,6 +532,12 @@
       {#if !(narrow && selectedDetail)}
         <div data-testid="syncthing-list-pane" class="flex-none min-w-0 border-r border-[var(--hv-shell-border)] overflow-y-auto" style="width: {narrow ? '100%' : '320px'};">
           {#if activeTab === 'devices'}
+            <div class="flex items-center justify-between gap-2 px-1 py-2">
+              <span class="text-c-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-3)]">{$t('syncthing.stat_devices')}</span>
+              <Button variant="ghost" size="sm" data-testid="syncthing-add-device" onclick={openDeviceModal} disabled={acting}>
+                <IconPlus size={16} /> <span>{$t('syncthing.add_device')}</span>
+              </Button>
+            </div>
             <div class="flex flex-col gap-1" data-testid="syncthing-device-list">
               {#each devices as device}
                 <button
@@ -390,6 +560,12 @@
               {/if}
             </div>
           {:else}
+            <div class="flex items-center justify-between gap-2 px-1 py-2">
+              <span class="text-c-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-3)]">{$t('syncthing.stat_folders')}</span>
+              <Button variant="ghost" size="sm" data-testid="syncthing-add-folder" onclick={openFolderModal} disabled={acting}>
+                <IconPlus size={16} /> <span>{$t('syncthing.add_folder')}</span>
+              </Button>
+            </div>
             <div class="flex flex-col gap-1" data-testid="syncthing-folder-list">
               {#each folders as folder}
                 <button
@@ -433,9 +609,12 @@
               <div class="flex items-center justify-between gap-2"><span class={detailLabel}>{$t('syncthing.downloaded_label')}</span><span class={detailValue}>{formatBytes(selectedDevice.in_bytes_total)}</span></div>
               <div class="flex items-center justify-between gap-2"><span class={detailLabel}>{$t('syncthing.uploaded_label')}</span><span class={detailValue}>{formatBytes(selectedDevice.out_bytes_total)}</span></div>
             </div>
-            <div class="px-4 pb-4">
+            <div class="flex flex-wrap items-center gap-2 px-4 pb-4">
               <Button variant={selectedDevice.paused ? 'success' : 'warning'} size="sm" data-testid="syncthing-btn-primary" onclick={() => toggleDevice(selectedDevice!)} disabled={acting}>
                 {#if selectedDevice.paused}<IconPlayerPlay size={14} /> <span>{$t('syncthing.resume_button')}</span>{:else}<IconPlayerPause size={14} /> <span>{$t('syncthing.pause_button')}</span>{/if}
+              </Button>
+              <Button variant="danger" size="sm" data-testid="syncthing-remove-device" onclick={() => askRemoveDevice(selectedDevice!)} disabled={acting}>
+                <IconTrash size={14} /> <span>{$t('syncthing.remove_button')}</span>
               </Button>
             </div>
           </div>
@@ -470,8 +649,9 @@
                 </div>
               </div>
             {/if}
-            <div class="px-4 pb-4">
+            <div class="flex flex-wrap items-center gap-2 px-4 pb-4">
               <Button variant="ghost" size="sm" data-testid="syncthing-btn-primary" onclick={() => scanFolder(selectedFolder!.id)} disabled={acting}><IconRefresh size={14} /> {$t('syncthing.scan_button')}</Button>
+              <Button variant="danger" size="sm" data-testid="syncthing-remove-folder" onclick={() => askRemoveFolder(selectedFolder!)} disabled={acting}><IconTrash size={14} /> {$t('syncthing.remove_button')}</Button>
             </div>
           </div>
         </div>
@@ -496,3 +676,185 @@
     {/if}
   {/snippet}
 </PageLayout>
+
+<!-- Add a folder (ROADMAP 18.1) -->
+<Modal
+  open={showFolderModal}
+  title={$t('syncthing.folder_modal_title')}
+  size="md"
+  onclose={() => { showFolderModal = false; formError = null; }}
+>
+  {#snippet icon()}<IconFolder size={22} stroke={1.8} />{/snippet}
+  {#snippet children()}
+    <div class="flex flex-col gap-4">
+      {#if formError}
+        <div data-testid="syncthing-form-error">
+          <Alert variant="error" title={$t('syncthing.action_failed')}>{formError}</Alert>
+        </div>
+      {/if}
+
+      <label class={field} data-testid="syncthing-folder-id-field">
+        <span class={fieldLabel}>{$t('syncthing.folder_id_label')} <span class="text-[var(--hv-error)]" aria-hidden="true">*</span></span>
+        <input
+          id="hv-syncthing-folder-id"
+          data-testid="syncthing-folder-id-input"
+          class={inp}
+          bind:value={newFolder.id}
+          maxlength={64}
+          required
+          autocomplete="off"
+          placeholder="photos"
+          aria-describedby="hv-syncthing-folder-id-help"
+          onkeydown={(e) => { if (e.key === 'Enter' && canCreateFolder) createFolder(); }}
+        />
+        <span id="hv-syncthing-folder-id-help" class={fieldHelp}>{$t('syncthing.folder_id_help')}</span>
+      </label>
+
+      <label class={field}>
+        <span class={fieldLabel}>{$t('syncthing.folder_label_label')}</span>
+        <input
+          id="hv-syncthing-folder-label"
+          data-testid="syncthing-folder-label-input"
+          class={inp}
+          bind:value={newFolder.label}
+          maxlength={128}
+          autocomplete="off"
+          placeholder={$t('syncthing.optional')}
+          onkeydown={(e) => { if (e.key === 'Enter' && canCreateFolder) createFolder(); }}
+        />
+        <span class={fieldHelp}>{$t('syncthing.folder_label_help')}</span>
+      </label>
+
+      <div class={field} data-testid="syncthing-folder-path-field">
+        <label class={fieldLabel} for="hv-syncthing-folder-path"
+          >{$t('syncthing.folder_path_label')} <span class="text-[var(--hv-error)]" aria-hidden="true">*</span></label
+        >
+        <!-- PathField (not the read-only PathPickerField) on purpose: Syncthing
+             creates the target directory, so a folder that does not exist yet
+             is a legitimate answer and the picker cannot express it. -->
+        <PathField
+          id="hv-syncthing-folder-path"
+          bind:value={newFolder.path}
+          mode="folder"
+          placeholder="/mnt/pools/data/photos"
+          required
+        />
+        <span class={fieldHelp}>{$t('syncthing.folder_path_help')}</span>
+      </div>
+
+      <label class={field}>
+        <span class={fieldLabel}>{$t('syncthing.folder_type_label')}</span>
+        <select id="hv-syncthing-folder-type" data-testid="syncthing-folder-type-select" class={inp} bind:value={newFolder.type}>
+          {#each folderTypeOptions as opt}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      </label>
+
+      {#if devices.length > 0}
+        <div class={field} data-testid="syncthing-folder-devices-field">
+          <span class={fieldLabel}>{$t('syncthing.share_with_label')}</span>
+          <span class={fieldHelp}>{$t('syncthing.share_with_help')}</span>
+          <div class="flex flex-col gap-1">
+            {#each devices as device (device.device_id)}
+              <Checkbox
+                checked={newFolder.devices.includes(device.device_id)}
+                onchange={(checked) => toggleFolderDevice(device.device_id, checked)}
+                label={device.name || shortId(device.device_id)}
+              />
+            {/each}
+          </div>
+        </div>
+      {/if}
+    </div>
+  {/snippet}
+  {#snippet footer()}
+    <Button variant="ghost" size="lg" onclick={() => (showFolderModal = false)}>{$t('common.cancel')}</Button>
+    <Button variant="primary" size="lg" data-testid="syncthing-folder-submit" onclick={createFolder} loading={acting} disabled={!canCreateFolder}>
+      {$t('common.create')}
+    </Button>
+  {/snippet}
+</Modal>
+
+<!-- Pair a device (ROADMAP 18.1) -->
+<Modal
+  open={showDeviceModal}
+  title={$t('syncthing.device_modal_title')}
+  size="md"
+  onclose={() => { showDeviceModal = false; formError = null; }}
+>
+  {#snippet icon()}<IconDeviceMobile size={22} stroke={1.8} />{/snippet}
+  {#snippet children()}
+    <div class="flex flex-col gap-4">
+      {#if formError}
+        <div data-testid="syncthing-form-error">
+          <Alert variant="error" title={$t('syncthing.action_failed')}>{formError}</Alert>
+        </div>
+      {/if}
+
+      <label class={field} data-testid="syncthing-device-id-field">
+        <span class={fieldLabel}>{$t('syncthing.device_id_label')} <span class="text-[var(--hv-error)]" aria-hidden="true">*</span></span>
+        <input
+          id="hv-syncthing-device-id"
+          data-testid="syncthing-device-id-input"
+          class={cn(inp, 'font-[family-name:var(--hv-font-mono)]')}
+          bind:value={newDevice.device_id}
+          required
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="AAAAAAA-BBBBBBB-…"
+          aria-describedby="hv-syncthing-device-id-help"
+          onkeydown={(e) => { if (e.key === 'Enter' && canCreateDevice) createDevice(); }}
+        />
+        <span id="hv-syncthing-device-id-help" class={fieldHelp}>{$t('syncthing.device_id_help')}</span>
+      </label>
+
+      <label class={field}>
+        <span class={fieldLabel}>{$t('syncthing.device_name_label')}</span>
+        <input
+          id="hv-syncthing-device-name"
+          data-testid="syncthing-device-name-input"
+          class={inp}
+          bind:value={newDevice.name}
+          maxlength={128}
+          autocomplete="off"
+          placeholder={$t('syncthing.optional')}
+          onkeydown={(e) => { if (e.key === 'Enter' && canCreateDevice) createDevice(); }}
+        />
+        <span class={fieldHelp}>{$t('syncthing.device_name_help')}</span>
+      </label>
+    </div>
+  {/snippet}
+  {#snippet footer()}
+    <Button variant="ghost" size="lg" onclick={() => (showDeviceModal = false)}>{$t('common.cancel')}</Button>
+    <Button variant="primary" size="lg" data-testid="syncthing-device-submit" onclick={createDevice} loading={acting} disabled={!canCreateDevice}>
+      {$t('syncthing.pair_button')}
+    </Button>
+  {/snippet}
+</Modal>
+
+<!-- Remove confirmation: names the consequence, because the action is
+     destructive and a home user must know the files stay on disk. -->
+<Modal
+  open={!!removeTarget}
+  title={removeTarget?.kind === 'folder'
+    ? translate('syncthing.remove_folder_title', { name: removeTarget?.name ?? '' })
+    : translate('syncthing.remove_device_title', { name: removeTarget?.name ?? '' })}
+  size="md"
+  onclose={() => (removeTarget = null)}
+>
+  {#snippet icon()}<IconTrash size={22} stroke={1.8} />{/snippet}
+  {#snippet children()}
+    <p data-testid="syncthing-remove-desc" class="text-sm text-[var(--hv-shell-text)]">
+      {removeTarget?.kind === 'folder'
+        ? $t('syncthing.remove_folder_desc')
+        : $t('syncthing.remove_device_desc')}
+    </p>
+  {/snippet}
+  {#snippet footer()}
+    <Button variant="ghost" size="lg" onclick={() => (removeTarget = null)}>{$t('common.cancel')}</Button>
+    <Button variant="danger" size="lg" data-testid="syncthing-confirm-remove" onclick={confirmRemove} loading={acting}>
+      {$t('syncthing.remove_button')}
+    </Button>
+  {/snippet}
+</Modal>

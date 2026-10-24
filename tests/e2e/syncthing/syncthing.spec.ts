@@ -38,6 +38,12 @@
  * the page shows its "not available" state, which this suite tests as a
  * first-class case.
  *
+ * The management flow added by ROADMAP 18.1 (add/remove a folder or a device)
+ * is exercised in section 7 against a **mocked daemon**: the read endpoints are
+ * fulfilled with fixtures and every write is recorded, so the assertions are
+ * about what the screen sent and what it did with the answer. Nothing in this
+ * file ever writes a real daemon's configuration.
+ *
  * Run (all):     npx playwright test tests/e2e/syncthing/syncthing.spec.ts --project=firefox
  * Run (single):  npx playwright test tests/e2e/syncthing/syncthing.spec.ts -g "1.1"
  * Custom server: BASE_URL=http://localhost:3000 npx playwright test tests/e2e/syncthing/syncthing.spec.ts
@@ -53,6 +59,9 @@ const BASE = process.env.BASE_URL || 'http://localhost:8080';
 const ADMIN_USER = process.env.E2E_ADMIN_USER || 'e2eadmin';
 const ADMIN_PASS = process.env.E2E_ADMIN_PASS || 'E2eSecret123';
 const RUN_LIVE = process.env.SYNCTHING_E2E === '1';
+
+/** A structurally valid device ID (56 base-32 characters, eight groups). */
+const DEVICE_ID = 'AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH';
 
 interface Tokens {
   username: string;
@@ -148,6 +157,135 @@ async function gotoSyncthing(page: Page, tokens: Tokens, lang?: string) {
 
 function win(page: Page) {
   return page.locator('[data-testid="syncthing-page"]');
+}
+
+// ---------------------------------------------------------------------------
+// A fake daemon (ROADMAP 18.1)
+// ---------------------------------------------------------------------------
+//
+// The management flow has to be exercised without touching a real Syncthing
+// instance: creating a folder writes the daemon's persisted configuration, and
+// a CI host has no daemon at all (the screen would show "not available").
+// These routes answer the read endpoints with fixture data and record every
+// write, so a test can assert *what was sent* and *what the screen did with the
+// answer* — the behaviour, not the envelope.
+
+interface DaemonMock {
+  folders: any[];
+  devices: any[];
+  /** Every non-GET request the screen issued, in order. */
+  writes: { method: string; path: string; body: any }[];
+  /** Override the answer of a folder write (to test a refusal). */
+  folderWrite?: (body: any) => { status?: number; body: unknown } | null;
+  /** Override the answer of a device write (to test a refusal). */
+  deviceWrite?: (body: any) => { status?: number; body: unknown } | null;
+}
+
+function folderFixture(over: Record<string, unknown> = {}) {
+  return {
+    id: 'photos',
+    label: 'Photos',
+    path: '/mnt/pools/data/photos',
+    paused: false,
+    global_bytes: 1024,
+    global_files: 10,
+    local_bytes: 1024,
+    local_files: 10,
+    need_bytes: 0,
+    need_files: 0,
+    in_sync_files: 10,
+    receive_only: false,
+    devices: [],
+    ...over,
+  };
+}
+
+function deviceFixture(over: Record<string, unknown> = {}) {
+  return {
+    device_id: DEVICE_ID,
+    name: 'Laptop',
+    addresses: ['dynamic'],
+    compression: 'metadata',
+    paused: false,
+    connected: true,
+    address: '10.0.0.5:22000',
+    client_version: 'v1.27.2',
+    completion: 100,
+    in_bytes_total: 2048,
+    out_bytes_total: 1024,
+    ...over,
+  };
+}
+
+function newMock(): DaemonMock {
+  return { folders: [], devices: [], writes: [] };
+}
+
+async function installDaemonMock(page: Page, mock: DaemonMock) {
+  const json = (body: unknown, status = 200) => ({
+    status,
+    contentType: 'application/json',
+    body: JSON.stringify(body),
+  });
+  const success = (data: unknown) => ({ success: true, data, error: null });
+
+  await page.route('**/api/syncthing/status*', (route) =>
+    route.fulfill(
+      json(
+        success({
+          available: true,
+          version: 'v1.27.2',
+          my_id: 'SELF-SELF',
+          uptime: 3600,
+          last_seen: null,
+        }),
+      ),
+    ),
+  );
+
+  const handler = (kind: 'folders' | 'devices') => async (route: any) => {
+    const request = route.request();
+    const method = request.method();
+    const path = new URL(request.url()).pathname;
+
+    if (method === 'GET') {
+      return route.fulfill(json(success(kind === 'folders' ? mock.folders : mock.devices)));
+    }
+
+    const body = request.postDataJSON?.() ?? {};
+    mock.writes.push({ method, path, body });
+
+    const override = kind === 'folders' ? mock.folderWrite : mock.deviceWrite;
+    const custom = override?.(body);
+    if (custom) return route.fulfill(json(custom.body, custom.status ?? 200));
+
+    if (method === 'POST') {
+      const created =
+        kind === 'folders'
+          ? folderFixture({ id: body.id, label: body.label, path: body.path })
+          : deviceFixture({ device_id: body.device_id, name: body.name });
+      (kind === 'folders' ? mock.folders : mock.devices).push(created);
+      return route.fulfill(json(success(created)));
+    }
+
+    // DELETE /api/syncthing/{kind}/{id}
+    const id = decodeURIComponent(path.split('/').pop() || '');
+    if (kind === 'folders') mock.folders = mock.folders.filter((f) => f.id !== id);
+    else mock.devices = mock.devices.filter((d) => d.device_id !== id);
+    return route.fulfill(json(success('removed')));
+  };
+
+  await page.route('**/api/syncthing/folders*', handler('folders'));
+  await page.route('**/api/syncthing/devices*', handler('devices'));
+}
+
+/** The open dialog (bits-ui portals it to <body>). */
+function dialog(page: Page) {
+  return page.locator('[role="dialog"]');
+}
+
+async function openTab(page: Page, label: RegExp) {
+  await win(page).locator('.hv-winhdr-tab', { hasText: label }).first().click();
 }
 
 async function api(
@@ -270,6 +408,11 @@ test.describe('3 — Security', () => {
         ['POST', '/api/syncthing/pause', { device: 'X' }],
         ['POST', '/api/syncthing/resume', { device: 'X' }],
         ['POST', '/api/syncthing/scan', { folder: 'default' }],
+        // ROADMAP 18.1 — the management routes are the same privilege bar.
+        ['POST', '/api/syncthing/folders', { id: 'x', path: '/tmp/x' }],
+        ['DELETE', '/api/syncthing/folders/x', null],
+        ['POST', '/api/syncthing/devices', { device_id: DEVICE_ID }],
+        ['DELETE', `/api/syncthing/devices/${DEVICE_ID}`, null],
       ];
       const out: Record<string, boolean> = {};
       for (const [m, p, b] of eps) {
@@ -529,6 +672,221 @@ test.describe('6 — Accessibility & console', () => {
     await gotoSyncthing(page, adminTokens);
     await page.waitForTimeout(2500);
     expect(bad).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// 7. Folder and device management (ROADMAP 18.1)
+// ===========================================================================
+//
+// Before this landed, the screen could read the daemon's topology and
+// pause/resume a paired device — but there was no route and no control to add
+// or remove a folder or a device, so a share or a peer could not be onboarded
+// from HomeVault at all. These tests pin the behaviour the new dialogs promise:
+// the values that are sent, the server's reason staying inside the dialog, and
+// a removal that names its consequence and only happens after confirmation.
+
+test.describe('7 — Folder and device management', () => {
+  test('7.1 — the Folders tab offers "Add folder", and Create waits for the two required fields', async ({
+    page,
+  }) => {
+    const mock = newMock();
+    await installDaemonMock(page, mock);
+    await gotoSyncthing(page, adminTokens);
+    await openTab(page, /folder/i);
+
+    const add = win(page).locator('[data-testid="syncthing-add-folder"]');
+    await expect(add).toBeVisible({ timeout: 8_000 });
+
+    await add.click();
+    await expect(dialog(page)).toBeVisible();
+    // The ID is the folder's identity, the path is where its files live: the
+    // dialog cannot sensibly submit without both.
+    const submit = page.locator('[data-testid="syncthing-folder-submit"]');
+    await expect(submit).toBeDisabled();
+
+    await page.locator('[data-testid="syncthing-folder-id-input"]').fill('photos');
+    await expect(submit).toBeDisabled(); // path still missing
+    await page.locator('#hv-syncthing-folder-path').fill('/mnt/pools/data/photos');
+    await expect(submit).toBeEnabled();
+    // Nothing was sent just by typing.
+    expect(mock.writes).toHaveLength(0);
+  });
+
+  test('7.2 — creating a folder sends the trimmed values and the new folder appears', async ({
+    page,
+  }) => {
+    const mock = newMock();
+    mock.devices = [deviceFixture()];
+    await installDaemonMock(page, mock);
+    await gotoSyncthing(page, adminTokens);
+    await openTab(page, /folder/i);
+    await win(page).locator('[data-testid="syncthing-add-folder"]').click();
+
+    await page.locator('[data-testid="syncthing-folder-id-input"]').fill('  photos  ');
+    await page.locator('[data-testid="syncthing-folder-label-input"]').fill('Photos');
+    await page.locator('#hv-syncthing-folder-path').fill('/mnt/pools/data/photos');
+    await page.locator('[data-testid="syncthing-folder-type-select"]').selectOption('sendonly');
+    await page.locator('[data-testid="syncthing-folder-submit"]').click();
+
+    await expect(dialog(page)).toHaveCount(0, { timeout: 8_000 });
+    expect(mock.writes).toHaveLength(1);
+    expect(mock.writes[0].method).toBe('POST');
+    expect(mock.writes[0].path).toBe('/api/syncthing/folders');
+    expect(mock.writes[0].body.id).toBe('photos'); // trimmed server-side
+    expect(mock.writes[0].body.label).toBe('Photos');
+    expect(mock.writes[0].body.path).toBe('/mnt/pools/data/photos');
+    expect(mock.writes[0].body.type).toBe('sendonly');
+    // The one paired device was pre-ticked, so the folder is shared with it.
+    expect(mock.writes[0].body.devices).toEqual([DEVICE_ID]);
+
+    // Visible feedback (simplicity rule 5) and the refreshed list.
+    await expect(win(page).locator('[data-testid="syncthing-success"]')).toContainText('Photos');
+    await expect(win(page).locator('[data-testid="syncthing-folder-list-row"]')).toHaveCount(1);
+  });
+
+  test('7.3 — a refused create keeps the dialog open and shows the server reason in it', async ({
+    page,
+  }) => {
+    const mock = newMock();
+    mock.folderWrite = () => ({
+      body: {
+        success: false,
+        data: null,
+        error: "Folder path '/etc' must be inside a storage location HomeVault manages",
+      },
+    });
+    await installDaemonMock(page, mock);
+    await gotoSyncthing(page, adminTokens);
+    await openTab(page, /folder/i);
+    await win(page).locator('[data-testid="syncthing-add-folder"]').click();
+
+    await page.locator('[data-testid="syncthing-folder-id-input"]').fill('etc');
+    await page.locator('#hv-syncthing-folder-path').fill('/etc');
+    await page.locator('[data-testid="syncthing-folder-submit"]').click();
+
+    // The reason is next to the field that is wrong, not in a page banner the
+    // user would have to correlate with a dialog they cannot see.
+    const formError = page.locator('[data-testid="syncthing-form-error"]');
+    await expect(formError).toBeVisible({ timeout: 8_000 });
+    await expect(formError).toContainText('must be inside a storage location');
+    await expect(dialog(page)).toBeVisible();
+    await expect(page.locator('[data-testid="syncthing-folder-id-input"]')).toHaveValue('etc');
+    await expect(win(page).locator('[data-testid="syncthing-error"]')).toHaveCount(0);
+  });
+
+  test('7.4 — a malformed device ID is explained inside the pairing dialog', async ({ page }) => {
+    const mock = newMock();
+    mock.deviceWrite = () => ({
+      body: {
+        success: false,
+        data: null,
+        error: 'Device ID must be 56 characters (dashes are optional), got 9',
+      },
+    });
+    await installDaemonMock(page, mock);
+    await gotoSyncthing(page, adminTokens);
+    await openTab(page, /device/i);
+    await win(page).locator('[data-testid="syncthing-add-device"]').click();
+
+    await page.locator('[data-testid="syncthing-device-id-input"]').fill('AAAA-BBBB');
+    await page.locator('[data-testid="syncthing-device-name-input"]').fill('Laptop');
+    await page.locator('[data-testid="syncthing-device-submit"]').click();
+
+    await expect(page.locator('[data-testid="syncthing-form-error"]')).toContainText(
+      '56 characters',
+    );
+    expect(mock.writes[0].body.device_id).toBe('AAAA-BBBB');
+    await expect(dialog(page)).toBeVisible();
+  });
+
+  test('7.5 — removing a folder names its consequence, sends nothing on Cancel, deletes on confirm', async ({
+    page,
+  }) => {
+    const mock = newMock();
+    mock.folders = [folderFixture()];
+    await installDaemonMock(page, mock);
+    await gotoSyncthing(page, adminTokens);
+    await openTab(page, /folder/i);
+
+    await win(page).locator('[data-testid="syncthing-folder-list-row"]').first().click();
+    await win(page).locator('[data-testid="syncthing-remove-folder"]').click();
+
+    // The dialog must say what happens to the files — a home user has to be
+    // able to decide without guessing (simplicity rule 6).
+    await expect(dialog(page)).toBeVisible();
+    await expect(dialog(page)).toContainText('Photos');
+    await expect(page.locator('[data-testid="syncthing-remove-desc"]')).toContainText(
+      'Files already on this appliance',
+    );
+
+    await dialog(page).getByRole('button', { name: /cancel/i }).click();
+    await expect(dialog(page)).toHaveCount(0);
+    expect(mock.writes).toHaveLength(0);
+
+    await win(page).locator('[data-testid="syncthing-remove-folder"]').click();
+    await page.locator('[data-testid="syncthing-confirm-remove"]').click();
+
+    await expect(dialog(page)).toHaveCount(0, { timeout: 8_000 });
+    expect(mock.writes).toHaveLength(1);
+    expect(mock.writes[0].method).toBe('DELETE');
+    expect(mock.writes[0].path).toBe('/api/syncthing/folders/photos');
+    await expect(win(page).locator('[data-testid="syncthing-folder-list-row"]')).toHaveCount(0);
+    await expect(win(page).locator('[data-testid="syncthing-success"]')).toContainText('Photos');
+  });
+
+  test('7.6 — removing a device asks for confirmation and unpairs it', async ({ page }) => {
+    const mock = newMock();
+    mock.devices = [deviceFixture()];
+    await installDaemonMock(page, mock);
+    await gotoSyncthing(page, adminTokens);
+    await openTab(page, /device/i);
+
+    await win(page).locator('[data-testid="syncthing-device-list-row"]').first().click();
+    await win(page).locator('[data-testid="syncthing-remove-device"]').click();
+    await expect(page.locator('[data-testid="syncthing-remove-desc"]')).toContainText(
+      'Folders and their files stay on disk',
+    );
+    await page.locator('[data-testid="syncthing-confirm-remove"]').click();
+
+    await expect(dialog(page)).toHaveCount(0, { timeout: 8_000 });
+    expect(mock.writes).toHaveLength(1);
+    expect(mock.writes[0].method).toBe('DELETE');
+    expect(mock.writes[0].path).toBe(`/api/syncthing/devices/${DEVICE_ID}`);
+    await expect(win(page).locator('[data-testid="syncthing-device-list-row"]')).toHaveCount(0);
+    await expect(win(page).locator('[data-testid="syncthing-empty"]')).toBeVisible();
+  });
+
+  test('7.7 — the management actions are labelled buttons, reachable by keyboard', async ({
+    page,
+  }) => {
+    const mock = newMock();
+    mock.folders = [folderFixture()];
+    mock.devices = [deviceFixture()];
+    await installDaemonMock(page, mock);
+    await gotoSyncthing(page, adminTokens);
+
+    await openTab(page, /folder/i);
+    const addFolder = win(page).locator('[data-testid="syncthing-add-folder"]');
+    await expect(addFolder).toHaveRole('button');
+    await expect(addFolder).toHaveAccessibleName(/add folder/i);
+    // Keyboard-only entry point: focus it and press Enter.
+    await addFolder.focus();
+    await page.keyboard.press('Enter');
+    await expect(dialog(page)).toBeVisible();
+    // Every field has a label and the dialog's title names the task.
+    await expect(dialog(page)).toContainText(/add a folder/i);
+    await expect(page.locator('[data-testid="syncthing-folder-id-input"]')).toHaveAttribute(
+      'id',
+      'hv-syncthing-folder-id',
+    );
+    await page.keyboard.press('Escape');
+    await expect(dialog(page)).toHaveCount(0);
+
+    await openTab(page, /device/i);
+    const addDevice = win(page).locator('[data-testid="syncthing-add-device"]');
+    await expect(addDevice).toHaveRole('button');
+    await expect(addDevice).toHaveAccessibleName(/add device/i);
   });
 });
 

@@ -17,14 +17,70 @@ none of these handlers checked a session at all; that gap is closed.)
 | `POST /syncthing/pause` | admin | pause device (`{ device }`) |
 | `POST /syncthing/resume` | admin | resume device (`{ device }`) |
 | `POST /syncthing/scan` | admin | scan folder (`{ folder }`) |
+| `POST /syncthing/folders` | admin | add a folder (see below) |
+| `DELETE /syncthing/folders/{id}` | admin | remove a folder, files kept |
+| `POST /syncthing/devices` | admin | pair a device (see below) |
+| `DELETE /syncthing/devices/{id}` | admin | unpair a device, files kept |
 
 `pause`/`resume`/`scan`'s `device`/`folder` values are URL-encoded
 (`url::form_urlencoded::byte_serialize`) before being interpolated into the
-Syncthing REST query string, closing a query-parameter-injection gap.
+Syncthing REST query string, closing a query-parameter-injection gap. The same
+encoding is applied to the ids in the two `DELETE` routes, which are
+re-validated on the way in even though they came out of the URL: the value ends
+up in the daemon's REST path, and a decoded `..` must never get there.
+
+### Adding and removing a folder or a device (ROADMAP 18.1)
+
+Until this landed the screen was a monitor: it could show the topology and
+pause/resume/rescan, but not add either, so a new phone or a new pool folder had
+to be configured on the daemon directly.
+
+**Every field is validated before the first daemon call.** Order matters: a
+daemon that is down would otherwise answer with a transport error and mask the
+fact that the request itself was never valid.
+
+| Field | Rule | Why |
+|---|---|---|
+| Folder ID | `[A-Za-z0-9._-]`, 1–64 bytes, not blank | It is the folder's identity and is interpolated into a REST path. |
+| Label | trimmed, ≤128 bytes; blank falls back to the ID | Display only. |
+| Path | absolute, no `..`, not `/`, inside `state.path_guard.allowed_roots()` | Syncthing creates the directory, so an unconfined path would let an admin write **anywhere the service can**. Same rule as `validate_quarantine_dir`. |
+| Sync mode | `sendreceive`, `sendonly`, `receiveonly` | `receiveencrypted` is refused on purpose: a home user cannot recover one from this screen, and a folder nobody can read is not a feature. |
+| Devices | ≤64, each already paired, deduped | `POST config/folders` with an unknown device id leaves the folder half-configured. |
+| Device ID | eight groups of seven base-32 characters, dashes and case optional | Normalised to the canonical dashed form before it is stored or compared. |
+| Device name | ≤128, no control characters; blank falls back to the first group of the ID | Display only. |
+
+Two things are deliberately **not** checked:
+
+- **The device ID check digit.** Syncthing's Luhn variant is the daemon's
+  business; the handler only guarantees the *shape*, and relays the daemon's
+  refusal. Implementing it here would mean two authorities that can disagree.
+- **Whether the folder path exists.** Syncthing creates it, so a path that does
+  not exist yet is a legitimate answer — which is why the dialog uses
+  `PathField` and not the read-only `PathPickerField`.
+
+The running config (`GET system/config`, via `load_config`) is read once after
+validation and serves two purposes: it is the duplicate check (folder id, device
+id) and the allowlist of devices a folder may be shared with. The appliance's
+own device id is injected into a new folder's `devices` array, and pairing or
+removing that id is refused — the host cannot be unpaired from itself.
+
+`POST` answers the created identity (`{"id": …}` or `{"device_id": …}`), which is
+enough for the screen to reload; `DELETE` answers a confirmation string.
+Both log an event naming the admin who made the change. Removal only edits the
+daemon's configuration: files already synced stay on disk, and the screen's
+confirmation says so.
+
+### Known debt
 
 `handle_syncthing_folders` calls `db/status?folder={id}` once per configured
 folder — Syncthing's real REST API has no bulk "all folders" status call, so
-this is a deliberate N+1, not an oversight. `DbFolderStatus` intentionally has
+this is a deliberate N+1, not an oversight: with *n* folders every 10 s poll
+costs *n*+3 requests on loopback. It is bounded (each has the 10 s timeout, the
+client is local, and a home install has a handful of folders), so it is not
+scheduled for a fix; folding the per-folder status into a single cache warmed by
+one poll loop is the change to make if a 20-folder install ever shows up.
+
+`DbFolderStatus` intentionally has
 no `id`/`label`/`path`/`receive_only` fields (those come from `system/config`
 instead) because the real `db/status?folder=X` response doesn't have them —
 adding them back would silently break deserialization again.
@@ -67,7 +123,8 @@ to run straight inside the async handler (ROADMAP X.1).
 - `frontend/src/lib/services/api.ts`: `getSyncthingStatus`, `getSyncthingConfig`,
   `getSyncthingDevices`, `getSyncthingFolders`, `getSyncthingConnections`,
   `restartSyncthing`, `pauseSyncthingDevice`, `resumeSyncthingDevice`,
-  `scanSyncthingFolder`, `getSyncthingErrors`.
+  `scanSyncthingFolder`, `getSyncthingErrors`, `createSyncthingFolder`,
+  `deleteSyncthingFolder`, `createSyncthingDevice`, `deleteSyncthingDevice`.
 
 One `Alert` (`data-testid="syncthing-error"`, title
 `syncthing.error_title`, body = the server's own reason) carries every failure
@@ -81,6 +138,30 @@ to install it would be a lie.
 
 Devices/folders *load* failures stay silent on purpose — they are what the
 "not available" empty state already says.
+
+### The management dialogs (ROADMAP 18.1)
+
+Each tab has an *Add* action (`syncthing-add-folder` / `syncthing-add-device`)
+and the detail pane a *Remove* button (`syncthing-remove-folder` /
+`syncthing-remove-device`). Three deliberate choices:
+
+- **A refusal stays inside the dialog** (`syncthing-form-error`), with the typed
+  values intact. A validation error is fixable; closing the dialog and dropping
+  what the user typed is not. The page-level banner is for the actions that have
+  no dialog left to keep open.
+- **The defaults are the common case.** Sync mode starts at two-way, and "Share
+  with" pre-ticks every paired device — that is what "sync this folder" means to
+  a home user. Unticking all of them keeps the folder on this appliance only.
+  The type select keeps its three options; "start paused" is omitted, since
+  pausing is already one click away on the detail pane (simplicity rule 2).
+- **Removal names its consequence.** The confirmation says the files already on
+  disk stay, because that is the question a user actually has. It does not
+  repeat the action's name twice or invent a second confirmation step.
+
+Values are trimmed before they are sent, so the payload is exactly what the
+daemon stores and the success banner (`syncthing-success`) cannot quote a padded
+name. Enter in any text field submits when the required ones are filled; Create
+stays disabled until the folder ID and path are both non-empty.
 
 ## Related
 
