@@ -128,6 +128,29 @@ in `src/web/mod.rs`. Read endpoints use `require_auth`; mutations use
 `require_admin`. **Do not** revert any handler to a bare "header present"
 check.
 
+## Deadlines on `rsync` / `find` / `df` (2026-10-24, ROADMAP X.2)
+
+The mover's three host tools used to run unbounded, from inside
+`spawn_blocking`. The consequence was worse than one stalled job: `run_mover`
+holds the **process-wide** `MOVER_RUNNING` slot for the whole run, so a wedged
+`rsync` kept that slot set and **no mover ran again** — not on schedule, not
+from the button — until the service was restarted.
+
+Every call now goes through `crate::utils::process::run_timed` via one local
+`run_command(cmd, timeout)` helper:
+
+| Call | Deadline | Why |
+|---|---|---|
+| `df -B1 <path>` | `CACHE_QUERY_TIMEOUT` 30 s | mount-table read; also gates the free-space check that must answer *before* `rsync --remove-source-files` deletes anything |
+| `find … -printf` (sizing, age list) | `CACHE_FIND_TIMEOUT` 600 s | proportional to the file count on the cache tier |
+| `rsync -a --stats …` | `CACHE_RSYNC_TIMEOUT` 6 h | a first drain of a full tier legitimately takes hours — a **ceiling**, like rclone's transfer budget |
+
+The child is killed at the deadline (`kill_on_drop`), so the run ends, the
+`MoverRunGuard` releases the slot on drop, and the run row is recorded as
+failed with the deadline in its message. `run_command` keeps a non-zero exit as
+*data*, which the `rsync` path depends on: exit 24 means "vanished source
+files" and is treated as success for the files that did transfer.
+
 ## Frontend
 
 - `frontend/src/routes/Storage.svelte`:
@@ -198,7 +221,12 @@ on completion/failure, reusing the shared `NotificationRepository`.
   `unwrap_or_default()` reported a failed scan as "that pool does not exist".
 - The mover shells out to `rsync`, `find` and `df`, so it is CPU/IO-bound — run
   it off the request path (`run_mover` is the scheduler/endpoint target, never
-  inline in a hot path).
+  inline in a hot path). **Each of those calls carries a deadline** (see
+  "Deadlines" above): the single-flight slot is process-wide, so an unbounded
+  tool would not just stall one run — it would block every later run until a
+  restart. Never call `Command::output()` directly in this module; a source
+  guard (`test_no_mover_subprocess_runs_without_a_deadline`) fails the build if
+  one comes back.
 - Creating a cache share also creates/updates a matching SMB export
   (`create_or_update_smb_export`, `src/handlers/cache.rs`) so the data is
   reachable over the network at its active path. After a mover run,

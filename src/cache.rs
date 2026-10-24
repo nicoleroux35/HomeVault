@@ -47,8 +47,44 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tracing;
 use uuid::Uuid;
+
+use crate::utils::process::run_timed;
+
+// ---------------------------------------------------------------------------
+// Deadlines (ROADMAP X.2)
+//
+// The mover shells out to `rsync`, `find` and `df` from inside
+// `spawn_blocking`, and `run_mover` holds the process-wide single-flight slot
+// for the whole run. A wedged `rsync` therefore did not just stall one job: it
+// pinned that blocking thread **and** kept `MOVER_RUNNING` set, so no mover ran
+// again — manually or on schedule — until the service was restarted. Each value
+// below is a ceiling for the slowest honest case, not an estimate.
+// ---------------------------------------------------------------------------
+
+/// `df -B1 <path>` — a mount-table read. Also bounds the free-space gate, which
+/// must answer *before* `rsync --remove-source-files` deletes anything.
+pub const CACHE_QUERY_TIMEOUT: Duration = Duration::from_secs(30);
+/// `find` — sizing a share and building the age list. Proportional to the
+/// number of files on the cache tier, so a large library is minutes.
+pub const CACHE_FIND_TIMEOUT: Duration = Duration::from_secs(600);
+/// `rsync` — one share's transfer. A first drain of a full cache tier
+/// legitimately takes hours, so this is a ceiling like rclone's transfer
+/// budget; the child is killed at the deadline instead of being abandoned,
+/// which is what frees the single-flight slot.
+pub const CACHE_RSYNC_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// Run one host command under a deadline, keeping the reason it failed.
+///
+/// The mover is synchronous by design (it runs on the blocking pool), so this
+/// is the blocking helper. The timeout is a parameter rather than a constant
+/// baked into each call site so the kill path is unit-testable, exactly like
+/// `disk::bounded`.
+fn run_command(cmd: &mut Command, timeout: Duration) -> Result<std::process::Output, String> {
+    run_timed(cmd, timeout)
+}
 
 /// Guards against the mover running twice at once (manual trigger racing the
 /// scheduler, or a double click). `run_mover` is the single entry point used
@@ -458,7 +494,8 @@ impl CacheService {
     /// `(used, available)` bytes of the filesystem holding `path`, via
     /// `df -B1`. `None` when `df` is unavailable or its output is unparseable.
     fn df_space(path: &str) -> Option<(u64, u64)> {
-        let output = Command::new("df").args(["-B1", path]).output().ok()?;
+        let output =
+            run_command(Command::new("df").args(["-B1", path]), CACHE_QUERY_TIMEOUT).ok()?;
         if !output.status.success() {
             return None;
         }
@@ -498,9 +535,7 @@ impl CacheService {
         args.push("-printf".into());
         args.push("%s\\n".into());
 
-        let out = Command::new("find")
-            .args(&args)
-            .output()
+        let out = run_command(Command::new("find").args(&args), CACHE_FIND_TIMEOUT)
             .map_err(|e| format!("failed to run find: {}", e))?;
         if !out.status.success() {
             return Err(format!(
@@ -588,8 +623,8 @@ impl CacheService {
         let age_list = if min_age_days > 0 {
             let list_path =
                 std::env::temp_dir().join(format!("homevault-cache-age-{}.txt", Uuid::new_v4()));
-            let out = Command::new("find")
-                .args([
+            let out = run_command(
+                Command::new("find").args([
                     &src_slash,
                     "-type",
                     "f",
@@ -597,8 +632,9 @@ impl CacheService {
                     &format!("+{}", min_age_days.saturating_sub(1)),
                     "-printf",
                     "%P\\0",
-                ])
-                .output();
+                ]),
+                CACHE_FIND_TIMEOUT,
+            );
             match out {
                 Ok(o) if o.status.success() => {
                     std::fs::write(&list_path, &o.stdout)
@@ -635,7 +671,7 @@ impl CacheService {
             args.push(dst_slash.clone());
         }
 
-        let output = Command::new("rsync").args(&args).output();
+        let output = run_command(Command::new("rsync").args(&args), CACHE_RSYNC_TIMEOUT);
         if let Some(list) = &age_list {
             let _ = std::fs::remove_file(list);
         }
@@ -1513,5 +1549,94 @@ Filesystem      1B-blocks         Used    Available Use% Mounted on
             !cache.join("media/movie.mkv").exists(),
             "the source copy must be removed once it is safely on the array"
         );
+    }
+
+    // -- ROADMAP X.2: the mover's host tools are bounded ---------------------
+
+    /// The defect class this guards against is invisible to a behavioural
+    /// test: a bare `.output()` still answers correctly on an idle box and only
+    /// pins the blocking thread — **and** the process-wide single-flight slot,
+    /// so no mover ever runs again — when `rsync`/`find`/`df` stops answering.
+    /// So the invariant is asserted at the source.
+    ///
+    /// `concat!` keeps each pattern out of this file's own source, so the
+    /// assertion cannot count itself.
+    #[test]
+    fn test_no_mover_subprocess_runs_without_a_deadline() {
+        let src = include_str!("cache.rs");
+        let production = src.split("#[cfg(test)]").next().unwrap_or(src);
+        for unbounded in [
+            concat!(".", "output()"),
+            concat!(".", "spawn()"),
+            concat!("wait_with_", "output()"),
+        ] {
+            assert!(
+                !production.contains(unbounded),
+                "`{unbounded}` waits without a deadline — use `run_command` (ROADMAP X.2)"
+            );
+        }
+        // Every host command is wrapped: one `Command::new` per tool, one
+        // `run_command` per `Command::new` (the helper's own definition is the
+        // extra match, and is not a `Command::new`).
+        let commands = production.matches("Command::new(").count();
+        let bounded = production.matches("run_command(").count();
+        assert!(commands >= 4, "the mover lost a host command: {commands}");
+        assert_eq!(
+            bounded,
+            commands + 1,
+            "a host command of the mover is not wrapped in `run_command`: \
+             {commands} Command::new vs {bounded} run_command"
+        );
+    }
+
+    #[test]
+    fn test_run_command_kills_a_hung_tool_and_names_the_deadline() {
+        let started = std::time::Instant::now();
+        let error = run_command(Command::new("sleep").arg("30"), Duration::from_millis(120))
+            .expect_err("a hung tool must not succeed");
+        assert!(error.contains("did not finish within"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the deadline must be enforced, not waited out"
+        );
+    }
+
+    #[test]
+    fn test_run_command_keeps_a_non_zero_exit_as_data() {
+        // `rsync_move` branches on the exit *status* (exit 24 means "vanished
+        // source files", which is success for the files that did transfer), so
+        // a non-zero exit must arrive as output, never as an error.
+        let out = run_command(&mut Command::new("false"), Duration::from_secs(5))
+            .expect("`false` still runs to completion");
+        assert_eq!(out.status.code(), Some(1));
+    }
+
+    #[test]
+    fn test_run_command_reports_a_missing_tool() {
+        let error = run_command(
+            &mut Command::new("homevault-no-such-binary"),
+            Duration::from_secs(1),
+        )
+        .expect_err("a missing tool is an error");
+        assert!(error.contains("Failed to run"), "{error}");
+    }
+
+    #[test]
+    fn test_mover_deadlines_are_ceilings_and_ordered() {
+        // `df` is a mount-table read; `find` walks the tier; `rsync` moves it.
+        assert!(CACHE_QUERY_TIMEOUT >= Duration::from_secs(5));
+        assert!(CACHE_FIND_TIMEOUT >= CACHE_QUERY_TIMEOUT);
+        assert!(CACHE_RSYNC_TIMEOUT >= CACHE_FIND_TIMEOUT);
+        // Still finite: a wedged transfer must free the single-flight slot.
+        assert!(CACHE_RSYNC_TIMEOUT <= Duration::from_secs(12 * 60 * 60));
+    }
+
+    #[test]
+    fn test_df_space_answers_none_when_the_tool_fails() {
+        // The free-space gate reads `df` *before* `rsync
+        // --remove-source-files` deletes anything, so "no answer" must be a
+        // clean `None` (the caller then refuses the move) rather than a panic
+        // or a fabricated 0.
+        assert_eq!(CacheService::df_space("/definitely/not/a/mount"), None);
     }
 }
