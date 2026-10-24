@@ -26,9 +26,11 @@
 //!   Reads (admin only):
 //!     GET  /api/settings                      (aggregate)
 //!     GET  /api/settings/appearance | /email | /notifications | /update
+//!     GET  /api/settings/autostart
 //!     GET  /api/settings/export
 //!   Writes (admin only):
 //!     PUT  /api/settings/appearance | /email | /notifications | /update
+//!     PUT  /api/settings/autostart
 //!     POST /api/settings/import | /reset
 //!     POST /api/settings/language
 //!   Any session:
@@ -74,7 +76,8 @@ use homevault::auth::AuthService;
 use homevault::config::PathGuard;
 use homevault::handlers::settings::{
     handle_all_settings_get, handle_appearance_settings_get, handle_appearance_settings_update,
-    handle_check_version_now, handle_email_settings_get, handle_email_settings_update,
+    handle_autostart_get, handle_autostart_update, handle_check_version_now,
+    handle_email_settings_get, handle_email_settings_update,
     handle_get_language, handle_notification_settings_get, handle_notification_settings_update,
     handle_public_settings_get, handle_set_language, handle_settings_export,
     handle_settings_import, handle_settings_reset, handle_timezones_get,
@@ -160,6 +163,10 @@ fn settings_router(state: Arc<AppState>) -> Router {
             get(handle_get_language).post(handle_set_language),
         )
         .route("/api/settings/timezones", get(handle_timezones_get))
+        .route(
+            "/api/settings/autostart",
+            get(handle_autostart_get).put(handle_autostart_update),
+        )
         .route("/api/settings/export", get(handle_settings_export))
         .route("/api/settings/import", post(handle_settings_import))
         .route("/api/settings/reset", post(handle_settings_reset))
@@ -245,6 +252,7 @@ fn admin_read_endpoints() -> Vec<&'static str> {
         "/api/settings/notifications",
         "/api/settings/update",
         "/api/settings/export",
+        "/api/settings/autostart",
     ]
 }
 
@@ -256,6 +264,7 @@ fn admin_write_endpoints() -> Vec<(Method, &'static str, Value)> {
         (Method::PUT, "/api/settings/email", json!({})),
         (Method::PUT, "/api/settings/notifications", json!({})),
         (Method::PUT, "/api/settings/update", json!({})),
+        (Method::PUT, "/api/settings/autostart", json!({"enabled": false})),
         (
             Method::POST,
             "/api/settings/language",
@@ -1438,4 +1447,155 @@ async fn test_a_due_schedule_checks_and_a_fresh_one_does_not() {
     );
 
     clear_update_endpoint();
+}
+
+// ---------------------------------------------------------------------------
+// 9. Autostart (ROADMAP 25)
+// ---------------------------------------------------------------------------
+//
+// The host command is never run for real: a `PATH` shim stands in for
+// `systemctl` / `sudo`, so these tests assert the two things 25.1/25.2 broke.
+// "Bounded and off the runtime" cannot be observed from here, but
+// "disabled" vs "the host cannot answer" and the stderr reason reaching the
+// response body can — both of which the old code collapsed.
+
+/// One test at a time runs in this binary (every test holds the `ENV_LOCK`
+/// guard `setup_state` returns), so prepending fake executables to `PATH` is
+/// safe. `PATH` is restored on drop.
+struct PathShim {
+    _dir: tempfile::TempDir,
+    saved: String,
+}
+
+impl PathShim {
+    /// Write `programs` (name, shell script) as 0755 files in a temp dir and
+    /// prepend that dir to `PATH`, so `Command::new(name)` reaches the shim
+    /// instead of the host's binary.
+    fn new(programs: &[(&str, &str)]) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("shim dir");
+        for (name, script) in programs {
+            let path = dir.path().join(name);
+            std::fs::write(&path, script).expect("write shim");
+            let mut perms = std::fs::metadata(&path).expect("shim metadata").permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&path, perms).expect("chmod shim");
+        }
+        let saved = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{}", dir.path().display(), saved));
+        Self { _dir: dir, saved }
+    }
+}
+
+impl Drop for PathShim {
+    fn drop(&mut self) {
+        std::env::set_var("PATH", &self.saved);
+    }
+}
+
+#[tokio::test]
+async fn autostart_read_reports_a_disabled_unit_as_false() {
+    let (state, _tmp, _guard) = setup_state().await;
+    // `systemctl is-enabled` prints the state and exits 1 with a clean stderr
+    // for a unit that is not enabled.
+    let _shim = PathShim::new(&[("systemctl", "#!/bin/sh\necho disabled\nexit 1\n")]);
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = settings_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/autostart",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["enabled"], json!(false));
+}
+
+#[tokio::test]
+async fn autostart_read_distinguishes_a_host_that_cannot_answer() {
+    let (state, _tmp, _guard) = setup_state().await;
+    // This is the assertion that would have caught 25.2: the old code mapped
+    // the non-zero exit to `false`, so the card said "off" on a host that
+    // never answered.
+    let _shim = PathShim::new(&[(
+        "systemctl",
+        "#!/bin/sh\necho \"System has not been booted with systemd as init system (PID 1). Can't operate.\" >&2\nexit 1\n",
+    )]);
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = settings_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/autostart",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["success"], json!(false));
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("not been booted with systemd"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn autostart_update_surfaces_the_hosts_refusal_reason() {
+    let (state, _tmp, _guard) = setup_state().await;
+    let _shim = PathShim::new(&[(
+        "sudo",
+        "#!/bin/sh\necho 'polkit refused: no authorization' >&2\nexit 1\n",
+    )]);
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = settings_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/settings/autostart",
+        Some(&token),
+        Some(json!({"enabled": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["success"], json!(false));
+    // The reason the admin needs to act on, not a generic "failed".
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("polkit refused: no authorization"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn autostart_update_records_a_successful_toggle() {
+    let (state, _tmp, _guard) = setup_state().await;
+    let _shim = PathShim::new(&[("sudo", "#!/bin/sh\nexit 0\n")]);
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = settings_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/settings/autostart",
+        Some(&token),
+        Some(json!({"enabled": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["enabled"], json!(true));
+    assert!(body["data"]["message"].is_string());
 }

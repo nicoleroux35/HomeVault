@@ -83,7 +83,6 @@ Two structural facts explain most of the list:
 |---|---|---|---|
 | 10b | File Explorer — residual hardening | P2 | 3 |
 | 16.4 | Cloud Sync (rclone) — no scheduler | P2 | 1 |
-| 25 | Autostart | P1 | 2 |
 | 26 | Wallpapers / Themes | P1 | 2 |
 | 27 | Web shortcuts | P1 | 2 |
 | 28 | Activity taskbar | P2 | 3 |
@@ -93,7 +92,7 @@ Two structural facts explain most of the list:
 | 33 | Transfer quotas — residual | P2 | 1 |
 | — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **26** (19 per-area + 7 cross-cutting).
+Total open findings: **24** (17 per-area + 7 cross-cutting).
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
@@ -138,8 +137,12 @@ finding, and it was the one a user hit first — a share or a peer could not be
 onboarded from HomeVault at all. **24 (Server control) closed on 2026-10-24**:
 a refused `restart`/`shutdown` now says why, a successful one says it is going
 down, and every power button (desktop, Settings, MCP) runs one bounded
-`sudo systemctl` primitive. The next P1 is **25 (Autostart)**, where a blocking
-`systemctl` runs on the async runtime and its error is thrown away.
+`sudo systemctl` primitive. **25 (Autostart) closed on 2026-10-24**: every
+`systemctl` call is off the async runtime with a deadline, a host that cannot
+answer is no longer reported as "disabled", and a refusal carries the host's
+own reason. The next P1 is **26 (Wallpapers / Themes)**, where a non-admin
+never receives the server appearance and `theme`/`density` are persisted
+no-ops.
 
 ---
 
@@ -186,25 +189,6 @@ contract now lives in [guides/server-control.md](docs/guides/server-control.md)
 (UI feedback) and [guides/power.md](docs/guides/power.md) (one primitive, one
 sudoers grant). Tests: `handlers/system.rs` 0 → 4 unit, `power_integration.rs`
 4 → 9, new `tests/e2e/desktop/power.spec.ts`.
-
----
-
-### 25. Autostart — a blocking `systemctl` in an async handler, with the error thrown away
-
-- [ ] **25.1 — `is_enabled()` / `set_enabled()` run on the runtime.**
-      `src/handlers/settings.rs:566,595` call `std::process::Command`
-      (`src/autostart.rs:34-56`) with no `spawn_blocking`; `sudo systemctl
-      enable` can block for seconds on sudo PAM or a systemd job. Contrast
-      `mdns.rs:449` and `transfer_quota.rs:136`, which wrap correctly.
-- [ ] **25.2 — The real error is discarded.** `handlers/settings.rs:595+` maps
-      any `Err` to `settings.autostart_update_failed`, throwing away the stderr
-      that `set_enabled` carefully returns (`autostart.rs:50-52`), so
-      "polkit refused" and "unit not found" are indistinguishable.
-
-*Tests:* `src/autostart.rs` has **0 tests** and the sudo/`systemctl` argv shape
-is untested; the only E2E is the staged-then-saved behaviour
-(`tests/e2e/settings/settings.spec.ts:518`).
-*Docs:* `docs/guides/settings.md`.
 
 ---
 
@@ -348,9 +332,15 @@ reuse.
       `std::fs` and `docker compose` are called straight from `async fn` in:
       Health (`web/mod.rs:322`), Dashboard (`dashboard.rs:1686,1798,1844,1994,2147,2159,2195`),
       Chat (`chat.rs:989,1021,1040`), Cache (`handlers/cache.rs:97,165,252,457`),
-      Encryption (`handlers/encryption.rs:210,345`), Autostart
-      (`handlers/settings.rs:566,595`), Apps Center (`docker_catalog.rs:490,562`),
-      Explorer (`explorer.rs:665,2628,2659`).
+      Encryption (`handlers/encryption.rs:210,345`), Apps Center
+      (`docker_catalog.rs:490,562`), Explorer (`explorer.rs:665,2628,2659`).
+      *(Autostart left this list with item 25, 2026-10-24 — `is_enabled` /
+      `set_enabled` run in `spawn_blocking`, and the two `sudo` shell-outs they
+      sit next to in `handlers/settings.rs` — `hostnamectl set-hostname` and
+      `timedatectl set-timezone` — followed in the same change: both moved to
+      `spawn_blocking` with a 30 s `run_timed` deadline, so no
+      `std::process::Command` of that module is reachable from an async body
+      any more. That also closed X.2 for `settings.rs`.)*
       *(Notifications, Antivirus, Power and rclone were on this list and are
       closed — items 13 and 16, 2026-10-23; DB backup left it on 2026-10-24 with
       item 22 — every `std::fs` call of `db_backup.rs` now runs on
@@ -459,6 +449,35 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-24 (c)** — Autostart — the `systemctl` calls left the async runtime
+and a refusal now says why (items 25.1 and 25.2). `is_enabled()` /
+`set_enabled()` ran `std::process::Command` straight from `async fn` handlers,
+so a `sudo systemctl enable` waiting on the sudo PAM stack or a systemd job
+parked a Tokio worker and — because the one Save button flushes the group —
+stalled the whole settings save. Both now run in `spawn_blocking` inside
+`run_timed` (`AUTOSTART_PROBE_TIMEOUT` 10 s, `AUTOSTART_UPDATE_TIMEOUT` 30 s),
+with the argv built by a pure `args_for()` so the scoped
+`systemctl enable|disable homevault` grant is pinned by a unit test and the
+unit name stays a constant. The refusal was invisible: any `Err` became
+`settings.autostart_update_failed`, discarding the stderr `set_enabled`
+returned. `PUT /settings/autostart` now answers `500` whose `message` is the
+host's own reason, rendered by the card as a dismissible `role="alert"`
+(`settings.autostart_error`); the staged flip is reverted to the last
+server-accepted value so the switch never claims a change the host refused.
+`GET /settings/autostart` is tri-state — a clean non-zero exit is
+`enabled:false`, a non-empty stderr (container, no systemd, unit missing) is
+`500` with the reason — and a failed read disables the switch
+(`settings.autostart_read_failed`) instead of showing a false "off". The
+sudoers grant is unchanged. Tests: `src/autostart.rs` 0 → **9** unit,
+`settings_core_integration.rs` 24 → **28** (a `PATH` shim stands in for
+`sudo`/`systemctl`), `settings.spec.ts` +3.5/3.6 (mocked routes). Written,
+not run (per instruction). Docs: [guides/settings.md](docs/guides/settings.md),
+[API.md](docs/API.md). The two `sudo` shell-outs of the same module
+(`hostnamectl set-hostname`, `timedatectl set-timezone`) left the async runtime
+in the same change and gained a 30 s deadline — X.1/X.2, and no blocking
+`std::process::Command` of `handlers/settings.rs` is reachable from an async
+body any more.
 
 **2026-10-24 (b)** — Server control — a refused `restart`/`shutdown` is now
 visible, and every power button runs the same privileged command (items 24.1

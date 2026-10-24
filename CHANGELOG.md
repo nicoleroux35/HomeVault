@@ -390,6 +390,46 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Autostart — the `systemctl` probe left the async runtime, and a refusal
+  says why (2026-10-24, ROADMAP 25.1/25.2).** `is_enabled()` / `set_enabled()`
+  ran `std::process::Command` straight from `async fn` handlers, so a
+  `sudo systemctl enable` waiting on the sudo PAM stack or on a systemd job
+  parked a Tokio worker — and, because both calls are flushed by the one
+  settings Save button, stalled the whole save. Both now run inside
+  `spawn_blocking` with a `run_timed` deadline (`AUTOSTART_PROBE_TIMEOUT` 10 s,
+  `AUTOSTART_UPDATE_TIMEOUT` 30 s); the argv is built by a pure `args_for()`, so
+  the scoped `systemctl enable|disable homevault` grant is asserted in a unit
+  test and the unit name stays a constant, never request input. The second half
+  was feedback: the handler mapped **any** failure to
+  `settings.autostart_update_failed`, discarding the stderr `set_enabled`
+  carefully returned, so “polkit refused”, “a password is required” and “unit
+  not found” were indistinguishable. `PUT /settings/autostart` now answers
+  `500` with the host's own reason as `message`, which the card renders as a
+  dismissible `role="alert"` (`settings.autostart_error`); the staged flip is
+  reverted to the last server-accepted value so the switch never claims a
+  change the host refused. `GET /settings/autostart` is tri-state: a clean
+  non-zero exit is `enabled:false`, but a non-empty stderr (container, no
+  systemd, unit missing) is `500` with the reason — “the host cannot answer”
+  is no longer reported as “disabled”. A failed read disables the switch
+  (`settings.autostart_read_failed`) so it cannot stage a change against an
+  unknown baseline. The sudoers grant is unchanged. Tests: `src/autostart.rs`
+  0 → **9** unit (exact argv, constant unit name, the three probe states, the
+  stderr tail, the silent non-zero exit, the deadlines),
+  `settings_core_integration.rs` 24 → **28** (a `PATH` shim stands in for
+  `sudo`/`systemctl`: disabled vs unreachable, the refusal reason in the body,
+  a successful toggle), `settings.spec.ts` 3.5/3.6 (mocked routes: refusal
+  alert + reverted switch, served value on success). **Written but not
+  executed** (per instruction). Docs: `docs/guides/settings.md`,
+  `docs/API.md`, `ROADMAP.md` (item 25 closed, 26 → 24 open findings),
+  `TESTING.md`, and the four `src/i18n/*.toml`.
+
+Also in this change (`ROADMAP X.1`/`X.2`, same module): the two remaining
+`std::process::Command` call sites of `handlers/settings.rs` — the
+`hostnamectl set-hostname` behind the server-name save and the
+`timedatectl set-timezone` next to it — moved to `spawn_blocking` with a 30 s
+`run_timed` deadline (`HOSTNAME_APPLY_TIMEOUT` / `TIMEZONE_APPLY_TIMEOUT`), so
+no blocking process of that module is reachable from an async handler.
+
 - **Server control — a refused power command is now visible, and every power
   button runs one privileged command (2026-10-24, ROADMAP 24.1/24.2).** The
   desktop power menu's two branches were literally empty
