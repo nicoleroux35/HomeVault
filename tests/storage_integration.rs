@@ -974,6 +974,81 @@ async fn test_import_pool_rejects_mdadm_before_any_command() {
     );
 }
 
+/// ROADMAP X.2 — a mover run always gives its single-flight slot back.
+///
+/// `run_mover` holds a process-wide `MOVER_RUNNING` flag for the whole run, and
+/// every host tool it uses (`rsync`, `find`, `df`) is now bounded by
+/// `CACHE_QUERY_TIMEOUT` / `CACHE_FIND_TIMEOUT` / `CACHE_RSYNC_TIMEOUT`. That
+/// only helps if the flag is released when the run ends — including a run that
+/// ends because a tool was killed at its deadline. The flag lives in an RAII
+/// guard, and this test pins the observable consequence: after a run finishes,
+/// the next `POST /cache/mover/run` is accepted instead of answering "already
+/// running" forever.
+///
+/// A shim `rsync` (exiting immediately) stands in for the real mover, so no
+/// data is ever moved: in this sandbox no cache pool is mounted, so the run
+/// fails at the run-level precondition — which is exactly the shortest path
+/// through the claim/release pair.
+#[tokio::test]
+async fn test_a_finished_mover_run_releases_its_single_flight_slot() {
+    let (mut router, token, _tmp, _guard) = admin_router().await;
+
+    let shim_dir = tempfile::tempdir().expect("shim dir");
+    for tool in ["rsync", "find", "df"] {
+        let shim = shim_dir.path().join(tool);
+        std::fs::write(&shim, "#!/bin/sh\nexit 1\n").expect("write shim");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod shim");
+        }
+    }
+    let previous_path = std::env::var("PATH").ok();
+    std::env::set_var("PATH", shim_dir.path());
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/cache/mover/run",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["data"]["job_id"].is_string(), "{body}");
+
+    // The run is spawned, not awaited: wait for the slot to come back.
+    let mut released = false;
+    for _ in 0..200 {
+        if !homevault::cache::mover_is_running() {
+            released = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    if let Some(path) = previous_path {
+        std::env::set_var("PATH", path);
+    }
+    assert!(
+        released,
+        "the mover never released its single-flight slot — a wedged tool would \
+         block every later run until a restart"
+    );
+
+    // And the release is real: a second trigger is accepted.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/cache/mover/run",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["data"]["job_id"].is_string(), "{body}");
+}
+
 #[tokio::test]
 async fn test_cache_pools_get_returns_an_array_even_with_no_pools() {
     // Best-effort `zpool`/`mdadm`/`btrfs` scans: absent tools or a

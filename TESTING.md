@@ -3102,6 +3102,47 @@ Written, **not run** (per instruction). What *was* run: `cargo check --lib`,
 `npm run check`/`npm run build` and the Playwright suites were not run (no
 frontend file changed).
 
+## 2026-10-24 — Cache mover: a deadline on `rsync`/`find`/`df`
+
+ROADMAP X.2 for `cache.rs` (`encryption.rs` was checked in the same pass and
+needed nothing — its entry was stale, every `cryptsetup`/`mount`/`umount`/`tee`
+call already runs under `run_timed` with a per-subcommand deadline, ROADMAP 9).
+
+Why this one matters more than its three call sites suggest: `run_mover` holds
+the **process-wide** `MOVER_RUNNING` flag for the whole run, so an `rsync` that
+never returned kept that slot set and no mover ran again — button or
+`scheduler` — until a restart. The deadline is what lets the RAII guard release
+it.
+
+- `CACHE_QUERY_TIMEOUT` 30 s (`df -B1`, also the free-space gate that must
+  answer before `rsync --remove-source-files` deletes anything),
+  `CACHE_FIND_TIMEOUT` 600 s (`find` sizing / age list), `CACHE_RSYNC_TIMEOUT`
+  6 h (a first drain of a full tier — a ceiling).
+- One local `run_command(cmd, timeout)` helper over
+  `utils::process::run_timed`; the timeout is a parameter so the kill path is
+  testable (same shape as `disk::bounded`), and a non-zero exit stays *data*
+  because the `rsync` path branches on exit 24.
+
+Counts: `src/cache.rs` **33 → 38**, `tests/storage_integration.rs` **29 → 30**.
+
+New assertions: `test_no_mover_subprocess_runs_without_a_deadline` (source
+guard — a bare `.output()`/`.spawn()`/`.status()`/`wait_with_output()` in
+production code fails it; the defect is invisible behaviourally, since an
+unbounded call still answers correctly on an idle box),
+`test_run_command_kills_a_hung_tool_and_names_the_deadline`,
+`test_run_command_keeps_a_non_zero_exit_as_data`,
+`test_run_command_reports_a_missing_tool`,
+`test_mover_deadlines_are_ceilings_and_ordered`,
+`test_df_space_answers_none_when_the_tool_fails`, and the integration case
+`test_a_finished_mover_run_releases_its_single_flight_slot` (shimmed
+`rsync`/`find`/`df`, `mover_is_running()` must fall back to `false`, and a
+second `POST /cache/mover/run` must be accepted).
+
+Written, **not run** (per instruction). What *was* run: `cargo check --lib`,
+`cargo test --no-run --lib`, `cargo check --test storage_integration`.
+`npm run check`/`npm run build` and the Playwright suites were not run (no
+frontend file changed).
+
 ## Verification method
 
 - `tests/*.rs` files listed via `ls`, counted via
