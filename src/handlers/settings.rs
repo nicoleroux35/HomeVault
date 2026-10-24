@@ -251,16 +251,33 @@ fn sanitize_hostname(name: &str) -> String {
 /// but does not itself restart any already-running service that cached the
 /// old name (Samba, mDNS, this very process's own already-open log file,
 /// etc.) - callers should surface a restart-recommended notice.
+///
+/// Blocking: `sudo hostnamectl` waits on the sudo PAM stack and on systemd, so
+/// callers run it on the blocking pool with a `run_timed` deadline
+/// (`apply_system_hostname_async`), never on the async runtime (ROADMAP X.1/
+/// X.2, the same shape as `autostart`).
 fn apply_system_hostname(new_hostname: &str) -> Result<(), String> {
-    let output = std::process::Command::new("sudo")
-        .args(["hostnamectl", "set-hostname", new_hostname])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut cmd = std::process::Command::new("sudo");
+    cmd.args(["hostnamectl", "set-hostname", new_hostname]);
+    let output = crate::utils::process::run_timed(&mut cmd, HOSTNAME_APPLY_TIMEOUT)?;
     if output.status.success() {
         Ok(())
     } else {
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
     }
+}
+
+/// Deadline for `sudo hostnamectl set-hostname`. Generous next to a probe —
+/// systemd may have to write `/etc/hostname` through a slow disk — but bounded
+/// so a wedged call cannot hold a worker at all.
+const HOSTNAME_APPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// [`apply_system_hostname`] on the blocking pool.
+async fn apply_system_hostname_async(new_hostname: &str) -> Result<(), String> {
+    let name = new_hostname.to_string();
+    tokio::task::spawn_blocking(move || apply_system_hostname(&name))
+        .await
+        .unwrap_or_else(|join_err| Err(format!("the hostname task could not run: {join_err}")))
 }
 
 /// The host's own timezone, read from `/etc/timezone` (Debian family) or the
@@ -307,17 +324,22 @@ pub fn effective_timezone() -> String {
 /// Applies the timezone as the real OS timezone via `timedatectl`
 /// (`homevault` has a scoped sudoers grant for exactly
 /// `timedatectl set-timezone *`). Needs root.
+///
+/// Blocking, and bounded by `TIMEZONE_APPLY_TIMEOUT`: the caller hands it to
+/// `spawn_blocking` (ROADMAP X.1/X.2).
 fn apply_system_timezone(timezone: &str) -> Result<(), String> {
-    let output = std::process::Command::new("sudo")
-        .args(["timedatectl", "set-timezone", timezone])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut cmd = std::process::Command::new("sudo");
+    cmd.args(["timedatectl", "set-timezone", timezone]);
+    let output = crate::utils::process::run_timed(&mut cmd, TIMEZONE_APPLY_TIMEOUT)?;
     if output.status.success() {
         Ok(())
     } else {
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
     }
 }
+
+/// Deadline for `sudo timedatectl set-timezone`.
+const TIMEZONE_APPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// SMTP email settings for outgoing notifications.
 #[derive(Debug, Deserialize, Clone)]
@@ -739,7 +761,7 @@ pub async fn handle_general_settings_update(
             .map(|h| h.to_string_lossy().to_lowercase())
             .unwrap_or_default();
         if target != current {
-            match apply_system_hostname(&target) {
+            match apply_system_hostname_async(&target).await {
                 Ok(()) => {
                     restart_required = true;
                     crate::events::log_event(format!(
@@ -923,9 +945,21 @@ pub async fn handle_autostart_get(
         return ResponseHelper::json_error("Admin access required".to_string());
     }
 
-    ResponseHelper::json_success(serde_json::json!({
-        "enabled": crate::autostart::is_enabled()
-    }))
+    // ROADMAP 25.2: `Err` means the host could not answer (container, no
+    // systemd, unit missing) — that is *unknown*, not "disabled". Collapsing
+    // the two read as "autostart off" on a host that never said so.
+    match crate::autostart::is_enabled().await {
+        Ok(enabled) => ResponseHelper::json_success(serde_json::json!({
+            "enabled": enabled
+        })),
+        Err(reason) => {
+            tracing::warn!("autostart probe failed: {}", reason);
+            ResponseHelper::json_error_with_status(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                reason,
+            )
+        }
+    }
 }
 
 /// Enables or disables start-on-boot for the HomeVault service. Admin-only,
@@ -953,7 +987,7 @@ pub async fn handle_autostart_update(
         return ResponseHelper::json_error("Admin access required".to_string());
     }
 
-    match crate::autostart::set_enabled(req.enabled) {
+    match crate::autostart::set_enabled(req.enabled).await {
         Ok(()) => {
             crate::events::log_event(format!(
                 "Admin '{}' {} HomeVault start-on-boot",
@@ -966,13 +1000,21 @@ pub async fn handle_autostart_update(
             }))
         }
         Err(err) => {
+            // ROADMAP 25.2: the host's own stderr is the reason the card needs
+            // ("polkit refused", "a password is required", …). The generic
+            // title lives in the UI, not here, so the server never has to
+            // guess which refusal this was.
+            tracing::error!("autostart update refused: {}", err);
             crate::events::log_event_warn(format!(
                 "Admin '{}' failed to {} HomeVault start-on-boot: {}",
                 session.username,
                 if req.enabled { "enable" } else { "disable" },
                 err
             ));
-            ResponseHelper::json_error(t("settings.autostart_update_failed"))
+            ResponseHelper::json_error_with_status(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                err,
+            )
         }
     }
 }

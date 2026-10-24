@@ -566,15 +566,98 @@ test.describe('3 — General', () => {
       set(page).locator('[data-testid="settings-save"]').click(),
     ]);
     expect(resp.request().postDataJSON()).toHaveProperty('enabled');
-    // 200 where systemd is available; a 4xx where it is not (dev boxes have no
-    // unit) — but the handler must never 5xx.
-    expect(resp.status(), `autostart PUT status ${resp.status()}`).toBeLessThan(500);
+    // 200 where the host accepts the systemd call, 500 where it refuses
+    // (`polkit refused`, no unit on a dev box): since ROADMAP 25.2 a refusal
+    // is explicit and carries its reason instead of a silent 4xx. Either way
+    // the handler must not answer 2xx on a host that refused.
+    expect([200, 500], `autostart PUT status ${resp.status()}`).toContain(resp.status());
 
     // restore
     await sharedCtx.put('/api/settings/autostart', {
       headers: adminHeaders,
       data: { enabled: enabledBefore },
     });
+  });
+
+  test('3.5 — a refused start-on-boot save shows the host reason and reverts the switch', async ({ page }) => {
+    // ROADMAP 25.2: the host's own reason reaches the card, and the refusal
+    // must not leave the switch showing a state the host never accepted.
+    await page.route('**/api/settings/autostart', async (route) => {
+      if (route.request().method() === 'PUT') {
+        await route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            success: false,
+            message: 'polkit refused: no authorization',
+          }),
+        });
+      } else {
+        // The probe answers: this is about the write, not an unreachable host.
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ success: true, data: { enabled: false } }),
+        });
+      }
+    });
+
+    await openSettings(page, admin);
+    const label = set(page).locator('[data-testid="settings-autostart"]');
+    const input = label.locator('input[type="checkbox"]');
+    await expect(input).not.toBeChecked();
+
+    // Stage the flip (the real input is visually hidden; click the label).
+    await label.click();
+    await expect(input).toBeChecked();
+
+    const saveBtn = set(page).locator('[data-testid="settings-save"]');
+    await saveBtn.click();
+    await expect(saveBtn).toHaveAttribute('data-state', 'error');
+
+    const alert = set(page).locator('[data-testid="autostart-error"] [role="alert"]');
+    await expect(alert).toBeVisible();
+    await expect(alert).toContainText('polkit refused: no authorization');
+    // The staged value was refused, so the switch goes back to the
+    // server-accepted value instead of claiming the change happened.
+    await expect(input).not.toBeChecked();
+
+    await page.unroute('**/api/settings/autostart');
+  });
+
+  test('3.6 — a successful start-on-boot save reflects the served value', async ({ page }) => {
+    let enabled = false;
+    await page.route('**/api/settings/autostart', async (route) => {
+      if (route.request().method() === 'PUT') {
+        enabled = !!(route.request().postDataJSON() as any)?.enabled;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ success: true, data: { enabled, message: 'ok' } }),
+        });
+      } else {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ success: true, data: { enabled } }),
+        });
+      }
+    });
+
+    await openSettings(page, admin);
+    const label = set(page).locator('[data-testid="settings-autostart"]');
+    const input = label.locator('input[type="checkbox"]');
+    await expect(input).not.toBeChecked();
+
+    await label.click();
+    await expect(input).toBeChecked();
+    await saveSettings(page);
+
+    // The server accepted it, so the switch stays on and no error band is left.
+    await expect(input).toBeChecked();
+    await expect(set(page).locator('[data-testid="autostart-error"]')).toHaveCount(0);
+
+    await page.unroute('**/api/settings/autostart');
   });
 });
 
