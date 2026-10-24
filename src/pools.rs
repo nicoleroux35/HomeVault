@@ -26,8 +26,23 @@
 
 use serde::{Deserialize, Serialize};
 use std::process::Command;
+use std::time::Duration;
 use thiserror::Error;
 use tracing::warn;
+
+use crate::utils::process::{run_timed, run_timed_with_stdin};
+
+/// Deadline for a metadata read (`zpool list/status/get`, `btrfs filesystem
+/// show/df`, `df`, `blkid`, `findmnt`). A pool whose disks have spun down still
+/// answers well inside it.
+pub const POOL_QUERY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Deadline for a mutating pool call (`zpool create|destroy|import`,
+/// `mkfs.btrfs`, `mount`, `umount`, `wipefs`, `rmdir`). `zpool create` on a set
+/// of large disks is the slowest honest case; `zpool import` scans every label
+/// on the box. ROADMAP X.2: none of these had a deadline, so a wedged `zpool`
+/// held the calling `spawn_blocking` thread — and the create wizard's request —
+/// for the life of the process.
+pub const POOL_WRITE_TIMEOUT: Duration = Duration::from_secs(900);
 
 /// Errors that can occur during storage pool operations.
 #[derive(Error, Debug)]
@@ -40,6 +55,16 @@ pub enum PoolError {
     PoolNotFound(String),
     #[error("Command failed: {0}")]
     CommandFailed(String),
+}
+
+impl From<String> for PoolError {
+    /// A `run_timed` failure (deadline expired, or the tool could not be
+    /// started) arrives as its own sentence — "zpool did not finish within
+    /// 900 seconds" — and is reported as a command failure, not as a parse
+    /// error, so the wizard can show it verbatim.
+    fn from(message: String) -> Self {
+        Self::CommandFailed(message)
+    }
 }
 
 /// Information about a storage pool (ZFS or MD RAID).
@@ -130,7 +155,10 @@ impl PoolService {
     fn list_importable_zfs_pools() -> Vec<ImportablePool> {
         // `zpool import` needs root to read the on-disk labels; a system
         // without ZFS installed simply has none.
-        let output = match Command::new("sudo").arg("zpool").arg("import").output() {
+        let output = match run_timed(
+            Command::new("sudo").arg("zpool").arg("import"),
+            POOL_WRITE_TIMEOUT,
+        ) {
             Ok(o) => o,
             Err(_) => return Vec::new(),
         };
@@ -141,11 +169,12 @@ impl PoolService {
     }
 
     fn list_importable_btrfs_pools() -> Vec<ImportablePool> {
-        let output = match Command::new("sudo")
-            .arg("btrfs")
-            .args(["filesystem", "show"])
-            .output()
-        {
+        let output = match run_timed(
+            Command::new("sudo")
+                .arg("btrfs")
+                .args(["filesystem", "show"]),
+            POOL_QUERY_TIMEOUT,
+        ) {
             Ok(o) => o,
             Err(_) => return Vec::new(),
         };
@@ -345,7 +374,10 @@ impl PoolService {
                     args.push(rename);
                 }
                 args.push(name);
-                let output = Command::new("sudo").arg("zpool").args(&args).output()?;
+                let output = run_timed(
+                    Command::new("sudo").arg("zpool").args(&args),
+                    POOL_QUERY_TIMEOUT,
+                )?;
                 if !output.status.success() {
                     return Err(PoolError::CommandFailed(
                         String::from_utf8_lossy(&output.stderr).trim().to_string(),
@@ -367,31 +399,34 @@ impl PoolService {
                     .ok_or_else(|| PoolError::Parse(format!("no device found for '{}'", name)))?;
                 let mount_point = format!("{}/{}", crate::config::paths::POOLS_MOUNT_BASE, name);
 
-                let mkdir = Command::new("sudo")
-                    .arg("mkdir")
-                    .args(["-p", &mount_point])
-                    .output()?;
+                let mkdir = run_timed(
+                    Command::new("sudo").arg("mkdir").args(["-p", &mount_point]),
+                    POOL_QUERY_TIMEOUT,
+                )?;
                 if !mkdir.status.success() {
                     return Err(PoolError::CommandFailed(format!(
                         "Failed to create mount point: {}",
                         String::from_utf8_lossy(&mkdir.stderr)
                     )));
                 }
-                let mount = Command::new("sudo")
-                    .arg("mount")
-                    .args([device.as_str(), &mount_point])
-                    .output()?;
+                let mount = run_timed(
+                    Command::new("sudo")
+                        .arg("mount")
+                        .args([device.as_str(), &mount_point]),
+                    POOL_WRITE_TIMEOUT,
+                )?;
                 if !mount.status.success() {
                     return Err(PoolError::CommandFailed(format!(
                         "Failed to mount pool: {}",
                         String::from_utf8_lossy(&mount.stderr)
                     )));
                 }
-                if let Ok(uuid_output) = Command::new("sudo")
-                    .arg("blkid")
-                    .args(["-s", "UUID", "-o", "value", device])
-                    .output()
-                {
+                if let Ok(uuid_output) = run_timed(
+                    Command::new("sudo")
+                        .arg("blkid")
+                        .args(["-s", "UUID", "-o", "value", device]),
+                    POOL_QUERY_TIMEOUT,
+                ) {
                     let uuid = String::from_utf8_lossy(&uuid_output.stdout)
                         .trim()
                         .to_string();
@@ -437,11 +472,13 @@ impl PoolService {
     }
 
     pub fn create_zfs_pool(name: &str, devices: &[&str]) -> Result<(), PoolError> {
-        let output = Command::new("sudo")
-            .arg("zpool")
-            .args(["create", name])
-            .args(devices)
-            .output()?;
+        let output = run_timed(
+            Command::new("sudo")
+                .arg("zpool")
+                .args(["create", name])
+                .args(devices),
+            POOL_WRITE_TIMEOUT,
+        )?;
 
         if !output.status.success() {
             return Err(PoolError::CommandFailed(
@@ -454,10 +491,12 @@ impl PoolService {
     pub fn delete_pool(name: &str, pool_type: PoolType) -> Result<(), PoolError> {
         match pool_type {
             PoolType::Zfs => {
-                let output = Command::new("sudo")
-                    .arg("zpool")
-                    .args(["destroy", "-f", name])
-                    .output()?;
+                let output = run_timed(
+                    Command::new("sudo")
+                        .arg("zpool")
+                        .args(["destroy", "-f", name]),
+                    POOL_WRITE_TIMEOUT,
+                )?;
 
                 if !output.status.success() {
                     return Err(PoolError::CommandFailed(
@@ -481,23 +520,29 @@ impl PoolService {
                 let mount_point = Self::btrfs_mount_point(name);
 
                 if let Some(ref mp) = mount_point {
-                    let _ = Command::new("sudo").arg("umount").arg(mp).output();
+                    let _ = run_timed(
+                        Command::new("sudo").arg("umount").arg(mp),
+                        POOL_WRITE_TIMEOUT,
+                    );
                 }
 
                 let devices = Self::get_btrfs_devices(name)?;
                 Self::remove_pool_fstab_entry(&format!("# homevault-pool:{}", name));
 
                 for dev in &devices {
-                    let _ = Command::new("sudo")
-                        .arg("wipefs")
-                        .args(["-a", &dev.device])
-                        .output();
+                    let _ = run_timed(
+                        Command::new("sudo").arg("wipefs").args(["-a", &dev.device]),
+                        POOL_WRITE_TIMEOUT,
+                    );
                 }
 
                 if let Some(mp) = mount_point {
                     // sudo, not std::fs::remove_dir — same reasoning as the
                     // sudo mkdir in create_btrfs_advanced_pool above.
-                    let _ = Command::new("sudo").arg("rmdir").arg(&mp).output();
+                    let _ = run_timed(
+                        Command::new("sudo").arg("rmdir").arg(&mp),
+                        POOL_WRITE_TIMEOUT,
+                    );
                 }
             }
             _ => {
@@ -512,10 +557,10 @@ impl PoolService {
     pub fn start_scrub(name: &str, pool_type: PoolType) -> Result<(), PoolError> {
         match pool_type {
             PoolType::Zfs => {
-                let output = Command::new("sudo")
-                    .arg("zpool")
-                    .args(["scrub", name])
-                    .output()?;
+                let output = run_timed(
+                    Command::new("sudo").arg("zpool").args(["scrub", name]),
+                    POOL_QUERY_TIMEOUT,
+                )?;
 
                 if !output.status.success() {
                     return Err(PoolError::CommandFailed(
@@ -538,10 +583,12 @@ impl PoolService {
                 let mount_point = Self::btrfs_mount_point(name)
                     .ok_or_else(|| PoolError::PoolNotFound(format!("{} is not mounted", name)))?;
 
-                let output = Command::new("sudo")
-                    .arg("btrfs")
-                    .args(["scrub", "start", &mount_point])
-                    .output()?;
+                let output = run_timed(
+                    Command::new("sudo")
+                        .arg("btrfs")
+                        .args(["scrub", "start", &mount_point]),
+                    POOL_QUERY_TIMEOUT,
+                )?;
 
                 if !output.status.success() {
                     return Err(PoolError::CommandFailed(
@@ -561,10 +608,10 @@ impl PoolService {
     pub fn get_scrub_status(name: &str, pool_type: PoolType) -> Result<String, PoolError> {
         match pool_type {
             PoolType::Zfs => {
-                let output = Command::new("sudo")
-                    .arg("zpool")
-                    .args(["status", name])
-                    .output()?;
+                let output = run_timed(
+                    Command::new("sudo").arg("zpool").args(["status", name]),
+                    POOL_QUERY_TIMEOUT,
+                )?;
 
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
@@ -588,10 +635,12 @@ impl PoolService {
                     return Ok("Not available".to_string());
                 };
 
-                let output = Command::new("sudo")
-                    .arg("btrfs")
-                    .args(["scrub", "status", &mount_point])
-                    .output()?;
+                let output = run_timed(
+                    Command::new("sudo")
+                        .arg("btrfs")
+                        .args(["scrub", "status", &mount_point]),
+                    POOL_QUERY_TIMEOUT,
+                )?;
 
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
@@ -663,16 +712,15 @@ impl PoolService {
         // `zpool` is an optional package (see installer/install.sh) — a
         // system without ZFS installed simply has no ZFS pools, it's not
         // an error condition for the rest of the pool list.
-        let output = match Command::new("sudo")
-            .arg("zpool")
-            .args([
+        let output = match run_timed(
+            Command::new("sudo").arg("zpool").args([
                 "list",
                 "-H",
                 "-o",
                 "name,size,allocated,free,cap,health,altroot",
-            ])
-            .output()
-        {
+            ]),
+            POOL_QUERY_TIMEOUT,
+        ) {
             Ok(o) => o,
             Err(_) => return Ok(Vec::new()),
         };
@@ -717,11 +765,12 @@ impl PoolService {
         // work (see the `handle_pools_list` doc comment in handlers/storage.rs
         // for why cache-tier is intentionally exempt from the "no RAID in
         // Storage" rule).
-        let output = match Command::new("sudo")
-            .arg("mdadm")
-            .args(["--detail", "--scan"])
-            .output()
-        {
+        let output = match run_timed(
+            Command::new("sudo")
+                .arg("mdadm")
+                .args(["--detail", "--scan"]),
+            POOL_QUERY_TIMEOUT,
+        ) {
             Ok(o) => o,
             Err(_) => return Ok(Vec::new()),
         };
@@ -772,10 +821,12 @@ impl PoolService {
     }
 
     fn get_zfs_devices(name: &str) -> Result<Vec<PoolDevice>, PoolError> {
-        let output = Command::new("sudo")
-            .arg("zpool")
-            .args(["status", name, "-P", "-L"])
-            .output()?;
+        let output = run_timed(
+            Command::new("sudo")
+                .arg("zpool")
+                .args(["status", name, "-P", "-L"]),
+            POOL_QUERY_TIMEOUT,
+        )?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut devices = Vec::new();
@@ -814,10 +865,10 @@ impl PoolService {
     // ("cannot open ...: No such file or directory") — confirmed live this
     // silently zeroed out every mdadm pool's reported size/devices/profile.
     fn get_mdadm_devices(name: &str) -> Result<Vec<PoolDevice>, PoolError> {
-        let output = Command::new("sudo")
-            .arg("mdadm")
-            .args(["--detail", name])
-            .output()?;
+        let output = run_timed(
+            Command::new("sudo").arg("mdadm").args(["--detail", name]),
+            POOL_QUERY_TIMEOUT,
+        )?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut devices = Vec::new();
@@ -872,11 +923,13 @@ impl PoolService {
         // `mountpoint` is a ZFS *dataset* property (`zfs get`), not a pool
         // property — `zpool get mountpoint` errors out with "invalid
         // property", which left every ZFS pool showing as unmounted.
-        let output = Command::new("sudo")
-            .arg("zfs")
-            .args(["get", "-H", "-o", "value", "mountpoint", name])
-            .output()
-            .ok()?;
+        let output = run_timed(
+            Command::new("sudo")
+                .arg("zfs")
+                .args(["get", "-H", "-o", "value", "mountpoint", name]),
+            POOL_QUERY_TIMEOUT,
+        )
+        .ok()?;
 
         let mount = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if mount == "none" || mount == "-" || mount == "legacy" || mount.is_empty() {
@@ -908,10 +961,11 @@ impl PoolService {
 
     /// `(used_bytes, available_bytes)` for a mounted filesystem, from `df`.
     fn df_usage(mount_point: &str) -> Option<(u64, u64)> {
-        let output = Command::new("df")
-            .args(["-B1", "--output=used,avail", mount_point])
-            .output()
-            .ok()?;
+        let output = run_timed(
+            Command::new("df").args(["-B1", "--output=used,avail", mount_point]),
+            POOL_QUERY_TIMEOUT,
+        )
+        .ok()?;
         let text = String::from_utf8_lossy(&output.stdout);
         let last = text.lines().nth(1)?;
         let mut nums = last.split_whitespace();
@@ -921,10 +975,10 @@ impl PoolService {
     }
 
     fn get_mdadm_size(name: &str) -> Result<u64, PoolError> {
-        let output = Command::new("sudo")
-            .arg("mdadm")
-            .args(["--detail", name])
-            .output()?;
+        let output = run_timed(
+            Command::new("sudo").arg("mdadm").args(["--detail", name]),
+            POOL_QUERY_TIMEOUT,
+        )?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
@@ -948,11 +1002,11 @@ impl PoolService {
 
     /// Extracts the mdadm RAID level (e.g. "raid1") from `mdadm --detail`.
     fn get_mdadm_raid_profile(name: &str) -> Option<String> {
-        let output = Command::new("sudo")
-            .arg("mdadm")
-            .args(["--detail", name])
-            .output()
-            .ok()?;
+        let output = run_timed(
+            Command::new("sudo").arg("mdadm").args(["--detail", name]),
+            POOL_QUERY_TIMEOUT,
+        )
+        .ok()?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
@@ -968,11 +1022,11 @@ impl PoolService {
     /// Extracts the ZFS pool's redundancy profile (mirror/raidzN/stripe)
     /// from `zpool status`'s `config:` section.
     fn get_zfs_raid_profile(name: &str) -> Option<String> {
-        let output = Command::new("sudo")
-            .arg("zpool")
-            .args(["status", name])
-            .output()
-            .ok()?;
+        let output = run_timed(
+            Command::new("sudo").arg("zpool").args(["status", name]),
+            POOL_QUERY_TIMEOUT,
+        )
+        .ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
 
         let mut in_config = false;
@@ -1013,11 +1067,12 @@ impl PoolService {
     /// Scans Btrfs filesystems (each one is its own "pool" — Btrfs has no
     /// separate pool/filesystem distinction like ZFS).
     fn scan_btrfs_pools() -> Result<Vec<PoolInfo>, PoolError> {
-        let output = match Command::new("sudo")
-            .arg("btrfs")
-            .args(["filesystem", "show"])
-            .output()
-        {
+        let output = match run_timed(
+            Command::new("sudo")
+                .arg("btrfs")
+                .args(["filesystem", "show"]),
+            POOL_QUERY_TIMEOUT,
+        ) {
             Ok(o) => o,
             Err(_) => return Ok(Vec::new()),
         };
@@ -1126,11 +1181,13 @@ impl PoolService {
     /// Reads the Btrfs "Data" redundancy profile (e.g. "RAID1", "single")
     /// for a mounted filesystem via `btrfs filesystem df`.
     fn get_btrfs_raid_profile(mount_point: &str) -> Option<String> {
-        let output = Command::new("sudo")
-            .arg("btrfs")
-            .args(["filesystem", "df", mount_point])
-            .output()
-            .ok()?;
+        let output = run_timed(
+            Command::new("sudo")
+                .arg("btrfs")
+                .args(["filesystem", "df", mount_point]),
+            POOL_QUERY_TIMEOUT,
+        )
+        .ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
 
         for line in stdout.lines() {
@@ -1145,11 +1202,13 @@ impl PoolService {
     /// Finds a Btrfs filesystem's mount point by matching any of its member
     /// devices against `/proc/mounts` (same idiom as `get_mdadm_mount_point`).
     pub(crate) fn btrfs_mount_point(name: &str) -> Option<String> {
-        let output = Command::new("sudo")
-            .arg("btrfs")
-            .args(["filesystem", "show", name])
-            .output()
-            .ok()?;
+        let output = run_timed(
+            Command::new("sudo")
+                .arg("btrfs")
+                .args(["filesystem", "show", name]),
+            POOL_QUERY_TIMEOUT,
+        )
+        .ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
 
         let mut member_devices = Vec::new();
@@ -1178,11 +1237,13 @@ impl PoolService {
 
     /// Reads used/free bytes for a mounted Btrfs filesystem.
     fn get_btrfs_usage(mount_point: &str) -> Option<(u64, u64)> {
-        let output = Command::new("sudo")
-            .arg("btrfs")
-            .args(["filesystem", "usage", "-b", mount_point])
-            .output()
-            .ok()?;
+        let output = run_timed(
+            Command::new("sudo")
+                .arg("btrfs")
+                .args(["filesystem", "usage", "-b", mount_point]),
+            POOL_QUERY_TIMEOUT,
+        )
+        .ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
 
         let mut used = None;
@@ -1208,10 +1269,12 @@ impl PoolService {
 
     /// Lists `devid`/path/size entries for a named Btrfs filesystem.
     fn get_btrfs_devices(name: &str) -> Result<Vec<PoolDevice>, PoolError> {
-        let output = Command::new("sudo")
-            .arg("btrfs")
-            .args(["filesystem", "show", name])
-            .output()?;
+        let output = run_timed(
+            Command::new("sudo")
+                .arg("btrfs")
+                .args(["filesystem", "show", name]),
+            POOL_QUERY_TIMEOUT,
+        )?;
 
         if !output.status.success() {
             return Err(PoolError::PoolNotFound(name.to_string()));
@@ -1272,15 +1335,16 @@ impl PoolService {
     /// fstab — confirmed live: it always worked in the moment (mounted
     /// immediately after creation) but would not have survived a reboot.
     fn write_file_as_root(path: &str, content: &str) -> std::io::Result<()> {
-        use std::io::Write;
-        let mut child = Command::new("sudo")
-            .args(["tee", path])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()?;
-        child.stdin.take().unwrap().write_all(content.as_bytes())?;
-        let output = child.wait_with_output()?;
+        // `run_timed_with_stdin`, not an unbounded wait on the child: `sudo tee`
+        // can block on the sudo PAM stack or on a busy filesystem, and this is
+        // the call that persists a pool's mount point — an unbounded wait here
+        // is the one that silently loses the fstab entry on the next reboot.
+        let output = run_timed_with_stdin(
+            Command::new("sudo").args(["tee", path]),
+            POOL_WRITE_TIMEOUT,
+            content.as_bytes(),
+        )
+        .map_err(std::io::Error::other)?;
         if !output.status.success() {
             return Err(std::io::Error::other(
                 String::from_utf8_lossy(&output.stderr).to_string(),
@@ -1474,7 +1538,10 @@ impl PoolService {
         let device_refs: Vec<&str> = devices.iter().map(|s| s.as_str()).collect();
         args.extend(device_refs);
 
-        let output = Command::new("sudo").arg("zpool").args(&args).output()?;
+        let output = run_timed(
+            Command::new("sudo").arg("zpool").args(&args),
+            POOL_QUERY_TIMEOUT,
+        )?;
         if !output.status.success() {
             return Err(PoolError::CommandFailed(
                 String::from_utf8_lossy(&output.stderr).to_string(),
@@ -1503,10 +1570,10 @@ impl PoolService {
         let device_refs: Vec<&str> = devices.iter().map(|s| s.as_str()).collect();
         args.extend(device_refs);
 
-        let output = Command::new("sudo")
-            .arg("mkfs.btrfs")
-            .args(&args)
-            .output()?;
+        let output = run_timed(
+            Command::new("sudo").arg("mkfs.btrfs").args(&args),
+            POOL_WRITE_TIMEOUT,
+        )?;
         if !output.status.success() {
             return Err(PoolError::CommandFailed(
                 String::from_utf8_lossy(&output.stderr).to_string(),
@@ -1517,20 +1584,22 @@ impl PoolService {
         // the unprivileged homevault process directly and fails outright
         // under /mnt (root-owned, confirmed live), since sudo only wraps
         // external Command invocations, not Rust's own syscalls.
-        let mkdir_output = Command::new("sudo")
-            .arg("mkdir")
-            .args(["-p", mount_point])
-            .output()?;
+        let mkdir_output = run_timed(
+            Command::new("sudo").arg("mkdir").args(["-p", mount_point]),
+            POOL_QUERY_TIMEOUT,
+        )?;
         if !mkdir_output.status.success() {
             return Err(PoolError::CommandFailed(format!(
                 "Failed to create mount point: {}",
                 String::from_utf8_lossy(&mkdir_output.stderr)
             )));
         }
-        let mount_output = Command::new("sudo")
-            .arg("mount")
-            .args([&devices[0], mount_point])
-            .output()?;
+        let mount_output = run_timed(
+            Command::new("sudo")
+                .arg("mount")
+                .args([&devices[0], mount_point]),
+            POOL_WRITE_TIMEOUT,
+        )?;
         if !mount_output.status.success() {
             return Err(PoolError::CommandFailed(format!(
                 "Pool created but failed to mount: {}",
@@ -1539,11 +1608,12 @@ impl PoolService {
         }
 
         let marker = format!("# homevault-pool:{}", name);
-        if let Ok(uuid_output) = Command::new("sudo")
-            .arg("blkid")
-            .args(["-s", "UUID", "-o", "value", &devices[0]])
-            .output()
-        {
+        if let Ok(uuid_output) = run_timed(
+            Command::new("sudo")
+                .arg("blkid")
+                .args(["-s", "UUID", "-o", "value", &devices[0]]),
+            POOL_QUERY_TIMEOUT,
+        ) {
             let uuid = String::from_utf8_lossy(&uuid_output.stdout)
                 .trim()
                 .to_string();
@@ -1983,5 +2053,38 @@ mod tests {
     fn test_import_pool_rejects_invalid_name_before_any_command() {
         let err = PoolService::import_pool("bad name!", PoolType::Zfs, None).unwrap_err();
         assert!(err.to_string().to_lowercase().contains("name"));
+    }
+
+    // -- ROADMAP X.2: no subprocess of this module runs unbounded ------------
+
+    /// The defect class this guards against is invisible to a behavioural
+    /// test: a bare `.output()` still answers correctly on an idle box and
+    /// only pins the calling `spawn_blocking` thread when a pool or a disk
+    /// stops answering. So the invariant is asserted at the source.
+    ///
+    /// `concat!` keeps each pattern out of this file's own source, so the
+    /// assertion cannot count itself.
+    #[test]
+    fn test_no_subprocess_of_this_module_runs_without_a_deadline() {
+        let src = include_str!("pools.rs");
+        let production = src.split("#[cfg(test)]").next().unwrap_or(src);
+        for unbounded in [
+            concat!(".", "output()"),
+            concat!(".", "spawn()"),
+            concat!(".", "status()"),
+            concat!("wait_with_", "output()"),
+        ] {
+            assert!(
+                !production.contains(unbounded),
+                "`{unbounded}` waits without a deadline — use `run_timed` (ROADMAP X.2)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_deadlines_are_bounded_and_ordered() {
+        assert!(POOL_QUERY_TIMEOUT >= std::time::Duration::from_secs(5));
+        assert!(POOL_WRITE_TIMEOUT >= POOL_QUERY_TIMEOUT);
+        assert!(POOL_WRITE_TIMEOUT <= std::time::Duration::from_secs(60 * 60));
     }
 }

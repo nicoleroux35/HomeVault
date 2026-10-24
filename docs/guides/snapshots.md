@@ -87,6 +87,18 @@ reuses it for every call of a run.
 - Deleting a schedule keeps its snapshots (history is only removed by the
   prune policy, never as a side effect).
 
+## Deadlines on every `zfs`/`btrfs` call (2026-10-24, ROADMAP X.2)
+
+Every call of `SnapshotService` runs under a deadline now: reads (`zfs list`,
+`zfs get`, `btrfs subvolume list`) at `SNAPSHOT_QUERY_TIMEOUT` 30 s, mutations
+(`zfs snapshot|destroy|rollback -R`, `btrfs subvolume snapshot|delete`,
+`sudo mkdir -p` for the Btrfs `.snapshots` directory) at
+`SNAPSHOT_WRITE_TIMEOUT` 600 s. A wedged `zfs` used to hold the calling
+`spawn_blocking` thread — and with it the scheduled-snapshot tick — forever;
+it is now a `SnapError::CommandFailed` carrying the deadline message. The
+timeouts are ceilings: a recursive rollback on a large dataset is the slowest
+honest case. See [storage.md](./storage.md#deadlines-on-every-host-tool-2026-10-24-roadmap-x2).
+
 ## Frontend
 
 - Snapshot UI lives in the Explorer (`Explorer.svelte`, read-only `.zfs`

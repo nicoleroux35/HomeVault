@@ -3054,6 +3054,54 @@ frontend file changed). `cargo clippy` on the touched modules is clean; the
 tree's pre-existing clippy/fmt drift elsewhere (`ups.rs`, `disk.rs`, …) is
 untouched.
 
+## 2026-10-24 — Storage tools: a deadline on every `zpool`/`btrfs`/`mdadm`/`smartctl` call
+
+ROADMAP X.2 for `disk.rs`, `pools.rs` and `snapshots.rs`. No behaviour a user
+asks for changed; what changed is what happens when a pool, a disk or `sudo`
+stops answering.
+
+- `disk.rs` — its private deadline helper now delegates to
+  `utils::process::run_timed_async_result`, and the 42 calls that were still
+  bare (the scans and probes behind `/storage/disks`, `/storage/virtual-disks`,
+  the RAID wizard's device facts, the SMART cards) go through one `bounded()`
+  helper. `ProcessFailure::Spawn` maps to `DiskError::Io` and `Timeout` to
+  `DiskError::Timeout`, so "not installed" is never shown as "too slow".
+- `pools.rs` / `snapshots.rs` — were fully unbounded (they are synchronous):
+  `POOL_QUERY_TIMEOUT` 30 s / `POOL_WRITE_TIMEOUT` 900 s and
+  `SNAPSHOT_QUERY_TIMEOUT` 30 s / `SNAPSHOT_WRITE_TIMEOUT` 600 s.
+- `utils::process` — `run_timed_with_stdin` and `run_timed_async_with_stdin`
+  added: `sudo tee /etc/fstab` must keep its stdin, which `run_timed` closes
+  (a closed stdin makes `tee` truncate the file to nothing). The input is
+  written from its own thread, so a child that ignores it cannot deadlock the
+  caller before the deadline loop starts.
+
+Counts: `src/disk.rs` **66 → 70**, `src/pools.rs` **33 → 35**,
+`src/snapshots.rs` **4 → 6**, `src/utils/process.rs` **12 → 16**,
+`tests/storage_integration.rs` **28 → 29**.
+
+The decisive new assertions are the three **source guards** —
+`test_no_subprocess_of_this_module_runs_without_a_deadline` in each of
+`disk.rs`, `pools.rs` and `snapshots.rs` — because this defect class is
+invisible to a behavioural test: an unbounded call still answers correctly on
+an idle box and only pins a blocking thread when the disk is wedged. They fail
+on a bare `.output()`, `.spawn()`, `.status()` or `wait_with_output()` in
+production code (`concat!` keeps the pattern out of the file's own source, so
+the assertion cannot count itself). Around them:
+`test_bounded_keeps_a_missing_tool_distinct_from_a_timeout`,
+`test_bounded_reports_the_program_it_waited_for`,
+`run_timed_with_stdin_feeds_the_child_and_keeps_stdout_piped`,
+`run_timed_with_stdin_does_not_deadlock_when_the_child_ignores_stdin`,
+`run_timed_to_file_does_not_pipe_stdout_back`,
+`run_timed_async_with_stdin_feeds_the_child_and_bounds_it`, and the integration
+case `test_a_slow_host_tool_is_waited_out_not_dropped` (a shim `sudo` sleeping
+300 ms must be *waited for* — the scan comes back as an array after really
+spending that time, so the test pins the bound without a 30 s run).
+
+Written, **not run** (per instruction). What *was* run: `cargo check --lib`,
+`cargo test --no-run --lib` and `cargo check --test storage_integration`.
+`npm run check`/`npm run build` and the Playwright suites were not run (no
+frontend file changed).
+
 ## Verification method
 
 - `tests/*.rs` files listed via `ls`, counted via
