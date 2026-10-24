@@ -337,4 +337,40 @@ mod tests {
                 .unwrap_or_else(|e| panic!("embedded {code}.toml must parse: {e}"));
         }
     }
+
+    /// ROADMAP 26.2 removed the `theme`/`density` appearance no-ops and ROADMAP
+    /// 26.1 added two new strings. The four locales are at key parity, so a key
+    /// added to (or dropped from) one file alone would surface as a raw key in
+    /// the UI of the other three — pin it here.
+    #[test]
+    fn test_appearance_keys_are_at_parity_and_the_removed_one_is_gone() {
+        let sources = embedded_translation_sources();
+        let mut maps = std::collections::HashMap::new();
+        for (code, toml_src) in &sources {
+            let parsed: toml::Value = toml::from_str(toml_src).expect("parse");
+            maps.insert(*code, flatten_toml(&parsed, ""));
+        }
+
+        // Present in every locale, non-empty.
+        for key in [
+            "settings.wallpaper_managed_by_admin",
+            "settings.appearance_load_failed",
+        ] {
+            for (code, map) in &maps {
+                let value = map
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{key} missing from {code}.toml"));
+                assert!(!value.trim().is_empty(), "{key} is empty in {code}.toml");
+            }
+        }
+
+        // Round 2 of 26.2: the dead label of the removed control is gone
+        // everywhere, so nothing can resurrect the field by reusing it.
+        for (code, map) in &maps {
+            assert!(
+                !map.contains_key("settings.density"),
+                "settings.density must be gone from {code}.toml"
+            );
+        }
+    }
 }

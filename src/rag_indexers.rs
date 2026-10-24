@@ -559,7 +559,7 @@ Security: protected-device blocklist prevents operating on the boot disk. Path t
             title: "Settings".to_string(),
             content: r#"Configure HomeVault:
 - General: hostname, update frequency, language
-- Appearance: accent color, wallpaper (bundled), density
+- Appearance: wallpaper (bundled) and accent colour
 - Email: SMTP configuration for notifications
 - Notifications: alert thresholds
 - AI Assistant: model selection, Ollama configuration
@@ -869,7 +869,7 @@ The panels are read-only: they display system state and link to the app that man
 - Two kinds of window content: an app's own interface, or an embedded web page — which is how an installed catalog application is shown, in a sandboxed frame.
 - Floating desktop panels (see Widgets) sit above the wallpaper, alongside the windows.
 - Power menu: restart the server, shut it down, or log out. Restart and shutdown require administrator rights and an explicit confirmation.
-- The wallpaper, accent colour, density and theme are chosen here and apply to the whole shell.
+- The wallpaper and the accent colour are chosen here and apply to the whole shell.
 - The layout adapts to the window size, from a wide screen down to a phone: below a narrow threshold the maximized window insets instead of hiding the chrome, and the launcher switches to a scrolling list."#.to_string(),
         },
         FeatureDoc {
@@ -889,23 +889,23 @@ The panels are read-only: they display system state and link to the app that man
         FeatureDoc {
             id: "themes".to_string(),
             title: "Themes & Appearance".to_string(),
-            content: r#"The look of the whole interface: theme, accent colour, density and wallpaper.
+            content: r#"The look of the whole appliance: the wallpaper and one accent colour. There is no dark or light theme and no density setting.
 
-- The theme chooses the overall light or dark treatment; the accent colour recolours interactive elements — buttons, links, switches, selection states — across every screen.
-- Density tightens or loosens the spacing of lists, tables and toolbars, which is what makes the interface usable on a large monitor and on a small laptop alike.
-- Changes are staged while you adjust them and applied when you save, so the interface is not repainted on every keystroke of a slider.
-- The appearance is stored on the server, so the same account gets the same look from any browser, and the wallpaper is picked from the bundled set.
-- Every screen is expected to read the shared colour and spacing tokens rather than hard-coding values, which is what makes a theme change apply everywhere at once."#.to_string(),
+- The accent colour recolours interactive elements — buttons, links, switches, selection states — across every screen.
+- The look belongs to the appliance, not to an account: an administrator chooses it once and everyone sees it. A non-administrator can see the wallpaper picker but cannot change it, and the screen says so.
+- Changes are staged while you adjust them and applied when you save, so the interface is not repainted on every click.
+- The choice is stored on the server, so the same account gets the same look from any browser, and the wallpaper is picked from the bundled set.
+- Every screen reads the shared colour and spacing tokens rather than hard-coding values, which is what makes an accent change apply everywhere at once."#.to_string(),
         },
         FeatureDoc {
             id: "wallpapers".to_string(),
             title: "Wallpapers".to_string(),
             content: r#"The desktop background, chosen from a set of images shipped with HomeVault.
 
-- Fifteen bundled wallpapers, each shown as a thumbnail in the appearance settings; selecting one applies it to the desktop immediately.
+- Forty-four bundled wallpapers, each shown as a thumbnail in the appearance settings; selecting one applies it to the desktop.
 - The thumbnails are small versions of the same images, so the grid stays light.
 - There is no wallpaper upload: the set is fixed, on purpose, so nothing unbounded can be pushed into the interface.
-- Selection is remembered per account, alongside the theme and accent colour."#.to_string(),
+- The choice belongs to the appliance: an administrator saves it and every account's desktop picks it up, on every browser and every address. Only an administrator can change it."#.to_string(),
         },
         FeatureDoc {
             id: "transfer-quotas".to_string(),

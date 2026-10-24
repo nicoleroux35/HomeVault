@@ -318,6 +318,40 @@ async function waitForNotification(page: Page, re: RegExp, timeout = 12_000): Pr
   return false;
 }
 
+/**
+ * A throwaway **non-admin** account (role 1 = the seeded "user" role). ROADMAP
+ * 26.1 is about what a non-admin sees, so the appearance tests below need a
+ * real member session — `POST /api/users` creates it with an admin-chosen
+ * password, and the account is deleted in `afterAll`.
+ */
+async function createMember(
+  ctx: APIRequestContext,
+  adminApi: APIRequestContext,
+  headers: Record<string, string>,
+  prefix: string,
+  password: string,
+): Promise<{ name: string; tokens: Tokens }> {
+  const name = `${prefix}${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`;
+  const created = await adminApi.post('/api/users', {
+    headers,
+    data: { username: name, password, fullname: 'Appearance Member', email: '', role_id: 1 },
+  });
+  const body = await created.json().catch(() => ({}));
+  expect(body?.success, `member creation must succeed: ${JSON.stringify(body)}`).toBe(true);
+  const tokens = await apiLogin(ctx, name, password);
+  expect(tokens.token, 'the created member must be able to log in').not.toEqual('');
+  return { name, tokens };
+}
+
+async function deleteMember(
+  adminApi: APIRequestContext,
+  headers: Record<string, string>,
+  name: string,
+): Promise<void> {
+  if (!name) return;
+  await adminApi.delete(`/api/users/${name}`, { headers }).catch(() => {});
+}
+
 // ---------------------------------------------------------------------------
 // Shared fixture — one admin session + a settings snapshot to restore
 // ---------------------------------------------------------------------------
@@ -824,6 +858,165 @@ test.describe('4 — Appearance', () => {
     expect(m.uniform, `every tile is ${m.w}x${m.h}, got ${m.sizes.join(', ')}`).toBe(true);
     expect(m.colGap, 'column gap == row gap').toBe(m.rowGap);
     expect(m.outsetShadow, 'no bleeding outset drop-shadow on thumbnails').toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // ROADMAP 26.1 / 26.2 — hydration for a non-admin, and the two deleted
+  // no-op fields. These run against a real member account: the boot hydration
+  // used to call the admin-only aggregate, so a non-admin silently kept this
+  // origin's `localStorage` value instead of the appliance's look.
+  // -------------------------------------------------------------------------
+
+  test('4.8 — a non-admin desktop paints the server accent, not this origin\'s localStorage', async ({ page, playwright }) => {
+    const memberPass = 'AppearanceMbr0!';
+    const ctx = await playwright.request.newContext({ baseURL: BASE });
+    let memberName = '';
+    try {
+      const created = await createMember(ctx, sharedCtx, adminHeaders, 'e2eap', memberPass);
+      memberName = created.name;
+
+      // The appliance look an admin saved (restored by afterAll).
+      await sharedCtx.put('/api/settings/appearance', {
+        headers: adminHeaders,
+        data: { accent_color: '#e2725b', wallpaper: '/wallpapers/hv-07.webp' },
+      });
+      // …and a stale copy this browser already holds, which must lose.
+      await page.addInitScript(() => {
+        try {
+          localStorage.setItem('hv-wallpaper', JSON.stringify({ type: 'image', value: '/wallpapers/hv-02.webp' }));
+        } catch {
+          /* a test will surface it */
+        }
+      });
+
+      await gotoDesktop(page, created.tokens);
+      // The hydration is a fetch after the gate flips to 'app'; give it a beat.
+      await expect
+        .poll(
+          () => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--hv-primary').trim()),
+          { timeout: 15_000 },
+        )
+        .toBe('#e2725b');
+
+      const applied = await page.evaluate(() => localStorage.getItem('hv-wallpaper'));
+      expect(applied, 'the server wallpaper replaces the stale local one').toContain('/wallpapers/hv-07.webp');
+    } finally {
+      await deleteMember(sharedCtx, adminHeaders, memberName);
+      await ctx.dispose().catch(() => {});
+    }
+  });
+
+  test('4.9 — a non-admin reads the appearance but cannot save it (one global look)', async ({ page, playwright }) => {
+    const memberPass = 'AppearanceMbr1!';
+    const ctx = await playwright.request.newContext({ baseURL: BASE });
+    let memberName = '';
+    try {
+      const created = await createMember(ctx, sharedCtx, adminHeaders, 'e2eap', memberPass);
+      memberName = created.name;
+
+      // Read: the hydration path itself, asserted at the HTTP layer.
+      const read = await ctx.get('/api/settings/appearance', {
+        headers: { 'x-session-token': created.tokens.token },
+      });
+      expect(read.status(), 'a non-admin must be able to read the appliance look').toBe(200);
+      const body = await read.json();
+      expect(Object.keys(body.data).sort()).toEqual(['accent_color', 'wallpaper']);
+
+      // Write: refused, and nothing shared was mutated.
+      const before = await sharedCtx.get('/api/settings/appearance', { headers: adminHeaders }).then((r) => r.json());
+      const write = await ctx.put('/api/settings/appearance', {
+        headers: { 'x-session-token': created.tokens.token, 'x-csrf-token': created.tokens.csrf },
+        data: { accent_color: '#efefef' },
+      });
+      expect(write.status(), 'a non-admin must not change the appliance look').toBe(400);
+      const after = await sharedCtx.get('/api/settings/appearance', { headers: adminHeaders }).then((r) => r.json());
+      expect(after.data).toEqual(before.data);
+
+      // UI: the grid is visible (so the member can see the look) but read-only,
+      // with the reason spelled out — never a control that appears to save.
+      await openSettings(page, created.tokens);
+      await openCategory(page, 'appearance');
+      await expect(set(page).locator('[data-testid="appearance-read-only"]')).toBeVisible();
+      const grid = set(page).locator('.settings-wallpaper-grid');
+      await expect(grid).toHaveAttribute('data-readonly', 'true');
+      await expect(grid.locator('.settings-wallpaper-tile').first()).toBeDisabled();
+    } finally {
+      await deleteMember(sharedCtx, adminHeaders, memberName);
+      await ctx.dispose().catch(() => {});
+    }
+  });
+
+  test('4.10 — theme and density are gone (no control, no field on the wire)', async ({ page }) => {
+    await openSettings(page, admin);
+    await openCategory(page, 'appearance');
+    // The controls never came back…
+    await expect(set(page).locator('#density')).toHaveCount(0);
+    await expect(set(page).locator('#theme')).toHaveCount(0);
+    // …and nothing on <html> pretends to honour them.
+    const attrs = await page.evaluate(() => ({
+      theme: document.documentElement.getAttribute('data-theme'),
+      density: document.documentElement.getAttribute('data-density'),
+    }));
+    expect(attrs).toEqual({ theme: null, density: null });
+
+    // What the Save button PUTs is exactly the two real fields.
+    const [req] = await Promise.all([
+      page.waitForRequest(
+        (r) => r.url().includes('/api/settings/appearance') && r.method() === 'PUT',
+        { timeout: 15_000 },
+      ),
+      (async () => {
+        // Stage a change so the group is dirty, then Save.
+        const tiles = set(page).locator('.settings-wallpaper-tile');
+        const count = await tiles.count();
+        for (let i = 0; i < count; i++) {
+          const cls = (await tiles.nth(i).getAttribute('class')) || '';
+          if (!cls.includes('is-selected')) {
+            await tiles.nth(i).click();
+            break;
+          }
+        }
+        await saveSettings(page);
+      })(),
+    ]);
+    const sent = JSON.parse(req.postData() || '{}');
+    expect(Object.keys(sent).sort()).toEqual(['accent_color', 'wallpaper']);
+  });
+});
+
+// ===========================================================================
+// 4b — Appearance hydration (ROADMAP 26.1)
+// ===========================================================================
+
+test.describe('4b — Appearance hydration', () => {
+  test('4.11 — a non-admin Settings load does not fire the admin-only aggregate', async ({ page, playwright }) => {
+    const memberPass = 'AppearanceMbr2!';
+    const ctx = await playwright.request.newContext({ baseURL: BASE });
+    let memberName = '';
+    const aggregateCalls: string[] = [];
+    try {
+      const created = await createMember(ctx, sharedCtx, adminHeaders, 'e2eap', memberPass);
+      memberName = created.name;
+
+      page.on('request', (r) => {
+        const url = new URL(r.url());
+        if (url.pathname === '/api/settings') aggregateCalls.push(r.url());
+      });
+      await openSettings(page, created.tokens);
+      await openCategory(page, 'appearance');
+      // The desktop hydration (App.svelte) now reads the appearance endpoint;
+      // the Settings window still needs the admin aggregate, so it is allowed
+      // to attempt it — what must not happen is a *silent* failure loop: the
+      // grid still renders the appliance look from the appearance endpoint.
+      await expect(set(page).locator('.settings-wallpaper-grid')).toBeVisible();
+      expect(
+        aggregateCalls.length,
+        'the aggregate is admin-only; a member must not depend on it for the look',
+      ).toBeLessThanOrEqual(1);
+    } finally {
+      await deleteMember(sharedCtx, adminHeaders, memberName);
+      await ctx.dispose().catch(() => {});
+    }
   });
 });
 

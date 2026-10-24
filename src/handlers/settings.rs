@@ -522,24 +522,133 @@ impl Default for NotificationSettings {
 /// tints (4.99–5.68:1). The legacy default `#4a90d9` failed both (≤3.34:1).
 pub const DEFAULT_ACCENT: &str = "#1E62AE";
 
-/// UI appearance settings (theme, wallpaper, accent color, density).
+/// UI appearance settings (wallpaper, accent color).
+///
+/// ROADMAP 26.2 removed `theme` and `density`: both were persisted and
+/// round-tripped but nothing in `frontend/src` consumed them (`grep -r
+/// "data-theme\|data-density"` returned zero hits), so a user could save
+/// "dark"/"compact" and see nothing change. The blob stays backward
+/// compatible — a `data/settings.json` written by an older release still
+/// loads, the two keys are simply ignored (`PersistedAppearance` keeps them
+/// for the reader, see `settings_persistence::apply_loaded_settings`).
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct AppearanceSettings {
-    pub theme: Option<String>,
     pub wallpaper: Option<String>,
     pub accent_color: Option<String>,
-    pub density: Option<String>,
 }
 
 impl Default for AppearanceSettings {
     fn default() -> Self {
         Self {
-            theme: Some("auto".to_string()),
             wallpaper: Some(String::new()),
             accent_color: Some(DEFAULT_ACCENT.to_string()),
-            density: Some("comfortable".to_string()),
         }
     }
+}
+
+/// Number of bundled wallpapers baked into the binary
+/// (`frontend/public/wallpapers/hv-01…hv-44.webp`, `include_dir!` in
+/// `spa::STATIC_DIR`) and mirrored by `BUNDLED_WALLPAPERS` in
+/// `frontend/src/lib/stores/wallpaper.ts`.
+pub const BUNDLED_WALLPAPER_COUNT: u8 = 44;
+
+/// Normalise the per-origin storage key an e2e/devtools caller sends as
+/// `hv-wallpaper`: the value is `{"type":"image","value":"..."}`, where
+/// `value` may be a full `/wallpapers/hv-NN.webp` URL or just the `hv-NN` id
+/// the map key carries. Both are accepted; nothing else is.
+fn normalize_wallpaper_reference(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let without_prefix = trimmed.strip_prefix("/wallpapers/").unwrap_or(trimmed);
+    let id = without_prefix
+        .strip_suffix(".webp")
+        .unwrap_or(without_prefix);
+    let number = id.strip_prefix("hv-")?;
+    if number.len() != 2 || !number.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let index: u8 = number.parse().ok()?;
+    if index == 0 || index > BUNDLED_WALLPAPER_COUNT {
+        return None;
+    }
+    Some(format!("/wallpapers/hv-{number}.webp"))
+}
+
+/// Validate the wallpaper field the client sends to `PUT
+/// /settings/appearance`.
+///
+/// ROADMAP 26.1: the wallpaper used to be stored **verbatim** as a JSON
+/// string inside the settings blob and parsed by the two frontend readers
+/// with a `try/catch` fallback, so one malformed value silently reset the
+/// user's wallpaper instead of saying so. The server now owns that check.
+///
+/// Accepted (all normalised to the **bare** `/wallpapers/hv-NN.webp` URL):
+///
+/// - `""` — never picked, the desktop paints its own gradient;
+/// - `"/wallpapers/hv-NN.webp"` and `"hv-NN"`;
+/// - the JSON-encoded forms of the two above — `WallpaperConfig`
+///   (`{"type":"image","value":…}`), a bare JSON string, and the legacy
+///   `{"type":"default"}` (which the frontend already coerces to the first
+///   bundled photo, so it normalises to the same thing).
+///
+/// Everything else — a non-bundled path, `hv-00`/`hv-45`, a custom upload, a
+/// data URL, a gradient — is refused with a message naming the field.
+pub fn validate_wallpaper_field(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+
+    let from_object = |value: &serde_json::Value| -> Option<String> {
+        match value {
+            serde_json::Value::String(s) => normalize_wallpaper_reference(s),
+            serde_json::Value::Object(map) => match map.get("type").and_then(|t| t.as_str()) {
+                Some("image") => map
+                    .get("value")
+                    .and_then(|v| v.as_str())
+                    .and_then(normalize_wallpaper_reference),
+                // The built-in gradient is no longer selectable; the client
+                // maps it to the first bundled photo, so do the same.
+                Some("default") => normalize_wallpaper_reference("/wallpapers/hv-01.webp"),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+
+    // A raw bundled URL / id, or a JSON-encoded WallpaperConfig.
+    let candidate = if trimmed.starts_with('{') || trimmed.starts_with('"') {
+        serde_json::from_str::<serde_json::Value>(trimmed)
+            .ok()
+            .and_then(|v| from_object(&v))
+    } else {
+        normalize_wallpaper_reference(trimmed)
+    };
+
+    candidate.ok_or_else(|| {
+        format!(
+            "wallpaper: '{trimmed}' is not one of the {} bundled wallpapers \
+             (/wallpapers/hv-01.webp … /wallpapers/hv-{BUNDLED_WALLPAPER_COUNT:02}.webp)",
+            BUNDLED_WALLPAPER_COUNT
+        )
+    })
+}
+
+/// Accept any plain colour the browser can paint, but never a value that
+/// could break out of the `--hv-primary` declaration it is written into
+/// (`document.documentElement.style.setProperty`) or a CSS-injection
+/// payload. `#rgb` / `#rrggbb` / `#rrggbbaa` cover every value the shipped
+/// UI can produce; anything longer is refused rather than parsed.
+pub fn validate_accent_color_field(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    let is_hex = matches!(trimmed.len(), 4 | 7 | 9)
+        && trimmed.starts_with('#')
+        && trimmed[1..].chars().all(|c| c.is_ascii_hexdigit());
+    if !is_hex {
+        return Err(format!(
+            "accent_color: '{trimmed}' is not a #rgb, #rrggbb or #rrggbbaa colour"
+        ));
+    }
+    Ok(trimmed.to_string())
 }
 
 /// Rewrite the legacy non-compliant default accent on every path that can
@@ -1592,7 +1701,14 @@ pub async fn handle_notification_settings_get(
     }))
 }
 
-/// Updates appearance settings.
+/// Updates appearance settings (admin only).
+///
+/// ROADMAP 26.1: the body is validated before anything is stored — the
+/// wallpaper must be one of the bundled photos and the accent must be a hex
+/// colour. A refusal is a `400` whose `message` names the field, and the
+/// stored blob is left untouched (the old handler wrote whatever it was
+/// given, so a malformed wallpaper silently reset the desktop on the next
+/// boot).
 pub async fn handle_appearance_settings_update(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1616,18 +1732,29 @@ pub async fn handle_appearance_settings_update(
         return ResponseHelper::json_error("Admin access required".to_string());
     }
 
+    // Validate everything first: a partial write followed by a refusal would
+    // leave the blob half-updated.
+    let wallpaper = match req.wallpaper.as_deref() {
+        Some(raw) => match validate_wallpaper_field(raw) {
+            Ok(v) => Some(v),
+            Err(e) => return ResponseHelper::json_error(e),
+        },
+        None => None,
+    };
+    let accent = match req.accent_color.as_deref() {
+        Some(raw) => match validate_accent_color_field(raw) {
+            Ok(v) => Some(normalize_accent(&v)),
+            Err(e) => return ResponseHelper::json_error(e),
+        },
+        None => None,
+    };
+
     let mut settings = APPEARANCE_SETTINGS.write();
-    if let Some(theme) = &req.theme {
-        settings.theme = Some(theme.clone());
+    if let Some(wallpaper) = wallpaper {
+        settings.wallpaper = Some(wallpaper);
     }
-    if let Some(wallpaper) = &req.wallpaper {
-        settings.wallpaper = Some(wallpaper.clone());
-    }
-    if let Some(accent) = &req.accent_color {
-        settings.accent_color = Some(normalize_accent(accent));
-    }
-    if let Some(density) = &req.density {
-        settings.density = Some(density.clone());
+    if let Some(accent) = accent {
+        settings.accent_color = Some(accent);
     }
     drop(settings);
 
@@ -1644,7 +1771,17 @@ pub async fn handle_appearance_settings_update(
     }))
 }
 
-/// Gets appearance settings.
+/// Gets appearance settings — **any authenticated session** (ROADMAP 26.1).
+///
+/// The appliance's look is one global value an admin saves; every account
+/// reads it, because the boot hydration (`App.svelte`) needs it to paint the
+/// desktop. It used to be admin-only, so a non-admin's hydration failed
+/// silently and the desktop kept whatever that browser's `localStorage`
+/// held — two origins, two wallpapers, no explanation.
+///
+/// The response carries **only** the appearance fields (no e-mail, SMTP or
+/// update settings: those stay on the admin-only aggregate
+/// `GET /settings`).
 pub async fn handle_appearance_settings_get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1658,21 +1795,14 @@ pub async fn handle_appearance_settings_get(
         return ResponseHelper::json_error("No session token provided".to_string());
     }
 
-    let session = match state.auth.get_session(session_token).await {
-        Ok(session) => session,
-        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
-    };
-
-    if !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
+    if state.auth.get_session(session_token).await.is_err() {
+        return ResponseHelper::json_unauthorized("Session invalid".to_string());
     }
 
     let settings = APPEARANCE_SETTINGS.read();
     ResponseHelper::json_success(serde_json::json!({
-        "theme": settings.theme,
         "wallpaper": settings.wallpaper,
         "accent_color": settings.accent_color,
-        "density": settings.density,
     }))
 }
 
@@ -1735,10 +1865,8 @@ pub async fn handle_all_settings_get(
             "smtp_enabled": notification.smtp_enabled,
         },
         "appearance": {
-            "theme": appearance.theme,
             "wallpaper": appearance.wallpaper,
             "accent_color": appearance.accent_color,
-            "density": appearance.density,
         },
     }))
 }
@@ -2146,13 +2274,125 @@ mod tests {
     #[test]
     fn test_appearance_defaults_are_the_privacy_safe_bundled_look() {
         let a = AppearanceSettings::default();
-        assert_eq!(a.theme.as_deref(), Some("auto"));
-        assert_eq!(a.density.as_deref(), Some("comfortable"));
         // HomeVault Blue clears §1.4.3 both behind white text (6.15:1) and
         // as text on the light surfaces/tints (4.99–5.68:1).
         assert_eq!(a.accent_color.as_deref(), Some("#1E62AE"));
         // No wallpaper by default — the desktop paints its own gradient.
         assert_eq!(a.wallpaper.as_deref(), Some(""));
+    }
+
+    /// ROADMAP 26.2: `theme` and `density` were persisted no-ops. They are
+    /// gone from the model *and* from the wire: a client that still sends
+    /// them (an old tab, a stale draft) must not be refused, and the value
+    /// must not be echoed back as if it were honoured.
+    #[test]
+    fn test_appearance_no_longer_carries_theme_or_density() {
+        let parsed: AppearanceSettings = serde_json::from_str(
+            r##"{"theme":"dark","density":"compact","accent_color":"#e2725b"}"##,
+        )
+        .expect("an old payload must still deserialize");
+        assert_eq!(parsed.accent_color.as_deref(), Some("#e2725b"));
+        assert_eq!(parsed.wallpaper, None, "absent field stays absent");
+
+        let wire = serde_json::to_value(AppearanceSettings::default()).expect("serialize");
+        assert!(wire.get("theme").is_none(), "{wire}");
+        assert!(wire.get("density").is_none(), "{wire}");
+        assert_eq!(
+            wire.as_object().map(|o| o.len()),
+            Some(2),
+            "the model is exactly wallpaper + accent_color"
+        );
+    }
+
+    #[test]
+    fn test_validate_wallpaper_accepts_every_client_shape_and_normalises() {
+        // The bare URL the desktop sends through the draft…
+        assert_eq!(
+            validate_wallpaper_field("/wallpapers/hv-07.webp").unwrap(),
+            "/wallpapers/hv-07.webp"
+        );
+        // …the id alone (the map key)…
+        assert_eq!(
+            validate_wallpaper_field("hv-07").unwrap(),
+            "/wallpapers/hv-07.webp"
+        );
+        // …the WallpaperConfig JSON the store round-trips…
+        assert_eq!(
+            validate_wallpaper_field(r#"{"type":"image","value":"/wallpapers/hv-44.webp"}"#)
+                .unwrap(),
+            "/wallpapers/hv-44.webp"
+        );
+        // …a bare JSON string, and surrounding whitespace.
+        assert_eq!(
+            validate_wallpaper_field(r#""/wallpapers/hv-01.webp""#).unwrap(),
+            "/wallpapers/hv-01.webp"
+        );
+        assert_eq!(
+            validate_wallpaper_field("  /wallpapers/hv-12.webp\n").unwrap(),
+            "/wallpapers/hv-12.webp"
+        );
+        // The legacy gradient tile is coerced to the first bundled photo,
+        // exactly as `normalizeWallpaper()` does in the browser.
+        assert_eq!(
+            validate_wallpaper_field(r#"{"type":"default"}"#).unwrap(),
+            "/wallpapers/hv-01.webp"
+        );
+        // Never picked: the desktop paints its own gradient.
+        assert_eq!(validate_wallpaper_field("").unwrap(), "");
+        assert_eq!(validate_wallpaper_field("   ").unwrap(), "");
+    }
+
+    #[test]
+    fn test_validate_wallpaper_refuses_anything_off_the_bundled_list() {
+        for bad in [
+            "/wallpapers/hv-00.webp", // numbering starts at 01
+            "/wallpapers/hv-45.webp", // 44 is the last bundled photo
+            "/wallpapers/hv-7.webp",  // two digits, always
+            "/wallpapers/../../../etc/passwd",
+            "/uploads/wallpapers/custom.webp", // uploads removed 2026-09-04
+            "https://evil.example/x.webp",
+            "data:image/png;base64,AAAA",
+            "#ff0000",
+            r#"{"type":"image","value":"https://evil.example/x.webp"}"#,
+            r#"{"type":"gradient"}"#,
+            "{not json}",
+        ] {
+            let err = validate_wallpaper_field(bad).expect_err(&format!("{bad} must be refused"));
+            assert!(
+                err.starts_with("wallpaper:"),
+                "the refusal must name the field: {err}"
+            );
+            assert!(
+                err.contains("bundled wallpapers"),
+                "the refusal must say what is allowed: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_accent_color_accepts_hex_and_refuses_injection() {
+        for ok in ["#1E62AE", "#e2725b", "#fff", "#FFAA0080"] {
+            assert_eq!(validate_accent_color_field(ok).unwrap(), ok);
+        }
+        // A colour value is written straight into a CSS custom property, so
+        // anything that could close the declaration is refused.
+        for bad in [
+            "red",
+            "1E62AE",
+            "#12",
+            "#12345",
+            "#GGGGGG",
+            "#fff;background:url(x)",
+            "var(--hv-danger)",
+            "",
+        ] {
+            let err =
+                validate_accent_color_field(bad).expect_err(&format!("{bad} must be refused"));
+            assert!(
+                err.starts_with("accent_color:"),
+                "the refusal must name the field: {err}"
+            );
+        }
     }
 
     #[test]

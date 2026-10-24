@@ -244,10 +244,13 @@ async fn send(
 }
 
 /// Every read endpoint that requires an **admin** session.
+///
+/// `/api/settings/appearance` is deliberately absent: ROADMAP 26.1 made it a
+/// *session* read (one global look, needed by every account's boot
+/// hydration). It is asserted in its own tests below.
 fn admin_read_endpoints() -> Vec<&'static str> {
     vec![
         "/api/settings",
-        "/api/settings/appearance",
         "/api/settings/email",
         "/api/settings/notifications",
         "/api/settings/update",
@@ -437,21 +440,19 @@ async fn test_public_settings_need_no_auth_and_leak_nothing_sensitive() {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Appearance round-trip (accent / density / wallpaper — the untested gap)
+// 2. Appearance — one global look, readable by every account (ROADMAP 26)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_appearance_put_then_get_round_trips_all_four_fields() {
+async fn test_appearance_put_then_get_round_trips_the_two_fields() {
     let (state, _tmp, _guard) = setup_state().await;
     create_test_user(&state, "admin1", "Password123!", 2).await;
     let mut router = settings_router(state);
     let token = login(&mut router, "admin1", "Password123!").await;
 
     let payload = json!({
-        "theme": "dark",
         "wallpaper": "/wallpapers/hv-09.webp",
-        "accent_color": "#e2725b",
-        "density": "compact"
+        "accent_color": "#e2725b"
     });
     let (status, body) = send(
         &mut router,
@@ -472,10 +473,11 @@ async fn test_appearance_put_then_get_round_trips_all_four_fields() {
         None,
     )
     .await;
-    assert_eq!(got["data"]["theme"], "dark");
     assert_eq!(got["data"]["wallpaper"], "/wallpapers/hv-09.webp");
     assert_eq!(got["data"]["accent_color"], "#e2725b");
-    assert_eq!(got["data"]["density"], "compact");
+    // ROADMAP 26.2: the two no-ops are gone from the wire, not just ignored.
+    assert!(got["data"].get("theme").is_none(), "{got}");
+    assert!(got["data"].get("density").is_none(), "{got}");
 
     // …and the aggregate endpoint reflects the same values.
     let (_, all) = send(
@@ -487,7 +489,131 @@ async fn test_appearance_put_then_get_round_trips_all_four_fields() {
     )
     .await;
     assert_eq!(all["data"]["appearance"]["accent_color"], "#e2725b");
-    assert_eq!(all["data"]["appearance"]["density"], "compact");
+    assert_eq!(
+        all["data"]["appearance"]["wallpaper"],
+        "/wallpapers/hv-09.webp"
+    );
+    assert!(all["data"]["appearance"].get("density").is_none(), "{all}");
+}
+
+/// ROADMAP 26.1 — **the assertion that would have caught the defect.**
+///
+/// The boot hydration calls this endpoint for *every* account. It used to be
+/// admin-only, so a non-admin got a 400, the SPA swallowed it, and the
+/// desktop kept whatever that browser's `localStorage` said: two origins, two
+/// wallpapers, no explanation. A non-admin session must now read the
+/// appliance's look — and nothing else.
+#[tokio::test]
+async fn test_appearance_is_readable_by_a_non_admin_session() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    create_test_user(&state, "regular", "Password123!", 1).await;
+    let mut router = settings_router(state);
+
+    let admin_token = login(&mut router, "admin1", "Password123!").await;
+    let (status, _) = send(
+        &mut router,
+        Method::PUT,
+        "/api/settings/appearance",
+        Some(&admin_token),
+        Some(json!({"wallpaper": "/wallpapers/hv-11.webp", "accent_color": "#123456"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let member = login(&mut router, "regular", "Password123!").await;
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/appearance",
+        Some(&member),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "non-admin read: {body}");
+    assert_eq!(body["data"]["accent_color"], "#123456");
+    assert_eq!(body["data"]["wallpaper"], "/wallpapers/hv-11.webp");
+
+    // The read is scoped to what hydration needs: no SMTP, no e-mail, no
+    // update preferences, no server name.
+    let raw = body.to_string().to_lowercase();
+    for leaked in ["smtp", "password", "webhook", "check_frequency", "email"] {
+        assert!(
+            !raw.contains(leaked),
+            "{leaked} leaked to a non-admin: {body}"
+        );
+    }
+    assert_eq!(
+        body["data"].as_object().map(|o| o.len()),
+        Some(2),
+        "exactly wallpaper + accent_color: {body}"
+    );
+
+    // Still authenticated: no token stays a refusal.
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/appearance",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/appearance",
+        Some("nope"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// Under the chosen contract (A: one global look, admin-managed) a non-admin
+/// can **read** the appearance and can never **write** it.
+#[tokio::test]
+async fn test_a_non_admin_cannot_change_the_appliance_look() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    create_test_user(&state, "regular", "Password123!", 1).await;
+    let mut router = settings_router(state);
+
+    let admin_token = login(&mut router, "admin1", "Password123!").await;
+    let _ = send(
+        &mut router,
+        Method::PUT,
+        "/api/settings/appearance",
+        Some(&admin_token),
+        Some(json!({"accent_color": "#123456"})),
+    )
+    .await;
+
+    let member = login(&mut router, "regular", "Password123!").await;
+    let (status, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/settings/appearance",
+        Some(&member),
+        Some(json!({"accent_color": "#efefef"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"].as_str().unwrap_or("").contains("Admin"),
+        "{body}"
+    );
+
+    // Nothing was mutated for anyone.
+    let (_, got) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/appearance",
+        Some(&member),
+        None,
+    )
+    .await;
+    assert_eq!(got["data"]["accent_color"], "#123456");
 }
 
 #[tokio::test]
@@ -503,7 +629,7 @@ async fn test_appearance_partial_update_leaves_other_fields_untouched() {
         Method::PUT,
         "/api/settings/appearance",
         Some(&token),
-        Some(json!({"theme": "light", "density": "spacious", "accent_color": "#111111", "wallpaper": "/wallpapers/hv-01.webp"})),
+        Some(json!({"accent_color": "#111111", "wallpaper": "/wallpapers/hv-01.webp"})),
     )
     .await;
     let _ = send(
@@ -524,8 +650,121 @@ async fn test_appearance_partial_update_leaves_other_fields_untouched() {
     )
     .await;
     assert_eq!(got["data"]["accent_color"], "#222222");
-    assert_eq!(got["data"]["theme"], "light", "unspecified field kept");
-    assert_eq!(got["data"]["density"], "spacious", "unspecified field kept");
+    assert_eq!(
+        got["data"]["wallpaper"], "/wallpapers/hv-01.webp",
+        "unspecified field kept"
+    );
+}
+
+/// ROADMAP 26.1 — a malformed wallpaper is refused with a `400` that names
+/// the field, and the stored value is **not** replaced.
+#[tokio::test]
+async fn test_a_malformed_wallpaper_is_refused_and_leaves_the_stored_value() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = settings_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, _) = send(
+        &mut router,
+        Method::PUT,
+        "/api/settings/appearance",
+        Some(&token),
+        Some(json!({"wallpaper": "/wallpapers/hv-05.webp"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    for bad in [
+        "/wallpapers/hv-99.webp",
+        "https://evil.example/x.webp",
+        r#"{"type":"image","value":"/etc/passwd"}"#,
+        "{not json}",
+    ] {
+        let (status, body) = send(
+            &mut router,
+            Method::PUT,
+            "/api/settings/appearance",
+            Some(&token),
+            Some(json!({"wallpaper": bad})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("wallpaper:"),
+            "the refusal must name the field: {body}"
+        );
+    }
+
+    // A bad accent in the same body must not have been applied either (the
+    // body is validated before anything is written).
+    let (status, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/settings/appearance",
+        Some(&token),
+        Some(json!({"accent_color": "#fff;background:url(x)"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("accent_color:"),
+        "{body}"
+    );
+
+    let (_, got) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/appearance",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(
+        got["data"]["wallpaper"], "/wallpapers/hv-05.webp",
+        "a refused save must not touch the stored wallpaper"
+    );
+    assert_eq!(
+        got["data"]["accent_color"], "#1E62AE",
+        "a refused save must not touch the stored accent"
+    );
+}
+
+/// A wallpaper sent the way the store actually round-trips it (the
+/// `WallpaperConfig` JSON string inside the draft) is accepted and stored as
+/// the bare bundled URL, which is what both readers expect.
+#[tokio::test]
+async fn test_a_json_encoded_wallpaper_config_is_normalised_on_save() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = settings_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/settings/appearance",
+        Some(&token),
+        Some(json!({"wallpaper": r#"{"type":"image","value":"/wallpapers/hv-12.webp"}"#})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (_, got) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/appearance",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(got["data"]["wallpaper"], "/wallpapers/hv-12.webp");
 }
 
 // ---------------------------------------------------------------------------
@@ -619,7 +858,7 @@ async fn test_export_then_import_round_trips_and_keeps_the_password() {
         Method::PUT,
         "/api/settings/appearance",
         Some(&token),
-        Some(json!({"accent_color": "#abcdef", "density": "compact"})),
+        Some(json!({"accent_color": "#abcdef"})),
     )
     .await;
 
@@ -661,7 +900,7 @@ async fn test_export_then_import_round_trips_and_keeps_the_password() {
     )
     .await;
     assert_eq!(got["data"]["accent_color"], "#abcdef");
-    assert_eq!(got["data"]["density"], "compact");
+    assert!(got["data"].get("density").is_none(), "{got}");
 
     // …and re-exporting still shows the email server (importing a redacted
     // `null` password did not wipe the block).
@@ -691,7 +930,7 @@ async fn test_settings_reset_restores_the_shipped_defaults() {
         Method::PUT,
         "/api/settings/appearance",
         Some(&token),
-        Some(json!({"accent_color": "#ff0000", "density": "compact"})),
+        Some(json!({"accent_color": "#ff0000"})),
     )
     .await;
     let _ = send(
@@ -722,7 +961,10 @@ async fn test_settings_reset_restores_the_shipped_defaults() {
     )
     .await;
     assert_eq!(appearance["data"]["accent_color"], "#1E62AE");
-    assert_eq!(appearance["data"]["density"], "comfortable");
+    assert_eq!(
+        appearance["data"]["wallpaper"], "",
+        "the look is back to default"
+    );
 
     // G2: the update-check default is back to Manual (no auto GitHub call).
     let (_, update) = send(

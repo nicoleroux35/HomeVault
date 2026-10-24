@@ -892,11 +892,25 @@ class ApiClient {
 
   // Appearance
 
+  /**
+   * The appliance's look (wallpaper + accent). **Any** signed-in session may
+   * read it — the desktop's boot hydration needs it, and it carries nothing
+   * but those two fields (ROADMAP 26.1). Writing it stays admin-only.
+   *
+   * `cache: false`: the Settings window re-reads it after a save and the
+   * hydration reads it on every boot, so a cached copy would show the
+   * previous look.
+   */
+  async getAppearanceSettings() {
+    return this.get<{ wallpaper: string | null; accent_color: string | null }>(
+      '/settings/appearance',
+      { cache: false },
+    );
+  }
+
   async updateAppearanceSettings(data: {
-    theme?: string;
     wallpaper?: string;
     accent_color?: string;
-    density?: string;
   }) {
     return this.put('/settings/appearance', data);
   }

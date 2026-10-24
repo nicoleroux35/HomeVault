@@ -910,6 +910,58 @@ no blocking process of that module is reachable from an async handler.
 
 ### Changed
 
+- **Appearance — one appliance look every account can read, a validated
+  wallpaper, and two no-op fields deleted (2026-10-24, ROADMAP 26.1/26.2).**
+  **A non-admin never received the appliance's appearance.** The desktop's boot
+  hydration called `GET /api/settings`, which is admin-only, so for every
+  non-admin the request failed, the `catch` swallowed it and the desktop kept
+  whatever that origin's `localStorage` held: the same account on two addresses
+  showed two wallpapers, with no explanation, and a non-admin on a fresh browser
+  got the default even though the appliance had one saved. Decision (recorded in
+  `docs/guides/settings.md`): appearance is a **single, appliance-wide** value —
+  wallpaper + accent colour — written by an admin and **read by any signed-in
+  session**; it is not per-account. `GET /api/settings/appearance` is now
+  session-readable and returns **exactly** `{ wallpaper, accent_color }` — no
+  e-mail, SMTP, webhook, update or notification field, so widening it leaks
+  nothing (the aggregate `GET /settings` stays admin-only, and the read is still
+  `400`/`401` without a session). The hydration calls it, and a failure is
+  reported **once** (a toast) with the desktop keeping its last known value, as
+  an explained fallback instead of a silent one. `PUT` stays admin-only, so the
+  Settings → Appearance grid is now rendered **read-only** for a non-admin
+  (`data-readonly`, every tile `disabled`, "Managed by the administrator") —
+  never a control that appears to save and does nothing. **The wallpaper is
+  validated server-side.** It was stored verbatim as a JSON string inside the
+  settings blob and parsed by two frontend readers behind a `try/catch`, so one
+  malformed value silently reset the desktop. `validate_wallpaper_field` now
+  accepts `""`, `/wallpapers/hv-NN.webp`, `hv-NN`, a bare JSON string or the
+  `WallpaperConfig` JSON (`{"type":"image","value":…}`; the legacy
+  `{"type":"default"}` maps to `hv-01`), normalises everything to the bare URL
+  and bounds N to 1–44; anything else (a custom upload, a data URL, a gradient,
+  another host) is a `400` whose message starts `wallpaper:`, with the stored
+  value untouched (both fields are validated before the first write). The same
+  rule runs on load, so a hand-edited `settings.json` cannot inject a value
+  either. `validate_accent_color_field` restricts the accent to
+  `#rgb`/`#rrggbb`/`#rrggbbaa`, closing a CSS-injection vector into
+  `--hv-primary`. **`theme` and `density` are gone.** Both were persisted and
+  round-tripped but consumed by nothing (`grep -rn "data-theme\|data-density"
+  frontend/src` → 0 hits; the tree has no dark theme), so a user could save
+  "dark"/"compact" and see nothing change, forever. They are removed from the
+  model, both appearance handlers, the aggregate, the Settings draft, the API
+  type and all four i18n files (`settings.density` dropped, keeping key parity);
+  an older `data/settings.json` still loads — the two keys are read for
+  backward compatibility and ignored. `docs/guides/themes.md`, which documented
+  a `ThemeToggle.svelte` and a theme registry that never existed, is rewritten
+  to describe the shipped look. Tests: `handlers/settings.rs` 25 → **29**
+  unit, `settings_persistence.rs` 13 → **15**, `src/i18n.rs` 8 → **9**
+  (key parity), `settings_core_integration.rs` 24 → **28** (the non-admin read
+  is the assertion that would have caught 26.1; a non-admin `PUT` mutates
+  nothing; a malformed wallpaper is a `400` naming the field with the stored
+  value unchanged), `settings.spec.ts` 104 → **111 `test(`** (a non-admin
+  desktop paints the server accent although `localStorage` says otherwise, the
+  grid is read-only with its reason, and the Save PUT carries exactly the two
+  real fields). **Written, not run in this pass** (per instruction); `cargo
+  check --all-targets` clean, `svelte-check` 0/0, `npm run build` OK.
+
 - **The 7 simplicity rules are now project rules (2026-10-20).** HomeVault is
   an appliance for a home user, so simplicity is a correctness bar next to
   accessibility: (1) immediately understandable, (2) only what the task needs,
