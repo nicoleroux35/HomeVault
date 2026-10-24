@@ -417,6 +417,243 @@ async fn test_retention_prunes_the_oldest_snapshots() {
 }
 
 // ========================================================================
+// 4b. Retention vs. the pre-migration restore point (ROADMAP 22.2)
+// ========================================================================
+
+/// The snapshots directory of the current `DATA_DIRECTORY`, as the API reports
+/// it (`dir` is the one place the client learns the path from).
+async fn backup_dir(app: &mut Router, admin: &str) -> std::path::PathBuf {
+    let (status, body) = send(
+        app,
+        Method::GET,
+        "/api/settings/backup/db",
+        Some(admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    std::path::PathBuf::from(
+        body["data"]["directory"]
+            .as_str()
+            .expect("the status must name the directory"),
+    )
+}
+
+/// Write a snapshot file directly — the retention pass only reads names and
+/// metadata, so the content does not need to be a real database.
+fn write_snapshot_file(dir: &std::path::Path, name: &str) {
+    std::fs::create_dir_all(dir).expect("backup dir");
+    std::fs::write(dir.join(name), b"snapshot").expect("write snapshot file");
+}
+
+#[tokio::test]
+async fn test_retention_never_prunes_the_pre_migration_restore_point() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let mut app = router(Arc::clone(&state));
+    let (admin, _viewer) = sessions(&mut app, &state).await;
+
+    let dir = backup_dir(&mut app, &admin).await;
+    // Oldest by name — the file the old `skip(retain)` pass deleted first.
+    let restore_point = "homevault-20200101-000000.pre-migration.db";
+    write_snapshot_file(&dir, restore_point);
+
+    let (status, _) = send(
+        &mut app,
+        Method::PUT,
+        "/api/settings/backup/db",
+        Some(&admin),
+        Some(json!({"interval_hours": 24, "retain": 2})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    for _ in 0..3 {
+        let (status, body) = send(
+            &mut app,
+            Method::POST,
+            "/api/settings/backup/db/now",
+            Some(&admin),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    }
+
+    let (_, list) = send(
+        &mut app,
+        Method::GET,
+        "/api/settings/backup/db",
+        Some(&admin),
+        None,
+    )
+    .await;
+    let backups = list["data"]["backups"].as_array().expect("array");
+    let names: Vec<&str> = backups
+        .iter()
+        .filter_map(|b| b["name"].as_str())
+        .collect();
+
+    assert!(
+        names.contains(&restore_point),
+        "retention must not eat the pre-upgrade restore point: {names:?}"
+    );
+    assert!(
+        std::path::Path::new(&dir.join(restore_point)).exists(),
+        "the restore point must still be on disk"
+    );
+
+    // Two regular snapshots + the restore point: `retain` counts the first two
+    // only, so the restore point neither consumes a slot nor gets pruned.
+    assert_eq!(
+        names.len(),
+        3,
+        "retain 2 + one restore point, got {names:?}"
+    );
+    assert_eq!(
+        names
+            .iter()
+            .filter(|n| n.contains(".pre-migration"))
+            .count(),
+        1
+    );
+
+    let entry = backups
+        .iter()
+        .find(|b| b["name"] == json!(restore_point))
+        .expect("the restore point is listed");
+    assert_eq!(
+        entry["is_pre_migration"],
+        json!(true),
+        "the screen needs to tell it apart from a scheduled snapshot"
+    );
+}
+
+#[tokio::test]
+async fn test_pre_migration_restore_points_are_bounded_separately() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let mut app = router(Arc::clone(&state));
+    let (admin, _viewer) = sessions(&mut app, &state).await;
+
+    let dir = backup_dir(&mut app, &admin).await;
+    for day in 1..=6 {
+        write_snapshot_file(
+            &dir,
+            &format!("homevault-2020010{day}-000000.pre-migration.db"),
+        );
+    }
+
+    // Saving settings prunes immediately.
+    let (status, body) = send(
+        &mut app,
+        Method::PUT,
+        "/api/settings/backup/db",
+        Some(&admin),
+        Some(json!({"interval_hours": 24, "retain": 100})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (_, list) = send(
+        &mut app,
+        Method::GET,
+        "/api/settings/backup/db",
+        Some(&admin),
+        None,
+    )
+    .await;
+    let backups = list["data"]["backups"].as_array().expect("array");
+    let names: Vec<&str> = backups
+        .iter()
+        .filter_map(|b| b["name"].as_str())
+        .collect();
+
+    // A 100-snapshot retention must not let them grow without bound either.
+    assert_eq!(
+        names,
+        vec![
+            "homevault-20200106-000000.pre-migration.db",
+            "homevault-20200105-000000.pre-migration.db",
+            "homevault-20200104-000000.pre-migration.db",
+        ],
+        "only the newest pre-migration restore points are kept"
+    );
+}
+
+// ========================================================================
+// 4c. A failed attempt is reported (ROADMAP 22.2)
+// ========================================================================
+
+#[tokio::test]
+async fn test_a_failed_snapshot_is_reported_and_cleared_by_the_next_success() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let mut app = router(Arc::clone(&state));
+    let (admin, _viewer) = sessions(&mut app, &state).await;
+
+    let dir = backup_dir(&mut app, &admin).await;
+    // A plain file where the directory should be: `create_dir_all` fails, so
+    // the failure is real (an unwritable/unmountable backup volume) and not a
+    // mocked error.
+    std::fs::create_dir_all(dir.parent().expect("parent")).expect("data dir");
+    std::fs::write(&dir, b"not a directory").expect("obstruction");
+
+    let (status, body) = send(
+        &mut app,
+        Method::POST,
+        "/api/settings/backup/db/now",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+
+    // `last_error` used to be hardcoded `None`, so the card could never show a
+    // failed snapshot.
+    let (_, after) = send(
+        &mut app,
+        Method::GET,
+        "/api/settings/backup/db",
+        Some(&admin),
+        None,
+    )
+    .await;
+    let reason = after["data"]["last_error"]
+        .as_str()
+        .expect("a failed attempt must be reported on the status card");
+    assert!(
+        reason.to_lowercase().contains("backup dir"),
+        "the reason must name what could not be done: {reason}"
+    );
+
+    // Remove the obstruction: the next attempt works and clears the reason.
+    std::fs::remove_file(&dir).expect("remove obstruction");
+    let (status, body) = send(
+        &mut app,
+        Method::POST,
+        "/api/settings/backup/db/now",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body["data"]["status"]["last_error"].is_null(),
+        "a success must clear the reason: {body}"
+    );
+
+    let (_, after) = send(
+        &mut app,
+        Method::GET,
+        "/api/settings/backup/db",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert!(after["data"]["last_error"].is_null(), "{after}");
+    assert_eq!(after["data"]["backups"].as_array().unwrap().len(), 1);
+}
+
+// ========================================================================
 // 5. Public probes
 // ========================================================================
 

@@ -1462,6 +1462,18 @@
               </span>
             </div>
 
+            <!-- A failed attempt must not be indistinguishable from a missing
+                 one: the reason the server recorded is shown until the next
+                 success clears it (ROADMAP 22.2). -->
+            {#if dbBackup?.last_error}
+              <div class={cn(settingsRow, 'settings-field-full')}>
+                <p class="m-0 flex items-center gap-1.5 text-xs text-[var(--hv-error)]" role="alert" data-testid="db-backup-last-error">
+                  <IconAlertTriangle size={16} />
+                  <span>{$t('settings.db_backup_last_error', { error: dbBackup.last_error })}</span>
+                </p>
+              </div>
+            {/if}
+
             <div class={settingsRow}>
               <label class={settingsRowLabel} for="dbBackupInterval">{$t('settings.db_backup_interval')}</label>
               <select id="dbBackupInterval" class={cn(settingsSelect, 'max-w-[200px]')} bind:value={dbBackupInterval} disabled={dbBackupBusy}>
@@ -1483,6 +1495,11 @@
                   {#each dbBackup.backups as entry (entry.name)}
                     <li class="flex items-center justify-between gap-3 rounded-md border border-[var(--hv-settings-hairline)] px-3 py-1.5 text-xs">
                       <span class="min-w-0 flex-1 truncate font-[family-name:var(--hv-font-mono)] text-[var(--hv-settings-title)]">{entry.name}</span>
+                      {#if entry.is_pre_migration}
+                        <span class="shrink-0 rounded-full border border-[var(--hv-settings-hairline)] px-2 py-0.5 text-[var(--hv-settings-label)]">
+                          {$t('settings.db_backup_pre_migration')}
+                        </span>
+                      {/if}
                       <span class="shrink-0 tabular-nums text-[var(--hv-settings-label)]">{formatBytes(entry.size_bytes)}</span>
                     </li>
                   {/each}

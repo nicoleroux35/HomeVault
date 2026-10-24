@@ -1,6 +1,6 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-23 — current version: 1.0.0
+Last updated: 2026-10-24 — current version: 1.0.0
 
 ## How to read this file
 
@@ -81,7 +81,6 @@ Two structural facts explain most of the list:
 | 10b | File Explorer — residual hardening | P2 | 3 |
 | 16.4 | Cloud Sync (rclone) — no scheduler | P2 | 1 |
 | 18 | Syncthing | P1 | 1 |
-| 22 | DB backup | P1 | 2 |
 | 24 | Server control | P1 | 2 |
 | 25 | Autostart | P1 | 2 |
 | 26 | Wallpapers / Themes | P1 | 2 |
@@ -93,7 +92,7 @@ Two structural facts explain most of the list:
 | 33 | Transfer quotas — residual | P2 | 1 |
 | — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **31** (24 per-area + 7 cross-cutting).
+Total open findings: **29** (22 per-area + 7 cross-cutting).
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
@@ -130,8 +129,13 @@ written `0600` and edited as parsed sections, and the screen no longer swallows 
 failure. Only the missing *scheduler* is left, as P2 **16.4**. **13 (Settings)
 closed on 2026-10-23** too (see Done), and **21 (Notifications) closed the
 same day** — see Done (2026-10-23 (r)): read state is per user, the feed is
-paginated, and the shared delete paths are admin-only. **22 (DB backup)** is
-therefore the next P1: the documented serialisation still does not hold.
+paginated, and the shared delete paths are admin-only. **22 (DB backup) closed
+on 2026-10-24** — see Done: the snapshot lock is process-wide, a failed attempt
+keeps its reason for the card, and retention no longer eats the pre-migration
+restore point. The next P1 is therefore **18 (Syncthing)**: 18.1 is the only
+finding left, and it is the one a user hits first (a share or a peer cannot be
+onboarded from HomeVault at all), followed by **24 (Server control)**, where a
+rejected `shutdown`/`reboot` is indistinguishable from a slow one.
 
 ---
 
@@ -192,31 +196,6 @@ Syncthing has no bulk call). The HTTP client has a real 10 s timeout
 (`HTTP_TIMEOUT`, `:44`) — the only one of the four network apps with a bound.
 
 *Tests:* 18 unit, 8 integration, 23 E2E. *Docs:* `docs/guides/syncthing.md`.
-
----
-
-### 22. DB backup — the documented serialisation does not hold
-
-- [ ] **22.1 — A new `DbBackupService` per request means two concurrent
-      `VACUUM INTO`s.** `src/handlers/db_backup.rs:49,62,91` construct a fresh
-      service, and `running` is a per-instance `Arc<Mutex<()>>`
-      (`src/db_backup.rs:113,121`); the scheduler spawns its own
-      `DbBackupService::new(db.clone())` (`src/web/mod.rs:1971`). A manual click
-      during a scheduled snapshot therefore runs both — exactly what
-      `docs/guides/backup-restic.md:43` promises cannot happen.
-      *Acceptance:* one process-wide lock (or one service in `AppState`).
-- [ ] **22.2 — `last_error` is hardcoded `None`, and prune can eat the
-      pre-migration restore point.** `src/db_backup.rs:292` reports "no error"
-      for every failure (unwritable dir, disk full), so the status card can
-      never show a failed snapshot. `prune` keeps the newest `retain` by name
-      with no marker filter (`:261-283`), so a forced
-      `homevault-<ts>.pre-migration.db` (`:361`) can be pruned like any other.
-
-Also: blocking `std::fs` in async fns (`:178,222,229,236,241,270`) and sync
-`status()`/`list()` called straight from the async handler
-(`handlers/db_backup.rs:49-50`).
-
-*Tests:* 5 unit, 12 integration, no E2E. *Docs:* `docs/guides/backup-restic.md`.
 
 ---
 
@@ -404,10 +383,11 @@ reuse.
       Chat (`chat.rs:989,1021,1040`), Cache (`handlers/cache.rs:97,165,252,457`),
       Encryption (`handlers/encryption.rs:210,345`), Autostart
       (`handlers/settings.rs:566,595`), Apps Center (`docker_catalog.rs:490,562`),
-      Explorer (`explorer.rs:665,2628,2659`),
-      DB backup (`db_backup.rs:178,222,229,236,241,270`).
+      Explorer (`explorer.rs:665,2628,2659`).
       *(Notifications, Antivirus, Power and rclone were on this list and are
-      closed — items 13 and 16, 2026-10-23.)*
+      closed — items 13 and 16, 2026-10-23; DB backup left it on 2026-10-24 with
+      item 22 — every `std::fs` call of `db_backup.rs` now runs on
+      `spawn_blocking`.)*
       **Reference implementations already in the tree:** `src/mdns.rs:449`,
       `src/handlers/journal.rs:171`, `src/transfer_quota.rs:136`,
       `src/handlers/docker.rs`, `src/handlers/mcp.rs:588`,
@@ -446,9 +426,9 @@ reuse.
       2026-10-23 — see Done (2026-10-23 (r)): every invariant on the list is
       now enforced (scheduled-task overlap guard, "RAID never destroys", opt-in
       update check, single-flight cache mover, unique `(pool, prefix)`, metrics
-      gaps, per-user notification read state), and the last remaining instance
-      (DB-backup serialisation) is already tracked as item 22.1, so the
-      cross-cutting pointer is redundant.
+      gaps, per-user notification read state). Its last remaining instance
+      (DB-backup serialisation, tracked as item 22.1) was closed on 2026-10-24,
+      so the pointer is definitively redundant.
 - [ ] **X.5 — `TESTING.md` counts drift where the specs grew.** The Dashboard row
       stated "37 runtime tests, recounted on 2026-09-14 via
       `grep -cE '^\s*test\('`". *Re-counted 2026-10-23 with both figures: 48
@@ -512,6 +492,45 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-24** — DB backup — one snapshot at a time process-wide, a failed
+attempt leaves its reason on the card, and retention spares the pre-migration
+restore point. **22.1 (two concurrent `VACUUM INTO`s):** the guard was a
+per-instance `Arc<tokio::sync::Mutex<()>>` while every HTTP handler built a
+fresh `DbBackupService`, so a manual click during a scheduled run ran both.
+`src/db_backup.rs` now serialises them with one module static (`RUNNING`),
+shared by every handler, the scheduler loop, the startup snapshot and
+`snapshot_before_migration` — which used to bypass the service entirely. A
+static rather than an `AppState` field, because that would have touched the 40+
+`AppState` literals under `tests/`. A same-second second snapshot is named
+`homevault-…_2.db` instead of overwriting the first (the `_` suffix keeps the
+reverse-name sort reading as reverse-chronological). **22.2 (`last_error` was
+hardcoded `None`, and prune could eat the restore point):** the reason of the
+last failed attempt lives in a process-wide slot, is served by
+`GET /settings/backup/db`, cleared by the next success and by a restart, and the
+Settings card renders it as a `role="alert"` line quoting the server's message;
+pruning now partitions the directory — `retain` bounds the regular snapshots,
+the `.pre-migration.db` restore points are never removed by it and are bounded
+separately at `PRE_MIGRATION_RETAIN` = 3 newest — and they no longer consume a
+`retain` slot (with `retain = 2` the old code kept one real snapshot and deleted
+the other *and* could delete the restore point). `DbBackupEntry.is_pre_migration`
+marks them for the screen, which labels them *Before upgrade*. **Also (X.1,
+this module):** every `std::fs` call left the async runtime (`create_dir_all`,
+the stale `.tmp` unlink, `rename` + `metadata`, `read_dir`, the retention
+`remove_file`, and the `data/db_backup.json` load/save/delete), and
+`list`/`prune`/`status`/`is_due` are `async` because they reach the filesystem;
+handlers use the I/O-free `DbBackupService::new` plus `load(db).await`, which
+reads the schedule on the blocking pool. Tests: `db_backup.rs` 5 → **11** unit
+(the lock is held from another instance and a snapshot must wait; prune keeps
+and bounds restore points; a `_2` duplicate sorts newest), `db_backup_integration.rs`
+12 → **15** (planted restore point survives three snapshots at `retain = 2` and
+is flagged, six restore points + a settings save keep the newest three, a
+snapshot failure is a `500` with `last_error` naming the directory and the next
+success clears it), `settings.spec.ts` §15 3 → **4** `test(` (§15.4 renders a
+served `last_error` as an alert) — **written, not run** (per instruction).
+Docs: `docs/guides/backup-restic.md` (*Only one snapshot runs at a time*,
+*Retention never eats the pre-upgrade restore point*, *A failure is remembered*,
+*Nothing blocks the async runtime*), `docs/API.md`, `CHANGELOG.md`, `TESTING.md`.
 
 **2026-10-23 (r)** — Notifications — the read state is per user, the feed is
 paginated, and the shared delete paths are admin-only (items 21.2, 21.3).

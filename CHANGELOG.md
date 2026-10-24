@@ -8,6 +8,53 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **DB backup — one snapshot at a time process-wide, a failure that is visible,
+  and a restore point that survives retention (2026-10-24, ROADMAP 22).** **Two
+  concurrent `VACUUM INTO`s were possible.** Every HTTP handler built its own
+  `DbBackupService` while the "one snapshot at a time" guard was a per-instance
+  `Arc<tokio::sync::Mutex<()>>`, so a manual click landing during a scheduled
+  run executed both — exactly what `docs/guides/backup-restic.md` promised could
+  not happen. The lock is now one module static (`RUNNING` in `src/db_backup.rs`)
+  shared by every handler, the scheduler loop, the startup snapshot and
+  `snapshot_before_migration` (which used to bypass the service entirely); a
+  process-wide static rather than an `AppState` field, because the latter would
+  have touched the 40+ `AppState` literals under `tests/`. Two snapshots in the
+  same second are named `homevault-…_2.db` instead of one overwriting the other,
+  and the `_` suffix keeps the reverse-name sort newest-first. **A failed
+  snapshot used to be invisible.** `DbBackupStatus.last_error` was hardcoded
+  `None`, so an unwritable directory or a full disk looked exactly like "no
+  snapshot yet"; the reason of the last failed attempt is now kept process-wide,
+  served by `GET /settings/backup/db`, cleared by the next success and by a
+  restart, and the Settings card renders it as a `role="alert"` line quoting the
+  server's own words. **Retention could eat the pre-upgrade restore point.**
+  Pruning kept the newest `retain` files by name with no marker filter, so a
+  forced `homevault-<ts>.pre-migration.db` — the only copy of the pre-upgrade
+  state — could be deleted like any other snapshot, and it also consumed one of
+  the retention slots (with `retain = 2`, the old code kept one real snapshot and
+  deleted the other). Pruning now partitions the directory: `retain` bounds the
+  regular snapshots only, `.pre-migration` restore points are never removed by
+  it and are bounded separately at `PRE_MIGRATION_RETAIN` = 3 newest;
+  `DbBackupEntry.is_pre_migration` marks them in the API and the card labels them
+  *Before upgrade*. **Also (X.1, this module):** every `std::fs` call left the
+  async runtime — `create_dir_all`, the stale `.tmp` unlink, `rename` +
+  `metadata`, `read_dir`, the retention `remove_file`, and the
+  `data/db_backup.json` load/save/delete — and `list`/`prune`/`status`/`is_due`
+  are `async` because they reach the filesystem; handlers use the I/O-free
+  `DbBackupService::new` plus `load(db).await`, which reads the schedule on the
+  blocking pool. Tests: `db_backup.rs` 5 → **11** unit (a snapshot must wait on
+  the lock held by *another* instance; prune keeps and bounds restore points; a
+  `_2` duplicate sorts newest), `db_backup_integration.rs` 12 → **15** (a planted
+  restore point survives three snapshots at `retain = 2` and is flagged; six
+  restore points plus a settings save keep the newest three; a failed snapshot is
+  a `500` whose `last_error` names the directory, and the next success clears
+  it), `settings.spec.ts` §15 3 → **4** `test(`. **Written but not executed**
+  (per instruction): no suite was run. Docs: `docs/guides/backup-restic.md`
+  (*Only one snapshot runs at a time*, *Retention never eats the pre-upgrade
+  restore point*, *A failure is remembered*, *Nothing blocks the async runtime*),
+  `docs/API.md`, `ROADMAP.md` (item 22 closed, 31 → 29 open findings),
+  `TESTING.md`, and the four `src/i18n/*.toml` (`db_backup_last_error`,
+  `db_backup_pre_migration`).
+
 - **Dashboard / Widgets — per-account tiles, deadlines on every host probe, and
   no fabricated measurement (2026-10-23, ROADMAP 15).** **Widgets belong to an
   account.** `handle_add_widget` used to hardcode `username: None` and neither

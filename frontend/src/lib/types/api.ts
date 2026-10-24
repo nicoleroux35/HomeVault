@@ -97,6 +97,9 @@ export interface DbBackupEntry {
   path: string;
   size_bytes: number;
   created_at: string;
+  /** True for the restore point written before a migration was applied.
+   *  Those files are outside `retain` and never pruned by it. */
+  is_pre_migration: boolean;
 }
 
 /** Snapshot settings plus the current state of the backup directory. */
