@@ -2961,6 +2961,51 @@ partition reported in use with the right reason, and refused by
 `validate_pool_devices`). The full UI walk of steps 2–3 requires opt-in loop
 devices (`RAID_E2E_DEVICES`) — same opt-in contract as 13.1.
 
+## 2026-10-24 — Web shortcuts: the 512 KB cap bounds the read; a redirect chain is walked hop by hop
+
+ROADMAP 27.1/27.2, the last P1. Two server-side defects, no UI change needed:
+
+- **27.1 — the cap bounded the parser, not the memory.** `read_capped` awaited
+  `Response::bytes()` and sliced afterwards, so a multi-GB response was fully
+  materialised before the truncation; the 10 s timeout was the only real bound.
+  The reader is now streaming (`read_capped_stream` over
+  `Response::bytes_stream()`): it stops pulling at `MAX_BODY_BYTES`, cuts a
+  chunk that crosses the cap to its prefix, and drops the rest of the body.
+- **27.2 — one hop followed, and a rebinding window.** The second redirect's
+  empty body was parsed as the page (metadata silently empty on every
+  short-link/CDN chain), and `resolve_public` validated addresses that reqwest
+  re-resolved at connect time. `fetch_page` now walks up to `MAX_REDIRECTS` (5)
+  hops, re-validating each target (scheme, host, every resolved address) before
+  dialling it, and the shared client resolves through `PublicOnlyResolver`
+  (`reqwest::dns::Resolve`), so the address handed to the connector was
+  validated in the same resolution. Only `301/302/303/307/308` are followed;
+  a longer chain is a named `400`. The timeout is one chain-wide deadline, and
+  one process-wide client replaces the per-request one.
+
+Counts: `src/handlers/shortcuts.rs` **7 → 19** unit — the decisive new
+assertions are `test_read_capped_stops_reading_at_the_cap` (the second chunk is
+never polled once the cap is reached — the old code would have drained it),
+`test_redirect_target_handles_relative_protocol_relative_and_cross_host`,
+`test_a_whole_redirect_chain_is_walked_hop_by_hop` (the second hop is where the
+old code stopped), `test_redirect_target_refuses_a_bad_scheme_or_a_missing_location`
+(a hop must obey the entry URL's allow-list) and
+`test_public_only_resolver_refuses_private_literals` (the connect-time half of
+the guard). `tests/shortcuts_integration.rs` **3 → 4** —
+`test_fetch_metadata_rejects_every_private_literal_form` covers v4-mapped,
+unspecified, link-local, unique-local, multicast and the two RFC1918 ranges
+(the addresses a malicious `Location` aims at). `shortcuts.spec.ts` **8 → 10**
+`test(` — §2.4 (a refused chain: server sentence in the `role="alert"`, typed
+URL kept, no tile pinned) and §2.5 (a timeout: submit re-enabled, field
+editable), both against a **mocked** route.
+
+Written, **not run** (per instruction). What *was* run: `cargo check --lib`,
+`cargo test --no-run --lib` (unit target compiles) and
+`cargo check --test shortcuts_integration`. `npm run check` / `npm run build`
+and the Playwright suites were not run. No test performs a real outbound
+request: a loopback test server would be refused by the guard under test, so
+the chain and the stream are driven as pure functions (documented in
+`docs/guides/shortcuts.md` → *Tests*).
+
 ## Verification method
 
 - `tests/*.rs` files listed via `ls`, counted via

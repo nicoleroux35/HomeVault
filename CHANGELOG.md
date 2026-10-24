@@ -390,6 +390,37 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Web shortcuts — the 512 KB cap now bounds the read, and a redirect chain is
+  walked hop by hop (2026-10-24, ROADMAP 27.1/27.2).** The metadata fetcher
+  awaited `Response::bytes()` and only then sliced the body to
+  `MAX_BODY_BYTES`, so a multi-GB response was fully resident in the server's
+  memory before the "cap" applied — `read_capped_stream` now stops pulling the
+  stream as soon as the cap is reached and drops the rest (the 10 s deadline is
+  no longer the only bound). The redirect was followed exactly **once**: a
+  second redirect's empty body was parsed as "the page", so metadata silently
+  came back empty on every short-link / CDN chain, and `resolve_public`
+  validated addresses that reqwest then re-resolved at connect time (a DNS
+  answer that changed in between reached an internal address). The chain is now
+  walked up to `MAX_REDIRECTS` (5) with each hop joined against the previous
+  absolute URL and re-validated (scheme allow-list, host, every resolved
+  address) **before** it is dialled; only `301/302/303/307/308` are followed
+  (`300/304/305/306` used to be read as "redirect without a Location"), a longer
+  chain answers `400 Too many redirects (at most 5 are followed)`, and the
+  client resolves through a `PublicOnlyResolver` (`reqwest::dns::Resolve`) so
+  the address that is dialled is the one just validated — the rebinding window
+  is closed without a second resolution. The same 10 s budget now covers the
+  whole chain (send *and* body read) instead of each hop, and one process-wide
+  client replaces the per-request one, so reqwest's connection pool, TLS session
+  and resolver are reused. Tests: `handlers/shortcuts.rs` 7 → **19** unit
+  (streaming reader — the second chunk is never polled once the cap is reached,
+  a chunk crossing the cap is cut to its prefix, a broken stream is an error —,
+  the followed-status set, relative / protocol-relative / cross-host hops, a
+  three-hop chain, per-hop `file:` refusal, the cap message, `parse_url`
+  normalisation, and the resolver's private-literal matrix) and
+  `shortcuts_integration.rs` 3 → **4**; `shortcuts.spec.ts` 8 → **10** `test(`
+  (a refused chain and a timeout each keep the dialog open with the server's
+  own sentence, the typed URL, and a re-enabled submit). Docs:
+  [guides/shortcuts.md](docs/guides/shortcuts.md), [API.md](docs/API.md).
 - **Autostart — the `systemctl` probe left the async runtime, and a refusal
   says why (2026-10-24, ROADMAP 25.1/25.2).** `is_enabled()` / `set_enabled()`
   ran `std::process::Command` straight from `async fn` handlers, so a

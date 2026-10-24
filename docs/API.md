@@ -1202,9 +1202,14 @@ A rejected blob is `400` and leaves the stored layout untouched.
 |--------|------|------|---------|
 | POST | `/shortcuts/fetch-metadata` | auth | `handle_fetch_metadata` — `{url}` → `{url, title, description, icon_url, site_name}` |
 
-The server fetches the page (SSRF-guarded: http/https only, every resolved
-address must be public, no automatic redirects, 10 s / 512 KB cap). See
-[Web shortcuts](./guides/shortcuts.md).
+The server fetches the page (SSRF-guarded: http/https only on **every hop**,
+each resolved address must be public, redirects followed manually up to 5 hops
+with the target re-checked before it is dialled, connect-time address pinning
+through a validating resolver, 512 KB read while streaming, and one 10 s budget
+for the whole chain). Failures are `400` with a `message` the dialog shows
+verbatim (`Only http and https URLs are allowed`, `Refusing to fetch a private
+or local address`, `Too many redirects (at most 5 are followed)`, `The site
+took too long to respond`, …). See [Web shortcuts](./guides/shortcuts.md).
 
 ## Events (SSE) — `/api/events`, `notifications/events/ticket` (`auth`)
 
