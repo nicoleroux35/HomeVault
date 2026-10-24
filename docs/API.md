@@ -656,6 +656,76 @@ where none of these handlers validated a session at all; see
 | POST | `/syncthing/pause` | pause one device |
 | POST | `/syncthing/resume` | resume one device |
 | POST | `/syncthing/scan` | rescan one folder |
+| POST | `/syncthing/folders` | add a folder (request below) |
+| DELETE | `/syncthing/folders/{id}` | remove a folder; files stay on disk |
+| POST | `/syncthing/devices` | pair a device (request below) |
+| DELETE | `/syncthing/devices/{id}` | unpair a device; files stay on disk |
+
+### Adding a folder
+
+```http
+POST /api/syncthing/folders
+{
+  "id": "photos",
+  "label": "Photos",
+  "path": "/mnt/pools/data/photos",
+  "type": "sendreceive",
+  "devices": ["AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH"]
+}
+```
+
+`type` is one of `sendreceive`, `sendonly`, `receiveonly` (`receiveencrypted` is
+refused); `devices` may be empty or omitted, and every id in it must already be
+paired. `label` may be blank (it falls back to the id). Success answers
+`{"success":true,"data":{"id":"photos"},"error":null}`.
+
+Rejections, as `{"success":false,"error":…}`:
+
+| Reason | When |
+|---|---|
+| `Folder ID must not be empty` / `Folder ID is too long` | length |
+| `… is not a usable identifier` / `… may only contain letters, digits` | charset outside `[A-Za-z0-9._-]` |
+| `Folder name is too long` / `must not contain control characters` | label (128 characters) |
+| `Folder path must not be empty` | blank path |
+| `Folder path must be an absolute path` | relative |
+| `Folder path must not contain '..'` | traversal |
+| `Folder path must not be the filesystem root` | `/` |
+| `Folder path is too long` | > 1024 bytes |
+| `Folder path … must be inside a storage location HomeVault manages` | outside `allowed_roots()` |
+| `Folder path must not contain control characters` | newline or NUL |
+| `Sync mode '…' is not supported` | mode outside the allowlist |
+| `A folder with ID '…' already exists` | duplicate |
+| `A folder can be shared with at most 64 devices` | more sharers than the cap |
+| `Device ID must not be empty` | blank share target |
+| `Device '…' is not paired with this appliance; pair it before sharing a folder with it` | unknown share target |
+
+Validation runs **before** any daemon call, so a stopped daemon cannot turn a
+malformed request into a transport error. The path is confined because
+Syncthing creates the directory: without the check an admin could create a
+folder anywhere the service can write.
+
+### Pairing a device
+
+```http
+POST /api/syncthing/devices
+{ "device_id": "aaaaaaabbbbbbbcccccccdddddddeeeeeeefffffffggggggghhhhhhh", "name": "Laptop" }
+```
+
+The id is normalised: dashes are optional, case is irrelevant, and the canonical
+eight-groups-of-seven form is what gets stored. `name` may be blank (it falls
+back to the first group of the id). Success answers
+`{"success":true,"data":{"device_id":"AAAAAAA-…"},"error":null}`.
+
+Rejections: `Device ID must not be empty`; `Device ID must be 56 characters
+(dashes are optional), got N`; `… may only contain letters A-Z and digits 2-7`;
+`Device name is too long (128 characters maximum)`; `Device name must not
+contain control characters`; `A device with ID '…' is already paired`; and
+`This is HomeVault's own device ID; pair the other device instead`.
+
+The check digit is **not** verified here — the daemon is the authority and its
+refusal is relayed. `DELETE /syncthing/devices/{id}` refuses the appliance's own
+id (`… it cannot be removed`) and re-validates the path segment before it is
+interpolated into the daemon's REST path.
 
 Every handler answers HTTP 200 with `{"success":false,"error":…, "data":null}`
 on failure (module convention, like Downloader / Cloud Sync). One error is worth
