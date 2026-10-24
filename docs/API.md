@@ -94,9 +94,9 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 | POST | `/settings/reset` | admin | reset to defaults, including antivirus / anti-ransomware / disk spindown / DB-backup settings and `ups.conf`; a domain that failed is listed in `warnings` |
 | GET/PUT | `/settings/tls` | admin | built-in HTTPS config + cert info; PUT returns `requires_restart` |
 | POST | `/settings/tls/regenerate` | admin | force self-signed cert regeneration |
-| GET | `/settings/backup/db` | admin | snapshots of HomeVault's own database — settings + files on disk + total size (the DB is WAL, so the `.db` alone is not restorable) |
-| PUT | `/settings/backup/db` | admin | update `interval_hours` / `retain`; a lower retention prunes immediately |
-| POST | `/settings/backup/db/now` | admin | take a `VACUUM INTO` snapshot now → `{ backup, status }` |
+| GET | `/settings/backup/db` | admin | snapshots of HomeVault's own database — settings, files on disk, total size and `last_error` (the reason the last attempt failed, cleared by the next success). The DB is WAL, so the `.db` alone is not restorable |
+| PUT | `/settings/backup/db` | admin | update `interval_hours` / `retain`; a lower retention prunes immediately. `retain` bounds regular snapshots only — a `.pre-migration` restore point is never pruned by it and is bounded separately (3) |
+| POST | `/settings/backup/db/now` | admin | take a `VACUUM INTO` snapshot now → `{ backup, status }`. Serialised process-wide: it waits for a snapshot already running instead of starting a second `VACUUM INTO` |
 | GET/PUT | `/settings/autostart` | admin | start-on-boot (systemd) for `homevault.service` |
 
 ## Security — `security/*` (auth)

@@ -2544,4 +2544,44 @@ test.describe('15 — Database snapshots', () => {
     expect(name.length).toBeGreaterThan(0);
     expect(name).not.toMatch(/^settings\./);
   });
+
+  test('15.4 — a failed attempt is surfaced on the card instead of looking like a success', async ({
+    page,
+  }) => {
+    // The status card could not report a failure at all until ROADMAP 22.2:
+    // `last_error` was hardcoded `None` server-side, so an unwritable backup
+    // directory looked exactly like "nothing to do". Serve a status carrying
+    // the reason and check the card renders it as an alert, with the server's
+    // own words (not a generic message).
+    await page.route('**/api/settings/backup/db', async (route) => {
+      if (route.request().method() !== 'GET') {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({
+        json: {
+          success: true,
+          data: {
+            settings: { interval_hours: 24, retain: 7 },
+            last_backup_at: null,
+            last_error: 'Cannot create backup dir: Read-only file system',
+            backups: [],
+            total_size_bytes: 0,
+            directory: '/var/lib/homevault/data/backups',
+          },
+        },
+      });
+    });
+
+    await openSettings(page, admin);
+    await openCategory(page, 'data_management');
+
+    const card = set(page).locator('[data-testid="settings-card"]').filter({ hasText: /Database snapshots/i });
+    const alert = card.locator('[data-testid="db-backup-last-error"]');
+    await expect(alert).toBeVisible();
+    await expect(alert).toHaveAttribute('role', 'alert');
+    await expect(alert).toContainText('Read-only file system');
+
+    await page.unroute('**/api/settings/backup/db');
+  });
 });

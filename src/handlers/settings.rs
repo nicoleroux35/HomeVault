@@ -1903,8 +1903,8 @@ pub async fn reset_domain_settings(state: &AppState) -> Vec<String> {
     }
 
     // Database snapshots: the schedule file (`data/db_backup.json`).
-    let db_backup = crate::db_backup::DbBackupService::new(state.db.clone());
-    if let Err(e) = db_backup.reset_settings() {
+    let db_backup = crate::db_backup::DbBackupService::load(state.db.clone()).await;
+    if let Err(e) = db_backup.reset_settings().await {
         failures.push(e);
     }
 
