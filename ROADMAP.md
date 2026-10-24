@@ -365,8 +365,12 @@ items 25/13.)*
       `HOST_PROBE_TIMEOUT` 10 s, `SMART_PROBE_TIMEOUT` 20 s) plus
       `utils/proc.rs`'s `probe()`. That module is the reference implementation
       now: a new handler should call it rather than inventing a deadline.
-      A wedged `zpool`/`mdadm`/`smartctl`/`df` still blocks a handler or a job
-      forever in the files listed above.
+      **What is actually left:** a wedged `cryptsetup`/`mount` (`encryption.rs`),
+      `rsync`/cache-mover tooling (`cache.rs`), a `smartctl`/`df` probe reached
+      from `health.rs`, and `ip`/`wg`/`openvpn`/`setfacl`/`chpasswd`
+      (`network.rs`, `vpn.rs`, `shares.rs`) still block a handler or a job with
+      no deadline. The storage tools named in the old wording
+      (`zpool`/`mdadm`/`smartctl`/`df`) are bounded as of 2026-10-24.
 - [ ] **X.3 — Empty `else {}` error handling in the UI.** CloudSync (6),
       Health, Desktop (power), NotificationCenter — *the boot hydration's two
       are fixed (2026-10-24, item 26: `App.svelte` no longer swallows the
