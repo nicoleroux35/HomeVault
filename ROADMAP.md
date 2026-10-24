@@ -1,6 +1,6 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-24 (item 26 closed) — current version: 1.0.0
+Last updated: 2026-10-24 (item 27 closed — no P1 left) — current version: 1.0.0
 
 ## How to read this file
 
@@ -83,16 +83,16 @@ Two structural facts explain most of the list:
 |---|---|---|---|
 | 10b | File Explorer — residual hardening | P2 | 3 |
 | 16.4 | Cloud Sync (rclone) — no scheduler | P2 | 1 |
-| 27 | Web shortcuts | P1 | 2 |
 | 28 | Activity taskbar | P2 | 3 |
 | 29 | mDNS | P2 | 2 |
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | 32 | Virtual Machines — residual | P2 | 2 |
 | 33 | Transfer quotas — residual | P2 | 1 |
-| — | Cross-cutting (6 systemic) | — | 6 |
+| — | Cross-cutting (7 systemic) | — | 7 |
 
-Total open findings: **22** (16 per-area + 6 cross-cutting). Item 26 (2
-findings) left the open list on 2026-10-24 — see Done.
+Total open findings: **20** (13 per-area + 7 cross-cutting). Item 27 (2
+findings) left the open list on 2026-10-24 — see Done — and with it the last
+P1.
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
@@ -143,9 +143,22 @@ answer is no longer reported as "disabled", and a refusal carries the host's
 own reason. **26 (Wallpapers / Themes) closed on 2026-10-24** (see Done): the appliance
 look is now readable by every session, so a non-admin's boot hydration paints
 it, the wallpaper is validated server-side, and the two persisted no-ops
-(`theme`, `density`) are deleted. The next P1 is **27 (Web shortcuts)**, where
-the 512 KB cap does not bound the read and the redirect guard stops after one
-hop.
+(`theme`, `density`) are deleted. **27 (Web shortcuts) closed on 2026-10-24**
+(see Done): the 512 KB cap is enforced by the streaming reader, a redirect
+chain is walked hop by hop with every hop re-validated before it is dialled,
+and the client resolves through a validating resolver, so the connection is
+pinned to an address that was just checked. **No P1 is left.**
+
+**Suggested order from here.** Every remaining finding is P2 or
+cross-cutting, so the order is the one the Process section gives: X.1/X.2
+first, because they turn a defect into an outage. The only module still
+reaching the runtime with blocking work is `handlers/explorer.rs` (see X.1 —
+`cache.rs`, `encryption.rs`, `chat.rs`, `docker_catalog.rs` and Health left the
+list without the entry being updated), so X.1 + X.2 on Explorer unblocks
+10.5/10.6/10.7 with no extra risk. Then 28/29 (small, self-contained), then
+32/33 (residuals of closed items), then 16.4 (the only remaining *feature*:
+a scheduler for persisted sync jobs) and 31 (pure maintainability, do it last,
+one tab at a time).
 
 ---
 
@@ -158,30 +171,8 @@ None. Item 6 (Apps Center / app-proxy) was closed on 2026-10-23 — see
 
 ## P1 — Needs work
 
-### 16.4. Cloud Sync (rclone) — a persisted sync job never runs on its own
-
-16.1–16.3 were closed on 2026-10-23 — see Done. One "also" item was left open
-on purpose, because it is a new feature and not a defect in what shipped:
-
-- [ ] **16.4 — No scheduler.** `POST /rclone/jobs/{id}/run` is the only way a
-      persisted job runs. The `sync_jobs` table stores the definition only — no
-      due time, no interval, no last outcome — so a nightly sync cannot be
-      expressed, and the screen's "last run / status" columns are the outcome of
-      the click that just happened, not a server-side run state (commented as
-      such at the call site so it is not mistaken for one).
-      *Acceptance:* an interval or cron column (the Scheduled Tasks scheduler
-      already has `compute_next_run` and a due-time loop to reuse), a run state
-      written by the server, and the screen reading that state instead of
-      remembering the last response. The transfer must then run outside the HTTP
-      request, which also closes the request-shaped-transfer debt recorded in
-      `docs/guides/cloud-sync.md`.
-
-*Tests:* 39 unit, 26 integration (the suite now covers the real config file
-through `RCLONE_CONFIG`, the `0600` mode and the parsed section edits over HTTP;
-it still states explicitly that **no test performs a real transfer or mount**),
-29 E2E. The mount-ready poll, the shutdown unmount and the `0600` repair are
-covered by unit/integration tests, never by a live FUSE mount.
-*Docs:* `docs/guides/cloud-sync.md` (*Known debt*).
+None. Item 27 (Web shortcuts) was the last one and closed on 2026-10-24 — see
+"Done".
 
 ---
 
@@ -212,28 +203,42 @@ the contract now lives in
 
 ### 27. Web shortcuts — the 512 KB cap does not bound anything
 
-- [ ] **27.1 — The body is fully buffered before the cap applies.**
-      `src/handlers/shortcuts.rs:376-387` does `resp.bytes().await` and only then
-      truncates to `MAX_BODY_BYTES`; a multi-GB response is fully materialised
-      first. The 10 s timeout (`:58,319`) is the only real bound.
-      *Acceptance:* a streaming reader that stops at the cap.
-- [ ] **27.2 — One redirect hop, and a DNS-rebinding window.**
-      `fetch_following_one_redirect` handles exactly one hop (`:355-370`), so a
-      second redirect returns the redirect body as "the page" and metadata
-      silently comes back empty on common CDN/short-link chains.
-      `resolve_public` (`:134-157`) validates the resolved IPs but reqwest
-      re-resolves at connect time, so a hostile DNS answer that changes between
-      check and connect reaches an internal address.
-      *Acceptance:* follow the chain with per-hop validation, and pin the
-      connection to the validated IP.
-
-Also: a new `reqwest::Client` per request (`:316-325`), losing connection-pool
-reuse.
-*Tests:* 7 unit, 3 integration, 8 E2E. *Docs:* `docs/guides/shortcuts.md`.
+Closed on 2026-10-24 — see Done. Both findings were fixed in one pass and the
+contract now lives in [guides/shortcuts.md](docs/guides/shortcuts.md) (guards
+3–5 + *Invariants*) and [API.md](docs/API.md). Tests:
+`src/handlers/shortcuts.rs` 7 → 19 unit, `tests/shortcuts_integration.rs` 3 → 4,
+`tests/e2e/shortcuts/shortcuts.spec.ts` 8 → 10 `test(`.
 
 ---
 
 ## P2 — Small gaps
+
+### 16.4. Cloud Sync (rclone) — a persisted sync job never runs on its own
+
+16.1–16.3 were closed on 2026-10-23 — see Done. One "also" item was left open
+on purpose, because it is a new feature and not a defect in what shipped:
+
+- [ ] **16.4 — No scheduler.** `POST /rclone/jobs/{id}/run` is the only way a
+      persisted job runs. The `sync_jobs` table stores the definition only — no
+      due time, no interval, no last outcome — so a nightly sync cannot be
+      expressed, and the screen's "last run / status" columns are the outcome of
+      the click that just happened, not a server-side run state (commented as
+      such at the call site so it is not mistaken for one).
+      *Acceptance:* an interval or cron column (the Scheduled Tasks scheduler
+      already has `compute_next_run` and a due-time loop to reuse), a run state
+      written by the server, and the screen reading that state instead of
+      remembering the last response. The transfer must then run outside the HTTP
+      request, which also closes the request-shaped-transfer debt recorded in
+      `docs/guides/cloud-sync.md`.
+
+*Tests:* 39 unit, 26 integration (the suite now covers the real config file
+through `RCLONE_CONFIG`, the `0600` mode and the parsed section edits over HTTP;
+it still states explicitly that **no test performs a real transfer or mount**),
+29 E2E. The mount-ready poll, the shutdown unmount and the `0600` repair are
+covered by unit/integration tests, never by a live FUSE mount.
+*Docs:* `docs/guides/cloud-sync.md` (*Known debt*).
+
+---
 
 ### 10b. File Explorer — residual hardening (non-blocking leftovers of the closed item 10)
 
@@ -327,6 +332,14 @@ reuse.
       Chat (`chat.rs:989,1021,1040`), Cache (`handlers/cache.rs:97,165,252,457`),
       Encryption (`handlers/encryption.rs:210,345`), Apps Center
       (`docker_catalog.rs:490,562`), Explorer (`explorer.rs:665,2628,2659`).
+      *(Re-checked on 2026-10-24: this list is stale except for Explorer. Health's
+      `web/mod.rs` holds no `Command::new` any more; the Dashboard calls stay
+      inside `spawn_blocking` (`build_server_details` → `run_probe_blocking`);
+      Chat's `detect_system_specs` is handed to `spawn_blocking`; Cache and
+      Encryption hold no `std::process::Command` at all; Apps Center wraps its
+      `docker compose` and its file reads in `spawn_blocking`. In
+      `handlers/explorer.rs` the calls at `:702`, `:3120`, `:3764` and `:3902`
+      are still reached from an async body.)*
       *(Autostart left this list with item 25, 2026-10-24 — `is_enabled` /
       `set_enabled` run in `spawn_blocking`, and the two `sudo` shell-outs they
       sit next to in `handlers/settings.rs` — `hostnamectl set-hostname` and
@@ -445,6 +458,60 @@ reuse.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-24 (e)** — Web shortcuts — the cap bounds the read, and a redirect
+chain is walked hop by hop (items 27.1 and 27.2, the last P1). **27.1:**
+`read_capped` awaited `Response::bytes()` and sliced the result afterwards, so a
+multi-GB response was fully resident before the "512 KB cap" applied — the 10 s
+timeout was the only real bound. The reader is now streaming
+(`read_capped_stream`, over `Response::bytes_stream()`): it stops pulling the
+moment the cap is reached, cuts a chunk that crosses it to its prefix, breaks
+early, and drops the rest of the body — and a broken stream is a named
+`Could not read the response` instead of a silent empty page. **27.2:**
+`fetch_following_one_redirect` followed exactly **one** hop, so a second
+redirect's body (empty) was parsed as the page and the metadata silently came
+back empty on every short-link / CDN chain; and `resolve_public` validated the
+addresses reqwest then re-resolved at connect time, leaving the classic
+rebinding window open. The chain is now walked by `fetch_page` up to
+`MAX_REDIRECTS` (5): each hop's `Location` is trimmed, joined against the
+previous **absolute** `url::Url` (so relative, protocol-relative and cross-host
+targets all work), and re-validated — scheme allow-list, host, and every
+resolved address — **before** it is dialled; only `301/302/303/307/308` are
+followed, because `300`/`304`/`305`/`306` used to be read as a redirect and
+answered "Redirect without a Location header"; a `Location: file:///…` or a
+`javascript:` target is refused with the same rule as the entry URL; a chain
+longer than the cap answers `400 Too many redirects (at most 5 are followed)`
+by name instead of truncating. The rebinding window is closed at the right
+layer: the shared client resolves through `PublicOnlyResolver`
+(`reqwest::dns::Resolve`), which refuses any answer containing a non-public
+address, so the address handed to the connector is the one that was just
+validated in the same resolution. `resolve_public` stays as the pre-check — it
+produces the precise message and covers literal IPs, which hyper dials without
+asking a resolver at all. The 10 s `FETCH_TIMEOUT` is now one **chain-wide**
+deadline (`tokio::time::timeout_at` around both `send` and the body read), not
+a per-hop budget that five hops multiply into a minute; the request path was
+re-parsed twice from raw input, and it now starts from `parse_url`'s normalised
+absolute URL; and one process-wide client (`LazyLock<Result<Client, String>>`)
+replaces the per-request one, so the connection pool, TLS session and resolver
+are reused. Tests: `handlers/shortcuts.rs` 7 → **19** unit — the streaming
+reader (`test_read_capped_stops_reading_at_the_cap` asserts the second chunk is
+**never polled**, a crossing chunk is cut to its prefix, a small body is kept
+whole, a broken stream errors), the followed-status set, relative /
+protocol-relative / cross-host hops, a three-hop chain, per-hop scheme refusal,
+the cap message, `parse_url` normalisation, `hop_destination`, and the
+connect-time resolver refusing `127.0.0.1`/`10.0.0.5`/`169.254.169.254`/`::1`/
+`fe80::1`/`::ffff:127.0.0.1` while accepting a public literal — **written, not
+run** (per instruction); the lib test target was type-checked with
+`cargo test --no-run --lib`. `shortcuts_integration.rs` 3 → **4** (every
+private literal form a malicious `Location` would aim at: v4-mapped, `0.0.0.0`,
+link-local, unique-local, multicast, `192.168`/`172.16`); `shortcuts.spec.ts`
+8 → **10** `test(` (§2.4 a refused chain keeps the dialog open with the server's
+own sentence, the typed URL and no pinned tile; §2.5 a timeout leaves the
+submit button enabled and the field editable — both drive a **mocked** route,
+never a real host). Docs: [guides/shortcuts.md](docs/guides/shortcuts.md)
+(guards 3–5 rewritten, *Invariants* extended, a *Tests* section that states why
+the chain and the stream are unit-tested as pure pieces),
+[API.md](docs/API.md), `CHANGELOG.md`, `TESTING.md`.
 
 **2026-10-24 (d)** — Wallpapers / Themes — one appliance look every account can
 read, a validated wallpaper, and two no-op fields deleted (items 26.1 and 26.2,

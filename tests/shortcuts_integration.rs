@@ -27,7 +27,11 @@
 //! Fresh in-memory SQLite + all migrations per test, a minimal Axum router,
 //! `tower::ServiceExt` for HTTP-level testing. No test performs a real
 //! outbound request: the SSRF cases are rejected before any socket is opened,
-//! and the auth case never reaches the fetch.
+//! and the auth case never reaches the fetch. The bounded stream (ROADMAP
+//! 27.1), the redirect chain (27.2) and the connect-time resolver are covered
+//! by the unit tests in `src/handlers/shortcuts.rs`, where the body stream and
+//! the hop decisions can be driven without a network — a loopback test server
+//! would be refused by the very guard under test.
 //!
 //! Run:
 //!   cargo test --test shortcuts_integration
@@ -242,6 +246,49 @@ async fn test_fetch_metadata_rejects_loopback_and_private_literals() {
                     .unwrap_or_default()
                     .to_lowercase()
                     .contains("local"),
+            "{url}: unexpected error {:?}",
+            body["message"]
+        );
+    }
+}
+
+/// ROADMAP 27.2 — the guard runs on **every** hop, so the literal forms that a
+/// redirect can point at are refused with the same message as the entry URL.
+/// These are the addresses a malicious `Location:` would aim for; the unit
+/// suite drives the hop decisions, this one pins the HTTP contract.
+#[tokio::test]
+async fn test_fetch_metadata_rejects_every_private_literal_form() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "pw12345678", 2).await;
+    let mut r = shortcuts_router(state);
+    let token = login(&mut r, "admin", "pw12345678").await;
+
+    for url in [
+        // IPv4-mapped IPv6 must not slip through as "public".
+        "http://[::ffff:127.0.0.1]/",
+        // The unspecified address is not a host.
+        "http://0.0.0.0:3000/",
+        // Link-local and unique-local IPv6.
+        "http://[fe80::1]/",
+        "http://[fc00::1]/",
+        // Multicast.
+        "http://224.0.0.1/",
+        // The private ranges a redirect would be aimed at.
+        "http://192.168.0.10:8080/",
+        "http://172.16.5.4/",
+    ] {
+        let (status, body) = send(
+            &mut r,
+            Method::POST,
+            "/api/shortcuts/fetch-metadata",
+            Some(&token),
+            Some(json!({ "url": url })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{url} must be refused");
+        let message = body["message"].as_str().unwrap_or_default().to_lowercase();
+        assert!(
+            message.contains("private") || message.contains("local"),
             "{url}: unexpected error {:?}",
             body["message"]
         );

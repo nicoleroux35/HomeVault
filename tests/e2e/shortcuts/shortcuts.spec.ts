@@ -264,6 +264,67 @@ test.describe('2 — Adding', () => {
     }, adminTokens.username);
     expect(stored).toHaveLength(0);
   });
+
+  // ROADMAP 27.2 — a redirect chain is walked hop by hop server-side; when the
+  // chain is refused (too long, or a hop pointing at a private address) the
+  // server's own sentence must reach the dialog. Mocked: the real endpoint
+  // needs a public redirector, and this spec never leaves the loopback origin.
+  test('2.4 — a refused redirect chain keeps the dialog open with the server reason', async ({ page }) => {
+    await page.route('**/api/shortcuts/fetch-metadata', (route) =>
+      route.fulfill({
+        status: 400,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: false,
+          message: 'Too many redirects (at most 5 are followed)',
+        }),
+      }),
+    );
+    await gotoDesktop(page, adminTokens);
+    await openAddDialog(page);
+
+    const input = page.locator('[data-testid="shortcuts-url"]');
+    await input.fill('https://short.example/abc');
+    await page.locator('[data-testid="shortcuts-submit"]').click();
+
+    const error = page.locator('[data-testid="shortcuts-error"]');
+    await expect(error).toBeVisible();
+    await expect(error).toHaveAttribute('role', 'alert');
+    // The server's reason, not a generic "failed".
+    await expect(error).toContainText('Too many redirects');
+    // A refusal is fixable: the dialog stays, the typed URL is kept, and no
+    // tile is pinned.
+    await expect(input).toHaveValue('https://short.example/abc');
+    await expect(page.locator('[data-testid="desktop-shortcut"]')).toHaveCount(0);
+  });
+
+  // ROADMAP 27.1/27.2 — a hop that never answers ends in a timeout, and the
+  // dialog must come back usable (the submit button used to stay disabled for
+  // the rest of the session if the handler never returned).
+  test('2.5 — a timed-out fetch leaves the dialog usable instead of stuck busy', async ({ page }) => {
+    await page.route('**/api/shortcuts/fetch-metadata', (route) =>
+      route.fulfill({
+        status: 400,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: false,
+          message: 'The site took too long to respond',
+        }),
+      }),
+    );
+    await gotoDesktop(page, adminTokens);
+    await openAddDialog(page);
+
+    await page.locator('[data-testid="shortcuts-url"]').fill('https://slow.example/');
+    await page.locator('[data-testid="shortcuts-submit"]').click();
+
+    await expect(page.locator('[data-testid="shortcuts-error"]')).toContainText(
+      'took too long',
+    );
+    // Not stuck: the user can correct the URL and retry.
+    await expect(page.locator('[data-testid="shortcuts-submit"]')).toBeEnabled();
+    await expect(page.locator('[data-testid="shortcuts-url"]')).toBeEditable();
+  });
 });
 
 // ===========================================================================
