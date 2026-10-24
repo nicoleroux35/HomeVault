@@ -1162,7 +1162,6 @@ mod tests {
         "ps",
         "rm",
         "rmdir",
-        "shutdown",
         "ss",
         "sudo",
         "systemctl",

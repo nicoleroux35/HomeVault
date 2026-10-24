@@ -409,7 +409,7 @@ pub fn tools_for_permissions(perms: &McpPermissions) -> Vec<McpTool> {
     if perms.manage_system {
         tools.push(McpTool {
             name: "system.reboot",
-            description: "Reboot the appliance gracefully. The call returns immediately; the reboot follows within seconds.",
+            description: "Reboot the appliance gracefully. Runs the same `sudo systemctl reboot` primitive as Settings, bounded to 30 s; a refused command returns the host's reason instead of claiming success.",
             input_schema: schema(&[], &[]),
         });
     }

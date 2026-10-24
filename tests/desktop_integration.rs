@@ -27,12 +27,16 @@
 //!   POST /api/server/restart   (admin — reboots the host)
 //!   POST /api/server/shutdown  (admin — powers the host off)
 //!
-//! **Both actually run `shutdown -r now` / `shutdown -h now` from a spawned
-//! task the moment an admin token passes the check**, so this suite only
-//! ever drives the *rejection* paths — no token, a bogus token, a valid
-//! non-admin session. A valid admin token is never sent. The confirm-then-
-//! reboot flow is a `tests/e2e/desktop/desktop.spec.ts` concern and even
-//! there it stops at the confirmation modal.
+//! **Both really schedule a host shutdown when an admin token passes the
+//! check** — since ROADMAP 24.2 they go through
+//! `power::host_power_action` (`sudo systemctl reboot|poweroff`, a 30 s
+//! deadline) instead of a bare `shutdown -r now`, so an admin call would
+//! reboot the test host on a machine where the sudoers grant exists. This
+//! suite therefore only ever drives the *rejection* paths — no token, a bogus
+//! token, a valid non-admin session. A valid admin token is never sent. The
+//! confirm-then-reboot flow is a `tests/e2e/desktop/desktop.spec.ts` concern
+//! and even there it stops at the confirmation modal; the feedback after the
+//! call is covered by `tests/e2e/desktop/power.spec.ts` with mocked routes.
 //!
 //! Everything else the shell renders (dock, topbar, launcher, windows,
 //! global search) is covered by the E2E suite; the monitor panels are the

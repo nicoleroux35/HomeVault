@@ -140,9 +140,26 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
-| POST | `/server/restart` | admin | |
-| POST | `/server/shutdown` | admin | |
+| POST | `/server/restart` | admin | `handle_server_restart` — alias of `/power/reboot` over the same primitive |
+| POST | `/server/shutdown` | admin | `handle_server_shutdown` — alias of `/power/shutdown` over the same primitive |
 | GET | `/server/info` | auth | IP/port/display address |
+
+The two families answer different JSON for different screens but execute the
+**same** command (ROADMAP 24.2):
+
+- accepted → `200 {"success":true,"data":{"message":"Server restart initiated","status":"restarting"|"shutting_down"}}`
+  for `/server/*`, and `200 {"success":true,"data":{"action":"reboot"|"shutdown"|"suspend"}}`
+  for `/power/*`;
+- refused by the host (missing sudoers verb, polkit, a systemd failure) →
+  `500 {"success":false,"message":"Server restart refused: <host stderr>"}`
+  for `/server/*`, and `400 {"success":false,"message":"<host stderr>"}`
+  for `/power/*`;
+- both stay admin-only. A missing `x-session-token` answers `401` on
+  `/server/*` (inline check) and `400` on `/power/*` (`require_admin`,
+  ROADMAP X.8); an unknown session is `401` on both, a non-admin `403`.
+
+The argv is always `sudo systemctl reboot|poweroff|suspend`; the sudoers grant
+names exactly those verbs (`src/setup.rs::power_grants`).
 
 ## Users — `users/*` (most `admin`)
 
@@ -1209,15 +1226,17 @@ is `null` when its `/proc` (or thermal-zone) read failed — see
 
 ## Host power — `power/*` (admin)
 
-See [guides/power.md](./guides/power.md).
+See [guides/power.md](./guides/power.md). `/power/{reboot,shutdown}` are the
+host-side aliases of `/server/{restart,shutdown}` — one primitive, one
+privilege path, two JSON shapes (see *Server control* above).
 
 | Method | Path | Auth | Handler |
 |--------|------|------|---------|
 | GET | `/power/status` | admin | `handle_power_status` — governor + capability flags |
 | PUT | `/power/governor` | admin | `handle_power_governor_set` — `{ governor }` |
-| POST | `/power/reboot` | admin | `handle_power_action` — host reboot |
-| POST | `/power/shutdown` | admin | `handle_power_action` — host poweroff |
-| POST | `/power/suspend` | admin | `handle_power_action` — host suspend |
+| POST | `/power/reboot` | admin | `handle_power_action` — host reboot (`sudo systemctl reboot`) |
+| POST | `/power/shutdown` | admin | `handle_power_action` — host poweroff (`sudo systemctl poweroff`) |
+| POST | `/power/suspend` | admin | `handle_power_action` — host suspend (`sudo systemctl suspend`) |
 | GET | `/power/spindown` | admin | `handle_power_spindown_get` |
 | PUT | `/power/spindown` | admin | `handle_power_spindown_set` — `{ device, apm_level?, spindown_minutes? }`, applied immediately |
 | POST | `/power/spindown/apply` | admin | `handle_power_spindown_apply` — re-apply all saved settings |

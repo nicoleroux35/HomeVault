@@ -11,6 +11,12 @@ idle timer). Inspiration: OMV's `conf.system.powermngmnt` + `hdparm`.
   every cpufreq policy), `PowerAction` (systemctl
   `reboot`/`poweroff`/`suspend`), `DiskSpindownSetting` + hdparm argument
   building (the `-S` minute→code mapping is unit-tested).
+  `host_power_command()` / `host_power_argv()` are the **only** place the
+  power argv is built: `/api/power/{action}`, `/api/server/*` and the MCP
+  `system.reboot` tool all call `host_power_action`, so they share one
+  `sudo systemctl <verb>` invocation, one sudoers grant
+  (`src/setup.rs::power_grants`) and one 30 s deadline (ROADMAP 24.2). The
+  bare `shutdown` binary is not used and not granted.
   Requires the **`hdparm`** package (installed by `installer/install.sh`,
   verified in its Step 4); without it the spindown card reports
   "hdparm not available" and the setting is not applied.
@@ -31,8 +37,8 @@ idle timer). Inspiration: OMV's `conf.system.powermngmnt` + `hdparm`.
 |----------|------|-------|
 | `GET /power/status` | admin | current governor, kernel-listed governors, capability flags (`governor_supported`, `spindown_supported`) |
 | `PUT /power/governor` | admin | `{ "governor": "performance" }` — validated against the kernel list |
-| `POST /power/reboot` | admin | host reboot (systemctl) |
-| `POST /power/shutdown` | admin | host poweroff |
+| `POST /power/reboot` | admin | host reboot (systemctl); alias of `/api/server/restart` over the same primitive |
+| `POST /power/shutdown` | admin | host poweroff; alias of `/api/server/shutdown` |
 | `POST /power/suspend` | admin | host suspend |
 | `GET /power/spindown` | admin | per-disk settings list |
 | `PUT /power/spindown` | admin | upsert one disk (`device`, `apm_level` 1-255, `spindown_minutes` 0-330); both `None` clears; applied immediately |
@@ -54,6 +60,13 @@ idle timer). Inspiration: OMV's `conf.system.powermngmnt` + `hdparm`.
   still stands for the next boot.
 - Reboot/shutdown kill the process mid-response; the JSON answer is
   best-effort by nature (the UI treats a dead connection as expected).
+- `/power/{reboot,shutdown}` and `/server/{restart,shutdown}` are **one
+  primitive with two JSON shapes** (ROADMAP 24.2): both run
+  `host_power_action` → `sudo systemctl reboot|poweroff`, bounded by
+  `run_timed` (30 s) and executed inside `spawn_blocking`. A refused command
+  answers `500` with the host's stderr in `message`, never a silent success.
+  The sudoers grant names exactly `reboot`, `poweroff` and `suspend` — add a
+  verb here and `src/setup.rs::power_grants` follows from `PowerAction`.
 - The `hdparm` (spindown) and `systemctl` (power action) calls are bounded
   (ROADMAP X.2): 30 s through `run_timed`, so a wedged controller or a unit
   stuck stopping cannot hold the request forever. The governor write goes
@@ -76,14 +89,22 @@ idle timer). Inspiration: OMV's `conf.system.powermngmnt` + `hdparm`.
 
 ## Tests
 
-- Unit: power action parse/verbs, governor validation (metacharacters),
-  hdparm mapping/args, device-name validation, disk_power repo round trips.
-- Integration: `tests/power_integration.rs` (guards, invalid governor /
-  device / ranges rejected, status shape).
+- Unit: power action parse/verbs, the single `sudo systemctl` argv for every
+  action, governor validation (metacharacters), hdparm mapping/args,
+  device-name validation, disk_power repo round trips, and the response
+  mapper the two `/api/server/*` handlers use (accepted → `status`, refused
+  → `message` with the host's reason).
+- Integration: `tests/power_integration.rs` (guards on both families, invalid
+  session on every power route, POST-only registration, invalid governor /
+  device / ranges rejected, status shape, refusal/accepted bodies). **No test
+  POSTs as an admin to a power route**: that would take the host down.
 - E2E: `tests/e2e/settings/power.spec.ts` (live server; read-only
-  assertions — never triggers a real power action).
+  assertions — never triggers a real power action) and
+  `tests/e2e/desktop/power.spec.ts` (the desktop flow with
+  `POST /api/server/*` mocked: alert on refusal, status on success, no double
+  submit, 44px dismiss, phone width).
 
 ## Related
 
 - [Server control](./server-control.md), [Scheduled tasks](./scheduled-tasks.md),
-  [Storage](./storage.md), [Settings](./settings.md)
+  [MCP server](./mcp.md), [Storage](./storage.md), [Settings](./settings.md)
