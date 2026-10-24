@@ -390,6 +390,33 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Cache mover — `rsync`/`find`/`df` are bounded, so a wedged transfer frees
+  the single-flight slot (2026-10-24, ROADMAP X.2).** The mover's three host
+  tools ran unbounded from inside `spawn_blocking`, and the damage was
+  structural rather than local: `run_mover` holds the process-wide
+  `MOVER_RUNNING` flag for the whole run, so an `rsync` that never returned kept
+  that slot set and **no mover ran again** — from the button or from
+  `cache_scheduler` — until a restart. Every call now goes through
+  `crate::utils::process::run_timed` behind one `run_command(cmd, timeout)`
+  helper with named ceilings: `CACHE_QUERY_TIMEOUT` 30 s (`df -B1`, which also
+  gates the free-space check that must answer before `rsync
+  --remove-source-files` deletes anything), `CACHE_FIND_TIMEOUT` 600 s (`find`
+  sizing a share and building the age list) and `CACHE_RSYNC_TIMEOUT` 6 h (a
+  first drain of a full tier legitimately takes hours — a ceiling, like
+  rclone's transfer budget). The child is killed at the deadline, so the run
+  ends, the RAII guard releases the slot, and the run row records the failure
+  with the deadline in its message. The helper keeps a **non-zero exit as
+  data**, which the `rsync` path depends on: exit 24 means "vanished source
+  files" and is success for the files that did transfer. `encryption.rs` was
+  checked in the same pass and needed nothing — its ROADMAP entry was stale,
+  every `cryptsetup`/`mount`/`umount`/`tee` call already carries a deadline
+  (ROADMAP 9). Tests: `cache.rs` 33 → **38** (a source guard — no bare
+  `.output()`/`.spawn()`/`.status()`/`wait_with_output()` in production code —
+  the kill path, the exit-status-as-data contract, a missing tool, the deadline
+  ordering, and `df_space` answering `None` instead of a fabricated `0`),
+  `storage_integration.rs` 29 → **30** (a finished mover run releases its
+  single-flight slot, and a second trigger is accepted). Docs:
+  [guides/cache.md](docs/guides/cache.md).
 - **Storage tools — every `zpool`/`btrfs`/`mdadm`/`smartctl`/`df` call is
   bounded (2026-10-24, ROADMAP X.2).** `disk.rs` bounded its virtual-disk
   *create* path in ROADMAP 8.3 and left every other call bare: the scans the

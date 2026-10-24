@@ -154,11 +154,13 @@ pinned to an address that was just checked. **No P1 is left.**
 cross-cutting, so the order is the one the Process section gives: X.2 first,
 because a missing deadline turns a defect into an outage — and it is now the
 only systemic item left that can wedge a request. Explorer left that list on
-2026-10-24 (X.1 closed, and its subprocesses bounded with it), and the storage
-group — `disk.rs`, `pools.rs`, `snapshots.rs` — followed the same day, so what
-is left of X.2 is `encryption.rs` / `cache.rs` (a LUKS2 create that never
-returns still holds the encryption card's request), then `network.rs` /
-`vpn.rs` / `shares.rs` / `health.rs`. After that: 28/29 (small,
+2026-10-24 (X.1 closed, and its subprocesses bounded with it), the storage group
+(`disk.rs`, `pools.rs`, `snapshots.rs`) followed the same day, and `cache.rs`
+with it; `encryption.rs` was already clean. **What is left of X.2 is four
+modules and 72 call sites**: `network.rs` (39), `vpn.rs` (16), `shares.rs` (11)
+and `health.rs` (6) — do `network.rs` first (it is the largest, and its
+`ip`/`netplan` calls sit behind the Network screen's own poll), then `vpn.rs`,
+then `shares.rs` + `health.rs` together. After that: 28/29 (small,
 self-contained), 10b (10.5/10.6/10.7 — the residual hardening), 32/33
 (residuals of closed items), 16.4 (the only remaining *feature*: a scheduler
 for persisted sync jobs) and 31 (pure maintainability, do it last, one tab at a
@@ -350,14 +352,19 @@ items 25/13.)*
       *Acceptance:* zero `std::process::Command` / blocking `std::fs` reachable
       from a handler's async body. A CI grep (or a clippy lint) would keep it
       that way.
-- [ ] **X.2 — No timeout on subprocesses.** Absent from `encryption.rs`,
-      `cache.rs`, `health.rs`, `network.rs`, `vpn.rs`, `shares.rs`
+- [ ] **X.2 — No timeout on subprocesses.** Absent from `health.rs`,
+      `network.rs`, `vpn.rs`, `shares.rs` (72 call sites, counted 2026-10-24)
       (*rclone left this list with item 16, 2026-10-23; `explorer.rs` and
       `src/browser.rs` left it on 2026-10-24 with X.1; **`disk.rs`, `pools.rs`
       and `snapshots.rs` left it the same day** — every `lsblk`/`df`/`blkid`/
       `mdadm`/`zpool`/`btrfs`/`smartctl`/`mount`/`umount`/`wipefs`/`mkfs`/
       `sudo tee` call of those three modules now runs under a deadline, with
-      three source guards that fail if a bare `.output()` comes back).* Present
+      three source guards that fail if a bare `.output()` comes back;
+      **`cache.rs` followed** — `df`/`find`/`rsync` are bounded, which is what
+      lets a wedged mover release its process-wide single-flight slot;
+      `encryption.rs` was **verified already clean** (every `cryptsetup`/`mount`/
+      `umount`/`tee` call goes through its own `run_timed`, ROADMAP 9) — the
+      entry above was stale, not a gap).* Present
       in Docker, Firewall, Restic, Syncthing, disk quotas (2026-10-22), System
       Journal (2026-10-23, `JOURNAL_READ_TIMEOUT`), and — since 2026-10-23 —
       **everything the Dashboard/Widgets surface shells out to**, through the
@@ -457,6 +464,47 @@ items 25/13.)*
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-24 (h)** — Cache mover — `rsync`/`find`/`df` are bounded, so a wedged
+transfer releases the single-flight slot (X.2 for `cache.rs`; `encryption.rs`
+was checked and needed nothing). The mover's three host tools were the only
+unbounded calls left in the cache path, and the damage was structural rather
+than local: `run_mover` holds the **process-wide** `MOVER_RUNNING` flag for the
+whole run, so an `rsync` that never returned kept that slot set and **no mover
+ran again** — not from the button, not from `cache_scheduler` — until the
+service was restarted. Every call now goes through
+`crate::utils::process::run_timed` behind one local `run_command(cmd, timeout)`
+helper, with three named ceilings: `CACHE_QUERY_TIMEOUT` 30 s (`df -B1`, which
+also gates the free-space check that must answer *before*
+`rsync --remove-source-files` deletes anything), `CACHE_FIND_TIMEOUT` 600 s
+(`find` sizing a share and building the age list — proportional to the file
+count on the tier) and `CACHE_RSYNC_TIMEOUT` 6 h (a first drain of a full tier
+legitimately takes hours; a ceiling, like rclone's transfer budget). The child
+is killed at the deadline, so the run ends, `MoverRunGuard` releases the slot on
+drop, and the run row is recorded as failed carrying the deadline. The helper
+takes its timeout as a parameter rather than baking a constant into each call
+site, which is what makes the kill path unit-testable (same shape as
+`disk::bounded`); it also keeps a **non-zero exit as data**, which the `rsync`
+path depends on — exit 24 is "vanished source files" and is success for the
+files that did transfer. **`encryption.rs` needed nothing:** its entry in this
+item was stale — every `cryptsetup`/`mount`/`umount`/`sudo tee` call already goes
+through its own `run_timed` with a per-subcommand deadline (ROADMAP 9), and its
+`/proc/self/mounts` reads use `tokio::fs`. Tests: `src/cache.rs` 33 → **38**
+unit — `test_no_mover_subprocess_runs_without_a_deadline` (source guard: no bare
+`.output()`/`.spawn()`/`.status()`/`wait_with_output()` in production code —
+this defect cannot be seen behaviourally, an unbounded call still answers
+correctly on an idle box), `test_run_command_kills_a_hung_tool_and_names_the_deadline`,
+`test_run_command_keeps_a_non_zero_exit_as_data` (the exit-24 contract),
+`test_run_command_reports_a_missing_tool`, the deadline ordering, and
+`test_df_space_answers_none_when_the_tool_fails` (the free-space gate must
+refuse, never fabricate a `0`); `tests/storage_integration.rs` 29 → **30** —
+`test_a_finished_mover_run_releases_its_single_flight_slot` drives
+`POST /cache/mover/run` with shimmed `rsync`/`find`/`df`, waits for
+`mover_is_running()` to fall back to `false`, and requires a **second** trigger to
+be accepted: the observable consequence of the deadline is that the slot comes
+back. **Written, not run** (per instruction). Docs:
+[guides/cache.md](docs/guides/cache.md) (*Deadlines*, *Invariants*),
+`CHANGELOG.md`, `TESTING.md`.
 
 **2026-10-24 (g)** — Storage tools — no `zpool`/`btrfs`/`mdadm`/`smartctl`/`df`
 call of the storage group runs without a deadline (X.2 for `disk.rs`,
