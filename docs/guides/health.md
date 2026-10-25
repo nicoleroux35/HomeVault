@@ -94,6 +94,20 @@ fifth value: anything a consumer can't express in `healthy | warning |
 unhealthy | unknown` is the consumer's bug (the Dashboard once emitted a
 HUD-only `"critical"` — removed).
 
+## Deadlines on every host probe (2026-10-24, ROADMAP X.2)
+
+Each check used to shell out with a bare `Command::output`. The checks run on
+the blocking pool (and the notification engine runs them every 60 s), so a `df`
+parked on a hung NFS mount, an `mdadm --detail` blocked on a failing disk or a
+`smartctl` on a spun-down drive pinned that thread with no ceiling and the
+probes piled up behind it. Every probe now goes through `run_timed` via a local
+`run_command`: `df`/`lsblk`/`mdadm`/`systemctl` at `HOST_PROBE_TIMEOUT` (10 s),
+`smartctl` at `SMART_PROBE_TIMEOUT` (20 s, a drive may need to spin up). A
+timeout or a failed spawn degrades that check to `Unknown` (through `degrade`),
+never a fabricated healthy reading. A source guard
+(`test_no_subprocess_of_this_module_runs_without_a_deadline`) fails if a bare
+`.output()`/`.spawn()`/`.status()` comes back.
+
 ## Frontend
 
 - `frontend/src/routes/Health.svelte` (self-contained — renders its check
@@ -182,6 +196,9 @@ Per-check contracts that are easy to regress (all fixed 2026-10-22):
   database read of `authentication`, and — via a parked `users` table —
   that one unreadable check degrades to `Unknown` while the other eight
   still run and the endpoint stays `success: true`.
+- **Every host probe carries a deadline** (see above): `run_command` is the
+  only allowed shape, and a timed-out probe degrades to `Unknown`, never to a
+  fabricated value.
 
 ## Related
 

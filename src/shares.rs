@@ -22,15 +22,45 @@
 //! Network share service (CRUD + per-protocol config generation and
 //! service control).
 
+use crate::utils::process::{run_timed, run_timed_with_stdin};
 use serde::{Deserialize, Serialize};
 use serde_json::Error as JsonError;
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 use thiserror::Error;
 use tracing::warn;
+
+// ---------------------------------------------------------------------------
+// Deadlines (ROADMAP X.2)
+//
+// Every host command of the shares module used to be a bare `Command::output`
+// (or a hand-rolled `.spawn` + `wait_with_output` for `sudo tee`). A
+// `systemctl reload smbd` blocked on a wedged SMB stack, an `exportfs -ra`
+// parked on an unresponsive NFS export or a `sudo tee` on a full/hung console
+// pinned the calling thread with no ceiling. Each value below is a ceiling for
+// the slowest honest case, not an estimate.
+// ---------------------------------------------------------------------------
+
+/// A root-owned config write: `sudo tee`/`sudo tee -a`, `sudo mkdir -p`.
+pub const SHARES_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A service control: `systemctl start/stop/restart/reload` and
+/// `exportfs -ra`. Longer than a write because a real service start can wait
+/// on its dependencies, while staying finite.
+pub const SHARES_SERVICE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Run one host command under a deadline, keeping the reason it failed.
+///
+/// The shares module is synchronous by design, so this is the blocking
+/// helper. The timeout is a parameter rather than a constant baked into each
+/// call site so the kill path is unit-testable, exactly like
+/// `disk::bounded` and `cache::run_command`.
+fn run_command(cmd: &mut Command, timeout: Duration) -> Result<std::process::Output, String> {
+    run_timed(cmd, timeout)
+}
 
 /// Errors that can occur when managing file shares.
 #[derive(Error, Debug)]
@@ -270,14 +300,14 @@ fn get_sftp_shares_path() -> PathBuf {
 /// `sudo tee`, since the unprivileged homevault account can't write these
 /// directly. Same pattern as `pools.rs`/`encryption.rs`'s `write_file_as_root`.
 pub(crate) fn write_file_as_root(path: &str, content: &str) -> std::io::Result<()> {
-    let mut child = Command::new("sudo")
-        .args(["tee", path])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    child.stdin.take().unwrap().write_all(content.as_bytes())?;
-    let output = child.wait_with_output()?;
+    let mut cmd = Command::new("sudo");
+    cmd.args(["tee", path]);
+    // `run_timed_with_stdin` feeds the content from its own thread and closes
+    // stdin afterwards (which is what `tee` waits for); a `tee` that never
+    // reads must still be killed at the deadline, so this cannot stay a bare
+    // `.spawn` + `wait_with_output`.
+    let output = run_timed_with_stdin(&mut cmd, SHARES_WRITE_TIMEOUT, content.as_bytes())
+        .map_err(std::io::Error::other)?;
     if !output.status.success() {
         return Err(std::io::Error::other(
             String::from_utf8_lossy(&output.stderr).to_string(),
@@ -290,14 +320,10 @@ pub(crate) fn write_file_as_root(path: &str, content: &str) -> std::io::Result<(
 /// `/etc/exports`) via `sudo tee -a`, for call sites that only need to add a
 /// new share section/export line rather than rewrite the whole file.
 pub(crate) fn append_file_as_root(path: &str, content: &str) -> std::io::Result<()> {
-    let mut child = Command::new("sudo")
-        .args(["tee", "-a", path])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    child.stdin.take().unwrap().write_all(content.as_bytes())?;
-    let output = child.wait_with_output()?;
+    let mut cmd = Command::new("sudo");
+    cmd.args(["tee", "-a", path]);
+    let output = run_timed_with_stdin(&mut cmd, SHARES_WRITE_TIMEOUT, content.as_bytes())
+        .map_err(std::io::Error::other)?;
     if !output.status.success() {
         return Err(std::io::Error::other(
             String::from_utf8_lossy(&output.stderr).to_string(),
@@ -314,9 +340,9 @@ pub(crate) fn append_file_as_root(path: &str, content: &str) -> std::io::Result<
 /// fails outright (`EPERM`) whenever the service isn't running as root —
 /// inconsistent with every `/etc` write elsewhere in this module.
 pub(crate) fn mkdir_as_root(dir: &std::path::Path) -> std::io::Result<()> {
-    let output = Command::new("sudo")
-        .args(["mkdir", "-p", &dir.to_string_lossy()])
-        .output()?;
+    let mut cmd = Command::new("sudo");
+    cmd.args(["mkdir", "-p", &dir.to_string_lossy()]);
+    let output = run_command(&mut cmd, SHARES_WRITE_TIMEOUT).map_err(std::io::Error::other)?;
     if output.status.success() {
         Ok(())
     } else {
@@ -933,11 +959,10 @@ impl SharesService {
             write_file_as_root(smb_conf, &lines.join("\n"))?;
         }
 
-        if let Err(e) = Command::new("sudo")
-            .arg("systemctl")
-            .args(["reload", "smbd"])
-            .output()
-        {
+        let mut cmd = Command::new("sudo");
+        cmd.arg("systemctl");
+        cmd.args(["reload", "smbd"]);
+        if let Err(e) = run_command(&mut cmd, SHARES_SERVICE_TIMEOUT) {
             warn!("Failed to reload smbd after applying SMB config: {}", e);
         }
         Ok(())
@@ -983,13 +1008,12 @@ impl SharesService {
             ShareType::Webdav => "homevault-webdav",
             ShareType::Sftp => "homevault-sftp",
         };
-        let output = Command::new("sudo")
-            .arg("systemctl")
-            .args(["start", service_name])
-            .output()
-            .map_err(|e| {
-                ShareError::CommandFailed(format!("Failed to start {}: {}", service_name, e))
-            })?;
+        let mut cmd = Command::new("sudo");
+        cmd.arg("systemctl");
+        cmd.args(["start", service_name]);
+        let output = run_command(&mut cmd, SHARES_SERVICE_TIMEOUT).map_err(|e| {
+            ShareError::CommandFailed(format!("Failed to start {}: {}", service_name, e))
+        })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(ShareError::CommandFailed(format!(
@@ -1016,13 +1040,12 @@ impl SharesService {
             ShareType::Webdav => "homevault-webdav",
             ShareType::Sftp => "homevault-sftp",
         };
-        let output = Command::new("sudo")
-            .arg("systemctl")
-            .args(["stop", service_name])
-            .output()
-            .map_err(|e| {
-                ShareError::CommandFailed(format!("Failed to stop {}: {}", service_name, e))
-            })?;
+        let mut cmd = Command::new("sudo");
+        cmd.arg("systemctl");
+        cmd.args(["stop", service_name]);
+        let output = run_command(&mut cmd, SHARES_SERVICE_TIMEOUT).map_err(|e| {
+            ShareError::CommandFailed(format!("Failed to stop {}: {}", service_name, e))
+        })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(ShareError::CommandFailed(format!(
@@ -1049,13 +1072,12 @@ impl SharesService {
             ShareType::Webdav => "homevault-webdav",
             ShareType::Sftp => "homevault-sftp",
         };
-        let output = Command::new("sudo")
-            .arg("systemctl")
-            .args(["restart", service_name])
-            .output()
-            .map_err(|e| {
-                ShareError::CommandFailed(format!("Failed to restart {}: {}", service_name, e))
-            })?;
+        let mut cmd = Command::new("sudo");
+        cmd.arg("systemctl");
+        cmd.args(["restart", service_name]);
+        let output = run_command(&mut cmd, SHARES_SERVICE_TIMEOUT).map_err(|e| {
+            ShareError::CommandFailed(format!("Failed to restart {}: {}", service_name, e))
+        })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(ShareError::CommandFailed(format!(
@@ -1146,11 +1168,10 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
             write_file_as_root(vsftpd_conf, &content)?;
         }
 
-        if let Err(e) = Command::new("sudo")
-            .arg("systemctl")
-            .args(["reload", "vsftpd"])
-            .output()
-        {
+        let mut cmd = Command::new("sudo");
+        cmd.arg("systemctl");
+        cmd.args(["reload", "vsftpd"]);
+        if let Err(e) = run_command(&mut cmd, SHARES_SERVICE_TIMEOUT) {
             warn!("Failed to reload vsftpd: {}", e);
         }
         Ok(())
@@ -1217,12 +1238,10 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
 
         append_file_as_root(config_path, &share_section)?;
 
-        if let Err(e) = Command::new("sudo")
-            .arg("systemctl")
-            .args(["reload", "smbd"])
-            .output()
-            .map(|o| o.status.success())
-        {
+        let mut cmd = Command::new("sudo");
+        cmd.arg("systemctl");
+        cmd.args(["reload", "smbd"]);
+        if let Err(e) = run_command(&mut cmd, SHARES_SERVICE_TIMEOUT).map(|o| o.status.success()) {
             warn!("Failed to reload smbd: {}", e);
         }
 
@@ -1235,12 +1254,10 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
 
         append_file_as_root(exports_path, &export_line)?;
 
-        if let Err(e) = Command::new("sudo")
-            .arg("exportfs")
-            .args(["-ra"])
-            .output()
-            .map(|o| o.status.success())
-        {
+        let mut cmd = Command::new("sudo");
+        cmd.arg("exportfs");
+        cmd.args(["-ra"]);
+        if let Err(e) = run_command(&mut cmd, SHARES_SERVICE_TIMEOUT).map(|o| o.status.success()) {
             warn!("Failed to reload NFS exports: {}", e);
         }
 
@@ -1589,11 +1606,11 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
 
             write_file_as_root("/etc/samba/smb.conf", &new_config)?;
 
-            if let Err(e) = Command::new("sudo")
-                .arg("systemctl")
-                .args(["reload", "smbd"])
-                .output()
-                .map(|o| o.status.success())
+            let mut cmd = Command::new("sudo");
+            cmd.arg("systemctl");
+            cmd.args(["reload", "smbd"]);
+            if let Err(e) =
+                run_command(&mut cmd, SHARES_SERVICE_TIMEOUT).map(|o| o.status.success())
             {
                 warn!("Failed to reload smbd after deleting share {}: {}", name, e);
             }
@@ -1659,7 +1676,10 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
     /// the source of truth, so a reload failure is logged, not fatal (the
     /// export will be applied on the next reload/reboot either way).
     fn reload_nfs_exports(name: &str, context: &str) {
-        match Command::new("sudo").arg("exportfs").args(["-ra"]).output() {
+        let mut cmd = Command::new("sudo");
+        cmd.arg("exportfs");
+        cmd.args(["-ra"]);
+        match run_command(&mut cmd, SHARES_SERVICE_TIMEOUT) {
             Ok(output) if output.status.success() => {}
             Ok(output) => warn!(
                 "exportfs -ra failed after NFS share {} ({}): {}",
@@ -1780,11 +1800,11 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
 
             write_file_as_root("/etc/samba/smb.conf", &new_config)?;
 
-            if let Err(e) = Command::new("sudo")
-                .arg("systemctl")
-                .args(["reload", "smbd"])
-                .output()
-                .map(|o| o.status.success())
+            let mut cmd = Command::new("sudo");
+            cmd.arg("systemctl");
+            cmd.args(["reload", "smbd"]);
+            if let Err(e) =
+                run_command(&mut cmd, SHARES_SERVICE_TIMEOUT).map(|o| o.status.success())
             {
                 warn!("Failed to reload smbd after updating share {}: {}", name, e);
             }
@@ -2483,5 +2503,70 @@ mod tests {
                 "{passive:?} must be rejected"
             );
         }
+    }
+
+    // -- subprocess deadlines (ROADMAP X.2) -----------------------------
+
+    /// The defect this guards against is invisible to a behavioural test: a
+    /// bare command call still answers correctly on an idle box and only pins
+    /// the caller when `systemctl`/`exportfs`/`sudo tee` stops answering.
+    ///
+    /// `concat!` keeps each pattern out of this file's own source, so the
+    /// assertion cannot count itself.
+    #[test]
+    fn test_no_subprocess_of_this_module_runs_without_a_deadline() {
+        let src = include_str!("shares.rs");
+        let production = src.split("#[cfg(test)]").next().unwrap_or(src);
+        for unbounded in [
+            concat!(".", "output()"),
+            concat!(".", "spawn()"),
+            concat!(".", "status()"),
+            concat!("wait_with_", "output()"),
+        ] {
+            assert!(
+                !production.contains(unbounded),
+                "`{unbounded}` waits without a deadline — use `run_command`/`run_timed_with_stdin` (ROADMAP X.2)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_run_command_kills_a_hung_tool_and_names_the_deadline() {
+        let started = std::time::Instant::now();
+        let error = run_command(Command::new("sleep").arg("30"), Duration::from_millis(120))
+            .expect_err("a hung tool must not succeed");
+        assert!(error.contains("did not finish within"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the deadline must be enforced, not waited out"
+        );
+    }
+
+    #[test]
+    fn test_run_command_keeps_a_non_zero_exit_as_data() {
+        // `systemctl is-active` on a stopped unit exits non-zero and the
+        // caller reads the status; a non-zero exit must arrive as output.
+        let out = run_command(&mut Command::new("false"), Duration::from_secs(5))
+            .expect("`false` still runs to completion");
+        assert_eq!(out.status.code(), Some(1));
+    }
+
+    #[test]
+    fn test_run_command_reports_a_missing_tool() {
+        let error = run_command(
+            &mut Command::new("homevault-no-such-binary"),
+            Duration::from_secs(1),
+        )
+        .expect_err("a missing tool is an error");
+        assert!(error.contains("Failed to run"), "{error}");
+    }
+
+    #[test]
+    fn test_shares_deadlines_are_ceilings_and_ordered() {
+        // A config write is short; a real service start can wait on its
+        // dependencies, so it gets the longer (still finite) budget.
+        assert!(SHARES_WRITE_TIMEOUT >= Duration::from_secs(1));
+        assert!(SHARES_SERVICE_TIMEOUT >= SHARES_WRITE_TIMEOUT);
+        assert!(SHARES_SERVICE_TIMEOUT <= Duration::from_secs(180));
     }
 }
