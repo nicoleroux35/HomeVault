@@ -161,6 +161,14 @@ pub struct GeneralSettings {
     /// first page is served.
     #[serde(default)]
     pub language: Option<String>,
+    /// Whether the appliance advertises itself over mDNS/Zeroconf on the LAN
+    /// (`homevault.local` + the running share services).
+    ///
+    /// `None` means "never decided", which the boot path reads as `true` so the
+    /// shipped default stays discovery-on; only an explicit `false` switches it
+    /// off (`crate::mdns::set_enabled`). ROADMAP 29.1.
+    #[serde(default)]
+    pub mdns_enabled: Option<bool>,
 }
 
 impl Default for GeneralSettings {
@@ -169,6 +177,7 @@ impl Default for GeneralSettings {
             server_name: Some("HomeVault".to_string()),
             timezone: Some("UTC".to_string()),
             language: Some(DEFAULT_LANGUAGE.to_string()),
+            mdns_enabled: Some(true),
         }
     }
 }
@@ -835,6 +844,9 @@ pub async fn handle_general_settings_update(
         if let Some(language) = &language {
             settings.language = Some(language.clone());
         }
+        if let Some(mdns_enabled) = req.mdns_enabled {
+            settings.mdns_enabled = Some(mdns_enabled);
+        }
     }
     if let Some(language) = &language {
         I18n::set_locale(language);
@@ -921,6 +933,47 @@ pub async fn handle_general_settings_update(
         }
     }
 
+    // ROADMAP 29.1: the mDNS choice has to reach the host, not just
+    // `settings.json`. Turning it off removes the Avahi service file **and**
+    // the `host-name` override; turning it on republishes immediately instead
+    // of waiting for the reconciler's next 120 s tick. Off the async runtime,
+    // and a refusal is named in `mdns_notice` rather than reported as a clean
+    // save.
+    let mut mdns_notice = None;
+    if let Some(mdns_enabled) = req.mdns_enabled {
+        let port = crate::config::Settings::load().port;
+        let applied =
+            tokio::task::spawn_blocking(move || crate::mdns::apply_enabled(port, mdns_enabled))
+                .await;
+        match applied {
+            Ok(Ok(())) => {
+                crate::events::log_event(format!(
+                    "Admin '{}' {} mDNS discovery",
+                    session.username,
+                    if mdns_enabled { "enabled" } else { "disabled" }
+                ));
+            }
+            Ok(Err(err)) => {
+                crate::events::log_event_warn(format!(
+                    "Admin '{}' saved mDNS discovery = {} but the host change failed: {}",
+                    session.username, mdns_enabled, err
+                ));
+                // The raw host reason, not a server-translated sentence: the
+                // card wraps it in `settings.mdns_apply_failed` (the same
+                // contract as `autostart_error`), so the wording follows the
+                // user's locale.
+                mdns_notice = Some(err);
+            }
+            Err(join_err) => {
+                crate::events::log_event_warn(format!(
+                    "Admin '{}' saved mDNS discovery = {} but the change task failed: {}",
+                    session.username, mdns_enabled, join_err
+                ));
+                mdns_notice = Some(join_err.to_string());
+            }
+        }
+    }
+
     crate::events::log_event(format!(
         "Admin '{}' saved General settings",
         session.username
@@ -931,6 +984,7 @@ pub async fn handle_general_settings_update(
         "restart_required": restart_required,
         "hostname_notice": if restart_required { Some(t("settings.hostname_restart_notice")) } else { None },
         "timezone_notice": timezone_notice,
+        "mdns_notice": mdns_notice,
     }))
 }
 
@@ -952,6 +1006,11 @@ pub async fn handle_general_settings_get(
     ResponseHelper::json_success(serde_json::json!({
         "server_name": settings.server_name,
         "timezone": settings.timezone,
+        "language": settings.language,
+        // The live flag, not the stored one: they agree except in the window
+        // where a save failed to reach the host, and the screen must show what
+        // the appliance actually does.
+        "mdns_enabled": crate::mdns::is_enabled(),
     }))
 }
 
@@ -1719,6 +1778,7 @@ pub async fn handle_all_settings_get(
                 .language
                 .clone()
                 .unwrap_or_else(I18n::get_locale),
+            "mdns_enabled": crate::mdns::is_enabled(),
         },
         "email": {
             "smtp_server": email.smtp_server,
@@ -1953,6 +2013,19 @@ pub async fn reset_domain_settings(state: &AppState) -> Vec<String> {
         }
         Ok(Err(e)) => failures.push(format!("UPS: {e}")),
         Err(e) => failures.push(format!("UPS: {e}")),
+    }
+
+    // mDNS: `reset()` put the in-memory setting back to "on"
+    // (`GeneralSettings::default()`), but the *host* state does not live in
+    // settings.json — the Avahi service file and the name override were
+    // removed if discovery had been switched off. Republish, so a reset really
+    // restores the shipped behaviour (ROADMAP 29.1: a reset that leaves the
+    // appliance undiscoverable is a partial reset reported as success).
+    let port = crate::config::Settings::load().port;
+    match tokio::task::spawn_blocking(move || crate::mdns::apply_enabled(port, true)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => failures.push(format!("mDNS: {e}")),
+        Err(e) => failures.push(format!("mDNS: {e}")),
     }
 
     failures
@@ -2445,5 +2518,52 @@ mod tests {
         let local = crate::email::EmailConfig::from(&EmailSettings::default());
         assert!(!local.is_explicit());
         assert_eq!(local.from_address, "homevault@localhost");
+    }
+
+    // -----------------------------------------------------------------
+    // ROADMAP 29.1 — mDNS discovery is a setting, and it reaches the host
+    // -----------------------------------------------------------------
+
+    /// Discovery ships **on** (the appliance is expected to be findable), so a
+    /// fresh install must not need the admin to enable it.
+    #[test]
+    fn mdns_is_enabled_by_default() {
+        assert_eq!(GeneralSettings::default().mdns_enabled, Some(true));
+    }
+
+    /// The defect 29.1 named: `crate::mdns::unpublish()` had **no caller**, so
+    /// switching discovery off wrote a setting nothing acted on and left the
+    /// Avahi service file + the `host-name` override on disk. The guard is a
+    /// source check because the alternative — calling it — would remove the
+    /// real `/etc/avahi/services/homevault.service` on the machine running the
+    /// tests.
+    #[test]
+    fn saving_general_settings_applies_the_mdns_choice_to_the_host() {
+        let src = include_str!("settings.rs");
+        assert!(
+            src.contains("crate::mdns::apply_enabled"),
+            "the General save must apply the mDNS choice to Avahi (ROADMAP 29.1)"
+        );
+        // …and it must not be a silent success: a host refusal is reported.
+        assert!(
+            src.contains("mdns_notice"),
+            "a refused host change must reach the screen (ROADMAP X.3)"
+        );
+        // Off the async runtime — `sudo rm`/`sudo tee` block.
+        assert!(
+            src.contains("spawn_blocking(move || crate::mdns::apply_enabled"),
+            "the host change must not run on the async runtime (ROADMAP X.1)"
+        );
+    }
+
+    /// The status endpoint reads the live flag rather than the stored value, so
+    /// the screen shows what the appliance actually does.
+    #[test]
+    fn the_general_read_reports_the_live_mdns_flag() {
+        let src = include_str!("settings.rs");
+        assert!(
+            src.contains("\"mdns_enabled\": crate::mdns::is_enabled()"),
+            "GET must report the live flag, not the stored one"
+        );
     }
 }

@@ -931,6 +931,8 @@ Not to be confused with the disk-space quota, which limits how much data a group
 - The advertised name is pinned to homevault, independent of the machine's own hostname, so the address is predictable. If a second HomeVault box appears on the same network, it is given a numbered name instead of fighting over the first one.
 - Only service types and ports are advertised — never credentials or personal data.
 - It relies on the Avahi service being present; when it is not installed, everything else works exactly as before and the name simply does not resolve.
+- Discovery can be turned off in Settings, under General, with the "Discoverable on the local network" switch. Turning it off removes the advertisement and the pinned name from the machine, so the appliance stops answering as homevault.local until it is switched back on.
+- Changing the server's advertised name does not interrupt the other devices and printers that this machine announces on the network.
 
 This is what lets a user type homevault.local in a browser or a file manager instead of an IP address."#.to_string(),
         },

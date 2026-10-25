@@ -28,7 +28,8 @@
 //! sync) with aria2's active downloads. Rules under test:
 //!
 //!   1. `require_auth` — no token -> 400, garbage token -> 401.
-//!   2. Only `pending`/`running` jobs appear; `completed`/`failed` drop out.
+//!   2. Live jobs appear; a job that failed/was cancelled stays for one minute
+//!      (with its `state` slug), and a completed one never appears.
 //!   3. `progress` is `null` until the job emits a percentage (indeterminate).
 //!   4. Owner scoping — a non-admin sees only jobs they own; an admin sees all.
 //!   5. Polling never spawns aria2.
@@ -253,8 +254,13 @@ async fn activity_excludes_completed_job() {
     );
 }
 
+/// ROADMAP 28.2. A job that failed **one second ago** used to disappear on the
+/// very next poll — the row the user was watching simply vanished, and the only
+/// trace left was a notification they were not looking at. It now stays for one
+/// minute, carrying `state: "failed"` so the client renders the outcome instead
+/// of a stalled bar.
 #[tokio::test]
-async fn activity_excludes_failed_job() {
+async fn activity_shows_a_job_that_just_failed() {
     let (state, _tmp, _g) = setup_state().await;
     create_test_user(&state, "admin1", "Password123!", 2).await;
     let mut r = activity_router(state);
@@ -264,9 +270,69 @@ async fn activity_excludes_failed_job() {
     PROGRESS_MANAGER.fail_job(&id, "disk full");
 
     let (_, body) = send(&mut r, Method::GET, "/api/activity", Some(&token), None).await;
+    let row = row_by_id(&body, &id).expect("a fresh failure must stay visible");
+    assert_eq!(
+        row["state"],
+        json!("failed"),
+        "the row must say it failed: {row}"
+    );
+    assert_eq!(row["kind"], json!("restore"));
+    // The reason travels in `detail` (the failure message), never in `label`.
     assert!(
-        row_by_id(&body, &id).is_none(),
-        "failed job must not appear"
+        row["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("disk full"),
+        "{row}"
+    );
+}
+
+/// The same for a cancellation: the user pressed Cancel, so the row must
+/// confirm the job stopped instead of blinking out.
+#[tokio::test]
+async fn activity_shows_a_job_that_was_just_cancelled() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut r = activity_router(state);
+    let token = login(&mut r, "admin1", "Password123!").await;
+
+    let id = PROGRESS_MANAGER.create_job(JobType::Backup, "start");
+    // `mark_cancelled` is the state a job reaches while its producer is still
+    // winding down (a cancel hook ran; the task has not dropped the id yet) —
+    // `cancel_job` without a hook removes the row outright, which is the
+    // "nothing to report" case.
+    PROGRESS_MANAGER.mark_cancelled(&id, "Cancelled by admin");
+
+    let (_, body) = send(&mut r, Method::GET, "/api/activity", Some(&token), None).await;
+    let row = row_by_id(&body, &id).expect("a fresh cancellation must stay visible");
+    assert_eq!(row["state"], json!("cancelled"), "{row}");
+}
+
+/// Every row carries its lifecycle slug — the field the client branches on to
+/// decide between a progress bar and a status word.
+#[tokio::test]
+async fn every_row_carries_its_state() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut r = activity_router(state);
+    let token = login(&mut r, "admin1", "Password123!").await;
+
+    let running = PROGRESS_MANAGER.create_job(JobType::Backup, "start");
+    PROGRESS_MANAGER.emit_progress(&running, 10.0, "10%");
+
+    let (_, body) = send(&mut r, Method::GET, "/api/activity", Some(&token), None).await;
+    let rows = body["data"].as_array().expect("data array");
+    assert!(!rows.is_empty());
+    for row in rows {
+        let state = row["state"].as_str().unwrap_or("<missing>");
+        assert!(
+            ["pending", "running", "failed", "cancelled"].contains(&state),
+            "unexpected state slug {state:?} in {row}"
+        );
+    }
+    assert_eq!(
+        row_by_id(&body, &running).expect("the live row")["state"],
+        json!("running")
     );
 }
 

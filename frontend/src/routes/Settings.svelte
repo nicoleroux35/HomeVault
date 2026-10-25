@@ -47,6 +47,7 @@
     clearHostnameNotice,
     clearTimezoneNotice,
     clearLanguageNotice,
+    clearMdnsNotice,
     setAutostartNotice,
     clearAutostartNotice,
     type SettingsGroup
@@ -382,7 +383,10 @@
         draft.general = {
           server_name: data.general?.server_name || 'HomeVault',
           timezone: data.general?.timezone || 'UTC',
-          language: data.general?.language || $languageStore
+          language: data.general?.language || $languageStore,
+          // The live flag, not the stored one: the server reports what the
+          // appliance actually does (ROADMAP 29.1).
+          mdns_enabled: data.general?.mdns_enabled !== false
         };
         draft.email = {
           smtp_server: data.email?.smtp_server || '',
@@ -1054,6 +1058,25 @@
                   autostartUnavailable ? 'settings.autostart_read_failed' : 'settings.autostart_error',
                   { reason: notices.autostart }
                 )}
+              </Alert>
+            </div>
+          {/if}
+          <div class={settingsRow} data-testid="settings-mdns-row">
+            <div class="min-w-0">
+              <span class={settingsRowLabel}>{$t('settings.mdns_label')}</span>
+              <p class={settingsRowHint}>{$t('settings.mdns_description')}</p>
+            </div>
+            <Switch
+              bind:checked={draft.general.mdns_enabled}
+              accent={activeCat.accent}
+              ariaLabel={$t('settings.mdns_label')}
+              data-testid="settings-mdns"
+            />
+          </div>
+          {#if notices.mdns}
+            <div class="py-3 border-t-[1.45px] border-[var(--hv-settings-hairline)]" data-testid="mdns-error">
+              <Alert variant="error" dismissible ondismiss={clearMdnsNotice}>
+                {$t('settings.mdns_apply_failed', { reason: notices.mdns })}
               </Alert>
             </div>
           {/if}

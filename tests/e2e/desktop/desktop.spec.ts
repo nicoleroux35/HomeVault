@@ -1643,6 +1643,90 @@ test.describe('13 — Activity taskbar', () => {
     expect(calls).not.toContain('downloader');
   });
 
+  /**
+   * ROADMAP 28.1 — the poll backs off when the backend fails.
+   *
+   * The store used `setInterval(poll, 2000)` unconditionally, so a backend
+   * answering 500 was hit 30 times a minute per open desktop: a self-inflicted
+   * load spike exactly when the box is already unwell. With exponential backoff
+   * (2 s → 4 s → 8 s → … capped at 60 s) the first seven seconds carry **two**
+   * requests, not four.
+   *
+   * The assertion is a count, not a timing: a 2 s cadence cannot produce fewer
+   * than three requests in seven seconds, and a backoff cannot produce more
+   * than three.
+   */
+  test('13.9 — a failing /api/activity is polled with exponential backoff', async ({ page }) => {
+    let calls = 0;
+    await page.route('**/api/activity*', async (route) => {
+      calls += 1;
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: false, error: 'boom' }),
+      });
+    });
+
+    await gotoDesktop(page, adminTokens);
+    await page.waitForTimeout(7000);
+
+    expect(calls, 'the feed must still be polled').toBeGreaterThanOrEqual(1);
+    expect(
+      calls,
+      `a failing backend was hit ${calls}× in 7 s — the poll is not backing off`
+    ).toBeLessThanOrEqual(3);
+  });
+
+  /**
+   * ROADMAP 28.2 — a job that just failed stays visible, and says so.
+   *
+   * The feed used to keep only `pending`/`running`, so a failure vanished on
+   * the very next poll and the dock button disappeared with it. The row now
+   * carries `state: "failed"`, renders the localised word instead of a progress
+   * bar, and does **not** count towards the badge (nothing is running any
+   * more).
+   */
+  test('13.10 — a failed job keeps a row with its outcome and no badge', async ({ page }) => {
+    await page.route('**/api/activity*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: [
+            {
+              id: 'job-failed-1',
+              kind: 'backup',
+              state: 'failed',
+              label: '',
+              progress: null,
+              detail: 'Failed: disk full',
+            },
+          ],
+        }),
+      });
+    });
+
+    await gotoDesktop(page, adminTokens);
+
+    // The dock button is there — a failure is news, not noise.
+    const btn = activityBtn(page);
+    await expect(btn).toBeVisible({ timeout: 6000 });
+    // …but the badge is not: nothing is running.
+    await expect(btn.locator('.hv-dock-badge')).toHaveCount(0);
+
+    await btn.click();
+    const row = panel(page).locator('.hv-activity-row').first();
+    await expect(row).toBeVisible();
+    await expect(row).toHaveAttribute('data-state', 'failed');
+    // A failure has no progress to report — a `progressbar` role here told a
+    // screen reader the wrong thing.
+    await expect(row.locator('[role="progressbar"]')).toHaveCount(0);
+    await expect(row.locator('.hv-activity-name')).not.toBeEmpty();
+    // The outcome is a word, not only a colour (WCAG 1.4.1).
+    await expect(row.locator('.hv-activity-pct')).toHaveText(/failed|échec|error|fehlgeschlagen/i);
+  });
+
   test('13.8 — responsive: the panel stays in the viewport at 360 / 768 / 1920', async ({
     page,
     playwright,

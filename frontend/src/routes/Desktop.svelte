@@ -165,7 +165,12 @@
   // Drives both the thin indeterminate strip on the topbar pill and the dock
   // activity button + taskbar panel above the dock.
   $: activityTasks = $activity.tasks;
+  // `activityCount` is work in progress (drives the badge + the topbar strip);
+  // `activityRowCount` is every row to render, which also includes a job that
+  // failed in the last minute. The two differ on purpose: a failure must be
+  // *visible* without making the dock look busy (ROADMAP 28.2).
   $: activityCount = $activity.count;
+  $: activityRowCount = activityTasks.length;
   $: activeJobCount = $activity.count;
   // Resolve each row's display name: dynamic label (torrent / file) if the
   // server gave one, else the localised `kind`, else the raw slug. Re-runs on
@@ -177,7 +182,7 @@
   });
   // Close the taskbar panel automatically once nothing is running, or when the
   // dock itself slides away (maximized window / phone chrome hidden).
-  $: if (showActivityPanel && (activityCount === 0 || dockHidden)) showActivityPanel = false;
+  $: if (showActivityPanel && (activityRowCount === 0 || dockHidden)) showActivityPanel = false;
 
   function toggleActivityPanel() {
     showActivityPanel = !showActivityPanel;
@@ -2979,9 +2984,10 @@
         {#if $windowManager && hasOpenWindow('settings')}<span class="hv-dock-dot"></span>{/if}
       </button>
 
-      <!-- Background activity — transient, shown only while tasks are running.
-           Click toggles the taskbar panel above the dock. -->
-      {#if activityCount > 0}
+      <!-- Background activity — shown while there is a row to report: work in
+           progress, or a job that failed in the last minute (the badge stays
+           empty in that case). Click toggles the taskbar panel above the dock. -->
+      {#if activityRowCount > 0}
         <span class="hv-dock-divider"></span>
         <button
           class="hv-dock-item hv-dock-item--enter"
@@ -2995,12 +3001,14 @@
           <div class="hv-dock-icon hv-dock-icon-activity">
             <IconActivity size={28} stroke={1.8} />
           </div>
-          <span
-            class="hv-dock-badge"
-            title={$t('desktop.activity_badge', { count: String(activityCount) })}
-          >
-            {activityCount > 99 ? '99+' : activityCount}
-          </span>
+          {#if activityCount > 0}
+            <span
+              class="hv-dock-badge"
+              title={$t('desktop.activity_badge', { count: String(activityCount) })}
+            >
+              {activityCount > 99 ? '99+' : activityCount}
+            </span>
+          {/if}
           {#if showActivityPanel}<span class="hv-dock-dot"></span>{/if}
         </button>
       {/if}
@@ -3029,7 +3037,7 @@
 
   <!-- Background-activity taskbar — sits flush above the dock, tracks its
        width, one row per running task (name / progress bar / %). Display-only. -->
-  {#if showActivityPanel && activityCount > 0}
+  {#if showActivityPanel && activityRowCount > 0}
     <!-- svelte-ignore a11y_click_events_have_key_events: the click only
          stops propagation (keeps the panel open on inside clicks); all
          panel controls are natively keyboard-accessible. -->
@@ -3044,27 +3052,46 @@
     >
       <div class="hv-activity-head">{$t('desktop.activity_title')}</div>
       {#each localizedActivityTasks as task (task.id)}
-        <div class="hv-activity-row" title={task.detail ?? ''}>
-          <span class="hv-activity-name">{task.displayName}</span>
-          <span class="hv-activity-pct">{task.progress == null ? '' : `${Math.round(task.progress)}%`}</span>
+        <!-- A finished-with-failure row replaces its progress bar with the
+             outcome. It is not a progressbar any more: there is no progress to
+             report, and `role="progressbar"` on a dead job told a screen
+             reader the wrong thing. The row is marked `data-state` so the
+             suite (and the CSS) can tell the two apart. -->
+        {#if task.state === 'failed' || task.state === 'cancelled'}
           <div
-            class="hv-activity-track"
-            role="progressbar"
-            aria-valuemin="0"
-            aria-valuemax="100"
-            aria-valuenow={task.progress == null ? undefined : Math.round(task.progress)}
-            aria-valuetext={task.progress == null ? $t('desktop.activity_indeterminate') : undefined}
+            class="hv-activity-row hv-activity-row--failed"
+            data-state={task.state}
+            title={task.detail ?? ''}
           >
-            {#if task.progress == null}
-              <span class="hv-activity-fill hv-activity-fill--indet"></span>
-            {:else}
-              <span
-                class="hv-activity-fill"
-                style="width: {Math.min(100, Math.max(0, task.progress))}%"
-              ></span>
-            {/if}
+            <span class="hv-activity-name">{task.displayName}</span>
+            <span class="hv-activity-pct">
+              {$t(task.state === 'failed' ? 'desktop.activity_failed' : 'desktop.activity_cancelled')}
+            </span>
+            <span class="hv-activity-outcome" aria-hidden="true"></span>
           </div>
-        </div>
+        {:else}
+          <div class="hv-activity-row" data-state={task.state} title={task.detail ?? ''}>
+            <span class="hv-activity-name">{task.displayName}</span>
+            <span class="hv-activity-pct">{task.progress == null ? '' : `${Math.round(task.progress)}%`}</span>
+            <div
+              class="hv-activity-track"
+              role="progressbar"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow={task.progress == null ? undefined : Math.round(task.progress)}
+              aria-valuetext={task.progress == null ? $t('desktop.activity_indeterminate') : undefined}
+            >
+              {#if task.progress == null}
+                <span class="hv-activity-fill hv-activity-fill--indet"></span>
+              {:else}
+                <span
+                  class="hv-activity-fill"
+                  style="width: {Math.min(100, Math.max(0, task.progress))}%"
+                ></span>
+              {/if}
+            </div>
+          </div>
+        {/if}
       {/each}
     </div>
   {/if}
@@ -5428,6 +5455,27 @@
     column-gap: var(--hv-space-2-5);
     row-gap: 6px;
     align-items: center;
+  }
+
+  /* A job that failed or was cancelled: no progress to draw, so the second
+     grid row becomes a short status rule in the error colour. Colour is never
+     the only signal — the row also carries the localised word ("Failed" /
+     "Cancelled") in `.hv-activity-pct`, and `data-state` for the suite. */
+  .hv-activity-row--failed .hv-activity-pct {
+    /* `--hv-error-text` (9.4:1 on white), not `--hv-error` (5.8:1): this is
+       12px text, and the token pair exists precisely for that split. */
+    color: var(--hv-error-text);
+    font-weight: var(--hv-font-weight-semibold);
+  }
+
+  .hv-activity-row--failed .hv-activity-outcome {
+    grid-area: track;
+    display: block;
+    height: 4px;
+    border-radius: var(--hv-radius-full);
+    /* Solid `--hv-error` (5.8:1 on white): a 4px status rule has to clear 3:1
+       as a non-text indicator, and a 55% mix did not. */
+    background: var(--hv-error);
   }
 
   .hv-activity-name {
