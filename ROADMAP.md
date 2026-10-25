@@ -466,12 +466,29 @@ ghost per poll; (2) `plan_reconcile` is pure and only ever completes ids
 carrying the `sys:` prefix, so the poller can never sweep another handler's
 job; (3) a source that cannot be read contributes **nothing** — a missing
 `/proc/mdstat` is "no md arrays", not "healthy", a timed-out `zpool` is a gap,
-and Syncthing is not even probed without a `config.xml`. Parsing is pure and
-unit-tested without hardware, and the integration suite drives a real
-`/proc/mdstat` fixture through `tick()` and reads the result back over
-`GET /api/activity`. Deliberately not covered: `luksFormat` (one-shot, no
-progress to read). The detail lives in [guides/activity.md](docs/guides/activity.md)
-→ *Live-hardware poller*.
+and Syncthing is not even probed without a `config.xml`. Deliberately not
+covered: `luksFormat` (one-shot, no progress to read). The detail lives in
+[guides/activity.md](docs/guides/activity.md) → *Live-hardware poller*.
+
+**The hardware pass was run, and it earned its keep.** Executing the item's own
+tests found **four** real defects, three of which would have made the feature
+silently useless in production: `apply_plan` created the job through
+`create_job()` (which mints a uuid), so the row was never addressable and
+**no synthetic row would ever have existed**; `parse_md_percent` split on the
+first `=`, which lands **inside the kernel's `[==>…]` progress bar**, so every
+resync reported an indeterminate bar; the zpool `%` scan compared `"done"`
+literally against a stream where the token is `"done,"`, so every scrub did
+the same; and `emit_message_only` wrote `0.0`, dropping a row from 29 % back
+to "0 %". All four are fixed and pinned. Verified on this host: 37/37 poller
+unit, 28/28 `sse::progress`, 10/10 integration; a real server binary serving
+the **real** `/proc/mdstat` (empty here) answers an empty feed with no warning
+or panic; and `tick()` driven by a synthetic resync produced
+`sys:raid:md0:resync` at 12.6 %, advanced it to 64 % **on the same id**, then
+removed it when the array left `mdstat`. `cargo test --lib` is 1698 passed /
+22 failed, and the 22 are pre-existing host-dependency failures — the same run
+on `HEAD` fails 31, exactly these 9 more. Not exercisable here (no `zpool`, no
+Syncthing, no live md array): a real scrub and a real folder backlog, both
+covered by parsers pinned to captured output.
 
 **2026-10-24 (s)** — Cloud Sync scheduler — **16.4 closed**, then the last
 *feature* besides 28.3 (which closed right after — Done (t)). Until now

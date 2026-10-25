@@ -317,6 +317,45 @@ impl ProgressManager {
         owner: Option<String>,
     ) -> String {
         let job_id = Uuid::new_v4().to_string();
+        self.create_job_with_id_and_owner(job_id, job_type, initial_message, owner)
+    }
+
+    /// Create a job under an **id the caller chooses**.
+    ///
+    /// Every other constructor mints a `Uuid::new_v4()`, which is right for a
+    /// handler-started job (each click is a new job) and wrong for a job that
+    /// describes a *state of the world*. The activity poller (ROADMAP 28.3)
+    /// needs the second kind: one mdadm resync must be **one** row that
+    /// advances, so its id is derived from the source
+    /// (`sys:raid:md0:resync`). Minting a uuid there meant every
+    /// `emit_progress(&op.id, …)` addressed an id that was never inserted — the
+    /// row silently never existed, which is exactly the class of bug a
+    /// `debug_assert` in `apply_plan` was standing in for.
+    ///
+    /// Idempotent: an id already tracked is left as it is and returned, so a
+    /// caller that races its own poll cannot reset a live row to 0 %.
+    pub fn create_job_with_id(
+        &self,
+        job_id: String,
+        job_type: JobType,
+        initial_message: &str,
+    ) -> String {
+        self.create_job_with_id_and_owner(job_id, job_type, initial_message, None)
+    }
+
+    fn create_job_with_id_and_owner(
+        &self,
+        job_id: String,
+        job_type: JobType,
+        initial_message: &str,
+        owner: Option<String>,
+    ) -> String {
+        // Idempotent insert: an id that is already tracked keeps its state and
+        // its retained event rather than being reset to the seed.
+        if self.jobs.read().contains_key(&job_id) {
+            return job_id;
+        }
+
         let (tx, _) = broadcast::channel(100);
 
         let initial_event = ProgressEvent::new(
@@ -374,11 +413,23 @@ impl ProgressManager {
     /// (a sliding bar, no `%`) for as long as the source says nothing.
     pub fn emit_message_only(&self, job_id: &str, message: &str) -> bool {
         if let Some(job) = self.jobs.read().get(job_id) {
+            // Keep the *last percentage this job reported*: writing a bare
+            // `0.0` here made a row that had reached 29 % fall back to "0 %"
+            // on the next tick, because `list_activity` answers with
+            // `last_event.progress` whenever `has_progress` is set. A source
+            // that stops reporting a number does not mean the work went back
+            // to the start.
+            let previous = job
+                .last_event
+                .lock()
+                .as_ref()
+                .map(|e| e.progress)
+                .unwrap_or(0.0);
             let event = ProgressEvent::new(
                 job_id.to_string(),
                 job.job_type.clone(),
                 ProgressState::Running,
-                0.0,
+                previous,
                 message,
             );
             *job.last_event.lock() = Some(event.clone());
