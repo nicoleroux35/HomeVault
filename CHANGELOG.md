@@ -390,6 +390,30 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Health — every host probe is bounded (2026-10-24, ROADMAP X.2).** The
+  checks run on the blocking pool (and the notification engine runs them every
+  60 s), so a `df` parked on a hung NFS mount, an `mdadm --detail` blocked on a
+  failing disk or a `smartctl` on a spun-down drive pinned that thread with no
+  ceiling. `df`/`lsblk`/`mdadm`/`systemctl` now run under `HOST_PROBE_TIMEOUT`
+  (10 s) and `smartctl` under `SMART_PROBE_TIMEOUT` (20 s), through one local
+  `run_command` over `utils::process::run_timed`; a timeout or failed spawn
+  degrades that check to `Unknown`, never a fabricated healthy reading. Tests:
+  `src/health.rs` 17 → **22** (source guard, kill path, exit-status-as-data, a
+  missing tool, the probe-budget ordering), `tests/health_integration.rs` 15 →
+  **16** (a shim `df` sleeping 250 ms is waited out; `GET /api/health` still
+  answers `200`). Docs: [guides/health.md](docs/guides/health.md).
+- **Shares/Protocols — every `systemctl`/`exportfs`/`sudo tee` call is bounded
+  (2026-10-24, ROADMAP X.2).** The handler's `run_share_op` outer timeout stops
+  waiting for the `spawn_blocking` future but does **not** kill the child, so a
+  wedged `sudo systemctl` or `exportfs` kept the blocking thread pinned. Every
+  call now carries its own ceiling, with `SHARES_WRITE_TIMEOUT` 30 s
+  (`sudo tee`/`tee -a`, `sudo mkdir -p`; the two `tee` helpers moved to
+  `run_timed_with_stdin`) and `SHARES_SERVICE_TIMEOUT` 60 s (`systemctl`
+  start/stop/restart/reload, `exportfs -ra`). Tests: `src/shares.rs` 32 → **37**
+  (source guard, kill path, exit-status-as-data, a missing tool, deadline
+  ordering); no behavioural integration case by design — every host call here
+  is a mutation the suite must not perform on the real host. Docs:
+  [guides/shares.md](docs/guides/shares.md).
 - **VPN — every `wg`/`wg-quick`/`openvpn`/`pgrep` call is bounded (2026-10-24,
   ROADMAP X.2).** Every command was a bare `Command::output()` (except two
   stdin cases that hand-rolled `.spawn()` + `wait_with_output()`), so a `wg`

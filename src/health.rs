@@ -34,6 +34,7 @@
 
 //! System health checks (disks, SMART, services) executed on demand.
 
+use crate::utils::process::{run_timed, HOST_PROBE_TIMEOUT, SMART_PROBE_TIMEOUT};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -62,6 +63,28 @@ pub enum HealthError {
     Parse(String),
     #[error("Service not found: {0}")]
     ServiceNotFound(String),
+}
+
+// ---------------------------------------------------------------------------
+// Deadlines (ROADMAP X.2)
+//
+// Every host probe of the health checks used to be a bare `Command::output`.
+// The checks run on the blocking pool, but a `df` parked on a hung NFS mount,
+// an `mdadm --detail` blocked on a failing disk or a `smartctl` on a
+// spun-down drive pinned that blocking thread with no ceiling — and the
+// health loop runs on a 60 s tick, so the probes piled up behind the wedged
+// one. `df`/`lsblk`/`mdadm`/`systemctl` get the shared host-probe budget;
+// `smartctl` gets its longer one (a drive can spin up on the first query).
+// ---------------------------------------------------------------------------
+
+/// Run one host probe under a deadline, keeping the reason it failed.
+fn run_command(cmd: &mut Command, timeout: Duration) -> Result<std::process::Output, String> {
+    run_timed(cmd, timeout)
+}
+
+/// Map a [`run_command`] failure into the `HealthError` the checks return.
+fn io_error(e: String) -> HealthError {
+    HealthError::Io(std::io::Error::other(e))
 }
 
 /// The result of a single health check.
@@ -323,9 +346,9 @@ impl HealthService {
     }
 
     pub fn check_disk_space() -> Result<HealthCheckResult, HealthError> {
-        let output = Command::new("df")
-            .args(["-B1", "-x", "tmpfs", "-x", "devtmpfs", "-x", "squashfs"])
-            .output()?;
+        let mut cmd = Command::new("df");
+        cmd.args(["-B1", "-x", "tmpfs", "-x", "devtmpfs", "-x", "squashfs"]);
+        let output = run_command(&mut cmd, HOST_PROBE_TIMEOUT).map_err(io_error)?;
 
         let mut critical_mounts = Vec::new();
         let mut warnings = Vec::new();
@@ -389,10 +412,10 @@ impl HealthService {
     /// healthy. mdadm itself isn't installed on all builds — that yields
     /// `Unknown`, never a hard failure.
     pub fn check_raid_arrays() -> Result<HealthCheckResult, HealthError> {
-        let scan = Command::new("sudo")
-            .arg("mdadm")
-            .args(["--detail", "--scan"])
-            .output();
+        let mut cmd = Command::new("sudo");
+        cmd.arg("mdadm");
+        cmd.args(["--detail", "--scan"]);
+        let scan = run_command(&mut cmd, HOST_PROBE_TIMEOUT);
 
         let scan = match scan {
             Ok(s) if s.status.success() => s,
@@ -443,10 +466,10 @@ impl HealthService {
         let mut failed = Vec::new();
         let mut healthy = 0usize;
         for device in &devices {
-            let detail = Command::new("sudo")
-                .arg("mdadm")
-                .args(["--detail", device])
-                .output();
+            let mut cmd = Command::new("sudo");
+            cmd.arg("mdadm");
+            cmd.args(["--detail", device]);
+            let detail = run_command(&mut cmd, HOST_PROBE_TIMEOUT);
             let state = detail
                 .ok()
                 .map(|d| {
@@ -508,9 +531,9 @@ impl HealthService {
         let mut unhealthy_disks = Vec::new();
         let mut healthy_disks = Vec::new();
 
-        let lsblk_output = Command::new("lsblk")
-            .args(["-d", "-n", "-o", "NAME,TYPE"])
-            .output()?;
+        let mut cmd = Command::new("lsblk");
+        cmd.args(["-d", "-n", "-o", "NAME,TYPE"]);
+        let lsblk_output = run_command(&mut cmd, HOST_PROBE_TIMEOUT).map_err(io_error)?;
 
         for line in String::from_utf8_lossy(&lsblk_output.stdout).lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
@@ -527,7 +550,8 @@ impl HealthService {
             // helper (src/smart.rs) carries the sudoers-granted argv shape
             // (item ROADMAP 1.2). Running this whole function is the job of
             // `spawn_blocking` in run_all_checks/run_check.
-            let output = crate::smart::std_command(&device, &["-H"]).output();
+            let mut cmd = crate::smart::std_command(&device, &["-H"]);
+            let output = run_command(&mut cmd, SMART_PROBE_TIMEOUT);
 
             if let Ok(out) = output {
                 let stdout = String::from_utf8_lossy(&out.stdout);
@@ -675,9 +699,9 @@ impl HealthService {
         let mut own_service_failed = None;
 
         for service in &services {
-            let output = Command::new("systemctl")
-                .args(["is-active", service])
-                .output();
+            let mut cmd = Command::new("systemctl");
+            cmd.args(["is-active", service]);
+            let output = run_command(&mut cmd, HOST_PROBE_TIMEOUT);
 
             if let Ok(out) = output {
                 let status = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -1107,5 +1131,71 @@ mod tests {
         assert!(total > 0);
         assert!(used <= total && avail <= total);
         assert_eq!(used + avail, total);
+    }
+
+    // -- subprocess deadlines (ROADMAP X.2) -----------------------------
+
+    /// The defect this guards against is invisible to a behavioural test: a
+    /// bare probe still answers correctly on an idle box and only pins the
+    /// health loop when `df`/`mdadm`/`smartctl`/`systemctl` stops answering.
+    ///
+    /// `concat!` keeps each pattern out of this file's own source, so the
+    /// assertion cannot count itself.
+    #[test]
+    fn test_no_subprocess_of_this_module_runs_without_a_deadline() {
+        let src = include_str!("health.rs");
+        let production = src.split("#[cfg(test)]").next().unwrap_or(src);
+        for unbounded in [
+            concat!(".", "output()"),
+            concat!(".", "spawn()"),
+            concat!(".", "status()"),
+            concat!("wait_with_", "output()"),
+        ] {
+            assert!(
+                !production.contains(unbounded),
+                "`{unbounded}` waits without a deadline — use `run_command` (ROADMAP X.2)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_run_command_kills_a_hung_probe_and_names_the_deadline() {
+        let started = Instant::now();
+        let error = run_command(Command::new("sleep").arg("30"), Duration::from_millis(120))
+            .expect_err("a hung probe must not succeed");
+        assert!(error.contains("did not finish within"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the deadline must be enforced, not waited out"
+        );
+    }
+
+    #[test]
+    fn test_run_command_keeps_a_non_zero_exit_as_data() {
+        // `systemctl is-active` on a stopped unit exits non-zero and the check
+        // reads the status; a non-zero exit must arrive as output.
+        let out = run_command(&mut Command::new("false"), Duration::from_secs(5))
+            .expect("`false` still runs to completion");
+        assert_eq!(out.status.code(), Some(1));
+    }
+
+    #[test]
+    fn test_run_command_reports_a_missing_probe() {
+        let error = run_command(
+            &mut Command::new("homevault-no-such-binary"),
+            Duration::from_secs(1),
+        )
+        .expect_err("a missing tool is an error");
+        assert!(error.contains("Failed to run"), "{error}");
+    }
+
+    #[test]
+    fn test_health_probe_budgets_are_bounded_and_ordered() {
+        // SMART gets the longer slot because a spinning disk may need to spin
+        // up; both must stay well under the 60 s health tick so the probes
+        // cannot pile up behind one another.
+        assert!(HOST_PROBE_TIMEOUT >= Duration::from_secs(1));
+        assert!(SMART_PROBE_TIMEOUT >= HOST_PROBE_TIMEOUT);
+        assert!(SMART_PROBE_TIMEOUT <= Duration::from_secs(30));
     }
 }
