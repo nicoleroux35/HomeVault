@@ -63,7 +63,106 @@ use chrono_tz::Tz;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
+use std::time::{Duration, Instant};
+
 use crate::groups::GroupService;
+
+/// How long a resolved group membership is reused.
+///
+/// ROADMAP 33.1: `load_applicable` forked `id -nG` on **every** quota check,
+/// and the resumable-upload path re-checks per chunk — a 1 GB upload in 8 MB
+/// chunks forked ~128 times. The lookup is correctly inside `spawn_blocking`
+/// (it never blocks the runtime), so this was throughput debt, not a stall.
+///
+/// Five seconds is the trade: a group added to an account (or removed from
+/// one) applies to quota checks within one TTL, which is far below the time a
+/// user takes to notice, and it collapses a chunked upload — or a burst of
+/// Explorer requests — to a single fork. Deliberately **not** longer: the
+/// bounded staleness has to be shorter than "a permission change that looks
+/// like it did nothing".
+pub const GROUP_MEMBERSHIP_TTL: Duration = Duration::from_secs(5);
+
+/// A cached `id -nG` result, keyed by username.
+struct CachedGroups {
+    groups: Vec<String>,
+    resolved_at: Instant,
+}
+
+/// Process-wide cache: one entry per account that has been checked recently.
+///
+/// Bounded by the number of accounts (the appliance's user table), so it needs
+/// no eviction policy beyond the TTL check — but [`prune_group_cache`] drops
+/// expired entries anyway so a long-running process does not hold a `Vec` per
+/// account that ever transferred a file.
+static GROUP_CACHE: LazyLock<Mutex<HashMap<String, CachedGroups>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The cached groups for `username`, if any and still fresh.
+fn cached_groups(username: &str, now: Instant) -> Option<Vec<String>> {
+    let cache = GROUP_CACHE.lock();
+    cache.get(username).and_then(|entry| {
+        if now.saturating_duration_since(entry.resolved_at) < GROUP_MEMBERSHIP_TTL {
+            Some(entry.groups.clone())
+        } else {
+            None
+        }
+    })
+}
+
+/// Stores a freshly resolved group list.
+fn store_groups(username: &str, groups: Vec<String>, now: Instant) {
+    let mut cache = GROUP_CACHE.lock();
+    cache.insert(
+        username.to_string(),
+        CachedGroups {
+            groups,
+            resolved_at: now,
+        },
+    );
+}
+
+/// Drops every expired entry. Called opportunistically by [`resolve_groups`].
+fn prune_group_cache(now: Instant) {
+    let mut cache = GROUP_CACHE.lock();
+    cache
+        .retain(|_, entry| now.saturating_duration_since(entry.resolved_at) < GROUP_MEMBERSHIP_TTL);
+}
+
+/// Forgets one account's cached groups — used after a membership change so the
+/// next check is immediate. Public so the Groups screen can call it.
+pub fn invalidate_group_cache(username: &str) {
+    GROUP_CACHE.lock().remove(username);
+}
+
+/// Empties the cache (tests, and a settings import that rewrites accounts).
+pub fn clear_group_cache() {
+    GROUP_CACHE.lock().clear();
+}
+
+/// Resolves `username`'s group membership through the cache, forking `id -nG`
+/// only on a miss.
+///
+/// The fork stays inside `spawn_blocking`: this is called from async handlers
+/// and must never run a subprocess on a runtime thread.
+async fn resolve_groups(username: &str) -> Result<Vec<String>, String> {
+    let now = Instant::now();
+    if let Some(groups) = cached_groups(username, now) {
+        return Ok(groups);
+    }
+
+    let username_owned = username.to_string();
+    let groups =
+        tokio::task::spawn_blocking(move || GroupService::get_user_groups(&username_owned))
+            .await
+            .map_err(|e| format!("Failed to resolve group membership: {}", e))?
+            .unwrap_or_default();
+
+    // A miss is also the cheap moment to prune: the map is already locked once
+    // per miss, and a hit must stay a pure lookup.
+    store_groups(username, groups.clone(), now);
+    prune_group_cache(now);
+    Ok(groups)
+}
 use crate::storage::transfer_quota_repo::{TransferQuota, TransferQuotaRepository};
 
 /// One quota that applies to the current transfer (the user's own, or one
@@ -367,12 +466,8 @@ async fn load_applicable(
         });
     }
 
-    let username_owned = username.to_string();
-    let group_names =
-        tokio::task::spawn_blocking(move || GroupService::get_user_groups(&username_owned))
-            .await
-            .map_err(|e| format!("Failed to resolve group membership: {}", e))?
-            .unwrap_or_default();
+    // ROADMAP 33.1: one `id -nG` fork per username per TTL, not per check.
+    let group_names = resolve_groups(username).await?;
 
     for group_name in group_names {
         let group_quota = repo
@@ -869,5 +964,100 @@ mod tests {
         let msg = unavailable_message("database is locked");
         assert!(msg.contains("refused"), "{msg}");
         assert!(msg.contains("database is locked"), "{msg}");
+    }
+
+    // -----------------------------------------------------------------
+    // ROADMAP 33.1 — one `id -nG` fork per username per TTL
+    // -----------------------------------------------------------------
+
+    /// A second lookup inside the TTL is served from the cache: this is the
+    /// whole point of 33.1 — the resumable-upload path re-checks per chunk, so
+    /// a 1 GB upload in 8 MB chunks forked ~128 times.
+    #[test]
+    fn a_fresh_entry_is_served_from_the_cache() {
+        clear_group_cache();
+        let now = Instant::now();
+        store_groups("alice", vec!["homevault_media".into()], now);
+        assert_eq!(
+            cached_groups("alice", now + Duration::from_secs(1)),
+            Some(vec!["homevault_media".to_string()])
+        );
+        clear_group_cache();
+    }
+
+    /// Past the TTL the entry is a miss, so a group added to the account applies
+    /// within one window. This is the bounded staleness documented in
+    /// `docs/guides/transfer-quotas.md`.
+    #[test]
+    fn an_expired_entry_is_a_miss() {
+        clear_group_cache();
+        let now = Instant::now();
+        store_groups("bob", vec!["homevault_media".into()], now);
+        assert!(
+            cached_groups("bob", now + GROUP_MEMBERSHIP_TTL).is_none(),
+            "the TTL boundary must be exclusive"
+        );
+        // …and exactly at the edge minus a nanosecond it is still fresh.
+        assert!(
+            cached_groups("bob", now + GROUP_MEMBERSHIP_TTL - Duration::from_nanos(1)).is_some()
+        );
+        clear_group_cache();
+    }
+
+    /// Accounts are keyed independently: one user's cached groups never answer
+    /// for another (the cross-account leak this cache could introduce).
+    #[test]
+    fn the_cache_is_keyed_per_username() {
+        clear_group_cache();
+        let now = Instant::now();
+        store_groups("carol", vec!["homevault_media".into()], now);
+        store_groups("dave", vec!["homevault_admin".into()], now);
+        assert_eq!(
+            cached_groups("carol", now),
+            Some(vec!["homevault_media".to_string()])
+        );
+        assert_eq!(
+            cached_groups("dave", now),
+            Some(vec!["homevault_admin".to_string()])
+        );
+        assert!(cached_groups("erin", now).is_none());
+        clear_group_cache();
+    }
+
+    /// An explicit invalidation wins immediately, whatever the TTL says — the
+    /// Groups screen calls it after a membership change.
+    #[test]
+    fn invalidate_drops_one_account_only() {
+        clear_group_cache();
+        let now = Instant::now();
+        store_groups("frank", vec!["homevault_media".into()], now);
+        store_groups("grace", vec!["homevault_media".into()], now);
+        invalidate_group_cache("frank");
+        assert!(cached_groups("frank", now).is_none());
+        assert!(cached_groups("grace", now).is_some());
+        clear_group_cache();
+    }
+
+    /// Pruning drops only the expired entries.
+    #[test]
+    fn pruning_keeps_the_fresh_entries() {
+        clear_group_cache();
+        let now = Instant::now();
+        store_groups("heidi", vec!["homevault_media".into()], now);
+        prune_group_cache(now + GROUP_MEMBERSHIP_TTL);
+        assert!(cached_groups("heidi", now + GROUP_MEMBERSHIP_TTL).is_none());
+        clear_group_cache();
+    }
+
+    /// The TTL has to stay short enough that a permission change is not a
+    /// mystery to the user, and long enough to collapse a chunked upload.
+    #[test]
+    fn the_ttl_is_a_short_bound_that_is_actually_documented() {
+        assert!(GROUP_MEMBERSHIP_TTL <= Duration::from_secs(30));
+        assert!(GROUP_MEMBERSHIP_TTL >= Duration::from_secs(1));
+        assert!(
+            include_str!("../docs/guides/transfer-quotas.md").contains("GROUP_MEMBERSHIP_TTL"),
+            "the bounded staleness must be documented in the guide"
+        );
     }
 }

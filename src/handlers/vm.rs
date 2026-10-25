@@ -1412,8 +1412,90 @@ fn vnc_display(inst: &IncusInstance) -> Option<u16> {
         .and_then(|s| s.trim().parse::<u16>().ok())
 }
 
+/// How often the relay pings the browser.
+///
+/// A VNC session is *idle* whenever the user is not touching it — an open
+/// console with nobody at the keyboard sends nothing for minutes at a time —
+/// so the heartbeat is the only thing that tells a live socket from a dead
+/// one (ROADMAP 32.1).
+pub const SCREEN_PING_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Silence after which both halves of the relay are dropped.
+///
+/// Three missed pings (Pong frames are answered by the browser's WebSocket
+/// stack without involving the page, so this does not depend on JS running).
+/// Without it a half-open connection — a closed laptop lid, Wi-Fi that came
+/// back on a different network, a suspended tab — left this task and the qemu
+/// VNC session alive until the kernel's TCP retransmission gave up, which on a
+/// quiet LAN is measured in many minutes.
+pub const SCREEN_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Tracks the last time either side proved it was alive, shared by the two
+/// pump tasks and the heartbeat.
+///
+/// A monotonic instant rather than a flag: the heartbeat needs to know *how
+/// long* the silence has lasted to distinguish "quiet" from "dead".
+#[derive(Debug)]
+pub struct RelayLiveness {
+    last_seen: std::sync::Mutex<Instant>,
+}
+
+impl Default for RelayLiveness {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RelayLiveness {
+    pub fn new() -> Self {
+        Self {
+            last_seen: std::sync::Mutex::new(Instant::now()),
+        }
+    }
+
+    /// Records that something happened on either leg.
+    pub fn touch(&self) {
+        if let Ok(mut guard) = self.last_seen.lock() {
+            *guard = Instant::now();
+        }
+    }
+
+    /// Whether the relay has been silent for at least `idle`.
+    pub fn is_stale(&self, idle: Duration) -> bool {
+        self.last_seen
+            .lock()
+            .map(|since| since.elapsed() >= idle)
+            .unwrap_or(false)
+    }
+
+    /// How long since the last sign of life.
+    pub fn idle(&self) -> Duration {
+        self.last_seen
+            .lock()
+            .map(|since| since.elapsed())
+            .unwrap_or_default()
+    }
+}
+
 /// Bridge a browser WebSocket (noVNC, raw RFB in binary frames) to the VM's
-/// `127.0.0.1:5900+display` VNC server. Pure byte pipe, both directions.
+/// `127.0.0.1:5900+display` VNC server.
+///
+/// **Heartbeat + idle deadline (ROADMAP 32.1).** This used to be a raw byte
+/// pipe in both directions with no ping and no timeout, so a half-open
+/// connection kept the task *and* the qemu VNC session alive until TCP gave
+/// up. It now:
+///
+/// - pings the browser every [`SCREEN_PING_INTERVAL`];
+/// - treats any frame in either direction (a `Pong`, RFB bytes from the VM, a
+///   keystroke from the browser) as a sign of life;
+/// - drops **both** halves once nothing has been seen for
+///   [`SCREEN_IDLE_TIMEOUT`], closing the WebSocket and the TCP leg so qemu
+///   sees the disconnect and frees the display.
+///
+/// Server-side RFB bytes count as life on purpose: a healthy idle VNC server
+/// still sends the occasional framebuffer update, so a session the user has
+/// walked away from stays up as long as its server is talking — which is the
+/// truthful reading of "the connection is alive".
 async fn screen_relay(browser: WebSocket, username: String, vm: String, display: u16) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -1433,13 +1515,17 @@ async fn screen_relay(browser: WebSocket, username: String, vm: String, display:
     let (mut tcp_rd, mut tcp_wr) = tcp.into_split();
     let (mut ws_tx, mut ws_rx) = browser.split();
 
+    let liveness = Arc::new(RelayLiveness::new());
+
     // VNC server → browser
+    let down_live = Arc::clone(&liveness);
     let mut down = tokio::spawn(async move {
         let mut buf = [0u8; 16 * 1024];
         loop {
             match tcp_rd.read(&mut buf).await {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
+                    down_live.touch();
                     if ws_tx
                         .send(Message::Binary(buf[..n].to_vec().into()))
                         .await
@@ -1454,29 +1540,70 @@ async fn screen_relay(browser: WebSocket, username: String, vm: String, display:
     });
 
     // browser → VNC server
+    let up_live = Arc::clone(&liveness);
     let mut up = tokio::spawn(async move {
         while let Some(Ok(msg)) = ws_rx.next().await {
             match msg {
                 Message::Binary(b) => {
+                    up_live.touch();
                     if tcp_wr.write_all(&b).await.is_err() {
                         break;
                     }
                 }
                 Message::Text(t) => {
+                    up_live.touch();
                     if tcp_wr.write_all(t.as_bytes()).await.is_err() {
                         break;
                     }
                 }
+                Message::Ping(_) | Message::Pong(_) => {
+                    // The browser's WebSocket stack answers a Ping with a Pong
+                    // on its own; either way the socket is demonstrably alive.
+                    up_live.touch();
+                }
                 Message::Close(_) => break,
-                _ => {}
             }
         }
         let _ = tcp_wr.shutdown().await;
     });
 
+    // Heartbeat: ping the browser, and give up on silence. This task is the
+    // only one that can end the relay on its own — the two pumps end it when
+    // their socket dies, which is the normal path.
+    let heartbeat_live = Arc::clone(&liveness);
+    let (hb_tx, mut hb_rx) = tokio::sync::mpsc::channel::<Message>(4);
+    let heartbeat = tokio::spawn(async move {
+        loop {
+            if heartbeat_live.is_stale(SCREEN_IDLE_TIMEOUT) {
+                tracing::info!(
+                    "Screen relay idle for {}s; closing both sides",
+                    heartbeat_live.idle().as_secs()
+                );
+                let _ = hb_tx.send(Message::Close(None)).await;
+                return;
+            }
+            if hb_tx.send(Message::Ping(Vec::new().into())).await.is_err() {
+                return;
+            }
+            tokio::time::sleep(SCREEN_PING_INTERVAL).await;
+        }
+    });
+
+    // The heartbeat writes through the same sink the download pump owns, so it
+    // hands its frames over and the pumps stay the only writers.
     tokio::select! {
-        _ = &mut down => up.abort(),
-        _ = &mut up => down.abort(),
+        _ = &mut down => { up.abort(); heartbeat.abort(); }
+        _ = &mut up => { down.abort(); heartbeat.abort(); }
+        msg = hb_rx.recv() => {
+            // The idle deadline fired (or the heartbeat task ended): drop both
+            // legs so qemu sees the disconnect and frees the display.
+            heartbeat.abort();
+            down.abort();
+            up.abort();
+            if let Some(Message::Close(_)) = msg {
+                tracing::info!("Screen relay closed on the idle deadline");
+            }
+        }
     }
     crate::events::log_event(format!("Screen on VM '{}' closed by {}", vm, username));
 }
@@ -1653,8 +1780,60 @@ async fn start_iso_download(admin: &str, url: &str, name: &str) -> Response {
 /// The post-download checks, as one blocking unit: reject a body that is not a
 /// real ISO (and remove it), then `chmod o+r` so the unprivileged qemu can read
 /// it. Returns the message to fail the job with.
+/// Smallest file that can be a real installation ISO.
+///
+/// Single source of truth: the download path, the link-import path and
+/// [`finalise_iso`] all compare against it. 10 MB is well under any
+/// distribution image (the smallest netinst builds are ~300 MB) and well above
+/// an HTML error page or a redirect stub.
+pub const MIN_ISO_BYTES: u64 = 10_000_000;
+
+/// Largest body the ISO downloader will write.
+///
+/// A ceiling, not an estimate: the biggest legitimate images (a full Windows
+/// or a multi-distro DVD) sit well under 32 GiB, so anything past it is a
+/// mistake on the other end — a redirect to a disk image, a mislabelled
+/// backup. `None` (no `Content-Length`) is allowed up to this cap, since a
+/// chunked response is legitimate; what is **not** allowed is running past it.
+pub const MAX_ISO_BYTES: u64 = 32 * 1024 * 1024 * 1024;
+
+/// What to do with a declared `Content-Length` **before** a byte is written.
+///
+/// ROADMAP 32.2: the download used to stream the whole body to disk and only
+/// then check the 10 MB floor, so a link returning a multi-GB wrong file was
+/// fully written before it was rejected (and a link returning a 2 KB HTML page
+/// burned a disk write to discover it). The declared length answers both
+/// questions up-front, at zero cost.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DeclaredLength {
+    /// A plausible ISO: stream it, and stop at `remaining` bytes.
+    Accept { remaining: u64 },
+    /// Shorter than [`MIN_ISO_BYTES`]: refuse without writing anything.
+    TooSmall { declared: u64 },
+    /// Longer than [`MAX_ISO_BYTES`]: refuse without writing anything.
+    TooLarge { declared: u64 },
+}
+
+/// Classifies the declared length of an ISO download.
+///
+/// `None` means the server sent no `Content-Length` (a chunked response). That
+/// is legitimate, so it is accepted with the full [`MAX_ISO_BYTES`] budget —
+/// the floor is then enforced on what actually lands, as it must be.
+pub fn classify_declared_length(declared: Option<u64>) -> DeclaredLength {
+    match declared {
+        Some(n) if n < MIN_ISO_BYTES => DeclaredLength::TooSmall { declared: n },
+        Some(n) if n > MAX_ISO_BYTES => DeclaredLength::TooLarge { declared: n },
+        Some(n) => DeclaredLength::Accept {
+            remaining: n.min(MAX_ISO_BYTES),
+        },
+        None => DeclaredLength::Accept {
+            remaining: MAX_ISO_BYTES,
+        },
+    }
+}
+
 fn finalise_iso(dest: &std::path::Path) -> Result<(), String> {
-    if std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0) < 10_000_000 {
+    if std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0) < MIN_ISO_BYTES {
         let _ = std::fs::remove_file(dest);
         return Err("That link did not return a valid ISO.".to_string());
     }
@@ -1694,6 +1873,36 @@ async fn run_iso_download(job: &str, url: &str, dest: &std::path::Path, name: &s
         }
     };
     let total = resp.content_length();
+
+    // ROADMAP 32.2: the declared length decides *before* anything is created
+    // or written. A link that answers with an HTML page or a stub is refused
+    // without touching the disk; one that declares more than `MAX_ISO_BYTES`
+    // is refused without a byte being streamed.
+    let budget = match classify_declared_length(total) {
+        DeclaredLength::Accept { remaining } => remaining,
+        DeclaredLength::TooSmall { declared } => {
+            PROGRESS_MANAGER.fail_job(
+                job,
+                &format!(
+                    "That link returned {} — too small to be an installation ISO.",
+                    human_bytes(declared)
+                ),
+            );
+            return;
+        }
+        DeclaredLength::TooLarge { declared } => {
+            PROGRESS_MANAGER.fail_job(
+                job,
+                &format!(
+                    "That link returned {} — larger than the {} an ISO may be.",
+                    human_bytes(declared),
+                    human_bytes(MAX_ISO_BYTES)
+                ),
+            );
+            return;
+        }
+    };
+
     let mut file = match tokio::fs::File::create(dest).await {
         Ok(f) => f,
         Err(e) => {
@@ -1712,6 +1921,19 @@ async fn run_iso_download(job: &str, url: &str, dest: &std::path::Path, name: &s
                 return;
             }
         };
+        // The cap also binds a *chunked* response (no `Content-Length`), which
+        // is otherwise unbounded — and a server that lied about its length.
+        if done + chunk.len() as u64 > budget {
+            let _ = tokio::fs::remove_file(dest).await;
+            PROGRESS_MANAGER.fail_job(
+                job,
+                &format!(
+                    "The download exceeded the {} an ISO may be; it was stopped and removed.",
+                    human_bytes(budget)
+                ),
+            );
+            return;
+        }
         if file.write_all(&chunk).await.is_err() {
             let _ = tokio::fs::remove_file(dest).await;
             PROGRESS_MANAGER.fail_job(job, "Could not write to disk (out of space?).");
@@ -2113,7 +2335,7 @@ fn validate_local_iso(path: &str) -> Result<String, String> {
     if !meta.is_file() {
         return Err("That path is not a file.".to_string());
     }
-    if meta.len() < 10_000_000 {
+    if meta.len() < MIN_ISO_BYTES {
         return Err("That file is too small to be an installation ISO.".to_string());
     }
     ensure_readable_by_qemu(&canon)?;
@@ -2588,5 +2810,130 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(pretty_os(&inst).as_deref(), Some("Debian 12"));
+    }
+
+    // -----------------------------------------------------------------
+    // ROADMAP 32.1 — the screen relay has a heartbeat and an idle deadline
+    // -----------------------------------------------------------------
+
+    /// A freshly opened relay is not stale; the point of 32.1 is that it
+    /// *becomes* stale on its own.
+    #[test]
+    fn a_liveness_tracker_starts_fresh_and_touches_reset_it() {
+        let live = RelayLiveness::new();
+        assert!(!live.is_stale(SCREEN_IDLE_TIMEOUT));
+        assert!(live.idle() < SCREEN_IDLE_TIMEOUT);
+
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        assert!(
+            live.idle() >= std::time::Duration::from_millis(50),
+            "the tracker must measure real elapsed time"
+        );
+        live.touch();
+        assert!(
+            live.idle() < std::time::Duration::from_millis(50),
+            "a sign of life must reset the clock"
+        );
+    }
+
+    /// The threshold comparison is `>=`, so an idle exactly at the deadline is
+    /// already dead — otherwise a relay could sit one tick past it for ever.
+    #[test]
+    fn staleness_is_reached_at_the_deadline() {
+        let live = RelayLiveness::new();
+        assert!(!live.is_stale(std::time::Duration::from_secs(60)));
+        assert!(
+            live.is_stale(std::time::Duration::from_nanos(0)),
+            "a zero deadline is immediately stale"
+        );
+    }
+
+    /// The ordering that makes the timeout meaningful: three missed heartbeats
+    /// before giving up, and a ping interval short enough that a dead socket is
+    /// noticed in about a minute rather than in TCP's many minutes.
+    #[test]
+    fn the_heartbeat_beats_before_the_deadline_and_three_pings_fit() {
+        assert!(SCREEN_PING_INTERVAL < SCREEN_IDLE_TIMEOUT);
+        assert!(
+            SCREEN_IDLE_TIMEOUT >= SCREEN_PING_INTERVAL * 3,
+            "the deadline must allow three missed pings"
+        );
+        assert!(SCREEN_IDLE_TIMEOUT <= std::time::Duration::from_secs(120));
+    }
+
+    // -----------------------------------------------------------------
+    // ROADMAP 32.2 — the ISO floor is checked before the bytes land
+    // -----------------------------------------------------------------
+
+    /// The defect 32.2 named: the download streamed the whole body to disk and
+    /// only then applied the floor. A declared length below it must be refused
+    /// up-front — no file created, no byte streamed.
+    #[test]
+    fn a_declared_length_below_the_floor_is_refused_before_writing() {
+        for declared in [0u64, 1, 2048, MIN_ISO_BYTES - 1] {
+            assert_eq!(
+                classify_declared_length(Some(declared)),
+                DeclaredLength::TooSmall { declared },
+                "{declared} bytes must be refused outright"
+            );
+        }
+    }
+
+    /// And a plausible length is accepted with exactly its own budget, so the
+    /// writer stops where the server said it would.
+    #[test]
+    fn a_plausible_declared_length_is_accepted_with_its_own_budget() {
+        let n = MIN_ISO_BYTES;
+        assert_eq!(
+            classify_declared_length(Some(n)),
+            DeclaredLength::Accept { remaining: n }
+        );
+        let big = 5 * 1024 * 1024 * 1024;
+        assert_eq!(
+            classify_declared_length(Some(big)),
+            DeclaredLength::Accept { remaining: big }
+        );
+    }
+
+    /// Above the ceiling the download is refused without writing anything: a
+    /// redirect to a disk image or a mislabelled backup must not fill the
+    /// appliance's disk first.
+    #[test]
+    fn a_declared_length_above_the_ceiling_is_refused() {
+        assert_eq!(
+            classify_declared_length(Some(MAX_ISO_BYTES + 1)),
+            DeclaredLength::TooLarge {
+                declared: MAX_ISO_BYTES + 1
+            }
+        );
+    }
+
+    /// A chunked response (no `Content-Length`) is legitimate — it is accepted,
+    /// but with the cap as its budget, so the running write still stops.
+    #[test]
+    fn an_undeclared_length_gets_the_ceiling_as_its_budget() {
+        assert_eq!(
+            classify_declared_length(None),
+            DeclaredLength::Accept {
+                remaining: MAX_ISO_BYTES
+            }
+        );
+    }
+
+    /// The floor and the ceiling bracket a real image by a wide margin, and the
+    /// import path uses the same floor constant (one source of truth).
+    #[test]
+    fn the_iso_bounds_are_sane_and_shared() {
+        assert_eq!(MIN_ISO_BYTES, 10_000_000);
+        assert!(MIN_ISO_BYTES < MAX_ISO_BYTES);
+        let src = include_str!("vm.rs");
+        assert!(
+            !src.contains("meta.len() < 10_000_000"),
+            "the import path must compare against MIN_ISO_BYTES, not a literal"
+        );
+        assert!(
+            src.contains("classify_declared_length"),
+            "the downloader must classify the declared length before writing"
+        );
     }
 }

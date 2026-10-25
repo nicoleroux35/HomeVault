@@ -6,6 +6,39 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A VM's screen console no longer stays alive on a half-open connection
+  (2026-10-24, ROADMAP 32.1).** The noVNC relay was a raw two-way byte pipe with
+  no ping and no timeout, so closing a laptop lid, dropping Wi-Fi or suspending
+  the tab left the relay task *and* the qemu VNC session alive until the
+  kernel's TCP retransmission gave up — many minutes on a quiet LAN, with the
+  display held for nothing. It now pings the browser every 30 s and drops both
+  sides after 90 s of silence, driven by a clock both pumps and the heartbeat
+  share. The browser answers a `Ping` on its own, so a frozen page still counts;
+  VNC traffic from the server counts too, so a genuinely live but untouched
+  session is not killed.
+
+- **An ISO download is refused on its declared size before a byte is written
+  (2026-10-24, ROADMAP 32.2).** The downloader streamed the whole body to disk
+  and only then checked the 10 MB floor, so a link returning a multi-GB wrong
+  file was fully written before it was rejected — and a 2 KB HTML error page
+  still cost a disk write to discover. The declared `Content-Length` is now
+  classified up-front: below `MIN_ISO_BYTES` (10 MB) or above the new
+  `MAX_ISO_BYTES` (32 GiB) fails the job with nothing created. The same budget
+  caps the running write, so a chunked response (no `Content-Length`) and a
+  server that lied about its length are stopped mid-stream and the partial file
+  removed.
+
+- **A chunked upload no longer forks `id -nG` ~128 times for one file
+  (2026-10-24, ROADMAP 33.1).** Every quota check resolved the caller's groups
+  with a fresh `id -nG`, and the resumable-upload path re-checks per chunk — a
+  1 GB upload in 8 MB chunks forked 128 times. Membership now comes from a
+  process-wide cache keyed on the username with a 5 s TTL; the Groups screen
+  invalidates the entry on a membership change, so adding someone takes effect
+  immediately rather than "within a few seconds", and the list an admin reads
+  bypasses the cache entirely.
+
 ### Security
 
 - **The File Explorer resolves the last path component instead of echoing the

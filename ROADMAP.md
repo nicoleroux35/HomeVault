@@ -1,7 +1,7 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-24 (10.5/10.6/10.7 closed — the File Explorer residual
-hardening) — current version: 1.0.0
+Last updated: 2026-10-24 (32.1/32.2 and 33.1 closed — the last two residuals of
+closed items) — current version: 1.0.0
 
 ## How to read this file
 
@@ -85,11 +85,12 @@ Two structural facts explain most of the list:
 | 16.4 | Cloud Sync (rclone) — no scheduler | P2 | 1 |
 | 28 | Activity taskbar | P2 | 1 |
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
-| 32 | Virtual Machines — residual | P2 | 2 |
-| 33 | Transfer quotas — residual | P2 | 1 |
 | — | Cross-cutting | — | 0 |
 
-Total open findings: **4** (4 per-area + 0 cross-cutting). **10b (10.5, 10.6,
+Total open findings: **2** (2 per-area + 0 cross-cutting). **32 (Virtual
+Machines) and 33 (Transfer quotas) closed on 2026-10-24** — see Done (r) — so
+the only defect-shaped work left is none: what remains is two features
+(28.3, 16.4) and one maintainability item (31). **10b (10.5, 10.6,
 10.7) closed on 2026-10-24** — see Done (q) — so the File Explorer has no
 residual finding left, and **X.9 closed the same day** (Done (p)): every
 `std::process::Command`/`tokio::process::Command` of `src/` is bounded, enforced
@@ -180,9 +181,9 @@ X.9 — and **X.9 closed the same day** (Done (p)): picking up item 29 had
 exposed that X.2's "every subprocess is bounded" was only true for the modules
 that got a guard, and the 98 sites it missed are now bounded too, behind a
 tree-wide source guard. **10b closed the same day** (Done (q)). What is left,
-in order: 32/33 (residuals of closed items), 28.3 (the only remaining *feature*
-besides 16.4: a live-hardware poller), 16.4 (a scheduler for persisted sync
-jobs) and 31 (pure maintainability, do it last, one tab at a time).
+in order: 28.3 (the only remaining *feature* besides 16.4: a live-hardware
+poller), 16.4 (a scheduler for persisted sync jobs) and 31 (pure
+maintainability, do it last, one tab at a time).
 
 ---
 
@@ -310,35 +311,29 @@ dropping every other advertisement on the host. The detail lives in
       methods and ~100 rewritten call sites, with `docker.spec.ts` (58 tests) as
       the only net. If taken up: one tab at a time, E2E green between each.
 
-### 32. Virtual Machines — residual (leftovers of the closed item 19)
+### 32. Virtual Machines — residual
 
-- [ ] **32.1 — The screen relay is a raw TCP pipe with no framing or
-      heartbeat.** `screen_relay` (`src/handlers/vm.rs:1380-1482`) pipes
-      whatever arrives on the WebSocket to `127.0.0.1:5900+N` and back, so a
-      half-open connection (laptop lid closed, Wi-Fi dropped) leaves the task
-      and the qemu VNC session alive until TCP gives up — there is no ping and
-      no idle timeout. *Acceptance:* a heartbeat plus an idle deadline that
-      closes both sides, or a framed protocol.
-- [ ] **32.2 — An ISO download runs to completion before the 10 MB floor is
-      checked.** `run_iso_download` (`:1650-1742`) streams the whole body to
-      disk and only then calls `finalise_iso`, so a link that returns a
-      multi-GB wrong file is fully written before it is rejected. The floor now
-      runs on the blocking pool (2026-10-23) but not *before* the bytes land.
-      *Acceptance:* stop the stream as soon as the declared length is below the
-      floor, and cap the body at a sane ISO size.
+Closed on 2026-10-24 — see Done (2026-10-24 (r)). 32.1: the screen relay was a
+raw pipe with no ping and no timeout, so a half-open connection kept the task
+*and* the qemu VNC session alive until TCP gave up; it now has a heartbeat
+(`SCREEN_PING_INTERVAL` 30 s) and an idle deadline (`SCREEN_IDLE_TIMEOUT` 90 s)
+around a shared liveness clock, and closes both legs when it fires. 32.2: an
+ISO download streamed the whole body to disk before checking the 10 MB floor; it
+now classifies the declared `Content-Length` **before** creating the file, caps
+the running write at the same budget (so a chunked response and a lying server
+are both stopped), and shares `MIN_ISO_BYTES` / `MAX_ISO_BYTES` with the import
+path. The detail lives in [guides/vm.md](docs/guides/vm.md).
 
-### 33. Transfer quotas — residual (leftover of the closed item 23)
+### 33. Transfer quotas — residual
 
-- [ ] **33.1 — Group membership costs one `id -nG` fork per quota check.**
-      `load_applicable` (`src/transfer_quota.rs`) resolves the caller's groups
-      through `GroupService::get_user_groups` on every check — and the
-      resumable-upload path re-checks per chunk, so a 1 GB upload in 8 MB
-      chunks forks ~128 times. It is correctly inside `spawn_blocking` (never
-      on the runtime), so this is throughput debt, not a stall. *Acceptance:* a
-      short-TTL (a few seconds) in-process cache keyed on the username, with
-      the bounded staleness documented — the trade is a freshly added group
-      quota taking up to one TTL to apply, which must be stated in
-      `docs/guides/transfer-quotas.md`.
+Closed on 2026-10-24 — see Done (2026-10-24 (r)). 33.1: `load_applicable`
+forked `id -nG` on every quota check, and the resumable-upload path re-checks
+per chunk — ~128 forks for one 1 GB upload. Group membership now comes from a
+process-wide cache keyed on the username with a 5 s TTL
+(`GROUP_MEMBERSHIP_TTL`), the bounded staleness is documented in
+[guides/transfer-quotas.md](docs/guides/transfer-quotas.md), and the Groups
+screen invalidates the entry on a membership change so that path stays
+immediate.
 
 ---
 
@@ -481,6 +476,58 @@ call site the guard also scans.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-24 (r)** — Virtual Machines and Transfer quotas — **32.1, 32.2 and
+33.1 closed**, the last two residuals of already-closed items. **32.1**: the
+screen relay was a raw two-way byte pipe with *no* ping and *no* timeout, so a
+half-open connection (laptop lid closed, Wi-Fi that came back on another
+network, a suspended tab) kept the relay task **and** the qemu VNC session alive
+until the kernel's TCP retransmission gave up — many minutes on a quiet LAN. It
+is now a three-task relay around one shared `RelayLiveness` clock: the down/up
+pumps `touch()` it on every frame (bytes, `Close`, and now also `Ping`/`Pong`),
+and a heartbeat pings the browser every `SCREEN_PING_INTERVAL` (30 s) and closes
+**both** legs once `is_stale(SCREEN_IDLE_TIMEOUT)` (90 s = three missed pings).
+The browser's WebSocket stack answers a `Ping` on its own, so a frozen page
+still counts; server-side RFB bytes count too, which is the truthful reading of
+"the connection is alive" for a session nobody is touching. **32.2**: an ISO
+download streamed the whole body to disk and only then ran `finalise_iso`, so a
+link returning a multi-GB wrong file was fully written before it was rejected
+(and a 2 KB HTML page still cost a disk write to discover). `classify_declared_length`
+now decides **before** the destination file is created — a `Content-Length`
+below `MIN_ISO_BYTES` (10 MB) or above the new `MAX_ISO_BYTES` (32 GiB) fails
+the job with nothing written, a plausible one becomes the write budget, an
+absent one (chunked) gets the cap as its budget — and the budget is enforced
+*while* writing, so a chunked response and a server that lied about its length
+are both stopped mid-stream and the partial file removed. `validate_local_iso`
+compares against the same `MIN_ISO_BYTES` instead of a literal.
+**33.1**: `load_applicable` resolved the caller's groups through one `id -nG`
+fork **per quota check**, and the resumable-upload path re-checks per chunk —
+~128 forks for a single 1 GB upload in 8 MB chunks. It was always inside
+`spawn_blocking`, so this was throughput debt, not a stall. Group membership now
+comes from a process-wide cache keyed on the username (`resolve_groups`) with a
+`GROUP_MEMBERSHIP_TTL` of **5 s**: a hit is a pure in-memory lookup, a miss forks
+once and prunes expired entries, and `invalidate_group_cache` /
+`clear_group_cache` are public so the Groups screen drops the entry on a
+membership change — that path is immediate, and the read that lists a user's
+groups deliberately bypasses the cache so an admin never sees a value one TTL
+old. The bounded staleness (a fresh group quota applies within five seconds) is
+documented in `docs/guides/transfer-quotas.md`, and the TTL test asserts that
+documentation mentions the constant so the two cannot drift.
+Tests: `src/handlers/vm.rs` 21 → **29** (liveness starts fresh and `touch`
+resets it; `>=` at the deadline; the interval/deadline ordering allows three
+missed pings; the declared-length classification for below/at/above the floor,
+above the ceiling, absent, and the "the import path uses the constant, not a
+literal" source guard), `src/transfer_quota.rs` 25 → **31** (a fresh entry is
+cached, an expired one is a miss with the TTL boundary exclusive, the cache is
+keyed per username, `invalidate_group_cache` drops one account only, pruning
+keeps fresh entries, and the TTL has to be short *and* documented),
+`tests/vm_integration.rs` 26 → **28** (an unusable link is refused before
+dialling — non-http scheme, non-`.iso` name — and the route is admin-only).
+**Written, not run** (per instruction). Docs:
+[guides/vm.md](docs/guides/vm.md) (*Heartbeat and idle deadline*, *The size
+bounds are checked before the bytes land*),
+[guides/transfer-quotas.md](docs/guides/transfer-quotas.md) (*Group-membership
+cache*), `CHANGELOG.md`, `TESTING.md`.
 
 **2026-10-24 (q)** — File Explorer residual hardening — **10.5, 10.6 and 10.7
 closed**. **10.5**: `PathGuard::validate` returned the caller's string verbatim
