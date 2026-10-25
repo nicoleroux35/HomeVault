@@ -101,6 +101,30 @@ follows [Semantic Versioning](https://semver.org/).
   an `unwrap` on a resource whose lifecycle lives elsewhere is a latent panic.
   It now logs and answers `503`; the 4-stream ceiling is unchanged.
 
+### Added
+
+- **The interface now follows the reader's text size (2026-10-25, ROADMAP
+  34.1).** Every type step in the product — the twelve `--hv-type-*` roles from
+  11px captions to the 62px gauge — was a literal `px`, and `html` was
+  `font-size: 16px`. The result was that raising the browser's configured font
+  size changed nothing: measured on the login screen, an 11px label and a 13px
+  body rendered identically at a 16px **and** a 32px root. Browser zoom still
+  worked, so nothing looked broken to anyone who tested with `Ctrl`+`+` — but
+  the setting a low-vision user actually changes was ignored, on the first
+  screen every user sees, which is exactly what Apple's HIG (*Layout →
+  Adaptability*) and the spirit of WCAG 1.4.4 ask an interface not to do. The
+  ladder is now expressed in `rem` against `html { font-size: clamp(100%, 100%,
+  20px) }`: pixel-identical at 100%, a real range up to a documented 1.25×
+  ceiling (past it, dense desktop chrome starts clipping at the widths a NAS is
+  administered from — macOS and Windows cap their own text-size setting the
+  same way). Three defects found by the same review went with it: a login field
+  box declared `h-11` was a **ceiling** that clipped the 16.25px text a 1.25×
+  reader gets (now `min-h-11`, so the 44px touch minimum still holds), the
+  "Forgot password" link had **no hit area** at all (19.9px tall, `padding: 0`
+  — the only interactive element on that screen without a 44px target, now
+  `h-11`), and the gateway card's width alternated between two values for one
+  viewport (now deterministic).
+
 ### Changed
 
 - **The roadmap's open-work list is empty (2026-10-24, ROADMAP 31.1).** With

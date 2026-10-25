@@ -26,10 +26,30 @@
 }
 
 html {
-  font-size: 16px;
+  /* The root size is the ONE place a reader's text preference takes effect:
+     every type step in `tokens.css` is expressed in `rem` against this value
+     (HIG Layout → Adaptability; WCAG 1.4.4), so raising it scales the whole
+     product without a single px override.
+
+     `100%` and not a px literal: `100%` resolves to the reader's configured
+     browser font size (16px by default, so the design is pixel-identical at
+     100%), while `font-size: 16px` would pin it and ignore that setting —
+     which is exactly what this screen used to do.
+
+     The 20px / 1.25× ceiling is deliberate: past it, dense desktop chrome
+     (dock, data tables, window titles) starts to clip on the widths a NAS is
+     administered from, so it is a supported maximum, not a bug. A user who
+     needs more than 1.25× has browser zoom (which scales everything,
+     including the layout), and both macOS and Windows cap their own text-size
+     setting the same way rather than scaling without bound. */
+  font-size: clamp(100%, 100%, 20px);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  /* iOS Safari inflates text in landscape without this; the layout already
+     reflows on its own terms, so let the declared sizes win. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {

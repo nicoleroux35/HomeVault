@@ -1,7 +1,7 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-24 (**open work list empty** — 31.1 was the last item) —
-current version: 1.0.0
+Last updated: 2026-10-25 (34.1 closed — the type ladder honours the reader's
+text size; the open list was emptied on 2026-10-24) — current version: 1.0.0
 
 ## How to read this file
 
@@ -337,6 +337,31 @@ process-wide cache keyed on the username with a 5 s TTL
 screen invalidates the entry on a membership change so that path stays
 immediate.
 
+### 34. Text scaling — the type ladder ignored the reader's font size
+
+**34.1 — every type token was a literal `px`, so a text-size preference did
+nothing.** Found by an Apple HIG review of the login screen (*Layout →
+Adaptability*: "Be prepared for text-size changes … apps that don't respond can
+be difficult or impossible to use for people who rely on this feature").
+Measured before the fix: an 11px label and a 13px body at a 16px root **and**
+at a 32px root — identical, because `html` was `font-size: 16px` and all twelve
+`--hv-type-*` steps were px. Browser zoom still worked (WCAG 1.4.4 passes that
+way), but the setting a low-vision reader actually changes was ignored, on the
+*first screen every user sees*. The same review found three further defects
+there: the field box was `h-11`, a **ceiling** that clipped the 16.25px text a
+1.25× reader produces; the "Forgot password" link had **no hit area** (19.9px
+tall, `padding: 0` — the only interactive element on the screen without a 44px
+target); and the card's width alternated between 358 and 326px for one viewport
+(`w-[…] max-w-full` re-derived itself from a scroll-containing ancestor).
+
+Closed on 2026-10-25 — see Done (2026-10-25 (a)). The ladder moved to `rem`
+against a `clamp(100%, 100%, 20px)` root, so it scales to a supported 1.25×
+ceiling; the field box became `min-h-11` (a floor that keeps the 44px touch
+minimum); the link became `h-11`; the card took `w-full max-w-[…]` so its
+width is deterministic. The detail lives in
+[guides/design-system.md](docs/guides/design-system.md#the-ladder-is-rem-and-it-scales-2026-10-25-hig-conformance)
+and [guides/auth.md](docs/guides/auth.md#gateway-layout--the-apple-hig-rules-it-is-built-to-2026-10-25).
+
 ---
 
 ## Cross-cutting — fix once, unblocks many
@@ -481,6 +506,41 @@ call site the guard also scans.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-25 (a)** — Typography — **34.1 closed**: the type ladder now honours
+the reader's text size. Every one of the twelve `--hv-type-*` steps (11 → 62px)
+was a literal `px` and `html` was `font-size: 16px`, so the whole product
+rendered identically whatever the browser was configured with — measured on
+the login screen: an 11px label and a 13px body at a 16px root **and** at a
+32px root. Browser zoom still worked (WCAG 1.4.4 passes that way), but Apple's
+HIG (*Layout → Adaptability*) and 1.4.4 in spirit both ask the interface to
+follow the reader's own font-size setting — the one a low-vision user changes
+— and the screen that ignored it is the first one every user sees. The tokens
+are now `rem` (`0.6875rem` = 11px) against `html { font-size:
+clamp(100%, 100%, 20px) }`: identical rendering at 100%, a real 1.25× range,
+and a documented ceiling (past 1.25× dense desktop chrome — dock, data tables,
+window titles — starts clipping at the widths a NAS is administered from, and
+both macOS and Windows cap their own setting the same way). Three defects the
+same review found on that screen went with it: the field box was `h-11`, a
+**ceiling** that clipped the 16.25px text a 1.25× reader gets (now `min-h-11`
+plus `py-2` — a floor, so the 44px touch minimum still holds, on the login
+form and the two recovery-modal fields); the "Forgot password" link was 19.9px
+tall with `padding: 0`, the only interactive element on the screen without a
+44px target (now `h-11`, measured 146×55px at 1.25×); and the card width
+alternated 358 ↔ 326px for one viewport (`w-[…] max-w-full` re-derived itself
+from a scroll-containing ancestor — now `w-full max-w-[…]`, measured stable at
+343/380px). Tests: `tests/e2e/design/typography.spec.ts` 7 → **11 `test(` /
+15 runtime** — a new §6 "Text scaling (HIG Layout → Adaptability)": 6.1 every
+step scales with the root (and is exact at 100%), 6.2 nothing is visually
+clipped at the 1.25× ceiling and the card grows instead, 6.3 the card width is
+deterministic across mounts, 6.4 `html` declares a `clamp()` rather than a px
+literal. **§6.1 was proven to bite**: reverting `--hv-type-body` to `13px`
+fails it with `body at root 20px / Expected: 16.25 / Received: 13`. Run live:
+`typography.spec.ts` **15/15 green**, `login.spec.ts` **87 passed / 13 skipped
+/ 0 failed** (Chromium, the rebuilt release on `:8080`). Docs:
+[design-system.md](docs/guides/design-system.md) → *The ladder is `rem`*,
+[guides/auth.md](docs/guides/auth.md) → *Gateway layout — the Apple HIG rules
+it is built to*, `CHANGELOG.md`, `TESTING.md`.
 
 **2026-10-24 (u)** — Docker — **31.1 closed**: the Docker screen was the last
 one driving its own HTTP. `Docker.svelte` carried a private `authedFetch`
