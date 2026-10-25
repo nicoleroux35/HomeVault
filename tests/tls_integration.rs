@@ -181,7 +181,7 @@ async fn test_get_requires_admin() {
     let (mut r, _tmp, _g) = setup().await;
 
     let (s, _) = send(&mut r, Method::GET, "/api/settings/tls", None, None).await;
-    assert_eq!(s, StatusCode::BAD_REQUEST); // no token -> json_error
+    assert_eq!(s, StatusCode::UNAUTHORIZED); // no token -> 401
 
     let (s, _) = send(
         &mut r,

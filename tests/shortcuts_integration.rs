@@ -177,7 +177,7 @@ async fn test_fetch_metadata_requires_session() {
         Some(json!({"url": "https://example.com"})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     let (status, _) = send(
         &mut r,

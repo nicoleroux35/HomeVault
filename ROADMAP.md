@@ -1,6 +1,7 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-24 (X.2, X.3 and X.5 closed — counts recounted) — current version: 1.0.0
+Last updated: 2026-10-24 (X.7 and X.8 closed — one auth primitive, one status
+contract) — current version: 1.0.0
 
 ## How to read this file
 
@@ -88,9 +89,9 @@ Two structural facts explain most of the list:
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | 32 | Virtual Machines — residual | P2 | 2 |
 | 33 | Transfer quotas — residual | P2 | 1 |
-| — | Cross-cutting (2 systemic) | — | 2 |
+| — | Cross-cutting | — | 0 |
 
-Total open findings: **15** (13 per-area + 2 cross-cutting). Item 27 (2
+Total open findings: **13** (13 per-area + 0 cross-cutting). Item 27 (2
 findings) left the open list on 2026-10-24 — see Done — and with it the last
 P1; **X.1 closed the same day** (Explorer was its last module — see Done
 2026-10-24 (f)), **X.2 closed the same day too** (Done 2026-10-24 (k)), so no
@@ -98,7 +99,9 @@ subprocess of the tree runs without a deadline, **X.3 closed on 2026-10-24**
 (Done 2026-10-24 (l)) — every mutating screen now surfaces its failure — and
 **X.5 closed the same day** (Done 2026-10-24 (m)): every count in `TESTING.md`
 was re-derived. **X.6 became a standing Process rule** rather than a finding,
-so only X.7 and X.8 remain cross-cutting.
+and **X.7 and X.8 closed on 2026-10-24** (Done 2026-10-24 (n)), which leaves
+**no cross-cutting finding open** — every guarded endpoint now goes through one
+primitive and answers one status contract.
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
@@ -155,17 +158,20 @@ chain is walked hop by hop with every hop re-validated before it is dialled,
 and the client resolves through a validating resolver, so the connection is
 pinned to an address that was just checked. **No P1 is left.**
 
-**Suggested order from here.** Every remaining finding is P2 or
-cross-cutting. **X.2 closed on 2026-10-24** — every `std::process::Command` of
-the tree now runs under `utils::process::run_timed` / `run_timed_async` (or the
-detached twin used by the OpenVPN daemon parent), with a source guard per
-module. **X.3 closed the same day** — every mutating screen surfaces its
-failure through `notifyError`, including the Shares/Backup/Storage sites the
-original item had missed. **X.5 closed the same day** — the `TESTING.md`
-counts are re-derived and every dual figure is in place; X.6 became a Process
-rule. What is left of the cross-cutting list is two real defects: **X.7**
-(hand-rolled auth in `security.rs`) and **X.8** (a missing token is `400`, not
-`401`). Then: 28/29 (small, self-contained), 10b (10.5/10.6/10.7 — the residual
+**Suggested order from here.** Every remaining finding is P2 — **the
+cross-cutting list is empty**. **X.2 closed on 2026-10-24** — every
+`std::process::Command` of the tree now runs under `utils::process::run_timed` /
+`run_timed_async` (or the detached twin used by the OpenVPN daemon parent),
+with a source guard per module. **X.3 closed the same day** — every mutating
+screen surfaces its failure through `notifyError`, including the
+Shares/Backup/Storage sites the original item had missed. **X.5 closed the same
+day** — the `TESTING.md` counts are re-derived and every dual figure is in
+place; X.6 became a Process rule. **X.7 and X.8 closed on 2026-10-24** (Done
+(n)): `admin_guard` is the only module that turns `x-session-token` into an
+identity decision — the nine duplicated primitives and the 65 inline header
+blocks are gone — and the status contract is stated once (`401` no/unknown
+session, `403` non-admin, `400` only a malformed request). What is left, in
+order: 28/29 (small, self-contained), 10b (10.5/10.6/10.7 — the residual
 hardening), 32/33 (residuals of closed items), 16.4 (the only remaining
 *feature*: a scheduler for persisted sync jobs) and 31 (pure maintainability,
 do it last, one tab at a time).
@@ -403,28 +409,21 @@ and the full table live in `TESTING.md` → 2026-10-24 recount.
 (2026-10-24) — it is a standing method rule, not a fixable finding: every new
 item must name the assertion that would have caught its defect, and add it with
 the fix. It no longer counts as an open finding.
-- [ ] **X.7 — Hand-rolled auth checks that bypass `require_auth`.** The
-      Dashboard's two (`dashboard.rs:2274,2328`, no `expires_at` predicate) are
-      **fixed** (2026-10-23): both preference handlers now go through
-      `require_auth`, so an invalid *or expired* session answers `401` and
-      writes nothing. Still open: the whole `handlers/security.rs` session
-      surface trusts the caller's own token as the scope (14.1/14.2). Audit
-      every handler that reads `x-session-token` manually instead of going
-      through `admin_guard`.
-- [ ] **X.8 — A missing `x-session-token` is `400`, not `401`.** `require_auth`
-      answers `json_error` (`StatusCode::BAD_REQUEST`) when the header is
-      absent, and `401` only for an invalid/expired token
-      (`src/handlers/admin_guard.rs:76-84`, `src/utils/response.rs:87-93`). So a
-      client that branches on the status reads an auth failure as a validation
-      error. Item 15 fixed the *security* half (an expired session was
-      accepted) but deliberately did **not** flip the tree-wide status: the
-      change is one line in `admin_guard` plus a sweep of ~50 assertions across
-      ~25 integration suites (many of them loops that mix guarded endpoints with
-      hand-rolled ones, e.g. `settings_core`, `chat`, `snmp`), and it cannot be
-      validated without running the tests. *Acceptance:* `401` for a missing
-      token in `require_auth`/`require_admin`, every `assert_eq!(… BAD_REQUEST)`
-      on a no-token request flipped to `UNAUTHORIZED`, suites with mixed guards
-      split per endpoint, and `docs/API.md` stating the contract once.
+**X.7 — Hand-rolled auth checks that bypass `require_auth`.** Closed on
+2026-10-24 — see Done (2026-10-24 (n)). `handlers::admin_guard` is now the only
+module that turns `x-session-token` into an identity decision: the nine
+duplicated primitives (`handlers::auth::require_admin` plus the private helpers
+of `syncthing`, `shares`, `vpn`, `ups`, `permissions`, `snmp`, `user_homes` and
+`downloader`) delegate to it, the 65 inline header blocks of
+`security`/`settings`/`explorer`/`chat`/`avatars` go through it, and the 11 dead
+re-checks of `docker.rs` are gone. The drifted `400` for a non-admin in
+`shares`/`permissions`/`snmp`/`settings` is now `403` everywhere.
+**X.8 — A missing `x-session-token` is `400`, not `401`.** Closed on
+2026-10-24 — see Done (2026-10-24 (n)). `require_auth` answers `401` for an
+absent or empty header, the contract is stated once in `docs/API.md` → *Auth
+status contract* and in `admin_guard.rs`, the 39 no-token assertions across 24
+suites were flipped, and the two tolerant `UNAUTHORIZED || BAD_REQUEST` pairs
+(`power`, `db_backup`) are strict `401` now that the two families agree.
 
 ---
 
@@ -465,6 +464,38 @@ the fix. It no longer counts as an open finding.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-24 (n)** — Auth guard — **X.7 and X.8 closed**: one primitive decides
+who the caller is, and one contract says how a refusal is answered. `X.7`: nine
+modules carried their own copy of the session check — `handlers::auth::
+require_admin` (a duplicate of `admin_guard::require_admin`) and private
+`require_admin` helpers in `syncthing`, `shares`, `vpn`, `ups`, `permissions`,
+`snmp`, `user_homes` and `downloader` — plus 65 inline `x-session-token` blocks
+in `security.rs` (6), `settings.rs` (20), `explorer.rs` (31), `chat.rs` (7) and
+`avatars.rs` (1), plus 11 dead re-checks in `docker.rs` that ran *after* a
+successful guard. The copies had drifted: `shares`, `permissions`, `snmp` and
+`settings` answered `400 Bad Request` to a signed-in **non-admin** while every
+other module answered `403`. All of them now go through `admin_guard`, which
+gained `require_auth_caller` (username + own token, for the self-service
+sessions), `require_session_token` (the modules that still resolve the `Session`
+row themselves — the Explorer's path guard) and `denial_message` (status →
+wording, for modules that answer a `Json<ApiResponse>` envelope: Syncthing,
+Downloader, VPN). `X.8`: `require_auth` answered `json_error` (`400`) when the
+header was absent, and `401` only for an invalid/expired token, so a client
+branching on the status read "you are not signed in" as "your request is
+malformed". The contract is now stated once — `401` absent/empty header or
+unknown/expired token, `403` valid non-admin on an `admin` route, `400` only for
+a request the server could not understand — in `admin_guard.rs` and
+`docs/API.md` → *Auth status contract*. Guard rails: four source-guard unit
+tests in `admin_guard.rs` fail if a module defines its own
+`require_admin`/`require_auth` again or if one of the eight delegated modules
+starts parsing the header, and the new `tests/auth_guard_integration.rs` (7
+tests) pins the behaviour — including the pair that gives the contract its
+meaning: the same route answers `401` without a session and `400` for a
+malformed body from an admin. `account_integration.rs` 30 → 31 (an expired
+session is `401` on all three self-service endpoints and writes nothing).
+`docs/guides/security.md` carries the detail; the SPA needed no change (it
+never branched on `400` vs `401`).
 
 **2026-10-24 (m)** — Test accounting — **X.5 closed**: every count in
 `TESTING.md` was re-derived from the tree instead of trusted. Method: test

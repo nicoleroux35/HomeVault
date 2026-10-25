@@ -78,6 +78,41 @@ returns and what `POST /security/sessions/revoke` accepts:
   filtered before deletion); "log out everything else" is the dedicated
   `revoke-all` endpoint.
 
+### One auth primitive, one status contract (2026-10-24, ROADMAP X.7 / X.8)
+
+Every handler in `security.rs` used to parse `x-session-token` itself and rebuild
+the same three branches (header present → resolve → is-admin). Six copies of the
+same decision is how the answer drifts, and it had:
+
+- `security.rs`, `shares.rs`, `permissions.rs`, `snmp.rs` and `settings.rs`
+  answered **`400 Bad Request`** to a signed-in **non-admin** where every other
+  module answered `403`;
+- a **missing** `x-session-token` answered **`400`** across the API (the header
+  was "just another absent parameter") while `terminal_pty.rs`, `system.rs` and
+  a few others answered `401`.
+
+A client that branches on the status therefore read "you are not signed in" as
+"your request is malformed", and the same refusal looked like two different
+problems on two screens. Both are fixed at the root:
+
+- `handlers::admin_guard` is now **the only module that turns the header into an
+  identity decision**. The eight modules that carried a private
+  `require_admin` (`syncthing`, `shares`, `vpn`, `ups`, `permissions`, `snmp`,
+  `user_homes`, `downloader`), the `Explorer`/`Settings`/`Chat`/`Avatars` inline
+  blocks and `handlers::auth::require_admin` (a duplicate of the shared one) all
+  delegate to it. Modules that answer a `Json<ApiResponse>` envelope keep their
+  envelope and flatten the guard's *status* to a message via
+  `admin_guard::denial_message`.
+- The status is stated once, in `admin_guard.rs` and in
+  [API.md](../API.md) → *Auth status contract*: `401` for an absent/empty header
+  or an unknown/expired token, `403` for a valid non-admin on an `admin` route,
+  and `400` **only** for a request the server could not understand.
+- Source guards in `admin_guard.rs` fail the build if a module defines its own
+  `require_admin`/`require_auth` again, or if one of the eight delegated modules
+  starts parsing the header itself. Behaviour guard:
+  `auth_guard_integration.rs` (missing → `401`, non-admin → `403`, malformed →
+  `400`, on the same routes).
+
 ## Frontend
 
 - Security UI: the Settings security-category cards
@@ -105,6 +140,12 @@ returns and what `POST /security/sessions/revoke` accepts:
   `account_integration.rs::test_revoke_sessions_is_scoped_to_the_caller`.
 - Login history: the global view is admin-only; per-user history is admin **or**
   the account owner (`handle_get_user_login_history`).
+- **Every handler in this module guards through `admin_guard`** — no local copy
+  of the token check, no local status choice. Source guard:
+  `admin_guard.rs::security_module_never_parses_the_header_itself`.
+- **An expired session is `401` on all three self-service endpoints** and writes
+  nothing. Guard:
+  `account_integration.rs::test_security_endpoints_reject_an_expired_session`.
 - `getActiveSessionsCount` counts **distinct usernames** with a
   non-expired session (`SessionRepository::count_distinct_active_users`),
   not raw session rows — one user open in several tabs/devices still

@@ -456,7 +456,16 @@ async fn test_share_endpoints_require_admin_not_just_a_session() {
     ];
 
     for (method, uri, body) in cases {
-        let (_, resp) = send(&mut r, method.clone(), uri, Some(&token), body.clone()).await;
+        let (status, resp) = send(&mut r, method.clone(), uri, Some(&token), body.clone()).await;
+        // `403`, never `400`: the request was well-formed, the session is
+        // valid, the account is simply not an admin. This suite used to ignore
+        // the status here, which is how the module's own guard drifted to
+        // `400` for a non-admin caller (ROADMAP X.7).
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{method} {uri} must answer 403 for a non-admin session: {resp}"
+        );
         assert_eq!(
             resp["success"],
             json!(false),
@@ -482,7 +491,7 @@ async fn test_user_permissions_is_self_or_admin_only() {
     let alice = login(&mut r, "alice", "Passw0rd!123").await;
 
     // alice may not read bob's permissions
-    let (_, body) = send(
+    let (status, body) = send(
         &mut r,
         Method::GET,
         "/api/users/bob/permissions",
@@ -490,6 +499,11 @@ async fn test_user_permissions_is_self_or_admin_only() {
         None,
     )
     .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "another account's permissions must answer 403, not 400: {body}"
+    );
     assert_eq!(body["success"], json!(false));
     assert!(body["message"]
         .as_str()

@@ -193,9 +193,11 @@ async fn test_backup_status_requires_a_session() {
     let mut app = router(state);
 
     let (status, body) = send(&mut app, Method::GET, "/api/settings/backup/db", None, None).await;
-    assert!(
-        status == StatusCode::UNAUTHORIZED || status == StatusCode::BAD_REQUEST,
-        "unauthenticated access must be refused, got {status} {body}"
+    // `401`, not `400`: no session is an authentication failure (ROADMAP X.8).
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "unauthenticated access must answer 401, got {status} {body}"
     );
 }
 

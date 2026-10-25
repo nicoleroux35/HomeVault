@@ -222,7 +222,7 @@ async fn test_read_endpoints_require_a_session() {
         "/api/journal/cleanup-settings",
     ] {
         let (status, _) = send(&mut r, Method::GET, uri, None, None).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri} (no token)");
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri} (no token)");
         let (status, _) = send(&mut r, Method::GET, uri, Some("nope"), None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri} (bad token)");
     }
@@ -245,7 +245,11 @@ async fn test_write_endpoints_require_an_admin() {
     ];
     for (method, uri, body) in cases {
         let (status, _) = send(&mut r, method.clone(), uri, None, body.clone()).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{method} {uri} (no token)");
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{method} {uri} (no token)"
+        );
         let (status, _) = send(&mut r, method.clone(), uri, Some(&token), body.clone()).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri} (non-admin)");
     }

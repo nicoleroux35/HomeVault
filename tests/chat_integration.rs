@@ -238,7 +238,7 @@ async fn test_send_and_models_and_model_get_reject_a_missing_session() {
 
     // /model GET uses a real status code
     let (status, _) = send(&mut router, Method::GET, "/api/chat/model", None, None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     // /send/stream uses 401
     let (status, _) = send(

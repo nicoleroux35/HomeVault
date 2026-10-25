@@ -268,7 +268,7 @@ async fn every_endpoint_rejects_missing_token() {
     let mut router = vm_router(state);
     for (m, path, body) in all_endpoints() {
         let (status, _) = send(&mut router, m.clone(), path, None, body).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{m} {path} missing token");
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{m} {path} missing token");
     }
 }
 
@@ -602,14 +602,7 @@ async fn iso_store_lists_and_deletes_through_the_blocking_pool() {
     std::fs::write(store.join("ubuntu-24.04.iso"), vec![0u8; 16]).unwrap();
     std::fs::write(store.join("notes.txt"), b"not an iso").unwrap();
 
-    let (status, body) = send(
-        &mut router,
-        Method::GET,
-        "/api/vm/isos",
-        Some(&token),
-        None,
-    )
-    .await;
+    let (status, body) = send(&mut router, Method::GET, "/api/vm/isos", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let list = body["data"].as_array().expect("a list");
     assert_eq!(list.len(), 1, "only .iso files are listed: {body}");

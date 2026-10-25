@@ -267,7 +267,11 @@ fn admin_write_endpoints() -> Vec<(Method, &'static str, Value)> {
         (Method::PUT, "/api/settings/email", json!({})),
         (Method::PUT, "/api/settings/notifications", json!({})),
         (Method::PUT, "/api/settings/update", json!({})),
-        (Method::PUT, "/api/settings/autostart", json!({"enabled": false})),
+        (
+            Method::PUT,
+            "/api/settings/autostart",
+            json!({"enabled": false}),
+        ),
         (
             Method::POST,
             "/api/settings/language",
@@ -288,7 +292,7 @@ async fn test_reads_reject_missing_and_bogus_token() {
     let mut router = settings_router(state);
     for uri in admin_read_endpoints() {
         let (status, body) = send(&mut router, Method::GET, uri, None, None).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "GET {uri} no token");
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "GET {uri} no token → 401");
         assert_eq!(body["success"], json!(false), "GET {uri} no token");
 
         let (status, _) = send(&mut router, Method::GET, uri, Some("nope"), None).await;
@@ -329,7 +333,9 @@ async fn test_reads_and_writes_reject_a_non_admin_session() {
 
     for uri in admin_read_endpoints() {
         let (status, body) = send(&mut router, Method::GET, uri, Some(&token), None).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "GET {uri} non-admin");
+        // `403`, not `400`: the session is valid, the account is not an admin
+        // (ROADMAP X.7).
+        assert_eq!(status, StatusCode::FORBIDDEN, "GET {uri} non-admin");
         assert_eq!(body["success"], json!(false));
         assert!(
             body["message"].as_str().unwrap_or("").contains("Admin"),
@@ -338,7 +344,7 @@ async fn test_reads_and_writes_reject_a_non_admin_session() {
     }
     for (method, uri, b) in admin_write_endpoints() {
         let (status, body) = send(&mut router, method.clone(), uri, Some(&token), Some(b)).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{method} {uri} non-admin");
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri} non-admin");
         assert!(body["message"].as_str().unwrap_or("").contains("Admin"));
     }
 }
@@ -357,7 +363,7 @@ async fn test_get_language_allows_any_session_but_still_needs_one() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     let token = login(&mut router, "regular", "Password123!").await;
     let (status, body) = send(
@@ -387,7 +393,7 @@ async fn test_timezones_offer_the_full_iana_database_to_any_session() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "no token");
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "no token");
 
     let token = login(&mut router, "regular", "Password123!").await;
     let (status, body) = send(
@@ -558,7 +564,7 @@ async fn test_appearance_is_readable_by_a_non_admin_session() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, _) = send(
         &mut router,
         Method::GET,

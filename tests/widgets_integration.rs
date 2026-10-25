@@ -217,7 +217,11 @@ async fn test_monitor_layout_requires_a_session() {
             body.clone(),
         )
         .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{method} (no token)");
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{method} (no token → 401)"
+        );
         let (status, _) = send(
             &mut r,
             method.clone(),
@@ -442,7 +446,14 @@ async fn test_monitor_layout_rejects_an_oversized_blob() {
     assert_eq!(body["success"], json!(false));
 
     // Nothing was stored.
-    let (_, body) = send(&mut r, Method::GET, "/api/monitor-layout", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/monitor-layout",
+        Some(&token),
+        None,
+    )
+    .await;
     assert!(body["data"]["layout_json"].is_null(), "{body}");
 }
 
@@ -522,7 +533,14 @@ async fn test_monitor_layout_accepts_a_16_kib_boundary_blob() {
     let (status, body) = post_layout(&mut r, &token, &blob).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    let (_, body) = send(&mut r, Method::GET, "/api/monitor-layout", Some(&token), None).await;
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/monitor-layout",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(
         body["data"]["layout_json"].as_str().map(str::len),
         Some(16 * 1024),
@@ -548,7 +566,7 @@ async fn test_active_sessions_count_is_admin_only() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, _) = send(
         &mut r,
         Method::GET,

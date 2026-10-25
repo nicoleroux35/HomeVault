@@ -825,18 +825,14 @@ pub async fn handle_explorer_list(
     Query(params): Query<ExplorerListQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
     let path = params.path.unwrap_or_else(|| "/".to_string());
 
-    let safe_path = match state.auth.get_session(session_token).await {
+    let safe_path = match state.auth.get_session(&session_token).await {
         Ok(session) => match validate_path_access(&state, &path, &session) {
             Some(p) => p,
             None => {
@@ -865,22 +861,18 @@ pub async fn handle_explorer_search(
     Query(params): Query<ExplorerSearchQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
     let path = if params.path.starts_with('/') {
         params.path.clone()
     } else {
         format!("/{}", params.path)
     };
 
-    let safe_path = match state.auth.get_session(session_token).await {
+    let safe_path = match state.auth.get_session(&session_token).await {
         Ok(session) => match validate_path_access(&state, &path, &session) {
             Some(p) => p,
             None => {
@@ -932,16 +924,12 @@ pub async fn handle_explorer_mkdir(
     Query(params): Query<ExplorerMkdirQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    match state.auth.get_session(&session_token).await {
         Ok(session) => {
             let validated = match validate_path_access(&state, &params.path, &session) {
                 Some(p) => p,
@@ -986,16 +974,12 @@ pub async fn handle_explorer_delete(
     Query(params): Query<ExplorerDeleteQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    match state.auth.get_session(&session_token).await {
         Ok(session) if session.is_admin => {}
         Ok(_) => return ResponseHelper::json_forbidden("Admin required".to_string()),
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
@@ -1221,14 +1205,12 @@ pub async fn handle_explorer_download_ticket(
     headers: HeaderMap,
     Query(params): Query<ExplorerPreviewQuery>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-    let session = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let session = match state.auth.get_session(&session_token).await {
         Ok(s) => s,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
@@ -1278,16 +1260,12 @@ pub async fn handle_explorer_upload(
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let session = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let session = match state.auth.get_session(&session_token).await {
         Ok(session) => session,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
@@ -1628,14 +1606,12 @@ pub async fn handle_explorer_upload_session_start(
 ) -> Response {
     prune_upload_sessions().await;
 
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-    let session = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let session = match state.auth.get_session(&session_token).await {
         Ok(s) => s,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
@@ -2000,16 +1976,12 @@ pub async fn handle_explorer_rename(
     Query(params): Query<ExplorerRenameQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let (old_path, new_path) = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let (old_path, new_path) = match state.auth.get_session(&session_token).await {
         Ok(session) => {
             // Both the source and the destination are full paths — validate
             // each so a rename can't move a file out of the allowed roots
@@ -2086,16 +2058,12 @@ pub async fn handle_explorer_copy(
     Query(params): Query<ExplorerCopyQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let (source, destination, username) = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let (source, destination, username) = match state.auth.get_session(&session_token).await {
         Ok(session) => {
             let src_valid = validate_path_access(&state, &params.source, &session);
             let dst_valid = validate_path_access(&state, &params.destination, &session);
@@ -2164,16 +2132,12 @@ pub async fn handle_explorer_move(
     Query(params): Query<ExplorerMoveQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let (source, destination, username) = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let (source, destination, username) = match state.auth.get_session(&session_token).await {
         Ok(session) => {
             let src_valid = validate_path_access(&state, &params.source, &session);
             let dst_valid = validate_path_access(&state, &params.destination, &session);
@@ -2269,16 +2233,12 @@ pub async fn handle_explorer_preview(
     Query(params): Query<ExplorerPreviewQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    match state.auth.get_session(&session_token).await {
         Ok(session) => {
             let validated = match validate_path_access(&state, &params.path, &session) {
                 Some(p) => p,
@@ -2315,16 +2275,12 @@ pub async fn handle_explorer_permissions(
     Query(params): Query<ExplorerPermissionsQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let validated_path = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let validated_path = match state.auth.get_session(&session_token).await {
         Ok(session) => match validate_path_access(&state, &params.path, &session) {
             Some(p) => p,
             None => {
@@ -2574,16 +2530,12 @@ pub async fn handle_explorer_extract(
     Query(params): Query<ExplorerExtractQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let (archive_path, destination) = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let (archive_path, destination) = match state.auth.get_session(&session_token).await {
         Ok(session) => {
             let path_valid = validate_path_access(&state, &params.path, &session);
             let dst_valid = validate_path_access(&state, &params.destination, &session);
@@ -3040,14 +2992,12 @@ pub async fn handle_explorer_thumbnail_ticket(
     headers: HeaderMap,
     Query(params): Query<ExplorerPreviewQuery>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-    let session = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let session = match state.auth.get_session(&session_token).await {
         Ok(s) => s,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
@@ -3135,16 +3085,12 @@ pub async fn handle_explorer_disks(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    match state.auth.get_session(&session_token).await {
         Ok(_) => {}
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     }
@@ -3319,16 +3265,12 @@ pub async fn handle_explorer_compress(
     headers: HeaderMap,
     axum::extract::Json(payload): axum::extract::Json<ExplorerCompressRequest>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let (paths, destination) = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let (paths, destination) = match state.auth.get_session(&session_token).await {
         Ok(session) => {
             let dest_valid = validate_path_access(&state, &payload.destination, &session);
             let mut sources_valid: Vec<PathBuf> = Vec::with_capacity(payload.paths.len());
@@ -3406,16 +3348,12 @@ pub async fn handle_explorer_trash(
     Query(params): Query<ExplorerDeleteQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    match state.auth.get_session(&session_token).await {
         Ok(session) => {
             let validated = match validate_path_access(&state, &params.path, &session) {
                 Some(p) => p,
@@ -3455,16 +3393,12 @@ pub async fn handle_explorer_trash_list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let session = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let session = match state.auth.get_session(&session_token).await {
         Ok(s) => s,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
@@ -3497,16 +3431,12 @@ pub async fn handle_explorer_trash_restore(
     Query(params): Query<ExplorerTrashIdQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let session = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let session = match state.auth.get_session(&session_token).await {
         Ok(s) => s,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
@@ -3539,16 +3469,12 @@ pub async fn handle_explorer_trash_purge(
     axum::extract::Path(id): axum::extract::Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let session = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let session = match state.auth.get_session(&session_token).await {
         Ok(s) => s,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
@@ -3581,16 +3507,12 @@ pub async fn handle_explorer_trash_empty(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let session = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let session = match state.auth.get_session(&session_token).await {
         Ok(s) => s,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
@@ -3636,16 +3558,12 @@ pub async fn handle_explorer_save(
     headers: HeaderMap,
     axum::extract::Json(payload): axum::extract::Json<ExplorerSaveRequest>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let target = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let target = match state.auth.get_session(&session_token).await {
         Ok(session) => match validate_path_access(&state, &payload.path, &session) {
             Some(p) => p,
             None => {
@@ -3735,16 +3653,12 @@ pub async fn handle_explorer_roots(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let session = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let session = match state.auth.get_session(&session_token).await {
         Ok(s) => s,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
@@ -3822,16 +3736,12 @@ pub async fn handle_explorer_eject(
     Query(params): Query<ExplorerEjectQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    match state.auth.get_session(&session_token).await {
         Ok(session) if session.is_admin => {}
         Ok(_) => return ResponseHelper::json_forbidden("Admin required".to_string()),
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
@@ -3920,16 +3830,12 @@ pub async fn handle_explorer_snapshots(
     Query(params): Query<ExplorerSnapshotsQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    match state.auth.get_session(&session_token).await {
         Ok(session) => {
             let validated = match validate_path_access(&state, &params.path, &session) {
                 Some(p) => p,
@@ -4057,16 +3963,12 @@ pub async fn handle_explorer_favorites_list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let session = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let session = match state.auth.get_session(&session_token).await {
         Ok(s) => s,
         Err(_) => return ResponseHelper::json_error("Session invalid".to_string()),
     };
@@ -4084,16 +3986,12 @@ pub async fn handle_explorer_favorites_add(
     headers: HeaderMap,
     axum::extract::Json(req): axum::extract::Json<FavoriteRequest>,
 ) -> impl IntoResponse {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let session = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let session = match state.auth.get_session(&session_token).await {
         Ok(s) => s,
         Err(_) => return ResponseHelper::json_error("Session invalid".to_string()),
     };
@@ -4133,16 +4031,12 @@ pub async fn handle_explorer_favorites_remove(
     headers: HeaderMap,
     axum::extract::Json(req): axum::extract::Json<FavoriteRequest>,
 ) -> impl IntoResponse {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let session = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let session = match state.auth.get_session(&session_token).await {
         Ok(s) => s,
         Err(_) => return ResponseHelper::json_error("Session invalid".to_string()),
     };
@@ -4178,14 +4072,12 @@ pub async fn handle_explorer_watch_ticket(
     headers: HeaderMap,
     axum::extract::Json(req): axum::extract::Json<WatchTicketRequest>,
 ) -> impl IntoResponse {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-    let session = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let session = match state.auth.get_session(&session_token).await {
         Ok(s) => s,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
@@ -4300,14 +4192,12 @@ pub async fn handle_explorer_recents_touch(
     headers: HeaderMap,
     axum::extract::Json(req): axum::extract::Json<RecentTouchRequest>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-    let session = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let session = match state.auth.get_session(&session_token).await {
         Ok(s) => s,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
@@ -4370,14 +4260,12 @@ pub async fn handle_explorer_history(
     Query(params): Query<ExplorerHistoryQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-    let session = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let session = match state.auth.get_session(&session_token).await {
         Ok(s) => s,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };

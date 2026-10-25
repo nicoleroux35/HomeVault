@@ -38,45 +38,6 @@ use axum::{
 use chrono::Utc;
 use std::sync::Arc;
 
-async fn extract_session(state: &Arc<AppState>, headers: &HeaderMap) -> Option<String> {
-    let token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    if token.is_empty() {
-        return None;
-    }
-    state.auth.get_username_from_token(token).await
-}
-
-// `Response` is axum's canonical error type; boxing it would ripple
-// through every call site for no real benefit, so allow the lint here.
-#[allow(clippy::result_large_err)]
-async fn require_admin(state: &Arc<AppState>, headers: &HeaderMap) -> Result<String, Response> {
-    let token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    if token.is_empty() {
-        return Err(ResponseHelper::json_error(
-            "No session token provided".to_string(),
-        ));
-    }
-    match state.auth.get_session(token).await {
-        Ok(session) => {
-            if !session.is_admin {
-                return Err(ResponseHelper::json_error(
-                    "Admin access required".to_string(),
-                ));
-            }
-            Ok(session.username)
-        }
-        Err(_) => Err(ResponseHelper::json_unauthorized(
-            "Invalid session".to_string(),
-        )),
-    }
-}
-
 /// Builds the absolute path for a user's home folder.
 pub(crate) fn build_home_path(disk_mount_point: &str, username: &str) -> String {
     if disk_mount_point == "/home" || disk_mount_point.is_empty() {
@@ -389,8 +350,8 @@ pub async fn handle_user_home_get(
     Path(username): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    if extract_session(&state, &headers).await.is_none() {
-        return ResponseHelper::json_unauthorized("Invalid session".to_string());
+    if let Err(resp) = crate::handlers::admin_guard::require_auth(&state, &headers).await {
+        return resp;
     }
 
     let repo = UserHomeRepository::new(state.db.pool());
@@ -433,10 +394,9 @@ pub async fn handle_user_home_put(
     headers: HeaderMap,
     req: axum::extract::Json<SetHomeFolderRequest>,
 ) -> Response {
-    let _ = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(r) => return r,
-    };
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
+    }
 
     if let Some(sz) = req.size_bytes {
         if sz < 0 {
@@ -482,10 +442,9 @@ pub async fn handle_user_home_delete(
     Path(username): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let _ = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(r) => return r,
-    };
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
+    }
 
     let repo = UserHomeRepository::new(state.db.pool());
 
@@ -556,8 +515,8 @@ pub async fn handle_available_home_disks(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    if extract_session(&state, &headers).await.is_none() {
-        return ResponseHelper::json_unauthorized("Invalid session".to_string());
+    if let Err(resp) = crate::handlers::admin_guard::require_auth(&state, &headers).await {
+        return resp;
     }
 
     match DiskService::list_partitions().await {

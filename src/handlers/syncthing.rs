@@ -49,31 +49,14 @@ const HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// sentence — and it is what the screen keys its banner on.
 const KEY_ERROR: &str = "Syncthing API key";
 
-/// Require a valid, authenticated **admin** session. Every handler in this
-/// file had no auth check at all before this fix — not even a "header is
-/// non-empty" check — so anyone who could reach the server could enumerate
-/// every paired device's ID/IP address and every synced folder's path, and
-/// could restart the Syncthing daemon or pause/resume any device outright.
-/// Device topology and sync control are privileged, same reasoning as VPN.
-async fn require_admin(state: &AppStateArc, headers: &HeaderMap) -> Result<String, String> {
-    let token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if token.is_empty() {
-        return Err("No session token provided".to_string());
-    }
-
-    let Some(username) = state.auth.get_username_from_token(token).await else {
-        return Err("Invalid or expired session".to_string());
-    };
-
-    if !state.auth.is_admin(&username).await {
-        return Err("Admin privileges required for this operation".to_string());
-    }
-
-    Ok(username)
+/// Requires a valid, authenticated **admin** session.
+///
+/// The decision — token present, token valid, account admin, and the status
+/// each failure carries — belongs to `admin_guard` (ROADMAP X.7). This module
+/// answers a `Json<ApiResponse>` envelope that is always `200`, so the guard's
+/// response is flattened to its message instead of being returned as-is.
+fn denial(resp: axum::response::Response) -> String {
+    crate::handlers::admin_guard::denial_message(resp.status())
 }
 
 /// Response wrapper
@@ -744,8 +727,8 @@ pub async fn handle_syncthing_status(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> Json<ApiResponse<SyncthingStatus>> {
-    if let Err(e) = require_admin(&state, &headers).await {
-        return Json(ApiResponse::error(&e));
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return Json(ApiResponse::error(&denial(resp)));
     }
     // First check if syncthing binary exists
     let binary_check = tokio::process::Command::new("syncthing")
@@ -806,8 +789,8 @@ pub async fn handle_syncthing_config(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> Json<ApiResponse<SyncthingConfig>> {
-    if let Err(e) = require_admin(&state, &headers).await {
-        return Json(ApiResponse::error(&e));
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return Json(ApiResponse::error(&denial(resp)));
     }
     let raw = match syncthing_get("system/config").await {
         Ok(r) => r,
@@ -828,8 +811,8 @@ pub async fn handle_syncthing_devices(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> Json<ApiResponse<Vec<SyncthingDeviceWithStatus>>> {
-    if let Err(e) = require_admin(&state, &headers).await {
-        return Json(ApiResponse::error(&e));
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return Json(ApiResponse::error(&denial(resp)));
     }
     let config_raw = match syncthing_get("system/config").await {
         Ok(r) => r,
@@ -882,8 +865,8 @@ pub async fn handle_syncthing_folders(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> Json<ApiResponse<Vec<FolderStatus>>> {
-    if let Err(e) = require_admin(&state, &headers).await {
-        return Json(ApiResponse::error(&e));
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return Json(ApiResponse::error(&denial(resp)));
     }
     let config_raw = match syncthing_get("system/config").await {
         Ok(r) => r,
@@ -944,8 +927,8 @@ pub async fn handle_syncthing_connections(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> Json<ApiResponse<ConnectionsResponse>> {
-    if let Err(e) = require_admin(&state, &headers).await {
-        return Json(ApiResponse::error(&e));
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return Json(ApiResponse::error(&denial(resp)));
     }
     let raw = match syncthing_get("system/connections").await {
         Ok(r) => r,
@@ -966,9 +949,9 @@ pub async fn handle_syncthing_restart(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> Json<ApiResponse<String>> {
-    let admin_username = match require_admin(&state, &headers).await {
+    let admin_username = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
         Ok(u) => u,
-        Err(e) => return Json(ApiResponse::error(&e)),
+        Err(resp) => return Json(ApiResponse::error(&denial(resp))),
     };
     match syncthing_post("system/restart").await {
         Ok(_) => {
@@ -993,9 +976,9 @@ pub async fn handle_syncthing_pause_device(
     headers: HeaderMap,
     Json(req): Json<PauseDeviceRequest>,
 ) -> Json<ApiResponse<String>> {
-    let admin_username = match require_admin(&state, &headers).await {
+    let admin_username = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
         Ok(u) => u,
-        Err(e) => return Json(ApiResponse::error(&e)),
+        Err(resp) => return Json(ApiResponse::error(&denial(resp))),
     };
     let device: String = url::form_urlencoded::byte_serialize(req.device.as_bytes()).collect();
     match syncthing_post(&format!("system/pause?device={}", device)).await {
@@ -1016,9 +999,9 @@ pub async fn handle_syncthing_resume_device(
     headers: HeaderMap,
     Json(req): Json<PauseDeviceRequest>,
 ) -> Json<ApiResponse<String>> {
-    let admin_username = match require_admin(&state, &headers).await {
+    let admin_username = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
         Ok(u) => u,
-        Err(e) => return Json(ApiResponse::error(&e)),
+        Err(resp) => return Json(ApiResponse::error(&denial(resp))),
     };
     let device: String = url::form_urlencoded::byte_serialize(req.device.as_bytes()).collect();
     match syncthing_post(&format!("system/resume?device={}", device)).await {
@@ -1044,8 +1027,8 @@ pub async fn handle_syncthing_scan_folder(
     headers: HeaderMap,
     Json(req): Json<ScanFolderRequest>,
 ) -> Json<ApiResponse<String>> {
-    if let Err(e) = require_admin(&state, &headers).await {
-        return Json(ApiResponse::error(&e));
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return Json(ApiResponse::error(&denial(resp)));
     }
     let folder: String = url::form_urlencoded::byte_serialize(req.folder.as_bytes()).collect();
     match syncthing_post(&format!("db/scan?folder={}", folder)).await {
@@ -1059,8 +1042,8 @@ pub async fn handle_syncthing_errors(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> Json<ApiResponse<Vec<String>>> {
-    if let Err(e) = require_admin(&state, &headers).await {
-        return Json(ApiResponse::error(&e));
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return Json(ApiResponse::error(&denial(resp)));
     }
     let raw = syncthing_get("system/error").await;
     match raw {
@@ -1112,9 +1095,9 @@ pub async fn handle_syncthing_create_folder(
     headers: HeaderMap,
     Json(req): Json<CreateFolderRequest>,
 ) -> Json<ApiResponse<serde_json::Value>> {
-    let admin_username = match require_admin(&state, &headers).await {
+    let admin_username = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
         Ok(u) => u,
-        Err(e) => return Json(ApiResponse::error(&e)),
+        Err(resp) => return Json(ApiResponse::error(&denial(resp))),
     };
 
     // 1. Validate every field on its own, so the screen can point at the one
@@ -1187,9 +1170,9 @@ pub async fn handle_syncthing_delete_folder(
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Json<ApiResponse<String>> {
-    let admin_username = match require_admin(&state, &headers).await {
+    let admin_username = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
         Ok(u) => u,
-        Err(e) => return Json(ApiResponse::error(&e)),
+        Err(resp) => return Json(ApiResponse::error(&denial(resp))),
     };
     // Re-validated even though it came out of the URL: the value is interpolated
     // into the daemon's REST path, and a decoded `..` must never get there.
@@ -1222,9 +1205,9 @@ pub async fn handle_syncthing_create_device(
     headers: HeaderMap,
     Json(req): Json<CreateDeviceRequest>,
 ) -> Json<ApiResponse<serde_json::Value>> {
-    let admin_username = match require_admin(&state, &headers).await {
+    let admin_username = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
         Ok(u) => u,
-        Err(e) => return Json(ApiResponse::error(&e)),
+        Err(resp) => return Json(ApiResponse::error(&denial(resp))),
     };
 
     let device_id = match normalize_device_id(&req.device_id) {
@@ -1262,7 +1245,9 @@ pub async fn handle_syncthing_create_device(
                 "Admin '{}' paired Syncthing device '{}' ({})",
                 admin_username, name, device_id
             ));
-            Json(ApiResponse::success(serde_json::json!({ "device_id": device_id })))
+            Json(ApiResponse::success(
+                serde_json::json!({ "device_id": device_id }),
+            ))
         }
         Err(e) => Json(ApiResponse::error(&e)),
     }
@@ -1277,9 +1262,9 @@ pub async fn handle_syncthing_delete_device(
     headers: HeaderMap,
     axum::extract::Path(device_id): axum::extract::Path<String>,
 ) -> Json<ApiResponse<String>> {
-    let admin_username = match require_admin(&state, &headers).await {
+    let admin_username = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
         Ok(u) => u,
-        Err(e) => return Json(ApiResponse::error(&e)),
+        Err(resp) => return Json(ApiResponse::error(&denial(resp))),
     };
     let device_id = match normalize_device_id(&device_id) {
         Ok(v) => v,

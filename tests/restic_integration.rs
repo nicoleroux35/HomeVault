@@ -379,7 +379,7 @@ async fn test_reads_reject_missing_token() {
     let mut router = restic_router(state);
     for (m, u) in read_endpoints() {
         let (s, _) = send(&mut router, m.clone(), u, None, None).await;
-        assert_eq!(s, StatusCode::BAD_REQUEST, "{m} {u}");
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{m} {u}");
     }
 }
 
@@ -422,7 +422,7 @@ async fn test_mutations_reject_missing_token() {
     let mut router = restic_router(state);
     for (m, u, b) in mutation_endpoints() {
         let (s, _) = send(&mut router, m.clone(), u, None, b).await;
-        assert_eq!(s, StatusCode::BAD_REQUEST, "{m} {u}");
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{m} {u}");
     }
 }
 
