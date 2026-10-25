@@ -163,6 +163,14 @@ stderr or only care that the reload ran). A source guard
 
 ## Frontend
 
+- **A refused mutation is never silent (ROADMAP X.3, 2026-10-24).** Service
+  start/stop/restart, the five protocol config saves, SFTP key add/save and
+  rebuild, share create/delete/toggle and ACL grant/revoke/sync all report a
+  failure through the shared `notifyError` (`frontend/src/lib/utils/notify.ts`),
+  which shows the server's own `message`/`error` under a translated fallback;
+  the config saves also confirm with `notifySuccess`. The empty `else {}`
+  branches this replaced made a refused click look like a click that did
+  nothing — never reintroduce one.
 - `frontend/src/routes/Shares.svelte` (uses `$state(...)` for all reactive
   fields — plain `let` would not trigger UI updates). The SFTP tab includes an
   "Add SFTP user" free-text form (not restricted to existing grantees) so a
@@ -199,6 +207,8 @@ stderr or only care that the reload ran). A source guard
   `run_timed_with_stdin` are the only allowed shapes. The handler's outer
   `tokio::time::timeout` stops waiting but does **not** kill the child, so a
   bare `.output()` in this module is a regression the source guard test catches.
+- **A refused mutation is never silent** (ROADMAP X.3, 2026-10-24): every
+  action reports its failure through `notifyError` (server `message`/`error`).
 - **WebDAV has no systemd unit.** Never reintroduce `systemctl` calls for the
   `webdav` protocol, a generated `homevault-webdav.py`, or a root-owned DAV
   process. `SharesService::start/stop/restart_service(Webdav)` returns an

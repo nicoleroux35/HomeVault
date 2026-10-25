@@ -26,6 +26,7 @@
   import { Button, Toggle, Alert, Spinner, Badge, Modal } from '$lib/components/theme';
   import { PageLayout, ConfirmDialog, StatCard, SectionCard, EmptyState } from '$lib/components/app';
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
+  import { notifyError } from '$lib/utils/notify';
   import { activateOnEnterOrSpace } from '$lib/utils/activateOnEnterOrSpace';
   import { cn } from '$lib/utils.js';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
@@ -427,6 +428,7 @@
       showScheduleModal = false;
       await loadSchedules();
     } else {
+      notifyError(resp);
     }
   }
 
@@ -435,6 +437,7 @@
     if (resp.success) {
       await loadSchedules();
     } else {
+      notifyError(resp);
     }
   }
 
@@ -445,6 +448,7 @@
     if (resp.success) {
       await loadSchedules();
     } else {
+      notifyError(resp);
     }
   }
 
@@ -465,6 +469,7 @@
       newPolicy = { name: '', max_count: 30, max_age_days: 90, max_size_gb: 0, apply_to_all: false };
       await loadRetentionPolicies();
     } else {
+      notifyError(resp);
     }
   }
 
@@ -475,6 +480,7 @@
     if (resp.success) {
       await loadRetentionPolicies();
     } else {
+      notifyError(resp);
     }
   }
 
@@ -511,6 +517,7 @@
       resetNewRepoForm();
       await loadRepos();
     } else {
+      notifyError(resp);
     }
   }
 
@@ -580,6 +587,7 @@
       }
       await loadRepos();
     } else {
+      notifyError(resp);
     }
   }
 
@@ -615,6 +623,7 @@
       // operator sees the job they just started.
       await Promise.all([loadJobs(), loadReminders()]);
     } else {
+      notifyError(resp);
     }
     backupInProgress = false;
   }
@@ -648,6 +657,7 @@
       restorePlan = null;
       await loadReminders();
     } else {
+      notifyError(resp);
     }
   }
 
@@ -658,10 +668,8 @@
     const resp = await api.resticCheck({ repo_id: selectedRepo.id });
     if (resp.success && resp.data) {
       checkResult = resp.data.check;
-      if (checkResult.healthy) {
-      } else {
-      }
     } else {
+      notifyError(resp);
     }
   }
 
@@ -686,6 +694,7 @@
       showForgetModal = false;
       await loadSnapshots();
     } else {
+      notifyError(resp);
     }
   }
 
@@ -694,7 +703,10 @@
 
     const resp = await api.resticPrune(selectedRepo.id);
     if (resp.success) {
+      await loadSnapshots();
+      await loadStats();
     } else {
+      notifyError(resp);
     }
   }
 
@@ -703,7 +715,9 @@
 
     const resp = await api.resticUnlock(selectedRepo.id);
     if (resp.success) {
+      await loadSnapshots();
     } else {
+      notifyError(resp);
     }
   }
 
@@ -726,6 +740,7 @@
     if (resp.success) {
       await loadSnapshots();
     } else {
+      notifyError(resp);
     }
   }
 

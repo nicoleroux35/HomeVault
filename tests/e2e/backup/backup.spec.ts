@@ -748,3 +748,79 @@ test.describe('14 — Edge cases & memory', () => {
     expect(restorePayload?.snapshot_id).toBe('bbbbbbbb');
   });
 });
+
+// ===========================================================================
+// 15. Action failure feedback (ROADMAP X.3)
+// ===========================================================================
+
+/**
+ * Every mutating handler used to swallow its failure in an empty `else {}`, so
+ * a refused click looked like a click that did nothing. The fix surfaces the
+ * server's own reason in an app toast. This test mocks the *failure* only — no
+ * real repository is deleted — and asserts the reason reaches the user.
+ */
+test.describe('15 — Action failure feedback', () => {
+  test('15.1 — a refused repository delete shows the server reason in a toast (mocked API)', async ({
+    page,
+  }) => {
+    const repo = {
+      id: 'mock-repo',
+      name: 'mock-repo',
+      repository: '/tmp/mock-repo',
+      password: 'mock-pass',
+      retention_policy_id: null,
+      source_paths: ['/etc/hostname'],
+      exclude_patterns: null,
+      tags: null,
+      snapshot_source: 'paths',
+      snapshot_pool: null,
+      snapshot_dataset: null,
+      snapshot_create_before_backup: false,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    };
+    const ok = (data: unknown) => JSON.stringify({ success: true, data });
+
+    // Routes before gotoBackup: the app fetches availability at mount.
+    await page.route('**/api/restic/available', (r) =>
+      r.fulfill({ body: ok({ available: true }), headers: { 'content-type': 'application/json' } }),
+    );
+    await page.route('**/api/restic/version', (r) =>
+      r.fulfill({ body: ok({ version: '0.17.0' }), headers: { 'content-type': 'application/json' } }),
+    );
+    await page.route(/\/api\/restic\/repos\?/, (r) =>
+      r.fulfill({ body: ok([repo]), headers: { 'content-type': 'application/json' } }),
+    );
+    await page.route('**/api/restic/repos/*/stats', (r) =>
+      r.fulfill({
+        body: ok({ snapshots_count: 2, total_size: 1024 }),
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await page.route('**/api/restic/retention-policies', (r) =>
+      r.fulfill({ body: ok([]), headers: { 'content-type': 'application/json' } }),
+    );
+    // Registered last so it wins over the generic routes above.
+    await page.route('**/api/restic/repos/mock-repo', async (r) => {
+      if (r.request().method() !== 'DELETE') return r.continue();
+      await r.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: false, message: 'e2e refusal: repository is busy' }),
+      });
+    });
+
+    await gotoBackup(page, adminTokens);
+    const card = win(page).locator('[data-testid="restic-repo-card"]').first();
+    await expect(card).toBeVisible({ timeout: 10_000 });
+    await card.locator('[data-testid="restic-action-danger"]').click();
+    await page
+      .locator('[data-slot="dialog-content"]')
+      .getByRole('button', { name: /confirm|confirmer|bestätigen|confirmar/i })
+      .click();
+
+    const toast = page.locator('[data-sonner-toast][data-type="error"]').first();
+    await expect(toast).toBeVisible({ timeout: 8_000 });
+    await expect(toast).toContainText('e2e refusal: repository is busy');
+  });
+});

@@ -1,6 +1,6 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-24 (X.2 closed — every subprocess bounded) — current version: 1.0.0
+Last updated: 2026-10-24 (X.2 and X.3 closed — subprocesses bounded, actions surfaced) — current version: 1.0.0
 
 ## How to read this file
 
@@ -88,13 +88,15 @@ Two structural facts explain most of the list:
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | 32 | Virtual Machines — residual | P2 | 2 |
 | 33 | Transfer quotas — residual | P2 | 1 |
-| — | Cross-cutting (5 systemic) | — | 5 |
+| — | Cross-cutting (4 systemic) | — | 4 |
 
-Total open findings: **18** (13 per-area + 5 cross-cutting). Item 27 (2
+Total open findings: **17** (13 per-area + 4 cross-cutting). Item 27 (2
 findings) left the open list on 2026-10-24 — see Done — and with it the last
 P1; **X.1 closed the same day** (Explorer was its last module — see Done
-2026-10-24 (f)), and **X.2 closed the same day too** (Done 2026-10-24 (k)), so
-no subprocess of the tree runs without a deadline.
+2026-10-24 (f)), **X.2 closed the same day too** (Done 2026-10-24 (k)), so no
+subprocess of the tree runs without a deadline, and **X.3 closed on
+2026-10-24** (Done 2026-10-24 (l)) — every mutating screen now surfaces its
+failure.
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
@@ -155,13 +157,15 @@ pinned to an address that was just checked. **No P1 is left.**
 cross-cutting. **X.2 closed on 2026-10-24** — every `std::process::Command` of
 the tree now runs under `utils::process::run_timed` / `run_timed_async` (or the
 detached twin used by the OpenVPN daemon parent), with a source guard per
-module. What is left of the cross-cutting list is process, not outage: X.3
-(silent `else {}` in CloudSync/Health/Desktop/NotificationCenter), X.5 (counts),
-X.6 (shape-only tests), X.7 (hand-rolled auth in `security.rs`) and X.8 (a
-missing token is `400`, not `401`). Then: 28/29 (small, self-contained), 10b
-(10.5/10.6/10.7 — the residual hardening), 32/33 (residuals of closed items),
-16.4 (the only remaining *feature*: a scheduler for persisted sync jobs) and 31
-(pure maintainability, do it last, one tab at a time).
+module. **X.3 closed the same day** — every mutating screen surfaces its
+failure through `notifyError`, including the Shares/Backup/Storage sites the
+original item had missed. What is left of the cross-cutting list is process,
+not outage: X.5 (counts), X.6 (shape-only tests), X.7 (hand-rolled auth in
+`security.rs`) and X.8 (a missing token is `400`, not `401`). Then: 28/29
+(small, self-contained), 10b (10.5/10.6/10.7 — the residual hardening), 32/33
+(residuals of closed items), 16.4 (the only remaining *feature*: a scheduler
+for persisted sync jobs) and 31 (pure maintainability, do it last, one tab at a
+time).
 
 ---
 
@@ -363,22 +367,23 @@ left with item 16 on 2026-10-23, and Docker, Firewall, Restic, Syncthing, disk
 quotas, the System Journal and the Dashboard/Widgets surface were already
 bounded.)* The acceptance is now a source guard per module rather than a hand
 count.
-- [ ] **X.3 — Empty `else {}` error handling in the UI.** CloudSync (6),
-      Health, Desktop (power), NotificationCenter — *the boot hydration's two
-      are fixed (2026-10-24, item 26: `App.svelte` no longer swallows the
-      appearance read — a failure is one `toast.error` and the desktop keeps
-      its last known value, as an explained fallback)* — *Dashboard is fixed
-      (2026-10-23: `AppUsageBreakdown` shows a `role="alert"` band for a failed
-      restart/stop/uninstall and an admin-only notice instead of a silent
-      403 loop); Downloader's 5
-      are fixed (2026-10-23: a dismissible `Alert` with the server reason),
-      Syncthing's 3 are fixed (2026-10-23: one page-level `Alert`), Explorer's
-      11 sites are fixed (2026-10-22, `dlg.notify` + partial-batch messages) and
-      the Journal's 5 are fixed (2026-10-23: error state + Retry, in-modal
-      errors, a page-level banner)*. Direct violation of
-      simplicity rule 5 ("every action gives visible feedback"). A shared
-      `notifyError()` helper already exists (`Settings.svelte` uses
-      `notifySettings`) — use it.
+**X.3 — Empty `else {}` error handling in the UI.** Closed on 2026-10-24 —
+see Done (2026-10-24 (l)). The four areas this item named were **already
+fixed** when it was picked up (CloudSync's page-level `errorMessage` +
+`showFailure`, Health's error state + Retry, the desktop power menu's
+`powerNotice` from item 24.1, NotificationCenter's `toast.error` per action),
+so the audit moved on to the rest of the tree and found the residual action
+failures it had missed: **Shares** (~18 sites: service start/stop/restart, the
+five protocol config saves, SFTP key add/save, SFTP rebuild, share
+create/delete/toggle, ACL grant/revoke/sync), **Backup/restic** (~15: schedule
+create/toggle/delete, retention-policy create/delete, repo create/delete,
+backup, restore, check, forget, prune, unlock, snapshot delete) and one
+**Storage** site (SMB self-test start). All now go through one shared
+`frontend/src/lib/utils/notify.ts` (`notifyError` / `notifySuccess`), which
+shows the server's own `message`/`error` under the translated
+`common.action_failed` fallback. The four named areas plus every listed
+screen are the acceptance; read-path loads that keep the last known value
+(CloudSync, Restic's repo list) stay as they are by design.
 **X.4 — Documented invariants the code does not enforce.** Closed on
       2026-10-23 — see Done (2026-10-23 (r)): every invariant on the list is
       now enforced (scheduled-task overlap guard, "RAID never destroys", opt-in
@@ -449,6 +454,38 @@ count.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-24 (l)** — UI action feedback — **X.3 closed**: no mutating handler
+swallows its failure in an empty `else {}` any more. The four areas the item
+named were **already fixed** when it was picked up (CloudSync's page-level
+`errorMessage` + `showFailure`, Health's error state + Retry, the desktop power
+menu's `powerNotice` from item 24.1, NotificationCenter's `toast.error` per
+action), so the audit went over the whole `frontend/src` tree with a scanner
+for empty/comment-only `else`/`catch` bodies and found what the original list
+had missed: **Shares** — service start/stop/restart, all five protocol config
+saves (which used to ignore the response entirely), the SFTP key add/save, the
+SFTP rebuild, share create/delete/toggle, ACL grant/revoke/sync; **Backup
+(restic)** — schedule create/toggle/delete, retention-policy create/delete,
+repo create/delete, backup, restore, check, forget, prune, unlock, snapshot
+delete; and one **Storage** site (the SMART self-test start, which had a
+`// silent error`). They all go through one new shared helper,
+`frontend/src/lib/utils/notify.ts`: `notifyError(response)` shows the server's
+own `message` (then `error`) verbatim under the translated
+`common.action_failed` fallback, and `notifySuccess('common.saved')` gives the
+config saves a trace where success would otherwise be invisible. Two new keys
+(`common.action_failed`, `common.saved`) exist in all four locales. Read-path
+loads that keep the last known value (CloudSync's lists, Restic's repo load)
+are unchanged by design — a toast per failed poll would be noise. Tests:
+`tests/e2e/shares/shares.spec.ts` 51 → **53** (15.1 a mocked refused share
+delete shows the server reason in a `[data-sonner-toast][data-type="error"]`;
+15.2 a mocked refused SMB config save does the same),
+`tests/e2e/backup/backup.spec.ts` 27 → **28** (15.1 a mocked refused repository
+delete shows the reason; every restic route is mocked, nothing is deleted).
+`src/i18n.rs` key parity holds (2 keys × 4 locales). **Written, not run** (per
+instruction); `npm run check` and `npm run build` are clean. Docs:
+[guides/shares.md](docs/guides/shares.md),
+[guides/backup-restic.md](docs/guides/backup-restic.md),
+[guides/storage.md](docs/guides/storage.md), `CHANGELOG.md`, `TESTING.md`.
 
 **2026-10-24 (k)** — Shares/Protocols and Health — **X.2 closed**: no
 `systemctl`/`exportfs`/`sudo tee`/`sudo mkdir` call of `shares.rs` and no

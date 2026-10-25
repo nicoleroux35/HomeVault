@@ -963,3 +963,77 @@ test.describe('14 — Memory regression', () => {
     expect(after - before).toBeLessThan(400);
   });
 });
+
+// ===========================================================================
+// 15. Action failure feedback (ROADMAP X.3)
+// ===========================================================================
+
+/**
+ * Every mutating handler used to swallow its failure in an empty `else {}`, so
+ * a refused click looked like a click that did nothing. The fix surfaces the
+ * server's own reason in an app toast. These two tests mock the *failure* only
+ * — no real share, service or root-owned file is touched — and assert the
+ * reason reaches the user where they actually see it.
+ */
+test.describe('15 — Action failure feedback', () => {
+  test('15.1 — a refused share delete shows the server reason in a toast', async ({ page }) => {
+    await page.route('**/api/shares', async (route) => {
+      if (route.request().method() !== 'GET') return route.continue();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: [
+            { name: 'e2e-mock', path: '/tmp/e2e-mock', share_type: 'smb', enabled: true, comment: '' },
+          ],
+        }),
+      });
+    });
+    await page.route('**/api/shares/e2e-mock/smb', async (route) => {
+      if (route.request().method() !== 'DELETE') return route.continue();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: false, message: 'e2e refusal: share is in use' }),
+      });
+    });
+
+    await gotoShares(page, adminTokens);
+    const card = win(page).locator('[data-testid="shares-card"]').first();
+    await expect(card).toBeVisible({ timeout: 10_000 });
+    // The delete action is the last icon button on the card (permissions is first).
+    await card.locator('[data-testid="shares-icon-btn"]').last().click();
+    await modal(page)
+      .getByRole('button', { name: /confirm|confirmer|bestätigen|confirmar/i })
+      .click();
+
+    const toast = page.locator('[data-sonner-toast][data-type="error"]').first();
+    await expect(toast).toBeVisible({ timeout: 8_000 });
+    await expect(toast).toContainText('e2e refusal: share is in use');
+  });
+
+  test('15.2 — a refused protocol config save shows the server reason in a toast', async ({ page }) => {
+    await page.route('**/api/shares/smb/config', async (route) => {
+      if (route.request().method() !== 'PUT') return route.continue();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: false, message: 'e2e refusal: smb.conf is read-only' }),
+      });
+    });
+
+    await gotoShares(page, adminTokens);
+    await switchTab(page, 'SMB / CIFS');
+    const form = win(page).locator('[data-testid="shares-config"] [data-testid="shares-form"]');
+    await expect(form).toBeVisible({ timeout: 10_000 });
+    await form
+      .getByRole('button', { name: /save|enregistrer|speichern|guardar/i })
+      .first()
+      .click();
+
+    const toast = page.locator('[data-sonner-toast][data-type="error"]').first();
+    await expect(toast).toBeVisible({ timeout: 8_000 });
+    await expect(toast).toContainText('e2e refusal: smb.conf is read-only');
+  });
+});

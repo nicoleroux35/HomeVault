@@ -390,6 +390,25 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **UI action feedback — no mutating handler swallows its failure any more
+  (2026-10-24, ROADMAP X.3).** The four areas the item named were already fixed
+  (CloudSync, Health, the desktop power menu, NotificationCenter), so the audit
+  scanned the whole `frontend/src` tree and found the residual silent branches
+  it had missed: **Shares** (service start/stop/restart, all five protocol
+  config saves — which ignored the response entirely — SFTP key add/save and
+  rebuild, share create/delete/toggle, ACL grant/revoke/sync), **Backup/restic**
+  (schedule/retention-policy/repo create, delete and toggle, backup, restore,
+  check, forget, prune, unlock, snapshot delete) and one **Storage** site (the
+  SMART self-test start). They all go through one new shared helper,
+  `frontend/src/lib/utils/notify.ts` — `notifyError(response)` shows the
+  server's own `message`/`error` under the translated `common.action_failed`
+  fallback, `notifySuccess('common.saved')` confirms the config saves — with
+  two new keys in all four locales. Tests: `shares.spec.ts` 51 → **53** and
+  `backup.spec.ts` 27 → **28** (a mocked refused action shows the reason in a
+  `[data-sonner-toast][data-type="error"]`). Docs:
+  [guides/shares.md](docs/guides/shares.md),
+  [guides/backup-restic.md](docs/guides/backup-restic.md),
+  [guides/storage.md](docs/guides/storage.md).
 - **Health — every host probe is bounded (2026-10-24, ROADMAP X.2).** The
   checks run on the blocking pool (and the notification engine runs them every
   60 s), so a `df` parked on a hung NFS mount, an `mdadm --detail` blocked on a
