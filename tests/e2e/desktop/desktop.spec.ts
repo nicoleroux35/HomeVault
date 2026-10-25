@@ -1727,6 +1727,63 @@ test.describe('13 — Activity taskbar', () => {
     await expect(row.locator('.hv-activity-pct')).toHaveText(/failed|échec|error|fehlgeschlagen/i);
   });
 
+  /**
+   * ROADMAP 28.3 — the live-hardware poller's rows render like any other.
+   *
+   * A resync, a scrub or a Syncthing folder catching up is written into
+   * `PROGRESS_MANAGER` by `activity_poller`, so it arrives in the same payload
+   * as a real job. What must hold on the client is only that the new `kind`
+   * slugs have a localised label (never a raw slug on screen) and that the bar
+   * moves with the percentage — and, once the operation ends, that the row
+   * disappears and the dock button with it.
+   */
+  test('13.11 — a synthetic hardware row renders, then leaves the dock', async ({ page }) => {
+    let live = true;
+    await page.route('**/api/activity*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: live
+            ? [
+                {
+                  id: 'sys:raid:md0:resync',
+                  kind: 'raid_resync',
+                  state: 'running',
+                  label: '',
+                  progress: 12.6,
+                  detail: 'RAID resync on md0',
+                },
+              ]
+            : [],
+        }),
+      });
+    });
+
+    await gotoDesktop(page, adminTokens);
+
+    const btn = activityBtn(page);
+    await expect(btn).toBeVisible({ timeout: 6000 });
+    await expect(btn.locator('.hv-dock-badge')).toHaveText('1');
+
+    await btn.click();
+    const row = panel(page).locator('.hv-activity-row').first();
+    await expect(row).toHaveAttribute('data-state', 'running');
+    const name = (await row.locator('.hv-activity-name').textContent())?.trim() ?? '';
+    // The row shows the localised kind, never the raw slug.
+    expect(name, 'a synthetic row must not render its raw kind slug').not.toBe('');
+    expect(name).not.toContain('raid_resync');
+    await expect(row.locator('.hv-activity-pct')).toHaveText('13%');
+    await expect(row.locator('[role="progressbar"]')).toHaveAttribute('aria-valuenow', '13');
+
+    // The resync finished: the next poll carries no row, and the dock button
+    // goes with it — the panel closes itself on the same transition.
+    live = false;
+    await expect(activityIcon(page)).toHaveCount(0, { timeout: 12_000 });
+    await expect(panel(page)).toHaveCount(0);
+  });
+
   test('13.8 — responsive: the panel stays in the viewport at 360 / 768 / 1920', async ({
     page,
     playwright,

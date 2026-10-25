@@ -2150,6 +2150,11 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // cron, outside any HTTP request (ROADMAP 16.4). A job with no cadence is
     // simply never due, so an appliance that never scheduled one is unaffected.
     tokio::spawn(crate::handlers::rclone::run_scheduler_loop(state.clone()));
+    // ROADMAP 28.3 — phase 2 of the activity feed: turn live host state
+    // (`/proc/mdstat`, `zpool status` / `btrfs scrub status`, the Syncthing
+    // API) into synthetic progress jobs, so a resync or a scrub the user did
+    // not start from HomeVault still shows up in the desktop taskbar.
+    tokio::spawn(crate::activity_poller::run_poller_loop(state.clone()));
 
     // Per-app reverse proxy: initialise with the pieces its tasks need, then
     // bring back a proxy for every catalog app that had one before restart.

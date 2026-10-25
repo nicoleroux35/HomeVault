@@ -585,9 +585,9 @@ Application events are always in plain English for audit trail purposes."#.to_st
             title: "Activity Taskbar".to_string(),
             content: r#"A dock button on the desktop (visible only while background tasks run) with a badge showing the active-task count. Clicking it opens a panel above the dock with one row per task: name, a progress bar, and a percentage.
 
-Sources shown: aria2 downloads, File Explorer copy/move of large folders, Restic backups/restores/verifications, antivirus scans, disk cache mover, Docker app install/update, disk cloning (ddrescue) and file recovery (photorec), knowledge-base reindexing, AI model downloads, and cloud sync.
+Sources shown: aria2 downloads, File Explorer copy/move of large folders, Restic backups/restores/verifications, antivirus scans, disk cache mover, Docker app install/update, disk cloning (ddrescue) and file recovery (photorec), knowledge-base reindexing, AI model downloads, and cloud sync. A server-side poller also reports work HomeVault did not start itself: a RAID array resyncing, recovering or reshaping (read from /proc/mdstat), a ZFS or btrfs scrub in progress, and a Syncthing folder that is still catching up.
 
-Endpoint: GET /api/activity (any signed-in user; non-admins only see their own tasks). The panel is display-only. Not yet covered: Syncthing folder sync and Storage operations (RAID resync, scrub, LUKS format)."#.to_string(),
+Endpoint: GET /api/activity (any signed-in user; non-admins only see their own tasks). The panel is display-only. Not covered: a LUKS format is a one-shot command with no progress to read, so it never appears as a row."#.to_string(),
         },
         FeatureDoc {
             id: "auth".to_string(),

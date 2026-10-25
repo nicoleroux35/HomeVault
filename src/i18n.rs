@@ -373,4 +373,37 @@ mod tests {
             );
         }
     }
+
+    /// ROADMAP 28.3 added three activity `kind` slugs (a RAID resync, a pool
+    /// scrub, a Syncthing folder catching up). The desktop renders a row's name
+    /// as `desktop.activity_kind_<slug>`, falling back to the **raw slug** when
+    /// the key is missing — so a locale that missed one would show
+    /// `raid_resync` on screen. Pin the four locales here instead.
+    #[test]
+    fn activity_poller_kinds_are_at_parity_in_every_locale() {
+        let sources = embedded_translation_sources();
+        assert_eq!(sources.len(), 4, "four locales ship");
+        for (code, toml_src) in &sources {
+            let parsed: toml::Value = toml::from_str(toml_src).expect("parse");
+            let map = flatten_toml(&parsed, "");
+            for key in [
+                "desktop.activity_kind_raid_resync",
+                "desktop.activity_kind_pool_scrub",
+                "desktop.activity_kind_syncthing_sync",
+            ] {
+                let value = map
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{key} missing from {code}.toml"));
+                assert!(!value.trim().is_empty(), "{key} is empty in {code}.toml");
+                // The label must not *be* the slug: `raid_resync` on screen is
+                // the exact failure this key exists to prevent.
+                assert!(
+                    !value.contains("raid_resync")
+                        && !value.contains("pool_scrub")
+                        && !value.contains("syncthing_sync"),
+                    "{key} in {code}.toml renders a raw slug: {value:?}"
+                );
+            }
+        }
+    }
 }

@@ -82,13 +82,17 @@ Two structural facts explain most of the list:
 
 | # | Area | Verdict | Blocking items |
 |---|---|---|---|
-| 28 | Activity taskbar | P2 | 1 |
+| 28 | Activity taskbar | P2 | 0 |
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | — | Cross-cutting | — | 0 |
 
-Total open findings: **2** (2 per-area + 0 cross-cutting) — **no defect left**:
-what remains is one feature (28.3, a live-hardware poller) and one
-maintainability item (31). The 2026-10-24 sweep closed, in order: **X.7/X.8**
+Total open findings: **1** (1 per-area + 0 cross-cutting) — **no defect left**:
+what remains is one maintainability item (31). Item 28 closed on 2026-10-24
+(Done (t)): **28.3**, its last finding and the last *feature* of the list, is a
+live-hardware poller — `/proc/mdstat`, `zpool status` / `btrfs scrub status`
+and the Syncthing API now feed synthetic rows into the taskbar, so a resync, a
+scrub or a folder catching up is visible even though HomeVault did not start
+it. The 2026-10-24 sweep closed, in order: **X.7/X.8**
 (Done (n), one auth primitive and one status contract), **28.1/28.2 + 29.1/29.2**
 (Done (o), activity backoff and a discovery switch that reaches the host),
 **X.9** (Done (p), the 98 subprocess sites X.2 never reached, now behind a
@@ -182,11 +186,12 @@ X.9 — and **X.9 closed the same day** (Done (p)): picking up item 29 had
 exposed that X.2's "every subprocess is bounded" was only true for the modules
 that got a guard, and the 98 sites it missed are now bounded too, behind a
 tree-wide source guard. **10b, 32/33 and 16.4 all closed the same day** (Done
-(q), (r), (s)). What is left is one feature and one maintenance item: 28.3 (a
-live-hardware poller for Syncthing/Storage — it needs a host with a resyncing
-array and a paired device, so it is a separate change with its own hardware
-pass) and 31 (Docker's `api.ts` consolidation — pure maintainability, ~50
-wrappers and ~100 call sites, do it last, one tab at a time).
+(q), (r), (s)). **28.3 closed on 2026-10-24 too** (Done (t)): the taskbar no
+longer only shows work HomeVault started — a poller turns `/proc/mdstat`, a
+`zpool`/`btrfs` scrub and the Syncthing API into synthetic rows. What is left is
+one maintenance item: 31 (Docker's `api.ts` consolidation — pure
+maintainability, ~50 wrappers and ~100 call sites, do it last, one tab at a
+time).
 
 ---
 
@@ -257,20 +262,9 @@ created without a cadence keeps behaving exactly as before. The detail lives in
 
 ### 28. Activity taskbar
 
-28.1 and 28.2 were closed on 2026-10-24 — see Done (2026-10-24 (o)). One
-finding is left, and it is a **feature**, not a defect:
-
-- [ ] **28.3 — Phase 2, documented.** Syncthing folder sync and Storage
-      operations (mdadm resync, `zpool`/`btrfs` scrub, `luksFormat`, RAID
-      rebuild) need a poller turning live system state into synthetic jobs, plus
-      a live-hardware pass (`docs/guides/activity.md` → *Not yet covered*). A
-      `/api/activity/stream` could replace the poll.
-      *Why it is still open:* both halves need hardware this change cannot
-      reach — `/proc/mdstat`, `zpool status` and the Syncthing API only tell the
-      truth on a host that actually has a resyncing array, a scrubbing pool and a
-      paired device, and a poller written against a stub would be untested code
-      shipped as a feature. The design note in the guide is the acceptance
-      document; implementing it is a separate change with its own hardware pass.
+Closed on 2026-10-24 — see Done (2026-10-24 (o)) for 28.1/28.2 and Done
+(2026-10-24 (t)) for 28.3, the last finding. The detail lives in
+[guides/activity.md](docs/guides/activity.md) → *Live-hardware poller*.
 
 ### 29. mDNS
 
@@ -455,8 +449,33 @@ call site the guard also scans.
 
 One line per closed item. The detail lives in the named guide, not here.
 
-**2026-10-24 (s)** — Cloud Sync scheduler — **16.4 closed**, the last
-*feature* besides 28.3. Until now `POST /rclone/jobs/{id}/run` was the only way
+**2026-10-24 (t)** — Activity poller — **28.3 closed**: the taskbar no longer
+only reports work HomeVault started. Until now a feed row was a
+`PROGRESS_MANAGER` job some handler created, so everything the *host* does on
+its own — an mdadm array resyncing, a `zpool`/`btrfs` scrub, a Syncthing folder
+still catching up — was invisible, exactly the long, slow, "is it stuck?" work
+the taskbar exists for. `src/activity_poller.rs` (spawned by `web::run`) reads
+the live sources every 5 s and writes a synthetic job per operation:
+`/proc/mdstat` (no privilege, `tokio::fs`), `sudo zpool status` /
+`sudo btrfs scrub status` (10 s deadline each, `run_timed_async`), and the
+Syncthing API through `handlers::syncthing::folder_backlogs`. Three design
+points carry it: (1) the job id is **derived from the source**
+(`sys:raid:md0:resync`, `sys:pool:tank:scrub`, `sys:syncthing:<folder>`), so a
+second tick **advances** the same row instead of filling the panel with one
+ghost per poll; (2) `plan_reconcile` is pure and only ever completes ids
+carrying the `sys:` prefix, so the poller can never sweep another handler's
+job; (3) a source that cannot be read contributes **nothing** — a missing
+`/proc/mdstat` is "no md arrays", not "healthy", a timed-out `zpool` is a gap,
+and Syncthing is not even probed without a `config.xml`. Parsing is pure and
+unit-tested without hardware, and the integration suite drives a real
+`/proc/mdstat` fixture through `tick()` and reads the result back over
+`GET /api/activity`. Deliberately not covered: `luksFormat` (one-shot, no
+progress to read). The detail lives in [guides/activity.md](docs/guides/activity.md)
+→ *Live-hardware poller*.
+
+**2026-10-24 (s)** — Cloud Sync scheduler — **16.4 closed**, then the last
+*feature* besides 28.3 (which closed right after — Done (t)). Until now
+`POST /rclone/jobs/{id}/run` was the only way
 a persisted job ran: `sync_jobs` held the definition and nothing else, so a
 nightly sync could not be expressed and the screen's "last run / status"
 columns were the outcome of the click that had just happened. Migration

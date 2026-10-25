@@ -32,6 +32,7 @@ pub mod web;
 
 /// System modules
 pub mod acl;
+pub mod activity_poller;
 pub mod antivirus;
 pub mod antivirus_scheduler;
 pub mod app_catalog;
