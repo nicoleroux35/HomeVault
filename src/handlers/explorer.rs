@@ -107,24 +107,65 @@ pub struct ExplorerSearchQuery {
     pub fuzzy: Option<bool>,
 }
 
-/// Returns the canonical path a session may access, or `None` if the path is
-/// outside the allowed roots. Admins bypass all checks and get the raw path
-/// back; other sessions are restricted by `PathGuard`, whose returned path is
-/// canonicalised (symlinks resolved, `..` normalised).
+/// Returns the path a session may access, with the final component made
+/// definite, or `None` if the path is unusable.
+///
+/// Admins are **not** confined to `allowed_roots`, but they no longer get the
+/// caller's string back either (ROADMAP 10.5). The old admin branch returned
+/// `PathBuf::from(path)` verbatim, so on that branch *nothing* was ever
+/// resolved: `..` stayed in the value, and a symlink whose target moved between
+/// the check and the `open` was followed with no second look. The admin branch
+/// now runs the same **shape** normalisation as the confined branch without the
+/// root confinement: the parent is canonicalised and the leaf is re-read, so
+/// what the handler later opens is the path the filesystem had at validation
+/// time rather than an unexamined string.
 ///
 /// **Handlers must use the returned path for the actual filesystem work** —
 /// never the raw input — otherwise the validate→use window is a TOCTOU gap
 /// where a symlink swapped between the check and the open could smuggle the
-/// operation outside the allowed roots.
+/// operation elsewhere. Closing that window completely is a *writer* concern
+/// (`O_NOFOLLOW` on the final `open`, an atomic `rename` into place), which the
+/// delete/rename paths already do; this function's job is to stop handing over
+/// an unexamined path.
 fn validate_path_access(
     state: &Arc<AppState>,
     path: &str,
     session: &crate::storage::models::Session,
 ) -> Option<PathBuf> {
     if session.is_admin {
-        Some(PathBuf::from(path))
+        resolve_unconfined(path).or_else(|| Some(PathBuf::from(path)))
     } else {
         state.path_guard.validate(path)
+    }
+}
+
+/// Normalises a path **without** confining it to the allowed roots.
+///
+/// Used for admin sessions, who may browse the whole filesystem but must still
+/// be handed a resolved leaf rather than the raw input (ROADMAP 10.5).
+/// `None` when the shape is unusable (empty, NUL, a `.`/`..` leaf).
+fn resolve_unconfined(path: &str) -> Option<PathBuf> {
+    use std::path::Path;
+    if path.is_empty() || path.contains('\0') {
+        return None;
+    }
+    let p = Path::new(path);
+    let leaf = p.file_name()?;
+    if leaf == "." || leaf == ".." || leaf.to_string_lossy().contains('\0') {
+        return None;
+    }
+    match p.parent() {
+        // `/etc`: the leaf *is* the root, nothing to resolve.
+        Some(parent) if parent.as_os_str().is_empty() => Some(p.to_path_buf()),
+        Some(parent) => {
+            let parent_resolved = std::fs::canonicalize(parent).ok()?;
+            let candidate = parent_resolved.join(leaf);
+            // A leaf that exists is resolved (following the symlink); one that
+            // does not is returned under its resolved parent, so the caller
+            // never sees `..` or a dangling textual path.
+            std::fs::canonicalize(&candidate).ok().or(Some(candidate))
+        }
+        None => Some(p.to_path_buf()),
     }
 }
 
@@ -1694,16 +1735,37 @@ pub async fn handle_explorer_upload_session_start(
     ResponseHelper::json_success(serde_json::json!({ "session_id": session_id }))
 }
 
+/// Largest chunk the server accepts for one `/upload/chunk` request.
+///
+/// The router-wide `RequestBodyLimitLayer` is 10 GiB (large raw uploads exist
+/// elsewhere), so the per-endpoint cap is what bounds this route's memory: the
+/// body is written out **as it arrives** (see below), which keeps the peak at
+/// one network buffer per chunk however large the request claims to be — but a
+/// client that retries a huge chunk would otherwise still burn its bandwidth
+/// and ours. 32 MiB is far above any sane client chunk size and well under the
+/// point where buffering it would matter (ROADMAP 10.6).
+pub const MAX_UPLOAD_CHUNK_BYTES: u64 = 32 * 1024 * 1024;
+
 /// `POST /api/explorer/upload/chunk?session_id=…&offset=…` — write one chunk
 /// at the server's authoritative offset. A chunk arriving out of order is
 /// rejected with a 409 carrying the current offset, so the client knows where
 /// to resume after a partial write.
+///
+/// **The body is streamed, never buffered** (ROADMAP 10.6). It used to be an
+/// `axum::body::Bytes` extractor, which materialises the whole chunk in RAM
+/// before the handler runs — with a 10 GiB router limit, one request could
+/// allocate the machine's memory. It is now an `axum::body::Body` written to
+/// the temp file frame by frame, capped by both [`MAX_UPLOAD_CHUNK_BYTES`] and
+/// the session's remaining `total_size - offset`; once the cap is reached the
+/// rest of the request is discarded, the partial bytes are **not** committed
+/// (the session offset does not advance) and the client is told to resume from
+/// the same offset it started at.
 #[axum_macros::debug_handler]
 pub async fn handle_explorer_upload_chunk(
     State(state): State<Arc<AppState>>,
     Query(params): Query<UploadChunkQuery>,
     headers: HeaderMap,
-    body: axum::body::Bytes,
+    body: axum::body::Body,
 ) -> Response {
     prune_upload_sessions().await;
 
@@ -1740,13 +1802,10 @@ pub async fn handle_explorer_upload_chunk(
         )
             .into_response();
     }
-    if body.is_empty() && session.total_bytes > 0 {
-        return ResponseHelper::json_error("Empty chunk".to_string());
-    }
-    let next = params.offset + body.len() as u64;
-    if next > session.total_bytes {
-        return ResponseHelper::json_error("Chunk exceeds the declared file size".to_string());
-    }
+    // Both caps are known before a single byte is read: the declared file size
+    // (a chunk may not run past it) and the per-request ceiling.
+    let remaining = session.total_bytes.saturating_sub(params.offset);
+    let cap = remaining.min(MAX_UPLOAD_CHUNK_BYTES);
 
     // Per-chunk quota re-check against current (possibly updated by other
     // completed transfers) usage. Fail closed: a guard that cannot answer
@@ -1762,26 +1821,89 @@ pub async fn handle_explorer_upload_chunk(
     drop(_guard);
 
     let tmp_path = session.tmp_path.clone();
-    let write_result: std::io::Result<()> = async {
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .open(&tmp_path)
-            .await?;
-        file.seek(SeekFrom::Start(params.offset)).await?;
-        file.write_all(&body).await?;
-        file.flush().await?;
-        Ok(())
-    }
-    .await;
-    match write_result {
-        Ok(()) => {
+    let written = stream_chunk_to_file(body, &tmp_path, params.offset, cap).await;
+    match written {
+        Ok(ChunkWrite::Done(n)) => {
+            if n == 0 && session.total_bytes > 0 {
+                return ResponseHelper::json_error("Empty chunk".to_string());
+            }
+            let next = params.offset + n;
             if let Some(s) = UPLOAD_SESSIONS.lock().get_mut(&params.session_id) {
                 s.offset = next;
             }
             ResponseHelper::json_success(serde_json::json!({ "offset": next }))
         }
+        // The cap was reached: nothing is committed, so the client resumes from
+        // the offset it already had. `413` is the honest status — the request
+        // was too large for this route, not malformed.
+        Ok(ChunkWrite::OverCap) => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            axum::Json(serde_json::json!({
+                "success": false,
+                "offset": params.offset,
+                "max_chunk_bytes": cap.min(MAX_UPLOAD_CHUNK_BYTES),
+                "message": format!(
+                    "Chunk exceeds the {} byte limit for one request; send a smaller chunk and resume at offset {}",
+                    cap.min(MAX_UPLOAD_CHUNK_BYTES),
+                    params.offset
+                )
+            })),
+        )
+            .into_response(),
         Err(e) => ResponseHelper::json_error(format!("Failed to write chunk: {}", e)),
     }
+}
+
+/// Outcome of [`stream_chunk_to_file`].
+#[derive(Debug, PartialEq, Eq)]
+enum ChunkWrite {
+    /// Bytes written. Never above the cap.
+    Done(u64),
+    /// The body was longer than the cap; the file holds **cap** bytes but the
+    /// caller must not advance the session offset.
+    OverCap,
+}
+
+/// Streams `body` into `tmp_path` at `offset`, stopping at `cap` bytes.
+///
+/// The file is truncated back to its pre-call length on an over-cap or I/O
+/// failure, so a refused chunk leaves the temp file exactly as it was — the
+/// resumable protocol's invariant is "the offset only moves on a full chunk"
+/// (ROADMAP 10.6). Peak memory is one network buffer, whatever the body size.
+async fn stream_chunk_to_file(
+    body: axum::body::Body,
+    tmp_path: &std::path::Path,
+    offset: u64,
+    cap: u64,
+) -> std::io::Result<ChunkWrite> {
+    use futures_util::StreamExt as _;
+    use tokio::io::AsyncWriteExt as _;
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(tmp_path)
+        .await?;
+    file.seek(SeekFrom::Start(offset)).await?;
+
+    let mut written: u64 = 0;
+    let mut stream = body.into_data_stream();
+    while let Some(frame) = stream.next().await {
+        let frame = frame.map_err(|e| std::io::Error::other(e.to_string()))?;
+        if written + frame.len() as u64 > cap {
+            // Discard the rest without keeping it: drain nothing, just drop the
+            // stream and roll the file back to its previous length.
+            file.set_len(offset).await?;
+            file.flush().await?;
+            return Ok(ChunkWrite::OverCap);
+        }
+        if let Err(e) = file.write_all(&frame).await {
+            let _ = file.set_len(offset).await;
+            return Err(e);
+        }
+        written += frame.len() as u64;
+    }
+    file.flush().await?;
+    Ok(ChunkWrite::Done(written))
 }
 
 /// `POST /api/explorer/upload/complete?session_id=…` — fsync, verify the
@@ -5227,5 +5349,147 @@ Path = stage/inside/link\nFolder = -\nAttributes =  lrwxrwxrwx\n\n";
         assert!(!path_exists(&missing).await);
         assert!(!path_is_file(&missing).await);
         assert!(!path_is_dir(&missing).await);
+    }
+
+    // -----------------------------------------------------------------
+    // ROADMAP 10.5 — the admin branch resolves the leaf too
+    // -----------------------------------------------------------------
+
+    /// The defect 10.5 named, on the admin branch: `validate_path_access` used
+    /// to hand back `PathBuf::from(path)` verbatim, so `..` survived and the
+    /// leaf was whatever the caller typed. Admins still are not *confined* —
+    /// but they now get the same shape normalisation as everyone else.
+    #[test]
+    fn the_admin_branch_normalises_the_path_it_returns() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("sub")).unwrap();
+        let parent = std::fs::canonicalize(tmp.path().join("sub")).unwrap();
+
+        let typed = format!("{}/sub/../sub/new.txt", tmp.path().to_string_lossy());
+        let got = resolve_unconfined(&typed).expect("a usable path");
+        assert_eq!(got, parent.join("new.txt"));
+        assert!(
+            !got.to_string_lossy().contains(".."),
+            "the admin path must not keep a traversal component: {got:?}"
+        );
+    }
+
+    /// Admins are **not** confined to the allowed roots: `/etc/hostname` must
+    /// still resolve even though no root covers it. Confinement is the
+    /// non-admin branch's job (`PathGuard::validate`).
+    #[test]
+    fn the_admin_branch_does_not_confine_to_the_allowed_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("f.txt"), b"x").unwrap();
+        let resolved = resolve_unconfined(&tmp.path().join("f.txt").to_string_lossy())
+            .expect("a path that exists resolves");
+        assert_eq!(
+            resolved,
+            std::fs::canonicalize(tmp.path().join("f.txt")).unwrap()
+        );
+        // A path outside any root, which is the normal admin case.
+        assert!(resolve_unconfined("/etc/hostname").is_some());
+    }
+
+    /// NUL bytes, an empty string and a `.`/`..` leaf are unusable shapes.
+    #[test]
+    fn the_admin_branch_refuses_unusable_shapes() {
+        assert!(resolve_unconfined("").is_none());
+        assert!(resolve_unconfined("/tmp/a\0b").is_none());
+        assert!(resolve_unconfined("/tmp/sub/..").is_none());
+        assert!(resolve_unconfined("/tmp/sub/.").is_none());
+    }
+
+    /// An existing symlink is resolved, so the handler opens the real target
+    /// rather than the link — which is what makes the validate→use window
+    /// narrow (the writer still opens with its own flags).
+    #[cfg(unix)]
+    #[test]
+    fn the_admin_branch_resolves_an_existing_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real.txt");
+        std::fs::write(&real, b"content").unwrap();
+        let link = tmp.path().join("alias.txt");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let got = resolve_unconfined(&link.to_string_lossy()).expect("resolves");
+        assert_eq!(got, std::fs::canonicalize(&real).unwrap());
+    }
+
+    // -----------------------------------------------------------------
+    // ROADMAP 10.6 — a chunk is streamed, never buffered
+    // -----------------------------------------------------------------
+
+    /// The chunk body must reach the file frame by frame, and the declared cap
+    /// is enforced while writing — the whole point of 10.6 is that the bytes
+    /// never sit in an in-memory `Bytes` first.
+    #[tokio::test]
+    async fn a_chunk_is_written_from_a_stream_in_bounded_memory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("part.bin");
+        std::fs::write(&path, b"").unwrap();
+
+        // Three frames of 4 bytes, delivered as a real stream (not one buffer).
+        let frames: Vec<Result<axum::body::Bytes, std::io::Error>> = vec![
+            Ok(axum::body::Bytes::from_static(b"aaaa")),
+            Ok(axum::body::Bytes::from_static(b"bbbb")),
+            Ok(axum::body::Bytes::from_static(b"cc")),
+        ];
+        let body = axum::body::Body::from_stream(futures_util::stream::iter(frames));
+        let outcome = stream_chunk_to_file(body, &path, 0, 1024).await.unwrap();
+        assert_eq!(outcome, ChunkWrite::Done(10));
+        assert_eq!(std::fs::read(&path).unwrap(), b"aaaabbbbcc");
+    }
+
+    /// Over the cap: nothing is committed. The file keeps exactly the bytes it
+    /// had before the call, so the resumable protocol's "the offset only moves
+    /// on a full chunk" invariant holds.
+    #[tokio::test]
+    async fn an_over_cap_chunk_leaves_the_file_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("part.bin");
+        std::fs::write(&path, b"KEEP").unwrap();
+
+        let frames: Vec<Result<axum::body::Bytes, std::io::Error>> = vec![
+            Ok(axum::body::Bytes::from_static(b"1234")),
+            Ok(axum::body::Bytes::from_static(b"5678")),
+        ];
+        let body = axum::body::Body::from_stream(futures_util::stream::iter(frames));
+        let outcome = stream_chunk_to_file(body, &path, 4, 6).await.unwrap();
+        assert_eq!(outcome, ChunkWrite::OverCap);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"KEEP",
+            "a refused chunk must roll the file back to its previous length"
+        );
+    }
+
+    /// A body has to be consumed exactly once and the result has to be
+    /// deterministic: an empty stream writes zero bytes without touching the
+    /// file length (the caller turns that into "Empty chunk").
+    #[tokio::test]
+    async fn an_empty_stream_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("part.bin");
+        std::fs::write(&path, b"X").unwrap();
+
+        let body = axum::body::Body::from_stream(futures_util::stream::iter(Vec::<
+            Result<axum::body::Bytes, std::io::Error>,
+        >::new()));
+        let outcome = stream_chunk_to_file(body, &path, 1, 1024).await.unwrap();
+        assert_eq!(outcome, ChunkWrite::Done(0));
+        assert_eq!(std::fs::read(&path).unwrap(), b"X");
+    }
+
+    /// The per-request ceiling is what bounds this route's memory, and it must
+    /// stay far below the 10 GiB router-wide body limit (that limit exists for
+    /// other routes; relying on it here is the defect).
+    #[test]
+    fn the_chunk_cap_is_far_below_the_router_body_limit() {
+        assert_eq!(MAX_UPLOAD_CHUNK_BYTES, 32 * 1024 * 1024);
+        assert!(
+            MAX_UPLOAD_CHUNK_BYTES < 10 * 1024 * 1024 * 1024,
+            "the route cap must be the binding one"
+        );
     }
 }

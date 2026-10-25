@@ -460,7 +460,26 @@ pub async fn handle_share_link_download(
 
     // Bound concurrent public streams, then build the (range-limited,
     // rate-limited) body.
-    let permit = SHARE_SEMAPHORE.clone().acquire_owned().await.unwrap();
+    //
+    // A closed semaphore used to `unwrap()` into a panic — a 500 with no
+    // message in the request log, and in a debug build a full task abort
+    // (ROADMAP 10.7). It cannot happen with the static above (nothing calls
+    // `close`), which is exactly why it went unnoticed: an `unwrap` on a
+    // resource whose lifecycle lives elsewhere is a latent panic. `503` says
+    // what happened and keeps the public endpoint answering.
+    let permit = match SHARE_SEMAPHORE.clone().acquire_owned().await {
+        Ok(permit) => permit,
+        Err(_) => {
+            tracing::error!(
+                "Share streams: the concurrency semaphore is closed; refusing a public stream"
+            );
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "The share streaming pool is unavailable, try again shortly",
+            )
+                .into_response();
+        }
+    };
     let body = if total == 0 {
         Body::empty()
     } else {
@@ -523,5 +542,52 @@ fn validate_path_access(
         Some(std::path::PathBuf::from(path))
     } else {
         state.path_guard.validate(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ROADMAP 10.7: a closed semaphore must produce a mapped error, not a
+    /// panic. The production semaphore is never closed, so the test drives a
+    /// clone of the same `Arc` — the shape the handler relies on.
+    #[tokio::test]
+    async fn a_closed_semaphore_is_a_service_unavailable_not_a_panic() {
+        let sem = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SHARE_STREAMS));
+        sem.close();
+        let acquired = sem.clone().acquire_owned().await;
+        assert!(
+            acquired.is_err(),
+            "a closed semaphore must refuse the permit"
+        );
+        // …and the handler maps that to a response rather than unwrapping: the
+        // source must not contain the old `unwrap()` on this path.
+        let src = include_str!("share_links.rs");
+        assert!(
+            !src.contains("acquire_owned().await.unwrap()"),
+            "the public stream path must not unwrap the semaphore (ROADMAP 10.7)"
+        );
+        assert!(
+            src.contains("SERVICE_UNAVAILABLE"),
+            "a closed pool must answer 503, not panic"
+        );
+    }
+
+    /// The concurrency ceiling still exists — the fix is the error mapping, not
+    /// the removal of the limit.
+    #[tokio::test]
+    async fn the_stream_ceiling_still_bounds_concurrency() {
+        let sem = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SHARE_STREAMS));
+        let mut held = Vec::new();
+        for _ in 0..MAX_CONCURRENT_SHARE_STREAMS {
+            held.push(sem.clone().acquire_owned().await.expect("permit"));
+        }
+        assert!(
+            sem.clone().try_acquire_owned().is_err(),
+            "the {MAX_CONCURRENT_SHARE_STREAMS}-stream ceiling must hold"
+        );
+        drop(held);
+        assert!(sem.try_acquire_owned().is_ok());
     }
 }

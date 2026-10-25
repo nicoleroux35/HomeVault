@@ -234,7 +234,7 @@ impl PathGuard {
                     }
                     if let Ok(parent_resolved) = std::fs::canonicalize(parent) {
                         if self.is_under_root(&parent_resolved) {
-                            return Some(candidate);
+                            return self.resolve_final_component(&parent_resolved, &candidate);
                         }
                     }
                 }
@@ -251,17 +251,63 @@ impl PathGuard {
             return None;
         }
 
-        // Path doesn't exist (new file). Validate the parent directory.
+        // Path doesn't exist yet (new file): validate the parent **and** make
+        // the final component definite.
         if let Some(parent) = p.parent() {
             if let Ok(parent_resolved) = std::fs::canonicalize(parent) {
                 if self.is_under_root(&parent_resolved) {
-                    // Return the original path for non-existent files
-                    return Some(PathBuf::from(path));
+                    return self.resolve_final_component(&parent_resolved, p);
                 }
             }
         }
 
         None
+    }
+
+    /// Splits the last component of `p` off, refuses anything that could move
+    /// the result (`..`, a root), re-reads the leaf with `symlink_metadata` and
+    /// returns the joined path with the leaf as the filesystem currently
+    /// reports it.
+    ///
+    /// This is what closes the TOCTOU window of a path whose leaf does not
+    /// exist *yet* (ROADMAP 10.5). Returning the caller's string, as this used
+    /// to, meant the actual `create`/`rename` could land anywhere the leaf
+    /// name pointed to at that instant — including through a symlink planted
+    /// after validation. Re-reading the leaf narrows the window to the writer
+    /// itself (a device-write path can only be closed with `O_NOFOLLOW` on the
+    /// final `open`), which is a *writer* concern, not a path-resolution one.
+    fn resolve_final_component(&self, parent_resolved: &Path, p: &Path) -> Option<PathBuf> {
+        let leaf = p.file_name()?;
+        if leaf == "." || leaf == ".." || leaf.to_string_lossy().contains('\0') {
+            return None;
+        }
+        let candidate = parent_resolved.join(leaf);
+        // `symlink_metadata` does not follow the leaf, so a symlink is kept as
+        // a symlink and its *target* decides the answer below.
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                // A symlink pointing outside the roots is refused outright,
+                // even though the parent is fine.
+                let target = std::fs::canonicalize(&candidate).ok()?;
+                if self.is_under_root(&target) {
+                    Some(target)
+                } else {
+                    None
+                }
+            }
+            // A regular leaf that appeared between the parent check and now —
+            // resolve it, and re-check the root.
+            Ok(_) => {
+                let resolved = std::fs::canonicalize(&candidate).ok()?;
+                if self.is_under_root(&resolved) {
+                    Some(resolved)
+                } else {
+                    None
+                }
+            }
+            // Still absent: the joined path with the resolved parent.
+            Err(_) => Some(candidate),
+        }
     }
 
     /// Check if the resolved path is under any allowed root
@@ -339,5 +385,86 @@ mod tests {
         let (guard, _tmp) = create_guard();
         assert!(guard.validate("/some/path\0malicious").is_none());
         assert!(guard.validate("").is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // ROADMAP 10.5 — the final component is resolved, not echoed back
+    // -----------------------------------------------------------------
+
+    /// The defect 10.5 named: a path whose leaf does not exist yet used to be
+    /// returned **verbatim**, so `..` survived validation and the leaf was
+    /// whatever the caller typed. It must come back under the *resolved*
+    /// parent, with no traversal component left in it.
+    #[test]
+    fn a_new_file_is_returned_under_its_resolved_parent() {
+        let (guard, tmp) = create_guard();
+        std::fs::create_dir_all(tmp.path().join("sub")).unwrap();
+        let parent = std::fs::canonicalize(tmp.path().join("sub")).unwrap();
+
+        let typed = format!("{}/sub/../sub/new.txt", tmp.path().to_string_lossy());
+        let got = guard.validate(&typed).expect("a new file under the root");
+        assert_eq!(got, parent.join("new.txt"));
+        assert!(
+            !got.to_string_lossy().contains(".."),
+            "the returned path must be normalised: {got:?}"
+        );
+    }
+
+    /// A symlink planted at the leaf must not smuggle the write outside the
+    /// roots — this is the exact shape of the TOCTOU 10.5 describes.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_leaf_pointing_outside_the_root_is_refused() {
+        let (guard, tmp) = create_guard();
+        let outside = TempDir::new().unwrap();
+        let victim = outside.path().join("victim.txt");
+        std::fs::write(&victim, b"original").unwrap();
+
+        let link = tmp.path().join("escape.txt");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+        assert!(
+            guard.validate(&link.to_string_lossy()).is_none(),
+            "a symlink whose target is outside the roots must be refused"
+        );
+    }
+
+    /// A symlink that stays inside the roots is resolved to its target, so the
+    /// caller writes to the real file rather than through the link.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_leaf_inside_the_root_resolves_to_its_target() {
+        let (guard, tmp) = create_guard();
+        let real = tmp.path().join("real.txt");
+        std::fs::write(&real, b"content").unwrap();
+        let link = tmp.path().join("alias.txt");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let got = guard
+            .validate(&link.to_string_lossy())
+            .expect("inside root");
+        assert_eq!(got, std::fs::canonicalize(&real).unwrap());
+    }
+
+    /// A `.`/`..` leaf is refused outright: it is a directory-shaped request,
+    /// not a file to create.
+    #[test]
+    fn a_dot_or_dotdot_leaf_is_refused() {
+        let (guard, tmp) = create_guard();
+        for leaf in [".", ".."] {
+            let path = format!("{}/sub/{}", tmp.path().to_string_lossy(), leaf);
+            std::fs::create_dir_all(tmp.path().join("sub")).unwrap();
+            assert!(guard.validate(&path).is_none(), "leaf {leaf:?}");
+        }
+    }
+
+    /// The relative branch gets the same treatment: the returned path is built
+    /// from the resolved parent, not from `root.join(input)`.
+    #[test]
+    fn a_relative_new_file_is_returned_under_the_root() {
+        let (guard, tmp) = create_guard();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let got = guard.validate("new.txt").expect("new file at the root");
+        assert_eq!(got, root.join("new.txt"));
     }
 }

@@ -6,6 +6,42 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- **The File Explorer resolves the last path component instead of echoing the
+  caller's string (2026-10-24, ROADMAP 10.5).** Two holes with one root cause.
+  `PathGuard::validate` returned the **raw input** when the leaf did not exist
+  yet ("a new file"), so `..` survived validation and the leaf was whatever was
+  typed; and `validate_path_access`'s admin branch returned
+  `PathBuf::from(path)` for *every* admin path, so on that branch nothing was
+  canonicalised at all — a symlink planted between the check and the `open` was
+  followed with no second look. Both now canonicalise the parent and re-read the
+  leaf with `symlink_metadata`: a link that resolves inside the roots becomes
+  its target, one that resolves outside is refused, a regular leaf that appeared
+  meanwhile is resolved and re-checked, and an absent leaf comes back under its
+  resolved parent (no `..`, no dangling textual path). A `.`/`..` leaf is
+  refused outright. Admins are still **not** confined to the allowed roots — the
+  fix normalises, it does not restrict.
+
+- **A upload chunk is streamed, not buffered in RAM (2026-10-24, ROADMAP
+  10.6).** `/explorer/upload/chunk` took an `axum::body::Bytes`, so the whole
+  chunk was materialised in memory *before* the handler ran — with the
+  router-wide 10 GiB limit as its only bound, one request could allocate the
+  machine's memory. It now takes a stream and writes it out frame by frame
+  (peak memory: one network buffer), capped at the new
+  `MAX_UPLOAD_CHUNK_BYTES` (32 MiB) and at the session's remaining size. Over
+  either cap the answer is `413` with the offset to resume at, the temp file is
+  truncated back, and the session offset does not move — so the resumable
+  protocol's "the offset only advances on a full chunk" invariant holds.
+
+- **A closed share-stream semaphore is a `503`, not a panic (2026-10-24, ROADMAP
+  10.7).** The public download path called
+  `SHARE_SEMAPHORE.acquire_owned().await.unwrap()`: if the semaphore were ever
+  closed that is a bare 500 with nothing in the request log, and a task abort in
+  a debug build. It cannot happen with the current static, which is exactly why
+  an `unwrap` on a resource whose lifecycle lives elsewhere is a latent panic.
+  It now logs and answers `503`; the 4-stream ceiling is unchanged.
+
 ### Fixed
 
 - **No host command anywhere runs without a deadline (2026-10-24, ROADMAP

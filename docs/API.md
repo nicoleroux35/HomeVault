@@ -329,7 +329,7 @@ Any refusal answers 400 and keeps the metadata row.
 | POST | `/explorer/upload` | auth | multipart `file` + `?path=` + `?strategy=`; `fsync`'d before success; SHA-256 in `checksums[]`, `skipped[]` for `strategy=skip`; optional `X-Expected-Sha256` header (single-file) |
 | POST | `/explorer/upload/session` | auth | `?path=&filename=&size=` — open a resumable upload session; owned by the calling user; capped per user (20) and globally (256), 429 beyond; 429 over quota, 503 if the quota guard cannot answer |
 | DELETE | `/explorer/upload/session` | auth | `?session_id=` — abort a resumable upload, remove the partial temp file; 403 unless the session belongs to the caller |
-| POST | `/explorer/upload/chunk` | auth | raw body + `?session_id=&offset=` — write one chunk at the server's authoritative offset (409 + current offset on mismatch); 403 unless the session belongs to the caller |
+| POST | `/explorer/upload/chunk` | auth | **streamed** body + `?session_id=&offset=` — write one chunk at the server's authoritative offset (409 + current offset on mismatch); the body is written frame by frame and capped at 32 MiB and at the session's remaining size, so an over-cap chunk is `413` with the offset to resume at and commits nothing; 403 unless the session belongs to the caller |
 | POST | `/explorer/upload/complete` | auth | `?session_id=` — fsync + SHA-256 + atomic rename into place, then debit the quota; 403 unless the session belongs to the caller |
 | POST/GET/DELETE | `/explorer/trash` | auth | `?path=` (POST) — move to trash / list trash / empty trash |
 | POST | `/explorer/trash/restore` | auth | `?id=` (cross-device EXDEV fallback) |
