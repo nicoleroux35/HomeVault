@@ -19,9 +19,43 @@
  * =============================================================================
  */
 
+use crate::utils::process::{run_timed, run_timed_detached, run_timed_with_stdin};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
+use std::time::Duration;
+
+// ---------------------------------------------------------------------------
+// Deadlines (ROADMAP X.2)
+//
+// Every host command of the VPN module used to be a bare `Command::output`
+// (or a hand-rolled `.spawn` + `wait_with_output`). A `wg`/`wg-quick`
+// call blocked on a missing kernel module, an `openvpn` daemonize that never
+// returns or a `pgrep` on a huge process table pinned the calling thread with
+// no ceiling — and the VPN screen polls the server status and the peer list.
+// Each value below is a ceiling for the slowest honest case, not an estimate.
+// ---------------------------------------------------------------------------
+
+/// A read-only VPN probe: `wg show`/`--version`/`genkey`/`genpsk`, `pgrep`,
+/// `ip route`, `sudo cat`/`sudo test`.
+pub const VPN_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A VPN mutation: `wg set`, `wg-quick up`, `sudo chmod`, `systemctl enable`,
+/// `sudo kill`, and the `openvpn --daemon` parent. Root operations can wait
+/// on the sudo/PAM stack or on the kernel, so this is longer than a probe
+/// while staying finite.
+pub const VPN_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Run one host command under a deadline, keeping the reason it failed.
+///
+/// The VPN module is synchronous by design (the async entry points call it
+/// through `spawn_blocking`), so this is the blocking helper. The timeout is
+/// a parameter rather than a constant baked into each call site so the kill
+/// path is unit-testable, exactly like `disk::bounded` and
+/// `cache::run_command`.
+fn run_command(cmd: &mut Command, timeout: Duration) -> Result<Output, String> {
+    run_timed(cmd, timeout)
+}
 
 // ---------------------------------------------------------------------------
 // Data structures
@@ -101,10 +135,10 @@ fn wg_server_config_path() -> String {
 /// brand new server keypair — invalidating every already-provisioned peer —
 /// on every single call instead of just the first one.
 fn wg_config_exists() -> bool {
-    Command::new("sudo")
-        .args(["test", "-e", &wg_server_config_path()])
-        .status()
-        .map(|s| s.success())
+    let mut cmd = Command::new("sudo");
+    cmd.args(["test", "-e", &wg_server_config_path()]);
+    run_command(&mut cmd, VPN_PROBE_TIMEOUT)
+        .map(|s| s.status.success())
         .unwrap_or(false)
 }
 
@@ -115,10 +149,9 @@ fn wg_config_exists() -> bool {
 /// service account can't read this one back with a plain
 /// `std::fs::read_to_string` once it's been written.
 fn read_wg_config() -> Result<String, String> {
-    let output = Command::new("sudo")
-        .args(["cat", &wg_server_config_path()])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut cmd = Command::new("sudo");
+    cmd.args(["cat", &wg_server_config_path()]);
+    let output = run_command(&mut cmd, VPN_PROBE_TIMEOUT).map_err(|e| e.to_string())?;
     if !output.status.success() {
         return Err(format!(
             "Failed to read WireGuard server config: {}",
@@ -132,10 +165,9 @@ fn read_wg_config() -> Result<String, String> {
 /// creates its output owned by root, so a plain `std::fs::set_permissions`
 /// on it fails the same way a direct write would.
 fn chmod_wg_config(mode: &str) -> Result<(), String> {
-    let output = Command::new("sudo")
-        .args(["chmod", mode, &wg_server_config_path()])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut cmd = Command::new("sudo");
+    cmd.args(["chmod", mode, &wg_server_config_path()]);
+    let output = run_command(&mut cmd, VPN_WRITE_TIMEOUT).map_err(|e| e.to_string())?;
     if !output.status.success() {
         return Err(format!(
             "Failed to set WireGuard server config permissions: {}",
@@ -147,9 +179,9 @@ fn chmod_wg_config(mode: &str) -> Result<(), String> {
 
 /// Check if WireGuard is available
 pub fn wireguard_available() -> bool {
-    Command::new("wg")
-        .arg("--version")
-        .output()
+    let mut cmd = Command::new("wg");
+    cmd.arg("--version");
+    run_command(&mut cmd, VPN_PROBE_TIMEOUT)
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
@@ -159,10 +191,9 @@ pub fn wireguard_available() -> bool {
 /// without it, a peer with a full-tunnel `AllowedIPs = 0.0.0.0/0` could
 /// reach the server itself but never get real internet access through it.
 fn detect_egress_interface() -> Option<String> {
-    let output = Command::new("ip")
-        .args(["route", "get", "1.1.1.1"])
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("ip");
+    cmd.args(["route", "get", "1.1.1.1"]);
+    let output = run_command(&mut cmd, VPN_PROBE_TIMEOUT).ok()?;
     if !output.status.success() {
         return None;
     }
@@ -179,9 +210,9 @@ fn detect_egress_interface() -> Option<String> {
 /// True once `wg0` genuinely exists as a live network interface, not just a
 /// config file on disk.
 fn is_wireguard_server_running() -> bool {
-    Command::new("sudo")
-        .args(["wg", "show", WG_INTERFACE])
-        .output()
+    let mut cmd = Command::new("sudo");
+    cmd.args(["wg", "show", WG_INTERFACE]);
+    run_command(&mut cmd, VPN_PROBE_TIMEOUT)
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
@@ -190,10 +221,9 @@ fn is_wireguard_server_running() -> bool {
 /// NAT/forwarding rules. Treats "already exists" (the interface was already
 /// up from an earlier call) as success rather than an error.
 fn start_wireguard_server() -> Result<(), String> {
-    let output = Command::new("sudo")
-        .args(["wg-quick", "up", WG_INTERFACE])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut cmd = Command::new("sudo");
+    cmd.args(["wg-quick", "up", WG_INTERFACE]);
+    let output = run_command(&mut cmd, VPN_WRITE_TIMEOUT).map_err(|e| e.to_string())?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -211,9 +241,9 @@ fn start_wireguard_server() -> Result<(), String> {
 /// feature's "everything automatic" goal. Requires the scoped sudoers grant
 /// added alongside this feature in `src/setup.rs::configure_sudoers`.
 fn enable_wireguard_server_on_boot() {
-    let _ = Command::new("sudo")
-        .args(["systemctl", "enable", &format!("wg-quick@{}", WG_INTERFACE)])
-        .output();
+    let mut cmd = Command::new("sudo");
+    cmd.args(["systemctl", "enable", &format!("wg-quick@{}", WG_INTERFACE)]);
+    let _ = run_command(&mut cmd, VPN_WRITE_TIMEOUT);
 }
 
 /// Idempotently ensures the WireGuard server exists, is configured, and is
@@ -322,18 +352,12 @@ fn read_server_public_key() -> Result<String, String> {
 }
 
 fn derive_public_key(private_key: &str) -> Result<String, String> {
-    let output = Command::new("wg")
-        .arg("pubkey")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin.write_all(private_key.as_bytes())?;
-            }
-            child.wait_with_output()
-        })
+    let mut cmd = Command::new("wg");
+    cmd.arg("pubkey");
+    // `wg pubkey` reads the private key on stdin; `run_timed_with_stdin`
+    // feeds it from its own thread and bounds the wait, so a `wg` blocked on
+    // a missing kernel module cannot park the caller.
+    let output = run_timed_with_stdin(&mut cmd, VPN_PROBE_TIMEOUT, private_key.as_bytes())
         .map_err(|e| e.to_string())?;
 
     if !output.status.success() {
@@ -345,10 +369,9 @@ fn derive_public_key(private_key: &str) -> Result<String, String> {
 
 /// Generate a WireGuard key pair
 pub fn generate_wireguard_keypair() -> Result<(String, String), String> {
-    let private_output = Command::new("wg")
-        .arg("genkey")
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut cmd = Command::new("wg");
+    cmd.arg("genkey");
+    let private_output = run_command(&mut cmd, VPN_PROBE_TIMEOUT).map_err(|e| e.to_string())?;
 
     if !private_output.status.success() {
         return Err("Failed to generate private key".to_string());
@@ -366,10 +389,9 @@ pub fn generate_wireguard_keypair() -> Result<(String, String), String> {
 /// each peer's own keypair, standard WireGuard practice for defense in
 /// depth against a future break of the asymmetric handshake.
 pub fn generate_wireguard_psk() -> Result<String, String> {
-    let output = Command::new("wg")
-        .arg("genpsk")
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut cmd = Command::new("wg");
+    cmd.arg("genpsk");
+    let output = run_command(&mut cmd, VPN_PROBE_TIMEOUT).map_err(|e| e.to_string())?;
 
     if !output.status.success() {
         return Err("Failed to generate preshared key".to_string());
@@ -414,31 +436,27 @@ pub async fn create_wireguard_peer(peer_ip: &str) -> Result<WireGuardPeerProvisi
     let (peer_private_key, peer_public_key) = generate_wireguard_keypair()?;
     let preshared_key = generate_wireguard_psk()?;
 
-    let set_output = Command::new("sudo")
-        .args([
-            "wg",
-            "set",
-            WG_INTERFACE,
-            "peer",
-            &peer_public_key,
-            "preshared-key",
-            "/dev/stdin",
-            "allowed-ips",
-            &format!("{}/32", peer_ip),
-        ])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin.write_all(preshared_key.as_bytes())?;
-                stdin.write_all(b"\n")?;
-            }
-            child.wait_with_output()
-        })
-        .map_err(|e| e.to_string())?;
+    let mut cmd = Command::new("sudo");
+    cmd.args([
+        "wg",
+        "set",
+        WG_INTERFACE,
+        "peer",
+        &peer_public_key,
+        "preshared-key",
+        "/dev/stdin",
+        "allowed-ips",
+        &format!("{}/32", peer_ip),
+    ]);
+    // The preshared key goes in on stdin; `run_timed_with_stdin` feeds it from
+    // its own thread and bounds the wait, so a `wg set` that never returns
+    // cannot park the peer-provisioning job.
+    let set_output = run_timed_with_stdin(
+        &mut cmd,
+        VPN_WRITE_TIMEOUT,
+        format!("{}\n", preshared_key).as_bytes(),
+    )
+    .map_err(|e| e.to_string())?;
 
     if !set_output.status.success() {
         let stderr = String::from_utf8_lossy(&set_output.stderr);
@@ -521,9 +539,9 @@ fn build_client_config(
 /// Revokes a peer: removes it from the live interface immediately, then
 /// from the persisted config so it doesn't come back on the next reboot.
 pub fn revoke_wireguard_peer(public_key: &str) -> Result<(), String> {
-    let _ = Command::new("sudo")
-        .args(["wg", "set", WG_INTERFACE, "peer", public_key, "remove"])
-        .output();
+    let mut cmd = Command::new("sudo");
+    cmd.args(["wg", "set", WG_INTERFACE, "peer", public_key, "remove"]);
+    let _ = run_command(&mut cmd, VPN_WRITE_TIMEOUT);
 
     remove_peer_from_server_config(public_key)
 }
@@ -554,9 +572,9 @@ pub struct WireGuardPeerLiveStatus {
 }
 
 pub fn list_wireguard_peer_live_status() -> Vec<WireGuardPeerLiveStatus> {
-    let output = Command::new("sudo")
-        .args(["wg", "show", WG_INTERFACE, "dump"])
-        .output();
+    let mut cmd = Command::new("sudo");
+    cmd.args(["wg", "show", WG_INTERFACE, "dump"]);
+    let output = run_command(&mut cmd, VPN_PROBE_TIMEOUT);
 
     let mut statuses = Vec::new();
     if let Ok(output) = output {
@@ -678,9 +696,9 @@ pub fn openvpn_fatal_from_log(text: &str) -> Option<String> {
 
 /// Check if OpenVPN is available
 pub fn openvpn_available() -> bool {
-    Command::new("openvpn")
-        .arg("--version")
-        .output()
+    let mut cmd = Command::new("openvpn");
+    cmd.arg("--version");
+    run_command(&mut cmd, VPN_PROBE_TIMEOUT)
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
@@ -690,7 +708,9 @@ pub fn list_openvpn_connections() -> Vec<VpnConnection> {
     let mut connections = Vec::new();
 
     // Check running OpenVPN processes
-    let output = Command::new("pgrep").args(["-a", "openvpn"]).output();
+    let mut cmd = Command::new("pgrep");
+    cmd.args(["-a", "openvpn"]);
+    let output = run_command(&mut cmd, VPN_PROBE_TIMEOUT);
 
     if let Ok(output) = output {
         if output.status.success() {
@@ -760,9 +780,9 @@ fn saved_config_names(config_dir: &str, extension: &str, active: &[VpnConnection
 /// True when an OpenVPN daemon is already running for `config_path` (a
 /// second start would bind-fight the first one).
 pub(crate) fn is_openvpn_running_for_config(config_path: &str) -> bool {
-    Command::new("pgrep")
-        .args(["-f", &format!("--config {config_path}")])
-        .output()
+    let mut cmd = Command::new("pgrep");
+    cmd.args(["-f", &format!("--config {config_path}")]);
+    run_command(&mut cmd, VPN_PROBE_TIMEOUT)
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
@@ -833,16 +853,15 @@ pub fn start_openvpn_connection(config: &OpenVPNConfig) -> Result<(), String> {
         cmd.args(["--auth-user-pass", &auth_file]);
     }
 
-    // Spawn with null stdio: `output()` would hold stdout/stderr pipes open
-    // until every writer closes them — and the forked daemon could keep them
-    // alive, parking this call forever. Everything openvpn has to say lands
-    // in the `--log` file anyway (verified empirically: parse-time
-    // `Options error`s are written there too).
-    let status = cmd
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|e| e.to_string())?;
+    // Run with detached stdio, bounded: `output()` would hold stdout/stderr
+    // pipes open until every writer closes them — and the forked daemon could
+    // keep them alive, parking this call forever (which is why the shared
+    // `run_timed` cannot be used here: its drain threads never see EOF).
+    // Everything openvpn has to say lands in the `--log` file anyway
+    // (verified empirically: parse-time `Options error`s are written there
+    // too). `run_timed_detached` waits for the daemonizing parent under
+    // `VPN_WRITE_TIMEOUT` and kills it if it never exits.
+    let status = run_timed_detached(&mut cmd, VPN_WRITE_TIMEOUT).map_err(|e| e.to_string())?;
 
     if !status.success() {
         let text = std::fs::read_to_string(&log_path).unwrap_or_default();
@@ -915,10 +934,9 @@ fn openvpn_log_error_summary(line: &str) -> String {
 pub fn stop_openvpn_connection(name: &str) -> Result<(), String> {
     // Find OpenVPN process with this config
     let config_path = format!("{}/{}.ovpn", OPENVPN_CONFIG_DIR, name);
-    let output = Command::new("pgrep")
-        .args(["-f", &format!("--config {config_path}")])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut cmd = Command::new("pgrep");
+    cmd.args(["-f", &format!("--config {config_path}")]);
+    let output = run_command(&mut cmd, VPN_PROBE_TIMEOUT).map_err(|e| e.to_string())?;
 
     if output.status.success() {
         let pids = String::from_utf8_lossy(&output.stdout);
@@ -932,7 +950,9 @@ pub fn stop_openvpn_connection(name: &str) -> Result<(), String> {
             // homevault service must delegate the kill to sudo. The signal is
             // explicit (`-TERM`) because the sudoers grant is pinned to it —
             // see `configure_sudoers()`.
-            let _ = Command::new("sudo").args(["kill", "-TERM", pid]).output();
+            let mut cmd = Command::new("sudo");
+            cmd.args(["kill", "-TERM", pid]);
+            let _ = run_command(&mut cmd, VPN_WRITE_TIMEOUT);
         }
     }
 
@@ -1317,5 +1337,84 @@ cipher AES-256-GCM\nauth-user-pass\nverb 3\n";
     fn test_openvpn_log_error_summary_plain_message() {
         assert_eq!(openvpn_log_error_summary("bare message"), "bare message");
         assert_eq!(openvpn_log_error_summary(""), "");
+    }
+
+    // -- subprocess deadlines (ROADMAP X.2) -----------------------------
+
+    /// The defect this guards against is invisible to a behavioural test: a
+    /// bare command call still answers correctly on an idle box and only pins
+    /// the caller when `wg`/`wg-quick`/`openvpn`/`pgrep` stops answering — and
+    /// the VPN screen polls the server status and the peer list. So the
+    /// invariant is asserted at the source.
+    ///
+    /// `concat!` keeps each pattern out of this file's own source, so the
+    /// assertion cannot count itself.
+    #[test]
+    fn test_no_subprocess_of_this_module_runs_without_a_deadline() {
+        let src = include_str!("vpn.rs");
+        let production = src.split("#[cfg(test)]").next().unwrap_or(src);
+        for unbounded in [
+            concat!(".", "output()"),
+            concat!(".", "spawn()"),
+            concat!(".", "status()"),
+            concat!("wait_with_", "output()"),
+        ] {
+            assert!(
+                !production.contains(unbounded),
+                "`{unbounded}` waits without a deadline — use `run_command`/`run_timed_detached` (ROADMAP X.2)"
+            );
+        }
+        // `openvpn --daemon` specifically must go through the detached helper:
+        // its forked child keeps any inherited pipe open, so a piping helper
+        // would make the deadline unfireable and park the start call forever.
+        assert!(
+            production.contains("run_timed_detached("),
+            "the OpenVPN daemon start must use `run_timed_detached` (ROADMAP X.2)"
+        );
+    }
+
+    #[test]
+    fn test_run_command_kills_a_hung_tool_and_names_the_deadline() {
+        let started = std::time::Instant::now();
+        let error = run_command(Command::new("sleep").arg("30"), Duration::from_millis(120))
+            .expect_err("a hung tool must not succeed");
+        assert!(error.contains("did not finish within"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the deadline must be enforced, not waited out"
+        );
+    }
+
+    #[test]
+    fn test_run_command_keeps_a_non_zero_exit_as_data() {
+        // `wg show` on a stopped interface exits non-zero and the caller reads
+        // that as "not running"; a non-zero exit must arrive as output, never
+        // as an error.
+        let out = run_command(&mut Command::new("false"), Duration::from_secs(5))
+            .expect("`false` still runs to completion");
+        assert_eq!(out.status.code(), Some(1));
+    }
+
+    #[test]
+    fn test_run_command_reports_a_missing_tool() {
+        let error = run_command(
+            &mut Command::new("homevault-no-such-binary"),
+            Duration::from_secs(1),
+        )
+        .expect_err("a missing tool is an error");
+        assert!(error.contains("Failed to run"), "{error}");
+    }
+
+    #[test]
+    fn test_vpn_deadlines_are_ceilings_and_ordered() {
+        // A probe is the shortest; a root mutation (or an `openvpn --daemon`
+        // parent) may wait on the sudo/PAM stack or on the kernel.
+        assert!(VPN_PROBE_TIMEOUT >= Duration::from_secs(1));
+        assert!(VPN_WRITE_TIMEOUT >= VPN_PROBE_TIMEOUT);
+        // Still finite: a wedged `wg-quick up` must free the caller.
+        assert!(VPN_WRITE_TIMEOUT <= Duration::from_secs(120));
+        // The daemon start must sit above the parent's own grace, or the
+        // verification loop could outlive the deadline that killed it.
+        assert!(VPN_WRITE_TIMEOUT >= OPENVPN_START_GRACE);
     }
 }
