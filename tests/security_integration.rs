@@ -309,7 +309,7 @@ async fn test_all_reads_reject_missing_token() {
     ] {
         let (status, body) = send(&mut r, Method::GET, uri, None, None).await;
         assert_eq!(body["success"], json!(false), "{uri}");
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri} no-token → 400");
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri} no-token → 401");
     }
 }
 
@@ -1149,7 +1149,7 @@ async fn test_firewall_history_requires_a_session_and_returns_an_envelope() {
 
     // Auth guard first — the change log is an audit trail.
     let (status, body) = send(&mut r, Method::GET, "/api/firewall/history", None, None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["success"], json!(false));
 
     // Any signed-in user may read it (it is a read-only audit view).

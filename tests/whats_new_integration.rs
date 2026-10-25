@@ -171,7 +171,7 @@ async fn test_whats_new_requires_a_session() {
     let (state, _tmp, _guard) = setup_state().await;
     let mut r = router(state);
     let (status, _) = send(&mut r, Method::GET, "/api/whats-new", None, None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, _) = send(&mut r, Method::GET, "/api/whats-new", Some("nope"), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
@@ -181,7 +181,7 @@ async fn test_whats_new_seen_requires_a_session() {
     let (state, _tmp, _guard) = setup_state().await;
     let mut r = router(state);
     let (status, _) = send(&mut r, Method::POST, "/api/whats-new/seen", None, None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 // ---------------------------------------------------------------------------

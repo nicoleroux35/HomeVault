@@ -64,33 +64,6 @@ pub struct SharePermissionResponse {
     pub recursive: bool,
 }
 
-async fn require_admin(headers: &HeaderMap, state: &AppState) -> Option<Response> {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return Some(ResponseHelper::json_error(
-            "No session token provided".to_string(),
-        ));
-    }
-
-    match state.auth.get_session(session_token).await {
-        Ok(session) => {
-            if !session.is_admin {
-                return Some(ResponseHelper::json_error(
-                    "Admin access required".to_string(),
-                ));
-            }
-            None
-        }
-        Err(_) => Some(ResponseHelper::json_unauthorized(
-            "Invalid session".to_string(),
-        )),
-    }
-}
-
 /// Lists all permissions for a specific share.
 #[axum_macros::debug_handler]
 pub async fn handle_share_permissions_list(
@@ -98,7 +71,7 @@ pub async fn handle_share_permissions_list(
     Path((share_name, share_type)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -121,7 +94,7 @@ pub async fn handle_share_permission_grant(
     headers: HeaderMap,
     req: axum::extract::Json<GrantPermissionRequest>,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -180,7 +153,7 @@ pub async fn handle_share_permission_revoke(
     headers: HeaderMap,
     req: axum::extract::Json<RevokePermissionRequest>,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -215,7 +188,7 @@ pub async fn handle_share_permissions_sync(
     Path((share_name, share_type)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -248,22 +221,15 @@ pub async fn handle_user_permissions(
     Path(username): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
+    let caller = match crate::handlers::admin_guard::require_auth(&state, &headers).await {
+        Ok(caller) => caller,
+        Err(resp) => return resp,
+    };
 
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    match state.auth.get_session(session_token).await {
-        Ok(session) => {
-            if !session.is_admin && session.username != username {
-                return ResponseHelper::json_error("Access denied".to_string());
-            }
-        }
-        Err(_) => return ResponseHelper::json_unauthorized("Invalid session".to_string()),
+    // Admin, or the account owner. A refusal is `403`, not `400`: the request
+    // was well-formed, the caller simply may not read this account.
+    if caller != username && !state.auth.is_admin(&caller).await {
+        return ResponseHelper::json_forbidden("Access denied".to_string());
     }
 
     match PermissionService::get_user_permissions(&username, state.db.pool()).await {

@@ -161,43 +161,6 @@ pub fn extract_client_ip(headers: &HeaderMap) -> String {
     client_ip(headers, None)
 }
 
-/// Guards a handler to admins only.
-///
-/// Returns `Ok(username)` on success or an error response on failure.
-// `Response` is axum's canonical error type; boxing it would ripple
-// through every call site for no real benefit, so allow the lint here.
-#[allow(clippy::result_large_err)]
-pub async fn require_admin(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Result<String, Response> {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return Err(ResponseHelper::json_error(
-            "No session token provided".to_string(),
-        ));
-    }
-
-    match state.auth.get_username_from_token(session_token).await {
-        Some(username) => {
-            if state.auth.is_admin(&username).await {
-                Ok(username)
-            } else {
-                Err(ResponseHelper::json_forbidden(
-                    "Admin privileges required".to_string(),
-                ))
-            }
-        }
-        None => Err(ResponseHelper::json_unauthorized(
-            "Invalid session".to_string(),
-        )),
-    }
-}
-
 #[axum_macros::debug_handler]
 /// Authenticates a user and returns a session token.
 ///
@@ -521,16 +484,12 @@ pub async fn handle_2fa_setup(
 #[axum_macros::debug_handler]
 /// Invalidates the current session, logging the user out.
 pub async fn handle_logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let username = match state.auth.get_username_from_token(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let username = match state.auth.get_username_from_token(&session_token).await {
         Some(username) => username,
         // Unlike every other authenticated endpoint, this handler previously
         // only checked the header was non-empty and reported success
@@ -539,7 +498,7 @@ pub async fn handle_logout(State(state): State<Arc<AppState>>, headers: HeaderMa
         None => return ResponseHelper::json_error("Invalid session".to_string()),
     };
 
-    match state.auth.invalidate_session(session_token).await {
+    match state.auth.invalidate_session(&session_token).await {
         Ok(_) => {
             crate::events::log_event(format!("User '{}' logged out", username));
             // Drop any app-proxy sessions this user holds, then expire both
@@ -559,16 +518,12 @@ pub async fn handle_get_current_user(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    match state.auth.get_session(&session_token).await {
         Ok(session) => match state.auth.get_user(&session.username).await {
             Ok(user) => {
                 let two_fa_enabled = state
@@ -1044,7 +999,7 @@ pub async fn handle_setup_rebaseline(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let username = match require_admin(State(state.clone()), headers).await {
+    let username = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
         Ok(username) => username,
         Err(response) => return response,
     };

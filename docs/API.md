@@ -21,6 +21,23 @@ SPA's `ApiClient` (`frontend/src/lib/services/api.ts`) prefixes every call with
   - `auth` — any valid session (`require_auth`).
   - `admin` — admin session (`require_admin`).
   - `public` — no session required.
+- **Auth status contract** (stated once, here and in
+  `src/handlers/admin_guard.rs` — ROADMAP X.7 / X.8):
+
+  | Situation | Status |
+  |---|---|
+  | `X-Session-Token` header absent or empty | `401` |
+  | Token unknown or expired | `401` |
+  | Valid session, account not admin (an `admin` route) | `403` |
+  | Valid session, malformed/refused body | `400` |
+
+  `400` is reserved for a request the server could not understand. It used to
+  be the answer for a *missing* header on most of the API (each module rebuilt
+  the check), so a client that branches on the status read "you are not signed
+  in" as "your input is wrong"; and `shares`/`permissions`/`snmp`/`settings`
+  answered `400` for a signed-in **non-admin** where every other module answered
+  `403`. Every guarded endpoint now goes through `admin_guard`, which is the
+  only place that turns the header into an identity decision.
 - **Caching**: `ApiClient` caches successful `GET`s for a per-call TTL (default
   5 s) and invalidates cache keys on mutations.
 
@@ -171,9 +188,10 @@ The two families answer different JSON for different screens but execute the
   `500 {"success":false,"message":"Server restart refused: <host stderr>"}`
   for `/server/*`, and `400 {"success":false,"message":"<host stderr>"}`
   for `/power/*`;
-- both stay admin-only. A missing `x-session-token` answers `401` on
-  `/server/*` (inline check) and `400` on `/power/*` (`require_admin`,
-  ROADMAP X.8); an unknown session is `401` on both, a non-admin `403`.
+- both stay admin-only. A missing `x-session-token` answers `401` on both
+  (the two families used to differ: `401` inline for `/server/*`, `400` from
+  `require_admin` for `/power/*` — closed by ROADMAP X.8); an unknown session
+  is `401` on both, a non-admin `403`.
 
 The argv is always `sudo systemctl reboot|poweroff|suspend`; the sudoers grant
 names exactly those verbs (`src/setup.rs::power_grants`).

@@ -244,7 +244,7 @@ async fn test_read_endpoints_reject_missing_token() {
     let mut router = raid_router(state);
     for (method, uri) in read_endpoints() {
         let (status, _) = send(&mut router, method.clone(), uri, None, None).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{method} {uri}");
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri}");
     }
 }
 
@@ -280,7 +280,7 @@ async fn test_write_endpoints_reject_missing_token() {
     let mut router = raid_router(state);
     for (method, uri, body) in write_endpoints() {
         let (status, _) = send(&mut router, method.clone(), uri, None, body).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{method} {uri}");
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri}");
     }
 }
 

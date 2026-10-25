@@ -79,7 +79,7 @@ pub async fn handle_ups_list(
     headers: HeaderMap,
     Query(_params): Query<UpsQueryParams>,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -96,7 +96,7 @@ pub async fn handle_ups_status(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -113,7 +113,7 @@ pub async fn handle_ups_variables(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -129,7 +129,7 @@ pub async fn handle_ups_availability(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -146,7 +146,7 @@ pub async fn handle_ups_config_list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -170,7 +170,7 @@ pub async fn handle_ups_config_save(
     headers: HeaderMap,
     axum::extract::Json(req): axum::extract::Json<UpsConfigRequest>,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -198,7 +198,7 @@ pub async fn handle_ups_config_delete(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -210,32 +210,5 @@ pub async fn handle_ups_config_delete(
         })),
         Ok(Err(e)) => ResponseHelper::json_error(format!("UPS config error: {}", e)),
         Err(resp) => resp,
-    }
-}
-
-async fn require_admin(headers: &HeaderMap, state: &AppState) -> Option<Response> {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return Some(ResponseHelper::json_error(
-            "No session token provided".to_string(),
-        ));
-    }
-
-    match state.auth.get_session(session_token).await {
-        Ok(session) => {
-            if !session.is_admin {
-                return Some(ResponseHelper::json_forbidden(
-                    "Admin access required".to_string(),
-                ));
-            }
-            None
-        }
-        Err(_) => Some(ResponseHelper::json_unauthorized(
-            "Invalid session".to_string(),
-        )),
     }
 }

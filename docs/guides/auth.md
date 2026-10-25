@@ -226,6 +226,14 @@ the form rather than dropping it on `<body>`.
   group check only for DB-less accounts.
 - The JSON API reads only the `x-session-token` header — the `hv_session` cookie
   is for the per-app reverse proxy only (`src/app_proxy`), no new CSRF surface.
+- **Every guarded handler goes through `handlers::admin_guard`**, never a local
+  copy of the token check, and the refusal status is the contract stated in
+  `admin_guard.rs` / [API.md](../API.md): `401` for an absent or empty header
+  and for an unknown or expired token, `403` for a valid non-admin on an
+  `admin` route, `400` **only** for a request the server could not understand.
+  Source guards in `admin_guard.rs` fail the build if a module defines its own
+  `require_admin`/`require_auth` again; behaviour is pinned by
+  `tests/auth_guard_integration.rs` (ROADMAP X.7/X.8).
 - No screen is frozen since 2026-09-12 — describe behaviour here, and when you
   do edit the Login/Setup-Wizard/auth source, keep this guide and the suites
   (`tests/auth_integration.rs`, `tests/e2e/login`) in the same change.

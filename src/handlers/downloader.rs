@@ -142,9 +142,9 @@ pub fn validate_uri(raw: &str) -> Result<String, String> {
         return Err("The link must not contain spaces or control characters".to_string());
     }
 
-    let (scheme, rest) = uri
-        .split_once(':')
-        .ok_or_else(|| "The link must start with a supported scheme (http, https, ftp, sftp, magnet)".to_string())?;
+    let (scheme, rest) = uri.split_once(':').ok_or_else(|| {
+        "The link must start with a supported scheme (http, https, ftp, sftp, magnet)".to_string()
+    })?;
     if scheme.is_empty()
         || !scheme
             .chars()
@@ -170,12 +170,14 @@ pub fn validate_uri(raw: &str) -> Result<String, String> {
     }
 
     // A plain link needs an authority: `http://host/path`.
-    let after_scheme = rest
-        .strip_prefix("//")
-        .ok_or_else(|| "The link must include a host, for example https://example.com/file.iso".to_string())?;
+    let after_scheme = rest.strip_prefix("//").ok_or_else(|| {
+        "The link must include a host, for example https://example.com/file.iso".to_string()
+    })?;
     let authority = after_scheme.split('/').next().unwrap_or("");
     if authority.is_empty() {
-        return Err("The link must include a host, for example https://example.com/file.iso".to_string());
+        return Err(
+            "The link must include a host, for example https://example.com/file.iso".to_string(),
+        );
     }
     Ok(uri.to_string())
 }
@@ -243,12 +245,8 @@ pub fn validate_output_name(raw: &str) -> Result<Option<String>, String> {
 /// start with the root, so a symlink planted inside the download folder cannot
 /// redirect a download outside it.
 pub fn resolve_download_dir(root: &FsPath, subfolder: Option<&str>) -> Result<PathBuf, String> {
-    let root = std::fs::canonicalize(root).map_err(|e| {
-        format!(
-            "The download folder {} is not usable: {e}",
-            root.display()
-        )
-    })?;
+    let root = std::fs::canonicalize(root)
+        .map_err(|e| format!("The download folder {} is not usable: {e}", root.display()))?;
 
     let Some(sub) = validate_subfolder(subfolder.unwrap_or(""))? else {
         return Ok(root);
@@ -267,9 +265,8 @@ pub fn resolve_download_dir(root: &FsPath, subfolder: Option<&str>) -> Result<Pa
     let mut probe = candidate.clone();
     loop {
         if probe.exists() {
-            let real = std::fs::canonicalize(&probe).map_err(|e| {
-                format!("The folder {} is not usable: {e}", probe.display())
-            })?;
+            let real = std::fs::canonicalize(&probe)
+                .map_err(|e| format!("The folder {} is not usable: {e}", probe.display()))?;
             if !real.starts_with(&root) {
                 return Err("The sub-folder must stay inside the download folder".to_string());
             }
@@ -571,10 +568,7 @@ async fn write_rpc_config(secret: &str) -> Result<PathBuf, String> {
 
 /// Polls `aria2.getVersion` until the daemon answers, or the child dies, or the
 /// deadline passes. A successful start now means the RPC port really is up.
-async fn wait_until_ready(
-    secret: &str,
-    child: &mut tokio::process::Child,
-) -> Result<(), String> {
+async fn wait_until_ready(secret: &str, child: &mut tokio::process::Child) -> Result<(), String> {
     let deadline = Instant::now() + ARIA2_START_TIMEOUT;
     loop {
         match child.try_wait() {
@@ -585,14 +579,9 @@ async fn wait_until_ready(
             Err(e) => return Err(format!("Could not poll aria2c: {e}")),
         }
 
-        if aria2_rpc_with_secret(
-            secret,
-            "aria2.getVersion",
-            vec![],
-            ARIA2_START_PROBE,
-        )
-        .await
-        .is_ok()
+        if aria2_rpc_with_secret(secret, "aria2.getVersion", vec![], ARIA2_START_PROBE)
+            .await
+            .is_ok()
         {
             return Ok(());
         }
@@ -686,7 +675,7 @@ pub async fn handle_downloader_status(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> Json<ApiResponse<serde_json::Value>> {
-    if let Err((_, msg)) = require_admin_request(&state, &headers).await {
+    if let Err((_, msg)) = guard_admin(&state, &headers).await {
         return Json(ApiResponse::error(&msg));
     }
 
@@ -705,7 +694,7 @@ pub async fn handle_downloader_start(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> Json<ApiResponse<String>> {
-    if let Err((_, msg)) = require_admin_request(&state, &headers).await {
+    if let Err((_, msg)) = guard_admin(&state, &headers).await {
         return Json(ApiResponse::error(&msg));
     }
     match ensure_aria2_running(&state.downloader).await {
@@ -718,7 +707,7 @@ pub async fn handle_downloader_stop(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> Json<ApiResponse<String>> {
-    if let Err((_, msg)) = require_admin_request(&state, &headers).await {
+    if let Err((_, msg)) = guard_admin(&state, &headers).await {
         return Json(ApiResponse::error(&msg));
     }
     let mut proc = state.downloader.lock().await;
@@ -735,7 +724,7 @@ pub async fn handle_downloader_global_stat(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> Json<ApiResponse<Aria2GlobalStat>> {
-    if let Err((_, msg)) = require_admin_request(&state, &headers).await {
+    if let Err((_, msg)) = guard_admin(&state, &headers).await {
         return Json(ApiResponse::error(&msg));
     }
     if let Err(e) = ensure_aria2_running(&state.downloader).await {
@@ -755,7 +744,7 @@ pub async fn handle_downloader_tasks(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> Json<ApiResponse<Vec<Aria2Task>>> {
-    if let Err((_, msg)) = require_admin_request(&state, &headers).await {
+    if let Err((_, msg)) = guard_admin(&state, &headers).await {
         return Json(ApiResponse::error(&msg));
     }
     if let Err(e) = ensure_aria2_running(&state.downloader).await {
@@ -829,7 +818,7 @@ pub async fn handle_downloader_add(
     headers: HeaderMap,
     Json(req): Json<AddUriRequest>,
 ) -> Json<ApiResponse<String>> {
-    let admin_username = match require_admin_request(&state, &headers).await {
+    let admin_username = match guard_admin(&state, &headers).await {
         Ok(u) => u,
         Err((_, msg)) => return Json(ApiResponse::error(&msg)),
     };
@@ -887,14 +876,20 @@ pub async fn handle_downloader_pause(
     headers: HeaderMap,
     Json(req): Json<GidRequest>,
 ) -> Json<ApiResponse<String>> {
-    if let Err((_, msg)) = require_admin_request(&state, &headers).await {
+    if let Err((_, msg)) = guard_admin(&state, &headers).await {
         return Json(ApiResponse::error(&msg));
     }
     if let Err(e) = ensure_aria2_running(&state.downloader).await {
         return Json(ApiResponse::error(&e));
     }
 
-    match aria2_rpc(&state.downloader, "aria2.pause", vec![serde_json::json!(req.gid)]).await {
+    match aria2_rpc(
+        &state.downloader,
+        "aria2.pause",
+        vec![serde_json::json!(req.gid)],
+    )
+    .await
+    {
         Ok(val) => {
             let gid = val.as_str().unwrap_or("unknown").to_string();
             Json(ApiResponse::success(gid))
@@ -908,14 +903,20 @@ pub async fn handle_downloader_unpause(
     headers: HeaderMap,
     Json(req): Json<GidRequest>,
 ) -> Json<ApiResponse<String>> {
-    if let Err((_, msg)) = require_admin_request(&state, &headers).await {
+    if let Err((_, msg)) = guard_admin(&state, &headers).await {
         return Json(ApiResponse::error(&msg));
     }
     if let Err(e) = ensure_aria2_running(&state.downloader).await {
         return Json(ApiResponse::error(&e));
     }
 
-    match aria2_rpc(&state.downloader, "aria2.unpause", vec![serde_json::json!(req.gid)]).await {
+    match aria2_rpc(
+        &state.downloader,
+        "aria2.unpause",
+        vec![serde_json::json!(req.gid)],
+    )
+    .await
+    {
         Ok(val) => {
             let gid = val.as_str().unwrap_or("unknown").to_string();
             Json(ApiResponse::success(gid))
@@ -929,7 +930,7 @@ pub async fn handle_downloader_remove(
     headers: HeaderMap,
     Json(req): Json<GidRequest>,
 ) -> Json<ApiResponse<String>> {
-    let admin_username = match require_admin_request(&state, &headers).await {
+    let admin_username = match guard_admin(&state, &headers).await {
         Ok(u) => u,
         Err((_, msg)) => return Json(ApiResponse::error(&msg)),
     };
@@ -947,12 +948,24 @@ pub async fn handle_downloader_remove(
     // case a user actually wants to clear (the "Remove" button on a
     // finished download in the UI). `aria2.removeDownloadResult` is the
     // separate RPC method aria2 requires for that case, so it's tried last.
-    match aria2_rpc(&state.downloader, "aria2.remove", vec![serde_json::json!(req.gid)]).await {
+    match aria2_rpc(
+        &state.downloader,
+        "aria2.remove",
+        vec![serde_json::json!(req.gid)],
+    )
+    .await
+    {
         Ok(val) => {
             let gid = val.as_str().unwrap_or("unknown").to_string();
             Json(ApiResponse::success(gid))
         }
-        Err(_) => match aria2_rpc(&state.downloader, "aria2.forceRemove", vec![serde_json::json!(req.gid)]).await {
+        Err(_) => match aria2_rpc(
+            &state.downloader,
+            "aria2.forceRemove",
+            vec![serde_json::json!(req.gid)],
+        )
+        .await
+        {
             Ok(val) => {
                 let gid = val.as_str().unwrap_or("unknown").to_string();
                 Json(ApiResponse::success(gid))
@@ -976,14 +989,20 @@ pub async fn handle_downloader_task(
     headers: HeaderMap,
     Path(gid): Path<String>,
 ) -> Json<ApiResponse<Aria2Task>> {
-    if let Err((_, msg)) = require_admin_request(&state, &headers).await {
+    if let Err((_, msg)) = guard_admin(&state, &headers).await {
         return Json(ApiResponse::error(&msg));
     }
     if let Err(e) = ensure_aria2_running(&state.downloader).await {
         return Json(ApiResponse::error(&e));
     }
 
-    match aria2_rpc(&state.downloader, "aria2.tellStatus", vec![serde_json::json!(gid)]).await {
+    match aria2_rpc(
+        &state.downloader,
+        "aria2.tellStatus",
+        vec![serde_json::json!(gid)],
+    )
+    .await
+    {
         Ok(val) => match serde_json::from_value::<Aria2Task>(val) {
             Ok(task) => Json(ApiResponse::success(task)),
             Err(e) => Json(ApiResponse::error(&format!("parse error: {}", e))),
@@ -992,34 +1011,23 @@ pub async fn handle_downloader_task(
     }
 }
 
-/// Validates that the request comes from an authenticated administrator.
-/// Returns `Err((status, message))` when access must be denied; handlers turn
-/// this into `Json(ApiResponse::error(&message))`.
-async fn require_admin_request(
-    state: &AppStateArc,
-    headers: &HeaderMap,
-) -> Result<String, (u16, String)> {
-    let token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if token.is_empty() {
-        return Err((401, "No session token provided".to_string()));
+/// Guards an admin-only Downloader request.
+///
+/// The decision — token present, token valid, account admin, and the status
+/// each failure carries — belongs to `admin_guard` (ROADMAP X.7). The module
+/// answers a `Json<ApiResponse>` envelope, so the guard's status is relayed as
+/// a number and its message re-derived from that status.
+async fn guard_admin(state: &AppStateArc, headers: &HeaderMap) -> Result<String, (u16, String)> {
+    match crate::handlers::admin_guard::require_admin(state, headers).await {
+        Ok(username) => Ok(username),
+        Err(resp) => {
+            let status = resp.status();
+            Err((
+                status.as_u16(),
+                crate::handlers::admin_guard::denial_message(status),
+            ))
+        }
     }
-
-    let Some(username) = state.auth.get_username_from_token(token).await else {
-        return Err((401, "Invalid or expired session".to_string()));
-    };
-
-    if !state.auth.is_admin(&username).await {
-        return Err((
-            403,
-            "Admin privileges required for this operation".to_string(),
-        ));
-    }
-
-    Ok(username)
 }
 
 #[cfg(test)]
@@ -1382,7 +1390,15 @@ mod tests {
 
     #[test]
     fn test_validate_output_name_refuses_a_path() {
-        for out in ["../etc/passwd", "a/b", "/etc/passwd", "a\\b", "..", ".", "a\u{0}b"] {
+        for out in [
+            "../etc/passwd",
+            "a/b",
+            "/etc/passwd",
+            "a\\b",
+            "..",
+            ".",
+            "a\u{0}b",
+        ] {
             assert!(
                 validate_output_name(out).is_err(),
                 "`{out}` must be refused, got {:?}",

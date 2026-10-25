@@ -126,54 +126,13 @@ pub struct UpdateShareRequest {
     pub options: Option<Vec<String>>,
 }
 
-async fn require_admin(headers: &HeaderMap, state: &AppState) -> Option<Response> {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return Some(ResponseHelper::json_error(
-            "No session token provided".to_string(),
-        ));
-    }
-
-    match state.auth.get_session(session_token).await {
-        Ok(session) => {
-            if !session.is_admin {
-                return Some(ResponseHelper::json_error(
-                    "Admin access required".to_string(),
-                ));
-            }
-            None
-        }
-        Err(_) => Some(ResponseHelper::json_unauthorized(
-            "Invalid session".to_string(),
-        )),
-    }
-}
-
-/// Best-effort username for event logging, after `require_admin` already
-/// confirmed the caller has a valid admin session.
-async fn actor_username(headers: &HeaderMap, state: &AppState) -> String {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    state
-        .auth
-        .get_username_from_token(session_token)
-        .await
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
 /// Lists all Samba/NFS shares.
 #[axum_macros::debug_handler]
 pub async fn handle_shares_list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -190,7 +149,7 @@ pub async fn handle_share_get(
     Path((name, share_type)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -218,7 +177,7 @@ pub async fn handle_share_update(
     headers: HeaderMap,
     req: axum::extract::Json<UpdateShareRequest>,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -260,9 +219,10 @@ pub async fn handle_share_create(
     headers: HeaderMap,
     req: axum::extract::Json<CreateShareRequest>,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
-        return resp;
-    }
+    let admin = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
 
     let Some(share_type) = ShareType::parse(&req.share_type) else {
         return ResponseHelper::json_error(
@@ -283,7 +243,7 @@ pub async fn handle_share_create(
         Ok(_) => {
             crate::events::log_event(format!(
                 "Admin '{}' created {} share '{}' at '{}'",
-                actor_username(&headers, &state).await,
+                admin,
                 req.share_type.to_uppercase(),
                 req.name,
                 req.path
@@ -307,9 +267,10 @@ pub async fn handle_share_delete(
     Path((name, share_type)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
-        return resp;
-    }
+    let admin = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
 
     let Some(share_type) = ShareType::parse(&share_type) else {
         return ResponseHelper::json_error("Invalid share type".to_string());
@@ -323,11 +284,7 @@ pub async fn handle_share_delete(
     .await
     {
         Ok(_) => {
-            crate::events::log_event_warn(format!(
-                "Admin '{}' deleted share '{}'",
-                actor_username(&headers, &state).await,
-                name
-            ));
+            crate::events::log_event_warn(format!("Admin '{}' deleted share '{}'", admin, name));
             if share_type == ShareType::Sftp {
                 rebuild_sftp_jails_best_effort(&state).await;
             }
@@ -347,7 +304,7 @@ pub async fn handle_share_toggle(
     Path((name, share_type, enabled)): Path<(String, String, bool)>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -383,7 +340,7 @@ pub async fn handle_smb_config_get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -400,7 +357,7 @@ pub async fn handle_smb_config_update(
     headers: HeaderMap,
     req: axum::extract::Json<SmbConfig>,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -420,7 +377,7 @@ pub async fn handle_nfs_config_get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -437,7 +394,7 @@ pub async fn handle_nfs_config_update(
     headers: HeaderMap,
     req: axum::extract::Json<NfsConfig>,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -459,7 +416,7 @@ pub async fn handle_share_service_start(
     Path(share_type): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -499,7 +456,7 @@ pub async fn handle_share_service_stop(
     Path(share_type): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -532,7 +489,7 @@ pub async fn handle_share_service_restart(
     Path(share_type): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -569,7 +526,7 @@ pub async fn handle_ftp_config_get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -586,7 +543,7 @@ pub async fn handle_ftp_config_update(
     headers: HeaderMap,
     req: axum::extract::Json<FtpConfig>,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -606,7 +563,7 @@ pub async fn handle_webdav_config_get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -623,7 +580,7 @@ pub async fn handle_webdav_config_update(
     headers: HeaderMap,
     req: axum::extract::Json<WebdavConfig>,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -651,7 +608,7 @@ pub async fn handle_sftp_config_get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -669,7 +626,7 @@ pub async fn handle_sftp_config_update(
     headers: HeaderMap,
     req: axum::extract::Json<SftpConfig>,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -694,7 +651,7 @@ pub async fn handle_sftp_grantees_list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -726,9 +683,10 @@ pub async fn handle_sftp_key_set(
     headers: HeaderMap,
     req: axum::extract::Json<SetSftpKeyRequest>,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
-        return resp;
-    }
+    let admin = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
 
     // `set_authorized_key` provisions a real Linux account for the username.
     // Refuse a name that isn't an actual HomeVault user, so a typo can't
@@ -747,8 +705,7 @@ pub async fn handle_sftp_key_set(
         Ok(_) => {
             crate::events::log_event(format!(
                 "Admin '{}' set an SFTP public key for user '{}'",
-                actor_username(&headers, &state).await,
-                req.username
+                admin, req.username
             ));
             ResponseHelper::json_success("SFTP key saved".to_string())
         }
@@ -765,7 +722,7 @@ pub async fn handle_sftp_rebuild(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(resp) = require_admin(&headers, &state).await {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
         return resp;
     }
 

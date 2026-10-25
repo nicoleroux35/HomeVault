@@ -253,13 +253,14 @@ pub async fn handle_chat_send(
     headers: HeaderMap,
     Json(req): Json<ChatRequest>,
 ) -> Json<ChatResponse> {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
     let language = req.language.as_deref().unwrap_or("en");
 
-    if session_token.is_empty() || state.auth.get_session(session_token).await.is_err() {
+    // The envelope is always `200` (the desktop reads `success`), but the
+    // decision is the shared guard's (ROADMAP X.7/X.8).
+    if crate::handlers::admin_guard::require_auth(&state, &headers)
+        .await
+        .is_err()
+    {
         return Json(ChatResponse {
             success: false,
             data: None,
@@ -355,14 +356,12 @@ pub async fn handle_chat_send_stream(
     use futures_util::StreamExt;
     use std::convert::Infallible;
 
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("")
-        .to_string();
     let language = req.language.clone().unwrap_or_else(|| "en".to_string());
 
-    if session_token.is_empty() || state.auth.get_session(&session_token).await.is_err() {
+    if crate::handlers::admin_guard::require_auth(&state, &headers)
+        .await
+        .is_err()
+    {
         return ResponseHelper::json_unauthorized(session_error_message(&language).to_string());
     }
 
@@ -502,12 +501,10 @@ pub async fn handle_chat_models_list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Json<ModelsListResponse> {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() || state.auth.get_session(session_token).await.is_err() {
+    if crate::handlers::admin_guard::require_auth(&state, &headers)
+        .await
+        .is_err()
+    {
         return Json(ModelsListResponse {
             success: false,
             data: None,
@@ -607,22 +604,9 @@ pub async fn handle_chat_models_pull(
 ) -> Response {
     use futures_util::StreamExt;
 
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let session = match _state.auth.get_session(session_token).await {
-        Ok(session) => session,
-        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
-    };
-
-    if !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
+    // Admin-only: `403` for a signed-in non-admin, `401` for no session.
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&_state, &headers).await {
+        return resp;
     }
 
     let model_name = req.name.trim().to_string();
@@ -733,16 +717,8 @@ pub async fn handle_chat_model_get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-    if state.auth.get_session(session_token).await.is_err() {
-        return ResponseHelper::json_unauthorized("Session invalid".to_string());
+    if let Err(resp) = crate::handlers::admin_guard::require_auth(&state, &headers).await {
+        return resp;
     }
 
     let model = AI_MODEL.read().clone();
@@ -766,22 +742,9 @@ pub async fn handle_chat_model_set(
     headers: HeaderMap,
     Json(req): Json<ModelSetRequest>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let session = match _state.auth.get_session(session_token).await {
-        Ok(session) => session,
-        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
-    };
-
-    if !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
+    // Admin-only: `403` for a signed-in non-admin, `401` for no session.
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&_state, &headers).await {
+        return resp;
     }
 
     let model_name = req.model.trim().to_string();
@@ -1152,12 +1115,10 @@ pub async fn handle_chat_models_recommend(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Json<RecommendResponse> {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() || state.auth.get_session(session_token).await.is_err() {
+    if crate::handlers::admin_guard::require_auth(&state, &headers)
+        .await
+        .is_err()
+    {
         return Json(RecommendResponse {
             success: false,
             data: RecommendData {

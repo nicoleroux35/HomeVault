@@ -240,15 +240,6 @@ pub async fn handle_docker_container_restart(
         Err(response) => return response,
     };
 
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
     if !DockerService::is_available() {
         return ResponseHelper::json_error("Docker is not available".to_string());
     }
@@ -494,15 +485,6 @@ pub async fn handle_docker_container_create(
         Err(response) => return response,
     };
 
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
     if !DockerService::is_available() {
         return ResponseHelper::json_error("Docker is not available".to_string());
     }
@@ -625,15 +607,6 @@ pub async fn handle_docker_image_pull(
         Err(response) => return response,
     };
 
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
     if !DockerService::is_available() {
         return ResponseHelper::json_error("Docker is not available".to_string());
     }
@@ -670,15 +643,6 @@ pub async fn handle_docker_image_remove(
         Err(response) => return response,
     };
 
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
     if !DockerService::is_available() {
         return ResponseHelper::json_error("Docker is not available".to_string());
     }
@@ -713,15 +677,6 @@ pub async fn handle_docker_networks_list(
         return response;
     }
 
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
     if !DockerService::is_available() {
         return ResponseHelper::json_error("Docker is not available".to_string());
     }
@@ -743,15 +698,6 @@ pub async fn handle_docker_network_get(
     // ✅ SECURITY: Admin privileges required
     if let Err(response) = require_admin(&state, &headers).await {
         return response;
-    }
-
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
     }
 
     if !DockerService::is_available() {
@@ -785,15 +731,6 @@ pub async fn handle_docker_network_create(
         Ok(u) => u,
         Err(response) => return response,
     };
-
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
 
     if !DockerService::is_available() {
         return ResponseHelper::json_error("Docker is not available".to_string());
@@ -853,15 +790,6 @@ pub async fn handle_docker_network_connect(
         return response;
     }
 
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
     if !DockerService::is_available() {
         return ResponseHelper::json_error("Docker is not available".to_string());
     }
@@ -883,15 +811,6 @@ pub async fn handle_docker_network_disconnect(
     // ✅ SECURITY: Admin privileges required
     if let Err(response) = require_admin(&state, &headers).await {
         return response;
-    }
-
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
     }
 
     if !DockerService::is_available() {
@@ -919,15 +838,6 @@ pub async fn handle_docker_network_remove(
         Ok(u) => u,
         Err(response) => return response,
     };
-
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
 
     if !DockerService::is_available() {
         return ResponseHelper::json_error("Docker is not available".to_string());
@@ -1047,15 +957,6 @@ pub async fn handle_docker_network_prune(
     // ✅ SECURITY: Admin privileges required
     if let Err(response) = require_admin(&state, &headers).await {
         return response;
-    }
-
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
     }
 
     if !DockerService::is_available() {

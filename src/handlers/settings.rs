@@ -707,22 +707,10 @@ pub async fn handle_set_language(
     headers: HeaderMap,
     req: axum::extract::Json<LanguageRequest>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let session = match state.auth.get_session(session_token).await {
-        Ok(session) => session,
-        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
-    };
-
-    if !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
+    // Admin gate through the shared primitive: `401` for no session, `403` for
+    // a signed-in non-admin (ROADMAP X.7 / X.8).
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
     }
 
     let language = match normalize_language(&req.language) {
@@ -749,16 +737,12 @@ pub async fn handle_get_language(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    match state.auth.get_session(&session_token).await {
         Ok(_) => {}
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     }
@@ -796,23 +780,20 @@ pub async fn handle_general_settings_update(
     headers: HeaderMap,
     req: axum::extract::Json<GeneralSettings>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    // Admin gate through the shared primitive: `401` for no session, `403` for
+    // a signed-in non-admin (ROADMAP X.7 / X.8).
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
     }
-
-    let session = match state.auth.get_session(session_token).await {
+    let session = match state.auth.get_session(&session_token).await {
         Ok(session) => session,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
-
-    if !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
-    }
 
     // The timezone is validated **before** anything is persisted or applied:
     // an unknown zone used to be stored verbatim and read by nothing, so the
@@ -961,22 +942,10 @@ pub async fn handle_general_settings_get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let session = match state.auth.get_session(session_token).await {
-        Ok(session) => session,
-        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
-    };
-
-    if !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
+    // Admin gate through the shared primitive: `401` for no session, `403` for
+    // a signed-in non-admin (ROADMAP X.7 / X.8).
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
     }
 
     let settings = GENERAL_SETTINGS.read();
@@ -1036,22 +1005,10 @@ pub async fn handle_autostart_get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let session = match state.auth.get_session(session_token).await {
-        Ok(session) => session,
-        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
-    };
-
-    if !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
+    // Admin gate through the shared primitive: `401` for no session, `403` for
+    // a signed-in non-admin (ROADMAP X.7 / X.8).
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
     }
 
     // ROADMAP 25.2: `Err` means the host could not answer (container, no
@@ -1078,23 +1035,20 @@ pub async fn handle_autostart_update(
     headers: HeaderMap,
     req: axum::extract::Json<AutostartRequest>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    // Admin gate through the shared primitive: `401` for no session, `403` for
+    // a signed-in non-admin (ROADMAP X.7 / X.8).
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
     }
-
-    let session = match state.auth.get_session(session_token).await {
+    let session = match state.auth.get_session(&session_token).await {
         Ok(session) => session,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
-
-    if !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
-    }
 
     match crate::autostart::set_enabled(req.enabled).await {
         Ok(()) => {
@@ -1134,23 +1088,20 @@ pub async fn handle_email_settings_update(
     headers: HeaderMap,
     req: axum::extract::Json<EmailSettings>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    // Admin gate through the shared primitive: `401` for no session, `403` for
+    // a signed-in non-admin (ROADMAP X.7 / X.8).
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
     }
-
-    let session = match state.auth.get_session(session_token).await {
+    let session = match state.auth.get_session(&session_token).await {
         Ok(session) => session,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
-
-    if !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
-    }
 
     // ROADMAP 13.3: these values are now the ones that reach msmtp, so they are
     // validated *before* they are persisted — a host with a space or a newline
@@ -1212,24 +1163,11 @@ pub async fn handle_email_settings_get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
+    // Admin gate through the shared primitive: `401` for no session, `403` for
+    // a signed-in non-admin (ROADMAP X.7 / X.8).
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
     }
-
-    let session = match state.auth.get_session(session_token).await {
-        Ok(session) => session,
-        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
-    };
-
-    if !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
-    }
-
     let settings = EMAIL_SETTINGS.read();
     ResponseHelper::json_success(serde_json::json!({
         "smtp_server": settings.smtp_server,
@@ -1242,22 +1180,10 @@ pub async fn handle_email_settings_get(
 
 /// Sends a test email.
 pub async fn handle_email_test(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let session = match state.auth.get_session(session_token).await {
-        Ok(session) => session,
-        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
-    };
-
-    if !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
+    // Admin gate through the shared primitive: `401` for no session, `403` for
+    // a signed-in non-admin (ROADMAP X.7 / X.8).
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
     }
 
     let settings = EMAIL_SETTINGS.read().clone();
@@ -1288,9 +1214,10 @@ pub async fn handle_email_test(State(state): State<Arc<AppState>>, headers: Head
 
     // ROADMAP 21.1 (same root cause as 13.3): sending shells out to an MTA with
     // a 30 s deadline, so it must not run on the async runtime.
-    let sent =
-        tokio::task::spawn_blocking(move || crate::email::EmailService::send_test_email(&recipient, &config))
-            .await;
+    let sent = tokio::task::spawn_blocking(move || {
+        crate::email::EmailService::send_test_email(&recipient, &config)
+    })
+    .await;
 
     match sent {
         Ok(Ok(_)) => ResponseHelper::json_success(serde_json::json!({
@@ -1308,23 +1235,20 @@ pub async fn handle_update_settings_update(
     headers: HeaderMap,
     req: axum::extract::Json<UpdateSettings>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    // Admin gate through the shared primitive: `401` for no session, `403` for
+    // a signed-in non-admin (ROADMAP X.7 / X.8).
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
     }
-
-    let session = match state.auth.get_session(session_token).await {
+    let session = match state.auth.get_session(&session_token).await {
         Ok(session) => session,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
-
-    if !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
-    }
 
     let mut settings = UPDATE_SETTINGS.write();
     if let Some(frequency) = &req.check_frequency {
@@ -1350,22 +1274,10 @@ pub async fn handle_update_settings_get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let session = match state.auth.get_session(session_token).await {
-        Ok(session) => session,
-        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
-    };
-
-    if !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
+    // Admin gate through the shared primitive: `401` for no session, `403` for
+    // a signed-in non-admin (ROADMAP X.7 / X.8).
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
     }
 
     let settings = UPDATE_SETTINGS.read();
@@ -1514,16 +1426,12 @@ pub async fn handle_check_version_now(
 }
 
 async fn serve_version_info(state: Arc<AppState>, headers: HeaderMap, force: bool) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let session = match state.auth.get_session(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let session = match state.auth.get_session(&session_token).await {
         Ok(session) => session,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
@@ -1532,7 +1440,7 @@ async fn serve_version_info(state: Arc<AppState>, headers: HeaderMap, force: boo
     // answer stays available to any signed-in user (the desktop footer shows
     // the running version).
     if force && !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
+        return ResponseHelper::json_forbidden("Admin access required".to_string());
     }
 
     if force || should_check_for_updates() {
@@ -1575,23 +1483,20 @@ pub async fn handle_notification_settings_update(
     headers: HeaderMap,
     req: axum::extract::Json<NotificationSettings>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    // Admin gate through the shared primitive: `401` for no session, `403` for
+    // a signed-in non-admin (ROADMAP X.7 / X.8).
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
     }
-
-    let session = match state.auth.get_session(session_token).await {
+    let session = match state.auth.get_session(&session_token).await {
         Ok(session) => session,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
-
-    if !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
-    }
 
     // ROADMAP 13.5: the webhook URL used to be stored verbatim and handed to
     // `reqwest` only when an alert fired, so a typo surfaced hours later as a
@@ -1670,22 +1575,10 @@ pub async fn handle_notification_settings_get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let session = match state.auth.get_session(session_token).await {
-        Ok(session) => session,
-        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
-    };
-
-    if !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
+    // Admin gate through the shared primitive: `401` for no session, `403` for
+    // a signed-in non-admin (ROADMAP X.7 / X.8).
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
     }
 
     let settings = NOTIFICATION_SETTINGS.read();
@@ -1714,23 +1607,20 @@ pub async fn handle_appearance_settings_update(
     headers: HeaderMap,
     req: axum::extract::Json<AppearanceSettings>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    // Admin gate through the shared primitive: `401` for no session, `403` for
+    // a signed-in non-admin (ROADMAP X.7 / X.8).
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
     }
-
-    let session = match state.auth.get_session(session_token).await {
+    let session = match state.auth.get_session(&session_token).await {
         Ok(session) => session,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
-
-    if !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
-    }
 
     // Validate everything first: a partial write followed by a refusal would
     // leave the blob half-updated.
@@ -1786,16 +1676,12 @@ pub async fn handle_appearance_settings_get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    if state.auth.get_session(session_token).await.is_err() {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    if state.auth.get_session(&session_token).await.is_err() {
         return ResponseHelper::json_unauthorized("Session invalid".to_string());
     }
 
@@ -1811,22 +1697,10 @@ pub async fn handle_all_settings_get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let session = match state.auth.get_session(session_token).await {
-        Ok(session) => session,
-        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
-    };
-
-    if !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
+    // Admin gate through the shared primitive: `401` for no session, `403` for
+    // a signed-in non-admin (ROADMAP X.7 / X.8).
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
     }
 
     let general = GENERAL_SETTINGS.read();
@@ -1844,7 +1718,7 @@ pub async fn handle_all_settings_get(
             "language": general
                 .language
                 .clone()
-                .unwrap_or_else(|| I18n::get_locale()),
+                .unwrap_or_else(I18n::get_locale),
         },
         "email": {
             "smtp_server": email.smtp_server,
@@ -1888,23 +1762,20 @@ pub async fn handle_settings_export(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    // Admin gate through the shared primitive: `401` for no session, `403` for
+    // a signed-in non-admin (ROADMAP X.7 / X.8).
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
     }
-
-    let session = match state.auth.get_session(session_token).await {
+    let session = match state.auth.get_session(&session_token).await {
         Ok(session) => session,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
-
-    if !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
-    }
 
     match export_settings() {
         Some(json) => {
@@ -1929,23 +1800,20 @@ pub async fn handle_settings_import(
     headers: HeaderMap,
     req: axum::extract::Json<ImportSettingsRequest>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    // Admin gate through the shared primitive: `401` for no session, `403` for
+    // a signed-in non-admin (ROADMAP X.7 / X.8).
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
     }
-
-    let session = match state.auth.get_session(session_token).await {
+    let session = match state.auth.get_session(&session_token).await {
         Ok(session) => session,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
-
-    if !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
-    }
 
     let json_result = serde_json::to_string(&req.data);
     let json = match json_result {
@@ -1973,23 +1841,20 @@ pub async fn handle_settings_reset(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    // Admin gate through the shared primitive: `401` for no session, `403` for
+    // a signed-in non-admin (ROADMAP X.7 / X.8).
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
     }
-
-    let session = match state.auth.get_session(session_token).await {
+    let session = match state.auth.get_session(&session_token).await {
         Ok(session) => session,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
-
-    if !session.is_admin {
-        return ResponseHelper::json_error("Admin access required".to_string());
-    }
 
     match reset_settings() {
         Ok(_) => {

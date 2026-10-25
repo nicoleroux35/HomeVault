@@ -59,9 +59,7 @@ use homevault::handlers::transfer_quotas::{
 };
 use homevault::handlers::{auth::handle_login, AppState};
 use homevault::middleware::rate_limit::RateLimitState;
-use homevault::storage::transfer_quota_repo::{
-    QuotaLimits, TransferQuotaRepository,
-};
+use homevault::storage::transfer_quota_repo::{QuotaLimits, TransferQuotaRepository};
 use homevault::storage::{Database, WidgetRepository};
 
 type Req = Request<axum::body::Body>;
@@ -234,8 +232,8 @@ async fn test_reads_require_a_session() {
     .await;
     assert_eq!(
         status,
-        StatusCode::BAD_REQUEST,
-        "a missing token keeps the module-wide json_error shape (400)"
+        StatusCode::UNAUTHORIZED,
+        "a missing token is 401, the same as every other guarded endpoint (ROADMAP X.8)"
     );
 
     let (status, _) = send(
@@ -503,10 +501,14 @@ async fn test_changing_the_period_zeroes_the_counters_and_editing_a_limit_does_n
     let admin = login(&mut r, "admin1", "Password123!").await;
 
     let repo = repo(&h);
-    repo.set_limits(QuotaLimits::lifetime("user", "alice", true, 1_000_000, false, 0))
+    repo.set_limits(QuotaLimits::lifetime(
+        "user", "alice", true, 1_000_000, false, 0,
+    ))
+    .await
+    .unwrap();
+    repo.add_upload_usage("user", "alice", 900_000)
         .await
         .unwrap();
-    repo.add_upload_usage("user", "alice", 900_000).await.unwrap();
 
     // Same period, bigger cap: the 900 kB already transferred still counts.
     let (_, body) = send(

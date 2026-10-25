@@ -269,7 +269,7 @@ async fn test_read_endpoints_reject_missing_token() {
     let mut router = dashboard_router(state);
     for uri in read_endpoints() {
         let (status, _) = send(&mut router, Method::GET, uri, None, None).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "GET {uri}");
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "GET {uri}");
     }
 }
 
@@ -302,7 +302,7 @@ async fn test_widget_crud_endpoints_reject_missing_token() {
     ];
     for (method, uri, body) in cases {
         let (status, _) = send(&mut router, method.clone(), uri, None, body.clone()).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{method} {uri}");
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri}");
         let (status, _) = send(&mut router, method.clone(), uri, Some("nope"), body.clone()).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri}");
     }
@@ -323,7 +323,7 @@ async fn test_widget_preferences_reject_missing_token() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["success"], json!(false));
 
     let (status, body) = send(

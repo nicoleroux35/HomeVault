@@ -190,7 +190,7 @@ async fn activity_rejects_missing_token() {
     let (state, _tmp, _g) = setup_state().await;
     let mut r = activity_router(state);
     let (status, _) = send(&mut r, Method::GET, "/api/activity", None, None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
