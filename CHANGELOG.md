@@ -6,6 +6,66 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **A switch for local-network discovery — and it really removes the
+  advertisement (2026-10-24, ROADMAP 29.1).** `crate::mdns::unpublish()` had
+  **no caller at all**: the Avahi service file and the `host-name` override
+  stayed on disk whatever the appliance was asked to do, so the only way to stop
+  broadcasting `homevault.local` was to disable Avahi by hand. Settings →
+  General now carries **"Discoverable on the local network"**
+  (`GeneralSettings.mdns_enabled`, shipped **on**), and the save reaches the
+  host: turning it off deletes `/etc/avahi/services/homevault.service`, strips
+  the `host-name=` line from `avahi-daemon.conf` (`remove_host_name`, the exact
+  inverse of `ensure_host_name`) and renames the running daemon back; turning it
+  back on republishes **immediately** instead of waiting up to 120 s for the
+  reconciler. The reconciler now skips its tick while disabled (it used to
+  recreate the file two minutes later), reset-to-defaults republishes, and a
+  host that refuses the change answers `200` with `mdns_notice` shown in the
+  card — a save that could not reach the host must not look saved.
+  `GET /mdns/status` and `GET /settings/general` report the **live** flag.
+
+### Fixed
+
+- **A host-name change no longer drops every other mDNS advertisement on the
+  host (2026-10-24, ROADMAP 29.2).** `avahi-daemon` reads `host-name=` at
+  startup only (`--reload` re-reads `/etc/avahi/services/*`, *not*
+  `avahi-daemon.conf` — see `avahi-daemon(8)`), so a rename restarted the
+  daemon and briefly removed **everything** it published for that host: the
+  admin's printers, other appliances' shares. The rename now goes through
+  Avahi's D-Bus `SetHostName` (`sudo busctl call`), **verified by reading
+  `HostName` back** so a call that silently did nothing still falls back to a
+  restart (logged at `warn`). The config file is still written for the next
+  boot.
+
+- **A background job that fails keeps its row instead of vanishing (2026-10-24,
+  ROADMAP 28.2).** The activity feed filtered on `pending | running`, so a job
+  that failed one second ago disappeared on the very next poll — the row the
+  user was watching simply vanished, and the only trace left was a notification
+  in the bell. A `failed` or `cancelled` job now stays for 60 s after its last
+  event and carries a `state` slug, and the desktop renders it as a failure: no
+  progress bar (there is no progress to report), the localised word instead of a
+  percentage, and **no dock badge** — the badge counts work in progress, so the
+  dock button now keys off "is there a row to report" while the badge counts
+  active rows only.
+
+- **A failing backend is no longer polled twice a second (2026-10-24, ROADMAP
+  28.1).** The activity store used `setInterval(poll, 2000)` unconditionally, so
+  an appliance answering `500` was hit 30 times a minute per open desktop — a
+  self-inflicted load spike exactly when the box is already unwell. The loop
+  backs off exponentially (2 s → 4 → 8 → 16 → 32 → 60 s cap), tolerates one
+  transient miss so the panel does not flicker, and resets the delay when the
+  tab becomes visible again.
+
+- **`mdns.rs` runs no subprocess without a deadline (2026-10-24, ROADMAP X.2 /
+  X.9).** Five bare `Command` invocations (`sudo tee`, `sudo rm`, `systemctl`,
+  `which`, `avahi-daemon --reload`) could pin the reconciler thread forever on a
+  `sudo` prompt waiting for a terminal. All of them now go through
+  `utils::process::run_timed` / `run_timed_with_stdin` with three ordered
+  ceilings, and a source guard fails the build if a bare invocation comes back.
+  The sweep this prompted found **98 more such sites in 26 files**, now tracked
+  as ROADMAP X.9.
+
 ### Security
 
 - **One auth primitive, one status contract — a non-admin is `403` and a

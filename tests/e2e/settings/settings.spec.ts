@@ -577,9 +577,12 @@ test.describe('3 — General', () => {
     // checkbox inside a `.settings-toggle-label`, which is the real hit
     // target (the input itself is clipped to 1px, so clicking it directly is
     // not reliably actionable).
-    const toggle = set(page)
-      .locator('[data-testid="settings-card"] .settings-toggle-label')
-      .first();
+    // Targeted at the autostart row, not `.first()`: the General card also
+    // carries the mDNS switch (ROADMAP 29.1), and a positional selector would
+    // silently start driving the wrong control.
+    const toggle = set(page).locator(
+      '[data-testid="settings-autostart-row"] .settings-toggle-label'
+    );
     await expect(toggle).toBeVisible();
     const before = await sharedCtx.get('/api/settings/autostart', { headers: adminHeaders });
     const enabledBefore = !!(await before.json().catch(() => ({})))?.data?.enabled;
@@ -611,6 +614,58 @@ test.describe('3 — General', () => {
       headers: adminHeaders,
       data: { enabled: enabledBefore },
     });
+  });
+
+  /**
+   * ROADMAP 29.1 — the mDNS switch exists, is staged like every other General
+   * field, and its PUT carries `mdns_enabled`.
+   *
+   * Both Avahi paths are mocked: a real save removes/creates
+   * `/etc/avahi/services/homevault.service` on the host running the suite.
+   * The disk-side behaviour is asserted in `tests/mdns_integration.rs`; here
+   * the contract is the wire one.
+   */
+  test('3.7 — the mDNS switch is staged and PUT as part of the General save', async ({ page }) => {
+    let putBody: any = null;
+    await page.route('**/api/settings/general', async (route) => {
+      if (route.request().method() === 'PUT') {
+        putBody = route.request().postDataJSON();
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            success: true,
+            data: { success: true, mdns_notice: null, restart_required: false },
+          }),
+        });
+      }
+      return route.continue();
+    });
+
+    await openSettings(page, admin);
+    const row = set(page).locator('[data-testid="settings-mdns-row"]');
+    await expect(row).toBeVisible();
+    await expect(row.locator('[data-testid="settings-mdns"]')).toBeVisible();
+    // The row explains what it does — an unlabelled switch is not acceptance.
+    await expect(row).toContainText(/mDNS|local network|réseau local|red local|Netzwerk/i);
+
+    const toggle = row.locator('.settings-toggle-label');
+    await toggle.click();
+
+    // Staged, not persisted: nothing is PUT until Save.
+    await page.waitForTimeout(1000);
+    expect(putBody, 'the mDNS switch must not save on its own').toBeNull();
+
+    const [resp] = await Promise.all([
+      page.waitForResponse(
+        (r) => r.url().includes('/api/settings/general') && r.request().method() === 'PUT',
+        { timeout: 8_000 },
+      ),
+      set(page).locator('[data-testid="settings-save"]').click(),
+    ]);
+    expect(resp.status()).toBe(200);
+    expect(putBody).toHaveProperty('mdns_enabled');
+    expect(typeof putBody.mdns_enabled).toBe('boolean');
   });
 
   test('3.5 — a refused start-on-boot save shows the host reason and reverts the switch', async ({ page }) => {

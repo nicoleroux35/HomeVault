@@ -171,6 +171,13 @@ pub struct ActivitySnapshot {
     pub job_type: JobType,
     pub owner: Option<String>,
     pub state: ProgressState,
+    /// When the last event was emitted, or `None` for a job that has not
+    /// reported anything yet.
+    ///
+    /// The activity feed needs it to answer "did this fail *just now*?" — a
+    /// job that failed ten minutes ago is history, one that failed a second
+    /// ago is what the user is waiting on (ROADMAP 28.2).
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
     /// `None` when no percentage has been reported yet (indeterminate).
     pub progress: Option<f64>,
     pub message: String,
@@ -482,6 +489,7 @@ impl ProgressManager {
                         .as_ref()
                         .map(|e| e.state.clone())
                         .unwrap_or_else(|| job.state.clone()),
+                    updated_at: last.as_ref().map(|e| e.timestamp),
                     progress: if has_progress {
                         last.as_ref().map(|e| e.progress)
                     } else {
