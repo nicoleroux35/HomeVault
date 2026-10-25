@@ -43,7 +43,30 @@ const TESTDISK_REBUILD_TIMEOUT: Duration = Duration::from_secs(300);
 /// Ceiling for any `mdadm` call (both are prompt; a hung one is a kernel issue).
 const MDADM_TIMEOUT: Duration = Duration::from_secs(60);
 
+// Note on the two long-running children (`ddrescue`, `photorec`): they are
+// deliberately NOT deadlined — a clone or a recovery runs for as long as it
+// takes, and it is cancelled through its process group. They go through
+// `spawn_child`, which adds `kill_on_drop` so a dropped guard cannot leave a
+// write running. That is the one sanctioned exception to "every subprocess is
+// bounded" in this module, and it is a choice, not an oversight (ROADMAP X.9).
+
 pub struct RescueService;
+
+/// Starts a long-running rescue child (`sudo ddrescue`, `sudo photorec`).
+///
+/// The child's *lifetime* is deliberately **not** bounded here: a disk clone or
+/// a file recovery legitimately runs for hours, and it is cancelled through its
+/// process group (`process_group(0)` + the `sudo kill` path), not through a
+/// deadline. What this wrapper adds is `kill_on_drop`, so a cancellation that
+/// drops the guard cannot leave the tool running, and one named error type for
+/// the "could not start" case (ROADMAP X.9 — these two `spawn()` calls were the
+/// last ones outside the module's bounded discipline; the surrounding
+/// `RESCUE_SPAWN_TIMEOUT` documentation explains why a deadline is the wrong
+/// instrument here).
+fn spawn_child(cmd: &mut Command) -> Result<tokio::process::Child, RescueError> {
+    cmd.kill_on_drop(true);
+    cmd.spawn().map_err(RescueError::Io)
+}
 
 impl RescueService {
     /// Run `cmd` to completion under a hard timeout, killing it on expiry.
@@ -361,11 +384,11 @@ impl RescueService {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
-        let mut child = match cmd.spawn() {
+        let mut child = match spawn_child(&mut cmd) {
             Ok(child) => child,
             Err(e) => {
                 handle.finish();
-                return Err(RescueError::Io(e));
+                return Err(e);
             }
         };
         if let Some(pid) = child.id() {
@@ -672,6 +695,8 @@ impl RescueService {
         // closed stdin guarantee the Tokio worker is never wedged.
         let commands = "analyze,search";
 
+        // Spawned, then awaited under `TESTDISK_REBUILD_TIMEOUT` two statements
+        // below (the guard in `utils/process.rs` pins this by name).
         let child = Command::new("sudo")
             .args([
                 "testdisk",
@@ -804,11 +829,11 @@ impl RescueService {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
-        let mut child = match cmd.spawn() {
+        let mut child = match spawn_child(&mut cmd) {
             Ok(child) => child,
             Err(e) => {
                 handle.finish();
-                return Err(RescueError::Io(e));
+                return Err(e);
             }
         };
         if let Some(pid) = child.id() {

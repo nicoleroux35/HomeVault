@@ -4007,3 +4007,70 @@ derived from reading the code path (`apply_enabled` → `unpublish` → `sudo rm
 `sudo tee` through the shims), not from a green run — `cargo test` is the
 acceptance step. No frontend build was run (`npm run build`) because no asset
 changed in a way `check` would not catch; run it before releasing.
+
+## 2026-10-24 — Subprocess deadlines, round 2 (ROADMAP X.9)
+
+X.2's Done entry claimed "every `std::process::Command` of the tree now runs
+under `src/utils/process.rs`". It was only true for the modules that got a
+**per-module source guard** — nothing ever re-swept the rest. Picking up item 29
+found five bare invocations in `src/mdns.rs` alone, and a sweep found **98 more
+across 26 files**.
+
+### What was unbounded, and why it mattered
+
+| File | Sites | The failure that was possible |
+|---|---|---|
+| `sftp.rs` | 21 | `getent`/`id`/`sudo useradd`/`chpasswd`/`mount --bind` on an unreachable export — the whole jail rebuild |
+| `groups.rs` | 14 | `getent` behind a dead NSS/LDAP backend, `groupadd` on a locked `/etc/group` |
+| `acl.rs` | 8 | `getfacl` on a directory served by a dead NFS server — the Explorer's ACL view |
+| `storage/database.rs` | 8 | the bootstrap `getent`/`id`/`chown -R` before the listener is up |
+| `restic.rs` | 7 | `which`/`version`, `mount`/`umount` of a snapshot for a restore |
+| `setup.rs` | 5 | `visudo -c`, `which`, `chown` while holding the wizard's setup lock |
+| `webdav/mod.rs` | 4 | the legacy-unit cleanup at startup |
+| `auth/service.rs` | 3 | **the login path**: `python3` running PyPAM, `id -un`, `id -Gn` |
+| `email.rs` | 3 | the MTA *spawn* (a wedged `sendmail`/`msmtp` hangs the fork) |
+| `app_catalog/updates.rs` | 3 | `docker inspect`, `compose ps`, `compose pull` |
+| `handlers/user_homes.rs` | 3 | `id`, `chown -R` on a home directory |
+| + 15 files with 1–2 each | 22 | `ss`, `nvidia-smi`/`rocm-smi`, `ufw --version`, `df`, `findmnt`, `sudo kill`, `git`, `chpasswd`, `docker compose logs`, … |
+
+### The test that would have caught it
+
+`src/utils/process.rs::tests::every_subprocess_of_the_tree_is_bounded` walks
+`src/`, finds every `Command::new(…)` and fails on one whose invocation
+(`.output()` / `.status()` / `.spawn()` / `wait_with_output()`) is not wrapped by
+`run_timed…`, a named bounded spawn helper, or an explicit
+`tokio::time::timeout`. It prints the file and line. Its companion
+`the_source_guard_detects_an_unbounded_call` proves it bites (a fabricated
+unbounded line is rejected, a bounded one accepted), and
+`every_exemption_names_a_real_file` keeps the exemption list from rotting.
+
+Two families are legitimate exemptions, listed by name with a reason:
+
+1. **Long-running children** — `clamscan`, `ddrescue`, `photorec`, the TestDisk
+   scan. Their lifetime *is* the work; they are cancelled through their process
+   group and carry `kill_on_drop`.
+2. **Command builders** — `smart::std_command` / `tokio_command`,
+   `encryption::run`. The bound lives at the call site, which the guard also
+   scans.
+
+### Counts
+
+| Suite | Before → after |
+|---|---|
+| `src/utils/process.rs` (unit) | 13 → **16** |
+| `src/acl.rs` (unit) | 0 → **1** |
+| `src/groups.rs` (unit) | 9 → **10** |
+| `src/sftp.rs` (unit) | 9 → **11** |
+| `src/restic.rs` (unit) | 29 → **31** |
+| `src/setup.rs` (unit) | 88 → **89** |
+| `src/storage/database.rs` (unit) | 0 → **1** |
+
+The other 20 touched files keep their counts: their fix is in the call sites, and
+the per-module guard that would pin them lives in `utils/process.rs` today. A
+per-module guard was added to the six files that had none.
+
+**Not verified.** Per instruction nothing was run: `cargo check --all-targets` is
+clean and `cargo test --no-run` compiles every target. The tree-wide guard was
+also replayed as a standalone script over `src/` before being written, and it
+reported exactly the two exemptions (`smart.rs`'s builder and the TestDisk
+spawn) — i.e. the fixed tree is clean and the guard is not vacuous.

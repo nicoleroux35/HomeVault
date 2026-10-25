@@ -25,6 +25,8 @@ use serde::{Deserialize, Serialize};
 use std::process::Command;
 use thiserror::Error;
 
+use crate::utils::process::run_timed;
+
 /// Prefix used for all HomeVault-managed system groups to avoid naming collisions.
 pub const GROUP_PREFIX: &str = "homevault_";
 
@@ -32,6 +34,18 @@ pub const GROUP_PREFIX: &str = "homevault_";
 /// slow NSS backend, or `groupadd` on a locked `/etc/group`, must never pin an
 /// HTTP request indefinitely.
 pub const GROUP_OP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Runs a group command under [`GROUP_OP_TIMEOUT`] and maps a timeout or a
+/// spawn failure to [`GroupError::CommandFailed`].
+///
+/// Every `getent`/`groupadd`/`groupmod`/`groupdel`/`usermod`/`gpasswd`/`id`/
+/// `groups` call of this module goes through it: an unbounded one pins the
+/// `spawn_blocking` thread (and the request awaiting it) for as long as the
+/// host tool takes to answer — which, behind a wedged NSS backend or a locked
+/// `/etc/group`, is forever (ROADMAP X.9).
+fn grp_run(cmd: &mut Command) -> Result<std::process::Output, GroupError> {
+    run_timed(cmd, GROUP_OP_TIMEOUT).map_err(GroupError::CommandFailed)
+}
 
 /// Run a blocking group operation on the blocking pool, under a hard ceiling.
 ///
@@ -166,7 +180,7 @@ impl GroupService {
 
     /// List all HomeVault-managed groups from the system's group database.
     pub fn list_groups() -> Result<Vec<GroupListItem>, GroupError> {
-        let output = Command::new("getent").args(["group"]).output()?;
+        let output = grp_run(Command::new("getent").args(["group"]))?;
 
         if !output.status.success() {
             return Err(GroupError::CommandFailed(
@@ -211,9 +225,7 @@ impl GroupService {
     /// Get a single group by name (accepts display name or full system name).
     pub fn get_group(name: &str) -> Result<Group, GroupError> {
         let full_name = Self::get_full_group_name(name);
-        let output = Command::new("getent")
-            .args(["group", &full_name])
-            .output()?;
+        let output = grp_run(Command::new("getent").args(["group", &full_name]))?;
 
         if !output.status.success() {
             return Err(GroupError::NotFound(name.to_string()));
@@ -290,9 +302,7 @@ impl GroupService {
 
         let full_name = Self::get_full_group_name(display_name);
 
-        let output = Command::new("getent")
-            .args(["group", &full_name])
-            .output()?;
+        let output = grp_run(Command::new("getent").args(["group", &full_name]))?;
         if output.status.success() {
             return Err(GroupError::CommandFailed(format!(
                 "Group '{}' already exists",
@@ -300,10 +310,7 @@ impl GroupService {
             )));
         }
 
-        let output = Command::new("sudo")
-            .arg("groupadd")
-            .arg(&full_name)
-            .output()?;
+        let output = grp_run(Command::new("sudo").arg("groupadd").arg(&full_name))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -349,10 +356,7 @@ impl GroupService {
             ));
         }
 
-        let output = Command::new("sudo")
-            .arg("groupdel")
-            .arg(&full_name)
-            .output()?;
+        let output = grp_run(Command::new("sudo").arg("groupdel").arg(&full_name))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -398,18 +402,14 @@ impl GroupService {
         let new_full = Self::get_full_group_name(&new_display);
 
         // Source must exist...
-        if !Command::new("getent")
-            .args(["group", &old_full])
-            .output()?
+        if !grp_run(Command::new("getent").args(["group", &old_full]))?
             .status
             .success()
         {
             return Err(GroupError::NotFound(old_display));
         }
         // ...and the target must not.
-        if Command::new("getent")
-            .args(["group", &new_full])
-            .output()?
+        if grp_run(Command::new("getent").args(["group", &new_full]))?
             .status
             .success()
         {
@@ -419,12 +419,13 @@ impl GroupService {
             )));
         }
 
-        let output = Command::new("sudo")
-            .arg("groupmod")
-            .arg("-n")
-            .arg(&new_full)
-            .arg(&old_full)
-            .output()?;
+        let output = grp_run(
+            Command::new("sudo")
+                .arg("groupmod")
+                .arg("-n")
+                .arg(&new_full)
+                .arg(&old_full),
+        )?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -453,9 +454,7 @@ impl GroupService {
             return Err(GroupError::CommandFailed(e));
         }
 
-        let exists = Command::new("id")
-            .arg(username)
-            .output()
+        let exists = grp_run(Command::new("id").arg(username))
             .map(|o| o.status.success())
             .unwrap_or(false);
 
@@ -463,10 +462,12 @@ impl GroupService {
             return Ok(());
         }
 
-        let output = Command::new("sudo")
-            .arg("useradd")
-            .args(["-M", "-s", "/usr/sbin/nologin", username])
-            .output()?;
+        let output = grp_run(Command::new("sudo").arg("useradd").args([
+            "-M",
+            "-s",
+            "/usr/sbin/nologin",
+            username,
+        ]))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -483,10 +484,12 @@ impl GroupService {
     /// Add a user to a group via `usermod -a -G`.
     pub fn add_user_to_group(username: &str, groupname: &str) -> Result<(), GroupError> {
         let full_group_name = Self::get_full_group_name(groupname);
-        let output = Command::new("sudo")
-            .arg("usermod")
-            .args(["-a", "-G", &full_group_name, username])
-            .output()?;
+        let output = grp_run(Command::new("sudo").arg("usermod").args([
+            "-a",
+            "-G",
+            &full_group_name,
+            username,
+        ]))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -512,10 +515,12 @@ impl GroupService {
     /// Remove a user from a group via `gpasswd -d`. Returns `Ok` if the user is not a member.
     pub fn remove_user_from_group(username: &str, groupname: &str) -> Result<(), GroupError> {
         let full_group_name = Self::get_full_group_name(groupname);
-        let output = Command::new("sudo")
-            .arg("gpasswd")
-            .args(["-d", username, &full_group_name])
-            .output()?;
+        let output =
+            grp_run(
+                Command::new("sudo")
+                    .arg("gpasswd")
+                    .args(["-d", username, &full_group_name]),
+            )?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -540,7 +545,7 @@ impl GroupService {
     /// count by one for every account. Filtered to `homevault_`-prefixed
     /// names only, matching `list_groups()`'s own scope.
     pub fn get_user_groups(username: &str) -> Result<Vec<String>, GroupError> {
-        let output = Command::new("id").args(["-nG", username]).output()?;
+        let output = grp_run(Command::new("id").args(["-nG", username]))?;
 
         if !output.status.success() {
             return Err(GroupError::UserNotFound(username.to_string()));
@@ -558,7 +563,7 @@ impl GroupService {
     /// Check if a user is a member of a group.
     pub fn is_member(username: &str, groupname: &str) -> Result<bool, GroupError> {
         let full_group_name = Self::get_full_group_name(groupname);
-        let output = Command::new("groups").arg(username).output()?;
+        let output = grp_run(Command::new("groups").arg(username))?;
 
         if !output.status.success() {
             return Err(GroupError::UserNotFound(username.to_string()));
@@ -719,5 +724,48 @@ mod tests {
     fn test_normalize_member_list_allows_an_empty_list() {
         // Removing every member is a valid operation.
         assert!(GroupService::normalize_member_list(&[]).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod x9_guards {
+    //! ROADMAP X.9 — no unbounded subprocess in this module.
+    //!
+    //! X.2 left this module out of its sweep, so a `getent` behind a dead NSS
+    //! backend, a `sudo` waiting on a prompt, or a `mount` on an unreachable
+    //! export pinned the caller with no ceiling. The guard is per module
+    //! because that is what makes a *new* unbounded call fail locally;
+    //! `utils/process.rs` carries the tree-wide one.
+
+    /// Every `Command::new` of this file must reach a bounded invocation.
+    #[test]
+    fn every_subprocess_is_bounded() {
+        let src = include_str!("groups.rs");
+        let mut offenders = Vec::new();
+        let lines: Vec<&str> = src.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains("Command::new(") {
+                continue;
+            }
+            let window = lines[i..(i + 14).min(lines.len())].join("\n");
+            let invokes = [".output()", ".status()", ".spawn()", "wait_with_output()"]
+                .iter()
+                .any(|needle| window.contains(needle));
+            if !invokes {
+                continue;
+            }
+            if window.contains("grp_run")
+                || window.contains("run_timed")
+                || window.contains("spawn_under_deadline")
+                || window.contains("tokio::time::timeout")
+            {
+                continue;
+            }
+            offenders.push(format!("{}: {}", i + 1, line.trim()));
+        }
+        assert!(
+            offenders.is_empty(),
+            "these invocations have no deadline (ROADMAP X.9): {offenders:?}"
+        );
     }
 }

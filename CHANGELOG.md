@@ -6,6 +6,31 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **No host command anywhere runs without a deadline (2026-10-24, ROADMAP
+  X.9).** X.2 closed this "for the whole tree" — but only the modules that
+  received a per-module source guard were ever re-checked, so **98 sites across
+  26 files** still invoked a subprocess with no ceiling: `getfacl` on a dead NFS
+  mount, `getent`/`id` behind an unreachable NSS backend, `sudo` waiting on a
+  password prompt, `mount --bind` on an unreachable export, `chpasswd`, `git
+  clone`, `docker compose pull`, `nvidia-smi` on a wedged driver, `visudo -c`,
+  `chown -R` on an unmounted home. Each one could pin the thread serving the
+  request — the Explorer's ACL view, the Users/Groups screens, `GET /shares`,
+  the login path, the setup wizard — with nothing to time it out. All of them
+  now go through `utils::process` or a module-local wrapper built on it, with a
+  ceiling chosen for what the command actually does (10–15 s for a probe, 30–60 s
+  for a write or a service action, minutes for a network fetch). The four
+  children whose *lifetime is the work* (`clamscan`, `ddrescue`, `photorec`, the
+  TestDisk scan) stay unbounded on purpose — they are cancelled through their
+  process group and now carry `kill_on_drop` — and those, plus the two command
+  *builders*, are named exemptions in the guard.
+- **The rule is now enforced tree-wide, not by hand.** A new source guard
+  (`utils/process::tests::every_subprocess_of_the_tree_is_bounded`) walks `src/`,
+  finds every `Command::new` and fails on one whose invocation is not wrapped.
+  That is the guard X.2 was missing: per-module guards cannot notice a module
+  nobody listed.
+
 ### Added
 
 - **A switch for local-network discovery — and it really removes the
