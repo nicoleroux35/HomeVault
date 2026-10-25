@@ -57,13 +57,35 @@
     source: string;
     destination: string;
     direction: 'local-to-cloud' | 'cloud-to-local' | 'bidirectional';
-    status: 'idle' | 'running' | 'completed' | 'error';
+    /** Server-side run state (ROADMAP 16.4 — never the outcome of a click). */
+    status: 'idle' | 'completed' | 'error';
     last_run: string | null;
+    /** The failure reason (or the byte count) the server recorded. */
+    last_message: string | null;
+    /** Cadence, as the server stores it. */
+    schedule_kind: 'none' | 'interval' | 'cron';
+    interval_minutes: number | null;
+    cron_expr: string | null;
+    /** When the scheduler will next run this job. */
+    next_run_at: string | null;
     stats: {
       files_synced: number;
       bytes_transferred: number;
       errors: number;
     };
+  }
+
+  /**
+   * Maps the server's run state onto the badge.
+   *
+   * `idle` is "scheduled or manual, not run yet"; the screen used to hardcode
+   * `idle` and then flip it from the response to its own click, which is the
+   * gap ROADMAP 16.4 closed.
+   */
+  function statusFromServer(job: any): SyncJob['status'] {
+    if (job?.last_status === 'ok') return 'completed';
+    if (job?.last_status === 'failed') return 'error';
+    return 'idle';
   }
 
   interface RcloneStatus {
@@ -227,8 +249,13 @@
         source: r.source,
         destination: r.destination,
         direction: r.direction === 'local-to-cloud' ? ('local-to-cloud' as const) : ('cloud-to-local' as const),
-        status: 'idle' as const,
-        last_run: null,
+        status: statusFromServer(r),
+        last_run: r.last_run_at ?? null,
+        last_message: r.last_message ?? null,
+        schedule_kind: (r.schedule_kind ?? 'none') as SyncJob['schedule_kind'],
+        interval_minutes: r.interval_minutes ?? null,
+        cron_expr: r.cron_expr ?? null,
+        next_run_at: r.next_run_at ?? null,
         stats: { files_synced: 0, bytes_transferred: 0, errors: 0 },
       }));
     } else if (response.error) {
@@ -374,13 +401,26 @@
   async function runSyncJobById(job: SyncJob) {
     errorMessage = null;
     const response = await api.runSyncJob(job.id);
-    job.last_run = new Date().toISOString();
-    // `status` here is the outcome of *this click*, not a server-side run
-    // state: the sync-job table stores the definition only, and the backend
-    // reports the transfer's result in this response (see the known gap in
-    // docs/guides/cloud-sync.md — there is no scheduler yet).
-    job.status = response.success ? 'completed' : 'error';
-    if (!response.success) showFailure(response);
+    // ROADMAP 16.4: the response carries the **updated job**, so the row shows
+    // what the server recorded (`last_status`, `last_run_at`, `next_run_at`)
+    // instead of the outcome of this click. A failure still surfaces, but the
+    // state is the server's.
+    const updated = (response as any)?.data;
+    if (updated && typeof updated === 'object') {
+      job.status = statusFromServer(updated);
+      job.last_run = updated.last_run_at ?? job.last_run;
+      job.last_message = updated.last_message ?? null;
+      job.schedule_kind = (updated.schedule_kind ?? job.schedule_kind) as SyncJob['schedule_kind'];
+      job.interval_minutes = updated.interval_minutes ?? null;
+      job.cron_expr = updated.cron_expr ?? null;
+      job.next_run_at = updated.next_run_at ?? null;
+    } else {
+      // No body to trust (an older server, or a transport error): report the
+      // failure and refresh rather than inventing a state.
+      if (!response.success) showFailure(response);
+      await loadSyncJobs();
+    }
+    if (!response.success && updated) showFailure(response);
     syncJobs = [...syncJobs];
   }
 
@@ -693,7 +733,7 @@
                   <td class={td}><code class="text-xs font-[family-name:var(--hv-font-mono)]">{job.destination}</code></td>
                   <td class={td}><span class={cn(badge, job.direction === 'local-to-cloud' ? 'bg-[var(--hv-primary-light)] text-[var(--hv-primary)]' : 'bg-[var(--hv-warning-bg)] text-[var(--hv-warning)]')}>{job.direction === 'local-to-cloud' ? $t('rclone.direction_local_to_cloud') : $t('rclone.direction_cloud_to_local')}</span></td>
                   <td class={td}>{#if job.last_run}{new Date(job.last_run).toLocaleString()}{:else}<span class="text-xs text-[var(--hv-shell-text-2)]">{$t('rclone.never')}</span>{/if}</td>
-                  <td class={td}><span class={cn(badge, job.status === 'completed' ? 'bg-[var(--hv-success-bg)] text-[var(--hv-success)]' : job.status === 'error' ? 'bg-[var(--hv-error-bg)] text-[var(--hv-error)]' : job.status === 'running' ? 'bg-[var(--hv-warning-bg)] text-[var(--hv-warning)]' : 'bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-2)]')}>{$t(`rclone.job_status_${job.status}`)}</span></td>
+                  <td class={td}><span class={cn(badge, job.status === 'completed' ? 'bg-[var(--hv-success-bg)] text-[var(--hv-success)]' : job.status === 'error' ? 'bg-[var(--hv-error-bg)] text-[var(--hv-error)]' : (job.status as string) === 'running' ? 'bg-[var(--hv-warning-bg)] text-[var(--hv-warning)]' : 'bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-2)]')}>{$t(`rclone.job_status_${job.status}`)}</span></td>
                   <td class={td}><div class="flex gap-2"><Button variant="primary" size="sm" onclick={() => runSyncJobById(job)}><IconRefresh size={13} /> {$t('rclone.run')}</Button><Button variant="danger" size="sm" onclick={() => deleteSyncJobById(job)}><IconX size={13} /> {$t('common.delete')}</Button></div></td>
                 </tr>
               {/each}

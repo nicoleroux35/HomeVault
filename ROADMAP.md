@@ -1,7 +1,7 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-24 (32.1/32.2 and 33.1 closed — the last two residuals of
-closed items) — current version: 1.0.0
+Last updated: 2026-10-24 (16.4 closed — a persisted Cloud Sync job finally has a
+scheduler) — current version: 1.0.0
 
 ## How to read this file
 
@@ -82,12 +82,14 @@ Two structural facts explain most of the list:
 
 | # | Area | Verdict | Blocking items |
 |---|---|---|---|
-| 16.4 | Cloud Sync (rclone) — no scheduler | P2 | 1 |
 | 28 | Activity taskbar | P2 | 1 |
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | — | Cross-cutting | — | 0 |
 
-Total open findings: **2** (2 per-area + 0 cross-cutting). **32 (Virtual
+Total open findings: **2** (2 per-area + 0 cross-cutting) — **no defect left**:
+what remains is one feature (28.3, a live-hardware poller) and one
+maintainability item (31). **16.4 closed on 2026-10-24** — see Done (s) — so a
+persisted sync job can finally run on its own. **32 (Virtual
 Machines) and 33 (Transfer quotas) closed on 2026-10-24** — see Done (r) — so
 the only defect-shaped work left is none: what remains is two features
 (28.3, 16.4) and one maintainability item (31). **10b (10.5, 10.6,
@@ -180,10 +182,12 @@ session, `403` non-admin, `400` only a malformed request). **28.1/28.2 and 29.1/
 X.9 — and **X.9 closed the same day** (Done (p)): picking up item 29 had
 exposed that X.2's "every subprocess is bounded" was only true for the modules
 that got a guard, and the 98 sites it missed are now bounded too, behind a
-tree-wide source guard. **10b closed the same day** (Done (q)). What is left,
-in order: 28.3 (the only remaining *feature* besides 16.4: a live-hardware
-poller), 16.4 (a scheduler for persisted sync jobs) and 31 (pure
-maintainability, do it last, one tab at a time).
+tree-wide source guard. **10b, 32/33 and 16.4 all closed the same day** (Done
+(q), (r), (s)). What is left is one feature and one maintenance item: 28.3 (a
+live-hardware poller for Syncthing/Storage — it needs a host with a resyncing
+array and a paired device, so it is a separate change with its own hardware
+pass) and 31 (Docker's `api.ts` consolidation — pure maintainability, ~50
+wrappers and ~100 call sites, do it last, one tab at a time).
 
 ---
 
@@ -240,40 +244,15 @@ contract now lives in [guides/shortcuts.md](docs/guides/shortcuts.md) (guards
 
 ### 16.4. Cloud Sync (rclone) — a persisted sync job never runs on its own
 
-16.1–16.3 were closed on 2026-10-23 — see Done. One "also" item was left open
-on purpose, because it is a new feature and not a defect in what shipped:
-
-- [ ] **16.4 — No scheduler.** `POST /rclone/jobs/{id}/run` is the only way a
-      persisted job runs. The `sync_jobs` table stores the definition only — no
-      due time, no interval, no last outcome — so a nightly sync cannot be
-      expressed, and the screen's "last run / status" columns are the outcome of
-      the click that just happened, not a server-side run state (commented as
-      such at the call site so it is not mistaken for one).
-      *Acceptance:* an interval or cron column (the Scheduled Tasks scheduler
-      already has `compute_next_run` and a due-time loop to reuse), a run state
-      written by the server, and the screen reading that state instead of
-      remembering the last response. The transfer must then run outside the HTTP
-      request, which also closes the request-shaped-transfer debt recorded in
-      `docs/guides/cloud-sync.md`.
-
-*Tests:* 39 unit, 26 integration (the suite now covers the real config file
-through `RCLONE_CONFIG`, the `0600` mode and the parsed section edits over HTTP;
-it still states explicitly that **no test performs a real transfer or mount**),
-29 E2E. The mount-ready poll, the shutdown unmount and the `0600` repair are
-covered by unit/integration tests, never by a live FUSE mount.
-*Docs:* `docs/guides/cloud-sync.md` (*Known debt*).
-
----
-
-### 10b. File Explorer — residual hardening
-
-Closed on 2026-10-24 — see Done (2026-10-24 (q)). All three findings were real
-on a normal path, not theory: `PathGuard::validate` echoed the caller's string
-for a leaf that did not exist yet **and** `validate_path_access`'s admin branch
-echoed it for *every* admin path (so `..` survived and no leaf was ever
-resolved), `/upload/chunk` buffered the whole chunk in RAM under a 10 GiB router
-limit, and the public share-stream permit was `unwrap()`ed. The detail lives in
-[guides/explorer.md](docs/guides/explorer.md) → *Residual hardening*.
+Closed on 2026-10-24 — see Done (2026-10-24 (s)). `sync_jobs` gained a cadence
+(`schedule_kind` `none`/`interval`/`cron`, migration 059), the **server** now
+writes the run state (`last_run_at`, `last_status`, `last_message`,
+`next_run_at`) on both the manual and the scheduled path, and
+`rclone::run_scheduler_loop` — spawned at startup — runs a due job **outside any
+HTTP request**, which also paid off the request-shaped-transfer debt. A job
+created without a cadence keeps behaving exactly as before. The detail lives in
+[guides/cloud-sync.md](docs/guides/cloud-sync.md) →
+*Scheduling a persisted job*.
 
 ---
 
@@ -476,6 +455,62 @@ call site the guard also scans.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-24 (s)** — Cloud Sync scheduler — **16.4 closed**, the last
+*feature* besides 28.3. Until now `POST /rclone/jobs/{id}/run` was the only way
+a persisted job ran: `sync_jobs` held the definition and nothing else, so a
+nightly sync could not be expressed and the screen's "last run / status"
+columns were the outcome of the click that had just happened. Migration
+**059** adds the cadence and the state, all nullable with `none` as the default
+so an existing appliance is unchanged: `schedule_kind` (`none` | `interval` |
+`cron`), `interval_minutes` (1 minute … 366 days), `cron_expr` (5-field,
+evaluated in the **appliance timezone** through the same
+`restic_scheduler::parse_schedule` the Scheduled Tasks engine uses),
+`next_run_at` (indexed), and `last_run_at` / `last_status` / `last_message`.
+Validation runs **before** the row exists and names the field
+(`NewSyncJob::validate_schedule`): an interval with no value or out of range, a
+cron that cannot be parsed, a cron over 120 chars — a job whose cadence cannot
+be computed would otherwise be picked up on every tick, the failure mode item
+12.3 had to fix on the tasks screen. Due-time arithmetic is deliberate: an
+interval job is first due **one interval after creation** (not immediately,
+which would surprise the admin still typing), and after a run it is rescheduled
+from **the moment the run finished** — otherwise a 20-minute sync would fire
+again at once and the overlap guard would skip it, making "every hour" behave
+like "whenever the previous one ended"; a cron job is rescheduled from its own
+schedule. `rclone::run_scheduler_loop` (spawned at startup, 60 s tick) queries
+`due_now(now)` and **spawns** the run, so the transfer leaves the HTTP request —
+that is the request-shaped-transfer debt paid off. One core, one state write:
+`execute_sync` was split into a `run_sync_core` returning a plain `SyncOutcome`
+(so the scheduler can call it at all) plus the HTTP shell, and both the button
+and the tick go through `run_saved_job`, which runs the core and then writes
+`record_run(status, message, finished_at, next_run)`; a run whose state could not
+be saved logs a `warn`, because the screen would otherwise show the previous
+outcome as if it were this one. Two entry points need one guard: `JobRunGuard`
+is a process-wide `HashSet<i64>` (same reasoning as
+`scheduled_tasks_scheduler::RUNNING`) so a click during a scheduled run does not
+start two `rclone` processes over the same pair of directories. The new
+`PUT /rclone/jobs/{id}/schedule` is admin-only and validates through the same
+rules; `POST .../run` now answers with the **updated job** so the screen renders
+what the server recorded. Frontend: `CloudSync.svelte` reads
+`last_status` / `last_run_at` / `next_run_at` instead of hardcoding `idle` and
+flipping it from its own click, and `api.ts` gained `updateSyncJobSchedule` +
+the `CloudSyncScheduleKind` type. Tests: `src/storage/sync_job_repo.rs` 0 →
+**8** (no cadence ⇒ never due; an interval is first due one interval after
+creation; a cron at its next occurrence; an interval reschedules from the run's
+end while `none` clears it; every unusable cadence refused with the field name;
+the kinds round-trip and an unknown value reads as `none`; the recorded message
+is truncated), `src/handlers/rclone.rs` 39 → **43** (the loop exists and is
+spawned at startup; the core returns a plain outcome; one job cannot run twice
+at once; a saved job replays as a non-destructive sync), `tests/rclone_integration.rs`
+26 → **29** (create-with-interval schedules the row and reports empty state
+columns; a run records `last_status: failed` with its reason and rolls
+`next_run_at` forward, visible on the list; switching to `none` clears the due
+time and keeps the history; an unusable cadence is refused at create time with
+nothing written; the schedule route is admin-only and a missing job is a clean
+error). **Written, not run** (per instruction); `cargo check --all-targets` and
+`npm run check` are clean. Docs:
+[guides/cloud-sync.md](docs/guides/cloud-sync.md) → *Scheduling a persisted
+job*, `docs/API.md`, `CHANGELOG.md`, `TESTING.md`.
 
 **2026-10-24 (r)** — Virtual Machines and Transfer quotas — **32.1, 32.2 and
 33.1 closed**, the last two residuals of already-closed items. **32.1**: the

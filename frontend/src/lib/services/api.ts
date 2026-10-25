@@ -119,6 +119,9 @@ interface CacheEntry {
  */
 export const CONTRACT_VERSION = 2;
 
+/** Cadence of a persisted Cloud Sync job (ROADMAP 16.4). */
+export type CloudSyncScheduleKind = 'none' | 'interval' | 'cron';
+
 /**
  * API client for the HomeVault backend.
  * Includes a request-level cache (keyed by method + endpoint) and automatic
@@ -1558,6 +1561,13 @@ class ApiClient {
     dest_type: 'local' | 'cloud';
     destination: string;
     dest_path?: string;
+    /**
+     * Cadence (ROADMAP 16.4). Omitted = `none`: the job only runs when asked,
+     * which is what every job created before the scheduler existed does.
+     */
+    schedule_kind?: CloudSyncScheduleKind;
+    interval_minutes?: number;
+    cron_expr?: string;
   }) {
     return this.post('/rclone/jobs', data);
   }
@@ -1566,8 +1576,29 @@ class ApiClient {
     return this.delete(`/rclone/jobs/${id}`);
   }
 
+  /**
+   * "Run now". The run happens inside this request and the response carries the
+   * **updated job**, so the caller renders what the server recorded
+   * (`last_status`, `last_run_at`, `next_run_at`) instead of assuming `200`
+   * meant "it worked".
+   */
   async runSyncJob(id: number) {
     return this.post(`/rclone/jobs/${id}/run`, {});
+  }
+
+  /**
+   * Set (or clear) a persisted job's cadence. `none` stops the scheduler
+   * picking it up and keeps the last-run history.
+   */
+  async updateSyncJobSchedule(
+    id: number,
+    data: {
+      schedule_kind: CloudSyncScheduleKind;
+      interval_minutes?: number;
+      cron_expr?: string;
+    },
+  ) {
+    return this.put(`/rclone/jobs/${id}/schedule`, data);
   }
 
   // ─── Progress SSE ───────────────────────────────────────────────────────────

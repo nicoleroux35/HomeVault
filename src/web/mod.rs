@@ -179,6 +179,7 @@ use crate::handlers::{
         handle_delete_sync_job, handle_get_config, handle_list_mounts, handle_list_providers,
         handle_list_remotes, handle_list_sync_jobs, handle_mount_start, handle_mount_stop,
         handle_rclone_status, handle_run_sync_job, handle_save_config, handle_sync,
+        handle_update_sync_job_schedule,
     },
     resource_shares::{
         handle_grant_access, handle_grant_group_access, handle_list_access,
@@ -1458,6 +1459,10 @@ pub fn create_app(state: AppStateArc) -> Router {
             axum::routing::delete(handle_delete_sync_job),
         )
         .route("/api/rclone/jobs/{id}/run", post(handle_run_sync_job))
+        .route(
+            "/api/rclone/jobs/{id}/schedule",
+            axum::routing::put(handle_update_sync_job_schedule),
+        )
         // Syncthing
         .route("/api/syncthing/status", get(handle_syncthing_status))
         .route("/api/syncthing/config", get(handle_syncthing_config))
@@ -2140,6 +2145,11 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tokio::spawn(crate::notification_engine::run_notification_loop(
         state.clone(),
     ));
+
+    // Cloud Sync (rclone) scheduler: runs a persisted job on its interval or
+    // cron, outside any HTTP request (ROADMAP 16.4). A job with no cadence is
+    // simply never due, so an appliance that never scheduled one is unaffected.
+    tokio::spawn(crate::handlers::rclone::run_scheduler_loop(state.clone()));
 
     // Per-app reverse proxy: initialise with the pieces its tasks need, then
     // bring back a proxy for every catalog app that had one before restart.
