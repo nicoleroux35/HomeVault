@@ -695,3 +695,57 @@ async fn test_public_ip_returns_ok_regardless_of_resolution() {
     .await;
     assert_eq!(status, StatusCode::OK);
 }
+
+/// ROADMAP X.2 — a host tool that answers *slowly* is waited out, not dropped.
+///
+/// `get_connection_summary` shells out to `ip route show default` for every
+/// poll (twice directly, plus `determine_connection_type` asks again). Those
+/// calls used to be unbounded; they are now bounded by `NET_PROBE_TIMEOUT`, and
+/// the failure mode that matters is the one this test pins: a bounded call must
+/// still return the tool's answer when the tool is merely slow (a busy `ip`, a
+/// host under load). A shim `ip` sleeps 250 ms, so the summary must come back
+/// `200` — not as an error, and not as a hang.
+#[tokio::test]
+async fn test_a_slow_host_tool_is_waited_out_not_dropped() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = network_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let shim_dir = tempfile::tempdir().expect("shim dir");
+    let shim = shim_dir.path().join("ip");
+    std::fs::write(
+        &shim,
+        "#!/bin/sh\n# A bounded call must wait for a slow tool, not kill it early.\nsleep 0.25\nexit 0\n",
+    )
+    .expect("write shim");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod shim");
+    }
+    let previous_path = std::env::var("PATH").ok();
+    std::env::set_var("PATH", shim_dir.path());
+
+    let started = std::time::Instant::now();
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/network/summary",
+        Some(&token),
+        None,
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    if let Some(path) = previous_path {
+        std::env::set_var("PATH", path);
+    }
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        elapsed >= std::time::Duration::from_millis(200),
+        "the shim was never actually waited for ({elapsed:?}) — the probe skipped it"
+    );
+}
