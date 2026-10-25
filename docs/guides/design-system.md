@@ -79,6 +79,10 @@ the platform's own desktop text-style set, so a label, a body line, a card
 title and a screen title land on the sizes a desktop application uses for
 those same functions — not on an ad-hoc web scale.
 
+The **Size** column is the value at the default reader font size (16px); the
+token itself is declared in `rem` so it scales — see *The ladder is `rem`*
+below before adding or editing one.
+
 | Role token | Size | Weight | Used for |
 |---|---|---|---|
 | `--hv-type-caption` | 11 | 400/700 | badges, chips, uppercase section eyebrows |
@@ -102,6 +106,46 @@ Two documented deviations, both deliberate:
 - **Decorative display numerals** — `--hv-type-gauge` (62px, the dashboard
   gauge) and `--hv-type-clock` / `-clock-sm` / `-clock-wizard` (72 / 48 / 56px,
   the gateway clock). These are visual elements, not body text.
+
+#### The ladder is `rem`, and it scales (2026-10-25, HIG conformance)
+
+The sizes above are the values at the **default** reader font size. Every step
+in `tokens.css` is declared in `rem` (`0.6875rem` = 11px, `0.8125rem` = 13px,
+…), and `html` is `clamp(100%, 100%, 20px)` — so raising the browser's
+configured font size resizes the whole product, up to a supported **1.25×
+ceiling**. At 100% the render is pixel-identical to the table, so scaling
+costs the design nothing.
+
+This is a requirement, not a nicety:
+
+- **Apple HIG, Layout → Adaptability:** "Be prepared for text-size changes …
+  Apps that don't respond to this setting can be difficult or impossible to
+  use for people who rely on this feature."
+- **WCAG 1.4.4 (Resize text):** a px-only ladder survives *browser zoom* but
+  ignores the reader's own font-size preference — the setting a low-vision
+  user actually changes. Before 2026-10-25 this screen did exactly that:
+  measured identical 11px labels at a 16px **and** a 32px root.
+
+Two rules follow for any new token:
+
+1. **Never declare a type size in `px`.** A px step silently opts out of
+   scaling and nothing in the visual design changes at 100%, so it passes a
+   visual review and fails the requirement. `rem` or a `calc()` on a `rem`.
+2. **A box that holds text is a floor, never a ceiling.** `min-h-11`, not
+   `h-11`: at 1.25× the field text is 16.25px, and a fixed 44px box clipped it
+   (found and fixed on the login screen the same day). The 44px touch floor
+   stays — it is the minimum, so `min-h` satisfies both.
+
+The 20px ceiling is deliberate: past 1.25×, dense desktop chrome (dock, data
+tables, window titles) starts to clip at the widths a NAS is administered
+from. Both macOS and Windows cap their own text-size setting the same way; a
+reader who needs more has browser zoom, which scales the layout too.
+
+Guard: `tests/e2e/design/typography.spec.ts` §6 — every step scales with the
+root, nothing clips at the ceiling, the gateway card keeps one deterministic
+width, and `html` carries a `clamp()` rather than a px literal. Verified by
+mutation: reverting `--hv-type-body` to `13px` turns 6.1 red with
+`body at root 20px / Expected: 16.25 / Received: 13`.
 
 **The two vocabularies share this ladder.** `--hv-font-size-*` (content) and
 `--hv-text-*` (compact chrome) stay separate *names* because ~380 call sites

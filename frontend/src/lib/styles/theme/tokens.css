@@ -675,27 +675,50 @@
          element, not body text; it keeps its own step.
      Roles are the recommended entry point for NEW code: pick the function, not
      a number. The two legacy scales below are re-pointed at these steps so the
-     whole product snaps without touching 500+ call sites. */
-  --hv-type-caption: 11px;      /* smallest allowed — badges, chips, timestamps */
-  --hv-type-footnote: 11px;     /* helper text under a field, table meta */
-  --hv-type-subheadline: 11px;  /* form labels, column headers, section eyebrows */
-  --hv-type-callout: 12px;      /* secondary prose, descriptions, hints */
-  --hv-type-body: 13px;         /* DEFAULT reading + UI text — was 14px */
-  --hv-type-headline: 13px;     /* body size, semibold — buttons, emphasis */
-  --hv-type-title-3: 15px;      /* card / panel / window titles */
-  --hv-type-title-2: 17px;      /* section titles, h3 */
-  --hv-type-title-1: 22px;      /* page titles, h2 */
-  --hv-type-large-title: 26px;  /* screen titles, h1 */
-  --hv-type-display: 34px;      /* empty-state / hero headings */
-  --hv-type-metric: 20px;       /* stat-card numbers, KPI readouts */
-  --hv-type-gauge: 62px;        /* dashboard gauge display (documented exception) */
+     whole product snaps without touching 500+ call sites.
+
+     **Unit: `rem`, never `px` (2026-10-25, HIG conformance).** Apple's HIG
+     (Layout → Adaptability) requires an interface to respond to text-size
+     changes: "Apps that don't respond to this setting can be difficult or
+     impossible to use for people who rely on this feature." The same duty sits
+     in WCAG 1.4.4 (text resizable to 200%), where a px-only ladder survives
+     *browser zoom* but ignores the reader's own font-size preference — the
+     setting a low-vision user actually changes. Every step below is therefore
+     expressed in `rem` against the root's 16px, so the rendered size is
+     identical at the default and the whole product scales when the root does.
+     `html { font-size: 16px }` stays a literal (base.css) and keeps the
+     mapping exact: 11px = 0.6875rem.
+
+     Do not "simplify" these back to px: a px step silently disables text
+     scaling, and nothing in the visual design changes at 100%. Guard:
+     `tests/e2e/design/typography.spec.ts` §6 fails if the ladder stops scaling
+     with the root.
+
+     Ceiling: `html` clamps the root to 20px (1.25×) in base.css. Past that,
+     dense desktop chrome (dock, tables, window titles) starts clipping on the
+     widths a NAS is administered from — Windows/Apple both cap their maximum
+     text size the same way rather than scaling without bound. */
+  --hv-type-caption: 0.6875rem;      /* 11px — smallest allowed: badges, chips, timestamps */
+  --hv-type-footnote: 0.6875rem;     /* 11px — helper text under a field, table meta */
+  --hv-type-subheadline: 0.6875rem;  /* 11px — form labels, column headers, eyebrows */
+  --hv-type-callout: 0.75rem;        /* 12px — secondary prose, descriptions, hints */
+  --hv-type-body: 0.8125rem;         /* 13px — DEFAULT reading + UI text */
+  --hv-type-headline: 0.8125rem;     /* 13px — body size, semibold: buttons, emphasis */
+  --hv-type-title-3: 0.9375rem;      /* 15px — card / panel / window titles */
+  --hv-type-title-2: 1.0625rem;      /* 17px — section titles, h3 */
+  --hv-type-title-1: 1.375rem;       /* 22px — page titles, h2 */
+  --hv-type-large-title: 1.625rem;   /* 26px — screen titles, h1 */
+  --hv-type-display: 2.125rem;       /* 34px — empty-state / hero headings */
+  --hv-type-metric: 1.25rem;         /* 20px — stat-card numbers, KPI readouts */
+  --hv-type-gauge: 3.875rem;         /* 62px — dashboard gauge display (documented exception) */
   /* Decorative display numerals — the gateway clock on the login and setup
      screens. Purely visual (aria-hidden, no interaction), so they sit outside
-     the reading scale like --hv-type-gauge. Tokenised so the two screens can
-     never drift to different sizes for the same element. */
-  --hv-type-clock: 72px;         /* login clock, ≥481px */
-  --hv-type-clock-sm: 48px;      /* login clock, ≤480px */
-  --hv-type-clock-wizard: 56px;  /* the wizard's sticky top clock */
+     the reading scale like --hv-type-gauge. They scale too: the clock is the
+     first thing a user with a large text setting looks at, and it never sits
+     next to a fixed-height box, so growing it costs nothing. */
+  --hv-type-clock: 4.5rem;           /* 72px — login clock, ≥481px */
+  --hv-type-clock-sm: 3rem;          /* 48px — login clock, ≤480px */
+  --hv-type-clock-wizard: 3.5rem;    /* 56px — the wizard's sticky top clock */
 
   /* CONTENT type scale — the default vocabulary. Re-pointed at the native
      steps above (2026-10-18): every --hv-font-size-* name now resolves to a

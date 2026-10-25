@@ -202,6 +202,34 @@ the form rather than dropping it on `<body>`.
   `connectionError` screen (both driven by `App.svelte`). The recovery-code
   `<input>` is one-way `value=` + `oninput` (`formatRecoveryCode` /
   `handleRecoveryCodeInput`) — never `bind:value`.
+
+### Gateway layout — the Apple HIG rules it is built to (2026-10-25)
+
+The card is the screen's **one** box, and its layout is reviewed against
+Apple's HIG *Layout and organization* (Boxes, Labels, Layout) rather than
+eyeballed. The rules that bind it, and what enforces each one:
+
+| HIG rule | Here |
+|---|---|
+| "Prefer keeping a box relatively small in comparison with its containing view" | `min(100% - 2rem, 380px)` — a single 380px card on any desktop, shrinking to 343px on a 375px phone |
+| "Use padding and alignment to communicate additional grouping" | one hairline between header and form; grouped rows via `gap`, never nested boxes |
+| "Provide a succinct introductory title" (sentence case, no punctuation) | `<h1>HomeVault</h1>`, exactly one `<h1>` per screen |
+| "Order content by relative importance" (top → leading) | brand → step → fields → CTA |
+| "Align elements to make them easier to scan" | every field on one leading rail: icon, label, input share the left edge |
+| "Be prepared for text-size changes" (Adaptability) | the type ladder is `rem`, so the card grows with the reader's font size — see [design-system §2.1](./design-system.md#the-ladder-is-rem-and-it-scales-2026-10-25-hig-conformance) |
+| "Differentiate controls from content" | fields are bordered boxes on a tinted fill, the CTA is the only saturated surface |
+
+Two concrete defects this review found and fixed: **the field box was a
+ceiling** (`h-11`, so a 1.25× reader's 16.25px text was clipped — now
+`min-h-11`, a floor that still satisfies the 44px touch minimum), and the
+**"Forgot password" link had no hit area** (19.9px tall with `padding: 0`,
+the only interactive element on the screen without one — now `h-11`). The card
+width is also deterministic now (`w-full max-w-[…]` instead of
+`w-[…] max-w-full`, which re-derived itself from a scroll container and
+alternated between two widths for the same viewport).
+
+Guards: `tests/e2e/design/typography.spec.ts` §6 (scaling, no clipping at the
+ceiling, deterministic card width) and `tests/e2e/login/login.spec.ts`.
 - `frontend/src/routes/SetupWizard.svelte` — first-run admin creation with TOTP
   enrolment at the password step (toggle → QR → verified code), then the
   mandatory "save your recovery code" screen (`startRecoveryCode`), then a short
@@ -237,6 +265,11 @@ the form rather than dropping it on `<body>`.
 - No screen is frozen since 2026-09-12 — describe behaviour here, and when you
   do edit the Login/Setup-Wizard/auth source, keep this guide and the suites
   (`tests/auth_integration.rs`, `tests/e2e/login`) in the same change.
+- **Never declare a type size in `px`, and never cap a text box's height.** The
+  gateway is the first screen every user sees: a px step turns a reader's
+  text-size preference into a no-op (HIG Adaptability, WCAG 1.4.4) and a fixed
+  `h-*` on a field clips the larger text it then renders. Use a `rem` token
+  from `--hv-type-*` and `min-h-*`.
 
 ## Related
 
