@@ -194,7 +194,11 @@ async fn test_snmp_endpoints_reject_missing_token() {
     let mut r = snmp_router(state);
     for (uri, method) in admin_endpoints() {
         let (status, _) = send(&mut r, method.clone(), uri, None, None).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{method} {uri} (no token)");
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{method} {uri} (no token → 401)"
+        );
     }
 }
 
@@ -220,11 +224,10 @@ async fn test_snmp_endpoints_reject_non_admin() {
     let token = login(&mut r, "regular", "Password123!").await;
     for (uri, method) in admin_endpoints() {
         let (status, _) = send(&mut r, method.clone(), uri, Some(&token), None).await;
-        assert_eq!(
-            status,
-            StatusCode::BAD_REQUEST,
-            "{method} {uri} (non-admin)"
-        );
+        // `403`, not `400`: the request was well-formed, the caller is simply
+        // not an admin. This suite used to pin the drifted `400` that the
+        // module's own hand-rolled guard returned (ROADMAP X.7).
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri} (non-admin)");
     }
 }
 

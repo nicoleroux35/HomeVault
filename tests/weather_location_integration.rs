@@ -176,7 +176,7 @@ async fn test_get_weather_location_requires_session() {
     let mut r = weather_router(state);
 
     let (status, _) = send(&mut r, Method::GET, "/api/weather-location", None, None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     let (status, _) = send(
         &mut r,
@@ -202,7 +202,7 @@ async fn test_set_weather_location_requires_session() {
         Some(json!({"location_json": "{}"})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     let (status, _) = send(
         &mut r,

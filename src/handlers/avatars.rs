@@ -157,16 +157,12 @@ pub async fn handle_update_my_avatar(
     headers: HeaderMap,
     req: axum::extract::Json<UpdateAvatarRequest>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let username = match state.auth.get_username_from_token(session_token).await {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let username = match state.auth.get_username_from_token(&session_token).await {
         Some(u) => u,
         None => return ResponseHelper::json_unauthorized("Invalid session".to_string()),
     };

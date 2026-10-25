@@ -292,7 +292,7 @@ async fn test_read_endpoints_reject_a_missing_token() {
         "/api/encryption/available-devices",
     ] {
         let (status, _) = send(&mut router, Method::GET, uri, None, None).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
     }
 }
 
@@ -332,7 +332,7 @@ async fn test_every_write_route_rejects_a_missing_token() {
     ];
     for (method, uri, body) in writes {
         let (status, _) = send(&mut router, method.clone(), &uri, None, body).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{method} {uri}");
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri}");
     }
 }
 

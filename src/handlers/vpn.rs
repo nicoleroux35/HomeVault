@@ -110,45 +110,32 @@ type HandlerResult = Result<Json<ApiSuccess>, (axum::http::StatusCode, Json<ApiE
 // Auth & validation helpers
 // ---------------------------------------------------------------------------
 
-/// Require a valid, authenticated **admin** session. Returns the username on
-/// success, or an HTTP 401/403 error response otherwise.
+/// Requires a valid, authenticated **admin** session.
 ///
-/// Every VPN operation is privileged (it writes to `/etc` and launches
-/// network interfaces as root), so the whole surface is admin-only.
-async fn require_admin(
+/// The decision — token present, token valid, account admin, and the status
+/// each failure carries — belongs to `admin_guard` (ROADMAP X.7). The VPN
+/// module answers `Json<ApiError>` instead of a `Response`, so the guard's
+/// status is relayed and its message re-derived from that status.
+async fn guard_admin(
     state: &AppStateArc,
     headers: &HeaderMap,
 ) -> Result<String, (axum::http::StatusCode, Json<ApiError>)> {
-    let token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    let username = match state.auth.get_username_from_token(token).await {
-        Some(u) => u,
-        None => {
-            return Err((
-                axum::http::StatusCode::UNAUTHORIZED,
+    match crate::handlers::admin_guard::require_admin(state, headers).await {
+        Ok(username) => Ok(username),
+        Err(resp) => {
+            let status = resp.status();
+            if status == axum::http::StatusCode::FORBIDDEN {
+                tracing::warn!("Non-admin caller denied access to the VPN API");
+            }
+            Err((
+                status,
                 Json(ApiError {
                     success: false,
-                    error: "No session token provided".to_string(),
+                    error: crate::handlers::admin_guard::denial_message(status),
                 }),
             ))
         }
-    };
-
-    if !state.auth.is_admin(&username).await {
-        tracing::warn!("Non-admin user '{}' denied access to VPN API", username);
-        return Err((
-            axum::http::StatusCode::FORBIDDEN,
-            Json(ApiError {
-                success: false,
-                error: "Admin privileges required for VPN management".to_string(),
-            }),
-        ));
     }
-
-    Ok(username)
 }
 
 /// Validate and normalize a VPN connection name. Rejects anything that could be
@@ -240,7 +227,7 @@ pub async fn handle_vpn_capabilities(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> HandlerResult {
-    let _username = require_admin(&state, &headers).await?;
+    let _username = guard_admin(&state, &headers).await?;
     // Capability detection shells out (`wg --version`, `openvpn --version`)
     // — keep it off the async worker threads like every other engine call.
     let capabilities = tokio::task::spawn_blocking(vpn_mod::get_vpn_capabilities)
@@ -259,7 +246,7 @@ pub async fn handle_vpn_list(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> HandlerResult {
-    let _username = require_admin(&state, &headers).await?;
+    let _username = guard_admin(&state, &headers).await?;
     let connections = tokio::task::spawn_blocking(vpn_mod::list_all_vpn_connections)
         .await
         .unwrap_or_default();
@@ -277,7 +264,7 @@ pub async fn handle_vpn_get(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> HandlerResult {
-    let _username = require_admin(&state, &headers).await?;
+    let _username = guard_admin(&state, &headers).await?;
 
     let id =
         sanitize_name(&id).map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e.1 .0.error))?;
@@ -308,7 +295,7 @@ pub async fn handle_wg_server_status(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> HandlerResult {
-    let _username = require_admin(&state, &headers).await?;
+    let _username = guard_admin(&state, &headers).await?;
 
     let server = vpn_mod::ensure_wireguard_server()
         .await
@@ -326,7 +313,7 @@ pub async fn handle_wg_peers_list(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> HandlerResult {
-    let _username = require_admin(&state, &headers).await?;
+    let _username = guard_admin(&state, &headers).await?;
 
     let repo = VpnPeerRepository::new(state.db.pool());
     let peers = repo
@@ -376,7 +363,7 @@ pub async fn handle_wg_peer_create(
     headers: HeaderMap,
     Json(request): Json<WireGuardPeerCreateRequest>,
 ) -> HandlerResult {
-    let username = require_admin(&state, &headers).await?;
+    let username = guard_admin(&state, &headers).await?;
     let name = sanitize_peer_name(&request.name)?;
 
     let repo = VpnPeerRepository::new(state.db.pool());
@@ -438,7 +425,7 @@ pub async fn handle_wg_peer_config(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> HandlerResult {
-    let _username = require_admin(&state, &headers).await?;
+    let _username = guard_admin(&state, &headers).await?;
 
     let repo = VpnPeerRepository::new(state.db.pool());
     let peer = repo
@@ -476,7 +463,7 @@ pub async fn handle_wg_peer_revoke(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> HandlerResult {
-    let username = require_admin(&state, &headers).await?;
+    let username = guard_admin(&state, &headers).await?;
 
     let repo = VpnPeerRepository::new(state.db.pool());
     let peer = repo
@@ -517,7 +504,7 @@ pub async fn handle_openvpn_create(
     headers: HeaderMap,
     Json(request): Json<OpenVPNConfigRequest>,
 ) -> HandlerResult {
-    let username = require_admin(&state, &headers).await?;
+    let username = guard_admin(&state, &headers).await?;
     let name = sanitize_name(&request.name)
         .map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e.1 .0.error))?;
 
@@ -589,7 +576,7 @@ pub async fn handle_openvpn_start(
     Path(name): Path<String>,
     Json(payload): Json<serde_json::Value>,
 ) -> HandlerResult {
-    let username = require_admin(&state, &headers).await?;
+    let username = guard_admin(&state, &headers).await?;
     let name =
         sanitize_name(&name).map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e.1 .0.error))?;
 
@@ -649,7 +636,7 @@ pub async fn handle_openvpn_stop(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> HandlerResult {
-    let username = require_admin(&state, &headers).await?;
+    let username = guard_admin(&state, &headers).await?;
     let name =
         sanitize_name(&name).map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e.1 .0.error))?;
 
@@ -678,7 +665,7 @@ pub async fn handle_openvpn_delete(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> HandlerResult {
-    let username = require_admin(&state, &headers).await?;
+    let username = guard_admin(&state, &headers).await?;
     let name =
         sanitize_name(&name).map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e.1 .0.error))?;
 

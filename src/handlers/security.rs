@@ -2,7 +2,7 @@
  * File          : security.rs
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 10/10/2026 by Nicolas Le Roux
+ * Last modified : 24/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
@@ -25,12 +25,19 @@
 //! Security endpoints: own-session list and revocation, login history
 //! (admin or self), and the system-wide active-sessions count (admin).
 //!
+//! Every handler here goes through `handlers::admin_guard` — no local copy of
+//! the token check, no local status choice (ROADMAP X.7). That is what keeps
+//! the `401` / `403` contract identical to the rest of the tree: an absent
+//! header, an unknown token and an expired token are all `401`, and a valid
+//! non-admin session asking for an admin-only view is `403`.
+//!
 //! The self-service session list never returns a live session token: each
 //! session is identified by an opaque SHA-256 fingerprint (`session_public_id`)
 //! and revocation works exclusively on those ids, resolved against the
 //! *caller's own* sessions — so a token belonging to another user can neither
 //! be handed out again nor used to revoke it (CWE-639 / OWASP A01).
 
+use crate::handlers::admin_guard::{require_admin, require_auth, require_auth_caller};
 use crate::handlers::AppState;
 use crate::storage::login_attempt_repo::LoginAttemptRepository;
 use crate::storage::session_repo::SessionRepository;
@@ -102,22 +109,13 @@ pub async fn handle_get_my_sessions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let username = match state.auth.get_username_from_token(session_token).await {
-        Some(u) => u,
-        None => return ResponseHelper::json_unauthorized("Invalid session".to_string()),
+    let caller = match require_auth_caller(&state, &headers).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
     };
 
     let session_repo = SessionRepository::new(state.db.pool());
-    let sessions = match session_repo.find_all_by_username(&username).await {
+    let sessions = match session_repo.find_all_by_username(&caller.username).await {
         Ok(s) => s,
         Err(e) => return ResponseHelper::json_error(format!("Failed to fetch sessions: {}", e)),
     };
@@ -129,7 +127,7 @@ pub async fn handle_get_my_sessions(
             ip_address: s.ip_address,
             created_at: s.created_at.to_rfc3339(),
             expires_at: s.expires_at.to_rfc3339(),
-            is_current: s.token == session_token,
+            is_current: s.token == caller.token,
         })
         .collect();
 
@@ -152,18 +150,9 @@ pub async fn handle_revoke_sessions(
     headers: HeaderMap,
     req: axum::extract::Json<RevokeSessionsRequest>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let username = match state.auth.get_username_from_token(session_token).await {
-        Some(u) => u,
-        None => return ResponseHelper::json_unauthorized("Invalid session".to_string()),
+    let caller = match require_auth_caller(&state, &headers).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
     };
 
     if req.ids.is_empty() {
@@ -174,14 +163,14 @@ pub async fn handle_revoke_sessions(
 
     // The candidate set is the caller's own sessions — never the request's
     // ids mapped to arbitrary rows. The current session stays protected.
-    let own_sessions = match session_repo.find_all_by_username(&username).await {
+    let own_sessions = match session_repo.find_all_by_username(&caller.username).await {
         Ok(s) => s,
         Err(e) => return ResponseHelper::json_error(format!("Failed to fetch sessions: {}", e)),
     };
 
     let tokens_to_revoke: Vec<String> = own_sessions
         .iter()
-        .filter(|s| s.token != session_token)
+        .filter(|s| s.token != caller.token)
         .filter(|s| {
             let public_id = session_public_id(&s.token);
             req.ids.iter().any(|id| id == &public_id)
@@ -198,7 +187,7 @@ pub async fn handle_revoke_sessions(
 
     match session_repo.delete_many(&tokens_to_revoke).await {
         Ok(deleted) => {
-            tracing::info!(username = %username, count = deleted, "Sessions revoked");
+            tracing::info!(username = %caller.username, count = deleted, "Sessions revoked");
             ResponseHelper::json_success(serde_json::json!({
                 "revoked": deleted
             }))
@@ -212,31 +201,22 @@ pub async fn handle_revoke_all_sessions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    let username = match state.auth.get_username_from_token(session_token).await {
-        Some(u) => u,
-        None => return ResponseHelper::json_unauthorized("Invalid session".to_string()),
+    let caller = match require_auth_caller(&state, &headers).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
     };
 
     let session_repo = SessionRepository::new(state.db.pool());
 
     // Get all sessions except current
-    let all_sessions = match session_repo.find_all_by_username(&username).await {
+    let all_sessions = match session_repo.find_all_by_username(&caller.username).await {
         Ok(s) => s,
         Err(e) => return ResponseHelper::json_error(format!("Failed to fetch sessions: {}", e)),
     };
 
     let tokens_to_revoke: Vec<String> = all_sessions
         .into_iter()
-        .filter(|s| s.token != session_token)
+        .filter(|s| s.token != caller.token)
         .map(|s| s.token)
         .collect();
 
@@ -248,7 +228,7 @@ pub async fn handle_revoke_all_sessions(
 
     match session_repo.delete_many(&tokens_to_revoke).await {
         Ok(deleted) => {
-            tracing::info!(username = %username, count = deleted, "All other sessions revoked");
+            tracing::info!(username = %caller.username, count = deleted, "All other sessions revoked");
             ResponseHelper::json_success(serde_json::json!({
                 "revoked": deleted
             }))
@@ -262,21 +242,9 @@ pub async fn handle_get_login_history(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
+    if let Err(resp) = require_admin(&state, &headers).await {
+        return resp;
     }
-
-    // Verify admin
-    let _admin_user =
-        match crate::handlers::auth::require_admin(State(state.clone()), headers.clone()).await {
-            Ok(u) => u,
-            Err(resp) => return resp,
-        };
 
     let attempt_repo = LoginAttemptRepository::new(state.db.pool());
     let attempts = match attempt_repo.get_all_recent(100).await {
@@ -317,18 +285,7 @@ pub async fn handle_get_active_sessions_count(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    if let Err(resp) =
-        crate::handlers::auth::require_admin(State(state.clone()), headers.clone()).await
-    {
+    if let Err(resp) = require_admin(&state, &headers).await {
         return resp;
     }
 
@@ -345,25 +302,13 @@ pub async fn handle_get_user_login_history(
     headers: HeaderMap,
     axum::extract::Path(username): axum::extract::Path<String>,
 ) -> Response {
-    let session_token = headers
-        .get("x-session-token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if session_token.is_empty() {
-        return ResponseHelper::json_error("No session token provided".to_string());
-    }
-
-    // Verify admin or own user
-    let requesting_user = match state.auth.get_username_from_token(session_token).await {
-        Some(u) => u,
-        None => return ResponseHelper::json_unauthorized("Invalid session".to_string()),
+    let requesting_user = match require_auth(&state, &headers).await {
+        Ok(u) => u,
+        Err(resp) => return resp,
     };
 
-    let is_admin = state.auth.is_admin(&requesting_user).await;
-
-    // Non-admins can only view their own history
-    if !is_admin && requesting_user != username {
+    // Non-admins can only view their own history.
+    if requesting_user != username && !state.auth.is_admin(&requesting_user).await {
         return ResponseHelper::json_forbidden("Access denied".to_string());
     }
 

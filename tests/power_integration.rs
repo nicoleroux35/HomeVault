@@ -297,15 +297,16 @@ async fn server_control_and_power_share_one_admin_gate() {
         "/api/power/reboot",
         "/api/power/shutdown",
     ] {
-        // Anonymous: the two families do not answer the same status yet —
-        // `/api/server/*` checks the token inline (401) while `/api/power/*`
-        // goes through `require_admin`, which answers 400 for a missing header
-        // (tracked tree-wide as ROADMAP X.8). What matters here is that both
-        // refuse, and that neither lets the request through.
+        // Anonymous: both families now answer `401`. They used to differ —
+        // `/api/server/*` checked the token inline (401) while `/api/power/*`
+        // went through `require_admin`, which answered `400` for a missing
+        // header. A client branching on the status read one as "not signed in"
+        // and the other as "malformed request" (ROADMAP X.8).
         let (status, body) = send(&mut router, Method::POST, uri, None, None).await;
-        assert!(
-            status == StatusCode::UNAUTHORIZED || status == StatusCode::BAD_REQUEST,
-            "{uri} must reject an anonymous caller, got {status}: {body}"
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{uri} must answer 401 to an anonymous caller: {body}"
         );
 
         let (status, body) = send(&mut router, Method::POST, uri, Some(&user), None).await;
@@ -374,11 +375,7 @@ fn a_refused_host_command_reaches_the_response_body() {
     use homevault::power::PowerAction;
 
     let reason = "systemctl reboot failed: Interactive authentication required";
-    let (status, body) = power_outcome(
-        PowerAction::Reboot,
-        "restart",
-        &Err(reason.to_string()),
-    );
+    let (status, body) = power_outcome(PowerAction::Reboot, "restart", &Err(reason.to_string()));
 
     // A refusal is a failure the screen renders as a `role="alert"`, carrying
     // the host's own words — the desktop shows `message` verbatim.

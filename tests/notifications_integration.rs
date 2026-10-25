@@ -261,7 +261,7 @@ async fn test_notifications_list_requires_a_session() {
     let (state, _tmp, _guard) = setup_state().await;
     let mut r = notifications_router(state);
     let (status, _) = send(&mut r, Method::GET, "/api/notifications", None, None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, _) = send(
         &mut r,
         Method::GET,
@@ -285,7 +285,7 @@ async fn test_unread_count_requires_a_session() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -300,7 +300,7 @@ async fn test_mark_all_read_requires_a_session() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -315,7 +315,7 @@ async fn test_mark_read_requires_a_session() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -330,7 +330,7 @@ async fn test_delete_requires_a_session() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -338,7 +338,7 @@ async fn test_clear_all_requires_a_session() {
     let (state, _tmp, _guard) = setup_state().await;
     let mut r = notifications_router(state);
     let (status, _) = send(&mut r, Method::DELETE, "/api/notifications", None, None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -353,7 +353,7 @@ async fn test_events_ticket_requires_a_session() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 // ---------------------------------------------------------------------------
@@ -530,14 +530,7 @@ async fn test_read_state_is_per_user() {
     )
     .await;
     assert!(admin_list["data"]["notifications"][0]["read_at"].is_string());
-    let (_, user_list) = send(
-        &mut r,
-        Method::GET,
-        "/api/notifications",
-        Some(&user),
-        None,
-    )
-    .await;
+    let (_, user_list) = send(&mut r, Method::GET, "/api/notifications", Some(&user), None).await;
     assert!(user_list["data"]["notifications"][0]["read_at"].is_null());
 }
 

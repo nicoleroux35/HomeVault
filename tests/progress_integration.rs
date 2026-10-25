@@ -230,7 +230,7 @@ async fn list_jobs_rejects_missing_token() {
     let (state, _tmp, _g) = setup_state().await;
     let mut r = progress_router(state);
     let (status, _) = send(&mut r, Method::GET, "/api/progress/jobs", None, None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "no token must be refused");
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "no token must be refused");
 }
 
 #[tokio::test]

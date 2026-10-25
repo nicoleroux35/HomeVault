@@ -6,6 +6,43 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- **One auth primitive, one status contract — a non-admin is `403` and a
+  missing session is `401`, everywhere (2026-10-24, ROADMAP X.7/X.8).** Two
+  defects, both invisible to a test that only ever sends a *valid* token.
+  **First**, `handlers::admin_guard` was meant to be the shared session check but
+  nine modules carried their own copy: `handlers::auth::require_admin` (a
+  duplicate of the shared one) and private `require_admin` helpers in
+  `syncthing`, `shares`, `vpn`, `ups`, `permissions`, `snmp`, `user_homes` and
+  `downloader`, plus 65 inline `x-session-token` blocks across `security.rs`
+  (6), `settings.rs` (20), `explorer.rs` (31), `chat.rs` (7) and `avatars.rs`
+  (1), plus 11 dead re-checks in `docker.rs` that ran *after* a successful
+  guard. The copies had drifted: `shares`, `permissions`, `snmp` and `settings`
+  answered **`400 Bad Request`** to a signed-in non-admin where every other
+  module answered `403`, so the same refusal looked like two different problems
+  on two screens. **Second**, `require_auth` answered `400` when the
+  `x-session-token` header was *absent* and `401` only for an invalid or
+  expired one, so a client that branches on the status read "you are not signed
+  in" as "your request is malformed". `admin_guard` is now the only module that
+  turns the header into an identity decision: the copies delegate to it, and it
+  gained `require_auth_caller` (username + own token, for the self-service
+  session endpoints), `require_session_token` (the modules that still resolve
+  the `Session` row themselves — the Explorer's path guard) and
+  `denial_message` (status → wording, for the modules that answer a
+  `Json<ApiResponse>` envelope: Syncthing, Downloader, VPN). The contract is
+  stated once, in `admin_guard.rs` and `docs/API.md` → *Auth status contract*:
+  `401` for an absent or empty header and for an unknown or expired token,
+  `403` for a valid non-admin on an `admin` route, and `400` **only** for a
+  request the server could not understand. Four source-guard unit tests fail the
+  build if a module defines its own `require_admin`/`require_auth` again or if
+  one of the eight delegated modules starts parsing the header, and the new
+  `tests/auth_guard_integration.rs` (7 tests) pins the behaviour — including
+  the pair that gives the contract its meaning: the same route answers `401`
+  without a session and `400` for a malformed body from an admin. 39 no-token
+  assertions across 24 suites moved to `401`; the SPA needed no change (it
+  never branched on `400` vs `401`).
+
 ### Added
 
 - **Syncthing — a folder and a device can be added and removed from HomeVault

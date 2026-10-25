@@ -221,7 +221,7 @@ async fn test_rescue_tools_no_token() {
     let (state, _tmp, _guard) = setup_state().await;
     let mut router = rescue_router(state);
     let (status, _) = send(&mut router, Method::GET, "/api/rescue/tools", None, None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -229,7 +229,7 @@ async fn test_rescue_devices_no_token() {
     let (state, _tmp, _guard) = setup_state().await;
     let mut router = rescue_router(state);
     let (status, _) = send(&mut router, Method::GET, "/api/rescue/devices", None, None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -259,7 +259,7 @@ async fn test_ddrescue_status_no_token() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

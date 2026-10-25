@@ -1297,3 +1297,76 @@ async fn test_revoke_all_sessions_stays_scoped_to_the_caller() {
         "revoke-all must never touch another account"
     );
 }
+
+// ===========================================================================
+// 8. The session surface goes through admin_guard (ROADMAP X.7)
+// ===========================================================================
+
+/// Expires a session row directly in the DB, the way time would.
+async fn expire_session(state: &AppState, token: &str) {
+    sqlx::query("UPDATE sessions SET expires_at = ? WHERE token = ?")
+        .bind("2000-01-01T00:00:00Z")
+        .bind(token)
+        .execute(&*state.db.pool())
+        .await
+        .expect("Failed to expire the session row");
+}
+
+/// The three self-service handlers used to rebuild the token check by hand.
+/// The delegation to `admin_guard` must not have loosened it: an expired
+/// session is `401` on every one of them, and nothing is read or written.
+///
+/// This is the assertion X.7 needed — a hand-rolled copy can silently lose the
+/// expiry predicate (which is exactly what item 15 had to fix on the Dashboard),
+/// and no status-only test around a *valid* token would ever notice.
+#[tokio::test]
+async fn test_security_endpoints_reject_an_expired_session() {
+    let (state, _tmp, _lock) = setup_state().await;
+    create_test_user(&state, "expired_owner", "Passw0rd!", 1).await;
+    let mut app = account_router(Arc::clone(&state));
+
+    let current = login(&mut app, "expired_owner", "Passw0rd!").await;
+    let other = login(&mut app, "expired_owner", "Passw0rd!").await;
+    expire_session(&state, &current).await;
+
+    let (status, body) = get_json_with_token(&mut app, "/api/security/sessions", &current).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "an expired session must not list sessions: {body}"
+    );
+
+    let (status, body) = post_json_with_token(
+        &mut app,
+        "/api/security/sessions/revoke",
+        json!({"ids": [homevault::handlers::security::session_public_id(&other)]}),
+        &current,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "an expired session must not revoke anything: {body}"
+    );
+
+    let (status, body) = post_json_with_token(
+        &mut app,
+        "/api/security/sessions/revoke-all",
+        json!({}),
+        &current,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "an expired session must not revoke anything: {body}"
+    );
+
+    // The refusal wrote nothing: the other session is still alive.
+    let (alive, _) = get_json_with_token(&mut app, "/api/auth/me", &other).await;
+    assert_eq!(
+        alive,
+        StatusCode::OK,
+        "a refused revoke must not delete a live session"
+    );
+}

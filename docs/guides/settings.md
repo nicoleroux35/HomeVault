@@ -423,9 +423,9 @@ said so.
 |---|---|---|
 | any session (boot hydration, `App.svelte`) | `GET /settings/appearance` | `200` + `{ wallpaper, accent_color }` |
 | admin (Settings window) | `GET /settings` (aggregate) | `200` + every family, `appearance` inside |
-| non-admin (Settings window) | `GET /settings` (aggregate) | `400 "Admin access required"` — unchanged |
+| non-admin (Settings window) | `GET /settings` (aggregate) | `403 "Admin privileges required for this operation"` (a permission refusal, not a malformed request — ROADMAP X.7) |
 | admin | `PUT /settings/appearance` | `200`, validated |
-| non-admin | `PUT /settings/appearance` | `400 "Admin access required"`, nothing mutated |
+| non-admin | `PUT /settings/appearance` | `403 "Admin privileges required for this operation"`, nothing mutated |
 
 Before 2026-10-24 the hydration called the admin-only aggregate, so for a
 non-admin it failed, the `catch` swallowed it, and the desktop kept that

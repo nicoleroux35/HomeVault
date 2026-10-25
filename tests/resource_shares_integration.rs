@@ -194,7 +194,7 @@ async fn test_list_access_requires_admin() {
     let mut r = access_router(state);
 
     let (status, _) = send(&mut r, Method::GET, "/api/shares/access", None, None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     let token = login(&mut r, "member", "pw12345678").await;
     let (status, _) = send(

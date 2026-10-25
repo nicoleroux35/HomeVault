@@ -495,17 +495,13 @@ pub async fn effective_visible_resources(
     Ok(ResourceShareRepository::merge_strongest(direct, inherited))
 }
 
-/// Whether `username` holds the admin role. A lookup failure is treated as
-/// "not admin" — fail closed.
+/// Whether `username` holds the admin role.
+///
+/// Delegates to `AuthService::is_admin`, the same predicate `require_admin`
+/// uses, so a HomeVault account and a privileged host (PAM) account are
+/// treated identically here and on every guarded endpoint (ROADMAP X.7).
 async fn is_admin(state: &Arc<AppState>, username: &str) -> bool {
-    sqlx::query_scalar::<_, i64>("SELECT role_id FROM users WHERE username = ?")
-        .bind(username)
-        .fetch_optional(state.db.pool().as_ref())
-        .await
-        .ok()
-        .flatten()
-        .map(|role_id| role_id == crate::storage::models::ADMIN_ROLE_ID)
-        .unwrap_or(false)
+    state.auth.is_admin(username).await
 }
 
 /// Filter a WebSocket event payload for a member.
