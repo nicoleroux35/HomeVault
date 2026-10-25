@@ -295,33 +295,78 @@ as the menu is taller than the remaining card height. Escape closes them
 through a `window` keydown listener, because focus is still on the trigger
 button when the menu opens.
 
-- `frontend/src/routes/Docker.svelte` — has its own local `authedFetch` helper
-  (reads `session-token`/`csrf-token` from `localStorage`) rather than going
-  through `frontend/src/lib/services/api.ts` for Docker/Compose/catalog calls;
-  the new "App Catalog" tab (`tab === 'catalog'`) follows the same pattern.
-  **Verified on 2026-10-12: the two paths are behaviourally identical** —
-  `authedFetch` sends the same `X-Session-Token` + `X-CSRF-Token` pair as
-  `api.ts` (which is what `src/middleware/csrf.rs` requires on every mutating
-  method), so this is a maintenance duplication, not a live divergence bug.
-  **Consolidating `Docker.svelte` onto `api.ts` is deliberately not done:**
-  `api.ts` carries only 6 Docker methods (`getDockerContainers`,
-  `getDockerCatalog`, `isDockerAvailable`, `startContainer`,
-  `stopContainer`, `restartContainer` — all consumed by the desktop Docker
-  monitor), while `Docker.svelte` drives containers, images, networks, volumes,
-  Compose files, the catalog and third-party stores. Routing it through
-  `api.ts` means adding roughly 60 wrapper methods and rewriting ~120 call
-  sites, with the 56-test `docker.spec.ts` as the only net — a large,
-  regression-prone change for no user-visible gain while both paths work. If it
-  is ever done, do it one tab at a time with the E2E suite green in between,
-  and keep the `authedFetch` error shape (`{success:false,error}`) until the
-  last call site is migrated.
-- `frontend/src/lib/services/api.ts` has a small, separate set of
-  Docker methods (`getDockerContainers`, `startContainer`,
-  `isDockerAvailable`, …) — these are not wired into
-  `Docker.svelte` itself (which uses its own `authedFetch`), but
-  `isDockerAvailable`/`getDockerContainers`/`startContainer`/`stopContainer`/
-  `restartContainer` **are** actively used by the desktop's Docker monitor
-  widget (`Desktop.svelte`, see [Widgets](./widgets.md)).
+### One HTTP path: the screen runs on `api.ts` (2026-10-24, ROADMAP 31.1)
+
+`Docker.svelte` used to carry its **own** `authedFetch` helper — a hand-rolled
+`fetch('/api' + endpoint)` that read `session-token`/`csrf-token` straight out
+of `localStorage`, next to the six Docker methods `api.ts` exposed for the
+desktop monitor. The two were behaviourally identical (same headers, checked
+2026-10-12), so it was debt rather than a bug — but it was debt with teeth:
+the local helper silently skipped everything the shared client adds.
+
+**What changed.** Every Docker/Compose/catalog/stores/port-check call of the
+screen now goes through `frontend/src/lib/services/api.ts`, which gained one
+wrapper per endpoint (59, grouped the way the screen is: containers, images,
+networks, volumes/disk-usage/prune, registries, daemon, compose, stores,
+catalog). The local `authedFetch` is **gone** — it is not kept "just for the
+catalog".
+
+What the screen gained by moving, in one line each:
+
+| Shared-client behaviour | What the local helper did |
+|---|---|
+| `X-HomeVault-Contract` on every request → a stale bundle gets the 426 reload prompt instead of a silently wrong-shaped payload | nothing (the contract middleware only gates a header that is *present*) |
+| One `invalidateForMutation` eviction rule for the whole app | nothing — no cache at all |
+| The 5 s GET cache with TTL + LRU eviction | nothing |
+| A single place that knows how tokens are hydrated | a second copy of the token read |
+
+**The caching contract** (`docs/FRONTEND.md` → *API client*):
+
+- Every new Docker wrapper passes `cache: false`. The screen must show the
+  daemon's live state after every action, and its ~20 mutations rely on the
+  read that follows them, so nothing is served from a TTL. The Docker app
+  still issues the same number of requests as before the migration: zero of
+  them are shared with the desktop dashboard through the cache.
+- Three read methods keep the TTLs the desktop monitor already depends on and
+  keep their exact signature: `getDockerContainers()` (3 s),
+  `getDockerCatalog()` (5 s), `isDockerAvailable()` (10 s). The screen calls
+  the uncached twins (`getDockerContainerList()`, `getDockerCatalogList()`,
+  `getDockerComposeProjects()`, …).
+- `invalidateForMutation` now evicts the whole `/docker` family on any Docker
+  mutation (it did the same for `/settings/<group>` → `/settings`): one click
+  has several readers — a container action changes
+  `GET:/docker/containers?stats=false` **and** `…?stats=true` **and** the
+  catalog's `installed`/`running` flags, an image pull changes
+  `GET:/docker/system/df`. Without it a cached 3 s row could come back after
+  the action that changed it.
+- `get()` now reads `options?.ttl ?? this.defaultTTL` instead of `||`. Under
+  `||` a deliberate `ttl: 0` silently became the 5 s default; the client has
+  no `ttl: 0` caller today, but the Docker migration is exactly the change
+  that would have produced one.
+
+**The wire types moved out of the component.** `frontend/src/lib/types/docker.ts`
+holds every Docker shape (`DockerContainer`, `DockerContainerDetail`,
+`DockerCatalogApp`, `DockerInstallReview`, the request bodies, …) and the two
+endpoint answers the screen reads, so the screen and the client cannot drift
+apart. In `Docker.svelte` they are re-exported under the names the template
+already uses (`Container`, `CatalogApp`, `DockerVolume`, …), so no markup
+changed.
+
+**Migrated one tab at a time**, as the item required (containers → catalog →
+images/networks → volumes/compose → daemon/registries), with
+`npm run check` and `npm run build` green.
+
+`POST /docker/catalog/{id}/proxy` keeps its two-field body
+(`auth_required`) inside `setDockerCatalogProxyAuth(id, authRequired)`; every
+other wrapper takes one positional argument per path segment plus an optional
+query value, so a call site reads like the URL it builds.
+
+- `frontend/src/routes/Docker.svelte` — the screen. `$lib/services/api.ts` is
+  its only HTTP path; `$lib/types/docker.ts` its only type source. Never add a
+  local `authedFetch` back: `docker.spec.ts` §17 scans the served chunks for a
+  raw `/api` fetch and fails on one.
+- `frontend/src/lib/services/api.ts` — the wrappers, and the reason the
+  Docker cache rules live there rather than in the screen.
 - The hand-rolled modal components
   (`frontend/src/lib/components/docker/{ImagePull,ContainerCreate,Logs,DeleteConfirm,Compose}Modal.svelte`)
   were deleted on 2026-09-23 (UI audit C2): they were orphaned — `Docker.svelte`
@@ -329,7 +374,11 @@ button when the menu opens.
   Escape, focus restore), never `role="document"`. The `api.ts` methods only
   they called (`getContainerLogs`, `createContainer`, `pullImage`,
   `removeContainer`, `removeImage`, `createComposeProject`) went with them.
-  Don't reintroduce a per-app modal skin.
+  Don't reintroduce a per-app modal skin. *(Two of those names are back in
+  `api.ts` since ROADMAP 31.1 — `createDockerContainer`, `pullDockerImage`,
+  `removeDockerContainer`, `removeDockerImage`,
+  `createDockerComposeProject`, `createDockerLogTicket` — now as the screen's
+  only path to those endpoints, which is what they should have been.)*
 
 ## Invariants
 
@@ -342,6 +391,12 @@ button when the menu opens.
   blocking pool (see "Production hardening"): never reintroduce a bare
   `Command::output()` on `docker`, and never call a `DockerService` method
   directly from an `async fn` handler.
+- **The Docker screen has no HTTP path of its own.** Every call goes through
+  `api.ts` (ROADMAP 31.1, 2026-10-24); a new endpoint gets a wrapper there,
+  never a local `fetch` in the component. `docker.spec.ts` §17 asserts it.
+- Docker GET wrappers are uncached unless the desktop monitor is the caller
+  (see the caching contract above); a Docker mutation evicts the whole
+  `/docker` cache family.
 - Live logs go through the ticket, never a session token in a URL.
 - Destructive actions validate their input **before** touching the daemon
   (`PruneTarget`, signals, names, build context, `daemon.json`).

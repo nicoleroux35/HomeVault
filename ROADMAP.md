@@ -1,7 +1,7 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-24 (16.4 closed — a persisted Cloud Sync job finally has a
-scheduler) — current version: 1.0.0
+Last updated: 2026-10-24 (31.1 closed — the Docker screen runs on `api.ts`;
+16.4 and 28.3 earlier the same day) — current version: 1.0.0
 
 ## How to read this file
 
@@ -276,12 +276,12 @@ dropping every other advertisement on the host. The detail lives in
 
 ### 31. Docker — `api.ts` consolidation (maintainability)
 
-- [ ] **31.1 — `Docker.svelte` drives the whole surface through its own
-      `authedFetch`** while `api.ts` exposes 6 Docker methods used by the desktop
-      monitor. The two are behaviourally identical today (same session + CSRF
-      headers, checked 2026-10-12), so this is debt, not a bug. ~50 new wrapper
-      methods and ~100 rewritten call sites, with `docker.spec.ts` (58 tests) as
-      the only net. If taken up: one tab at a time, E2E green between each.
+Closed on 2026-10-24 — see Done (2026-10-24 (u)). Every Docker/Compose/catalog
+call of `Docker.svelte` now goes through `api.ts` (59 wrappers, 61 rewritten
+call sites, the local `authedFetch` deleted), the wire types live in
+`frontend/src/lib/types/docker.ts`, and `docker.spec.ts` §17 pins the three
+behaviours the migration had to preserve. The detail lives in
+[guides/docker.md](docs/guides/docker.md) → *One HTTP path*.
 
 ### 32. Virtual Machines — residual
 
@@ -448,6 +448,44 @@ call site the guard also scans.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-24 (u)** — Docker — **31.1 closed**: the Docker screen was the last
+one driving its own HTTP. `Docker.svelte` carried a private `authedFetch`
+(token pair straight out of `localStorage`) while `api.ts` exposed six Docker
+methods for the desktop monitor, so the two paths only stayed identical by
+hand — and the private one skipped the contract header (`X-HomeVault-Contract`,
+i.e. no 426 reload prompt for a stale bundle), the GET cache and every
+invalidation rule. It is now the **only** screen without an HTTP path of its
+own: `api.ts` gained 59 Docker wrappers (containers, images, networks,
+volumes + `docker system df` + prune, registries, daemon, Compose, community
+stores, app catalog, port check), 61 call sites were rewritten, the local
+helper is deleted, and the wire shapes moved to
+`frontend/src/lib/types/docker.ts` (re-exported in the component under the
+names the template already used, so no markup moved). **Two real behaviour
+changes, both deliberate:** (1) `invalidateForMutation` now evicts the whole
+`/docker` cache family on any Docker mutation — one container action changes
+`GET:/docker/containers?stats=false` **and** `…?stats=true` **and** the
+catalog's `installed`/`running` flags, an image pull changes
+`GET:/docker/system/df`, so a cached 3 s row could otherwise come back after
+the action that changed it; (2) `get()` now reads `options.ttl ?? default`,
+so a deliberate `ttl: 0` no longer silently becomes the 5 s default (no
+caller uses it today; the migration is exactly the change that would have
+introduced one). Every new wrapper defaults to `cache: false` — nothing of the
+screen's own reads is served from a TTL, so the request count per interaction
+is unchanged — and the three reads the desktop monitor shares keep their TTLs
+and signatures. Migrated one group at a time (containers → catalog →
+images/networks → volumes/compose → daemon/registries), `npm run check` and
+`npm run build` green. Tests: `tests/e2e/docker/docker.spec.ts` 64 → **67
+`test(` / 69 runtime** — a new §17 "API client consolidation" pins what the
+migration had to preserve and needs no docker daemon: 17.1 every `/api/docker`
+request carries the session, CSRF **and** contract headers (the old helper's
+missing contract header is exactly the fingerprint), 17.2 no served chunk
+contains a raw `/api` fetch (the regression shape), 17.3 a container action is
+not answered from the 3 s GET cache (stubbed list differs before/after the
+action; a cached re-read leaves the pre-action row on screen). **Written, not
+run** (per instruction). Docs: [guides/docker.md](docs/guides/docker.md) →
+*One HTTP path*, `docs/FRONTEND.md` → *API client*, `CHANGELOG.md`,
+`TESTING.md`.
 
 **2026-10-24 (t)** — Activity poller — **28.3 closed**: the taskbar no longer
 only reports work HomeVault started. Until now a feed row was a
