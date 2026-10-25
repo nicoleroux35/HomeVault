@@ -2,7 +2,7 @@
  * File          : docker.spec.ts
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Last modified : 24/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
@@ -35,6 +35,14 @@
  * registry access in this environment) rather than requiring an env var —
  * unlike RAID's loop-device lifecycle, a throwaway container never touches
  * host disks, so this is safe to attempt by default. See section 13.
+ *
+ * **§17 (2026-10-24, ROADMAP 31.1)** pins the consolidation of the screen
+ * onto `$lib/services/api.ts`: every Docker request must carry the session,
+ * CSRF and `X-HomeVault-Contract` headers and the `/api` prefix (i.e. it
+ * really went through the shared client), no call site may bypass it, and a
+ * mutation must not be answered from the 3 s GET cache. Those assertions are
+ * request/response observations — they need no docker daemon, so they run
+ * everywhere.
  *
  * Run (all, safe subset):  npx playwright test tests/e2e/docker/docker.spec.ts --project=firefox
  * Run (single):            npx playwright test tests/e2e/docker/docker.spec.ts -g "4.1"
@@ -1151,5 +1159,156 @@ test.describe('16 — Production surface', () => {
     await expect(modal.locator('pre').first()).toBeVisible({ timeout: 20_000 });
     await page.keyboard.press('Escape');
     await expect(modal).toHaveCount(0);
+  });
+});
+
+// ===========================================================================
+// 17. API client consolidation (ROADMAP 31.1)
+// ===========================================================================
+//
+// The screen carried its own `authedFetch` helper until 2026-10-24; every
+// Docker call now goes through `$lib/services/api.ts`. Three behaviours are
+// worth pinning, and none of them is visible in the rendered markup — they
+// are all request/response observations:
+//
+//   * the shared client's per-request headers (`X-Session-Token`,
+//     `X-CSRF-Token`, `X-HomeVault-Contract`) and its `/api` base — a helper
+//     that comes back at a call site loses at least one of them;
+//   * no call site bypasses the client (no new hand-rolled fetch);
+//   * a mutation evicts the cached GET, so the list re-read after an action
+//     shows the action's outcome instead of the pre-action rows (the shared
+//     client caches `GET /docker/containers` for 3 s, which the old helper
+//     never did — re-reading from a warm cache was the one way the migration
+//     could have changed behaviour).
+//
+// These need no docker daemon: they watch traffic and serve stubbed answers.
+
+test.describe('17 — API client consolidation (ROADMAP 31.1)', () => {
+  test('17.1 — every Docker request carries the session, CSRF and contract headers', async ({ page }) => {
+    const violations: string[] = [];
+    page.on('request', (r) => {
+      const url = r.url();
+      if (!url.includes('/api/docker')) return;
+      const h = r.headers();
+      if (!h['x-session-token']) violations.push(`no session token: ${r.method()} ${url}`);
+      if (!h['x-csrf-token']) violations.push(`no csrf token: ${r.method()} ${url}`);
+      if (!h['x-homevault-contract']) violations.push(`no contract header: ${r.method()} ${url}`);
+    });
+
+    await gotoDesktop(page, adminTokens);
+    await openDocker(page);
+    const seen = page.waitForResponse((r) => r.url().includes('/api/docker/available'), { timeout: 20_000 });
+    await page.waitForLoadState('networkidle').catch(() => {});
+    await seen.catch(() => null);
+
+    // The home-grown helper sent neither the contract header nor the cache
+    // awareness; a single request without it fails here.
+    expect(violations, violations.join('\n')).toEqual([]);
+  });
+
+  test('17.2 — no call site bypasses the shared client', async ({ page }) => {
+    // The old helper's fingerprint is a raw `fetch('/api…')`. Every module the
+    // page really loaded is scanned for it: the built chunks are minified, so
+    // the quote style follows, but `fetch` and the `/api/` prefix survive.
+    const offenders: string[] = [];
+    const scan = (url: string, body: string) => {
+      if (!/^https?:.*\.js(\?|$)/.test(url)) return;
+      const raw = body.match(/fetch\(\s*['"`]\s*\/api/g);
+      if (raw) offenders.push(`${url} → ${raw.length} raw /api fetch(es)`);
+    };
+    page.on('response', async (r) => {
+      if (!r.url().endsWith('.js') && !r.url().includes('.js?')) return;
+      try {
+        scan(r.url(), await r.text());
+      } catch {
+        /* redirect / aborted / cross-origin — not a module we can read */
+      }
+    });
+    page.on('request', async (r) => {
+      if (r.resourceType() !== 'script') return;
+      try {
+        const body = r.postData();
+        if (body) scan(r.url(), body);
+      } catch {
+        /* ignore */
+      }
+    });
+    await gotoDesktop(page, adminTokens);
+    await openDocker(page);
+    await page.waitForLoadState('networkidle').catch(() => {});
+
+    // The screen is only fully mounted once its shell is on screen — that is
+    // also when its chunk has been fetched and scanned.
+    await expect(win(page).locator('[data-testid="docker-page"]')).toBeVisible();
+    expect(offenders, offenders.join('\n')).toEqual([]);
+  });
+
+  test('17.3 — a container action is not answered from the 3 s GET cache', async ({ page }) => {
+    // Stub the whole container surface so this runs with no daemon. The card
+    // must first show the row `getDockerContainerList` serves, then — after a
+    // start — the row the re-read serves. If the shared client answered that
+    // re-read from its 3 s `GET /docker/containers` cache, the card would
+    // still carry the pre-action name.
+    //
+    // Two deliberate concessions, both documented rather than papered over:
+    // the stub answers `GET …/containers` on the path alone (any query), and
+    // the action button is located by role + accessible name, which is what
+    // the card really exposes.
+    const row = (name: string) => ({
+      id: `id-${name}`,
+      name,
+      image: `img-${name}:latest`,
+      status: 'Up 2 minutes',
+      state: 'Running',
+      created: '2026-10-24T10:00:00Z',
+      ports: [],
+      memory_mb: null,
+      cpu_percent: null,
+      net_rx_bytes: null,
+      net_tx_bytes: null,
+      blk_read_bytes: null,
+      blk_write_bytes: null,
+      update_available: false,
+      compose_project: null,
+      networks: [],
+    });
+
+    let listedAfterAction = false;
+    let listReads = 0;
+    const json = (data: unknown) => ({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: true, data }),
+    });
+
+    await page.route('**/api/docker/available', (route) => route.fulfill(json({ available: true })));
+    await page.route('**/api/docker/containers**', async (route) => {
+      const url = route.request().url();
+      if (!/POST|PUT|DELETE/.test(route.request().method()) && !/\/(start|stop|restart|logs)/.test(url)) {
+        if (url.includes('stats=true')) return route.fulfill(json([]));
+        listReads += 1;
+        return route.fulfill(json([row(listedAfterAction ? 'after-action' : 'before-action')]));
+      }
+      if (url.endsWith('/start')) listedAfterAction = true;
+      return route.fulfill(json({}));
+    });
+
+    await gotoDesktop(page, adminTokens);
+    await openDocker(page);
+    if (await win(page).locator('[data-testid="docker-daemon-down"]').count()) {
+      test.skip(true, 'the screen mounted its daemon-down panel before the stub applied');
+    }
+
+    const cards = win(page).locator('[data-testid="docker-ctr-card"]');
+    await expect(cards).toHaveCount(1, { timeout: 15_000 });
+    await expect(win(page).getByText('before-action')).toBeVisible();
+    expect(listReads).toBeGreaterThanOrEqual(1);
+
+    const start = cards.first().getByRole('button', { name: /start/i }).first();
+    if ((await start.count()) === 0) test.skip(true, 'the card exposes no start action for a running container');
+    await start.click();
+
+    await expect(win(page).getByText('after-action')).toBeVisible({ timeout: 15_000 });
+    expect(listReads).toBeGreaterThanOrEqual(2);
   });
 });

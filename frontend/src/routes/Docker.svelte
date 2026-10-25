@@ -2,23 +2,29 @@
      File          : Docker.svelte
      Author        : Nicolas Le Roux
      Created       : 28/09/2026
-     Last modified : 21/10/2026 by Nicolas Le Roux
+     Last modified : 24/10/2026 by Nicolas Le Roux
      Version       : 1.0.0
 
      Description:
      The Docker app: container list with live status refresh, lifecycle
      actions (start/stop/restart/remove), logs, image pull/remove, network
      inspection, port checks and per-container resource stats.
+     Every request goes through `$lib/services/api.ts` (ROADMAP 31.1): the
+     screen used to carry its own `authedFetch` helper and now shares the
+     session/CSRF injection, the contract header, the 426 reload prompt and
+     the cache invalidation of every other screen. The wire types live in
+     `$lib/types/docker.ts`.
 
      Dependencies:
        - svelte (>= 5), theme primitives, app/ composites, utils
-         (autoRevalidate), stores/i18n
+         (autoRevalidate), stores/i18n, services/api, types/docker
 
      Usage:
      Opened as a desktop window app (admin only).
      ======================================================================== -->
 <script lang="ts">
   import { IconSearch, IconX, IconRefresh, IconTrash, IconPlayerPlay, IconPlayerPause, IconSquare, IconDownload, IconCheck, IconCopy, IconPhoto as ImageIcon, IconAlertTriangle, IconContainer, IconPlus, IconTerminal, IconExternalLink, IconDeviceTv, IconCloud, IconShield, IconLock, IconHome, IconGlobe, IconDatabase, IconActivity, IconPackage, IconPackages, IconServer, IconNetwork, IconKey, IconShieldOff, IconGitBranch, IconRss, IconTextScan2, IconBook, IconLayoutDashboard, IconMusic, IconListCheck, IconPipeline, IconBoxMultiple, IconBox, IconPencil, IconStar, IconInfoCircle, IconTool, IconSettings, IconBolt } from '@tabler/icons-svelte';
+  import { api } from '$lib/services/api';
   import { t, translate } from '$lib/stores/i18n';
   import { onAppVisible } from '$lib/utils/autoRevalidate';
   import { Button, Toggle, Modal, Alert } from '$lib/components/theme';
@@ -30,204 +36,33 @@
   import WindowSidebarItem from '$lib/components/desktop/WindowSidebarItem.svelte';
   import WindowSidebarSection from '$lib/components/desktop/WindowSidebarSection.svelte';
 
-  // ── Types matching the real backend envelope ──────────────────────────────
-  interface ApiEnvelope<T = any> {
-    success: boolean;
-    data?: T;
-    message?: string;
-    error?: string;
-  }
+  // ── Wire types ────────────────────────────────────────────────────────────
+  // Shared with `services/api.ts` (which wraps every endpoint below), so the
+  // screen and its client cannot drift apart — see `$lib/types/docker.ts`
+  // and ROADMAP 31.1. `ApiResponse` is the standard envelope.
+  import type {
+    DockerAppStore as AppStore,
+    DockerAppUpdateStatus as AppUpdateStatus,
+    DockerCatalogApp as CatalogApp,
+    DockerComposeProject as ComposeProject,
+    DockerContainer as Container,
+    DockerContainerDetail as ContainerDetail,
+    DockerCreateEnvVar as CreateEnvRow,
+    DockerCreateVolume as CreateVolumeRow,
+    DockerDiskUsage as DiskUsage,
+    DockerEnvVarDecl as EnvVarDecl,
+    DockerExecResult as ExecResult,
+    DockerHubResult as HubResult,
+    DockerImage as Image,
+    DockerInstallReview as InstallReview,
+    DockerNetwork,
+    DockerPortStatus as PortCheck,
+    DockerPruneReport as PruneReport,
+    DockerVolume,
+  } from '$lib/types/docker';
+  import type { ApiResponse } from '$lib/types/api';
 
-  interface ContainerPort {
-    host_port: number;
-    container_port: number;
-    protocol: string;
-  }
-  interface Container {
-    id: string;
-    name: string;
-    image: string;
-    status: string;
-    state: 'Running' | 'Exited' | 'Paused' | 'Restarting' | 'Dead' | 'Created' | 'Unknown';
-    created: string;
-    ports: ContainerPort[];
-    memory_mb: number | null;
-    cpu_percent: number | null;
-    net_rx_bytes: number | null;
-    net_tx_bytes: number | null;
-    blk_read_bytes: number | null;
-    blk_write_bytes: number | null;
-    update_available: boolean;
-    compose_project: string | null;
-    networks: string[];
-  }
-  interface Image {
-    id: string;
-    repository: string;
-    tag: string;
-    size: string;
-    created: string;
-  }
-  interface DockerNetwork {
-    id: string;
-    name: string;
-    driver: string;
-    scope: string;
-    subnet: string | null;
-    gateway: string | null;
-    internal: boolean;
-    containers: string[];
-  }
-  interface HubResult {
-    name: string;
-    description: string;
-    star_count: number;
-    pull_count: number;
-    is_official: boolean;
-  }
-  interface ComposeProject {
-    name: string;
-    config_path: string;
-    services: string[];
-    status: string;
-  }
-  interface DockerVolume {
-    name: string;
-    driver: string;
-    scope: string;
-    mountpoint: string;
-    in_use: boolean;
-    used_by: string[];
-  }
-  interface DiskUsageRow {
-    kind: string;
-    total: number;
-    active: number;
-    size: string;
-    reclaimable: string;
-  }
-  interface DiskUsage {
-    rows: DiskUsageRow[];
-    total_size: string;
-    total_reclaimable: string;
-  }
-  interface PruneReport {
-    target: string;
-    reclaimed: string;
-    message: string;
-  }
-  interface ContainerMount {
-    kind: string;
-    source: string;
-    destination: string;
-    read_only: boolean;
-    name: string | null;
-  }
-  interface ContainerDetail {
-    id: string;
-    name: string;
-    image: string;
-    image_id: string;
-    image_digest: string | null;
-    created: string;
-    state: string;
-    status: string;
-    exit_code: number | null;
-    started_at: string | null;
-    finished_at: string | null;
-    restart_count: number;
-    pid: number | null;
-    command: string[];
-    entrypoint: string[];
-    working_dir: string;
-    hostname: string;
-    user: string;
-    restart_policy: string;
-    privileged: boolean;
-    memory_limit: number | null;
-    nano_cpus: number | null;
-    env: string[];
-    labels: [string, string][];
-    mounts: ContainerMount[];
-    ports: ContainerPort[];
-    networks: string[];
-    ip_address: string | null;
-    health: string | null;
-    log_driver: string | null;
-    log_path: string | null;
-    compose_project: string | null;
-    compose_service: string | null;
-  }
-  interface ExecResult {
-    stdout: string;
-    stderr: string;
-    exit_code: number;
-  }
-  interface CatalogApp {
-    /** Namespaced id, "<store>:<app>" — used in every catalog API path. */
-    id: string;
-    /** Bare app id, for the Lucide-icon fallback lookup. */
-    app_id: string;
-    name: string;
-    description: string;
-    tagline: string | null;
-    category: string;
-    icon: string | null;
-    has_icon: boolean;
-    gallery_count: number;
-    default_port: number;
-    version: string;
-    developer: string | null;
-    website: string | null;
-    repo: string | null;
-    dependencies: string[];
-    implements: string[];
-    environment: EnvVarDecl[];
-    missing_dependencies: string[];
-    incompatibility_reason: string | null;
-    store_id: string;
-    store_name: string;
-    installed: boolean;
-    running: boolean;
-    installed_port: number | null;
-    proxy_port: number | null;
-    proxy_auth_required: boolean;
-    unsupported_on_host: boolean;
-  }
-  interface AppStore {
-    id: string;
-    name: string;
-    git_url: string;
-    enabled: boolean;
-    last_synced_at: number | null;
-    last_error: string | null;
-    app_count: number;
-  }
-  interface CreatePortRow { host_port: string; container_port: string; protocol: string; }
-  interface CreateEnvRow { key: string; value: string; }
-  interface CreateVolumeRow { host_path: string; container_path: string; read_only: boolean; }
-  interface EnvVarDecl { name: string; services: string[]; default: string | null; options: string[]; required: boolean; note: string | null; }
-  interface InstallReviewDep { dependency: string; satisfied_by: string[]; providers: string[]; selected: string | null; }
-  interface InstallReview { id: string; name: string; version: string; incompatibility_reason: string | null; dependencies: InstallReviewDep[]; environment: EnvVarDecl[]; default_port: number; }
-
-  // ── Local authed fetch (keeps session + CSRF tokens in sync with api client) ─
-  async function authedFetch<T = any>(method: string, endpoint: string, body?: any): Promise<ApiEnvelope<T>> {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    const st = localStorage.getItem('session-token');
-    const ct = localStorage.getItem('csrf-token');
-    if (st) headers['X-Session-Token'] = st;
-    if (ct) headers['X-CSRF-Token'] = ct;
-    try {
-      const res = await fetch('/api' + endpoint, {
-        method,
-        headers,
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-      });
-      return await res.json();
-    } catch (e) {
-      return { success: false, error: e instanceof Error ? e.message : 'Network error' };
-    }
-  }
+  type CreatePortRow = { host_port: string; container_port: string; protocol: string };
 
   // ── Image -> icon glyph (the shape varies per known app so the grid is
   //    scannable; the tint is always the app accent — one colour everywhere) ──
@@ -310,7 +145,7 @@
 
   async function loadStores() {
     storesLoading = true;
-    const res = await authedFetch<AppStore[]>('GET', '/docker/stores');
+    const res = await api.getDockerStores();
     storesLoading = false;
     if (res.success && res.data) appStores = res.data;
   }
@@ -319,7 +154,7 @@
     const url = storeUrl.trim();
     if (!url) return;
     storeBusy = true;
-    const res = await authedFetch('POST', '/docker/stores', { git_url: url });
+    const res = await api.addDockerStore(url);
     storeBusy = false;
     if (res.success) {
       storeUrl = '';
@@ -333,7 +168,7 @@
 
   async function syncStore(store: AppStore) {
     storeBusy = true;
-    const res = await authedFetch('POST', `/docker/stores/${encodeURIComponent(store.id)}/sync`);
+    const res = await api.syncDockerStore(store.id);
     storeBusy = false;
     if (res.success) setBanner('ok', translate('docker.stores_synced'));
     else setBanner('error', res.message || res.error || translate('docker.stores_sync_failed'));
@@ -344,7 +179,7 @@
   async function removeStore(store: AppStore) {
     if (!(await dlg.ask(translate('docker.stores_remove_confirm', { name: store.name })))) return;
     storeBusy = true;
-    const res = await authedFetch('DELETE', `/docker/stores/${encodeURIComponent(store.id)}`);
+    const res = await api.removeDockerStore(store.id);
     storeBusy = false;
     if (res.success) setBanner('ok', translate('docker.stores_removed'));
     else setBanner('error', res.message || res.error || translate('docker.stores_sync_failed'));
@@ -438,7 +273,7 @@
     const v = portStr.trim();
     if (!isValidPort(v) || portChecks[v]) return;
     portChecks = { ...portChecks, [v]: 'checking' };
-    const res = await authedFetch<PortCheck>('GET', `/docker/port-check?port=${Number(v)}`);
+    const res = await api.checkDockerPort(Number(v));
     const result: PortCheck = res.success && res.data
       ? res.data
       : { available: true, used_by: null, detail: null };
@@ -597,8 +432,8 @@
     // (`?stats=false`) so it renders instantly; `fillContainerStats` fills the
     // CPU/memory in afterwards.
     const [avail, containersRes] = await Promise.all([
-      authedFetch<{ available: boolean }>('GET', '/docker/available'),
-      authedFetch<Container[]>('GET', '/docker/containers?stats=false'),
+      api.isDockerAvailable(),
+      api.getDockerContainerList(),
     ]);
     dockerAvailable = avail.success && !!avail.data?.available;
     if (!dockerAvailable) return;
@@ -609,7 +444,7 @@
 
   async function loadContainers() {
     busy = true;
-    const res = await authedFetch<Container[]>('GET', '/docker/containers?stats=false');
+    const res = await api.getDockerContainerList();
     busy = false;
     if (res.success && res.data) containers = res.data;
     else setBanner('error', res.message || res.error || translate('docker.load_containers_failed'));
@@ -620,7 +455,7 @@
   // part) in the background and merge them into the already-rendered list, so
   // the containers appear immediately and the metrics catch up a moment later.
   async function fillContainerStats() {
-    const res = await authedFetch<Container[]>('GET', '/docker/containers?stats=true');
+    const res = await api.getDockerContainersWithStats();
     if (!res.success || !res.data) return;
     const byId = new Map(res.data.map((c) => [c.id, c]));
     containers = containers.map((c) => {
@@ -641,7 +476,7 @@
 
   async function loadImages() {
     busy = true;
-    const res = await authedFetch<Image[]>('GET', '/docker/images');
+    const res = await api.getDockerImages();
     busy = false;
     if (res.success && res.data) images = res.data;
     else setBanner('error', res.message || res.error || translate('docker.load_images_failed'));
@@ -649,7 +484,7 @@
 
   async function loadNetworks() {
     busy = true;
-    const res = await authedFetch<DockerNetwork[]>('GET', '/docker/networks');
+    const res = await api.getDockerNetworks();
     busy = false;
     if (res.success && res.data) networks = res.data;
     else setBanner('error', res.message || res.error || translate('docker.load_networks_failed'));
@@ -657,41 +492,35 @@
 
   async function loadProjects() {
     busy = true;
-    const res = await authedFetch<ComposeProject[]>('GET', '/docker/compose/projects');
+    const res = await api.getDockerComposeProjects();
     busy = false;
     if (res.success && res.data) projects = res.data;
     else setBanner('error', res.message || res.error || translate('docker.load_projects_failed'));
   }
 
   async function loadComposeAvailable() {
-    const res = await authedFetch<{ available: boolean }>('GET', '/docker/compose/available');
+    const res = await api.isDockerComposeAvailable();
     composeAvailable = res.success && !!res.data?.available;
   }
 
   async function loadCatalog() {
     catalogLoading = true;
-    const res = await authedFetch<CatalogApp[]>('GET', '/docker/catalog');
+    const res = await api.getDockerCatalogList();
     catalogLoading = false;
     if (res.success && res.data) catalogApps = res.data;
     else setBanner('error', res.message || res.error || translate('docker.catalog_load_failed'));
   }
 
   // ── App updates (image digest / package version) ─────────────────────────
-  interface AppUpdateStatus {
-    id: string;
-    name: string;
-    installed_version: string | null;
-    available_version: string;
-    package_update_available: boolean;
-    image_update_available: boolean;
-  }
+  // `AppUpdateStatus` comes from `$lib/types/docker` (imported as
+  // `AppUpdateStatus` above).
   let catalogUpdates = $state<Record<string, AppUpdateStatus>>({});
   let updatesChecking = $state(false);
   let updateBusyId = $state<string | null>(null);
 
   async function loadCatalogUpdates() {
     updatesChecking = true;
-    const res = await authedFetch<AppUpdateStatus[]>('GET', '/docker/catalog/updates');
+    const res = await api.getDockerCatalogUpdates();
     updatesChecking = false;
     if (res.success && res.data) {
       const map: Record<string, AppUpdateStatus> = {};
@@ -711,9 +540,7 @@
   }
 
   async function toggleAppProxyAuth(app: CatalogApp) {
-    const res = await authedFetch('POST', `/docker/catalog/${encodeURIComponent(app.id)}/proxy`, {
-      auth_required: !app.proxy_auth_required,
-    });
+    const res = await api.setDockerCatalogProxyAuth(app.id, !app.proxy_auth_required);
     if (res.success) {
       await loadCatalog();
     } else {
@@ -723,7 +550,7 @@
 
   async function updateCatalogApp(app: CatalogApp) {
     updateBusyId = app.id;
-    const res = await authedFetch('POST', `/docker/catalog/${encodeURIComponent(app.id)}/update`);
+    const res = await api.updateDockerCatalogApp(app.id);
     updateBusyId = null;
     if (res.success) {
       setBanner('ok', translate('docker.catalog_updated', { name: app.name }));
@@ -739,7 +566,7 @@
   // reporting per-app outcomes so a single failure never hides the rest.
   async function updateAllCatalogApps() {
     updateAllBusy = true;
-    const res = await authedFetch<{ updated: string[]; failed: { id: string; error: string }[] }>('POST', '/docker/catalog/update-all');
+    const res = await api.updateAllDockerCatalogApps();
     updateAllBusy = false;
     if (res.success && res.data) {
       const ok = res.data.updated.length;
@@ -756,7 +583,7 @@
   // Per-app compose logs viewer (same Modal pattern as container logs).
   async function openAppLogs(app: CatalogApp) {
     appLogsModal = { id: app.id, name: app.name, logs: '', loading: true };
-    const res = await authedFetch<{ logs: string }>('GET', `/docker/catalog/${encodeURIComponent(app.id)}/logs?tail=200`);
+    const res = await api.getDockerCatalogAppLogs(app.id, 200);
     if (!appLogsModal || appLogsModal.id !== app.id) return;
     if (res.success && res.data) appLogsModal.logs = res.data.logs;
     else {
@@ -800,7 +627,7 @@
   // Pre-install review (dependencies with alternatives, declared settings,
   // compatibility) so the dialog offers choices before the image pull.
   async function loadInstallReview(id: string) {
-    const res = await authedFetch<InstallReview>('GET', `/docker/catalog/${encodeURIComponent(id)}/install-review`);
+    const res = await api.getDockerInstallReview(id);
     if (!catalogPortModal || catalogPortModal.id !== id) return;
     if (res.success && res.data) {
       const review = res.data;
@@ -828,7 +655,7 @@
     for (const [k, v] of Object.entries(envValues)) {
       if (v.trim() !== '') environment[k] = v;
     }
-    const res = await authedFetch('POST', `/docker/catalog/${encodeURIComponent(id)}/install`, {
+    const res = await api.installDockerCatalogApp(id, {
       port: Number.isFinite(parsedPort) ? parsedPort : undefined,
       alternatives,
       environment,
@@ -847,7 +674,7 @@
   async function uninstallCatalogApp(app: CatalogApp) {
     if (!(await dlg.ask(translate('docker.catalog_uninstall_confirm', { name: app.name })))) return;
     catalogBusyId = app.id;
-    const res = await authedFetch('DELETE', `/docker/catalog/${encodeURIComponent(app.id)}`);
+    const res = await api.uninstallDockerCatalogApp(app.id);
     catalogBusyId = null;
     if (res.success) setBanner('ok', translate('docker.catalog_uninstalled', { name: app.name }));
     else setBanner('error', res.message || res.error || translate('docker.catalog_uninstall_failed'));
@@ -888,7 +715,7 @@
   // ── Container actions (real) ──────────────────────────────────────────────
   async function containerAction(name: string, action: 'start' | 'stop' | 'restart') {
     busy = true;
-    const res = await authedFetch('PUT', `/docker/containers/${encodeURIComponent(name)}/${action}`);
+    const res = await api.dockerContainerAction(name, action);
     busy = false;
     const actionKey = action === 'start' ? 'container_started' : action === 'stop' ? 'container_stopped' : 'container_restarted';
     if (res.success) { setBanner('ok', translate(`docker.${actionKey}`, { name })); }
@@ -900,7 +727,7 @@
   async function removeContainer(name: string, force: boolean) {
     if (!(await dlg.ask(translate('docker.container_delete_confirm', { name }) + (force ? translate('docker.container_force') : '')))) return;
     busy = true;
-    const res = await authedFetch('DELETE', `/docker/containers/${encodeURIComponent(name)}?force=${force}`);
+    const res = await api.removeDockerContainer(name, force);
     busy = false;
     if (res.success) setBanner('ok', translate('docker.container_deleted', { name }));
     else setBanner('error', res.message || res.error || translate('docker.container_delete_failed'));
@@ -924,11 +751,11 @@
     stopLogStream();
     logState = 'connecting';
     logError = '';
-    const res = await authedFetch<{ ticket: string; url: string }>(
-      'POST',
-      `/docker/containers/${encodeURIComponent(name)}/logs/ticket`,
-      { tail: logTail, follow: logFollow, timestamps: logTimestamps },
-    );
+    const res = await api.createDockerLogTicket(name, {
+      tail: logTail,
+      follow: logFollow,
+      timestamps: logTimestamps,
+    });
     if (!res.success || !res.data?.url) {
       logState = 'error';
       logError = res.message || res.error || translate('docker.logs_failed');
@@ -1005,10 +832,7 @@
       managed: true,
       status: null,
     };
-    const res = await authedFetch<{ config: string }>(
-      'GET',
-      `/docker/compose/projects/${encodeURIComponent(c.compose_project)}/config`,
-    );
+    const res = await api.getDockerComposeConfig(c.compose_project);
     if (!editCompose) return; // closed while loading
     if (res.success && res.data) {
       editCompose = { ...editCompose, yaml: res.data.config, loading: false };
@@ -1026,7 +850,7 @@
   async function validateEditCompose() {
     if (!editCompose) return;
     editCompose = { ...editCompose, busy: true, status: { text: translate('docker.validating'), color: 'var(--hv-shell-text-2)' } };
-    const res = await authedFetch('POST', '/docker/compose/validate', { config: editCompose.yaml });
+    const res = await api.validateDockerCompose(editCompose.yaml);
     if (!editCompose) return;
     editCompose = {
       ...editCompose,
@@ -1045,7 +869,7 @@
       busy: true,
       status: { text: translate(redeploy ? 'docker.deploying' : 'docker.validating'), color: 'var(--hv-shell-text-2)' },
     };
-    const put = await authedFetch('PUT', `/docker/compose/projects/${encodeURIComponent(project)}`, { config: yaml });
+    const put = await api.updateDockerComposeProject(project, yaml);
     if (!put.success) {
       if (editCompose) {
         editCompose = { ...editCompose, busy: false, status: { text: put.message || put.error || translate('docker.edit_compose_save_failed'), color: 'var(--hv-error)' } };
@@ -1053,7 +877,7 @@
       return;
     }
     if (redeploy) {
-      const up = await authedFetch('POST', `/docker/compose/projects/${encodeURIComponent(project)}/restart`);
+      const up = await api.dockerComposeAction(project, 'restart');
       if (!up.success) {
         if (editCompose) {
           editCompose = { ...editCompose, busy: false, status: { text: up.message || up.error || translate('docker.deploy_failed'), color: 'var(--hv-error)' } };
@@ -1079,7 +903,7 @@
     pullModalOpen = false;
     const [repo, tag] = image.split(':');
     busy = true;
-    const res = await authedFetch('POST', '/docker/images/pull', { image: repo, tag: tag || 'latest' });
+    const res = await api.pullDockerImage({ image: repo, tag: tag || 'latest' });
     busy = false;
     if (res.success) setBanner('ok', translate('docker.image_pulled', { name: image }));
     else setBanner('error', res.message || res.error || translate('docker.pull_failed2'));
@@ -1089,7 +913,7 @@
   async function removeImage(id: string) {
     if (!(await dlg.ask(translate('docker.image_delete_confirm', { id })))) return;
     busy = true;
-    const res = await authedFetch('DELETE', `/docker/images/${encodeURIComponent(id)}?force=true`, { force: true });
+    const res = await api.removeDockerImage(id, true);
     busy = false;
     if (res.success) setBanner('ok', translate('docker.image_deleted'));
     else setBanner('error', res.message || res.error || translate('docker.container_delete_failed'));
@@ -1104,7 +928,7 @@
   async function createNetwork() {
     if (!nName.trim()) { setBanner('error', translate('docker.network_name_required')); return; }
     busy = true;
-    const res = await authedFetch('POST', '/docker/networks', {
+    const res = await api.createDockerNetwork({
       name: nName, driver: nDriver, subnet: nSubnet || null, gateway: nGateway || null, internal: nInternal,
     });
     busy = false;
@@ -1115,7 +939,7 @@
   async function removeNetwork(name: string) {
     if (!(await dlg.ask(translate('docker.network_delete_confirm', { name })))) return;
     busy = true;
-    const res = await authedFetch('DELETE', `/docker/networks/${encodeURIComponent(name)}`);
+    const res = await api.removeDockerNetwork(name);
     busy = false;
     if (res.success) setBanner('ok', translate('docker.network_deleted'));
     else setBanner('error', res.message || res.error || translate('docker.container_delete_failed'));
@@ -1127,7 +951,7 @@
     const q = hubQuery.trim();
     if (!q) { hubResults = []; return; }
     hubLoading = true;
-    const res = await authedFetch<HubResult[]>('GET', `/docker/hub/search?q=${encodeURIComponent(q)}`);
+    const res = await api.searchDockerHub(q);
     hubLoading = false;
     if (res.success && res.data) hubResults = res.data;
     else setBanner('error', res.message || res.error || translate('docker.hub_search_failed'));
@@ -1168,7 +992,7 @@
     const env = cEnv.filter(e => e.key && e.value).map(e => ({ key: e.key, value: e.value }));
 
     modalBusy = true;
-    const res = await authedFetch('POST', '/docker/containers', {
+    const res = await api.createDockerContainer({
       name: cName,
       image: cImage,
       ports,
@@ -1193,7 +1017,7 @@
     if (!composeYaml.trim()) { composeStatus = { text: translate('docker.paste_compose_first'), color: 'var(--hv-error)' }; return; }
     composeDeploying = true;
     composeStatus = { text: translate('docker.deploying'), color: 'var(--hv-shell-text-2)' };
-    const res = await authedFetch('POST', '/docker/compose/projects', { name: composeName, config: composeYaml });
+    const res = await api.createDockerComposeProject(composeName, composeYaml);
     composeDeploying = false;
     if (res.success) { composeStatus = { text: translate('docker.stack_deployed'), color: 'var(--hv-success)' }; composeName = ''; composeYaml = ''; await loadProjects(); await loadContainers(); }
     else composeStatus = { text: res.message || res.error || translate('docker.deploy_failed'), color: 'var(--hv-error)' };
@@ -1206,7 +1030,7 @@
     if (!composeYaml.trim()) { composeStatus = { text: translate('docker.paste_compose_first'), color: 'var(--hv-error)' }; return; }
     composeValidating = true;
     composeStatus = { text: translate('docker.validating'), color: 'var(--hv-shell-text-2)' };
-    const res = await authedFetch('POST', '/docker/compose/validate', { config: composeYaml });
+    const res = await api.validateDockerCompose(composeYaml);
     composeValidating = false;
     if (res.success) composeStatus = { text: translate('docker.compose_valid'), color: 'var(--hv-success)' };
     else composeStatus = { text: res.message || res.error || translate('docker.compose_invalid'), color: 'var(--hv-error)' };
@@ -1215,7 +1039,7 @@
   // ── Daemon-down recovery ──────────────────────────────────────────────────
   async function startDaemon() {
     daemonStarting = true;
-    const res = await authedFetch('POST', '/docker/daemon/start');
+    const res = await api.startDockerDaemon();
     daemonStarting = false;
     if (res.success) { setBanner('ok', translate('docker.daemon_started')); await init(); }
     else setBanner('error', res.message || res.error || translate('docker.daemon_start_failed'));
@@ -1224,14 +1048,14 @@
   async function openDaemonLogs() {
     daemonLogsOpen = true;
     daemonLogs = translate('docker.logs_loading');
-    const res = await authedFetch<{ logs: string }>('GET', '/docker/daemon/logs');
+    const res = await api.getDockerDaemonLogs();
     if (res.success && res.data) daemonLogs = res.data.logs || translate('docker.logs_empty');
     else daemonLogs = res.message || res.error || translate('docker.logs_failed');
   }
   function closeDaemonLogs() { daemonLogsOpen = false; daemonLogs = ''; }
   async function composeAction(name: string, action: 'start' | 'stop' | 'restart') {
     busy = true;
-    const res = await authedFetch('POST', `/docker/compose/projects/${encodeURIComponent(name)}/${action}`);
+    const res = await api.dockerComposeAction(name, action);
     busy = false;
     const actionKey = action === 'start' ? 'stack_started' : action === 'stop' ? 'stack_stopped' : 'stack_restarted';
     if (res.success) setBanner('ok', translate(`docker.${actionKey}`, { name }));
@@ -1242,7 +1066,7 @@
   async function removeProject(name: string) {
     if (!(await dlg.ask(translate('docker.stack_delete_confirm', { name })))) return;
     busy = true;
-    const res = await authedFetch('DELETE', `/docker/compose/projects/${encodeURIComponent(name)}`);
+    const res = await api.removeDockerComposeProject(name);
     busy = false;
     if (res.success) setBanner('ok', translate('docker.stack_deleted'));
     else setBanner('error', res.message || res.error || translate('docker.stack_delete_failed'));
@@ -1260,7 +1084,7 @@
 
   async function loadVolumes() {
     volumesLoading = true;
-    const res = await authedFetch<DockerVolume[]>('GET', '/docker/volumes');
+    const res = await api.getDockerVolumes();
     volumesLoading = false;
     if (res.success && res.data) volumes = res.data;
     else setBanner('error', res.message || res.error || translate('docker.load_volumes_failed'));
@@ -1275,7 +1099,7 @@
   async function createVolume() {
     if (!vName.trim()) { setBanner('error', translate('docker.volume_name_required')); return; }
     volumeBusy = true;
-    const res = await authedFetch('POST', '/docker/volumes', {
+    const res = await api.createDockerVolume({
       name: vName.trim(),
       driver: vDriver || null,
     });
@@ -1295,7 +1119,7 @@
     const key = v.in_use ? 'docker.volume_force_delete_confirm' : 'docker.volume_delete_confirm';
     if (!(await dlg.ask(translate(key, { name: v.name })))) return;
     volumeBusy = true;
-    const res = await authedFetch('DELETE', `/docker/volumes/${encodeURIComponent(v.name)}?force=${v.in_use}`);
+    const res = await api.removeDockerVolume(v.name, v.in_use);
     volumeBusy = false;
     if (res.success) setBanner('ok', translate('docker.volume_deleted', { name: v.name }));
     else setBanner('error', res.message || res.error || translate('docker.volume_delete_failed'));
@@ -1308,7 +1132,7 @@
   let pruneBusy = $state<string | null>(null);
 
   async function loadDiskUsage() {
-    const res = await authedFetch<DiskUsage>('GET', '/docker/system/df');
+    const res = await api.getDockerDiskUsage();
     if (res.success && res.data) diskUsage = res.data;
   }
 
@@ -1328,7 +1152,7 @@
     const key = all ? 'docker.prune_all_confirm' : 'docker.prune_confirm';
     if (!(await dlg.ask(translate(key, { target: translate(`docker.prune_${target}`) })))) return;
     pruneBusy = target;
-    const res = await authedFetch<PruneReport>('POST', '/docker/prune', { target, all });
+    const res = await api.pruneDocker(target, all);
     pruneBusy = null;
     if (res.success && res.data) {
       setBanner('ok', translate('docker.pruned', { target: translate(`docker.prune_${target}`), reclaimed: res.data.reclaimed || '0B' }));
@@ -1363,7 +1187,7 @@
 
   async function containerExtra(name: string, action: 'pause' | 'unpause') {
     busy = true;
-    const res = await authedFetch('PUT', `/docker/containers/${encodeURIComponent(name)}/${action}`);
+    const res = await api.dockerContainerPauseAction(name, action);
     busy = false;
     const key = action === 'pause' ? 'docker.container_paused' : 'docker.container_unpaused';
     if (res.success) setBanner('ok', translate(key, { name }));
@@ -1374,7 +1198,7 @@
   async function killContainer(name: string) {
     if (!(await dlg.ask(translate('docker.kill_confirm', { name })))) return;
     busy = true;
-    const res = await authedFetch('POST', `/docker/containers/${encodeURIComponent(name)}/kill`, { signal: 'SIGKILL' });
+    const res = await api.killDockerContainer(name, 'SIGKILL');
     busy = false;
     if (res.success) setBanner('ok', translate('docker.container_killed', { name }));
     else setBanner('error', res.message || res.error || translate('docker.action_failed', { action: 'kill' }));
@@ -1384,7 +1208,7 @@
   async function openInspect(name: string) {
     ctrMenuFor = null;
     detailModal = { name, detail: null, loading: true, error: '' };
-    const res = await authedFetch<ContainerDetail>('GET', `/docker/containers/${encodeURIComponent(name)}/inspect`);
+    const res = await api.inspectDockerContainer(name);
     if (!detailModal || detailModal.name !== name) return;
     if (res.success && res.data) {
       detailModal = { ...detailModal, detail: res.data, loading: false };
@@ -1403,7 +1227,7 @@
     const { name, value } = renameModal;
     if (!value.trim() || value.trim() === name) { renameModal = null; return; }
     renameModal = { ...renameModal, busy: true };
-    const res = await authedFetch('PUT', `/docker/containers/${encodeURIComponent(name)}/rename`, { name: value.trim() });
+    const res = await api.renameDockerContainer(name, value.trim());
     if (res.success) {
       setBanner('ok', translate('docker.container_renamed', { name: value.trim() }));
       renameModal = null;
@@ -1417,7 +1241,7 @@
   async function openLimits(name: string) {
     ctrMenuFor = null;
     limitsModal = { name, memory: '', cpus: '', restart: '', busy: false };
-    const res = await authedFetch<ContainerDetail>('GET', `/docker/containers/${encodeURIComponent(name)}/inspect`);
+    const res = await api.inspectDockerContainer(name);
     if (!limitsModal || limitsModal.name !== name || !res.success || !res.data) return;
     const d = res.data;
     limitsModal = {
@@ -1432,7 +1256,7 @@
     if (!limitsModal) return;
     const { name, memory, cpus, restart } = limitsModal;
     limitsModal = { ...limitsModal, busy: true };
-    const res = await authedFetch('POST', `/docker/containers/${encodeURIComponent(name)}/update`, {
+    const res = await api.updateDockerContainer(name, {
       memory_limit: memory.trim() || null,
       cpu_limit: cpus.trim() || null,
       restart_policy: restart || null,
@@ -1457,10 +1281,7 @@
     const argv = execModal.command.trim().split(/\s+/).filter(Boolean);
     if (argv.length === 0) return;
     execModal = { ...execModal, running: true, error: '', result: null };
-    const res = await authedFetch<ExecResult>('POST', `/docker/containers/${encodeURIComponent(execModal.name)}/exec`, {
-      command: argv,
-      timeout_secs: 30,
-    });
+    const res = await api.execDockerContainer(execModal.name, argv, 30);
     if (!execModal) return;
     if (res.success && res.data) {
       execModal = { ...execModal, running: false, result: res.data };
@@ -1473,7 +1294,7 @@
     ctrMenuFor = null;
     if (!(await dlg.ask(translate('docker.recreate_confirm', { name: c.name })))) return;
     recreateBusy = c.name;
-    const res = await authedFetch('POST', `/docker/containers/${encodeURIComponent(c.name)}/recreate`);
+    const res = await api.recreateDockerContainer(c.name);
     recreateBusy = null;
     if (res.success) setBanner('ok', translate('docker.container_recreated', { name: c.name }));
     else setBanner('error', res.message || res.error || translate('docker.recreate_failed'));
@@ -1500,7 +1321,7 @@
     if (!buildModal) return;
     if (!buildModal.context.trim() || !buildModal.tag.trim()) return;
     buildModal = { ...buildModal, running: true, log: '', error: '' };
-    const res = await authedFetch<{ log: string }>('POST', '/docker/images/build', {
+    const res = await api.buildDockerImage({
       context: buildModal.context.trim(),
       dockerfile: buildModal.dockerfile.trim() || null,
       tag: buildModal.tag.trim(),
@@ -1530,7 +1351,7 @@
 
   async function openRegistries() {
     registryModal = { registries: [], loading: true, host: '', username: '', password: '', busy: false };
-    const res = await authedFetch<string[]>('GET', '/docker/registries');
+    const res = await api.getDockerRegistries();
     if (!registryModal) return;
     registryModal = { ...registryModal, loading: false, registries: res.success && res.data ? res.data : [] };
   }
@@ -1538,11 +1359,11 @@
   async function registryLogin() {
     if (!registryModal) return;
     registryModal = { ...registryModal, busy: true };
-    const res = await authedFetch('POST', '/docker/registries/login', {
-      registry: registryModal.host.trim(),
-      username: registryModal.username.trim(),
-      password: registryModal.password,
-    });
+    const res = await api.dockerRegistryLogin(
+      registryModal.host.trim(),
+      registryModal.username.trim(),
+      registryModal.password,
+    );
     if (!registryModal) return;
     if (res.success) {
       setBanner('ok', translate('docker.registry_logged_in'));
@@ -1557,7 +1378,7 @@
   async function registryLogout(host: string) {
     if (!registryModal) return;
     registryModal = { ...registryModal, busy: true };
-    const res = await authedFetch('POST', '/docker/registries/logout', { registry: host });
+    const res = await api.dockerRegistryLogout(host);
     if (!registryModal) return;
     if (res.success) setBanner('ok', translate('docker.registry_logged_out'));
     else setBanner('error', res.message || res.error || translate('docker.registry_logout_failed'));
@@ -1569,7 +1390,7 @@
 
   async function openDaemonConfig() {
     daemonConfigModal = { config: '', path: '/etc/docker/daemon.json', loading: true, busy: false, error: '' };
-    const res = await authedFetch<{ config: string; path: string }>('GET', '/docker/daemon/config');
+    const res = await api.getDockerDaemonConfig();
     if (!daemonConfigModal) return;
     if (res.success && res.data) {
       daemonConfigModal = {
@@ -1598,7 +1419,7 @@
       return;
     }
     daemonConfigModal = { ...daemonConfigModal, busy: true, error: '' };
-    const res = await authedFetch('PUT', '/docker/daemon/config', { config: daemonConfigModal.config });
+    const res = await api.saveDockerDaemonConfig(daemonConfigModal.config);
     if (!daemonConfigModal) return;
     if (res.success) {
       setBanner('ok', translate('docker.daemon_config_saved'));
@@ -1611,7 +1432,7 @@
   // ── Compose: pull newest images and redeploy ──────────────────────────────
   async function updateProject(name: string) {
     busy = true;
-    const res = await authedFetch('POST', `/docker/compose/projects/${encodeURIComponent(name)}/update`);
+    const res = await api.updateDockerComposeProjectImages(name);
     busy = false;
     if (res.success) setBanner('ok', translate('docker.stack_updated', { name }));
     else setBanner('error', res.message || res.error || translate('docker.stack_update_failed'));
