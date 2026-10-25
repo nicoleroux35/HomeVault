@@ -1518,7 +1518,12 @@ Filesystem      1B-blocks         Used    Available Use% Mounted on
 
     #[test]
     fn test_perform_moves_actually_moves_a_file() {
-        if Command::new("rsync").arg("--version").output().is_err() {
+        if run_timed(
+            Command::new("rsync").arg("--version"),
+            Duration::from_secs(10),
+        )
+        .is_err()
+        {
             return; // rsync not installed: the move path cannot be exercised.
         }
         let tmp = tempfile::tempdir().unwrap();

@@ -586,18 +586,22 @@ async fn call_tool(
                         .unwrap_or(200)
                         .clamp(1, 2000);
                     let out = tokio::task::spawn_blocking(move || {
-                        std::process::Command::new("docker")
-                            .args([
-                                "compose",
-                                "-p",
-                                &key,
-                                "logs",
-                                "--no-color",
-                                "--tail",
-                                &tail.to_string(),
-                            ])
-                            .output()
-                            .map_err(|e| format!("failed to run docker compose logs: {e}"))
+                        // Bounded — see `docker_catalog.rs` (ROADMAP X.9).
+                        let mut cmd = std::process::Command::new("docker");
+                        cmd.args([
+                            "compose",
+                            "-p",
+                            &key,
+                            "logs",
+                            "--no-color",
+                            "--tail",
+                            &tail.to_string(),
+                        ]);
+                        crate::utils::process::run_timed(
+                            &mut cmd,
+                            std::time::Duration::from_secs(30),
+                        )
+                        .map_err(|e| format!("failed to run docker compose logs: {e}"))
                             .and_then(|o| {
                                 if o.status.success() {
                                     Ok(String::from_utf8_lossy(&o.stdout).to_string())

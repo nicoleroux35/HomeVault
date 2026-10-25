@@ -237,7 +237,14 @@ pub async fn reload_if_running(state: &Arc<AppState>) {
 /// does not keep a root-owned Python WebDAV server listening alongside the
 /// in-process one. Idempotent and silent when the files are absent.
 pub fn cleanup_legacy_service() {
+    use crate::utils::process::run_timed;
     use std::process::Command;
+    use std::time::Duration;
+
+    /// Deadline on one removal step. This runs at startup, before the HTTP
+    /// listener is up, so an unbounded `sudo` here delays the whole appliance
+    /// (ROADMAP X.9). Four steps, so the worst case is bounded and named.
+    const LEGACY_CLEANUP_TIMEOUT: Duration = Duration::from_secs(60);
 
     const PY: &str = "/usr/local/bin/homevault-webdav.py";
     const UNIT: &str = "/etc/systemd/system/homevault-webdav.service";
@@ -245,14 +252,22 @@ pub fn cleanup_legacy_service() {
         return;
     }
 
-    let _ = Command::new("sudo")
-        .args(["systemctl", "disable", "--now", "homevault-webdav"])
-        .output();
-    let _ = Command::new("sudo").args(["rm", "-f", UNIT]).output();
-    let _ = Command::new("sudo").args(["rm", "-f", PY]).output();
-    let _ = Command::new("sudo")
-        .args(["systemctl", "daemon-reload"])
-        .output();
+    let _ = run_timed(
+        Command::new("sudo").args(["systemctl", "disable", "--now", "homevault-webdav"]),
+        LEGACY_CLEANUP_TIMEOUT,
+    );
+    let _ = run_timed(
+        Command::new("sudo").args(["rm", "-f", UNIT]),
+        LEGACY_CLEANUP_TIMEOUT,
+    );
+    let _ = run_timed(
+        Command::new("sudo").args(["rm", "-f", PY]),
+        LEGACY_CLEANUP_TIMEOUT,
+    );
+    let _ = run_timed(
+        Command::new("sudo").args(["systemctl", "daemon-reload"]),
+        LEGACY_CLEANUP_TIMEOUT,
+    );
     tracing::info!("WebDAV: removed the legacy generated service");
 }
 

@@ -55,9 +55,19 @@
 //! service — so warning "installed but not running" at every startup was
 //! both noisy and wrong. Only `installed` (the `ufw` binary) gates the app.
 
+use crate::utils::process::run_timed;
 use serde::Serialize;
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
+
+/// Deadline on the two probes of the dependency inventory (`which`, `systemctl
+/// is-active`).
+///
+/// This runs at startup and in the dependency screen; an unbounded `which` on a
+/// host whose `PATH` points at a dead automount, or `systemctl` on a bus that
+/// stopped answering, used to block the caller with no ceiling (ROADMAP X.9).
+const DEP_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DependencyStatus {
@@ -90,9 +100,7 @@ struct DependencySpec {
 /// want to shell out through `sudo` just to ask "does this file exist", so
 /// the well-known absolute install path is checked directly instead.
 fn binary_present(bin: &str, default_path: &str) -> bool {
-    let via_which = Command::new("which")
-        .arg(bin)
-        .output()
+    let via_which = run_timed(Command::new("which").arg(bin), DEP_PROBE_TIMEOUT)
         .map(|o| o.status.success() && !o.stdout.is_empty())
         .unwrap_or(false);
     via_which || Path::new(default_path).exists()
@@ -103,11 +111,12 @@ fn binary_present(bin: &str, default_path: &str) -> bool {
 /// (`src/shares.rs`, `src/setup.rs::configure_sudoers`), `systemctl
 /// is-active` needs no root and no sudoers grant.
 fn service_active(unit: &str) -> bool {
-    Command::new("systemctl")
-        .args(["is-active", "--quiet", unit])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    run_timed(
+        Command::new("systemctl").args(["is-active", "--quiet", unit]),
+        DEP_PROBE_TIMEOUT,
+    )
+    .map(|o| o.status.success())
+    .unwrap_or(false)
 }
 
 fn check_mdadm() -> bool {

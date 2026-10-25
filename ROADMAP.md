@@ -1,7 +1,7 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-24 (28.1/28.2 and 29.1/29.2 closed; X.9 opened — X.2's
-"every subprocess is bounded" was over-claimed) — current version: 1.0.0
+Last updated: 2026-10-24 (X.9 closed — the 98 sites X.2 never reached are
+bounded, with a tree-wide source guard) — current version: 1.0.0
 
 ## How to read this file
 
@@ -88,10 +88,12 @@ Two structural facts explain most of the list:
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | 32 | Virtual Machines — residual | P2 | 2 |
 | 33 | Transfer quotas — residual | P2 | 1 |
-| X.9 | Cross-cutting — subprocess deadlines, round 2 | P2 | 98 |
+| — | Cross-cutting | — | 0 |
 
-Total open findings: **10** (9 per-area + 1 cross-cutting: X.9 carries 98
-sites in 26 files, counted rather than estimated). Item 27 (2
+Total open findings: **7** (7 per-area + 0 cross-cutting). **X.9 closed on
+2026-10-24** — see Done (p) — so every `std::process::Command`/`tokio::process::
+Command` of `src/` is bounded again, this time enforced by a tree-wide source
+guard rather than by a hand count. Item 27 (2
 findings) left the open list on 2026-10-24 — see Done — and with it the last
 P1; **X.1 closed the same day** (Explorer was its last module — see Done
 2026-10-24 (f)), **X.2 closed the same day too** (Done 2026-10-24 (k)), so no
@@ -173,16 +175,15 @@ place; X.6 became a Process rule. **X.7 and X.8 closed on 2026-10-24** (Done
 (n)): `admin_guard` is the only module that turns `x-session-token` into an
 identity decision — the nine duplicated primitives and the 65 inline header
 blocks are gone — and the status contract is stated once (`401` no/unknown
-session, `403` non-admin, `400` only a malformed request). **28.1/28.2 and 29.1/29.2 closed on 2026-10-24** (Done (o)), which also
-**opened X.9**: picking up item 29 exposed that X.2's "every
-`std::process::Command` of the tree now runs under `utils/process`" was not
-true — `mdns.rs` had five bare invocations, and a sweep found 98 more in 26
-files. X.9 is now the biggest single item on the list and, by the Process rule
-below ("always fix X.1/X.2-shaped debt before the feature-level findings"), it
-goes first. After it: 10b (10.5/10.6/10.7 — the residual hardening), 32/33
-(residuals of closed items), 28.3 (the only remaining *feature* besides 16.4: a
-live-hardware poller), 16.4 (a scheduler for persisted sync jobs) and 31 (pure
-maintainability, do it last, one tab at a time).
+session, `403` non-admin, `400` only a malformed request). **28.1/28.2 and 29.1/29.2 closed on 2026-10-24** (Done (o)), which also opened
+X.9 — and **X.9 closed the same day** (Done (p)): picking up item 29 had
+exposed that X.2's "every subprocess is bounded" was only true for the modules
+that got a guard, and the 98 sites it missed are now bounded too, behind a
+tree-wide source guard. What is left, in order: 10b (10.5/10.6/10.7 — the
+residual hardening), 32/33 (residuals of closed items), 28.3 (the only
+remaining *feature* besides 16.4: a live-hardware poller), 16.4 (a scheduler
+for persisted sync jobs) and 31 (pure maintainability, do it last, one tab at a
+time).
 
 ---
 
@@ -438,34 +439,17 @@ status contract* and in `admin_guard.rs`, the 39 no-token assertions across 24
 suites were flipped, and the two tolerant `UNAUTHORIZED || BAD_REQUEST` pairs
 (`power`, `db_backup`) are strict `401` now that the two families agree.
 
-- [ ] **X.9 — Subprocess deadlines, round 2 (the 98 sites X.2 never reached).**
-      `X.2`'s Done entry claimed "every `std::process::Command` of the tree now
-      runs under `src/utils/process.rs`". That was an over-claim: only the
-      modules that received a source guard were ever re-checked. Picking up item
-      29 found five bare invocations in `src/mdns.rs` alone, and a sweep of the
-      tree (a `Command::new` whose invocation is `.output()`/`.status()`/
-      `.spawn()`/`wait_with_output()` with no `run_timed` and no
-      `tokio::time::timeout`) finds **98 more in 26 files**:
-      `sftp.rs` (21), `groups.rs` (14), `acl.rs` (8), `storage/database.rs` (8),
-      `restic.rs` (7), `setup.rs` (5), `webdav/mod.rs` (4), `auth/service.rs`
-      (3), `email.rs` (3), `app_catalog/updates.rs` (3), `handlers/user_homes.rs`
-      (3), `app_catalog/store.rs` (2), `dependencies.rs` (2),
-      `rescue/service.rs` (2), `handlers/chat.rs` (2), and one each in
-      `antivirus.rs`, `cache.rs`, `docker.rs`, `firewall.rs`, `power.rs`,
-      `smart.rs`, `rescue/jobs.rs`, `rescue/validator.rs`,
-      `handlers/downloader.rs`, `handlers/restic.rs`, `handlers/syncthing.rs`.
-      *Why it matters:* this is the same class of defect X.2 closed — a `sudo`
-      prompt, a wedged `getfacl` on a dead NFS mount, a `getent` behind a slow
-      LDAP, or a `restic` waiting on a locked repo pins a Tokio worker thread
-      with no ceiling, and several of these run on a request path (`GET
-      /shares`, the Users/Groups screens, the Explorer's ACL view).
-      *Acceptance:* every site above runs under `run_timed` /
-      `run_timed_with_stdin` / `run_timed_async` with a per-module ceiling, and
-      **each module gets its own source guard** — the missing guards are what
-      let the gap survive, so a hand count is not acceptance.
-      *Note:* `host_accounts.rs`, `rescue/service.rs`'s three
-      `tokio::time::timeout` call sites and the `tokio::process` uses that
-      already sit inside an explicit timeout are **not** counted.
+**X.9 — Subprocess deadlines, round 2 (the 98 sites X.2 never reached).**
+Closed on 2026-10-24 — see Done (2026-10-24 (p)). Every invocation of the 26
+files is now bounded through `utils::process` or through a module-local wrapper
+built on it (`acl_run`, `grp_run`, `sftp_run`, `pam_run`, `run_probe`,
+`spawn_under_deadline`), and a **tree-wide source guard** in `utils/process.rs`
+walks `src/` and fails the build on the next unbounded `Command::new`. The four
+remaining unbounded children are named exemptions with a reason each
+(`clamscan`, `ddrescue`, `photorec`, the TestDisk scan — they run for hours by
+design and are cancelled through their process group) plus the two command
+*builders* (`smart::std_command`, `encryption::run`) whose bound lives at the
+call site the guard also scans.
 
 ---
 
@@ -506,6 +490,48 @@ suites were flipped, and the two tolerant `UNAUTHORIZED || BAD_REQUEST` pairs
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-24 (p)** — Subprocess deadlines, round 2 — **X.9 closed**: every
+`std::process::Command` / `tokio::process::Command` of `src/` runs under a
+deadline again, and this time a **tree-wide source guard** enforces it instead
+of a hand count. The item existed because X.2's Done entry claimed the property
+for the whole tree while only the modules that received a per-module guard were
+ever re-checked — `mdns.rs`, touched by item 29, still had five bare
+invocations, and a sweep of the tree found **98 more in 26 files**. All of them
+now go through `utils::process` (`run_timed`, `run_timed_with_stdin`,
+`run_timed_async_result`) or through a module-local wrapper built on it, each
+with a ceiling chosen for what the command actually does rather than a copy of
+the previous file's number: `acl.rs` (`acl_run`, 10 s probe / 30 s write),
+`groups.rs` (`grp_run`, `GROUP_OP_TIMEOUT`), `sftp.rs` (`sftp_run`, 30 s op /
+60 s `systemctl`, both below the 120 s rebuild budget), `auth/service.rs`
+(`pam_run`, 15 s — a PyPAM module on an unreachable backend blocks for ever and
+this is the login path), `restic.rs` (new `RESTIC_PROBE_TIMEOUT` 10 s and
+`RESTIC_MOUNT_TIMEOUT` 60 s; the nine query calls reuse
+`RESTIC_QUERY_TIMEOUT`), `storage/database.rs` and `handlers/user_homes.rs`
+(the bootstrap/provisioning `id`/`chown`/`getent` calls), `setup.rs`
+(`SETUP_OP_TIMEOUT`, including `visudo -c`), `dependencies.rs`, the scheduler's
+SMART self-test, `docker.rs`'s `ss` port probe, `app_catalog` (`git clone/pull`,
+`docker inspect`/`compose ps`/`compose pull`), `email.rs` (a bounded *spawn*,
+because the fork itself hangs on a wedged MTA), `firewall.rs`'s `--version`
+probe, `chat.rs`'s GPU probes, `power.rs`'s hand-rolled `.spawn()` +
+`wait_with_output()` now on `run_timed_with_stdin`, `sftp.rs`'s `chpasswd`
+likewise, the two `docker compose logs` reads (`docker_catalog`, `mcp`),
+`webdav`'s legacy-unit cleanup, `rescue/validator.rs`, `rescue/jobs.rs`,
+`download-`/`restic`/`syncthing` handlers, and `rescue/service.rs` /
+`antivirus.rs` where the *child's lifetime* is deliberately not deadlined (a
+clone, a recovery or a full-drive scan runs for hours and is cancelled through
+its process group) but the spawn now carries `kill_on_drop`. The four remaining
+unbounded children are named exemptions with a reason each, plus the two
+command *builders* (`smart::std_command`, `encryption::run`) whose bound lives
+at the call site the guard also scans. Tests: `src/utils/process.rs` 13 → **16**
+(`every_subprocess_of_the_tree_is_bounded` — walks `src/`, fails on the next
+unbounded call; `the_source_guard_detects_an_unbounded_call` — proves the guard
+bites; `every_exemption_names_a_real_file` — the exemption list cannot rot) and
+a per-module guard in each touched module that had none
+(`acl` 0 → 1, `groups` 9 → 10, `sftp` 9 → 11, `restic` 29 → 31, `setup` 88 → 89,
+`storage/database` 0 → 1). **Written, not run** (per instruction);
+`cargo check --all-targets` is clean. Docs: `docs/BACKEND.md`,
+`docs/guides/development.md`, `CHANGELOG.md`, `TESTING.md`.
 
 **2026-10-24 (o)** — Activity taskbar + mDNS — **28.1, 28.2, 29.1 and 29.2
 closed** (and **X.9 opened** — see the cross-cutting list). **28.1**: the feed

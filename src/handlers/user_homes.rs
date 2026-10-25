@@ -29,6 +29,7 @@ use crate::disk::DiskService;
 use crate::handlers::{users_models::*, AppState};
 use crate::quota::QuotaService;
 use crate::storage::user_home_repo::UserHomeRepository;
+use crate::utils::process::run_timed_async_result;
 use crate::utils::ResponseHelper;
 use axum::{
     extract::{Path, State},
@@ -37,6 +38,13 @@ use axum::{
 };
 use chrono::Utc;
 use std::sync::Arc;
+
+/// Deadline on one host-account command of this module (`id`, `chown -R`).
+///
+/// `chown -R` on an unmounted home directory walks nothing for ever, and `id`
+/// behind a dead NSS backend never answers — both used to block the request
+/// with no ceiling (ROADMAP X.9).
+const HOME_HOST_OP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Builds the absolute path for a user's home folder.
 pub(crate) fn build_home_path(disk_mount_point: &str, username: &str) -> String {
@@ -220,17 +228,21 @@ pub(crate) async fn apply_home_folder(
             .map_err(|e| format!("Failed to create home directory '{}': {}", home_path, e))?;
 
         // Get uid/gid of the user
-        let uid_output = tokio::process::Command::new("id")
-            .args(["-u", username])
-            .output()
-            .await
-            .map_err(|e| format!("Failed to get UID for {}: {}", username, e))?;
+        // Bounded: `id` behind a dead NSS backend blocks forever, and this runs
+        // inside the home-folder provisioning path (ROADMAP X.9).
+        let uid_output = run_timed_async_result(
+            tokio::process::Command::new("id").args(["-u", username]),
+            HOME_HOST_OP_TIMEOUT,
+        )
+        .await
+        .map_err(|e| format!("Failed to get UID for {}: {}", username, e))?;
 
-        let gid_output = tokio::process::Command::new("id")
-            .args(["-g", username])
-            .output()
-            .await
-            .map_err(|e| format!("Failed to get GID for {}: {}", username, e))?;
+        let gid_output = run_timed_async_result(
+            tokio::process::Command::new("id").args(["-g", username]),
+            HOME_HOST_OP_TIMEOUT,
+        )
+        .await
+        .map_err(|e| format!("Failed to get GID for {}: {}", username, e))?;
 
         if !uid_output.status.success() || !gid_output.status.success() {
             return Err(format!(
@@ -246,11 +258,16 @@ pub(crate) async fn apply_home_folder(
             .trim()
             .to_string();
 
-        let chown_output = tokio::process::Command::new("chown")
-            .args(["-R", &format!("{}:{}", uid, gid), &home_path])
-            .output()
-            .await
-            .map_err(|e| format!("Failed to chown '{}': {}", home_path, e))?;
+        let chown_output = run_timed_async_result(
+            tokio::process::Command::new("chown").args([
+                "-R",
+                &format!("{}:{}", uid, gid),
+                &home_path,
+            ]),
+            HOME_HOST_OP_TIMEOUT,
+        )
+        .await
+        .map_err(|e| format!("Failed to chown '{}': {}", home_path, e))?;
 
         if !chown_output.status.success() {
             let stderr = String::from_utf8_lossy(&chown_output.stderr);

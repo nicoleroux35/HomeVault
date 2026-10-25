@@ -731,12 +731,15 @@ pub async fn handle_syncthing_status(
         return Json(ApiResponse::error(&denial(resp)));
     }
     // First check if syncthing binary exists
-    let binary_check = tokio::process::Command::new("syncthing")
-        .arg("--version")
-        .output()
-        .await;
+    // Bounded: `syncthing --version` loads the binary and may query the config
+    // directory; on a wedged `$HOME` mount it blocks (ROADMAP X.9).
+    let binary_check = crate::utils::process::run_timed_async(
+        tokio::process::Command::new("syncthing").arg("--version"),
+        std::time::Duration::from_secs(15),
+    )
+    .await;
 
-    if binary_check.is_err() || !binary_check.unwrap().status.success() {
+    if !binary_check.map(|o| o.status.success()).unwrap_or(false) {
         return Json(ApiResponse::success(SyncthingStatus {
             available: false,
             version: None,

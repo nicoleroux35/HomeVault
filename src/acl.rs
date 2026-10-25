@@ -23,7 +23,23 @@
 
 use serde::{Deserialize, Serialize};
 use std::process::Command;
+use std::time::Duration;
 use thiserror::Error;
+
+use crate::utils::process::run_timed;
+
+/// Deadline on a read-only probe (`getfacl`, `which`).
+///
+/// `getfacl` on a directory served by a dead NFS server blocks indefinitely —
+/// and `get_acl` runs on the Explorer's ACL view and on every shares-on-disk
+/// reconciliation, so an unbounded call pins a caller with no ceiling
+/// (ROADMAP X.9).
+const ACL_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Deadline on an ACL write (`sudo setfacl`). Longer than a probe because the
+/// same `sudo` may have to wait for a password-less ticket, but still a
+/// ceiling: a write that never returns used to hold its caller forever.
+const ACL_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Errors that can occur during ACL operations.
 #[derive(Error, Debug)]
@@ -36,6 +52,18 @@ pub enum AclError {
     CommandFailed(String),
     #[error("Invalid permission: {0}")]
     InvalidPermission(String),
+}
+
+/// Runs an ACL command under `deadline` and maps every failure to
+/// [`AclError`].
+///
+/// `run_timed` returns a `String` on a timeout or a spawn failure and an
+/// `Output` (with a possibly non-zero status) otherwise — the same split the
+/// call sites already made between `?` and a `status.success()` check, so the
+/// mapping is one-to-one. A deadline expiring becomes `CommandFailed`, never a
+/// hang (ROADMAP X.9).
+fn acl_run(cmd: &mut Command, deadline: Duration) -> Result<std::process::Output, AclError> {
+    run_timed(cmd, deadline).map_err(AclError::CommandFailed)
 }
 
 /// A single ACL entry consisting of a tag, optional qualifier (user/group name), and permissions.
@@ -208,7 +236,7 @@ impl AclService {
     pub fn get_acl(path: &str) -> Result<FileAcl, AclError> {
         Self::validate_acl_path(path)?;
 
-        let output = Command::new("getfacl").arg(path).output()?;
+        let output = acl_run(&mut Command::new("getfacl").arg(path), ACL_PROBE_TIMEOUT)?;
 
         if !output.status.success() {
             return Err(AclError::CommandFailed(
@@ -300,7 +328,10 @@ impl AclService {
 
             args.push(path.to_string());
 
-            let output = Command::new("sudo").arg("setfacl").args(&args).output()?;
+            let output = acl_run(
+                &mut Command::new("sudo").arg("setfacl").args(&args),
+                ACL_WRITE_TIMEOUT,
+            )?;
 
             if !output.status.success() {
                 return Err(AclError::CommandFailed(
@@ -342,7 +373,10 @@ impl AclService {
 
             args.push(path.to_string());
 
-            let output = Command::new("sudo").arg("setfacl").args(&args).output()?;
+            let output = acl_run(
+                &mut Command::new("sudo").arg("setfacl").args(&args),
+                ACL_WRITE_TIMEOUT,
+            )?;
 
             if !output.status.success() {
                 return Err(AclError::CommandFailed(
@@ -378,20 +412,28 @@ impl AclService {
         // created in the share afterwards. The default removal is
         // best-effort: `setfacl -x` errors if the entry isn't there (a
         // non-recursive grant), which must not fail the revoke.
-        let output = Command::new("sudo")
-            .arg("setfacl")
-            .args(["-x", spec.as_str(), path])
-            .output()?;
+        let output = acl_run(
+            &mut Command::new("sudo")
+                .arg("setfacl")
+                .args(["-x", spec.as_str(), path]),
+            ACL_WRITE_TIMEOUT,
+        )?;
         if !output.status.success() {
             return Err(AclError::CommandFailed(
                 String::from_utf8_lossy(&output.stderr).to_string(),
             ));
         }
 
-        let _ = Command::new("sudo")
-            .arg("setfacl")
-            .args(["-d", "-x", spec.as_str(), path])
-            .output();
+        // Best-effort cleanup of the default entry: bounded, and a refusal is
+        // not an error here (the named entry above is what the caller asked
+        // for). Still never unbounded — a hung `sudo` must not outlive the
+        // request (ROADMAP X.9).
+        let _ = acl_run(
+            &mut Command::new("sudo")
+                .arg("setfacl")
+                .args(["-d", "-x", spec.as_str(), path]),
+            ACL_WRITE_TIMEOUT,
+        );
 
         Ok(())
     }
@@ -400,10 +442,10 @@ impl AclService {
     pub fn remove_all_acl(path: &str) -> Result<(), AclError> {
         Self::validate_acl_path(path)?;
 
-        let output = Command::new("sudo")
-            .arg("setfacl")
-            .args(["-b", path])
-            .output()?;
+        let output = acl_run(
+            &mut Command::new("sudo").arg("setfacl").args(["-b", path]),
+            ACL_WRITE_TIMEOUT,
+        )?;
 
         if !output.status.success() {
             return Err(AclError::CommandFailed(
@@ -431,14 +473,10 @@ impl AclService {
 
     /// Return `true` if the system has `getfacl` and `setfacl` available.
     pub fn check_acl_support() -> bool {
-        Command::new("which")
-            .arg("getfacl")
-            .output()
+        acl_run(&mut Command::new("which").arg("getfacl"), ACL_PROBE_TIMEOUT)
             .map(|o| o.status.success())
             .unwrap_or(false)
-            && Command::new("which")
-                .arg("setfacl")
-                .output()
+            && acl_run(&mut Command::new("which").arg("setfacl"), ACL_PROBE_TIMEOUT)
                 .map(|o| o.status.success())
                 .unwrap_or(false)
     }
@@ -513,5 +551,48 @@ impl AclService {
         );
 
         format!("{}{}{}", owner, group, other)
+    }
+}
+
+#[cfg(test)]
+mod x9_guards {
+    //! ROADMAP X.9 — no unbounded subprocess in this module.
+    //!
+    //! X.2 left this module out of its sweep, so a `getent` behind a dead NSS
+    //! backend, a `sudo` waiting on a prompt, or a `mount` on an unreachable
+    //! export pinned the caller with no ceiling. The guard is per module
+    //! because that is what makes a *new* unbounded call fail locally;
+    //! `utils/process.rs` carries the tree-wide one.
+
+    /// Every `Command::new` of this file must reach a bounded invocation.
+    #[test]
+    fn every_subprocess_is_bounded() {
+        let src = include_str!("acl.rs");
+        let mut offenders = Vec::new();
+        let lines: Vec<&str> = src.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains("Command::new(") {
+                continue;
+            }
+            let window = lines[i..(i + 14).min(lines.len())].join("\n");
+            let invokes = [".output()", ".status()", ".spawn()", "wait_with_output()"]
+                .iter()
+                .any(|needle| window.contains(needle));
+            if !invokes {
+                continue;
+            }
+            if window.contains("acl_run")
+                || window.contains("run_timed")
+                || window.contains("spawn_under_deadline")
+                || window.contains("tokio::time::timeout")
+            {
+                continue;
+            }
+            offenders.push(format!("{}: {}", i + 1, line.trim()));
+        }
+        assert!(
+            offenders.is_empty(),
+            "these invocations have no deadline (ROADMAP X.9): {offenders:?}"
+        );
     }
 }

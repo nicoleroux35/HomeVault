@@ -53,9 +53,24 @@ use crate::storage::{
     Database, LoginAttemptRepository, PasswordHistoryRepository, PasswordRecoveryCodeRepository,
     SessionRepository, User2faRepository, UserRepository,
 };
+use crate::utils::process::run_timed;
 use chrono::{Duration, Utc};
 use std::sync::Arc;
 use thiserror::Error;
+
+/// Deadline on one host-account probe on the authentication path (`python3`
+/// running PyPAM, `id -un`, `id -Gn`).
+///
+/// A PyPAM module backed by an unreachable service blocks indefinitely, and
+/// `id` behind a dead NSS backend does the same — either one would hold a
+/// login request open with no ceiling (ROADMAP X.9).
+const PAM_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// [`run_timed`] with the authentication probe budget, returning the error
+/// string so the call sites keep their `Ok(out)` / `_` shape.
+fn pam_run(cmd: &mut std::process::Command) -> Result<std::process::Output, String> {
+    run_timed(cmd, PAM_PROBE_TIMEOUT)
+}
 
 const MAX_USERS: usize = 100;
 const SESSION_LIFETIME_SECONDS: i64 = 86400;
@@ -718,7 +733,10 @@ except Exception as e:
             password = password_py,
         );
 
-        let output = Command::new("python3").args(["-c", &script]).output();
+        // Bounded: a PyPAM module whose backing service is unreachable (a
+        // stopped `sssd`, an LDAP server that stopped answering) blocks the
+        // helper for ever, and this runs on the login path (ROADMAP X.9).
+        let output = pam_run(&mut Command::new("python3").args(["-c", &script]));
 
         match output {
             Ok(out) => {
@@ -731,7 +749,12 @@ except Exception as e:
                 }
                 out.status.success()
             }
-            Err(_) => false,
+            Err(why) => {
+                // A timeout is *not* a wrong password: say so at debug level so
+                // the operator can tell them apart.
+                tracing::debug!("PAM auth for {} did not complete: {why}", username);
+                false
+            }
         }
     }
 
@@ -922,10 +945,7 @@ except Exception as e:
             return false;
         }
 
-        Command::new("id")
-            .args(["-un", username])
-            .stdin(std::process::Stdio::null())
-            .output()
+        pam_run(&mut Command::new("id").args(["-un", username]))
             .map(|o| o.status.success())
             .unwrap_or(false)
     }
@@ -940,14 +960,11 @@ except Exception as e:
 
         let username = username.to_string();
         let output = tokio::task::spawn_blocking(move || {
-            Command::new("id")
-                .args(["-Gn", &username])
-                .stdin(std::process::Stdio::null())
-                .output()
+            pam_run(&mut Command::new("id").args(["-Gn", &username]))
         })
         .await
         .map_err(|e| AuthError::Database(e.to_string()))?
-        .map_err(|e| AuthError::Database(e.to_string()))?;
+        .map_err(AuthError::Database)?;
 
         if !output.status.success() {
             // `id` failed — treat as a regular user rather than granting

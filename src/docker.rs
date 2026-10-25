@@ -1169,7 +1169,15 @@ impl DockerService {
         let mut ports = std::collections::HashSet::new();
         // -H no header, -l listening, -n numeric, -t tcp, -u udp, -a incl. UNCONN
         for args in [["-Hltn"].as_slice(), ["-Hluna"].as_slice()] {
-            if let Ok(out) = Command::new("ss").args(args).output() {
+            // Bounded: `ss` walks the kernel's socket tables, which on a box
+            // with tens of thousands of connections (or a wedged netlink) can
+            // take seconds — and it is called once per container port probe
+            // (ROADMAP X.9).
+            let mut ss_cmd = Command::new("ss");
+            ss_cmd.args(args);
+            if let Ok(out) =
+                crate::utils::process::run_timed(&mut ss_cmd, std::time::Duration::from_secs(10))
+            {
                 if !out.status.success() {
                     continue;
                 }

@@ -319,6 +319,45 @@ backup job results into `notifications` rows, optionally dispatched via
 email/webhook). Plus terminal cleanup on shutdown (`shutdown_signal` →
 `pty_manager.cleanup_all`).
 
+## Subprocesses — every one is bounded (ROADMAP X.2 / X.9)
+
+No handler, scheduler or startup task may run a host command without a
+deadline. `src/utils/process.rs` is the one implementation:
+
+| Helper | Use |
+|---|---|
+| `run_timed(cmd, deadline)` | blocking call (from `spawn_blocking` code) |
+| `run_timed_with_stdin(cmd, deadline, bytes)` | `sudo tee`, `sudo chpasswd` |
+| `run_timed_to_file(cmd, deadline, sink)` | extraction whose stdout is a file |
+| `run_timed_detached(cmd, deadline)` | both streams `/dev/null` (a daemon parent) |
+| `run_timed_async(cmd, deadline)` / `run_timed_async_result(…)` | `tokio::process`, `kill_on_drop` |
+
+Every one of them **kills** the child on expiry — an outer
+`tokio::time::timeout` only stops *waiting* and would leave the process running.
+Modules with their own shape wrap it once and use the wrapper everywhere
+(`acl::acl_run`, `groups::grp_run`, `sftp::sftp_run`, `auth::service::pam_run`,
+`firewall::run_probe`, `email::spawn_under_deadline`, `rescue::service::
+spawn_child`).
+
+**Enforcement.** `utils::process::tests::every_subprocess_of_the_tree_is_bounded`
+walks `src/` and fails on any `Command::new` whose invocation
+(`.output()`/`.status()`/`.spawn()`/`wait_with_output()`) is not wrapped. This
+is the guard X.2 lacked: it had per-module guards only, so 98 sites across 26
+files survived its "every subprocess is bounded" claim (X.9).
+
+**Named exceptions**, listed in the guard with a reason each:
+
+- *Long-running children* — `clamscan` (a full-drive scan), `ddrescue`,
+  `photorec`, the TestDisk scan. Their lifetime **is** the work; they are
+  cancelled through their process group (`process_group(0)` + a bounded
+  `sudo kill`) and carry `kill_on_drop`, not a deadline.
+- *Command builders* — `smart::std_command` / `tokio_command`,
+  `encryption::run`. They hand a `Command` to a caller whose own call site the
+  guard also scans.
+
+Adding an exception means editing `LONG_RUNNING_CHILDREN` in `process.rs`, so it
+is a reviewed decision, not an accident.
+
 ## Running & checking
 
 ```bash

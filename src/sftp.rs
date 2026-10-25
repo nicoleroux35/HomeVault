@@ -56,6 +56,17 @@ use std::time::Duration;
 use thiserror::Error;
 use tracing::warn;
 
+use crate::utils::process::{run_timed, run_timed_with_stdin};
+
+/// Runs one SFTP host command under [`SFTP_OP_TIMEOUT`].
+///
+/// A timeout or a spawn failure becomes [`SftpError::CommandFailed`], while a
+/// non-zero exit stays *data* in the returned `Output` so the call sites keep
+/// their existing `status.success()` checks (ROADMAP X.9).
+fn sftp_run(cmd: &mut Command) -> Result<std::process::Output, SftpError> {
+    run_timed(cmd, SFTP_OP_TIMEOUT).map_err(SftpError::CommandFailed)
+}
+
 #[derive(Error, Debug)]
 pub enum SftpError {
     #[error("IO error: {0}")]
@@ -81,6 +92,21 @@ const FSTAB_TAG_PREFIX: &str = "# homevault-sftp:";
 /// surface as a clean error, never leave a request pending forever.
 const JAIL_REBUILD_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Deadline on one SFTP host command.
+///
+/// Shorter than `JAIL_REBUILD_TIMEOUT` on purpose: that one is the *outer*
+/// budget of a whole reconciliation (dozens of calls), so a per-call ceiling
+/// below it is what turns "the rebuild took too long" into "this `mount --bind`
+/// hung", which is the failure a user can act on. A `sudo` waiting for a
+/// password prompt, a `mount` on an unreachable export and a `getent` behind a
+/// dead NSS backend all used to block their caller with no ceiling at all
+/// (ROADMAP X.9).
+const SFTP_OP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Deadline on a `systemctl` call against the dedicated SFTP unit. Larger than
+/// [`SFTP_OP_TIMEOUT`]: an `enable`/`restart` can wait on its own dependencies.
+const SFTP_SERVICE_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// A user with SFTP access to at least one share, for the "SFTP Users" key
 /// management panel.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -94,15 +120,11 @@ pub struct SftpJailService;
 
 impl SftpJailService {
     fn ensure_group() -> Result<(), SftpError> {
-        let check = Command::new("getent")
-            .args(["group", SFTP_GROUP])
-            .output()?;
+        let check = sftp_run(Command::new("getent").args(["group", SFTP_GROUP]))?;
         if check.status.success() {
             return Ok(());
         }
-        let output = Command::new("sudo")
-            .args(["groupadd", SFTP_GROUP])
-            .output()?;
+        let output = sftp_run(Command::new("sudo").args(["groupadd", SFTP_GROUP]))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if !stderr.contains("already exists") {
@@ -124,24 +146,20 @@ impl SftpJailService {
     /// membership — same conservative approach `sync_admin_user_to_group`
     /// already takes.
     fn ensure_linux_user(username: &str) -> Result<(), SftpError> {
-        let exists = Command::new("id")
-            .arg(username)
-            .output()
+        let exists = sftp_run(Command::new("id").arg(username))
             .map(|o| o.status.success())
             .unwrap_or(false);
 
         if !exists {
-            let output = Command::new("sudo")
-                .args([
-                    "useradd",
-                    "-M",
-                    "-s",
-                    "/usr/sbin/nologin",
-                    "-G",
-                    SFTP_GROUP,
-                    username,
-                ])
-                .output()?;
+            let output = sftp_run(Command::new("sudo").args([
+                "useradd",
+                "-M",
+                "-s",
+                "/usr/sbin/nologin",
+                "-G",
+                SFTP_GROUP,
+                username,
+            ]))?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 return Err(SftpError::CommandFailed(format!(
@@ -164,9 +182,8 @@ impl SftpJailService {
             return Ok(());
         }
 
-        let output = Command::new("sudo")
-            .args(["usermod", "-a", "-G", SFTP_GROUP, username])
-            .output()?;
+        let output =
+            sftp_run(Command::new("sudo").args(["usermod", "-a", "-G", SFTP_GROUP, username]))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(SftpError::CommandFailed(format!(
@@ -191,19 +208,17 @@ impl SftpJailService {
             .map(|b| format!("{:02x}", b))
             .collect::<String>();
 
-        let mut child = Command::new("sudo")
-            .arg("chpasswd")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()?;
-        use std::io::Write;
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(format!("{}:{}\n", username, random_password).as_bytes())?;
-        let output = child.wait_with_output()?;
+        // Bounded, through the stdin helper: `sudo chpasswd` waiting on a
+        // password prompt used to hold its caller for ever (ROADMAP X.9). The
+        // password never touches disk — it only travels through the pipe.
+        let mut cmd = Command::new("sudo");
+        cmd.arg("chpasswd").stdout(std::process::Stdio::null());
+        let output = run_timed_with_stdin(
+            &mut cmd,
+            SFTP_OP_TIMEOUT,
+            format!("{}:{}\n", username, random_password).as_bytes(),
+        )
+        .map_err(SftpError::CommandFailed)?;
         if !output.status.success() {
             return Err(SftpError::CommandFailed(format!(
                 "chpasswd failed to unlock '{}': {}",
@@ -215,7 +230,7 @@ impl SftpJailService {
     }
 
     fn mkdir_as_root(path: &str) -> Result<(), SftpError> {
-        let output = Command::new("sudo").args(["mkdir", "-p", path]).output()?;
+        let output = sftp_run(Command::new("sudo").args(["mkdir", "-p", path]))?;
         if !output.status.success() {
             return Err(SftpError::CommandFailed(format!(
                 "mkdir -p {} failed: {}",
@@ -273,9 +288,7 @@ impl SftpJailService {
         // key never leaves the client), unlike the WireGuard/OpenVPN
         // key/credential files elsewhere in this codebase that are
         // deliberately 0600 because they hold real secrets.
-        let _ = Command::new("sudo")
-            .args(["chmod", "644", &file.to_string_lossy()])
-            .output();
+        let _ = sftp_run(Command::new("sudo").args(["chmod", "644", &file.to_string_lossy()]));
         Ok(())
     }
 
@@ -346,25 +359,34 @@ Subsystem sftp internal-sftp
         );
         write_file_as_root(SFTP_SERVICE_FILE, &service)?;
 
-        let _ = Command::new("sudo")
-            .arg("systemctl")
-            .args(["daemon-reload"])
-            .output();
-        let _ = Command::new("sudo")
-            .arg("systemctl")
-            .args(["enable", SFTP_SERVICE])
-            .output();
-
-        let is_active = Command::new("systemctl")
-            .args(["is-active", "--quiet", SFTP_SERVICE])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if is_active {
-            let _ = Command::new("sudo")
+        // `systemctl` gets the larger service budget: an `enable` can wait on
+        // its own dependencies. Everything else here is a prompt.
+        let _ = run_timed(
+            Command::new("sudo")
                 .arg("systemctl")
-                .args(["restart", SFTP_SERVICE])
-                .output();
+                .args(["daemon-reload"]),
+            SFTP_SERVICE_TIMEOUT,
+        );
+        let _ = run_timed(
+            Command::new("sudo")
+                .arg("systemctl")
+                .args(["enable", SFTP_SERVICE]),
+            SFTP_SERVICE_TIMEOUT,
+        );
+
+        let is_active = run_timed(
+            Command::new("systemctl").args(["is-active", "--quiet", SFTP_SERVICE]),
+            SFTP_OP_TIMEOUT,
+        )
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+        if is_active {
+            let _ = run_timed(
+                Command::new("sudo")
+                    .arg("systemctl")
+                    .args(["restart", SFTP_SERVICE]),
+                SFTP_SERVICE_TIMEOUT,
+            );
         }
 
         Ok(())
@@ -464,22 +486,14 @@ Subsystem sftp internal-sftp
                 Self::remove_bind_mount(&entry.path(), username, &share_name);
             }
         }
-        let _ = Command::new("sudo")
-            .args(["rmdir", &jail.to_string_lossy()])
-            .output();
+        let _ = sftp_run(Command::new("sudo").args(["rmdir", &jail.to_string_lossy()]));
 
         let keys_dir = paths::sftp_keys_dir().join(username);
         let keys_file = keys_dir.join("authorized_keys");
-        let _ = Command::new("sudo")
-            .args(["rm", "-f", &keys_file.to_string_lossy()])
-            .output();
-        let _ = Command::new("sudo")
-            .args(["rmdir", &keys_dir.to_string_lossy()])
-            .output();
+        let _ = sftp_run(Command::new("sudo").args(["rm", "-f", &keys_file.to_string_lossy()]));
+        let _ = sftp_run(Command::new("sudo").args(["rmdir", &keys_dir.to_string_lossy()]));
 
-        let _ = Command::new("sudo")
-            .args(["gpasswd", "-d", username, SFTP_GROUP])
-            .output();
+        let _ = sftp_run(Command::new("sudo").args(["gpasswd", "-d", username, SFTP_GROUP]));
     }
 
     fn ensure_bind_mount(
@@ -491,15 +505,11 @@ Subsystem sftp internal-sftp
         let mp = mountpoint.to_string_lossy().to_string();
         Self::mkdir_as_root(&mp)?;
 
-        let already_mounted = Command::new("mountpoint")
-            .args(["-q", &mp])
-            .status()
-            .map(|s| s.success())
+        let already_mounted = sftp_run(Command::new("mountpoint").args(["-q", &mp]))
+            .map(|o| o.status.success())
             .unwrap_or(false);
         if !already_mounted {
-            let output = Command::new("sudo")
-                .args(["mount", "--bind", share_path, &mp])
-                .output()?;
+            let output = sftp_run(Command::new("sudo").args(["mount", "--bind", share_path, &mp]))?;
             if !output.status.success() {
                 return Err(SftpError::CommandFailed(format!(
                     "mount --bind '{}' -> '{}' failed: {}",
@@ -515,8 +525,8 @@ Subsystem sftp internal-sftp
 
     fn remove_bind_mount(mountpoint: &std::path::Path, username: &str, share_name: &str) {
         let mp = mountpoint.to_string_lossy().to_string();
-        let _ = Command::new("sudo").args(["umount", &mp]).output();
-        let _ = Command::new("sudo").args(["rmdir", &mp]).output();
+        let _ = sftp_run(Command::new("sudo").args(["umount", &mp]));
+        let _ = sftp_run(Command::new("sudo").args(["rmdir", &mp]));
         Self::remove_fstab_entry(username, share_name);
     }
 
@@ -649,12 +659,12 @@ Subsystem sftp internal-sftp
                     }
 
                     if !desired.contains_key(&username) {
-                        let _ = Command::new("sudo")
-                            .args(["gpasswd", "-d", &username, SFTP_GROUP])
-                            .output();
-                        let _ = Command::new("sudo")
-                            .args(["rmdir", &user_jail.to_string_lossy()])
-                            .output();
+                        let _ = sftp_run(
+                            Command::new("sudo").args(["gpasswd", "-d", &username, SFTP_GROUP]),
+                        );
+                        let _ = sftp_run(
+                            Command::new("sudo").args(["rmdir", &user_jail.to_string_lossy()]),
+                        );
                     }
                 }
             }
@@ -886,5 +896,57 @@ mod tests {
             );
             assert!(err.is_err(), "{bad_user:?} must be rejected");
         }
+    }
+}
+
+#[cfg(test)]
+mod x9_guards {
+    //! ROADMAP X.9 — no unbounded subprocess in this module.
+    //!
+    //! X.2 left this module out of its sweep, so a `getent` behind a dead NSS
+    //! backend, a `sudo` waiting on a prompt, or a `mount` on an unreachable
+    //! export pinned the caller with no ceiling. The guard is per module
+    //! because that is what makes a *new* unbounded call fail locally;
+    //! `utils/process.rs` carries the tree-wide one.
+
+    /// Every `Command::new` of this file must reach a bounded invocation.
+    #[test]
+    fn every_subprocess_is_bounded() {
+        let src = include_str!("sftp.rs");
+        let mut offenders = Vec::new();
+        let lines: Vec<&str> = src.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains("Command::new(") {
+                continue;
+            }
+            let window = lines[i..(i + 14).min(lines.len())].join("\n");
+            let invokes = [".output()", ".status()", ".spawn()", "wait_with_output()"]
+                .iter()
+                .any(|needle| window.contains(needle));
+            if !invokes {
+                continue;
+            }
+            if window.contains("sftp_run")
+                || window.contains("run_timed")
+                || window.contains("spawn_under_deadline")
+                || window.contains("tokio::time::timeout")
+            {
+                continue;
+            }
+            offenders.push(format!("{}: {}", i + 1, line.trim()));
+        }
+        assert!(
+            offenders.is_empty(),
+            "these invocations have no deadline (ROADMAP X.9): {offenders:?}"
+        );
+    }
+
+    /// The per-call ceiling must stay **below** the reconciliation's outer
+    /// budget, or "this `mount --bind` hung" would be reported as "the rebuild
+    /// took too long" — the failure a user can act on is the per-call one.
+    #[test]
+    fn the_command_ceilings_sit_below_the_rebuild_budget() {
+        assert!(super::SFTP_OP_TIMEOUT < super::JAIL_REBUILD_TIMEOUT);
+        assert!(super::SFTP_SERVICE_TIMEOUT < super::JAIL_REBUILD_TIMEOUT);
     }
 }

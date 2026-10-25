@@ -29,8 +29,19 @@
 //! shelled out to (already a required host dependency elsewhere); all calls
 //! are blocking and must be wrapped in `spawn_blocking` by the caller.
 
+use crate::utils::process::run_timed;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
+
+/// Deadline on a `git clone`/`git pull` of the app-store repository.
+///
+/// A ceiling, not an estimate: the repository is small, but the remote can be
+/// slow — and a `git` waiting on a credentialed remote that will never answer
+/// prompts, or on a TCP connection to a dead host, used to block its caller
+/// with no limit at all (ROADMAP X.9). Fifteen minutes covers a slow link for
+/// a shutdown-time sync while still bounding it.
+const STORE_SYNC_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// `apps_dir()/stores` - the parent of every synced community store.
 pub fn stores_root() -> PathBuf {
@@ -101,20 +112,24 @@ pub fn sync(git_url: &str, dest: &Path) -> Result<StoreDescriptor, String> {
 
     let git_dir = dest.join(".git");
     let output = if git_dir.is_dir() {
-        Command::new("git")
-            .args(["-C"])
-            .arg(dest)
-            .args(["pull", "--ff-only", "--depth", "1"])
-            .output()
+        run_timed(
+            Command::new("git")
+                .args(["-C"])
+                .arg(dest)
+                .args(["pull", "--ff-only", "--depth", "1"]),
+            STORE_SYNC_TIMEOUT,
+        )
     } else {
         // A stale non-git directory would make `clone` fail - clear it.
         if dest.exists() {
             let _ = std::fs::remove_dir_all(dest);
         }
-        Command::new("git")
-            .args(["clone", "--depth", "1", git_url])
-            .arg(dest)
-            .output()
+        run_timed(
+            Command::new("git")
+                .args(["clone", "--depth", "1", git_url])
+                .arg(dest),
+            STORE_SYNC_TIMEOUT,
+        )
     }
     .map_err(|e| format!("failed to run git: {e}"))?;
 

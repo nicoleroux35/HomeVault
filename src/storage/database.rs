@@ -25,9 +25,21 @@
 use include_dir::{include_dir, Dir};
 use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool};
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 
 use crate::storage::models::{User, ADMIN_ROLE_ID};
+use crate::utils::process::run_timed_async_result;
+
+/// Deadline on one host-account command issued at startup
+/// (`which`/`getent`/`id`/`chown`/`groupadd`/`usermod`).
+///
+/// These run on the bootstrap path, not on a request, but an unbounded one
+/// still wedges the whole appliance: `getent` on a host whose NSS backend
+/// points at an unreachable LDAP server blocks before the HTTP listener ever
+/// comes up, and `chown -R` on an unmounted home directory walks nothing
+/// forever. Same class as ROADMAP X.2, missed by it (X.9).
+const HOST_ACCOUNT_OP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The `.sql` migration files, embedded into the binary at compile time.
 ///
@@ -576,29 +588,33 @@ impl Database {
     /// Ensure the `homevault_admin` system group exists (best-effort).
     /// Ensure the `homevault_admin` system group exists on the host (best-effort).
     pub async fn ensure_admin_group(&self) -> Result<(), DbError> {
-        let getent_check = tokio::process::Command::new("which")
-            .arg("getent")
-            .output()
-            .await;
+        let getent_check = run_timed_async_result(
+            tokio::process::Command::new("which").arg("getent"),
+            HOST_ACCOUNT_OP_TIMEOUT,
+        )
+        .await;
 
-        if getent_check.is_err() || !getent_check.unwrap().status.success() {
+        if !getent_check.map(|o| o.status.success()).unwrap_or(false) {
             tracing::warn!("System group management not available (getent not found). Skipping admin group creation.");
             return Ok(());
         }
 
-        let output = tokio::process::Command::new("getent")
-            .args(["group", ADMIN_GROUP_NAME])
-            .output()
-            .await
-            .map_err(DbError::Io)?;
+        let output = run_timed_async_result(
+            tokio::process::Command::new("getent").args(["group", ADMIN_GROUP_NAME]),
+            HOST_ACCOUNT_OP_TIMEOUT,
+        )
+        .await
+        .map_err(|e| DbError::Io(std::io::Error::other(e.to_string())))?;
 
         if !output.status.success() {
             // Attempt group creation, but do not fail if we lack privileges.
-            match tokio::process::Command::new("sudo")
-                .arg("groupadd")
-                .arg(ADMIN_GROUP_NAME)
-                .output()
-                .await
+            match run_timed_async_result(
+                tokio::process::Command::new("sudo")
+                    .arg("groupadd")
+                    .arg(ADMIN_GROUP_NAME),
+                HOST_ACCOUNT_OP_TIMEOUT,
+            )
+            .await
             {
                 Ok(output) => {
                     if output.status.success() {
@@ -626,11 +642,12 @@ impl Database {
         .await?;
 
         for user in users {
-            let output = tokio::process::Command::new("getent")
-                .args(["group", ADMIN_GROUP_NAME])
-                .output()
-                .await
-                .map_err(DbError::Io)?;
+            let output = run_timed_async_result(
+                tokio::process::Command::new("getent").args(["group", ADMIN_GROUP_NAME]),
+                HOST_ACCOUNT_OP_TIMEOUT,
+            )
+            .await
+            .map_err(|e| DbError::Io(std::io::Error::other(e.to_string())))?;
 
             if output.status.success() {
                 let group_line = String::from_utf8_lossy(&output.stdout);
@@ -646,12 +663,17 @@ impl Database {
                     .unwrap_or_default();
 
                 if !members.contains(&user.username) {
-                    let output = tokio::process::Command::new("sudo")
-                        .arg("usermod")
-                        .args(["-a", "-G", ADMIN_GROUP_NAME, &user.username])
-                        .output()
-                        .await
-                        .map_err(DbError::Io)?;
+                    let output = run_timed_async_result(
+                        tokio::process::Command::new("sudo").arg("usermod").args([
+                            "-a",
+                            "-G",
+                            ADMIN_GROUP_NAME,
+                            &user.username,
+                        ]),
+                        HOST_ACCOUNT_OP_TIMEOUT,
+                    )
+                    .await
+                    .map_err(|e| DbError::Io(std::io::Error::other(e.to_string())))?;
 
                     if output.status.success() {
                         tracing::info!(
@@ -715,22 +737,24 @@ impl Database {
         }
 
         // Verify ownership
-        let uid_output = tokio::process::Command::new("id")
-            .args(["-u", username])
-            .output()
-            .await
-            .map_err(DbError::Io)?;
+        let uid_output = run_timed_async_result(
+            tokio::process::Command::new("id").args(["-u", username]),
+            HOST_ACCOUNT_OP_TIMEOUT,
+        )
+        .await
+        .map_err(|e| DbError::Io(std::io::Error::other(e.to_string())))?;
 
         if !uid_output.status.success() {
             tracing::warn!("Could not get UID for user '{}'", username);
             return Ok(());
         }
 
-        let gid_output = tokio::process::Command::new("id")
-            .args(["-g", username])
-            .output()
-            .await
-            .map_err(DbError::Io)?;
+        let gid_output = run_timed_async_result(
+            tokio::process::Command::new("id").args(["-g", username]),
+            HOST_ACCOUNT_OP_TIMEOUT,
+        )
+        .await
+        .map_err(|e| DbError::Io(std::io::Error::other(e.to_string())))?;
 
         if !gid_output.status.success() {
             tracing::warn!("Could not get GID for user '{}'", username);
@@ -745,11 +769,16 @@ impl Database {
             .to_string();
 
         // Ensure ownership is correct
-        let output = tokio::process::Command::new("chown")
-            .args(["-R", &format!("{}:{}", uid_str, gid_str), &home_dir])
-            .output()
-            .await
-            .map_err(DbError::Io)?;
+        let output = run_timed_async_result(
+            tokio::process::Command::new("chown").args([
+                "-R",
+                &format!("{}:{}", uid_str, gid_str),
+                &home_dir,
+            ]),
+            HOST_ACCOUNT_OP_TIMEOUT,
+        )
+        .await
+        .map_err(|e| DbError::Io(std::io::Error::other(e.to_string())))?;
 
         if output.status.success() {
             tracing::info!("Verified home directory ownership: {}", home_dir);
@@ -1036,5 +1065,42 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&wal);
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+}
+
+#[cfg(test)]
+mod x9_guards {
+    //! ROADMAP X.9 — no unbounded subprocess in this module.
+    //!
+    //! These run on the bootstrap path, not on a request, but an unbounded one
+    //! still wedges the appliance: `getent` behind a dead NSS backend blocks
+    //! before the HTTP listener is up, and `chown -R` on an unmounted home
+    //! directory walks nothing for ever.
+
+    #[test]
+    fn every_subprocess_is_bounded() {
+        let src = include_str!("database.rs");
+        let mut offenders = Vec::new();
+        let lines: Vec<&str> = src.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains("Command::new(") {
+                continue;
+            }
+            let window = lines[i..(i + 14).min(lines.len())].join("\n");
+            let invokes = [".output()", ".status()", ".spawn()", "wait_with_output()"]
+                .iter()
+                .any(|needle| window.contains(needle));
+            if !invokes {
+                continue;
+            }
+            if window.contains("run_timed") || window.contains("tokio::time::timeout") {
+                continue;
+            }
+            offenders.push(format!("{}: {}", i + 1, line.trim()));
+        }
+        assert!(
+            offenders.is_empty(),
+            "these invocations have no deadline (ROADMAP X.9): {offenders:?}"
+        );
     }
 }

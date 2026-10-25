@@ -567,11 +567,17 @@ async fn perform(action: &TaskAction) -> Result<String, String> {
             let device = device.clone();
             let test_type = test_type.clone();
             tokio::task::spawn_blocking(move || {
-                let output = crate::smart::std_command(
+                // Bounded: a self-test on a disk in a bad power state can
+                // block the `sudo smartctl` for ever, and the scheduler task
+                // holds this blocking thread meanwhile (ROADMAP X.9).
+                let mut smart_cmd = crate::smart::std_command(
                     &format!("/dev/{device}"),
                     &["-t", test_type.as_str()],
+                );
+                let output = crate::utils::process::run_timed(
+                    &mut smart_cmd,
+                    crate::utils::process::SMART_PROBE_TIMEOUT,
                 )
-                .output()
                 .map_err(|e| format!("smartctl not available: {e}"))?;
                 // smartctl exits with a bitmask; bits 0-2 cover CLI/device
                 // errors. Health-report bits (4 = SMART failing, 8 = self-test

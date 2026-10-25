@@ -29,6 +29,12 @@ use std::path::Path;
 /// of one policy share the governor).
 pub const GOVERNOR_DIR: &str = "/sys/devices/system/cpu/cpu0/cpufreq";
 
+/// Deadline on a `sudo tee` into `/sys/.../cpufreq/scaling_governor`.
+///
+/// A governor write is instantaneous on a healthy box, so this only ever bites
+/// on a wedged `sudo` — which must not hold the caller (ROADMAP X.9).
+const POWER_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// A host power action the admin (or a scheduled task) can request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -120,23 +126,22 @@ pub fn set_governor(governor: &str) -> Result<(), String> {
     }
     let mut failures = Vec::new();
     for gov in policies {
-        let output = std::process::Command::new("sudo")
+        // `sudo tee <governor file>` per policy — through the bounded stdin
+        // helper, so a `sudo` waiting on a password prompt cannot hold this
+        // call for ever (ROADMAP X.9). The hand-rolled `.spawn()` +
+        // `wait_with_output()` had no ceiling at all.
+        let mut tee_cmd = std::process::Command::new("sudo");
+        tee_cmd
             .args(["tee", gov.to_str().unwrap_or_default()])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .and_then(|mut child| {
-                use std::io::Write;
-                if let Some(stdin) = child.stdin.as_mut() {
-                    let _ = stdin.write_all(governor.as_bytes());
-                }
-                child.wait_with_output()
-            });
-        match output {
+            .stdout(std::process::Stdio::null());
+        match crate::utils::process::run_timed_with_stdin(
+            &mut tee_cmd,
+            POWER_WRITE_TIMEOUT,
+            governor.as_bytes(),
+        ) {
             Ok(out) if out.status.success() => {}
             Ok(out) => failures.push(String::from_utf8_lossy(&out.stderr).trim().to_string()),
-            Err(e) => failures.push(e.to_string()),
+            Err(e) => failures.push(e),
         }
     }
     if failures.is_empty() {

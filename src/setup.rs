@@ -27,7 +27,19 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::time::Duration;
 use thiserror::Error;
+
+use crate::utils::process::run_timed;
+
+/// Deadline on a setup-time host probe or write (`which`, `kill -0`, `chown`,
+/// `visudo -c`).
+///
+/// The wizard runs these while holding its setup lock, so an unbounded one
+/// leaves the appliance half-configured with no error to show: `visudo -c` on
+/// a sudoers file that includes a dead network path, or `chown` on an
+/// unreachable mount, used to block the request forever (ROADMAP X.9).
+const SETUP_OP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Errors that can occur during initial system setup.
 #[derive(Error, Debug)]
@@ -69,14 +81,14 @@ fn process_is_alive(pid: u32) -> bool {
     if std::path::Path::new("/proc").is_dir() {
         return std::path::Path::new(&format!("/proc/{pid}")).exists();
     }
-    std::process::Command::new("kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(true)
+    run_timed(
+        std::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string()),
+        SETUP_OP_TIMEOUT,
+    )
+    .map(|o| o.status.success())
+    .unwrap_or(true)
 }
 
 impl SetupService {
@@ -120,14 +132,12 @@ impl SetupService {
 
     /// Returns true if the given command can be located via `which`.
     pub fn is_command_available(command: &str) -> bool {
-        std::process::Command::new("which")
-            .arg(command)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        run_timed(
+            std::process::Command::new("which").arg(command),
+            SETUP_OP_TIMEOUT,
+        )
+        .map(|o| o.status.success())
+        .unwrap_or(false)
     }
 
     /// Return a stable machine identifier, falling back to hostname for containers without machine-id.
@@ -585,7 +595,10 @@ impl SetupService {
     /// Resolve the absolute path of a binary via `which`, falling back to
     /// `default_path` when it is not installed (e.g. before setup).
     fn resolve_bin(bin: &str, default_path: &str) -> String {
-        if let Ok(out) = std::process::Command::new("which").arg(bin).output() {
+        if let Ok(out) = run_timed(
+            std::process::Command::new("which").arg(bin),
+            SETUP_OP_TIMEOUT,
+        ) {
             if out.status.success() {
                 let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 if !p.is_empty() {
@@ -607,10 +620,10 @@ impl SetupService {
                 continue;
             }
             // Best-effort: own the directory as the homevault service user.
-            if let Err(e) = std::process::Command::new("chown")
-                .args(["homevault:homevault", dir])
-                .output()
-            {
+            if let Err(e) = run_timed(
+                std::process::Command::new("chown").args(["homevault:homevault", dir]),
+                SETUP_OP_TIMEOUT,
+            ) {
                 tracing::warn!("Could not chown VPN config directory '{}': {}", dir, e);
             }
             #[cfg(target_os = "linux")]
@@ -1191,10 +1204,11 @@ homevault ALL=(root) NOPASSWD: {power_grants}
                 }
 
                 // Validate sudoers syntax
-                match std::process::Command::new("visudo")
-                    .args(["-c", "-f", "/etc/sudoers.d/homevault"])
-                    .output()
-                {
+                match run_timed(
+                    std::process::Command::new("visudo")
+                        .args(["-c", "-f", "/etc/sudoers.d/homevault"]),
+                    SETUP_OP_TIMEOUT,
+                ) {
                     Ok(output) => {
                         if output.status.success() {
                             tracing::info!(
@@ -2656,5 +2670,48 @@ mod tests {
         ] {
             assert!(grants.contains(bin), "no grant for {bin}");
         }
+    }
+}
+
+#[cfg(test)]
+mod x9_guards {
+    //! ROADMAP X.9 — no unbounded subprocess in this module.
+    //!
+    //! X.2 left this module out of its sweep, so a `getent` behind a dead NSS
+    //! backend, a `sudo` waiting on a prompt, or a `mount` on an unreachable
+    //! export pinned the caller with no ceiling. The guard is per module
+    //! because that is what makes a *new* unbounded call fail locally;
+    //! `utils/process.rs` carries the tree-wide one.
+
+    /// Every `Command::new` of this file must reach a bounded invocation.
+    #[test]
+    fn every_subprocess_is_bounded() {
+        let src = include_str!("setup.rs");
+        let mut offenders = Vec::new();
+        let lines: Vec<&str> = src.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains("Command::new(") {
+                continue;
+            }
+            let window = lines[i..(i + 14).min(lines.len())].join("\n");
+            let invokes = [".output()", ".status()", ".spawn()", "wait_with_output()"]
+                .iter()
+                .any(|needle| window.contains(needle));
+            if !invokes {
+                continue;
+            }
+            if window.contains("run_timed")
+                || window.contains("run_timed")
+                || window.contains("spawn_under_deadline")
+                || window.contains("tokio::time::timeout")
+            {
+                continue;
+            }
+            offenders.push(format!("{}: {}", i + 1, line.trim()));
+        }
+        assert!(
+            offenders.is_empty(),
+            "these invocations have no deadline (ROADMAP X.9): {offenders:?}"
+        );
     }
 }

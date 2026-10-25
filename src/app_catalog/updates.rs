@@ -34,9 +34,24 @@
 
 use crate::app_catalog::{self, CatalogApp};
 use crate::compose::ComposeManager;
+use crate::utils::process::run_timed;
 use serde::Serialize;
 use std::process::Command;
 use std::time::Duration;
+
+/// Deadline on a local `docker inspect` probe. Milliseconds on a healthy
+/// daemon; bounded so a wedged container runtime cannot pin the update check
+/// (ROADMAP X.9).
+const CATALOG_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Deadline on `docker compose ps` — one more API round-trip than `inspect`,
+/// so it gets a little more room.
+const CATALOG_COMPOSE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Deadline on `docker compose pull`, which fetches image layers over the
+/// network. A ceiling, not an estimate: a large image on a slow link is
+/// legitimate, a wedged registry is not.
+const CATALOG_PULL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// One service's image-update status.
 #[derive(Debug, Clone, Serialize)]
@@ -149,10 +164,11 @@ pub fn parse_bearer_challenge(header: &str) -> Option<(String, Option<String>, O
 /// The `sha256:…` digest of the image a container/image currently runs,
 /// from `docker inspect`'s `RepoDigests`. Blocking.
 pub fn local_image_digest(image: &str) -> Option<String> {
-    let out = Command::new("docker")
-        .args(["inspect", "--format", "{{index .RepoDigests 0}}", image])
-        .output()
-        .ok()?;
+    let out = run_timed(
+        Command::new("docker").args(["inspect", "--format", "{{index .RepoDigests 0}}", image]),
+        CATALOG_PROBE_TIMEOUT,
+    )
+    .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -289,10 +305,12 @@ pub async fn check_installed_apps(
 /// how `ComposeManager` creates and starts projects. Short subprocess.
 fn project_images(project: &str) -> Vec<String> {
     let dir = crate::config::paths::compose_dir().join(project);
-    let out = Command::new("docker")
-        .args(["compose", "ps", "-a", "--format", "{{.Image}}"])
-        .current_dir(&dir)
-        .output();
+    let out = run_timed(
+        Command::new("docker")
+            .args(["compose", "ps", "-a", "--format", "{{.Image}}"])
+            .current_dir(&dir),
+        CATALOG_COMPOSE_TIMEOUT,
+    );
     let mut images: Vec<String> = out
         .ok()
         .filter(|o| o.status.success())
@@ -345,11 +363,13 @@ pub fn apply_update(app: &CatalogApp, host_port: u16) -> Result<(), String> {
     ComposeManager::update_project(&key, &rendered).map_err(|e| e.to_string())?;
 
     let dir = crate::config::paths::compose_dir().join(&key);
-    let pull = Command::new("docker")
-        .args(["compose", "pull"])
-        .current_dir(&dir)
-        .output()
-        .map_err(|e| format!("docker compose pull: {e}"))?;
+    let pull = run_timed(
+        Command::new("docker")
+            .args(["compose", "pull"])
+            .current_dir(&dir),
+        CATALOG_PULL_TIMEOUT,
+    )
+    .map_err(|e| format!("docker compose pull: {e}"))?;
     if !pull.status.success() {
         return Err(format!(
             "docker compose pull failed: {}",

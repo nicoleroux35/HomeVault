@@ -196,15 +196,27 @@ fn ufw_command() -> Command {
 /// added`, `enable`, `default`, rule writes — goes through [`run_ufw`],
 /// which is async and time-limited.
 pub fn ufw_available() -> bool {
-    std::process::Command::new("sudo")
-        .env("LC_ALL", "C")
+    let mut cmd = std::process::Command::new("sudo");
+    cmd.env("LC_ALL", "C")
         .env("LANGUAGE", "")
         .arg("ufw")
         .arg("--version")
-        .stdin(Stdio::null())
-        .output()
+        .stdin(Stdio::null());
+    // Bounded like every other probe: `sudo` fails fast with stdin closed, but
+    // a wedged PAM/polkit stack would otherwise block this for ever
+    // (ROADMAP X.9).
+    run_probe(&mut cmd)
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// Deadline for the synchronous firewall probes (`sudo ufw --version`). Shared
+/// with [`ufw_available`]'s caller-facing budget so the two cannot drift.
+const FIREWALL_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `run_timed` alias kept local so the probe sites read as one pattern.
+fn run_probe(cmd: &mut std::process::Command) -> Result<std::process::Output, String> {
+    crate::utils::process::run_timed(cmd, FIREWALL_PROBE_TIMEOUT)
 }
 
 /// Run `sudo ufw <args>` under [`UFW_TIMEOUT`].
