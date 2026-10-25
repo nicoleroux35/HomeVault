@@ -390,6 +390,33 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Network — every `ip`/`wpa_cli`/`dhclient`/`netplan`/`ethtool`/`ping`/`ps`
+  call is bounded (2026-10-24, ROADMAP X.2).** The module runs on the blocking
+  pool (its handlers wrap it in `spawn_blocking`), so a wedged tool did not
+  stall just one request: a `sudo wpa_cli` waiting on the root-owned control
+  socket, a `dhclient` parked on a dead DHCP server or a `netplan apply`
+  blocked on systemd-networkd pinned that blocking thread — and because
+  `GET /network/interfaces`, `/wifi/status` and `/summary` are read on every
+  view of the Network screen, the calls piled up behind the wedged one with no
+  ceiling. All ~38 call sites now go through `crate::utils::process::run_timed`
+  behind one local `run_command(cmd, timeout)` helper with three named
+  ceilings: `NET_PROBE_TIMEOUT` 10 s (`ip … show`, `wpa_cli status`/
+  `list_networks`/`scan_results`, `ethtool`, `sudo cat`, `ps`),
+  `NET_WRITE_TIMEOUT` 30 s (`ip addr add|flush|route`, `dhclient`, `wpa_cli`
+  connect/select/save, `netplan apply`, `sudo tee`/`chmod`/`rm`) and
+  `NET_PING_TIMEOUT` 5 s. The privileged mutations collapsed into
+  `ip_sudo_run(program, args)` so a call site cannot forget the `sudo` prefix
+  **or** the deadline; `write_as_root` moved to `run_timed_with_stdin` (its
+  hand-rolled `.spawn()` + `wait_with_output()` would hang forever on a `tee`
+  that never read, and stdin is still written from its own thread); and
+  `run_command` keeps a non-zero exit as *data*, which `wpa_cli` refusals rely
+  on. Tests: `src/network.rs` 57 → **63** (a source guard — no bare
+  `.output()`/`.spawn()`/`.status()`/`wait_with_output()` in production code —
+  the kill path, the exit-status-as-data contract, a missing tool, the deadline
+  ordering, and the argv shape of both privilege helpers),
+  `tests/network_integration.rs` 23 → **24** (a shim `ip` sleeps 250 ms; the
+  summary must still come back `200`, after really waiting for it). Docs:
+  [guides/network.md](docs/guides/network.md).
 - **Cache mover — `rsync`/`find`/`df` are bounded, so a wedged transfer frees
   the single-flight slot (2026-10-24, ROADMAP X.2).** The mover's three host
   tools ran unbounded from inside `spawn_blocking`, and the damage was

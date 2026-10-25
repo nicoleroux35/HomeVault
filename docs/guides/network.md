@@ -89,6 +89,32 @@ Design decisions worth keeping:
   `installer/install.sh`): Ubuntu always ships it, Debian hosts without it
   fall through to ifupdown or stay temporary-only.
 
+## Deadlines on every host tool (2026-10-24, ROADMAP X.2)
+
+Every command of this module used to be a bare `Command::output`. The module
+runs on the blocking pool (its handlers wrap it in `spawn_blocking`), so a
+wedged tool pinned that blocking thread — and because `GET /network/interfaces`,
+`/wifi/status` and `/summary` are polled on every view of the Network screen,
+the calls piled up behind the wedged one. Each call now goes through
+`crate::utils::process::run_timed` behind one local `run_command(cmd, timeout)`
+helper (plus `ip_sudo_run` for the privileged mutations):
+
+| Call | Deadline | Why |
+|---|---|---|
+| `ip … show`, `wpa_cli status`/`list_networks`/`scan_results`, `ethtool`, `sudo cat`, `ps` | `NET_PROBE_TIMEOUT` 10 s | one-shot read; the screen polls it |
+| `ip addr add\|flush\|route`, `dhclient`, `wpa_cli` connect/select/save, `netplan apply`, `sudo tee`/`chmod`/`rm` | `NET_WRITE_TIMEOUT` 30 s | can wait on the sudo/PAM stack or systemd-networkd |
+| `ping -c 1 -W 2` | `NET_PING_TIMEOUT` 5 s | carries its own `-W 2`; the deadline only covers teardown |
+
+`sudo tee` (writing `/etc/resolv.conf`, `/proc/sys/net/ipv6/...`, the netplan
+file) goes through `run_timed_with_stdin`, which feeds the content from its own
+thread and closes stdin afterwards — the previous bare `.spawn()` +
+`wait_with_output()` could hang forever on a `tee` that never read.
+`run_command` keeps a non-zero exit as *data*: `wpa_cli` reports a refusal with
+stdout/stderr and the caller reads it, while only a spawn failure or a timeout
+is an error. A source guard
+(`test_no_subprocess_of_this_module_runs_without_a_deadline`) fails if a bare
+`.output()`/`.spawn()`/`.status()`/`wait_with_output()` comes back.
+
 ## Backend
 Router built by `src/handlers/network.rs::create_network_router` and nested at
 `/api/network` (`src/web/mod.rs:1069`).
@@ -137,6 +163,9 @@ unaffected: the Wi-Fi endpoints report the tool as unavailable.
   live netplan path itself needs a real host (see `TESTING.md` — "remaining to
   test live"). Never run `netplan apply` outside the apply-verify-rollback
   pattern.
+- **Every host command carries a deadline** (see above): `run_command` /
+  `ip_sudo_run` are the only allowed shapes. A bare `Command::output()` in this
+  module is a regression — the source guard test fails on it (ROADMAP X.2).
 - **Editable since 2026-09-12** — `CLAUDE.md`'s frozen-area registry is gone, so
   `Network.svelte`, the network handlers and the `network.*` i18n section are
   open to edits. The invariants above stay binding: a change keeps the Rust
