@@ -13,8 +13,11 @@ Handlers in `src/handlers/explorer.rs`. Every handler checks
 shared `require_auth`/`require_admin` helpers, but functionally equivalent —
 a real session is always required). Paths are validated against
 `state.path_guard` (`AppState.path_guard`, `src/config/explorer_config.rs` /
-`PathGuard`) — admins bypass `PathGuard` entirely and can browse anywhere;
-non-admins are restricted to the configured `allowed_roots`.
+`PathGuard`) — admins bypass the **root confinement** (they can browse
+anywhere) but not the **shape normalisation**: the admin branch still
+canonicalises the parent and resolves the leaf, so a handler never works on the
+caller's raw string (ROADMAP 10.5, see *Invariants*); non-admins are confined
+to the configured `allowed_roots`.
 
 | Endpoint | Method | Body / Query | Notes |
 |----------|--------|--------------|-------|
@@ -37,7 +40,7 @@ non-admins are restricted to the configured `allowed_roots`.
 | `/explorer/upload` | POST | multipart `file` + `?path=` | upload (XHR for progress); each chunk is checked against the caller's [transfer quota](./transfer-quotas.md) mid-write, not just once at the start |
 | `/explorer/upload/session` | POST | `?path=&filename=&size=&strategy=` | open a resumable upload session (creates the hidden temp slot, validates path + filename + quota up-front) |
 | `/explorer/upload/session` | DELETE | `?session_id=` | abort a resumable upload and remove its partial temp file |
-| `/explorer/upload/chunk` | POST | raw body + `?session_id=&offset=` | write one chunk at the server's authoritative offset; an out-of-order chunk is rejected with a 409 carrying the current offset so the client can resume |
+| `/explorer/upload/chunk` | POST | **streamed** body + `?session_id=&offset=` | write one chunk at the server's authoritative offset; the body is written frame by frame (never buffered — ROADMAP 10.6), capped at `MAX_UPLOAD_CHUNK_BYTES` (32 MiB) and at the session's remaining `total_size`; a chunk over either cap is `413` with the offset to resume at and commits nothing; an out-of-order chunk is a 409 carrying the current offset |
 | `/explorer/upload/complete` | POST | `?session_id=` | fsync + SHA-256 the temp file, resolve the collision strategy, atomically rename it into place and debit the quota (re-checked under the quota lock) |
 | `/explorer/trash` | POST / GET / DELETE | `?path=` / — / — | move to trash / list everything in trash / empty trash |
 | `/explorer/trash/restore` | POST | `?id=` | move a trashed item back to its original path (cross-device EXDEV fallback) |
@@ -196,6 +199,17 @@ token never appears in a URL.
   `?sha256=`), resolves the collision strategy and atomically renames — then
   debits the quota under the per-subject lock. The multipart `/explorer/upload`
   endpoint remains for small/simple uploads.
+- **A chunk is streamed, never buffered** (2026-10-24, ROADMAP 10.6). The
+  handler used to take an `axum::body::Bytes`, which materialises the whole
+  chunk in RAM *before* the handler runs — with the router-wide 10 GiB
+  `RequestBodyLimitLayer` as its only bound, one request could allocate the
+  machine's memory. It now takes an `axum::body::Body` and writes it out frame
+  by frame (`stream_chunk_to_file`), so peak memory is one network buffer
+  whatever the body size. Two caps are computed **before** a byte is read: the
+  declared file size (a chunk may not run past `total_size`) and
+  `MAX_UPLOAD_CHUNK_BYTES` (32 MiB). Over either one → `413`, the temp file is
+  truncated back to its previous length and **the session offset does not
+  move**, so the client resumes from where it was.
 
 ## Directory copy/move progress
 
@@ -435,6 +449,23 @@ work, and the last one whose host commands had no deadline.
   operating on the un-canonicalised string is a TOCTOU gap (a symlink swapped
   between the check and the open can smuggle the operation out of the allowed
   roots). `validate_path_access` returns `Option<PathBuf>` for this reason.
+- **The final component is resolved, not echoed back** (2026-10-24, ROADMAP
+  10.5). `PathGuard::validate` used to return the caller's string verbatim when
+  the leaf did not exist yet (a new file), so `..` survived and the leaf was
+  whatever was typed; the admin branch of `validate_path_access` returned
+  `PathBuf::from(path)` for *every* path, so nothing was always resolved there.
+  Both now go through `resolve_final_component` / `resolve_unconfined`: the
+  parent is canonicalised, the leaf is re-read with `symlink_metadata` (a link
+  inside the roots resolves to its target, a link outside is refused), and the
+  result is the resolved parent joined with a definite leaf. A `.`/`..` leaf is
+  refused outright. What remains is the writer's concern — `O_NOFOLLOW` on the
+  final `open`, an atomic `rename` into place — which the delete/rename paths
+  already apply.
+- **A public share stream never `unwrap`s its concurrency permit** (2026-10-24,
+  ROADMAP 10.7). `SHARE_SEMAPHORE.acquire_owned().await.unwrap()` would panic
+  into a bare 500 if the semaphore were ever closed; it now answers `503` with
+  a log line. The ceiling itself (`MAX_CONCURRENT_SHARE_STREAMS` = 4) is
+  unchanged — the fix is the error mapping, not the removal of the limit.
 - `rename` validates **both** the source and the destination (the destination
   is a full path and was previously never checked — a non-admin could rename a
   file into `/etc`); `favorites` add is path-guarded too.
@@ -516,6 +547,70 @@ work, and the last one whose host commands had no deadline.
   real SSE `progress`/`done` events observed), and an instant same-filesystem
   directory move. Auth was verified via `curl`: every new endpoint rejects a
   request with no session token.
+
+## Residual hardening (2026-10-24, ROADMAP 10.5/10.6/10.7)
+
+The three leftovers item 10 deliberately left open, all real on a normal path.
+
+### 10.5 — the final path component is resolved
+
+`PathGuard::validate` returned the **caller's string** when the leaf did not
+exist yet ("a new file"), and `validate_path_access`'s admin branch returned
+`PathBuf::from(path)` for *every* admin path. On both, the last component was
+never canonicalised: `..` survived, and a symlink planted after validation was
+followed with no second look.
+
+Now both go through one shape:
+
+- `PathGuard::resolve_final_component(parent_resolved, p)` — used by
+  `PathGuard::validate` (absolute **and** relative branch);
+- `explorer::resolve_unconfined(path)` — the admin branch, same shape but
+  **without** root confinement (an admin may browse anywhere).
+
+The parent is canonicalised, the leaf is re-read with
+`symlink_metadata` (which does *not* follow it): a symlink that resolves inside
+the roots becomes its target, a symlink that resolves outside is refused, a
+regular leaf that appeared meanwhile is resolved and re-checked, and an absent
+leaf comes back under its resolved parent. A `.`/`..` leaf is refused outright.
+
+What is left is the **writer's** half, and it is already handled where it
+matters: `delete`/`rename`/`create` open and rename into place rather than
+resolving a name twice. This change removes the unexamined hand-over; closing
+the window completely is an `O_NOFOLLOW`-on-open property, not a
+path-resolution one.
+
+### 10.6 — a chunk is streamed, never buffered
+
+The handler took `axum::body::Bytes`: the whole chunk was materialised in RAM
+before the handler ran, and the only bound was the router-wide 10 GiB
+`RequestBodyLimitLayer`. One request could allocate the machine's memory.
+
+It now takes `axum::body::Body` and writes it out through
+`stream_chunk_to_file`, frame by frame, so peak memory is one network buffer.
+Two caps are computed *before* a byte is read — the session's remaining
+`total_size - offset` and `MAX_UPLOAD_CHUNK_BYTES` (32 MiB, public so the client
+can honour it). Over either: `413` with the resume offset, the temp file
+truncated back to its previous length, and **the session offset does not
+move** — the resumable protocol's invariant is "the offset only advances on a
+full chunk".
+
+### 10.7 — the share-stream permit is a mapped error
+
+`SHARE_SEMAPHORE.acquire_owned().await.unwrap()` panicked if the semaphore was
+closed: a bare 500 with nothing in the request log, and a task abort in a debug
+build. It cannot happen with the static (nothing calls `close`) — which is why
+it went unnoticed, and exactly why an `unwrap` on a resource whose lifecycle
+lives elsewhere is a latent panic. It now logs and answers `503`. The ceiling
+(`MAX_CONCURRENT_SHARE_STREAMS` = 4) is unchanged.
+
+### Tests
+
+| Where | What |
+|---|---|
+| `src/config/explorer_config.rs` (4 → **9**) | a new file comes back under its resolved parent with no `..`; a symlink leaf pointing outside is refused; one inside resolves to its target; a `.`/`..` leaf is refused; the relative branch |
+| `src/handlers/explorer.rs` (38 → **46**) | the admin branch normalises; it does *not* confine (`/etc/hostname` still resolves); unusable shapes refused; an existing symlink resolves; a chunk written from a 3-frame stream; an over-cap chunk rolls the file back; an empty stream writes nothing; the route cap stays below the router limit |
+| `src/handlers/share_links.rs` (0 → **2**) | a closed semaphore yields an error, and the source no longer contains `acquire_owned().await.unwrap()`; the 4-stream ceiling still holds |
+| `tests/explorer_integration.rs` (65 → **70**) | a streamed multi-frame chunk lands byte for byte and completes; a chunk past the declared size is `413`, does not move the offset, and the session still completes with the accepted bytes; an admin `..` path lists the resolved directory; an admin path outside the roots still works; a non-admin traversal is still `400` |
 
 ## Progress reporting (fixed 2026-10-12)
 

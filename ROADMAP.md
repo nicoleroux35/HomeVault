@@ -1,7 +1,7 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-24 (X.9 closed — the 98 sites X.2 never reached are
-bounded, with a tree-wide source guard) — current version: 1.0.0
+Last updated: 2026-10-24 (10.5/10.6/10.7 closed — the File Explorer residual
+hardening) — current version: 1.0.0
 
 ## How to read this file
 
@@ -82,7 +82,6 @@ Two structural facts explain most of the list:
 
 | # | Area | Verdict | Blocking items |
 |---|---|---|---|
-| 10b | File Explorer — residual hardening | P2 | 3 |
 | 16.4 | Cloud Sync (rclone) — no scheduler | P2 | 1 |
 | 28 | Activity taskbar | P2 | 1 |
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
@@ -90,10 +89,11 @@ Two structural facts explain most of the list:
 | 33 | Transfer quotas — residual | P2 | 1 |
 | — | Cross-cutting | — | 0 |
 
-Total open findings: **7** (7 per-area + 0 cross-cutting). **X.9 closed on
-2026-10-24** — see Done (p) — so every `std::process::Command`/`tokio::process::
-Command` of `src/` is bounded again, this time enforced by a tree-wide source
-guard rather than by a hand count. Item 27 (2
+Total open findings: **4** (4 per-area + 0 cross-cutting). **10b (10.5, 10.6,
+10.7) closed on 2026-10-24** — see Done (q) — so the File Explorer has no
+residual finding left, and **X.9 closed the same day** (Done (p)): every
+`std::process::Command`/`tokio::process::Command` of `src/` is bounded, enforced
+by a tree-wide source guard rather than a hand count. Item 27 (2
 findings) left the open list on 2026-10-24 — see Done — and with it the last
 P1; **X.1 closed the same day** (Explorer was its last module — see Done
 2026-10-24 (f)), **X.2 closed the same day too** (Done 2026-10-24 (k)), so no
@@ -179,11 +179,10 @@ session, `403` non-admin, `400` only a malformed request). **28.1/28.2 and 29.1/
 X.9 — and **X.9 closed the same day** (Done (p)): picking up item 29 had
 exposed that X.2's "every subprocess is bounded" was only true for the modules
 that got a guard, and the 98 sites it missed are now bounded too, behind a
-tree-wide source guard. What is left, in order: 10b (10.5/10.6/10.7 — the
-residual hardening), 32/33 (residuals of closed items), 28.3 (the only
-remaining *feature* besides 16.4: a live-hardware poller), 16.4 (a scheduler
-for persisted sync jobs) and 31 (pure maintainability, do it last, one tab at a
-time).
+tree-wide source guard. **10b closed the same day** (Done (q)). What is left,
+in order: 32/33 (residuals of closed items), 28.3 (the only remaining *feature*
+besides 16.4: a live-hardware poller), 16.4 (a scheduler for persisted sync
+jobs) and 31 (pure maintainability, do it last, one tab at a time).
 
 ---
 
@@ -265,23 +264,15 @@ covered by unit/integration tests, never by a live FUSE mount.
 
 ---
 
-### 10b. File Explorer — residual hardening (non-blocking leftovers of the closed item 10)
+### 10b. File Explorer — residual hardening
 
-- [ ] **10.5 — `validate_path_access` returns the raw path for admins and
-      `PathGuard::validate` accepts a non-existent final component**
-      (`src/handlers/explorer.rs`, `src/config/explorer_config.rs:259`), so the
-      last component of an admin path is never canonicalised — a symlink
-      planted after validation escapes the root (TOCTOU).
-      *Acceptance:* the final component is resolved or re-validated after the
-      fact for admin paths.
-- [ ] **10.6 — Upload chunks are fully buffered.** `/upload/chunk` takes the
-      whole chunk as an in-memory `Bytes` body and the global body limit is
-      10 GiB (`src/web/mod.rs:1764`), so a single huge chunk is still a
-      RAM spike. *Acceptance:* streamed body writes capped by the session's
-      `total_size`.
-- [ ] **10.7 — `SHARE_SEMAPHORE.acquire_owned().await.unwrap()` can panic**
-      (`src/handlers/share_links.rs:463`) if the semaphore is closed.
-      *Acceptance:* a mapped error, not an unwrap.
+Closed on 2026-10-24 — see Done (2026-10-24 (q)). All three findings were real
+on a normal path, not theory: `PathGuard::validate` echoed the caller's string
+for a leaf that did not exist yet **and** `validate_path_access`'s admin branch
+echoed it for *every* admin path (so `..` survived and no leaf was ever
+resolved), `/upload/chunk` buffered the whole chunk in RAM under a 10 GiB router
+limit, and the public share-stream permit was `unwrap()`ed. The detail lives in
+[guides/explorer.md](docs/guides/explorer.md) → *Residual hardening*.
 
 ---
 
@@ -490,6 +481,50 @@ call site the guard also scans.
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-24 (q)** — File Explorer residual hardening — **10.5, 10.6 and 10.7
+closed**. **10.5**: `PathGuard::validate` returned the caller's string verbatim
+when the leaf did not exist yet ("a new file"), so `..` survived and the leaf
+was whatever was typed; and `validate_path_access`'s admin branch returned
+`PathBuf::from(path)` for *every* admin path, so on that branch nothing was ever
+resolved — a symlink planted after validation was followed with no second look.
+Both now go through one shape: the parent is canonicalised, the leaf is re-read
+with `symlink_metadata` (a link resolving inside the roots becomes its target, a
+link resolving outside is refused, a regular leaf that appeared meanwhile is
+resolved and re-checked, an absent leaf comes back under its resolved parent),
+and a `.`/`..` leaf is refused outright. `PathGuard::resolve_final_component`
+serves the confined branch (absolute *and* relative), `explorer::
+resolve_unconfined` the admin one — same normalisation, **no** root confinement,
+because an admin may browse anywhere. What remains is the writer's half
+(`O_NOFOLLOW` on the final `open`), which delete/rename already apply; this
+removes the unexamined hand-over. **10.6**: `/upload/chunk` took an
+`axum::body::Bytes`, materialising the whole chunk in RAM before the handler ran,
+with the router-wide 10 GiB `RequestBodyLimitLayer` as its only bound — one
+request could allocate the machine's memory. It now takes `axum::body::Body` and
+writes it through `stream_chunk_to_file`, frame by frame (peak memory = one
+network buffer). Two caps are computed **before** a byte is read — the session's
+remaining `total_size - offset` and the new public `MAX_UPLOAD_CHUNK_BYTES`
+(32 MiB): over either, `413` with the resume offset, the temp file truncated back
+to its previous length, and the session offset **does not move**. **10.7**: the
+public share-stream permit was `acquire_owned().await.unwrap()`, a latent panic
+(a bare 500, a task abort in a debug build) that could not fire with the static
+but had no business being an `unwrap` — it now logs and answers `503`, ceiling
+unchanged. Tests: `src/config/explorer_config.rs` 4 → **9** (new file under its
+resolved parent with no `..`; a symlink leaf outside the roots refused; one
+inside resolved; `.`/`..` leaf refused; the relative branch),
+`src/handlers/explorer.rs` 38 → **46** (the admin branch normalises but does not
+confine; unusable shapes; an existing symlink resolves; a chunk written from a
+3-frame stream; an over-cap chunk rolls the file back; an empty stream writes
+nothing; the route cap stays below the router limit),
+`src/handlers/share_links.rs` 0 → **2** (a closed semaphore yields an error and
+the source no longer contains the `unwrap`; the 4-stream ceiling still holds),
+`tests/explorer_integration.rs` 65 → **70** (a streamed multi-frame chunk lands
+byte for byte and completes; a chunk past the declared size is `413`, does not
+move the offset and the session still completes with the accepted bytes; an
+admin `..` path lists the resolved directory; an admin path outside the roots
+still works; a non-admin traversal is still `400`). **Written, not run** (per
+instruction). Docs: [guides/explorer.md](docs/guides/explorer.md) →
+*Residual hardening*, `docs/API.md`, `CHANGELOG.md`, `TESTING.md`.
 
 **2026-10-24 (p)** — Subprocess deadlines, round 2 — **X.9 closed**: every
 `std::process::Command` / `tokio::process::Command` of `src/` runs under a
