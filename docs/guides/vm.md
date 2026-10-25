@@ -191,6 +191,34 @@ sanity-checked, `chmod o+r`); `vm/isos/virtio` is the same with the canonical
 `..`, control chars; must end `.iso`). The wizard shows the store contents as
 one-click chips next to the file picker.
 
+### The size bounds are checked before the bytes land (ROADMAP 32.2)
+
+Two constants in `src/handlers/vm.rs` are the single source of truth for every
+path that accepts an ISO:
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `MIN_ISO_BYTES` | 10 MB | below this it cannot be an installation ISO (the smallest netinst builds are ~300 MB; an HTML error page or a redirect stub is a few KB) |
+| `MAX_ISO_BYTES` | 32 GiB | above this it is a mistake on the other end — a redirect to a disk image, a mislabelled backup |
+
+The download used to stream the **whole body to disk** and only then call
+`finalise_iso`, so a link returning a multi-GB wrong file was fully written
+before it was rejected, and a 2 KB HTML page still cost a disk write to
+discover. `classify_declared_length(Content-Length)` now decides **before**
+the destination file is even created:
+
+| Declared | Outcome |
+|---|---|
+| `< MIN_ISO_BYTES` | job fails, "too small to be an installation ISO" — nothing written |
+| `> MAX_ISO_BYTES` | job fails, "larger than the 32 GiB an ISO may be" — nothing written |
+| plausible | accepted, budget = the declared length |
+| absent (chunked) | accepted, budget = `MAX_ISO_BYTES` |
+
+The budget is enforced **while writing** too, so a chunked response (no
+`Content-Length`) and a server that lied about its length are both stopped: the
+partial file is removed and the job fails. The link-import path
+(`validate_local_iso`) compares against the same `MIN_ISO_BYTES`.
+
 ## Graphical screen (VNC)
 
 ISO-install VMs get a full framebuffer, driven by **noVNC** (`@novnc/novnc`):
@@ -200,6 +228,29 @@ ISO-install VMs get a full framebuffer, driven by **noVNC** (`@novnc/novnc`):
 2. Browser opens `wss://…/api/vm/screen/ws?ticket=…` (subprotocol `binary`).
 3. `screen_relay()` opens a `TcpStream` to `127.0.0.1:5900+display` and pipes
    raw bytes both ways — RFB in, RFB out. No protocol parsing.
+
+### Heartbeat and idle deadline (ROADMAP 32.1)
+
+The relay used to be a raw pipe with **no ping and no timeout**: a half-open
+connection (laptop lid closed, Wi-Fi that came back on another network, a
+suspended tab) kept the task *and* the qemu VNC session alive until the kernel's
+TCP retransmission gave up, which on a quiet LAN is many minutes.
+
+It is now a three-task relay around one shared `RelayLiveness` clock:
+
+| Task | Role |
+|---|---|
+| down | VNC server → browser; every read `touch()`es the clock |
+| up | browser → VNC server; bytes, `Close` **and `Ping`/`Pong`** all `touch()` it |
+| heartbeat | pings the browser every `SCREEN_PING_INTERVAL` (30 s), and closes both sides once `is_stale(SCREEN_IDLE_TIMEOUT)` (90 s) |
+
+Three missed pings before giving up, and the browser's WebSocket stack answers
+a `Ping` on its own — no JavaScript is involved, so a frozen page still counts.
+Anything arriving on **either** leg resets the clock, including RFB bytes from
+the server: a healthy idle VNC session still sends the occasional framebuffer
+update, so "the connection is alive" is read truthfully rather than from
+keyboard activity alone. When the deadline fires the WebSocket is closed *and*
+the TCP leg dropped, so qemu sees the disconnect and frees the display.
 
 Frontend: `frontend/src/lib/components/vm/VmScreen.svelte` (noVNC `RFB`, a
 Ctrl+Alt+Del button, fullscreen).
@@ -279,6 +330,15 @@ protocol as the Terminal app).
   must switch to ISO mode.
 - An `audio0` device is attached **only to a VM** (`apply_audio_device`); never
   to a container, which has no audio device.
+- **The screen relay never outlives its socket by more than
+  `SCREEN_IDLE_TIMEOUT`.** Both pumps `touch()` a shared clock and the heartbeat
+  closes both legs on silence; removing any of the three brings back the
+  half-open task that held a qemu display for many minutes (ROADMAP 32.1).
+- **An ISO is classified on its declared length before anything is created.**
+  `MIN_ISO_BYTES` / `MAX_ISO_BYTES` are the only bounds, the running write is
+  capped by the same budget (so a chunked response and a lying server are both
+  stopped), and `validate_local_iso` compares against `MIN_ISO_BYTES` — never a
+  literal (ROADMAP 32.2).
 - `build_cloud_init` must keep hashing the password — never emit
   `plain_text_passwd`. The unit test asserts the plaintext is absent.
 - `os` and `password` are `#[serde(default)]` (optional for ISO mode) — the

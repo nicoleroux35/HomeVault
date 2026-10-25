@@ -843,3 +843,62 @@ async fn test_create_with_windows_catalogue_id_requires_iso() {
         "must point at the ISO install: {body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ROADMAP 32.2 — an ISO download is refused on its declared length, up-front
+// ---------------------------------------------------------------------------
+
+/// The download route validates its input **before** any network call, so a
+/// link whose shape is unusable never reaches the streaming code. This is the
+/// half of 32.2 that is observable without a real remote server; the
+/// "declared length below the floor" half is pinned by the unit tests on
+/// `classify_declared_length` (a 2 KB answer must be refused without writing a
+/// byte, which needs a live HTTP peer to demonstrate end to end).
+#[tokio::test]
+async fn iso_download_rejects_an_unusable_link_before_dialling() {
+    let (state, _tmp, _guard) = setup_state().await;
+    let mut router = vm_router(state.clone());
+    let token = admin_token(&state, &mut router).await;
+
+    // A non-http scheme: refused, and the message says what is accepted.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/vm/isos/download",
+        Some(&token),
+        Some(json!({"url": "file:///etc/passwd", "name": "boot.iso"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // A name that is not an `.iso`: refused without touching the store.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/vm/isos/download",
+        Some(&token),
+        Some(json!({"url": "https://example.com/x.iso", "name": "not-an-iso.bin"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+/// The route is admin-only on both verbs — a download writes into the managed
+/// store, so a member must never trigger one.
+#[tokio::test]
+async fn iso_download_is_admin_only() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "member", "Password123!", 1).await;
+    let mut router = vm_router(state.clone());
+    let token = login(&mut router, "member", "Password123!").await;
+
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/vm/isos/download",
+        Some(&token),
+        Some(json!({"url": "https://example.com/x.iso", "name": "boot.iso"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}

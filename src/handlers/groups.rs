@@ -467,6 +467,11 @@ pub async fn handle_group_add_member(
     .await
     {
         Ok(_) => {
+            // ROADMAP 33.1: the quota check caches group membership for a few
+            // seconds; a membership change must be visible immediately, not
+            // "within one TTL", or the admin sees a group quota that ignores
+            // the member they just added.
+            crate::transfer_quota::invalidate_group_cache(&username);
             crate::events::log_event(format!(
                 "Admin '{}' added user '{}' to group '{}'",
                 admin_username, username, group_name
@@ -513,6 +518,8 @@ pub async fn handle_group_remove_member(
     .await
     {
         Ok(_) => {
+            // Same cache as the add path (ROADMAP 33.1).
+            crate::transfer_quota::invalidate_group_cache(&username);
             crate::events::log_event(format!(
                 "Admin '{}' removed user '{}' from group '{}'",
                 admin_username, username, group_name
@@ -542,6 +549,9 @@ pub async fn handle_user_groups(
         return ResponseHelper::json_forbidden("Access denied".to_string());
     }
 
+    // Deliberately **not** through `transfer_quota`'s cache (ROADMAP 33.1): this
+    // is the list an admin reads to decide what they just changed, and it must
+    // never show a value up to one TTL old.
     let lookup = username.clone();
     match run_group_op("list user groups", move || {
         GroupService::get_user_groups(&lookup)

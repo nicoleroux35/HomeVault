@@ -251,19 +251,45 @@ dedicated destination of the Users rail's **Quota view** button, and it fronts
   `bytes_to_i64` (saturating), and `check_quota` compares in `u128`: a plain
   cast turned any value above `i64::MAX` negative and silently passed the
   check.
+- **A quota check must not fork once per chunk.** Group membership goes
+  through `resolve_groups` (5 s TTL); bypassing the cache re-introduces the
+  ~128-fork upload (ROADMAP 33.1).
 - Reads are scoped in the **handler**, not in the screen. `GET
   /transfer-quotas/{subject_type}` is admin-only and the single-subject GET is
   self-or-admin; Quotas.svelte's non-admin redirect is a courtesy, not the
   boundary.
 
-## Known debt
+## Group-membership cache (ROADMAP 33.1, 2026-10-24)
 
-- **Group membership costs one `id -nG` fork per quota check** — and therefore
-  per chunk of a resumable upload. It is correctly offloaded with
-  `spawn_blocking`, so it never blocks the runtime, but a short-TTL in-process
-  cache would remove the fork entirely. Tracked as ROADMAP item 33.1; left
-  alone here because a cache introduces a bounded staleness window on group
-  membership, which is a separate behaviour decision.
+`load_applicable` resolves the caller's groups to know which **group** quotas
+apply. That resolution is `GroupService::get_user_groups`, i.e. one `id -nG`
+fork — and the resumable-upload path re-checks the quota **per chunk**, so a
+1 GB upload in 8 MB chunks forked ~128 times for one file. The call was always
+inside `spawn_blocking` (it never blocked the runtime), so this was throughput
+debt, not a stall.
+
+`resolve_groups` now serves it from a process-wide cache keyed on the username:
+
+| | |
+|---|---|
+| TTL | `GROUP_MEMBERSHIP_TTL` = **5 s** (`src/transfer_quota.rs`) |
+| Miss | forks `id -nG` inside `spawn_blocking`, stores the result, prunes expired entries |
+| Hit | pure in-memory lookup, no fork, no lock held across an await |
+| Bound | one entry per account that checked recently; expired entries are pruned on every miss and by `prune_group_cache` |
+
+**The bounded staleness, stated plainly:** a group added to (or removed from)
+an account applies to quota enforcement within **one TTL** — up to five
+seconds. That is far below the time a user takes to notice, and the trade is
+deliberate: the alternative is either a fork per chunk or an unbounded cache
+that makes a revoked group quota keep applying. The Groups screen calls
+`invalidate_group_cache(username)` after a membership change, so that path is
+**immediate** rather than "within five seconds"; `clear_group_cache` exists for
+tests and a settings import.
+
+The TTL is pinned by unit tests (`the_ttl_is_a_short_bound_that_is_actually_documented`
+also asserts this section mentions the constant), and the cache's per-account
+keying is tested explicitly: one user's cached groups can never answer for
+another.
 
 ## Related
 
