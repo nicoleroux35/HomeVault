@@ -81,6 +81,7 @@ use homevault::handlers::{
         handle_delete_sync_job, handle_get_config, handle_list_mounts, handle_list_providers,
         handle_list_remotes, handle_list_sync_jobs, handle_mount_start, handle_mount_stop,
         handle_rclone_status, handle_run_sync_job, handle_save_config, handle_sync,
+        handle_update_sync_job_schedule,
     },
     AppState,
 };
@@ -158,6 +159,10 @@ fn rclone_router(state: Arc<AppState>) -> Router {
             axum::routing::delete(handle_delete_sync_job),
         )
         .route("/api/rclone/jobs/{id}/run", post(handle_run_sync_job))
+        .route(
+            "/api/rclone/jobs/{id}/schedule",
+            axum::routing::put(handle_update_sync_job_schedule),
+        )
         .with_state(state)
 }
 
@@ -1286,6 +1291,224 @@ async fn test_sync_jobs_crud_round_trip() {
         &format!("/api/rclone/jobs/{id}"),
         Some(&admin),
         None,
+    )
+    .await;
+    denied(&body, "Sync job not found");
+}
+
+// ---------------------------------------------------------------------------
+// ROADMAP 16.4 — a persisted sync job carries a cadence and a server-written
+// run state
+// ---------------------------------------------------------------------------
+
+/// The defect 16.4 named: the `sync_jobs` row held the definition only, so a
+/// nightly sync could not be expressed and the screen's "last run / status"
+/// columns were the outcome of the click that had just happened.
+///
+/// This test drives the whole server-side state machine over HTTP: create with
+/// an interval → the row is scheduled → a run records its outcome and rolls
+/// the due time forward → switching the cadence off stops it being due.
+#[tokio::test]
+async fn a_sync_job_carries_a_cadence_and_the_server_writes_its_run_state() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "adm", "Password123!", 2).await;
+    let mut router = rclone_router(state.clone());
+    let admin = login(&mut router, "adm", "Password123!").await;
+
+    // Create with an hourly cadence.
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/rclone/jobs",
+        Some(&admin),
+        Some(json!({
+            "name": "hourly",
+            "source_type": "local",
+            "source": "/srv/photos",
+            "destination": "gdrive:photos",
+            "schedule_kind": "interval",
+            "interval_minutes": 60,
+        })),
+    )
+    .await;
+    assert_eq!(body["success"], true, "{body}");
+    let id = body["data"]["id"].as_i64().expect("job id");
+    assert_eq!(body["data"]["schedule_kind"], json!("interval"));
+    assert_eq!(body["data"]["interval_minutes"], json!(60));
+    // Never run: the state columns are empty, not invented.
+    assert!(body["data"]["last_run_at"].is_null(), "{body}");
+    assert!(body["data"]["last_status"].is_null(), "{body}");
+    // …and the server has already computed the first due time.
+    assert!(
+        body["data"]["next_run_at"].is_string(),
+        "a scheduled job must be due at a known instant: {body}"
+    );
+
+    // A run records its outcome (it fails: there is no rclone/remote here, and
+    // that is the point — the failure must be *recorded*, not just returned).
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        &format!("/api/rclone/jobs/{id}/run"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["success"], false,
+        "expected a graceful failure: {body}"
+    );
+    let view = &body["data"];
+    assert_eq!(view["last_status"], json!("failed"), "{body}");
+    assert!(view["last_run_at"].is_string(), "{body}");
+    assert!(
+        !view["last_message"].as_str().unwrap_or("").is_empty(),
+        "the failure reason must be kept for the screen: {body}"
+    );
+    let rerun_due = view["next_run_at"].as_str().expect("still scheduled");
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(rerun_due).is_ok(),
+        "next_run_at must be a timestamp: {rerun_due}"
+    );
+
+    // The list reports the same server-side state (the screen no longer has to
+    // remember the response to its own click).
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/rclone/jobs",
+        Some(&admin),
+        None,
+    )
+    .await;
+    let row = &body["data"][0];
+    assert_eq!(row["last_status"], json!("failed"), "{body}");
+    assert_eq!(row["schedule_kind"], json!("interval"), "{body}");
+
+    // Switching the cadence off clears the due time: the scheduler stops
+    // picking the job up, while the last-run state stays visible.
+    let (_, body) = send(
+        &mut router,
+        Method::PUT,
+        &format!("/api/rclone/jobs/{id}/schedule"),
+        Some(&admin),
+        Some(json!({"schedule_kind": "none"})),
+    )
+    .await;
+    assert_eq!(body["success"], true, "{body}");
+    assert_eq!(body["data"]["schedule_kind"], json!("none"));
+    assert!(body["data"]["next_run_at"].is_null(), "{body}");
+    assert_eq!(
+        body["data"]["last_status"],
+        json!("failed"),
+        "the last outcome is history and must survive a schedule change: {body}"
+    );
+}
+
+/// A cron cadence is accepted, and a cron that cannot be parsed is refused
+/// **before** the row exists — a job the scheduler could never schedule would
+/// otherwise be picked up on every tick.
+#[tokio::test]
+async fn an_unusable_cadence_is_refused_at_create_time() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "adm", "Password123!", 2).await;
+    let mut router = rclone_router(state.clone());
+    let admin = login(&mut router, "adm", "Password123!").await;
+
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/rclone/jobs",
+        Some(&admin),
+        Some(json!({
+            "name": "broken",
+            "source": "/srv/a",
+            "destination": "gdrive:a",
+            "schedule_kind": "cron",
+            "cron_expr": "definitely not a cron",
+        })),
+    )
+    .await;
+    assert_eq!(body["success"], false, "{body}");
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("cron_expr"),
+        "the refusal must name the field: {body}"
+    );
+
+    // Nothing was written.
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/rclone/jobs",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"].as_array().unwrap().len(), 0, "{body}");
+
+    // An interval with no value is refused the same way.
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/rclone/jobs",
+        Some(&admin),
+        Some(json!({
+            "name": "no-interval",
+            "source": "/srv/a",
+            "destination": "gdrive:a",
+            "schedule_kind": "interval",
+        })),
+    )
+    .await;
+    assert_eq!(body["success"], false, "{body}");
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or("")
+        .contains("interval_minutes"));
+}
+
+/// The schedule route is admin-only, and a body that does not name a job is a
+/// clean error rather than a panic.
+#[tokio::test]
+async fn the_schedule_route_is_admin_only() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "adm", "Password123!", 2).await;
+    create_test_user(&state, "reg", "Password123!", 1).await;
+    let mut router = rclone_router(state.clone());
+    let admin = login(&mut router, "adm", "Password123!").await;
+    let reg = login(&mut router, "reg", "Password123!").await;
+
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/rclone/jobs",
+        Some(&admin),
+        Some(json!({"name": "j", "source": "/srv/a", "destination": "gdrive:a"})),
+    )
+    .await;
+    let id = body["data"]["id"].as_i64().expect("job id");
+    // A job created without a cadence is `none` — the shipped default.
+    assert_eq!(body["data"]["schedule_kind"], json!("none"));
+    assert!(body["data"]["next_run_at"].is_null());
+
+    let (_, body) = send(
+        &mut router,
+        Method::PUT,
+        &format!("/api/rclone/jobs/{id}/schedule"),
+        Some(&reg),
+        Some(json!({"schedule_kind": "interval", "interval_minutes": 30})),
+    )
+    .await;
+    denied(&body, "Admin privileges required");
+
+    // Unknown job → clean error.
+    let (_, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/rclone/jobs/999999/schedule",
+        Some(&admin),
+        Some(json!({"schedule_kind": "none"})),
     )
     .await;
     denied(&body, "Sync job not found");

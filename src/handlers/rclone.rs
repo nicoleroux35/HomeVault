@@ -50,7 +50,7 @@ use tokio::process::{Child, Command};
 
 use crate::config::paths::RCLONE_MOUNT_BASE;
 use crate::handlers::AppStateArc;
-use crate::storage::sync_job_repo::{NewSyncJob, SyncJob, SyncJobRepository};
+use crate::storage::sync_job_repo::{NewSyncJob, ScheduleKind, SyncJob, SyncJobRepository};
 use crate::utils::process::run_timed_async_result;
 
 // ---------------------------------------------------------------------------
@@ -1808,9 +1808,42 @@ pub async fn handle_sync(
     execute_sync(&admin_username, &req).await
 }
 
-/// Shared core of [`handle_sync`] and [`handle_run_sync_job`]: validates the
-/// pair of paths and runs the `rclone sync` subprocess.
-async fn execute_sync(admin_username: &str, req: &SyncRequest) -> Json<ApiResponse<String>> {
+/// What one `rclone sync` run actually did.
+///
+/// Separate from the HTTP envelope so the **scheduler** can run the same work
+/// and record its outcome without an `axum::response::Response` — ROADMAP 16.4
+/// requires the transfer to leave the request, so the core cannot be shaped
+/// around a reply.
+#[derive(Debug)]
+struct SyncOutcome {
+    ok: bool,
+    /// stdout on success, the stderr tail or the transport error on failure.
+    message: String,
+}
+
+impl SyncOutcome {
+    fn ok(stdout: &str) -> Self {
+        Self {
+            ok: true,
+            message: if stdout.trim().is_empty() {
+                "Sync complete".to_string()
+            } else {
+                stdout.trim().to_string()
+            },
+        }
+    }
+
+    fn failed(message: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            message: message.into(),
+        }
+    }
+}
+
+/// Shared core of [`handle_sync`], [`handle_run_sync_job`] and the scheduler:
+/// validates the pair of paths and runs the `rclone sync` subprocess.
+async fn run_sync_core(admin_username: &str, req: &SyncRequest) -> SyncOutcome {
     let mut args = vec!["sync".to_string()];
 
     // Determine path types
@@ -1823,10 +1856,10 @@ async fn execute_sync(admin_username: &str, req: &SyncRequest) -> Json<ApiRespon
 
     // Validate
     if source.is_empty() || source == ":" {
-        return Json(ApiResponse::error("Source is required"));
+        return SyncOutcome::failed("Source is required");
     }
     if dest.is_empty() || dest == ":" {
-        return Json(ApiResponse::error("Destination is required"));
+        return SyncOutcome::failed("Destination is required");
     }
 
     args.push(source);
@@ -1877,10 +1910,10 @@ async fn execute_sync(admin_username: &str, req: &SyncRequest) -> Json<ApiRespon
                     "Admin '{}' ran a sync from '{}' to '{}'",
                     admin_username, req.source, req.destination
                 ));
-                Json(ApiResponse::success(stdout.to_string()))
+                SyncOutcome::ok(&stdout)
             } else {
                 crate::sse::PROGRESS_MANAGER.fail_job(&job, &stderr);
-                Json(ApiResponse::error(&format!("Sync failed: {}", stderr)))
+                SyncOutcome::failed(format!("Sync failed: {}", stderr.trim()))
             }
         }
         Err(e) => {
@@ -1889,8 +1922,34 @@ async fn execute_sync(admin_username: &str, req: &SyncRequest) -> Json<ApiRespon
                 "Admin '{}' — sync from '{}' to '{}' aborted: {}",
                 admin_username, req.source, req.destination, e
             ));
-            Json(ApiResponse::error(&format!("Sync failed: {}", e)))
+            SyncOutcome::failed(format!("Sync failed: {e}"))
         }
+    }
+}
+
+/// The `SyncRequest` a stored job executes.
+fn request_for(job: &SyncJob) -> SyncRequest {
+    SyncRequest {
+        source_type: Some(job.source_type.clone()),
+        source: job.source.clone(),
+        source_path: job.source_path.clone(),
+        dest_type: Some(job.dest_type.clone()),
+        destination: job.destination.clone(),
+        dest_path: job.dest_path.clone(),
+        delete: false,
+        dry_run: false,
+        update: true,
+        exclude: None,
+    }
+}
+
+/// [`execute_sync`]'s HTTP shell: the shared core plus the JSON envelope.
+async fn execute_sync(admin_username: &str, req: &SyncRequest) -> Json<ApiResponse<String>> {
+    let outcome = run_sync_core(admin_username, req).await;
+    if outcome.ok {
+        Json(ApiResponse::success(outcome.message))
+    } else {
+        Json(ApiResponse::error(&outcome.message))
     }
 }
 
@@ -1910,6 +1969,29 @@ pub struct CreateSyncJobRequest {
     pub dest_type: String,
     pub destination: String,
     pub dest_path: Option<String>,
+    /// `none` (default — a job that only runs on demand), `interval` or `cron`.
+    /// ROADMAP 16.4: the server needs a cadence to schedule anything, and a
+    /// nightly sync is the whole reason this exists.
+    #[serde(default)]
+    pub schedule_kind: Option<String>,
+    /// Cadence in minutes, when `schedule_kind = "interval"`.
+    #[serde(default)]
+    pub interval_minutes: Option<i64>,
+    /// 5-field cron, when `schedule_kind = "cron"` (evaluated in the appliance
+    /// timezone, exactly like a Scheduled Task).
+    #[serde(default)]
+    pub cron_expr: Option<String>,
+}
+
+/// Body for editing a job's cadence.
+#[derive(Deserialize)]
+pub struct UpdateSyncJobScheduleRequest {
+    #[serde(default)]
+    pub schedule_kind: Option<String>,
+    #[serde(default)]
+    pub interval_minutes: Option<i64>,
+    #[serde(default)]
+    pub cron_expr: Option<String>,
 }
 
 fn default_cloud() -> String {
@@ -1927,6 +2009,18 @@ pub struct SyncJobView {
     pub destination: String,
     pub direction: String,
     pub created_at: String,
+    /// `none` | `interval` | `cron`.
+    pub schedule_kind: String,
+    pub interval_minutes: Option<i64>,
+    pub cron_expr: Option<String>,
+    /// Server-written run state (ROADMAP 16.4): the screen renders these
+    /// instead of remembering the response to its own click.
+    pub last_run_at: Option<String>,
+    /// `ok` | `failed` | `None` (never run).
+    pub last_status: Option<String>,
+    pub last_message: Option<String>,
+    /// The next time the scheduler will run this job.
+    pub next_run_at: Option<String>,
 }
 
 impl From<SyncJob> for SyncJobView {
@@ -1943,6 +2037,13 @@ impl From<SyncJob> for SyncJobView {
             destination: job.destination,
             direction: direction.to_string(),
             created_at: job.created_at,
+            schedule_kind: ScheduleKind::parse(&job.schedule_kind).as_str().to_string(),
+            interval_minutes: job.interval_minutes,
+            cron_expr: job.cron_expr,
+            last_run_at: job.last_run_at,
+            last_status: job.last_status,
+            last_message: job.last_message,
+            next_run_at: job.next_run_at,
         }
     }
 }
@@ -1980,6 +2081,7 @@ pub async fn handle_create_sync_job(
         return Json(ApiResponse::error(&e));
     }
 
+    let schedule_kind = ScheduleKind::parse(req.schedule_kind.as_deref().unwrap_or("none"));
     let job = NewSyncJob {
         name: req.name,
         source_type: req.source_type,
@@ -1988,6 +2090,9 @@ pub async fn handle_create_sync_job(
         dest_type: req.dest_type,
         destination: req.destination,
         dest_path: req.dest_path,
+        schedule_kind,
+        interval_minutes: req.interval_minutes,
+        cron_expr: req.cron_expr,
     };
     if let Err(msg) = job.validate() {
         return Json(ApiResponse::error(&msg));
@@ -2039,13 +2144,60 @@ pub async fn handle_delete_sync_job(
     }
 }
 
-/// Run a saved sync job now (admin). Rethrows the saved configuration through
-/// the same `execute_sync` core as the ad-hoc sync endpoint.
+/// Runs one persisted job end to end and records its outcome.
+///
+/// Shared by the "Run now" button and the scheduler so the two cannot disagree
+/// about what a run *is*: the same request, the same core, the same recorded
+/// state (ROADMAP 16.4). `trigger` only labels the event log.
+async fn run_saved_job(
+    state: &AppStateArc,
+    job: &SyncJob,
+    actor: &str,
+    trigger: &str,
+) -> SyncOutcome {
+    crate::events::log_event(format!(
+        "Admin '{}' — {} sync job '{}' ({} -> {})",
+        actor, trigger, job.name, job.source, job.destination
+    ));
+    let outcome = run_sync_core(actor, &request_for(job)).await;
+
+    // The state is written **by the server**, whichever path started the run,
+    // and the next due time is recomputed from the moment the run finished.
+    let finished_at = chrono::Utc::now();
+    let next = crate::storage::sync_job_repo::next_run_after(job, finished_at);
+    let repo = SyncJobRepository::new(state.db.pool());
+    if let Err(e) = repo
+        .record_run(
+            job.id,
+            if outcome.ok { "ok" } else { "failed" },
+            &outcome.message,
+            finished_at,
+            next,
+        )
+        .await
+    {
+        // A run that happened but could not be recorded must say so: the screen
+        // would otherwise show the previous outcome as if it were this one.
+        tracing::warn!(
+            "Sync job '{}' ran but its state could not be saved: {}",
+            job.name,
+            e
+        );
+    }
+    outcome
+}
+
+/// POST /api/rclone/jobs/{id}/run — run a saved sync job now (admin).
+///
+/// The run happens **inside** this request (the `rclone` subprocess is awaited
+/// under `RCLONE_TRANSFER_TIMEOUT`), which is what a "Run now" button means: the
+/// admin wants to watch it. The *scheduled* path is the one that must not be
+/// request-shaped, and it is not — see [`run_scheduler_loop`].
 pub async fn handle_run_sync_job(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
     Path(id): Path<i64>,
-) -> Json<ApiResponse<String>> {
+) -> Json<ApiResponse<SyncJobView>> {
     let admin_username = match check_admin(&state, &headers).await {
         Ok(u) => u,
         Err(e) => return Json(ApiResponse::error(&e)),
@@ -2063,22 +2215,195 @@ pub async fn handle_run_sync_job(
         }
     };
 
-    let req = SyncRequest {
-        source_type: Some(job.source_type),
-        source: job.source,
-        source_path: job.source_path,
-        dest_type: Some(job.dest_type),
-        destination: job.destination,
-        dest_path: job.dest_path,
-        delete: false,
-        dry_run: false,
-        update: true,
-        exclude: None,
+    // ROADMAP 16.4: two paths can start a run (the button and the scheduler),
+    // so a manual click while one is in flight would run the same `rclone`
+    // twice over the same pair of directories.
+    let _guard = match JobRunGuard::acquire(id, &job.name) {
+        Ok(guard) => guard,
+        Err(reason) => return Json(ApiResponse::error(&reason)),
     };
-    execute_sync(&admin_username, &req).await
+
+    let outcome = run_saved_job(&state, &job, &admin_username, "ran").await;
+    let updated = repo.get_by_id(id).await.ok().flatten().unwrap_or(job);
+    if outcome.ok {
+        Json(ApiResponse::success(SyncJobView::from(updated)))
+    } else {
+        // The state is recorded either way, so the screen shows the failure;
+        // the envelope still reports it.
+        Json(ApiResponse {
+            success: false,
+            data: Some(SyncJobView::from(updated)),
+            error: Some(outcome.message),
+        })
+    }
 }
 
-/// Run copy operation
+/// PUT /api/rclone/jobs/{id}/schedule — set (or clear) a job's cadence (admin).
+pub async fn handle_update_sync_job_schedule(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(req): Json<UpdateSyncJobScheduleRequest>,
+) -> Json<ApiResponse<SyncJobView>> {
+    if let Err(e) = check_admin(&state, &headers).await {
+        return Json(ApiResponse::error(&e));
+    }
+
+    let repo = SyncJobRepository::new(state.db.pool());
+    let existing = match repo.get_by_id(id).await {
+        Ok(Some(job)) => job,
+        Ok(None) => return Json(ApiResponse::error("Sync job not found")),
+        Err(e) => {
+            return Json(ApiResponse::error(&format!(
+                "Failed to load sync job: {}",
+                e
+            )))
+        }
+    };
+
+    let kind = ScheduleKind::parse(req.schedule_kind.as_deref().unwrap_or("none"));
+    // Validate through the same `NewSyncJob` rules the create path uses: one
+    // definition of "a cadence that can actually be computed".
+    let probe = NewSyncJob {
+        name: existing.name.clone(),
+        source_type: existing.source_type.clone(),
+        source: existing.source.clone(),
+        source_path: existing.source_path.clone(),
+        dest_type: existing.dest_type.clone(),
+        destination: existing.destination.clone(),
+        dest_path: existing.dest_path.clone(),
+        schedule_kind: kind,
+        interval_minutes: req.interval_minutes,
+        cron_expr: req.cron_expr.clone(),
+    };
+    if let Err(msg) = probe.validate_schedule() {
+        return Json(ApiResponse::error(&msg));
+    }
+
+    let now = chrono::Utc::now();
+    match repo
+        .set_schedule(
+            id,
+            kind,
+            req.interval_minutes,
+            req.cron_expr.as_deref(),
+            now,
+        )
+        .await
+    {
+        Ok(true) => {
+            crate::events::log_event(format!(
+                "Sync job '{}' cadence set to {}",
+                existing.name,
+                kind.as_str()
+            ));
+            let updated = repo
+                .get_by_id(id)
+                .await
+                .ok()
+                .flatten()
+                .map(SyncJobView::from);
+            match updated {
+                Some(view) => Json(ApiResponse::success(view)),
+                None => Json(ApiResponse::error("Sync job not found")),
+            }
+        }
+        Ok(false) => Json(ApiResponse::error("Sync job not found")),
+        Err(e) => Json(ApiResponse::error(&format!(
+            "Failed to save the schedule: {}",
+            e
+        ))),
+    }
+}
+
+/// One run per job at a time, process-wide.
+///
+/// The scheduler tick and the "Run now" button share it, for the same reason
+/// `scheduled_tasks_scheduler::RUNNING` exists: a static is the only way two
+/// entry points cannot each believe they own the id.
+static RUNNING_JOBS: LazyLock<std::sync::Mutex<std::collections::HashSet<i64>>> =
+    LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+#[derive(Debug)]
+struct JobRunGuard {
+    id: i64,
+}
+
+impl JobRunGuard {
+    fn acquire(id: i64, name: &str) -> Result<Self, String> {
+        let mut running = RUNNING_JOBS.lock().unwrap_or_else(|e| e.into_inner());
+        if !running.insert(id) {
+            return Err(format!("Sync job '{name}' is already running"));
+        }
+        Ok(Self { id })
+    }
+}
+
+impl Drop for JobRunGuard {
+    fn drop(&mut self) {
+        let mut running = RUNNING_JOBS.lock().unwrap_or_else(|e| e.into_inner());
+        running.remove(&self.id);
+    }
+}
+
+/// How often the scheduler looks for a due job.
+///
+/// A sync is a minutes-scale operation, so a one-minute tick is plenty and
+/// keeps the query (one indexed `next_run_at <= ?`) trivial.
+pub const SYNC_SCHEDULER_POLL_SECS: u64 = 60;
+
+/// Runs forever; `tokio::spawn`ed once at startup (ROADMAP 16.4).
+///
+/// This is what makes a nightly sync possible at all: until it existed,
+/// `POST /rclone/jobs/{id}/run` was the only way a persisted job ever ran.
+/// The transfer happens **outside** any HTTP request — the tick spawns the run
+/// and moves on, so a six-hour sync does not hold a connection open (the
+/// request-shaped-transfer debt recorded in `docs/guides/cloud-sync.md`).
+pub async fn run_scheduler_loop(state: AppStateArc) {
+    let mut interval = tokio::time::interval(Duration::from_secs(SYNC_SCHEDULER_POLL_SECS));
+    loop {
+        interval.tick().await;
+        if let Err(e) = tick_due(&state).await {
+            tracing::warn!("Cloud-sync scheduler tick failed: {}", e);
+        }
+    }
+}
+
+/// Starts every job that is due at this instant.
+async fn tick_due(state: &AppStateArc) -> Result<(), String> {
+    let repo = SyncJobRepository::new(state.db.pool());
+    let now = chrono::Utc::now();
+    let due = repo.due_now(now).await.map_err(|e| e.to_string())?;
+
+    for job in due {
+        // Claim the run first: a job that is still going (from the previous
+        // tick, or started by hand) is skipped, and its `next_run_at` is left
+        // alone so the claim is retried on the next tick.
+        let guard = match JobRunGuard::acquire(job.id, &job.name) {
+            Ok(guard) => guard,
+            Err(_) => {
+                tracing::info!("Sync job '{}' still running; skipping tick", job.name);
+                continue;
+            }
+        };
+        // The scheduler is not a user; the event log names the trigger instead.
+        let state_for_run = state.clone();
+        tokio::spawn(async move {
+            let _guard = guard;
+            let outcome = run_saved_job(&state_for_run, &job, "scheduler", "scheduled").await;
+            if !outcome.ok {
+                tracing::warn!(
+                    "Scheduled sync job '{}' failed: {}",
+                    job.name,
+                    outcome.message
+                );
+            }
+        });
+    }
+    Ok(())
+}
+
+/// Run copy operation/// Run copy operation
 pub async fn handle_copy(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
@@ -2927,5 +3252,96 @@ gdrive: /mnt/rclone/vault2 fuse.rclone rw 0 0
                 .expect("must deserialize without the bool fields");
         assert!(!req.read_only && !req.allow_other && !req.daemon);
         assert_eq!(req.path.as_deref(), Some("backups"));
+    }
+
+    // -----------------------------------------------------------------
+    // ROADMAP 16.4 — a saved job can be scheduled, and the run leaves the request
+    // -----------------------------------------------------------------
+
+    /// The cadence a persisted job runs on. A scheduled run must not be
+    /// request-shaped, so the loop exists and is spawned at startup; an
+    /// unscheduled job must never be picked up.
+    #[test]
+    fn the_scheduler_loop_exists_and_is_wired_at_startup() {
+        let src = include_str!("rclone.rs");
+        assert!(
+            src.contains("pub async fn run_scheduler_loop"),
+            "the sync scheduler must exist (ROADMAP 16.4)"
+        );
+        assert!(
+            src.contains("SYNC_SCHEDULER_POLL_SECS"),
+            "the tick interval must be a named constant"
+        );
+        let boot = include_str!("../web/mod.rs");
+        assert!(
+            boot.contains("rclone::run_scheduler_loop"),
+            "the loop must be spawned at startup, or a nightly sync never happens"
+        );
+    }
+
+    /// The run core is shared by the button and the scheduler: the scheduler
+    /// cannot use an HTTP envelope, which is exactly why it was extracted.
+    #[test]
+    fn the_run_core_returns_a_plain_outcome() {
+        let src = include_str!("rclone.rs");
+        assert!(
+            src.contains("struct SyncOutcome") && src.contains("async fn run_sync_core"),
+            "the transfer must be callable without an axum response"
+        );
+        assert!(
+            src.contains("record_run"),
+            "the run path must write the server-side state"
+        );
+    }
+
+    /// Two entry points (button + scheduler) must not run the same job twice
+    /// over the same pair of directories.
+    #[test]
+    fn a_job_cannot_run_twice_at_once() {
+        let _first = JobRunGuard::acquire(4242, "guard test").expect("first claim wins");
+        let second = JobRunGuard::acquire(4242, "guard test");
+        assert!(second.is_err(), "a second concurrent run must be refused");
+        let err = second.unwrap_err();
+        assert!(err.contains("already running"), "{err}");
+        drop(_first);
+        assert!(
+            JobRunGuard::acquire(4242, "guard test").is_ok(),
+            "the claim must be released when the run ends"
+        );
+    }
+
+    /// The stored job is replayed through the same request shape the ad-hoc
+    /// endpoint uses, and the recorded state keeps the run's own options (a
+    /// scheduled sync must never gain `--delete` from nowhere).
+    #[test]
+    fn a_saved_job_replays_as_a_non_destructive_sync() {
+        let job = SyncJob {
+            id: 7,
+            name: "nightly".into(),
+            source_type: "cloud".into(),
+            source: "gdrive:photos".into(),
+            source_path: Some("2024".into()),
+            dest_type: "local".into(),
+            destination: "/srv/photos".into(),
+            dest_path: None,
+            created_at: "2026-10-24T00:00:00Z".into(),
+            schedule_kind: "cron".into(),
+            interval_minutes: None,
+            cron_expr: Some("0 3 * * *".into()),
+            last_run_at: None,
+            last_status: None,
+            last_message: None,
+            next_run_at: None,
+        };
+        let req = request_for(&job);
+        assert_eq!(req.source, "gdrive:photos");
+        assert_eq!(req.source_path.as_deref(), Some("2024"));
+        assert_eq!(req.destination, "/srv/photos");
+        assert_eq!(req.source_type.as_deref(), Some("cloud"));
+        assert_eq!(req.dest_type.as_deref(), Some("local"));
+        assert!(!req.delete, "a scheduled sync must never delete by default");
+        assert!(!req.dry_run);
+        assert!(req.update);
+        assert!(req.exclude.is_none());
     }
 }

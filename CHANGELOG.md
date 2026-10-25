@@ -6,6 +6,32 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **A Cloud Sync job can finally run on its own (2026-10-24, ROADMAP 16.4).**
+  Until now `POST /rclone/jobs/{id}/run` was the only way a saved sync job ever
+  ran: the row held the definition and nothing else, so a nightly sync could not
+  be expressed and the screen's "last run / status" columns were the outcome of
+  the click that had just happened. A job now carries a cadence — an
+  **interval** (1 minute to 366 days) or a **cron** expression evaluated in the
+  appliance timezone, like a Scheduled Task — and `next_run_at` is computed by
+  the server on create, on edit and after every run. A scheduler spawned at
+  startup picks up whatever is due and runs it **outside any HTTP request**, so
+  a six-hour sync no longer holds a connection open. Everything new is optional
+  with "no schedule" as the default: an existing appliance behaves exactly as
+  before until an admin opts in. A cadence that cannot be computed (an interval
+  with no value or out of range, an unparseable cron) is refused when the job is
+  saved, naming the field, instead of producing a job the scheduler would retry
+  on every tick.
+
+- **The run state is the server's, not the screen's (2026-10-24, ROADMAP
+  16.4).** `last_run_at`, `last_status` and `last_message` are written by
+  whichever path ran the job — the "Run now" button or the scheduler — so what
+  the screen shows is a fact. "Run now" answers with the updated job, and a
+  failed run now shows its reason on the row instead of leaving the badge on
+  whatever the previous attempt left. Two entry points can start a run, so a
+  job cannot run twice at once (a click during a scheduled run is refused).
+
 ### Fixed
 
 - **A VM's screen console no longer stays alive on a half-open connection

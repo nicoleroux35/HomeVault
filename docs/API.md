@@ -648,9 +648,10 @@ Every Compose project-name path parameter is validated by
 | POST | `/rclone/remotes` (add) | admin |
 | DELETE | `/rclone/remotes/{name}` | admin |
 | GET | `/rclone/jobs` (list) | auth — persisted sync jobs |
-| POST | `/rclone/jobs` (create) | admin |
+| POST | `/rclone/jobs` (create) | admin — optional `schedule_kind` (`none`\|`interval`\|`cron`), `interval_minutes`, `cron_expr`; an unusable cadence is a `400` naming the field |
 | DELETE | `/rclone/jobs/{id}` | admin |
-| POST | `/rclone/jobs/{id}/run` | admin — one-shot "Run now" reusing the `execute_sync` core (no scheduler; the job never auto-runs) |
+| PUT | `/rclone/jobs/{id}/schedule` | admin — `{ schedule_kind, interval_minutes?, cron_expr? }`; `none` clears the due time and keeps the last-run history |
+| POST | `/rclone/jobs/{id}/run` | admin — "Run now"; awaits the run and returns the **updated job** (`last_status`, `last_run_at`, `last_message`, `next_run_at`). A scheduled job also runs on its own via the server-side scheduler (ROADMAP 16.4) |
 
 `POST /rclone/crypt` was removed — it was a fake stub (always returned a
 canned success string without doing anything) with zero frontend callers.

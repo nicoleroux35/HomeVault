@@ -27,7 +27,8 @@ without a large mechanical rewrite of every return point).
 | `GET /rclone/jobs` | auth | list persisted sync jobs |
 | `POST /rclone/jobs` | admin | create a persisted sync job |
 | `DELETE /rclone/jobs/{id}` | admin | delete a sync job |
-| `POST /rclone/jobs/{id}/run` | admin | one-shot "Run now" — reuses the `execute_sync` core extracted from `handle_sync`; there is **no scheduler**, jobs never auto-run (see *Known debt*) |
+| `POST /rclone/jobs/{id}/run` | admin | "Run now" — awaits the run in the request, then returns the **updated job** (schedule + recorded outcome) |
+| `PUT /rclone/jobs/{id}/schedule` | admin | set or clear the cadence: `{ schedule_kind: none\|interval\|cron, interval_minutes?, cron_expr? }` |
 
 `POST /rclone/crypt` was removed entirely — it was a fake stub (always
 returned a canned "Crypt operation configured" string without doing
@@ -149,15 +150,16 @@ registry; a tracked child whose mount disappeared is reported
 - **Sync selects offer every configured remote**, including `local` type ones.
   The old `cloudRemotes` filter hid them although `build_rclone_path`
   supports them — a screen-only restriction with no server rule behind it.
-- The **job status badge is the outcome of the last click**, not a server-side
-  run state: the `sync_jobs` table stores the definition only (see *Known
-  debt*). Commented as such at the call site so it is not mistaken for a
-  scheduler.
+- The **job status badge reads the server-side run state** (`last_status`,
+  `last_run_at`, `last_message`) and the schedule columns (`schedule_kind`,
+  `next_run_at`) — ROADMAP 16.4 closed the debt this bullet used to describe.
+  The screen must render what the API returns, never the outcome of its own
+  click.
 - `frontend/src/lib/services/api.ts`: `getRcloneStatus`, `getCloudRemotes`,
   `getCloudProviders`, `getCloudMounts`, `addCloudRemote`, `deleteCloudRemote`,
   `mountCloudRemote`, `unmountCloudRemote`, `syncCloud`, `copyCloud`,
   `getCloudConfig`, `saveCloudConfig`, `listSyncJobs`, `createSyncJob`,
-  `deleteSyncJob`, `runSyncJob`. `unmountCloudRemote(mountPoint)` sends
+  `deleteSyncJob`, `runSyncJob`, `updateSyncJobSchedule`. `unmountCloudRemote(mountPoint)` sends
   `{ mount_point }` — which is why the backend has a dedicated
   `MountStopRequest`.
 
@@ -208,6 +210,20 @@ registry; a tracked child whose mount disappeared is reported
   requires an admin session (`check_admin`).
 - **Every rclone subprocess is bounded** by one of the four deadlines above,
   through `run_timed_async_result`. Do not add a bare `.output()`/`.status()`.
+- **A job's run state is written by the server, never by the client.** Both the
+  "Run now" button and the scheduler go through `run_saved_job`, which calls
+  `record_run`; a screen that renders `last_status` must read it from the API,
+  not remember its own response (ROADMAP 16.4).
+- **A scheduled job never gains `--delete`.** `request_for` builds the request
+  from the stored definition with `delete: false`, `dry_run: false`,
+  `update: true` — a scheduled run must be no more destructive than a
+  hand-started one.
+- **One run per job at a time.** `JobRunGuard` is process-wide; without it the
+  tick and a manual click would run two `rclone` processes over the same pair of
+  directories.
+- **A saved job with `schedule_kind = 'none'` is never due.** The due query
+  filters on the kind as well as on `next_run_at`, so clearing a cadence really
+  stops the runs rather than leaving one final firing behind.
 - **A mount this process starts is a mount this process stops.** The child
   lives in `MOUNTS` until `handle_mount_stop`/`shutdown_mounts` reaps it; never
   reintroduce `--daemon`, `kill_on_drop(true)` or a dropped `Child`.
@@ -259,15 +275,75 @@ registry; a tracked child whose mount disappeared is reported
   and by integration tests over HTTP (mode bits on a tempdir config, refusals,
   the `{ mount_point }` body), not by a live FUSE mount.
 
-## Known debt
+## Scheduling a persisted job (ROADMAP 16.4, 2026-10-24)
 
-- **No scheduler (ROADMAP 16.4).** `POST /rclone/jobs/{id}/run` is the only way
-  a persisted job runs; nothing records a due time, an interval or a last
-  outcome server-side, so the screen's "last run / status" columns come from
-  the click that just happened. A nightly sync cannot be expressed yet.
-- A transfer runs inside its HTTP request. The 6 h ceiling bounds the damage,
-  but a real background runner (the scheduler above) is what removes the
-  request-shaped transfer.
+Before this, `POST /rclone/jobs/{id}/run` was the only way a saved job ever ran:
+the `sync_jobs` row held the definition and nothing else, so a nightly sync
+could not be expressed and the screen's "last run / status" columns were the
+outcome of the click that had just happened. Both halves are now server-side.
+
+### The cadence
+
+`sqlx/migrations/059_sync_job_schedule.sql` adds, all nullable with `none` as
+the default — an existing appliance behaves exactly as before until an admin
+opts in:
+
+| Column | Meaning |
+|---|---|
+| `schedule_kind` | `none` \| `interval` \| `cron` |
+| `interval_minutes` | cadence for `interval` (1 … 366 days, inclusive) |
+| `cron_expr` | 5-field cron for `cron`, evaluated in the **appliance timezone** (same `next_run_at` machinery as a Scheduled Task: `restic_scheduler::parse_schedule`) |
+| `next_run_at` | when the scheduler will consider the job due (indexed) |
+| `last_run_at` / `last_status` / `last_message` | the outcome of the last **finished** attempt |
+
+Validation happens **before** the row is written (`NewSyncJob::validate_schedule`)
+and names the field: an interval with no value or out of range, a cron that
+cannot be parsed, a cron over 120 chars. A job whose cadence cannot be computed
+must never exist, or the scheduler would pick it up on every tick — the failure
+mode item 12.3 had to fix on the tasks screen.
+
+### Due-time arithmetic
+
+- **First run**: an interval job is due **one interval after creation** (an
+  "every 24 h" job created at 09:00 first runs tomorrow at 09:00 — not
+  immediately, which would surprise the admin still typing), a cron job at its
+  first occurrence.
+- **After a run**: an interval job is rescheduled from **the moment the run
+  finished**, not from the previous due time — a sync that took twenty minutes
+  would otherwise fire again immediately and the overlap guard would skip it,
+  making "every hour" behave like "whenever the previous one ended". A cron job
+  is rescheduled from its own schedule, which is what a cron means.
+- Switching the cadence to `none` clears `next_run_at` (the scheduler stops
+  picking it up) and **keeps** the last-run state — that is history.
+
+### The loop, and why the transfer is no longer request-shaped
+
+`rclone::run_scheduler_loop(state)` is spawned at startup
+(`src/web/mod.rs`). Every `SYNC_SCHEDULER_POLL_SECS` (60 s) it asks
+`SyncJobRepository::due_now(now)` (one indexed query) and, for each due job,
+**spawns** the run and moves on. The transfer therefore happens outside any
+HTTP request — this is the request-shaped-transfer debt paid off.
+
+Two entry points can start a run (the button and the tick), so both take a
+`JobRunGuard` — a process-wide `HashSet<i64>` for the same reason
+`scheduled_tasks_scheduler::RUNNING` exists: a static is the only way two entry
+points cannot each believe they own the job. A job that is still running is
+skipped with its `next_run_at` untouched, so the claim is retried next tick.
+
+### One core, one state write
+
+`run_sync_core` (extracted from `handle_sync`) returns a plain `SyncOutcome`
+instead of an `axum::Response`, precisely so the scheduler can call it. Both
+paths go through `run_saved_job`, which runs the core and then writes
+`record_run(status, message, finished_at, next_run)`: the server always owns the
+state, whichever path started the run. A run whose state could not be saved logs
+a `warn` — the screen would otherwise show the previous outcome as if it were
+this one.
+
+`POST /rclone/jobs/{id}/run` still awaits the run in the request: that is what
+"Run now" means (the admin is watching it). It answers with the **updated job**,
+so the screen renders what the server recorded rather than assuming `200` meant
+"it worked".
 
 ## Related
 
