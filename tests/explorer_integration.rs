@@ -385,6 +385,21 @@ fn p(root: &Path, rel: &str) -> String {
     root.join(rel).to_string_lossy().to_string()
 }
 
+/// Percent-encodes every byte that is not unreserved — enough for a path used
+/// as a query value (`..`, `/`, spaces), and no dependency needed.
+fn urlencode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
+            other => out.push_str(&format!("%{:02X}", other)),
+        }
+    }
+    out
+}
+
 /// A handler must never 500; either it failed the auth gate or returned a
 /// clean `success:false`.
 fn assert_clean_rejection(status: StatusCode, body: &Value) {
@@ -3101,4 +3116,252 @@ async fn test_upload_sessions_are_capped_per_user() {
         .await;
         assert_eq!(status, StatusCode::OK);
     }
+}
+
+// ===========================================================================
+// ROADMAP 10.5 / 10.6 — residual Explorer hardening
+// ===========================================================================
+
+/// Sends a chunk as a **stream** (several frames) rather than one buffered
+/// body, which is the shape the endpoint now consumes.
+async fn send_streamed_chunk(
+    router: &mut Router,
+    session_id: &str,
+    offset: usize,
+    frames: Vec<Vec<u8>>,
+    token: &str,
+) -> (StatusCode, Value) {
+    let uri = format!("/api/explorer/upload/chunk?session_id={session_id}&offset={offset}");
+    let stream = futures_util::stream::iter(
+        frames
+            .into_iter()
+            .map(|f| Ok::<_, std::io::Error>(axum::body::Bytes::from(f))),
+    );
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header("content-type", "application/octet-stream")
+        .header("x-session-token", token)
+        .body(axum::body::Body::from_stream(stream))
+        .unwrap();
+    let resp = ServiceExt::<Req>::ready(router)
+        .await
+        .unwrap()
+        .call(req)
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json =
+        serde_json::from_slice(&body).unwrap_or(json!({"raw": String::from_utf8_lossy(&body)}));
+    (status, json)
+}
+
+/// 10.6: a chunk delivered as several frames is written in order and advances
+/// the offset by the total — the endpoint must not depend on the body being a
+/// single in-memory buffer.
+#[tokio::test]
+async fn test_chunked_upload_accepts_a_streamed_body() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "bob", "Password123!").await;
+    std::fs::create_dir_all(h.root.join("incoming")).unwrap();
+
+    let payload: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        &format!(
+            "/api/explorer/upload/session?path={}&filename=streamed.bin&size={}",
+            p(&h.root, "incoming"),
+            payload.len()
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let sid = body["data"]["session_id"].as_str().unwrap().to_string();
+
+    // Three frames, none of which is the whole chunk.
+    let frames = vec![
+        payload[..1024].to_vec(),
+        payload[1024..2048].to_vec(),
+        payload[2048..].to_vec(),
+    ];
+    let (status, body) = send_streamed_chunk(&mut r, &sid, 0, frames, &token).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["offset"].as_u64(), Some(4096), "{body}");
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        &format!("/api/explorer/upload/complete?session_id={sid}"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        std::fs::read(h.root.join("incoming/streamed.bin")).unwrap(),
+        payload,
+        "a streamed chunk must land byte for byte"
+    );
+}
+
+/// 10.6: a chunk larger than the **declared** file size is `413` and advances
+/// nothing — the client resumes from the offset it already had, and the temp
+/// file is rolled back.
+#[tokio::test]
+async fn test_a_chunk_beyond_the_declared_size_is_refused_and_commits_nothing() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "bob", "Password123!").await;
+    std::fs::create_dir_all(h.root.join("incoming")).unwrap();
+
+    // A 10-byte file.
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        &format!(
+            "/api/explorer/upload/session?path={}&filename=small.bin&size=10",
+            p(&h.root, "incoming")
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let sid = body["data"]["session_id"].as_str().unwrap().to_string();
+
+    // The first 10 bytes are accepted…
+    let (status, body) = send_chunk(&mut r, &sid, 0, b"0123456789", Some(&token)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["offset"].as_u64(), Some(10));
+
+    // …and a chunk past the end is a 413 that names the new offset to resume
+    // at (unchanged, because nothing was committed).
+    let (status, body) = send_chunk(&mut r, &sid, 10, b"overflow!", Some(&token)).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+    assert_eq!(body["success"], json!(false), "{body}");
+    assert_eq!(
+        body["offset"].as_u64(),
+        Some(10),
+        "a refused chunk must not move the offset: {body}"
+    );
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("smaller chunk"),
+        "{body}"
+    );
+
+    // The session still completes with exactly the 10 accepted bytes.
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        &format!("/api/explorer/upload/complete?session_id={sid}"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        std::fs::read(h.root.join("incoming/small.bin")).unwrap(),
+        b"0123456789"
+    );
+}
+
+/// 10.5: an admin path is normalised before it is used. `..` must not survive
+/// into the value the handler works with — it did, on that branch, because
+/// `validate_path_access` returned `PathBuf::from(path)` verbatim.
+#[tokio::test]
+async fn test_an_admin_path_is_normalised_not_echoed() {
+    let h = setup().await;
+    create_test_user(&h.state, "admin1", "Password123!", 2).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "admin1", "Password123!").await;
+
+    std::fs::create_dir_all(h.root.join("deep/nested")).unwrap();
+    std::fs::write(h.root.join("deep/nested/target.txt"), b"ok").unwrap();
+
+    // `deep/nested/../nested/target.txt` resolves to the same file; the listing
+    // (and the download) must agree with the resolved path.
+    let with_traversal = format!("{}/deep/nested/../nested", h.root.to_string_lossy());
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        &format!("/api/explorer/list?path={}", urlencode(&with_traversal)),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let names: Vec<String> = body["data"]["entries"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| e["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        names.contains(&"target.txt".to_string()),
+        "a `..` path must resolve to the real directory: {body}"
+    );
+}
+
+/// 10.5: an admin still reaches outside the allowed roots — the fix normalises
+/// the path, it does not confine the admin branch.
+#[tokio::test]
+async fn test_an_admin_path_outside_the_roots_still_works() {
+    let h = setup().await;
+    create_test_user(&h.state, "admin2", "Password123!", 2).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "admin2", "Password123!").await;
+
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("elsewhere.txt"), b"x").unwrap();
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        &format!(
+            "/api/explorer/list?path={}",
+            urlencode(&outside.path().to_string_lossy())
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "admins are not confined to the allowed roots: {body}"
+    );
+}
+
+/// 10.5: a non-admin is still confined, `..` included — the admin branch's
+/// normalisation must not have loosened the confined one.
+#[tokio::test]
+async fn test_a_non_admin_traversal_is_still_refused() {
+    let h = setup().await;
+    create_test_user(&h.state, "member", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "member", "Password123!").await;
+
+    let escaping = format!("{}/../etc", h.root.to_string_lossy());
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        &format!("/api/explorer/list?path={}", urlencode(&escaping)),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
