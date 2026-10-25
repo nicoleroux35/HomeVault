@@ -33,6 +33,7 @@
 //! model list, admin-only model pull, language-aware + RAG-enriched prompts.
 
 use crate::handlers::AppState;
+use crate::utils::process::run_timed;
 use crate::utils::ResponseHelper;
 use axum::http::HeaderMap;
 use axum::response::Response;
@@ -989,13 +990,18 @@ fn detect_system_specs() -> SystemSpecs {
 }
 
 fn detect_gpu() -> (Option<String>, Option<u64>) {
-    if let Ok(output) = std::process::Command::new("nvidia-smi")
-        .args([
+    // GPU probes are the classic "hangs for ever" case: `nvidia-smi` on a
+    // wedged driver, or `rocm-smi` on a GPU in a bad power state, can block
+    // indefinitely. Both are bounded (ROADMAP X.9).
+    const GPU_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    if let Ok(output) = run_timed(
+        std::process::Command::new("nvidia-smi").args([
             "--query-gpu=name,memory.total",
             "--format=csv,noheader,nounits",
-        ])
-        .output()
-    {
+        ]),
+        GPU_PROBE_TIMEOUT,
+    ) {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if let Some(first_line) = stdout.lines().next() {
@@ -1008,10 +1014,10 @@ fn detect_gpu() -> (Option<String>, Option<u64>) {
         }
     }
 
-    if let Ok(output) = std::process::Command::new("rocm-smi")
-        .args(["--showmeminfo", "vram"])
-        .output()
-    {
+    if let Ok(output) = run_timed(
+        std::process::Command::new("rocm-smi").args(["--showmeminfo", "vram"]),
+        GPU_PROBE_TIMEOUT,
+    ) {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {

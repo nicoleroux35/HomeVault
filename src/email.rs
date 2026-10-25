@@ -364,15 +364,15 @@ impl EmailService {
     fn send_via_mutt(to: &str, subject: &str, body: &str, is_html: bool) -> Result<(), EmailError> {
         let content_type = if is_html { "text/html" } else { "text/plain" };
 
-        let mut child = Command::new("mutt")
-            .args(["-e", &format!("set content_type={}", content_type)])
+        let mut cmd = Command::new("mutt");
+        cmd.args(["-e", &format!("set content_type={}", content_type)])
             .args(["-s", subject])
             .arg("--")
             .arg(to)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
+            .stderr(std::process::Stdio::piped());
+        let mut child = spawn_under_deadline(&mut cmd)
             .map_err(|e| EmailError::Send(format!("mutt not found: {}", e)))?;
 
         if let Some(mut stdin) = child.stdin.take() {
@@ -395,13 +395,13 @@ impl EmailService {
 
     /// Send via `sendmail`, piping the fully-formed raw email on stdin.
     fn send_via_sendmail(to: &str, content: &str) -> Result<(), EmailError> {
-        let mut child = Command::new("sendmail")
-            .args(["-f", "homevault@localhost"])
+        let mut cmd = Command::new("sendmail");
+        cmd.args(["-f", "homevault@localhost"])
             .arg(to)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
+            .stderr(std::process::Stdio::piped());
+        let mut child = spawn_under_deadline(&mut cmd)
             .map_err(|e| EmailError::Send(format!("sendmail not found: {}", e)))?;
 
         if let Some(mut stdin) = child.stdin.take() {
@@ -437,12 +437,12 @@ impl EmailService {
         };
         let from = config.from_address.trim();
 
-        let mut child = Command::new("msmtp")
-            .args(msmtp_argv(config_file.as_deref(), from, to))
+        let mut cmd = Command::new("msmtp");
+        cmd.args(msmtp_argv(config_file.as_deref(), from, to))
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
+            .stderr(std::process::Stdio::piped());
+        let mut child = spawn_under_deadline(&mut cmd)
             .map_err(|e| EmailError::Send(format!("msmtp not found: {}", e)))?;
 
         if let Some(mut stdin) = child.stdin.take() {
@@ -625,6 +625,33 @@ fn tail(stderr: &[u8]) -> String {
     } else {
         text.chars().take(MAX_MTA_STDERR).collect::<String>() + "…"
     }
+}
+
+/// Spawns an MTA child under [`EMAIL_TIMEOUT_SECS`].
+///
+/// `Child::spawn` itself can block before any of the wait-with-timeout logic
+/// runs: a `sudo`-wrapped MTA, a binary on an unreachable mount, or a
+/// `sendmail` symlink pointing at a stuck queue manager all hang the *fork*.
+/// The ceiling here covers that half, and the existing
+/// [`WaitWithTimeout`] covers the run (ROADMAP X.9).
+fn spawn_under_deadline(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+    // Tokio-free by design: `email.rs` runs these from `spawn_blocking` (the
+    // notification engine), so a blocking spawn is already off the runtime.
+    let started = Instant::now();
+    let child = cmd.spawn()?;
+    if started.elapsed() >= Duration::from_secs(EMAIL_TIMEOUT_SECS) {
+        // The child took the whole budget just to exec; do not hand it back as
+        // if it were healthy — kill it and report the timeout the way the wait
+        // path does.
+        let mut child = child;
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "process timed out",
+        ));
+    }
+    Ok(child)
 }
 
 /// Extension trait: wait for a child with stderr captured, so a failure can be

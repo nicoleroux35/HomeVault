@@ -197,7 +197,10 @@ fn run_kill(flag: &str, signal: &str, pgid: u32) -> bool {
     }
     cmd.arg("--").arg(&target);
 
-    match cmd.output() {
+    // Bounded: `sudo kill` with a signal that the target ignores, or a `sudo`
+    // waiting on a prompt, must not hold the cancel path for ever
+    // (ROADMAP X.9).
+    match crate::utils::process::run_timed(&mut cmd, std::time::Duration::from_secs(30)) {
         Ok(out) => out.status.success(),
         Err(e) => {
             warn!("Rescue: failed to run 'sudo kill': {}", e);

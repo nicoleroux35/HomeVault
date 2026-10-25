@@ -342,10 +342,17 @@ async fn run_clamscan(
     scan_archives: bool,
     job_id: Option<&str>,
 ) -> Result<(AvScanSummary, Vec<ThreatMatch>), String> {
-    let mut child = Command::new("clamscan")
-        .args(clamscan_args(scan_path, quarantine_dir, scan_archives))
+    // The scan itself is deliberately unbounded (a full-drive ClamAV pass takes
+    // as long as it takes and is cancelled through `cancel_scan()`), but the
+    // *spawn* must not hang: without `kill_on_drop`, a scan whose task is
+    // dropped leaves `clamscan` running with nothing tracking it
+    // (ROADMAP X.9). `Command` here is `tokio::process::Command`.
+    let mut cmd = Command::new("clamscan");
+    cmd.args(clamscan_args(scan_path, quarantine_dir, scan_archives))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to start clamscan: {}", e))?;
 

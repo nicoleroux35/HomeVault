@@ -88,10 +88,13 @@ impl SecurityValidator {
     /// determined (e.g. `findmnt` unavailable) — callers must still fall
     /// back to the static list in that case.
     fn root_disk() -> Option<String> {
-        let output = std::process::Command::new("findmnt")
-            .args(["-n", "-o", "SOURCE", "/"])
-            .output()
-            .ok()?;
+        // Bounded: `findmnt` reads the mount table, and on a host with a dead
+        // network mount that read can block — this is on the destructive-path
+        // guard, so it must answer (ROADMAP X.9).
+        let mut cmd = std::process::Command::new("findmnt");
+        cmd.args(["-n", "-o", "SOURCE", "/"]);
+        let output =
+            crate::utils::process::run_timed(&mut cmd, std::time::Duration::from_secs(10)).ok()?;
         if !output.status.success() {
             return None;
         }

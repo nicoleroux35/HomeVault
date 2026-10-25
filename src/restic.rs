@@ -38,6 +38,8 @@ use std::time::Duration;
 use thiserror::Error;
 use tracing::info;
 
+use crate::utils::process::run_timed;
+
 /// Ceiling for a metadata call (`snapshots`, `stats`, `diff`, `find`,
 /// `unlock`, a snapshot forget). These read the repository index, never the
 /// data, so a minute is already generous — and a hung `restic` (an
@@ -47,6 +49,16 @@ pub const RESTIC_QUERY_TIMEOUT: Duration = Duration::from_secs(120);
 /// Ceiling for `restic init`, which on a remote backend creates a config
 /// object and a set of pack files over the network.
 pub const RESTIC_INIT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Ceiling on a **local capability probe** (`which restic`, `restic version`,
+/// `zfs --version`, `mountpoint`). These are milliseconds on a healthy host;
+/// the ceiling exists so a wedged `exec` cannot pin the caller (ROADMAP X.9).
+pub const RESTIC_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Ceiling on the `mount`/`umount` pair used to expose a snapshot for a
+/// restore. `mount` on an unreachable ZFS dataset blocks indefinitely, and the
+/// caller holds a guard that must eventually be released (ROADMAP X.9).
+pub const RESTIC_MOUNT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A path, repository or pattern is never longer than this. Guards the DB
 /// columns and keeps a pathological request out of argv.
@@ -318,7 +330,10 @@ pub struct ResticService;
 
 impl ResticService {
     fn restic_cmd() -> Result<Command, ResticError> {
-        let which = Command::new("which").arg("restic").output();
+        let which = run_timed(
+            &mut Command::new("which").arg("restic"),
+            RESTIC_PROBE_TIMEOUT,
+        );
         match which {
             Ok(out) if out.status.success() => Ok(Command::new("restic")),
             _ => Err(ResticError::NotFound),
@@ -633,15 +648,20 @@ impl ResticService {
     // -----------------------------------------------------------------------
 
     pub fn is_available() -> bool {
-        Command::new("restic")
-            .arg("version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        run_timed(
+            &mut Command::new("restic").arg("version"),
+            RESTIC_PROBE_TIMEOUT,
+        )
+        .map(|o| o.status.success())
+        .unwrap_or(false)
     }
 
     pub fn get_version() -> Result<String, ResticError> {
-        let output = Command::new("restic").arg("version").output()?;
+        let output = run_timed(
+            &mut Command::new("restic").arg("version"),
+            RESTIC_PROBE_TIMEOUT,
+        )
+        .map_err(ResticError::CommandFailed)?;
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
         } else {
@@ -753,7 +773,11 @@ impl ResticService {
         Self::set_env(&mut cmd, repo);
         cmd.arg("init");
 
-        let output = cmd.output()?;
+        // `restic init` reaches a remote backend: the `run_restic_op` outer
+        // budget only stops *waiting*, it does not kill the child, so the call
+        // itself carries the init ceiling (ROADMAP X.9).
+        let output =
+            run_timed(&mut cmd, RESTIC_INIT_TIMEOUT).map_err(ResticError::CommandFailed)?;
         if output.status.success() {
             info!("Restic repository initialized: {}", repo.repository);
             Ok(())
@@ -1052,7 +1076,8 @@ impl ResticService {
         Self::set_env(&mut cmd, repo);
         cmd.args(["snapshots", "--json"]);
 
-        let output = cmd.output()?;
+        let output =
+            run_timed(&mut cmd, RESTIC_QUERY_TIMEOUT).map_err(ResticError::CommandFailed)?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(ResticError::CommandFailed(stderr.to_string()));
@@ -1261,7 +1286,8 @@ impl ResticService {
             cmd.arg("--prune");
         }
 
-        let output = cmd.output()?;
+        let output =
+            run_timed(&mut cmd, RESTIC_QUERY_TIMEOUT).map_err(ResticError::CommandFailed)?;
         if output.status.success() {
             info!("Restic forget completed for repo: {}", repo.name);
             Ok(())
@@ -1276,7 +1302,8 @@ impl ResticService {
         Self::set_env(&mut cmd, repo);
         cmd.arg("prune");
 
-        let output = cmd.output()?;
+        let output =
+            run_timed(&mut cmd, RESTIC_QUERY_TIMEOUT).map_err(ResticError::CommandFailed)?;
         if output.status.success() {
             info!("Restic prune completed for repo: {}", repo.name);
             Ok(())
@@ -1291,7 +1318,8 @@ impl ResticService {
         Self::set_env(&mut cmd, repo);
         cmd.args(["stats", "--json"]);
 
-        let output = cmd.output()?;
+        let output =
+            run_timed(&mut cmd, RESTIC_QUERY_TIMEOUT).map_err(ResticError::CommandFailed)?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(ResticError::CommandFailed(stderr.to_string()));
@@ -1327,7 +1355,8 @@ impl ResticService {
         Self::set_env(&mut cmd, repo);
         cmd.arg("unlock");
 
-        let output = cmd.output()?;
+        let output =
+            run_timed(&mut cmd, RESTIC_QUERY_TIMEOUT).map_err(ResticError::CommandFailed)?;
         if output.status.success() {
             info!("Restic repo unlocked: {}", repo.name);
             Ok(())
@@ -1346,7 +1375,8 @@ impl ResticService {
         Self::set_env(&mut cmd, repo);
         cmd.args(["stats", "--json", "--mode", "restore-size", snapshot_id]);
 
-        let output = cmd.output()?;
+        let output =
+            run_timed(&mut cmd, RESTIC_QUERY_TIMEOUT).map_err(ResticError::CommandFailed)?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(ResticError::CommandFailed(stderr.to_string()));
@@ -1368,7 +1398,8 @@ impl ResticService {
         Self::set_env(&mut cmd, repo);
         cmd.args(["diff", snapshot_a, snapshot_b]);
 
-        let output = cmd.output()?;
+        let output =
+            run_timed(&mut cmd, RESTIC_QUERY_TIMEOUT).map_err(ResticError::CommandFailed)?;
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         } else {
@@ -1398,7 +1429,8 @@ impl ResticService {
             cmd.args(["--snapshot", snap]);
         }
 
-        let output = cmd.output()?;
+        let output =
+            run_timed(&mut cmd, RESTIC_QUERY_TIMEOUT).map_err(ResticError::CommandFailed)?;
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         } else {
@@ -1413,7 +1445,8 @@ impl ResticService {
         Self::set_env(&mut cmd, repo);
         cmd.args(["forget", snapshot_id]);
 
-        let output = cmd.output()?;
+        let output =
+            run_timed(&mut cmd, RESTIC_QUERY_TIMEOUT).map_err(ResticError::CommandFailed)?;
         if output.status.success() {
             info!("Restic snapshot deleted: {}", snapshot_id);
             Ok(())
@@ -1444,21 +1477,25 @@ impl SnapshotMount {
         std::fs::create_dir_all(mount_point)
             .map_err(|e| ResticError::CommandFailed(format!("Cannot create {mount_point}: {e}")))?;
 
-        let is_zfs = Command::new("zfs")
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
+        let is_zfs = run_timed(
+            &mut Command::new("zfs").arg("--version"),
+            RESTIC_PROBE_TIMEOUT,
+        )
+        .map(|o| o.status.success())
+        .unwrap_or(false);
 
         let output = if is_zfs {
-            Command::new("mount")
-                .args(["-t", "zfs", snapshot_path, mount_point])
-                .output()?
+            run_timed(
+                &mut Command::new("mount").args(["-t", "zfs", snapshot_path, mount_point]),
+                RESTIC_MOUNT_TIMEOUT,
+            )
         } else {
-            Command::new("mount")
-                .args(["--bind", dataset, mount_point])
-                .output()?
-        };
+            run_timed(
+                &mut Command::new("mount").args(["--bind", dataset, mount_point]),
+                RESTIC_MOUNT_TIMEOUT,
+            )
+        }
+        .map_err(ResticError::CommandFailed)?;
 
         if output.status.success() {
             Ok(guard)
@@ -1478,7 +1515,10 @@ impl SnapshotMount {
 
 impl Drop for SnapshotMount {
     fn drop(&mut self) {
-        let _ = Command::new("umount").arg(&self.mount_point).output();
+        let _ = run_timed(
+            &mut Command::new("umount").arg(&self.mount_point),
+            RESTIC_MOUNT_TIMEOUT,
+        );
         let _ = std::fs::remove_dir(&self.mount_point);
     }
 }
@@ -2000,5 +2040,63 @@ mod tests {
         };
         let sv = serde_json::to_value(&stats).unwrap();
         assert_eq!(sv["snapshots_count"], 3);
+    }
+}
+
+#[cfg(test)]
+mod x9_guards {
+    //! ROADMAP X.9 — no unbounded subprocess in this module.
+    //!
+    //! X.2 left this module out of its sweep, so a `getent` behind a dead NSS
+    //! backend, a `sudo` waiting on a prompt, or a `mount` on an unreachable
+    //! export pinned the caller with no ceiling. The guard is per module
+    //! because that is what makes a *new* unbounded call fail locally;
+    //! `utils/process.rs` carries the tree-wide one.
+
+    /// Every `Command::new` of this file must reach a bounded invocation.
+    #[test]
+    fn every_subprocess_is_bounded() {
+        let src = include_str!("restic.rs");
+        let mut offenders = Vec::new();
+        let lines: Vec<&str> = src.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains("Command::new(") {
+                continue;
+            }
+            let window = lines[i..(i + 14).min(lines.len())].join("\n");
+            let invokes = [".output()", ".status()", ".spawn()", "wait_with_output()"]
+                .iter()
+                .any(|needle| window.contains(needle));
+            if !invokes {
+                continue;
+            }
+            if window.contains("run_timed")
+                || window.contains("run_timed")
+                || window.contains("spawn_under_deadline")
+                || window.contains("tokio::time::timeout")
+            {
+                continue;
+            }
+            offenders.push(format!("{}: {}", i + 1, line.trim()));
+        }
+        assert!(
+            offenders.is_empty(),
+            "these invocations have no deadline (ROADMAP X.9): {offenders:?}"
+        );
+    }
+
+    /// The two new ceilings must be shorter than the *outer* budget they sit
+    /// under, or a per-call deadline would never fire before the operation's
+    /// own timeout: a probe is a probe, and a mount must give up before the
+    /// caller's `run_restic_op` gives up on it.
+    #[test]
+    fn the_new_ceilings_are_ordered_within_the_query_budget() {
+        use super::{
+            RESTIC_INIT_TIMEOUT, RESTIC_MOUNT_TIMEOUT, RESTIC_PROBE_TIMEOUT, RESTIC_QUERY_TIMEOUT,
+        };
+        assert!(RESTIC_PROBE_TIMEOUT < RESTIC_QUERY_TIMEOUT);
+        assert!(RESTIC_MOUNT_TIMEOUT < RESTIC_QUERY_TIMEOUT);
+        // `init` on a remote backend is the long one, by design.
+        assert!(RESTIC_INIT_TIMEOUT > RESTIC_QUERY_TIMEOUT);
     }
 }

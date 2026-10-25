@@ -584,4 +584,185 @@ mod tests {
             .await
             .is_none());
     }
+
+    // -----------------------------------------------------------------
+    // ROADMAP X.9 — the tree-wide source guard
+    // -----------------------------------------------------------------
+
+    /// Every `Command::new` of `src/` must reach a bounded invocation.
+    ///
+    /// X.2 claimed this tree-wide and only enforced it in the modules that got
+    /// their own guard (`mdns`, `shares`, `health`, `disk`, …), so 98 sites
+    /// survived across 26 files. This guard is the missing global one: it walks
+    /// `src/`, finds every `Command::new(…)`, and looks at the next few lines
+    /// for an invocation terminator (`.output()`, `.status()`, `.spawn()`,
+    /// `wait_with_output()`) that is **not** wrapped by `run_timed…`, by one of
+    /// the named bounded spawn helpers, or by an explicit
+    /// `tokio::time::timeout`.
+    ///
+    /// Two families are legitimately exempt, and they are listed rather than
+    /// discovered — a new exemption must be added here on purpose:
+    ///
+    /// 1. **Long-running children** whose lifetime is the work itself
+    ///    (`ddrescue`, `photorec`, `clamscan`, the TestDisk scan): they are
+    ///    cancelled through their process group and carry `kill_on_drop`, not a
+    ///    deadline.
+    /// 2. **The helpers that build a command for a caller** (`smart::std_command`
+    ///    / `tokio_command`, `encryption::run`, the test shims): the bound lives
+    ///    at the call site, which this guard also scans.
+    /// Every entry carries the reason it exists; the guard prints the file and
+    /// the line, so a new exemption is a deliberate edit here.
+    const LONG_RUNNING_CHILDREN: &[(&str, &str)] = &[
+        // A full-drive ClamAV pass: cancelled through `cancel_scan()`, and the
+        // spawn carries `kill_on_drop`.
+        ("antivirus.rs", "clamscan"),
+        // A disk clone / a file recovery: they run for hours by design and are
+        // cancelled through their process group (`process_group(0)` + the
+        // bounded `sudo kill`).
+        ("rescue/service.rs", "ddrescue"),
+        ("rescue/service.rs", "photorec"),
+        // The TestDisk scan spawns then waits under `TESTDISK_REBUILD_TIMEOUT`
+        // immediately afterwards (`child.wait_with_output()` inside
+        // `tokio::time::timeout`). Matched on the `sudo` wrapper, since the
+        // argv that names the tool is spread over the following lines.
+        ("rescue/service.rs", "/cmd"),
+        // Builders, not callers: `std_command`/`tokio_command` hand the command
+        // to a caller whose own call site is bounded (`disk.rs::bounded`,
+        // `dashboard.rs`, `health.rs`, the scheduler), and the guard scans those
+        // too.
+        ("smart.rs", "sudo"),
+        // Same shape: `encryption.rs::run` is the module's bounded runner.
+        ("encryption.rs", ""),
+    ];
+
+    fn src_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
+    }
+
+    fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                rust_files(&path, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// A `Command::new` is bounded when one of these appears before the
+    /// invocation terminator.
+    fn is_bounded(window: &str) -> bool {
+        [
+            "run_timed",
+            "run_timed_async",
+            "run_timed_with_stdin",
+            "run_timed_async_with_stdin",
+            "run_timed_to_file",
+            "run_timed_detached",
+            "spawn_under_deadline",
+            "spawn_child",
+            "tokio::time::timeout",
+            "acl_run",
+            "grp_run",
+            "sftp_run",
+            "pam_run",
+            "run_probe",
+        ]
+        .iter()
+        .any(|needle| window.contains(needle))
+    }
+
+    #[test]
+    fn every_subprocess_of_the_tree_is_bounded() {
+        let mut files = Vec::new();
+        rust_files(&src_dir(), &mut files);
+        assert!(
+            files.len() > 40,
+            "the sweep found only {} files — it is not walking src/",
+            files.len()
+        );
+
+        let mut offenders = Vec::new();
+        for path in &files {
+            let rel = path
+                .strip_prefix(src_dir())
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let text = std::fs::read_to_string(path).expect("read source");
+            let lines: Vec<&str> = text.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                if !line.contains("Command::new(") {
+                    continue;
+                }
+                // The helper definitions themselves, and this guard's own text.
+                if rel.contains("utils/process.rs") {
+                    continue;
+                }
+                let window = lines[i..(i + 14).min(lines.len())].join("\n");
+                // Plain substring checks — the terminators are literal enough
+                // and a regex dependency would be overkill for a source guard.
+                let invokes = [".output()", ".status()", ".spawn()", "wait_with_output()"]
+                    .iter()
+                    .any(|needle| window.contains(needle));
+                if !invokes || is_bounded(&window) {
+                    continue;
+                }
+                // The needle may sit on a later line of a multi-line `args([…])`
+                // (the TestDisk argv, for instance), so match against the whole
+                // window rather than the `Command::new` line alone.
+                let exempt = LONG_RUNNING_CHILDREN.iter().any(|(file, needle)| {
+                    rel.ends_with(file) && (needle.is_empty() || window.contains(needle))
+                });
+                if exempt {
+                    continue;
+                }
+                offenders.push(format!("{rel}:{}", i + 1));
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "these `Command::new` invocations have no deadline (ROADMAP X.9) — \
+             route them through `utils::process::run_timed*` or add a named \
+             exemption with its reason:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    /// The guard must actually bite: a deliberately unbounded call is caught.
+    /// Checked on a sample line rather than by editing `src/`, so the test
+    /// cannot leave the tree in a broken state.
+    #[test]
+    fn the_source_guard_detects_an_unbounded_call() {
+        let unbounded = "let out = Command::new(\"df\").arg(\"/\").output()?;";
+        let window = unbounded.to_string();
+        assert!(!is_bounded(&window));
+        assert!(window.contains(".output()"));
+
+        let bounded = "run_timed(Command::new(\"df\").arg(\"/\"), T).ok()?;";
+        assert!(is_bounded(bounded));
+    }
+
+    /// The exemption list must not become a dumping ground: every entry names a
+    /// real file and a real reason, and none of them is `utils/process.rs`
+    /// itself.
+    #[test]
+    fn every_exemption_names_a_real_file() {
+        for (file, _needle) in LONG_RUNNING_CHILDREN {
+            let path = src_dir().join(file);
+            assert!(
+                path.is_file(),
+                "exemption for {file} points at a file that does not exist"
+            );
+        }
+        assert!(
+            LONG_RUNNING_CHILDREN.len() <= 8,
+            "the exemption list is growing without review"
+        );
+    }
 }

@@ -46,6 +46,13 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Deadline on `docker compose logs` (a log read, not a build).
+///
+/// The read streams from the daemon; a daemon that stopped answering must not
+/// hold the blocking thread that serves the app's log panel (ROADMAP X.9).
+const COMPOSE_LOGS_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The catalog view sent to the frontend: manifest metadata (localized)
 /// plus live install/run state.
@@ -939,17 +946,20 @@ pub async fn handle_catalog_logs(
         .unwrap_or(200)
         .clamp(1, 2000);
     let output = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("docker")
-            .args([
-                "compose",
-                "-p",
-                &install_key,
-                "logs",
-                "--no-color",
-                "--tail",
-                &tail.to_string(),
-            ])
-            .output()
+        // Bounded: `docker compose logs` streams from the daemon, and a daemon
+        // that stopped answering used to hold this blocking thread for ever
+        // (ROADMAP X.9).
+        let mut cmd = std::process::Command::new("docker");
+        cmd.args([
+            "compose",
+            "-p",
+            &install_key,
+            "logs",
+            "--no-color",
+            "--tail",
+            &tail.to_string(),
+        ]);
+        crate::utils::process::run_timed(&mut cmd, COMPOSE_LOGS_TIMEOUT)
             .map_err(|e| format!("failed to run docker compose logs: {e}"))
             .and_then(|o| {
                 if o.status.success() {

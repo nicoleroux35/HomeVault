@@ -511,12 +511,15 @@ async fn find_aria2() -> Option<String> {
         let check = if bin.starts_with('/') {
             tokio::fs::metadata(bin).await.is_ok()
         } else {
-            tokio::process::Command::new("which")
-                .arg(bin)
-                .output()
-                .await
-                .map(|o| o.status.success())
-                .unwrap_or(false)
+            // Bounded: a `PATH` entry on a dead automount makes `which` block
+            // (ROADMAP X.9).
+            crate::utils::process::run_timed_async(
+                tokio::process::Command::new("which").arg(bin),
+                std::time::Duration::from_secs(10),
+            )
+            .await
+            .map(|o| o.status.success())
+            .unwrap_or(false)
         };
         if check {
             return Some(bin.to_string());

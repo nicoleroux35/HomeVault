@@ -1180,9 +1180,12 @@ pub(crate) fn parse_df_available(stdout: &str) -> Option<u64> {
 
 /// Free bytes at `target` via `df`. `None` when the path is unusable.
 fn target_available_bytes(target: &str) -> Option<u64> {
-    std::process::Command::new("df")
-        .args(["-B1", "--output=avail", target])
-        .output()
+    // Bounded: `df` on a target whose mount is gone (an unmounted array, a
+    // dead NFS export) blocks — and this decides whether a restore has room
+    // (ROADMAP X.9).
+    let mut cmd = std::process::Command::new("df");
+    cmd.args(["-B1", "--output=avail", target]);
+    crate::utils::process::run_timed(&mut cmd, std::time::Duration::from_secs(10))
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| parse_df_available(&String::from_utf8_lossy(&o.stdout)))
