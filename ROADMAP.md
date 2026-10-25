@@ -1,7 +1,7 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-24 (X.7 and X.8 closed — one auth primitive, one status
-contract) — current version: 1.0.0
+Last updated: 2026-10-24 (28.1/28.2 and 29.1/29.2 closed; X.9 opened — X.2's
+"every subprocess is bounded" was over-claimed) — current version: 1.0.0
 
 ## How to read this file
 
@@ -84,14 +84,14 @@ Two structural facts explain most of the list:
 |---|---|---|---|
 | 10b | File Explorer — residual hardening | P2 | 3 |
 | 16.4 | Cloud Sync (rclone) — no scheduler | P2 | 1 |
-| 28 | Activity taskbar | P2 | 3 |
-| 29 | mDNS | P2 | 2 |
+| 28 | Activity taskbar | P2 | 1 |
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | 32 | Virtual Machines — residual | P2 | 2 |
 | 33 | Transfer quotas — residual | P2 | 1 |
-| — | Cross-cutting | — | 0 |
+| X.9 | Cross-cutting — subprocess deadlines, round 2 | P2 | 98 |
 
-Total open findings: **13** (13 per-area + 0 cross-cutting). Item 27 (2
+Total open findings: **10** (9 per-area + 1 cross-cutting: X.9 carries 98
+sites in 26 files, counted rather than estimated). Item 27 (2
 findings) left the open list on 2026-10-24 — see Done — and with it the last
 P1; **X.1 closed the same day** (Explorer was its last module — see Done
 2026-10-24 (f)), **X.2 closed the same day too** (Done 2026-10-24 (k)), so no
@@ -99,9 +99,12 @@ subprocess of the tree runs without a deadline, **X.3 closed on 2026-10-24**
 (Done 2026-10-24 (l)) — every mutating screen now surfaces its failure — and
 **X.5 closed the same day** (Done 2026-10-24 (m)): every count in `TESTING.md`
 was re-derived. **X.6 became a standing Process rule** rather than a finding,
-and **X.7 and X.8 closed on 2026-10-24** (Done 2026-10-24 (n)), which leaves
-**no cross-cutting finding open** — every guarded endpoint now goes through one
-primitive and answers one status contract.
+and **X.7 and X.8 closed on 2026-10-24** (Done 2026-10-24 (n)) — every guarded
+endpoint now goes through one primitive and answers one status contract. That
+closed the cross-cutting list as it stood, **but picking up item 29 immediately
+proved X.2's acceptance was over-claimed**: `src/mdns.rs` (the module that item
+touches) still had five bare `Command` invocations, and a sweep of the tree
+found **98 more in 26 files**. They are now tracked honestly as **X.9**.
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
@@ -170,11 +173,16 @@ place; X.6 became a Process rule. **X.7 and X.8 closed on 2026-10-24** (Done
 (n)): `admin_guard` is the only module that turns `x-session-token` into an
 identity decision — the nine duplicated primitives and the 65 inline header
 blocks are gone — and the status contract is stated once (`401` no/unknown
-session, `403` non-admin, `400` only a malformed request). What is left, in
-order: 28/29 (small, self-contained), 10b (10.5/10.6/10.7 — the residual
-hardening), 32/33 (residuals of closed items), 16.4 (the only remaining
-*feature*: a scheduler for persisted sync jobs) and 31 (pure maintainability,
-do it last, one tab at a time).
+session, `403` non-admin, `400` only a malformed request). **28.1/28.2 and 29.1/29.2 closed on 2026-10-24** (Done (o)), which also
+**opened X.9**: picking up item 29 exposed that X.2's "every
+`std::process::Command` of the tree now runs under `utils/process`" was not
+true — `mdns.rs` had five bare invocations, and a sweep found 98 more in 26
+files. X.9 is now the biggest single item on the list and, by the Process rule
+below ("always fix X.1/X.2-shaped debt before the feature-level findings"), it
+goes first. After it: 10b (10.5/10.6/10.7 — the residual hardening), 32/33
+(residuals of closed items), 28.3 (the only remaining *feature* besides 16.4: a
+live-hardware poller), 16.4 (a scheduler for persisted sync jobs) and 31 (pure
+maintainability, do it last, one tab at a time).
 
 ---
 
@@ -278,26 +286,28 @@ covered by unit/integration tests, never by a live FUSE mount.
 
 ### 28. Activity taskbar
 
-- [ ] **28.1 — No backoff on poll failure.** `activityStore.ts:44,83` polls
-      every 2000 ms unconditionally, so a failing backend is hit 30×/min per open
-      desktop. Add exponential backoff.
-- [ ] **28.2 — Failed jobs vanish instead of showing a failure row.**
-      `src/handlers/activity.rs:82` surfaces only `Pending | Running`, so a job
-      that failed one second ago disappears (it only reaches the bell).
+28.1 and 28.2 were closed on 2026-10-24 — see Done (2026-10-24 (o)). One
+finding is left, and it is a **feature**, not a defect:
+
 - [ ] **28.3 — Phase 2, documented.** Syncthing folder sync and Storage
       operations (mdadm resync, `zpool`/`btrfs` scrub, `luksFormat`, RAID
       rebuild) need a poller turning live system state into synthetic jobs, plus
-      a live-hardware pass (`docs/guides/activity.md:99-108`). A
+      a live-hardware pass (`docs/guides/activity.md` → *Not yet covered*). A
       `/api/activity/stream` could replace the poll.
+      *Why it is still open:* both halves need hardware this change cannot
+      reach — `/proc/mdstat`, `zpool status` and the Syncthing API only tell the
+      truth on a host that actually has a resyncing array, a scrubbing pool and a
+      paired device, and a poller written against a stub would be untested code
+      shipped as a feature. The design note in the guide is the acceptance
+      document; implementing it is a separate change with its own hardware pass.
 
 ### 29. mDNS
 
-- [ ] **29.1 — `unpublish()` is dead code.** `src/mdns.rs:431` has no caller, so
-      disabling mDNS leaves the Avahi service file and the host-name override on
-      disk. Wire it into the settings path.
-- [ ] **29.2 — `systemctl restart avahi-daemon` on any hostname change**
-      (`:411`) briefly drops every other Avahi advertisement on the host
-      (printers, shares). A reload would do.
+Closed on 2026-10-24 — see Done (2026-10-24 (o)). Both findings were real
+defects, not debt: `unpublish()` had no caller at all (so "discovery off" wrote
+a setting nothing acted on), and a host-name change restarted `avahi-daemon`,
+dropping every other advertisement on the host. The detail lives in
+[guides/mdns.md](docs/guides/mdns.md).
 
 ### 31. Docker — `api.ts` consolidation (maintainability)
 
@@ -363,19 +373,22 @@ items 25/13.)*
       from a handler's async body. A CI grep (or a clippy lint) would keep it
       that way.
 **X.2 — No timeout on subprocesses.** Closed on 2026-10-24 — see Done
-(2026-10-24 (k)). Every `std::process::Command` of the tree now runs under
-`src/utils/process.rs` — `run_timed` (blocking), `run_timed_async` /
+(2026-10-24 (k)) — **for the modules it named**, and its Done entry over-claimed
+the rest: it said *every* `std::process::Command` of the tree was bounded, which
+was not true then and is tracked as **X.9** below. What did land: the helper set
+in `src/utils/process.rs` — `run_timed` (blocking), `run_timed_async` /
 `run_timed_async_result` (async), `run_timed_with_stdin` (`sudo tee`),
-`run_timed_to_file` (extraction) and the new `run_timed_detached` (the
-OpenVPN daemon parent) — with per-module ceilings and a source guard in each
-module that fails if a bare `.output()`/`.spawn()`/`.status()` comes back. The
-modules closed by this item: `disk.rs`, `pools.rs`, `snapshots.rs`, `cache.rs`,
-`explorer.rs`/`browser.rs`, `network.rs`, `vpn.rs`, `shares.rs` and
-`health.rs`; `encryption.rs` was already clean (ROADMAP 9). *(History: rclone
-left with item 16 on 2026-10-23, and Docker, Firewall, Restic, Syncthing, disk
+`run_timed_to_file` (extraction) and `run_timed_detached` (the OpenVPN daemon
+parent) — with per-module ceilings and a source guard in each module that fails
+if a bare invocation comes back. The modules closed by this item: `disk.rs`,
+`pools.rs`, `snapshots.rs`, `cache.rs`, `explorer.rs`/`browser.rs`,
+`network.rs`, `vpn.rs`, `shares.rs`, `health.rs` and (2026-10-24, item 29)
+`mdns.rs`; `encryption.rs` was already clean (ROADMAP 9). *(History: rclone left
+with item 16 on 2026-10-23, and Docker, Firewall, Restic, Syncthing, disk
 quotas, the System Journal and the Dashboard/Widgets surface were already
-bounded.)* The acceptance is now a source guard per module rather than a hand
-count.
+bounded.)* The acceptance is a source guard per module rather than a hand count
+— which is exactly why the gap X.9 covers survived: only the modules that got a
+guard were ever re-checked.
 **X.3 — Empty `else {}` error handling in the UI.** Closed on 2026-10-24 —
 see Done (2026-10-24 (l)). The four areas this item named were **already
 fixed** when it was picked up (CloudSync's page-level `errorMessage` +
@@ -425,6 +438,35 @@ status contract* and in `admin_guard.rs`, the 39 no-token assertions across 24
 suites were flipped, and the two tolerant `UNAUTHORIZED || BAD_REQUEST` pairs
 (`power`, `db_backup`) are strict `401` now that the two families agree.
 
+- [ ] **X.9 — Subprocess deadlines, round 2 (the 98 sites X.2 never reached).**
+      `X.2`'s Done entry claimed "every `std::process::Command` of the tree now
+      runs under `src/utils/process.rs`". That was an over-claim: only the
+      modules that received a source guard were ever re-checked. Picking up item
+      29 found five bare invocations in `src/mdns.rs` alone, and a sweep of the
+      tree (a `Command::new` whose invocation is `.output()`/`.status()`/
+      `.spawn()`/`wait_with_output()` with no `run_timed` and no
+      `tokio::time::timeout`) finds **98 more in 26 files**:
+      `sftp.rs` (21), `groups.rs` (14), `acl.rs` (8), `storage/database.rs` (8),
+      `restic.rs` (7), `setup.rs` (5), `webdav/mod.rs` (4), `auth/service.rs`
+      (3), `email.rs` (3), `app_catalog/updates.rs` (3), `handlers/user_homes.rs`
+      (3), `app_catalog/store.rs` (2), `dependencies.rs` (2),
+      `rescue/service.rs` (2), `handlers/chat.rs` (2), and one each in
+      `antivirus.rs`, `cache.rs`, `docker.rs`, `firewall.rs`, `power.rs`,
+      `smart.rs`, `rescue/jobs.rs`, `rescue/validator.rs`,
+      `handlers/downloader.rs`, `handlers/restic.rs`, `handlers/syncthing.rs`.
+      *Why it matters:* this is the same class of defect X.2 closed — a `sudo`
+      prompt, a wedged `getfacl` on a dead NFS mount, a `getent` behind a slow
+      LDAP, or a `restic` waiting on a locked repo pins a Tokio worker thread
+      with no ceiling, and several of these run on a request path (`GET
+      /shares`, the Users/Groups screens, the Explorer's ACL view).
+      *Acceptance:* every site above runs under `run_timed` /
+      `run_timed_with_stdin` / `run_timed_async` with a per-module ceiling, and
+      **each module gets its own source guard** — the missing guards are what
+      let the gap survive, so a hand count is not acceptance.
+      *Note:* `host_accounts.rs`, `rescue/service.rs`'s three
+      `tokio::time::timeout` call sites and the `tokio::process` uses that
+      already sit inside an explicit timeout are **not** counted.
+
 ---
 
 ## Process
@@ -464,6 +506,72 @@ suites were flipped, and the two tolerant `UNAUTHORIZED || BAD_REQUEST` pairs
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-24 (o)** — Activity taskbar + mDNS — **28.1, 28.2, 29.1 and 29.2
+closed** (and **X.9 opened** — see the cross-cutting list). **28.1**: the feed
+polled `/api/activity` with `setInterval(poll, 2000)` unconditionally, so a
+backend answering `500` was hit 30×/min per open desktop — a self-inflicted
+load spike exactly when the box is already unwell. The loop is now a
+`setTimeout` chain driven by a pure `nextPollDelay(failures)` (2 s → 4 → 8 → 16
+→ 32 → **60 s** cap, no jitter), one transient miss is still tolerated
+(`FAILURE_TOLERANCE`), and coming back to the tab resets the backoff and polls
+immediately. **28.2**: the feed kept only `pending | running`, so a job that
+failed one second ago vanished on the next poll — the row the user was watching
+simply disappeared. A `failed`/`cancelled` job now stays for `FAILED_GRACE`
+(60 s after its last event, from a new `ActivitySnapshot.updated_at`), carries a
+new `state` slug on the wire, and renders as a failure: no `role="progressbar"`
+(there is no progress to report), the localised word in `--hv-error-text`
+(9.4:1), and it does **not** count towards the dock badge — `count` is now the
+number of *active* rows, while the dock button and the panel key off
+`activityRowCount`, so a failure is visible without making the dock look busy.
+`is_visible`/`state_slug` are pure and unit-tested, including "a terminal state
+with no timestamp is not shown". **29.1**: `unpublish()` had **no caller at
+all**, so "discovery off" was a setting nothing acted on — the Avahi service
+file and the `host-name` override stayed on disk and the appliance kept
+answering as `homevault.local`. There is now an admin setting
+(`GeneralSettings.mdns_enabled`, shipped `Some(true)`, Settings → General →
+"Discoverable on the local network"), and the save reaches the host through
+`crate::mdns::apply_enabled` on `spawn_blocking`: off deletes the service file,
+strips the `host-name=` line (`remove_host_name`, the exact inverse of
+`ensure_host_name`) and renames the daemon back; on writes both back
+**immediately** instead of waiting up to 120 s for the reconciler. A host that
+refuses answers `200` with `mdns_notice` (the raw host reason; the card wraps
+it in the localised `settings.mdns_apply_failed`, like `autostart_error`),
+shown in the card. The reconciler now
+skips its tick while the flag is false (otherwise it recreated the file 120 s
+later), the reset-to-defaults path republishes, and `GET /mdns/status` +
+`GET /settings/general` report the **live** flag. **29.2**: a `host-name`
+change restarted `avahi-daemon`, which drops *every* other advertisement on the
+host for a few seconds (printers, other appliances' shares). The roadmap's
+suggested fix ("a reload would do") is **wrong** — `avahi-daemon(8)` states
+that `--reload` re-reads `/etc/avahi/services/*` and **not**
+`avahi-daemon.conf` — so the rename now goes through Avahi's D-Bus
+`SetHostName` (`sudo busctl call`, verified by reading `HostName` back, restart
+kept only as the logged fallback). While in the module, its five bare
+`Command` invocations were put under `run_timed`/`run_timed_with_stdin` with
+three ordered ceilings and a source guard — **which is how X.9 was found**.
+Tests: `src/mdns.rs` 10 → **18** unit (`remove_host_name` incl. the
+publish→unpublish inverse, the enable flag, the path overrides, the subprocess
+guard), `src/handlers/activity.rs` 14 → **22** (`is_visible`, `state_slug`, the
+failed-row mapping), `src/handlers/settings.rs` 29 → **32** (default,
+host-application guard, live-flag read), `src/settings_persistence.rs` 15 →
+**15** (the new field is carried by the existing import/export tests),
+`tests/activity_integration.rs` 11 → **13** (a fresh failure is visible with
+`state: "failed"`, a cancellation too, every row carries its slug),
+`tests/mdns_integration.rs` 3 → **6** (the whole settings chain with both Avahi
+paths redirected into a tempdir and `sudo`/`which`/`systemctl`/`busctl` shims on
+`PATH`: disabling really deletes the service file and the `host-name` line,
+enabling writes both back, admin-only on both verbs),
+`tests/settings_core_integration.rs` 32 → **33** (the aggregate carries the live
+flag), `tests/e2e/desktop/desktop.spec.ts` 88 → **90** (13.9 backoff — ≤3
+requests in 7 s against 4 for a 2 s cadence; 13.10 a failed row keeps its
+outcome and no badge), `tests/e2e/settings/settings.spec.ts` 111 → **112** (3.7
+the mDNS switch is staged and PUT inside the General save) with 3.4 re-targeted
+from `.first()` to the autostart row. **Written, not run** (per instruction).
+Docs: [guides/activity.md](docs/guides/activity.md),
+[guides/mdns.md](docs/guides/mdns.md),
+[guides/settings.md](docs/guides/settings.md), `docs/API.md`, `CHANGELOG.md`,
+`TESTING.md`.
 
 **2026-10-24 (n)** — Auth guard — **X.7 and X.8 closed**: one primitive decides
 who the caller is, and one contract says how a refusal is answered. `X.7`: nine

@@ -46,13 +46,14 @@
 //! `std::fs::write` to `/etc/avahi/...` would silently `EACCES` (the same
 //! class of bug already fixed in `network.rs` / `shares.rs`).
 
-use std::io::Write as _;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::Serialize;
 
 use crate::shares::{ShareType, SharesService};
+use crate::utils::process::{run_timed, run_timed_with_stdin};
 
 /// The default name HomeVault publishes itself as — the `.local` address is
 /// `<hostname>.local`, independent of the OS hostname.
@@ -79,34 +80,68 @@ pub fn mdns_hostname() -> String {
 }
 /// Avahi's main config file — we only ever touch its `host-name=` key.
 pub const AVAHI_CONF: &str = "/etc/avahi/avahi-daemon.conf";
+/// Environment override for [`AVAHI_CONF`].
+///
+/// Same seam as `RCLONE_CONFIG` (`handlers/rclone.rs`): it exists so a test can
+/// point the whole publish/unpublish path at a temp directory and prove what
+/// lands on disk **without writing to `/etc`**. Unset in production, where the
+/// compiled-in path is the only correct one.
+pub const AVAHI_CONF_ENV: &str = "HV_AVAHI_CONF";
+/// Environment override for [`SERVICE_FILE`] — see [`AVAHI_CONF_ENV`].
+pub const SERVICE_FILE_ENV: &str = "HV_AVAHI_SERVICE_FILE";
 /// The DNS-SD service definition HomeVault owns. Avahi loads every
 /// `*.service` in this directory; this is the only one we write.
 pub const SERVICE_FILE: &str = "/etc/avahi/services/homevault.service";
+
+/// The `avahi-daemon.conf` this process edits: [`AVAHI_CONF_ENV`] when set and
+/// non-empty, [`AVAHI_CONF`] otherwise.
+pub fn avahi_conf_path() -> String {
+    env_path(AVAHI_CONF_ENV).unwrap_or_else(|| AVAHI_CONF.to_string())
+}
+
+/// The DNS-SD service file this process owns: [`SERVICE_FILE_ENV`] when set and
+/// non-empty, [`SERVICE_FILE`] otherwise.
+pub fn service_file_path() -> String {
+    env_path(SERVICE_FILE_ENV).unwrap_or_else(|| SERVICE_FILE.to_string())
+}
+
+/// A non-empty environment override, or `None`. An exported-but-empty value is
+/// ignored rather than resolving to `""` (which would make `tee` fail with a
+/// confusing "No such file").
+fn env_path(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
 
 /// How often the background reconciler re-derives the advertised set (which
 /// shares are enabled can change from the Shares page at any time) and
 /// rewrites [`SERVICE_FILE`] if — and only if — the content changed.
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(120);
 
+/// Deadline on a `sudo tee`/`sudo rm` write to `/etc/avahi`. A `sudo` prompt
+/// waiting on a terminal that will never answer must not pin the reconciler
+/// thread for ever (ROADMAP X.2).
+const MDNS_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Deadline on a `systemctl`/`busctl` call against Avahi. A real service
+/// restart can wait on its own dependencies, hence the larger ceiling than
+/// the probe below.
+const MDNS_SERVICE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Deadline on a read-only probe (`which`, `systemctl is-active`, `busctl
+/// get-property`). Each one is a few milliseconds on a healthy host.
+const MDNS_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
 // ---------------------------------------------------------------------------
 // Root-write helpers (mirrors network.rs::write_as_root)
 // ---------------------------------------------------------------------------
 
 fn sudo_tee(path: &str, content: &str) -> Result<(), String> {
-    let mut child = Command::new("sudo")
-        .args(["tee", path])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    child
-        .stdin
-        .take()
-        .ok_or("sudo_tee: no stdin")?
-        .write_all(content.as_bytes())
-        .map_err(|e| e.to_string())?;
-    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    // `run_timed_with_stdin` feeds the body from its own thread and closes the
+    // pipe, so a `sudo` that never reads cannot deadlock the caller.
+    let mut cmd = Command::new("sudo");
+    cmd.args(["tee", path]);
+    let out = run_timed_with_stdin(&mut cmd, MDNS_WRITE_TIMEOUT, content.as_bytes())?;
     if !out.status.success() {
         return Err(format!(
             "failed to write {}: {}",
@@ -118,10 +153,9 @@ fn sudo_tee(path: &str, content: &str) -> Result<(), String> {
 }
 
 fn sudo_rm(path: &str) -> Result<(), String> {
-    let out = Command::new("sudo")
-        .args(["rm", "-f", path])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut cmd = Command::new("sudo");
+    cmd.args(["rm", "-f", path]);
+    let out = run_timed(&mut cmd, MDNS_WRITE_TIMEOUT)?;
     if out.status.success() {
         Ok(())
     } else {
@@ -130,10 +164,9 @@ fn sudo_rm(path: &str) -> Result<(), String> {
 }
 
 fn systemctl(action: &str) -> Result<(), String> {
-    let out = Command::new("sudo")
-        .args(["systemctl", action, "avahi-daemon"])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut cmd = Command::new("sudo");
+    cmd.args(["systemctl", action, "avahi-daemon"]);
+    let out = run_timed(&mut cmd, MDNS_SERVICE_TIMEOUT)?;
     if out.status.success() {
         Ok(())
     } else {
@@ -144,18 +177,18 @@ fn systemctl(action: &str) -> Result<(), String> {
 /// Whether a systemd unit is currently active. Read-only, needs no root
 /// (same query `dependencies.rs` uses).
 fn unit_active(unit: &str) -> bool {
-    Command::new("systemctl")
-        .args(["is-active", "--quiet", unit])
-        .status()
-        .map(|s| s.success())
+    let mut cmd = Command::new("systemctl");
+    cmd.args(["is-active", "--quiet", unit]);
+    run_timed(&mut cmd, MDNS_PROBE_TIMEOUT)
+        .map(|o| o.status.success())
         .unwrap_or(false)
 }
 
 /// `avahi-daemon` binary present on this host (matches `dependencies.rs`).
 pub fn avahi_available() -> bool {
-    Command::new("which")
-        .arg("avahi-daemon")
-        .output()
+    let mut cmd = Command::new("which");
+    cmd.arg("avahi-daemon");
+    run_timed(&mut cmd, MDNS_PROBE_TIMEOUT)
         .map(|o| o.status.success() && !o.stdout.is_empty())
         .unwrap_or(false)
         || std::path::Path::new("/usr/sbin/avahi-daemon").exists()
@@ -258,6 +291,48 @@ pub fn ensure_host_name(existing: &str, host_name: &str) -> Option<String> {
         out.push('\n');
     }
     Some(out)
+}
+
+/// Drop every `host-name` key line from the `[server]` section of an
+/// `avahi-daemon.conf` body, leaving the rest byte-for-byte intact.
+///
+/// Returns `Some(new_body)` when there was something to remove, `None` when the
+/// file carries no override (so the caller can skip the `sudo tee`). Both the
+/// active key and a commented-out one are dropped: leaving `#host-name=…`
+/// behind would make the file read as if HomeVault still owned the name, and a
+/// later `ensure_host_name` would have two lines to reason about.
+///
+/// Pure, so the "discovery off really removes the name" half is unit-testable
+/// without an Avahi daemon — the only host-touching part left is the `sudo
+/// tee` itself (ROADMAP 29.1).
+pub fn remove_host_name(existing: &str) -> Option<String> {
+    let mut out = String::with_capacity(existing.len());
+    let mut in_server = false;
+    let mut removed = false;
+
+    for line in existing.lines() {
+        let t = line.trim();
+        if t.starts_with('[') && t.ends_with(']') {
+            in_server = t.eq_ignore_ascii_case("[server]");
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let key = t.trim_start_matches('#').trim_start();
+        let is_host_name = key.split('=').next().map(str::trim) == Some("host-name");
+        if in_server && is_host_name {
+            removed = true;
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+
+    if removed {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 /// Render the `/etc/avahi/services/homevault.service` XML for the given web
@@ -375,6 +450,54 @@ pub fn detect_services() -> Vec<AdvertisedService> {
 // Publish / unpublish
 // ---------------------------------------------------------------------------
 
+/// Whether the appliance advertises itself over mDNS at all.
+///
+/// A plain `AtomicBool` rather than a read of `GENERAL_SETTINGS` on every tick:
+/// this module is the *low* layer, so it must not depend on `handlers::settings`
+/// (which itself imports `crate::mdns` for the status/TLS names). The settings
+/// path is the writer — `handlers::settings::handle_general_settings_update`
+/// and `settings_persistence::init_persistence`, both through
+/// [`set_enabled`]. Default `true`: discovery is on unless an admin turned it
+/// off, matching the shipped default of the setting.
+static ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Whether the reconciler may advertise, and whether an admin has opted out.
+pub fn is_enabled() -> bool {
+    ENABLED.load(Ordering::Relaxed)
+}
+
+/// Set the flag without touching the host (used at boot and by the settings
+/// save when the value is unchanged). Returns `true` when the value moved.
+pub fn set_enabled(enabled: bool) -> bool {
+    ENABLED.swap(enabled, Ordering::Relaxed) != enabled
+}
+
+/// Apply an admin's mDNS choice to the host: publish when it is switched on,
+/// remove both artefacts when it is switched off.
+///
+/// Order matters. Turning it **on** writes the config/service files and
+/// (re)applies the host name *before* the flag flips, so the daemon is already
+/// advertising when the next tick sees `enabled = true`. Turning it **off**
+/// unpublishes first — the service file and the `host-name` override both
+/// leave `/etc/avahi`, which is what the old code never did: `unpublish` was
+/// dead code, so switching discovery off left HomeVault advertised on the LAN
+/// and the appliance's name pinned in Avahi's config (ROADMAP 29.1).
+pub fn apply_enabled(web_port: u16, enabled: bool) -> Result<(), String> {
+    // Deliberately **not** gated on a transition: both halves are idempotent
+    // (`publish` only writes what changed, `unpublish` only removes what is
+    // there), and re-applying is what repairs a host left half-configured by a
+    // hand-edited `settings.json` or an interrupted save.
+    if enabled {
+        publish(web_port)?;
+        set_enabled(true);
+        Ok(())
+    } else {
+        unpublish()?;
+        set_enabled(false);
+        Ok(())
+    }
+}
+
 /// (Re)publish HomeVault over mDNS: pin the `homevault` host-name and write a
 /// service file describing the web UI + currently-running shares. Idempotent
 /// — only touches `avahi-daemon.conf` / the service file when their content
@@ -392,30 +515,59 @@ pub fn publish(web_port: u16) -> Result<(), String> {
     let mut needs_reload = false;
 
     // 1. Pin the published name.
-    let conf = std::fs::read_to_string(AVAHI_CONF).unwrap_or_default();
+    //
+    // The `host-name=` key is read by `avahi-daemon` **at startup only**
+    // (`avahi-daemon --reload` re-reads `/etc/avahi/services/*`, not this
+    // file — see avahi-daemon(8)), so the old code restarted the daemon on
+    // every change. That restart drops *every* other advertisement on the
+    // host for a few seconds: the admin's printers, other appliances' shares,
+    // anything else Avahi publishes on that segment. Avahi exposes
+    // `SetHostName` on its D-Bus interface, which renames the running daemon
+    // without a restart, so that is what we use — the config file is still
+    // written for the next boot, and a **restart remains the fallback** for a
+    // host whose D-Bus call is refused (no `busctl`, no system bus, Avahi not
+    // on the bus). ROADMAP 29.2.
+    let conf_path = avahi_conf_path();
+    let conf = std::fs::read_to_string(&conf_path).unwrap_or_default();
+    let mut rename_now = false;
     if let Some(new_conf) = ensure_host_name(&conf, &mdns_hostname()) {
-        sudo_tee(AVAHI_CONF, &new_conf)?;
-        needs_restart = true;
+        sudo_tee(&conf_path, &new_conf)?;
+        rename_now = true;
     }
 
     // 2. Describe the services.
     let desired = render_service_file(web_port, &detect_services());
-    let current = std::fs::read_to_string(SERVICE_FILE).unwrap_or_default();
+    let service_path = service_file_path();
+    let current = std::fs::read_to_string(&service_path).unwrap_or_default();
     if current != desired {
-        sudo_tee(SERVICE_FILE, &desired)?;
+        sudo_tee(&service_path, &desired)?;
         needs_reload = true;
     }
 
     // 3. Apply.
+    if rename_now {
+        if let Err(e) = set_running_host_name(&mdns_hostname()) {
+            tracing::warn!(
+                "mDNS: live rename to '{}' failed ({e}); falling back to an \
+                 avahi-daemon restart",
+                mdns_hostname()
+            );
+            needs_restart = true;
+        } else {
+            // The rename is live; the service file still needs a reload.
+            needs_restart = false;
+        }
+    }
     if needs_restart {
         systemctl("restart")?;
     } else if needs_reload {
         // `avahi-daemon --reload` picks up service-file changes without a
-        // full restart; fall back to systemctl reload if the binary call
-        // isn't permitted.
-        let direct = Command::new("sudo")
-            .args(["avahi-daemon", "--reload"])
-            .output()
+        // full restart (it re-reads `/etc/avahi/services/*` — see
+        // avahi-daemon(8)); fall back to `systemctl reload` if the binary call
+        // isn't permitted. Both are bounded like every other call here.
+        let mut direct_cmd = Command::new("sudo");
+        direct_cmd.args(["avahi-daemon", "--reload"]);
+        let direct = run_timed(&mut direct_cmd, MDNS_SERVICE_TIMEOUT)
             .map(|o| o.status.success())
             .unwrap_or(false);
         if !direct {
@@ -425,15 +577,102 @@ pub fn publish(web_port: u16) -> Result<(), String> {
     Ok(())
 }
 
-/// Remove HomeVault's mDNS advertisement (service file) and reload Avahi.
-/// Leaves the `host-name` override in place — harmless on its own and cheap
-/// to reuse if publishing is turned back on.
+/// Remove HomeVault's mDNS advertisement: delete the DNS-SD service file
+/// **and** the `host-name` override Avahi was pinned to, then reload the
+/// daemon so the removal is live.
+///
+/// Both artefacts have to go. An earlier version kept the `host-name` override
+/// on the grounds that it was "harmless on its own" — but it is not: the
+/// appliance keeps answering as `homevault.local` (and keeps a name reserved
+/// on the segment) after the admin switched discovery off, which is exactly
+/// the privacy default `PRIVACY.md` promises. `unpublish` itself had no caller
+/// at all, so neither artefact was ever removed (ROADMAP 29.1).
+///
+/// A reload — not a restart — is the right signal here: it re-reads
+/// `/etc/avahi/services/*`, which is the file we deleted, and it does not drop
+/// the other advertisements on the host.
 pub fn unpublish() -> Result<(), String> {
-    if !avahi_available() || !std::path::Path::new(SERVICE_FILE).exists() {
+    if !avahi_available() {
         return Ok(());
     }
-    sudo_rm(SERVICE_FILE)?;
-    let _ = systemctl("reload");
+    let mut changed = false;
+
+    let service_path = service_file_path();
+    if std::path::Path::new(&service_path).exists() {
+        sudo_rm(&service_path)?;
+        changed = true;
+    }
+
+    // Drop the `host-name=` override so the daemon falls back to the host's own
+    // name. Note the *live* name can only follow with a restart (Avahi reads
+    // this key at startup), which is the honest cost of turning discovery off
+    // and is why the loop is stopped first.
+    let conf_path = avahi_conf_path();
+    let conf = std::fs::read_to_string(&conf_path).unwrap_or_default();
+    if let Some(stripped) = remove_host_name(&conf) {
+        sudo_tee(&conf_path, &stripped)?;
+        changed = true;
+        // Live rename back to the host's own name, when D-Bus answers.
+        let host = hostname::get()
+            .map(|h| h.to_string_lossy().to_lowercase())
+            .unwrap_or_else(|_| "localhost".to_string());
+        if let Err(e) = set_running_host_name(&host) {
+            tracing::debug!("mDNS: live rename back to '{host}' skipped ({e})");
+            let _ = systemctl("restart");
+        }
+    }
+
+    if changed {
+        let _ = systemctl("reload");
+    }
+    Ok(())
+}
+
+/// Rename the **running** `avahi-daemon` through its D-Bus interface, so a
+/// host-name change does not restart the daemon and drop every other
+/// advertisement on the host (ROADMAP 29.2).
+///
+/// `sudo` because `SetHostName` is a privileged method on the system bus.
+/// Verified by reading the property back: a call that returns 0 but leaves the
+/// old name in place (a bus that swallowed the request) must not be reported
+/// as success, or the fallback restart never happens.
+fn set_running_host_name(name: &str) -> Result<(), String> {
+    let mut call = Command::new("sudo");
+    call.args([
+        "busctl",
+        "call",
+        "org.freedesktop.Avahi",
+        "/",
+        "org.freedesktop.Avahi.Server",
+        "SetHostName",
+        "s",
+        name,
+    ]);
+    let out = run_timed(&mut call, MDNS_SERVICE_TIMEOUT)?;
+    if !out.status.success() {
+        return Err(format!(
+            "busctl SetHostName failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+
+    let mut read = Command::new("busctl");
+    read.args([
+        "get-property",
+        "org.freedesktop.Avahi",
+        "/",
+        "org.freedesktop.Avahi.Server",
+        "org.freedesktop.Avahi.Server",
+        "HostName",
+    ]);
+    let out = run_timed(&mut read, MDNS_PROBE_TIMEOUT)?;
+    let reported = String::from_utf8_lossy(&out.stdout);
+    if out.status.success() && !reported.contains(name) {
+        return Err(format!(
+            "busctl reported '{}' after SetHostName({name})",
+            reported.trim()
+        ));
+    }
     Ok(())
 }
 
@@ -446,6 +685,12 @@ pub async fn run_publisher_loop(web_port: u16) {
     let mut interval = tokio::time::interval(RECONCILE_INTERVAL);
     loop {
         interval.tick().await;
+        // Switched off in Settings: the service file and the name override were
+        // removed by `apply_enabled`, and re-publishing here would put them
+        // straight back on the next tick (ROADMAP 29.1).
+        if !is_enabled() {
+            continue;
+        }
         let res = tokio::task::spawn_blocking(move || publish(web_port)).await;
         match res {
             Ok(Ok(())) => {}
@@ -461,6 +706,8 @@ pub async fn run_publisher_loop(web_port: u16) {
 
 #[derive(Debug, Serialize)]
 pub struct MdnsStatus {
+    /// The admin's choice: `false` when discovery is switched off in Settings.
+    pub enabled: bool,
     /// `avahi-daemon` installed on this host.
     pub available: bool,
     /// `avahi-daemon` currently running.
@@ -483,6 +730,7 @@ pub fn status(web_port: u16) -> MdnsStatus {
     let mut services = vec!["_http._tcp".to_string()];
     services.extend(detect_services().iter().map(|s| s.svc_type.to_string()));
     MdnsStatus {
+        enabled: is_enabled(),
         available,
         running,
         host_name: mdns_hostname(),
@@ -595,6 +843,128 @@ mod tests {
     fn test_mdns_hostname_defaults_without_override() {
         // No `HV_MDNS_HOSTNAME` in the test process → the canonical name.
         assert_eq!(mdns_hostname(), MDNS_HOSTNAME);
+    }
+
+    // -----------------------------------------------------------------
+    // ROADMAP 29.1 — turning discovery off really removes both artefacts
+    // -----------------------------------------------------------------
+
+    /// The assertion 29.1 needed: `unpublish` used to leave the `host-name`
+    /// override in place, so switching discovery off kept the appliance
+    /// answering as `homevault.local`.
+    #[test]
+    fn remove_host_name_drops_the_override_and_keeps_every_other_line() {
+        let conf = "[server]\nuse-ipv4=yes\nhost-name=homevault\nuse-ipv6=no\n\n[publish]\npublish-hinfo=no\n";
+        let out = remove_host_name(conf).expect("there is an override to remove");
+        assert!(!out.contains("host-name"), "{out}");
+        // Nothing else moved.
+        assert!(out.contains("use-ipv4=yes"));
+        assert!(out.contains("use-ipv6=no"));
+        assert!(out.contains("[publish]"));
+        assert!(out.contains("publish-hinfo=no"));
+    }
+
+    #[test]
+    fn remove_host_name_drops_a_commented_override_too() {
+        // A `#host-name=` line reads as "this file still owns the name", and it
+        // would give a later `ensure_host_name` two lines to reason about.
+        let conf = "[server]\n#host-name=old\nhost-name=homevault\n";
+        let out = remove_host_name(conf).expect("should remove");
+        assert_eq!(out.matches("host-name").count(), 0, "{out}");
+    }
+
+    #[test]
+    fn remove_host_name_is_a_noop_without_an_override() {
+        assert!(remove_host_name("[server]\nuse-ipv4=yes\n").is_none());
+        // A `host-name` outside `[server]` is not ours to touch.
+        assert!(remove_host_name("[publish]\nhost-name=x\n").is_none());
+        assert!(remove_host_name("").is_none());
+    }
+
+    /// The two directions must be exact inverses: publish pins the name,
+    /// unpublish takes it away again.
+    #[test]
+    fn publish_then_unpublish_leaves_no_override_behind() {
+        let conf = "[server]\nuse-ipv4=yes\n\n[publish]\npublish-hinfo=no\n";
+        let pinned = ensure_host_name(conf, "homevault").expect("pins the name");
+        assert!(pinned.contains("host-name=homevault"));
+        let stripped = remove_host_name(&pinned).expect("removes it again");
+        assert!(!stripped.contains("host-name"), "{stripped}");
+        assert!(stripped.contains("use-ipv4=yes"));
+        assert!(stripped.contains("publish-hinfo=no"));
+    }
+
+    /// The flag the settings path writes and the reconciler reads.
+    #[test]
+    fn the_enabled_flag_round_trips() {
+        let before = is_enabled();
+        let moved = set_enabled(!before);
+        assert!(moved, "flipping the flag must report a transition");
+        assert_eq!(is_enabled(), !before);
+        let moved_again = set_enabled(!before);
+        assert!(!moved_again, "setting the same value is not a transition");
+        assert_eq!(is_enabled(), !before);
+        // Leave the process as we found it.
+        set_enabled(before);
+        assert_eq!(is_enabled(), before);
+    }
+
+    /// `status()` has to report the live flag, not a constant: the screen shows
+    /// what the appliance actually does (ROADMAP 29.1).
+    #[test]
+    fn status_reports_the_enabled_flag() {
+        let before = is_enabled();
+        set_enabled(false);
+        assert!(!status(8080).enabled, "a disabled appliance must say so");
+        set_enabled(true);
+        assert!(status(8080).enabled);
+        set_enabled(before);
+    }
+
+    /// The path overrides exist so a test can point the whole publish/unpublish
+    /// path at a temp directory. An exported-but-empty value must be ignored
+    /// rather than resolving to `""`.
+    #[test]
+    fn the_avahi_paths_honour_their_override() {
+        assert_eq!(avahi_conf_path(), AVAHI_CONF);
+        assert_eq!(service_file_path(), SERVICE_FILE);
+
+        std::env::set_var(AVAHI_CONF_ENV, "/tmp/hv-test/avahi.conf");
+        std::env::set_var(SERVICE_FILE_ENV, "/tmp/hv-test/homevault.service");
+        assert_eq!(avahi_conf_path(), "/tmp/hv-test/avahi.conf");
+        assert_eq!(service_file_path(), "/tmp/hv-test/homevault.service");
+
+        std::env::set_var(AVAHI_CONF_ENV, "   ");
+        assert_eq!(avahi_conf_path(), AVAHI_CONF, "blank override is ignored");
+
+        std::env::remove_var(AVAHI_CONF_ENV);
+        std::env::remove_var(SERVICE_FILE_ENV);
+    }
+
+    /// ROADMAP X.2 debt in this module: every call used to be a bare
+    /// `Command` invocation with no ceiling, so a `sudo` prompt waiting on a
+    /// terminal that will never answer pinned the reconciler thread for ever.
+    #[test]
+    fn every_subprocess_is_bounded() {
+        let src = include_str!("mdns.rs");
+        for needle in [
+            concat!(".", "output()"),
+            concat!(".", "spawn()"),
+            concat!(".", "status()"),
+        ] {
+            assert!(
+                !src.contains(needle),
+                "`{needle}` waits without a deadline — use `run_timed` (ROADMAP X.2)"
+            );
+        }
+        assert!(
+            src.contains("run_timed(") && src.contains("run_timed_with_stdin("),
+            "the bounded helpers must be the ones in use"
+        );
+        // The ceilings must be ordered the way the module assumes: probes are
+        // short, service actions are long.
+        assert!(MDNS_PROBE_TIMEOUT < MDNS_SERVICE_TIMEOUT);
+        assert!(MDNS_WRITE_TIMEOUT < MDNS_SERVICE_TIMEOUT);
     }
 
     #[test]

@@ -82,6 +82,41 @@ Handlers in `src/handlers/settings.rs`. Persistence via
   from the host** at startup, so the setting never contradicts the real
   system zone.
 
+### General: local-network discovery (ROADMAP 29.1, 2026-10-24)
+
+A **"Discoverable on the local network"** switch (`mdns_enabled`) sits in the
+General card, after *Start on boot*. It is the on/off control for the
+`homevault.local` advertisement described in [mdns.md](./mdns.md).
+
+- It **ships on** (`GeneralSettings::default().mdns_enabled == Some(true)`):
+  an appliance that cannot be found on the LAN on a fresh install is not the
+  product. Only an explicit `false` switches it off.
+- The save **reaches the host**, not just `settings.json`:
+  `handle_general_settings_update` calls `crate::mdns::apply_enabled(port,
+  enabled)` on `spawn_blocking` (it runs `sudo rm`/`sudo tee`). Off →
+  the Avahi service file and the `host-name` override are removed and the
+  daemon renamed back; on → both are written back immediately instead of
+  waiting up to 120 s for the reconciler.
+- A host that refuses (no `sudo`, no D-Bus) answers `200` with
+  `mdns_notice`, shown as a dismissible `Alert` (`data-testid="mdns-error"`,
+  `settings.mdns_apply_failed`). A save that could not reach the host must not
+  look saved — the same rule as `timezone_notice` and `autostart_error`.
+  `mdns_notice` carries the host's **raw** reason (an stderr tail), never a
+  server-translated sentence: the card wraps it in the localised
+  `settings.mdns_apply_failed` (`%reason%`), so the wording follows the user's
+  locale instead of the server's — the `autostart_error` contract, not the
+  `timezone_notice` one.
+- Both `GET /settings/general` and the aggregate `GET /settings` report the
+  **live** flag (`crate::mdns::is_enabled()`), not the stored copy: they agree
+  except in that failure window, and the screen must show what the appliance
+  actually does.
+- The staged draft field is `draft.general.mdns_enabled`; like every other
+  General field it is only persisted by the rail's **Save** button.
+
+Before this existed, `crate::mdns::unpublish()` had **no caller**: the only way
+to stop advertising was to disable Avahi by hand. The dead function was the
+evidence the roadmap tracked.
+
 ### General: language (ROADMAP 13.4)
 
 - `handle_set_language` writes `GENERAL_SETTINGS.language` and calls
@@ -530,6 +565,8 @@ screen:
   `chatSetModel`. Installing/pulling a model is still an immediate action.
 - The **autostart** toggle stages `draft.autostart.enabled`; Save calls
   `api.setAutostart`.
+- The **mDNS** toggle stages `draft.general.mdns_enabled`; Save sends it in
+  the General `PUT` (ROADMAP 29.1).
 - **Widgets / weather** stage `draft.widgets.*` and `draft.weather.*`; Save
   applies them through `monitorStore` / `weatherLocationStore` /
   `weatherDisplayPrefsStore` (their own persistence paths are the save). The

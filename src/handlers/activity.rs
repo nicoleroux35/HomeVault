@@ -49,6 +49,15 @@ use axum::{
 use serde::Serialize;
 use std::sync::Arc;
 
+/// How long a finished-with-failure job stays in the feed.
+///
+/// A job that fails has to be *seen*: it used to leave the list on the very
+/// next poll (the filter only kept `pending`/`running`), so the row the user
+/// was watching simply vanished — while the bell got a notification they were
+/// not looking at. One minute is long enough for the panel to be open, short
+/// enough that the taskbar is not a graveyard (ROADMAP 28.2).
+pub const FAILED_GRACE: chrono::Duration = chrono::Duration::seconds(60);
+
 /// One row in the desktop taskbar.
 #[derive(Serialize, Debug, PartialEq)]
 pub struct ActivityTask {
@@ -56,6 +65,13 @@ pub struct ActivityTask {
     pub id: String,
     /// Stable slug — the frontend maps it to a localised label.
     pub kind: String,
+    /// Lifecycle slug: `"pending"`, `"running"`, `"failed"` or `"cancelled"`.
+    ///
+    /// The row's *state*, not a label: the client renders a failed job as a
+    /// failure (no progress bar, a status word) and keeps it out of the active
+    /// count. Before this field existed the feed had no way to say "this is
+    /// over and it did not work", which is why a failure had to be hidden.
+    pub state: String,
     /// Dynamic name (torrent / file). Empty for a generic job (the frontend
     /// then falls back to the localised `kind` label).
     pub label: String,
@@ -73,10 +89,11 @@ pub async fn handle_activity(State(state): State<Arc<AppState>>, headers: Header
     };
     let is_admin = state.auth.is_admin(&username).await;
 
+    let now = chrono::Utc::now();
     let mut tasks: Vec<ActivityTask> = PROGRESS_MANAGER
         .list_activity()
         .into_iter()
-        .filter(|s| matches!(s.state, ProgressState::Pending | ProgressState::Running))
+        .filter(|s| is_visible(s, now))
         .filter(|s| is_admin || s.owner.as_deref() == Some(username.as_str()))
         .map(activity_task_from_snapshot)
         .collect();
@@ -89,6 +106,35 @@ pub async fn handle_activity(State(state): State<Arc<AppState>>, headers: Header
     }
 
     ResponseHelper::json_success(tasks).into_response()
+}
+
+/// Whether a job belongs in the feed at `now`.
+///
+/// Live work always does. A job that **failed** or was **cancelled** stays for
+/// [`FAILED_GRACE`] after its last event so the user sees the outcome of the
+/// row they were watching, then drops out. A job that **completed** is not
+/// shown: the screen that started it reports its own success, and the feed is
+/// about work in progress (ROADMAP 28.2).
+fn is_visible(s: &ActivitySnapshot, now: chrono::DateTime<chrono::Utc>) -> bool {
+    match s.state {
+        ProgressState::Pending | ProgressState::Running => true,
+        ProgressState::Failed | ProgressState::Cancelled => s
+            .updated_at
+            .map(|at| now.signed_duration_since(at) <= FAILED_GRACE)
+            .unwrap_or(false),
+        ProgressState::Completed => false,
+    }
+}
+
+/// Lifecycle slug for the row's `state` field — the client branches on it.
+fn state_slug(s: &ProgressState) -> &'static str {
+    match s {
+        ProgressState::Pending => "pending",
+        ProgressState::Running => "running",
+        ProgressState::Completed => "completed",
+        ProgressState::Failed => "failed",
+        ProgressState::Cancelled => "cancelled",
+    }
 }
 
 /// Map a `JobType` to the stable slug the frontend localises.
@@ -119,6 +165,7 @@ fn activity_task_from_snapshot(s: ActivitySnapshot) -> ActivityTask {
     ActivityTask {
         id: s.id,
         kind: job_type_kind(&s.job_type),
+        state: state_slug(&s.state).to_string(),
         label: String::new(),
         progress: s.progress.map(|p| p.clamp(0.0, 100.0)),
         detail,
@@ -143,6 +190,8 @@ fn activity_task_from_aria2(t: Aria2Task) -> Option<ActivityTask> {
     Some(ActivityTask {
         id: format!("aria2:{}", t.gid),
         kind: kind.to_string(),
+        // aria2 only ever reaches this branch while it reports `active`.
+        state: "running".to_string(),
         label: aria2_name(&t),
         progress,
         detail,
@@ -235,6 +284,7 @@ mod tests {
             job_type,
             owner: None,
             state: ProgressState::Running,
+            updated_at: None,
             progress: None,
             message: String::new(),
             bytes_processed: None,
@@ -359,6 +409,7 @@ mod tests {
         let json = serde_json::to_value(ActivityTask {
             id: "aria2:g1".into(),
             kind: "download_url".into(),
+            state: "running".into(),
             label: "f.bin".into(),
             progress: Some(40.0),
             detail: None,
@@ -367,7 +418,104 @@ mod tests {
         let obj = json.as_object().unwrap();
         let mut keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["detail", "id", "kind", "label", "progress"]);
+        assert_eq!(keys, ["detail", "id", "kind", "label", "progress", "state"]);
+    }
+
+    // -----------------------------------------------------------------
+    // ROADMAP 28.2 — a job that just failed must stay visible
+    // -----------------------------------------------------------------
+
+    /// The assertion 28.2 needed. The feed used to keep only
+    /// `Pending | Running`, so a job that failed one second ago disappeared on
+    /// the very next poll and the only trace left was a notification the user
+    /// was not looking at.
+    #[test]
+    fn a_fresh_failure_is_visible_within_the_grace_window() {
+        let now = chrono::Utc::now();
+        let mut s = snapshot(JobType::Restore);
+        s.state = ProgressState::Failed;
+        s.updated_at = Some(now - chrono::Duration::seconds(1));
+        assert!(is_visible(&s, now), "a job that just failed must be shown");
+    }
+
+    #[test]
+    fn an_old_failure_drops_out_of_the_feed() {
+        let now = chrono::Utc::now();
+        let mut s = snapshot(JobType::Restore);
+        s.state = ProgressState::Failed;
+        s.updated_at = Some(now - FAILED_GRACE - chrono::Duration::seconds(1));
+        assert!(
+            !is_visible(&s, now),
+            "the taskbar must not become a graveyard"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_job_follows_the_same_grace_window() {
+        let now = chrono::Utc::now();
+        let mut s = snapshot(JobType::Backup);
+        s.state = ProgressState::Cancelled;
+        s.updated_at = Some(now);
+        assert!(is_visible(&s, now));
+        s.updated_at = Some(now - FAILED_GRACE - chrono::Duration::seconds(1));
+        assert!(!is_visible(&s, now));
+    }
+
+    #[test]
+    fn live_work_is_always_visible_and_completed_work_never_is() {
+        let now = chrono::Utc::now();
+        let mut s = snapshot(JobType::Backup);
+        // Even an ancient, never-updated pending job stays: it has not failed.
+        s.state = ProgressState::Pending;
+        s.updated_at = None;
+        assert!(is_visible(&s, now));
+        s.state = ProgressState::Running;
+        assert!(is_visible(&s, now));
+        s.state = ProgressState::Completed;
+        s.updated_at = Some(now);
+        assert!(
+            !is_visible(&s, now),
+            "success is reported by the screen that started the job"
+        );
+    }
+
+    /// A terminal state with no timestamp is not shown: there is no evidence it
+    /// happened *recently*, and inventing one would keep it forever.
+    #[test]
+    fn a_terminal_state_without_a_timestamp_is_not_shown() {
+        let now = chrono::Utc::now();
+        let mut s = snapshot(JobType::Backup);
+        s.state = ProgressState::Failed;
+        s.updated_at = None;
+        assert!(!is_visible(&s, now));
+    }
+
+    #[test]
+    fn state_slug_covers_every_variant() {
+        assert_eq!(state_slug(&ProgressState::Pending), "pending");
+        assert_eq!(state_slug(&ProgressState::Running), "running");
+        assert_eq!(state_slug(&ProgressState::Completed), "completed");
+        assert_eq!(state_slug(&ProgressState::Failed), "failed");
+        assert_eq!(state_slug(&ProgressState::Cancelled), "cancelled");
+    }
+
+    /// The row carries the state, so the client can render a failure instead of
+    /// a stalled progress bar.
+    #[test]
+    fn a_failed_snapshot_maps_to_a_failed_row() {
+        let mut s = snapshot(JobType::Backup);
+        s.state = ProgressState::Failed;
+        s.message = "Failed: disk full".into();
+        let task = activity_task_from_snapshot(s);
+        assert_eq!(task.state, "failed");
+        assert_eq!(task.detail.as_deref(), Some("Failed: disk full"));
+    }
+
+    #[test]
+    fn an_aria2_row_is_always_running() {
+        let t = task("active");
+        let row = activity_task_from_aria2(t).expect("an active download is a row");
+        assert_eq!(row.state, "running");
     }
 
     #[test]

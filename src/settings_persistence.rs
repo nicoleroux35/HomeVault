@@ -88,6 +88,11 @@ pub struct PersistedGeneral {
     /// Server-wide default UI language (ROADMAP 13.4).
     #[serde(default)]
     pub language: Option<String>,
+    /// mDNS/Zeroconf advertising, applied to Avahi on save (ROADMAP 29.1).
+    /// `#[serde(default)]` so a `settings.json` written before the field
+    /// existed still loads — `None` reads as "on", the shipped default.
+    #[serde(default)]
+    pub mdns_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,6 +145,7 @@ impl PersistedSettings {
             server_name: self.general.as_ref().and_then(|g| g.server_name.clone()),
             timezone: self.general.as_ref().and_then(|g| g.timezone.clone()),
             language: self.general.as_ref().and_then(|g| g.language.clone()),
+            mdns_enabled: self.general.as_ref().and_then(|g| g.mdns_enabled),
         }
     }
 
@@ -220,6 +226,7 @@ impl SettingsPersistence {
                 server_name: general.server_name.clone(),
                 timezone: general.timezone.clone(),
                 language: general.language.clone(),
+                mdns_enabled: general.mdns_enabled,
             }),
             email: Some(PersistedEmail {
                 smtp_server: email.smtp_server.clone(),
@@ -529,6 +536,18 @@ fn apply_loaded_settings(loaded: &PersistedSettings) {
                 crate::i18n::I18n::set_locale(&language);
             }
         }
+        if let Some(mdns_enabled) = general.mdns_enabled {
+            settings.mdns_enabled = Some(mdns_enabled);
+            // ROADMAP 29.1: seed the flag **before** the reconciler starts, or
+            // a disabled appliance advertises itself for the first 120 s of
+            // every boot. `set_enabled` only flips the in-process flag — the
+            // host-side removal happened on the save that turned it off, and a
+            // file that says `false` without the removal having happened (a
+            // hand-edited settings.json) is corrected by the next Settings
+            // save. Never a silent success, which is what the old dead
+            // `unpublish()` was.
+            crate::mdns::set_enabled(mdns_enabled);
+        }
     }
 
     // Email settings
@@ -652,6 +671,7 @@ pub fn save_all_settings() {
                 server_name: general.server_name.clone(),
                 timezone: general.timezone.clone(),
                 language: general.language.clone(),
+                mdns_enabled: general.mdns_enabled,
             }),
             email: Some(PersistedEmail {
                 smtp_server: email.smtp_server.clone(),
@@ -1086,6 +1106,7 @@ mod tests {
             server_name: None,
             timezone: Some("Mars/Olympus".to_string()),
             language: None,
+            mdns_enabled: None,
         });
         let err = validate_import(&bad_tz).unwrap_err();
         assert!(err.contains("timezone"), "{err}");
@@ -1124,6 +1145,7 @@ mod tests {
             server_name: None,
             timezone: None,
             language: Some("it".to_string()),
+            mdns_enabled: None,
         });
         assert!(validate_import(&bad_language)
             .unwrap_err()
@@ -1138,6 +1160,7 @@ mod tests {
                 server_name: Some("NAS".to_string()),
                 timezone: Some("Europe/Paris".to_string()),
                 language: Some("fr".to_string()),
+                mdns_enabled: Some(true),
             }),
             ..PersistedSettings::default()
         };

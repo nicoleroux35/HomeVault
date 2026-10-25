@@ -32,6 +32,15 @@ export interface ActivityTask {
   id: string;
   /** Stable slug — localised on the client via `desktop.activity_kind_<kind>`. */
   kind: string;
+  /**
+   * Lifecycle slug: `pending` | `running` | `failed` | `cancelled`.
+   *
+   * A failed or cancelled job stays in the feed for one minute after its last
+   * event, so the row the user was watching reports its outcome instead of
+   * vanishing between two polls (ROADMAP 28.2). The badge counts only the
+   * active states.
+   */
+  state: 'pending' | 'running' | 'failed' | 'cancelled' | 'completed';
   /** Dynamic name (torrent / file); empty for a generic job. */
   label: string;
   /** `0..100`, or `null` for an indeterminate job (sliding bar, no `%`). */
@@ -847,7 +856,11 @@ class ApiClient {
 
   // General
 
-  async updateGeneralSettings(data: { server_name?: string; timezone?: string }) {
+  async updateGeneralSettings(data: {
+    server_name?: string;
+    timezone?: string;
+    mdns_enabled?: boolean;
+  }) {
     return this.put('/settings/general', data);
   }
 

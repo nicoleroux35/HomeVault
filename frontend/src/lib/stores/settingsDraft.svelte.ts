@@ -100,7 +100,13 @@ export interface WeatherDraft {
 }
 
 export interface DraftValues {
-  general: { server_name: string; timezone: string; language: string };
+  general: {
+    server_name: string;
+    timezone: string;
+    language: string;
+    /** mDNS/Zeroconf advertising (`homevault.local`). ROADMAP 29.1. */
+    mdns_enabled: boolean;
+  };
   email: {
     smtp_server: string;
     smtp_port: number;
@@ -147,7 +153,12 @@ export interface DraftValues {
 }
 
 export const draft = $state<DraftValues>({
-  general: { server_name: 'HomeVault', timezone: 'UTC', language: 'en' },
+  general: {
+    server_name: 'HomeVault',
+    timezone: 'UTC',
+    language: 'en',
+    mdns_enabled: true
+  },
   email: {
     smtp_server: '',
     smtp_port: 587,
@@ -232,11 +243,16 @@ export const notices = $state<{
    *  the server's own reason (host stderr), shown with `role="alert"` so a
    *  refused `sudo systemctl` is distinguishable from a silent success. */
   autostart: string | null;
+  /** The mDNS choice was stored but the host refused the change (ROADMAP
+   *  29.1). Discovery is a *host* state (an Avahi service file + a name
+   *  override), so a save that could not reach the host must not look saved. */
+  mdns: string | null;
 }>({
   hostname: null,
   timezone: null,
   language: null,
   autostart: null,
+  mdns: null,
 });
 
 export function clearHostnameNotice() {
@@ -258,6 +274,10 @@ export function setAutostartNotice(reason: string | null) {
 
 export function clearAutostartNotice() {
   notices.autostart = null;
+}
+
+export function clearMdnsNotice() {
+  notices.mdns = null;
 }
 
 /** TLS save result surfaced to the TlsCard (restart banner + cert info). */
@@ -363,6 +383,7 @@ async function saveGroup(group: SettingsGroup): Promise<void> {
       const res = await api.updateGeneralSettings({
         server_name: draft.general.server_name,
         timezone: draft.general.timezone,
+        mdns_enabled: draft.general.mdns_enabled,
       });
       if (!res.success) throw new Error(group);
       notices.hostname = res.data?.restart_required ? res.data.hostname_notice : null;
@@ -370,6 +391,10 @@ async function saveGroup(group: SettingsGroup): Promise<void> {
       // (no sudo, unknown zone on the host) is reported instead of looking
       // like a save that worked.
       notices.timezone = res.data?.timezone_notice ?? null;
+      // ROADMAP 29.1: turning discovery off removes the Avahi service file and
+      // the name override on the host. A refusal (no sudo, no bus) is surfaced
+      // instead of leaving the switch showing a state the box is not in.
+      notices.mdns = res.data?.mdns_notice ?? null;
       if (draft.general.language !== savedLanguage) {
         const lr = await api.setLanguage(draft.general.language);
         if (lr.success) {
@@ -516,6 +541,7 @@ export async function saveAll(): Promise<number> {
   notices.timezone = null;
   notices.language = null;
   notices.autostart = null;
+  notices.mdns = null;
   setTlsSaveResult(null);
   let failed = 0;
   for (const group of dirty) {

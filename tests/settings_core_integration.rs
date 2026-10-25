@@ -47,9 +47,12 @@
 //! The `*_SETTINGS` statics and the persistence singleton are process-global,
 //! so every test serialises behind `ENV_LOCK` and calls `reset_settings()`
 //! first. Nothing here is *tested through a host side effect*:
-//! `/api/settings/general` (`hostnamectl`) is deliberately not covered — its
-//! display-name sanitiser is unit-tested in `handlers::settings::tests`
-//! instead.
+//! `/api/settings/general` (`hostnamectl`, and — since ROADMAP 29.1 — the
+//! Avahi publish/unpublish chain) is deliberately not covered here: its
+//! display-name sanitiser is unit-tested in `handlers::settings::tests`, and
+//! the mDNS half is exercised for real in `tests/mdns_integration.rs`, where
+//! both Avahi paths are redirected into a tempdir. Only the *read* of the
+//! aggregate is asserted here.
 //!
 //! One exception is documented rather than hidden: `POST /api/settings/reset`
 //! now also clears the families stored outside `settings.json`
@@ -280,6 +283,36 @@ fn admin_write_endpoints() -> Vec<(Method, &'static str, Value)> {
         (Method::POST, "/api/settings/import", json!({"data": {}})),
         (Method::POST, "/api/settings/reset", json!({})),
     ]
+}
+
+/// ROADMAP 29.1: the mDNS choice is part of the General block, so the Settings
+/// window seeds it from the same aggregate as everything else. The value is the
+/// **live** flag (`crate::mdns::is_enabled()`), not a stale copy.
+///
+/// Only the read is asserted here — a `PUT` carrying `mdns_enabled` reaches
+/// Avahi on the host, so it belongs in `tests/mdns_integration.rs` where the
+/// service file and the config are redirected into a tempdir.
+#[tokio::test]
+async fn test_the_aggregate_carries_the_mdns_choice() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = settings_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"]["general"]["mdns_enabled"],
+        json!(true),
+        "discovery ships enabled: {body}"
+    );
 }
 
 // ---------------------------------------------------------------------------

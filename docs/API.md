@@ -95,7 +95,7 @@ flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
 |--------|------|------|-------|
 | GET | `/settings` | auth | aggregate of all categories |
 | GET | `/settings/public` | public | safe subset (server name, language, version — no appearance) |
-| GET/PUT | `/settings/general` | auth / admin | server name, timezone — the timezone is validated (IANA) and applied to the host with `timedatectl`; a failed apply returns `timezone_notice` |
+| GET/PUT | `/settings/general` | auth / admin | server name, timezone, `mdns_enabled` — the timezone is validated (IANA) and applied to the host with `timedatectl` (a failed apply returns `timezone_notice`); `mdns_enabled` drives the Avahi service file and the `host-name` override (a refused host change returns `mdns_notice`). The `GET` reports the **live** `mdns_enabled` |
 | GET | `/settings/timezones` | auth | every zone name the scheduler can evaluate (`chrono-tz`'s IANA database, region-prefixed names + `UTC`), sorted — what the Settings picker renders |
 | GET/POST | `/settings/language` | auth | set UI language — persisted as `general.language` and applied at boot before the first page renders; unsupported tags answer `400` |
 | GET | `/translations` | auth | returns flattened `locale → key → string` map (`handle_get_translations`, `src/handlers/settings.rs`; mounted at `/api/translations`) |
@@ -457,7 +457,7 @@ Read endpoints `auth`; config/state/WiFi mutations `admin`.
 
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
-| GET | `/mdns/status` | auth | `{ available, running, host_name, fqdn, http_url, services[] }` — the `homevault.local` address + advertised share types. Publishing itself is automatic (`src/mdns.rs` reconciler); see [guides/mdns.md](./guides/mdns.md). |
+| GET | `/mdns/status` | auth | `{ enabled, available, running, host_name, fqdn, http_url, services[] }` — the `homevault.local` address + advertised share types. `enabled` is the **live** flag (the admin's Settings choice), not the stored one. Publishing itself is automatic (`src/mdns.rs` reconciler, skipped while disabled); see [guides/mdns.md](./guides/mdns.md). |
 
 ## Chat (AI Assistant) — `chat/*`
 
@@ -872,7 +872,10 @@ Explorer copy/move, Docker install/update, ddrescue/photorec, RAG reindex,
 Ollama model pull, cloud sync) with aria2's active downloads (admin only, and
 only when aria2 is already running — the call never starts it). Non-admins see
 only jobs they own. `ApiResponse<ActivityTask[]>` where `ActivityTask =
-{ id, kind, label, progress: number|null, detail: string|null }`; `kind` is a
+{ id, kind, state, label, progress: number|null, detail: string|null }`; `state`
+is `pending`/`running`/`failed`/`cancelled` — a job that failed or was cancelled
+stays in the list for 60 s after its last event so its outcome is visible, and a
+`completed` one is never listed (ROADMAP 28.2); `kind` is a
 stable slug localised client-side. See [guides/activity.md](./guides/activity.md).
 
 ## Rescue — `/rescue/*` (`admin`)
