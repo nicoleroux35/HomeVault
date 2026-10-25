@@ -29,6 +29,7 @@
   import PathField from '$lib/components/theme/PathField.svelte';
   import { PageLayout, ConfirmDialog, tileBtn, dangerHover, StatCard, EmptyState } from '$lib/components/app';
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
+  import { notifyError, notifySuccess } from '$lib/utils/notify';
   import { cn } from '$lib/utils.js';
   import { IconShare, IconPlus, IconSettings, IconPlayerPlay, IconSquare, IconRefresh, IconShield, IconTrash, IconUser, IconUsers } from '@tabler/icons-svelte';
 
@@ -219,6 +220,7 @@
     if (resp.success) {
       await loadServiceStatus();
     } else {
+      notifyError(resp);
     }
   }
 
@@ -227,6 +229,7 @@
     if (resp.success) {
       await loadServiceStatus();
     } else {
+      notifyError(resp);
     }
   }
 
@@ -235,6 +238,7 @@
     if (resp.success) {
       await loadServiceStatus();
     } else {
+      notifyError(resp);
     }
   }
 
@@ -247,6 +251,8 @@
 
   async function saveSmbConfig() {
     const resp = await api.put('/shares/smb/config', smbConfig);
+    if (resp.success) notifySuccess('common.saved');
+    else notifyError(resp);
   }
 
   async function loadNfsConfig() {
@@ -268,6 +274,8 @@
   async function saveNfsConfig() {
     saveNetworks();
     const resp = await api.put('/shares/nfs/config', nfsConfig);
+    if (resp.success) notifySuccess('common.saved');
+    else notifyError(resp);
   }
 
   async function loadFtpConfig() {
@@ -279,6 +287,8 @@
 
   async function saveFtpConfig() {
     const resp = await api.put('/shares/ftp/config', ftpConfig);
+    if (resp.success) notifySuccess('common.saved');
+    else notifyError(resp);
   }
 
   async function loadWebdavConfig() {
@@ -290,6 +300,8 @@
 
   async function saveWebdavConfig() {
     const resp = await api.put('/shares/webdav/config', webdavConfig);
+    if (resp.success) notifySuccess('common.saved');
+    else notifyError(resp);
   }
 
   async function loadSftpConfig() {
@@ -301,6 +313,8 @@
 
   async function saveSftpConfig() {
     const resp = await api.put('/shares/sftp/config', sftpConfig);
+    if (resp.success) notifySuccess('common.saved');
+    else notifyError(resp);
   }
 
   async function loadSftpGrantees() {
@@ -325,6 +339,7 @@
       sftpKeyDrafts[username] = '';
       await loadSftpGrantees();
     } else {
+      notifyError(resp);
     }
   }
 
@@ -340,6 +355,7 @@
       newSftpKey = '';
       await loadSftpGrantees();
     } else {
+      notifyError(resp);
     }
   }
 
@@ -347,6 +363,7 @@
     sftpRefreshing = true;
     const resp = await api.post('/shares/sftp/rebuild');
     sftpRefreshing = false;
+    if (!resp.success) notifyError(resp);
   }
 
   function switchTab(tab: typeof activeTab) {
@@ -394,6 +411,7 @@
       newShare = { name: '', path: '', share_type: 'smb', comment: '' };
       await loadShares();
     } else {
+      notifyError(response);
     }
   }
 
@@ -403,6 +421,7 @@
     if (response.success) {
       await loadShares();
     } else {
+      notifyError(response);
     }
   }
 
@@ -410,6 +429,8 @@
     const response = await api.put(`/shares/${name}/${shareType}/toggle/${enabled}`);
     if (response.success) {
       await loadShares();
+    } else {
+      notifyError(response);
     }
   }
 
@@ -449,6 +470,7 @@
       newGrant = { grantee_type: 'user', grantee_name: '', permission: 'r', recursive: true };
       await loadSharePermissions();
     } else {
+      notifyError(resp);
     }
   }
 
@@ -461,6 +483,7 @@
     if (resp.success) {
       await loadSharePermissions();
     } else {
+      notifyError(resp);
     }
   }
 
@@ -469,7 +492,9 @@
     permissionsSyncing = true;
     const resp = await api.syncSharePermissions(permissionsShare.name, permissionsShare.share_type);
     if (resp.success) {
+      await loadSharePermissions();
     } else {
+      notifyError(resp);
     }
     permissionsSyncing = false;
   }

@@ -260,6 +260,12 @@ exit path.
 
 ## Invariants
 
+- **A refused mutation is never silent (ROADMAP X.3, 2026-10-24).** Schedule,
+  retention-policy and repository create/delete/toggle, backup, restore, check,
+  forget, prune, unlock and snapshot delete all report a failure through the
+  shared `notifyError` (`frontend/src/lib/utils/notify.ts`), which shows the
+  server's own `message`/`error`. The empty `else {}` branches this replaced made
+  a refused click look like a click that did nothing.
 - Every one of the 26 `restic.rs` handlers requires a session (a past bug accepted
   any non-empty token, and `?include_password=true` leaked every repo password
   in plaintext). Read = `require_auth`; mutations (incl. `include_password`) =

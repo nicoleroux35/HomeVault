@@ -189,6 +189,10 @@ idle box.
 
 ## Invariants
 
+- **A refused action is never silent (ROADMAP X.3, 2026-10-24).** `dlg.notify`
+  carries the server's own reason for every failed mutation, including the
+  SMART self-test start (which used to have a `// silent error` branch and a
+  silent `catch`). Never reintroduce one.
 - `handle_storage_*` share the real-session-check hardening applied to the RAID
   handlers in the same file — do not revert any handler to a bare "header present"
   check.
