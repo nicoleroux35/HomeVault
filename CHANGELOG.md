@@ -127,6 +127,25 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The design-system guide stops advertising components that do not exist
+  (2026-10-25).** The §4 layer table listed **30** generated shadcn-svelte
+  components; `frontend/src/lib/components/ui/` contains **11** (`alert`,
+  `badge`, `button`, `checkbox`, `dialog`, `input`, `radio-group`, `select`,
+  `sonner`, `spinner`, `switch`), and **none of the 19 extra ones is imported
+  anywhere**. The doc described an intention, not the code — the failure mode
+  ROADMAP X.4 warns about, with a concrete cost: a developer reads "use
+  `Progress`", greps for it, finds nothing, and hand-rolls a bar in the screen,
+  which the same section forbids. The row now names the real 11 and a new
+  section maps each would-be component to what the tree already uses instead
+  (`role="progressbar"` bars, the `.hv-skeleton` utilities, the native
+  `<title>`/`<textarea>`/`<details>`, `DataTable`'s server-side pagination …).
+  Nothing was generated: 19 empty files would be dead weight, and every pattern
+  they would cover is already solved. The rule for the future is written down —
+  add a component the day a screen needs it, and update the row in the same
+  change. A Rust test now enforces the list **in both directions**
+  (`dependencies.rs`, walking `ui/` against the guide), so the doc cannot drift
+  again.
+
 - **The roadmap's open-work list is empty (2026-10-24, ROADMAP 31.1).** With
   the Docker screen moved onto `api.ts`, the last item left the list — every
   P0, P1, P2 and cross-cutting finding is closed, and `ROADMAP.md` now says so
