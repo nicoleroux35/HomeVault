@@ -112,8 +112,12 @@
   // transparent and borderless, the focus ring lives on the wrapper.
   const textInputClass =
     'min-w-0 flex-1 p-0! border-none! bg-transparent! text-[var(--hv-shell-text-strong)] caret-[var(--hv-login-accent)] outline-none placeholder:text-[var(--hv-login-muted)]! focus:shadow-none! disabled:bg-transparent!';
+  // The field box grows with the type it contains (min-h-11 = the 44px touch
+  // floor, not a cap). A fixed `h-11` clipped the 16.25px text a 1.25×
+  // reader-size produces on touch pointers (HIG Layout → Adaptability,
+  // ROADMAP 34.1) — the box must be a floor, never a ceiling.
   const fieldWrapperClass =
-    'flex h-11 items-center gap-2 rounded-md border border-[var(--hv-login-field-border)] bg-[var(--hv-login-field-bg)] px-3 text-c-base focus-within:border-[var(--hv-login-accent)] focus-within:shadow-[0_0_0_3px_var(--hv-login-accent-ring)]';
+    'flex min-h-11 items-center gap-2 rounded-md border border-[var(--hv-login-field-border)] bg-[var(--hv-login-field-bg)] px-3 py-2 text-c-base focus-within:border-[var(--hv-login-accent)] focus-within:shadow-[0_0_0_3px_var(--hv-login-accent-ring)]';
   const ctaClass =
     'bg-[image:var(--hv-login-btn-grad)]! rounded-md! shadow-[var(--hv-login-btn-shadow)] hover:brightness-105 active:scale-[0.98] disabled:opacity-60 disabled:shadow-none';
 
@@ -572,7 +576,13 @@
       <div class="relative z-[1] flex min-h-screen items-center justify-center px-4 pt-[140px] pb-10 max-[480px]:pt-[116px] max-[480px]:pb-8">
         <div
           class={cn(
-            'w-[var(--hv-login-card-width)] max-w-full overflow-hidden rounded-2xl border border-[var(--hv-login-card-border)] bg-white shadow-[var(--hv-login-card-shadow)] transition-all duration-500 ease-out',
+            // `w-full max-w-[…]` (not `w-[…] max-w-full`): the card must fill
+            // the row up to its design width, so at 375px it measures
+            // 375 - 2*16 = 343px and never re-derives itself from a
+            // scroll-containing ancestor (it used to flip between 358 and
+            // 326 depending on layout pass). The card is a single box that
+            // stays well under its container at every width (HIG Boxes).
+            'w-full max-w-[var(--hv-login-card-width)] overflow-hidden rounded-2xl border border-[var(--hv-login-card-border)] bg-white shadow-[var(--hv-login-card-shadow)] transition-all duration-500 ease-out',
             shaking && 'animate-[hv-shake_0.4s_ease]',
             unlocking && 'scale-95 opacity-0',
           )}
@@ -730,7 +740,7 @@
                     <Switch bind:checked={rememberMe} disabled={isLoading} aria-label={t('login.remember_me')} />
                     <span class="text-sm text-[var(--hv-shell-text-2)]">{t('login.remember_me')}</span>
                   </div>
-                  <button type="button" data-testid="login-forgot-link" class="cursor-pointer border-none bg-transparent p-0 text-t-body font-medium text-[var(--hv-login-accent-deep)] hover:underline disabled:opacity-60" onclick={openForgotPassword} disabled={isLoading}>
+                  <button type="button" data-testid="login-forgot-link" class="h-11 cursor-pointer border-none bg-transparent px-1 text-t-body font-medium text-[var(--hv-login-accent-deep)] hover:underline disabled:opacity-60" onclick={openForgotPassword} disabled={isLoading}>
                     {t('login.forgot_password_link')}
                   </button>
                 </div>
@@ -846,7 +856,7 @@
     <form onsubmit={(e)=>{e.preventDefault();handleRecoveryReset();}}>
       <div class="mb-4">
         <label for="recovery-new-pw" class="block mb-1.5 text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{t('login.reset_new_password_label')}</label>
-        <div class="flex items-center gap-2 h-12 px-3 rounded-md border border-[var(--hv-login-field-border)] bg-[var(--hv-login-field-bg)] focus-within:border-[var(--hv-login-accent)]">
+        <div class="flex min-h-12 items-center gap-2 rounded-md border border-[var(--hv-login-field-border)] bg-[var(--hv-login-field-bg)] px-3 py-2 focus-within:border-[var(--hv-login-accent)]">
           <IconLock size={19} stroke={1.7} class="text-[var(--hv-login-muted)]" />
           <input id="recovery-new-pw" type={showNewPasswordText ? 'text' : 'password'} class="flex-1 min-w-0 border-none bg-transparent text-sm text-[var(--hv-shell-text-strong)] outline-none" bind:value={newPassword} placeholder={t('login.reset_new_password_placeholder')} disabled={isResettingRecovery} required autocomplete="new-password" />
           <button type="button" class="grid place-items-center w-8 h-8 flex-none rounded-full border-none bg-transparent text-[var(--hv-login-muted)] cursor-pointer hover:text-[var(--hv-shell-text-strong)] hv-ic" aria-label={showNewPasswordText ? t('login.hide_password') : t('login.show_password')} onclick={() => showNewPasswordText = !showNewPasswordText} disabled={isResettingRecovery}>
@@ -856,7 +866,7 @@
       </div>
       <div class="mb-4">
         <label for="recovery-confirm-pw" class="block mb-1.5 text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{t('login.reset_confirm_password_label')}</label>
-        <div class="flex items-center gap-2 h-12 px-3 rounded-md border border-[var(--hv-login-field-border)] bg-[var(--hv-login-field-bg)] focus-within:border-[var(--hv-login-accent)]">
+        <div class="flex min-h-12 items-center gap-2 rounded-md border border-[var(--hv-login-field-border)] bg-[var(--hv-login-field-bg)] px-3 py-2 focus-within:border-[var(--hv-login-accent)]">
           <IconLock size={19} stroke={1.7} class="text-[var(--hv-login-muted)]" />
           <input id="recovery-confirm-pw" type={showNewPasswordText ? 'text' : 'password'} class="flex-1 min-w-0 border-none bg-transparent text-sm text-[var(--hv-shell-text-strong)] outline-none" bind:value={newPasswordConfirm} placeholder={t('login.reset_confirm_password_placeholder')} disabled={isResettingRecovery} required autocomplete="new-password" />
         </div>

@@ -32,13 +32,19 @@
  * wizard's sticky clock). 11px is a hard floor — nothing readable renders
  * smaller.
  *
- * Two guarantees are asserted:
+ * Three guarantees are asserted:
  *   1. CONFORMANCE — no visible text node renders at a size outside the
  *      ladder (catches raw `text-[13px]`, a `text-md` that stopped resolving,
  *      a component that invented its own step).
  *   2. ROLE MAPPING — the recurring roles sit where the native scale puts
  *      them: field label / body 13, helper 11, card title 15, window title 15,
  *      metric 20, section eyebrow 11.
+ *   3. TEXT SCALING (§6) — the ladder is expressed in `rem`, so raising the
+ *      reader's root font size really resizes every step, the layout reflows
+ *      instead of clipping, and the gateway card keeps one deterministic
+ *      width. Apple HIG (Layout → Adaptability) makes this a requirement, not
+ *      a nicety: a px-only ladder renders identically at 100% and ignores the
+ *      one setting a low-vision reader changes.
  *
  * Requires a live server whose setup is complete, seeded with an admin
  * (defaults: e2eadmin / E2eSecret123, override with E2E_ADMIN_USER /
@@ -285,5 +291,152 @@ test.describe('2 — Desktop shell and apps', () => {
     }));
     expect(s.transform, 'section eyebrow is uppercased').toBe('uppercase');
     expect(s.size, 'section eyebrow').toBe(11);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. Text scaling — the ladder responds to the reader's font size
+// ---------------------------------------------------------------------------
+//
+// Every step of the ladder is a `rem` against `html`'s size, and `html` is
+// `clamp(100%, 100%, 20px)` — so it follows the browser's configured font size
+// up to a supported 1.25x ceiling. Before 2026-10-25 the tokens were literal
+// px and `html` was `font-size: 16px`: the whole product rendered identically
+// whatever the reader asked for (measured: 11px labels before AND after a
+// 16 -> 32px root), which is the deviation Apple's HIG calls out by name and
+// WCAG 1.4.4 legislates.
+//
+// These tests drive the root directly rather than through a browser
+// preference (Playwright cannot set the Firefox/Chromium default font size):
+// `html { font-size: N px }` is exactly what `100%` resolves to, so it
+// reproduces the reader's setting faithfully.
+
+/** Read the type scale and layout health of the login card at one root size. */
+async function loginAtRootSize(page: Page, rootPx: number) {
+  await page.addInitScript((px) => {
+    document.addEventListener('DOMContentLoaded', () => {
+      document.documentElement.style.setProperty('font-size', `${px}px`, 'important');
+    });
+  }, rootPx);
+  await page.goto('/');
+  await page.waitForSelector('#username', { timeout: 20_000 });
+  // The app repaints the card on mount; settle before measuring.
+  await page.waitForTimeout(400);
+  return page.evaluate(() => {
+    const size = (sel: string) => {
+      const el = document.querySelector(sel);
+      return el ? parseFloat(getComputedStyle(el).fontSize) : -1;
+    };
+    // Real visual clipping: an element whose own overflow is not `visible`
+    // and whose content is larger than its box. The `.hv-ic::after` 44px hit
+    // pad inflates `scrollWidth` on icon buttons and is deliberately ignored
+    // — it overflows a *visible* box, so it never clips.
+    const clipped: string[] = [];
+    for (const el of document.querySelectorAll('[data-testid="login-container"] *')) {
+      const h = el as HTMLElement;
+      if (!h.offsetParent) continue;
+      const cs = getComputedStyle(h);
+      if (cs.overflow === 'visible') continue;
+      if (h.scrollWidth > h.clientWidth + 1 || h.scrollHeight > h.clientHeight + 1) {
+        clipped.push(`${h.tagName} "${(h.textContent || '').trim().slice(0, 24)}" ${h.scrollWidth}x${h.scrollHeight} > ${h.clientWidth}x${h.clientHeight}`);
+      }
+    }
+    const card = document.querySelector('[data-testid="login-container"]')!.getBoundingClientRect();
+    return {
+      label: size('label[for="username"]'),
+      body: size('#username'),
+      title: size('[data-testid="login-brand-title"]'),
+      cardW: Math.round(card.width),
+      cardH: Math.round(card.height),
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
+      clipped,
+    };
+  });
+}
+
+test.describe('6 — Text scaling (HIG Layout → Adaptability)', () => {
+  test('6.1 — every step scales with the reader font size', async ({ page }) => {
+    const design = await loginAtRootSize(page, 16);
+
+    const page2 = await page.context().newPage();
+    const bigger = await loginAtRootSize(page2, 20);
+    await page2.close();
+
+    // Root 16px is the design value: the ladder must be pixel-identical to
+    // what the guide documents, so scaling costs nothing at 100%.
+    expect(design.label, 'label at root 16px').toBe(11);
+    expect(design.body, 'body at root 16px').toBe(13);
+    expect(design.title, 'title at root 16px').toBe(15);
+
+    // 20px is the 1.25x ceiling: every step follows the root.
+    expect(bigger.label, 'label at root 20px').toBeCloseTo(11 * 1.25, 1);
+    expect(bigger.body, 'body at root 20px').toBeCloseTo(13 * 1.25, 1);
+    expect(bigger.title, 'title at root 20px').toBeCloseTo(15 * 1.25, 1);
+    expect(bigger.body, 'body must be larger than at 100%').toBeGreaterThan(design.body);
+  });
+
+  test('6.2 — the card reflows instead of clipping at the 1.25x ceiling', async ({ page }) => {
+    const m = await loginAtRootSize(page, 20);
+    expect(m.clipped, `elements clipped at 1.25x:\n${m.clipped.join('\n')}`).toEqual([]);
+    expect(m.horizontalOverflow, 'no horizontal overflow at 1.25x').toBe(false);
+    // The card grew vertically to hold the larger text — it did not stay at
+    // its 100% height and crop the form.
+    expect(m.cardH).toBeGreaterThan(500);
+  });
+
+  test('6.3 — the gateway card width is deterministic', async ({ page }) => {
+    // It used to alternate between two widths for the same viewport
+    // (`w-[…] max-w-full` re-derived itself from a scroll-containing
+    // ancestor). Two mounts must now agree exactly.
+    const a = await loginAtRootSize(page, 16);
+    await page.reload();
+    await page.waitForSelector('#username', { timeout: 20_000 });
+    await page.waitForTimeout(400);
+    const b = await page.evaluate(
+      () => Math.round(document.querySelector('[data-testid="login-container"]')!.getBoundingClientRect().width),
+    );
+    expect(b, 'card width must not change between renders').toBe(a.cardW);
+    expect(a.cardW, 'card stays a box well inside its container').toBeLessThanOrEqual(380);
+  });
+
+  test('6.4 — the root size is clamped, never unbounded', async ({ page }) => {
+    // The 1.25x ceiling is a documented support boundary (dense desktop
+    // chrome): past it the root stops growing instead of breaking the layout.
+    //
+    // The clamp has to be asserted on the DECLARED rule, not on an inline
+    // override: `loginAtRootSize` writes `html{font-size:32px!important}`,
+    // which deliberately beats `clamp()` — that is how the *uncapped* scale
+    // is exercised. Reading the computed root while overriding it would test
+    // the override, not the shipped rule.
+    await page.goto('/');
+    await page.waitForSelector('#username', { timeout: 20_000 });
+    const clampDecl = await page.evaluate(() => {
+      const hits: string[] = [];
+      for (const sheet of Array.from(document.styleSheets)) {
+        let rules: CSSRuleList;
+        try {
+          rules = sheet.cssRules;
+        } catch {
+          continue; // cross-origin
+        }
+        for (const rule of Array.from(rules)) {
+          if (rule instanceof CSSStyleRule && /(^|,|\s)html\s*$/.test(rule.selectorText.trim())) {
+            const decl = rule.style.getPropertyValue('font-size');
+            if (decl) hits.push(decl.trim());
+          }
+        }
+      }
+      return hits;
+    });
+    const decl = clampDecl.find((d) => d.startsWith('clamp(')) || '';
+    expect(decl, 'html font-size must be a clamp(), not a px literal').not.toEqual('');
+    // Ceiling of the clamp is the supported maximum.
+    expect(decl, 'the clamp caps the root at 20px').toContain('20px');
+    expect(decl, 'the clamp must not lower the default').not.toMatch(/^clamp\(\s*0/);
+
+    // And the page still renders clean at the ceiling this clamp allows.
+    const m = await loginAtRootSize(page, 20);
+    expect(m.horizontalOverflow, 'no horizontal overflow at the ceiling').toBe(false);
+    expect(m.clipped, `clipped at the ceiling:\n${m.clipped.join('\n')}`).toEqual([]);
   });
 });
