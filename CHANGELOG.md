@@ -101,6 +101,34 @@ follows [Semantic Versioning](https://semver.org/).
   an `unwrap` on a resource whose lifecycle lives elsewhere is a latent panic.
   It now logs and answers `503`; the 4-stream ceiling is unchanged.
 
+### Changed
+
+- **One HTTP client, everywhere: the Docker app stops hand-rolling its own
+  (2026-10-24, ROADMAP 31.1).** `Docker.svelte` was the last screen talking to
+  the server with a private helper — a `fetch('/api' + path)` that read the
+  session and CSRF tokens out of `localStorage` itself — while `api.ts` exposed
+  six Docker methods for the desktop monitor. The two only stayed identical by
+  hand, and the private path silently skipped everything else the shared
+  client does: a stale cached bundle got no `X-HomeVault-Contract` header and
+  therefore no "reload the app" prompt (the contract middleware only gates a
+  header that is present), and nothing on the screen took part in the GET
+  cache or its invalidation rules. The whole surface — containers, images,
+  networks, volumes, `docker system df` and prune, registries, `daemon.json`,
+  Compose, community stores, the app catalog, the log ticket and the port
+  check — now goes through `api.ts` (59 wrapper methods, 61 rewritten call
+  sites), and the wire shapes moved out of the component into
+  `frontend/src/lib/types/docker.ts`. Two behaviour changes came with it, both
+  deliberate: any Docker mutation evicts the whole `/docker` cache family (a
+  container action changes the stats list, the no-stats list *and* the
+  catalog's installed/running flags; an image pull changes the disk-usage
+  table), and `get()` reads `ttl ?? default` instead of `ttl || default` so a
+  deliberate `ttl: 0` is no longer silently turned into the 5 s default. Every
+  new wrapper is uncached, so nothing the screen reads is served from a TTL
+  and the request count per interaction is unchanged. Covered by a new
+  `docker.spec.ts` §17 that runs without a docker daemon: all three headers
+  present on every Docker request, no raw `/api` fetch in any served chunk,
+  and a container action that must not be answered from the cache.
+
 ### Fixed
 
 - **No host command anywhere runs without a deadline (2026-10-24, ROADMAP

@@ -1118,12 +1118,15 @@
   // new browser tab or window (the user picks), same as the Docker page's
   // container "Open" menu. A tile disappears when the app is uninstalled and
   // greys out (not clickable) when the app is installed but stopped.
-  let dockerApps: Array<{ id: string; app_id: string; name: string; icon: string; category: string; installed: boolean; running: boolean; installed_port?: number; proxy_port?: number }> = [];
+  let dockerApps: Array<{ id: string; app_id: string; name: string; icon: string; category: string; installed: boolean; running: boolean; installed_port?: number | null; proxy_port?: number | null }> = [];
 
   async function loadDockerCatalog() {
     const res = await api.getDockerCatalog();
     if (res.success && res.data) {
-      dockerApps = res.data;
+      // `icon` is nullable on the wire (an app whose package ships no icon
+      // file); the Launchpad tile below always draws `launchpadIcons.dockerApp`
+      // and only reads this field as a stable key, so it is narrowed here.
+      dockerApps = res.data.map((a) => ({ ...a, icon: a.icon ?? '' }));
     }
   }
 

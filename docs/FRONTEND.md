@@ -310,13 +310,21 @@ the wizard is 4 steps** (welcome, account, password, verify): storage, RAID,
 A single `ApiClient` class exported as `api`. Responsibilities:
 
 - Injects `X-Session-Token` and `X-CSRF-Token` headers (from localStorage).
+- The **single** HTTP path of the frontend: no screen carries its own
+  `authedFetch` any more. `Docker.svelte` did until 2026-10-24 (ROADMAP 31.1)
+  and now calls 59 Docker wrapper methods instead; see
+  [guides/docker.md](./guides/docker.md#one-http-path-the-screen-runs-on-apits-2026-10-24-roadmap-311).
 - Per-method GET caching with TTL + LRU/size eviction (`saveToCache`/`getFromCache`,
-  default TTL 5 s, max 100 entries).
+  default TTL 5 s, max 100 entries). `get()` reads `options.ttl ?? defaultTTL`,
+  so an explicit `ttl: 0` means "no cache" rather than falling back to 5 s.
 - `invalidateForMutation(endpoint)` on mutations: evicts the endpoint's own
   GET keys — and, after a `/settings/<group>` write, every `/settings` key too,
   because the aggregate `GET:/settings` that seeds the Settings window lives
   under its own key (otherwise a close/reopen right after a save re-seeds from
-  pre-save data, E2E 15.2).
+  pre-save data, E2E 15.2). A `/docker*` mutation evicts the whole `/docker`
+  family for the same reason: one container action changes the stats and
+  no-stats lists, the catalog's `installed`/`running` flags and, for an image
+  pull, `GET:/docker/system/df`.
 - `subscribeToProgress(jobId, …)` opens an `EventSource` to `/progress/{job_id}`.
 - Methods grouped: auth, users, groups, docker, dashboard, network, vpn, rclone,
   syncthing, explorer, rescue, shares, restic, downloader, settings, security,
@@ -324,10 +332,13 @@ A single `ApiClient` class exported as `api`. Responsibilities:
   `createEncryptedVolume`, `unlockEncryptedVolume`, `lockEncryptedVolume`,
   `deleteEncryptedVolume`), notifications (`getNotifications`,
   `getUnreadNotificationCount`, `markNotificationRead`,
-  `markAllNotificationsRead`, `deleteNotification`). The Docker app catalog
-  (`GET/POST/DELETE /docker/catalog*`) is called directly from `Docker.svelte`'s
-  own local `authedFetch` helper rather than through `api.ts`, consistent with
-  how the rest of `Docker.svelte` already calls Docker/Compose endpoints — see
+  `markAllNotificationsRead`, `deleteNotification`), and since 2026-10-24 (ROADMAP 31.1) the **whole**
+  Docker surface — containers, images, networks, volumes, disk usage/prune,
+  registries, daemon, Compose, community stores, app catalog and port checks.
+  The Docker wrappers default to `cache: false` (the screen must show live
+  daemon state after every action); only the three reads the desktop monitor
+  shares with it keep a TTL. Wire shapes live in
+  `frontend/src/lib/types/docker.ts`. See
   [guides/docker.md](./guides/docker.md).
 
 Import pattern: `import { api } from '$lib/services/api';` then

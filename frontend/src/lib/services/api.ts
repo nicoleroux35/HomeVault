@@ -2,7 +2,7 @@
  * File          : api.ts
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 13/10/2026 by Nicolas Le Roux
+ * Last modified : 24/10/2026 by Nicolas Le Roux
  * Version       : 1.0.0
  *
  * Description:
@@ -14,6 +14,12 @@
  *   nothing. Also hosts the shared client-side types for the activity feed
  *   and progress events.
  *
+ *   Since ROADMAP 31.1 it is the **only** HTTP path of the frontend: the
+ *   Docker app used to carry its own local `authedFetch` helper, and every
+ *   Docker/Compose/catalog call now goes through this class, so the token
+ *   injection, the contract header, the 426 reload prompt, the GET cache and
+ *   the mutation invalidation are shared by every screen.
+ *
  * Dependencies:
  *   - none (browser fetch + internal $lib modules)
  *
@@ -24,6 +30,33 @@
  */
 
 import type { ApiResponse, DbBackupEntry, DbBackupStatus, LoginRequest, LoginResponse, SetupAdminRequest, SetupStatus } from '$lib/types/api';
+import type {
+  DockerAppStore,
+  DockerAppUpdateStatus,
+  DockerBuildImageRequest,
+  DockerCatalogApp,
+  DockerCatalogInstallRequest,
+  DockerCatalogUpdateAllReport,
+  DockerComposeProject,
+  DockerContainer,
+  DockerContainerAction,
+  DockerContainerDetail,
+  DockerContainerUpdateRequest,
+  DockerCreateContainerRequest,
+  DockerCreateNetworkRequest,
+  DockerCreateVolumeRequest,
+  DockerDiskUsage,
+  DockerExecResult,
+  DockerHubResult,
+  DockerImage,
+  DockerInstallReview,
+  DockerNetwork,
+  DockerPruneReport,
+  DockerPruneTarget,
+  DockerPortStatus,
+  DockerPullImageRequest,
+  DockerVolume,
+} from '$lib/types/docker';
 import { notifyContractMismatch } from '$lib/stores/contract';
 
 /** One row of the desktop background-activity taskbar (`GET /api/activity`). */
@@ -194,11 +227,24 @@ class ApiClient {
    * payload that seeds the Settings window (5 s TTL), whose key does not
    * contain the group path — without this second eviction, closing and
    * reopening the window right after a save re-seeds it from pre-save data.
+   *
+   * A Docker mutation evicts the whole `/docker` family for the same reason:
+   * one click has several readers — a container action changes
+   * `GET:/docker/containers?stats=false` **and** `…?stats=true` **and** the
+   * catalog's `installed`/`running` flags, an image pull changes
+   * `GET:/docker/system/df`, a compose action changes the project list. The
+   * Docker screen re-read 8 of those endpoints after every action, and a
+   * cached 3 s answer would have shown the pre-action state back (ROADMAP
+   * 31.1). The screen already asked for the freshness explicitly; this
+   * keeps that behaviour when the cache is in the path.
    */
   private invalidateForMutation(endpoint: string) {
     this.invalidateCache(endpoint);
     if (endpoint.startsWith('/settings/')) {
       this.invalidateCache('/settings');
+    }
+    if (endpoint.startsWith('/docker')) {
+      this.invalidateCache('/docker');
     }
   }
 
@@ -285,7 +331,10 @@ class ApiClient {
    */
   async get<T = any>(endpoint: string, options?: { cache?: boolean; ttl?: number }): Promise<ApiResponse<T>> {
     const useCache = options?.cache !== false;
-    const ttl = options?.ttl || this.defaultTTL;
+    // `ttl ?? default` and not `ttl || default`: the Docker screen needs a
+    // `ttl: 0` ("never serve a cached row") and `0 || 5000` would silently
+    // turn that into the 5 s default (ROADMAP 31.1).
+    const ttl = options?.ttl ?? this.defaultTTL;
     const cacheKey = `GET:${endpoint}`;
 
     if (useCache) {
@@ -626,30 +675,59 @@ class ApiClient {
   }
 
   // ==============================================
-  // Docker (with caching)
+  // Docker (containers, images, networks, volumes, compose, app catalog)
   // ==============================================
+  //
+  // One wrapper per endpoint the Docker screen calls (ROADMAP 31.1). The
+  // screen used to hold its own `authedFetch` helper; every call now goes
+  // through this class, so a Docker request carries the same contract header,
+  // 426 prompt, cache and invalidation as the rest of the app.
+  //
+  // **Caching contract.** The wrappers default to `cache: false` because the
+  // screen's behaviour before the migration was "no cache": rows must be the
+  // live daemon state after every action, and the ~20 mutations rely on the
+  // read that follows them. The two exceptions are the original read methods
+  // (`getDockerContainers`, `getDockerCatalog`, `isDockerAvailable`) whose
+  // 3 s / 5 s / 10 s TTLs the desktop Docker monitor already depends on —
+  // they keep their exact signature and TTL. Every mutation also evicts the
+  // whole `/docker` cache family (see `invalidateForMutation`), so a cached
+  // read can never survive the write that invalidates it.
 
   async getDockerContainers() {
-    return this.get('/docker/containers', { ttl: 3000 }); // Cache 3s
+    return this.get<DockerContainer[]>('/docker/containers', { ttl: 3000 }); // Cache 3s
+  }
+
+  /**
+   * Containers WITHOUT stats — what the Docker app paints first (a plain
+   * `docker ps`, no `docker stats` round-trip).
+   */
+  async getDockerContainerList() {
+    return this.get<DockerContainer[]>('/docker/containers?stats=false', { cache: false });
   }
 
   /**
    * Containers WITH live `docker stats` sampling (CPU %, memory, net/block
    * IO). `stats=true` makes the backend run `docker stats --no-stream`, which
-   * blocks ~1s, so this is deliberately uncached and only used by the
-   * Dashboard's live-usage card — never by the Docker app's first paint.
+   * blocks ~1s, so this is deliberately uncached and used by the Dashboard's
+   * live-usage card and by the Docker screen's background stats fill — never
+   * by its first paint.
    */
   async getDockerContainersWithStats() {
-    return this.get('/docker/containers?stats=true', { cache: false });
+    return this.get<DockerContainer[]>('/docker/containers?stats=true', { cache: false });
   }
 
-  /** Remove (uninstall) a container. `force` also stops a running one. */
-  async removeDockerContainer(name: string, force = false) {
-    return this.delete(`/docker/containers/${encodeURIComponent(name)}?force=${force ? 'true' : 'false'}`);
+  async isDockerAvailable() {
+    return this.get<{ available: boolean }>('/docker/available', { ttl: 10000 });
   }
 
-  async getDockerCatalog() {
-    return this.get('/docker/catalog', { ttl: 5000 });
+  async isDockerComposeAvailable() {
+    return this.get<{ available: boolean }>('/docker/compose/available', { cache: false });
+  }
+
+  // -- Containers ------------------------------------------------------------
+
+  async createDockerContainer(payload: DockerCreateContainerRequest) {
+    return this.post('/docker/containers', payload);
   }
 
   async startContainer(name: string) {
@@ -664,8 +742,272 @@ class ApiClient {
     return this.put(`/docker/containers/${name}/restart`);
   }
 
-  async isDockerAvailable() {
-    return this.get('/docker/available', { ttl: 10000 });
+  /** Start/stop/restart — the shape `Desktop.svelte` switches on. */
+  async dockerContainerAction(name: string, action: DockerContainerAction) {
+    return this.put(`/docker/containers/${encodeURIComponent(name)}/${action}`);
+  }
+
+  /** Pause/resume a running container. */
+  async dockerContainerPauseAction(name: string, action: 'pause' | 'unpause') {
+    return this.put(`/docker/containers/${encodeURIComponent(name)}/${action}`);
+  }
+
+  /** Send a signal. The backend whitelists the accepted signals. */
+  async killDockerContainer(name: string, signal = 'SIGKILL') {
+    return this.post(`/docker/containers/${encodeURIComponent(name)}/kill`, { signal });
+  }
+
+  async renameDockerContainer(name: string, newName: string) {
+    return this.put(`/docker/containers/${encodeURIComponent(name)}/rename`, { name: newName });
+  }
+
+  /** Remove (uninstall) a container. `force` also stops a running one. */
+  async removeDockerContainer(name: string, force = false) {
+    return this.delete(`/docker/containers/${encodeURIComponent(name)}?force=${force ? 'true' : 'false'}`);
+  }
+
+  async inspectDockerContainer(name: string) {
+    return this.get<DockerContainerDetail>(`/docker/containers/${encodeURIComponent(name)}/inspect`, { cache: false });
+  }
+
+  /** Apply memory/CPU/restart-policy limits in place (no recreate). */
+  async updateDockerContainer(name: string, payload: DockerContainerUpdateRequest) {
+    return this.post(`/docker/containers/${encodeURIComponent(name)}/update`, payload);
+  }
+
+  /**
+   * Recreate a container from its own settings after re-pulling its image
+   * (the backend renames the old one aside and rolls back on failure).
+   */
+  async recreateDockerContainer(name: string) {
+    return this.post(`/docker/containers/${encodeURIComponent(name)}/recreate`);
+  }
+
+  async execDockerContainer(name: string, command: string[], timeoutSecs = 30) {
+    return this.post<DockerExecResult>(`/docker/containers/${encodeURIComponent(name)}/exec`, {
+      command,
+      timeout_secs: timeoutSecs,
+    });
+  }
+
+  /**
+   * Mint a single-use ticket for the live-log SSE stream. `EventSource`
+   * cannot send `X-Session-Token`, so the session never travels in a URL —
+   * the returned `url` carries the ticket instead.
+   */
+  async createDockerLogTicket(
+    name: string,
+    options: { tail: number; follow: boolean; timestamps: boolean },
+  ) {
+    return this.post<{ ticket: string; url: string }>(
+      `/docker/containers/${encodeURIComponent(name)}/logs/ticket`,
+      { tail: options.tail, follow: options.follow, timestamps: options.timestamps },
+    );
+  }
+
+  // -- Images ----------------------------------------------------------------
+
+  async getDockerImages() {
+    return this.get<DockerImage[]>('/docker/images', { cache: false });
+  }
+
+  /** `image` is the repository, `tag` defaults to `latest` server-side. */
+  async pullDockerImage(payload: DockerPullImageRequest) {
+    return this.post('/docker/images/pull', payload);
+  }
+
+  async buildDockerImage(payload: DockerBuildImageRequest) {
+    return this.post<{ log: string }>('/docker/images/build', payload);
+  }
+
+  async removeDockerImage(id: string, force = true) {
+    return this.delete(`/docker/images/${encodeURIComponent(id)}?force=${force ? 'true' : 'false'}`, { force });
+  }
+
+  async searchDockerHub(query: string) {
+    return this.get<DockerHubResult[]>(`/docker/hub/search?q=${encodeURIComponent(query)}`, { cache: false });
+  }
+
+  // -- Networks --------------------------------------------------------------
+
+  async getDockerNetworks() {
+    return this.get<DockerNetwork[]>('/docker/networks', { cache: false });
+  }
+
+  async createDockerNetwork(payload: DockerCreateNetworkRequest) {
+    return this.post('/docker/networks', payload);
+  }
+
+  async removeDockerNetwork(name: string) {
+    return this.delete(`/docker/networks/${encodeURIComponent(name)}`);
+  }
+
+  // -- Volumes, disk usage, prune -------------------------------------------
+
+  async getDockerVolumes() {
+    return this.get<DockerVolume[]>('/docker/volumes', { cache: false });
+  }
+
+  async createDockerVolume(payload: DockerCreateVolumeRequest) {
+    return this.post('/docker/volumes', payload);
+  }
+
+  /** `force` is required to delete a volume that is still in use. */
+  async removeDockerVolume(name: string, force = false) {
+    return this.delete(`/docker/volumes/${encodeURIComponent(name)}?force=${force ? 'true' : 'false'}`);
+  }
+
+  async getDockerDiskUsage() {
+    return this.get<DockerDiskUsage>('/docker/system/df', { cache: false });
+  }
+
+  /** `all` also prunes unused (not only dangling) resources. */
+  async pruneDocker(target: DockerPruneTarget, all = false) {
+    return this.post<DockerPruneReport>('/docker/prune', { target, all });
+  }
+
+  // -- Private registries ----------------------------------------------------
+
+  async getDockerRegistries() {
+    return this.get<string[]>('/docker/registries', { cache: false });
+  }
+
+  /** The password goes in the body; it is never logged nor echoed back. */
+  async dockerRegistryLogin(registry: string, username: string, password: string) {
+    return this.post('/docker/registries/login', { registry, username, password });
+  }
+
+  async dockerRegistryLogout(registry: string) {
+    return this.post('/docker/registries/logout', { registry });
+  }
+
+  // -- Daemon ----------------------------------------------------------------
+
+  async startDockerDaemon() {
+    return this.post('/docker/daemon/start');
+  }
+
+  async getDockerDaemonLogs() {
+    return this.get<{ logs: string }>('/docker/daemon/logs', { cache: false });
+  }
+
+  async getDockerDaemonConfig() {
+    return this.get<{ config: string; path: string }>('/docker/daemon/config', { cache: false });
+  }
+
+  async saveDockerDaemonConfig(config: string) {
+    return this.put('/docker/daemon/config', { config });
+  }
+
+  // -- Compose ---------------------------------------------------------------
+
+  async getDockerComposeProjects() {
+    return this.get<DockerComposeProject[]>('/docker/compose/projects', { cache: false });
+  }
+
+  async createDockerComposeProject(name: string, config: string) {
+    return this.post('/docker/compose/projects', { name, config });
+  }
+
+  async updateDockerComposeProject(project: string, config: string) {
+    return this.put(`/docker/compose/projects/${encodeURIComponent(project)}`, { config });
+  }
+
+  /** The raw `docker-compose.yml` text of a managed project. */
+  async getDockerComposeConfig(project: string) {
+    return this.get<{ config: string }>(
+      `/docker/compose/projects/${encodeURIComponent(project)}/config`,
+      { cache: false },
+    );
+  }
+
+  /** Validate a compose file without deploying it. */
+  async validateDockerCompose(config: string) {
+    return this.post('/docker/compose/validate', { config });
+  }
+
+  async dockerComposeAction(project: string, action: 'start' | 'stop' | 'restart') {
+    return this.post(`/docker/compose/projects/${encodeURIComponent(project)}/${action}`);
+  }
+
+  /** Pull the newest images and redeploy the stack. */
+  async updateDockerComposeProjectImages(project: string) {
+    return this.post(`/docker/compose/projects/${encodeURIComponent(project)}/update`);
+  }
+
+  async removeDockerComposeProject(project: string) {
+    return this.delete(`/docker/compose/projects/${encodeURIComponent(project)}`);
+  }
+
+  // -- Community package stores ---------------------------------------------
+
+  async getDockerStores() {
+    return this.get<DockerAppStore[]>('/docker/stores', { cache: false });
+  }
+
+  async addDockerStore(gitUrl: string) {
+    return this.post('/docker/stores', { git_url: gitUrl });
+  }
+
+  async syncDockerStore(id: string) {
+    return this.post(`/docker/stores/${encodeURIComponent(id)}/sync`);
+  }
+
+  async removeDockerStore(id: string) {
+    return this.delete(`/docker/stores/${encodeURIComponent(id)}`);
+  }
+
+  // -- App catalog -----------------------------------------------------------
+
+  async getDockerCatalog() {
+    return this.get<DockerCatalogApp[]>('/docker/catalog', { ttl: 5000 });
+  }
+
+  /** Uncached catalog read — the catalog tab, where an install must show up. */
+  async getDockerCatalogList() {
+    return this.get<DockerCatalogApp[]>('/docker/catalog', { cache: false });
+  }
+
+  async getDockerCatalogUpdates() {
+    return this.get<DockerAppUpdateStatus[]>('/docker/catalog/updates', { cache: false });
+  }
+
+  /** The pre-install review: dependencies, settings, compatibility. */
+  async getDockerInstallReview(id: string) {
+    return this.get<DockerInstallReview>(`/docker/catalog/${encodeURIComponent(id)}/install-review`, { cache: false });
+  }
+
+  async installDockerCatalogApp(id: string, payload: DockerCatalogInstallRequest = {}) {
+    return this.post(`/docker/catalog/${encodeURIComponent(id)}/install`, payload);
+  }
+
+  async updateDockerCatalogApp(id: string) {
+    return this.post(`/docker/catalog/${encodeURIComponent(id)}/update`);
+  }
+
+  /** Grouped update queue: per-app outcomes, one failure never hides the rest. */
+  async updateAllDockerCatalogApps() {
+    return this.post<DockerCatalogUpdateAllReport>('/docker/catalog/update-all');
+  }
+
+  async getDockerCatalogAppLogs(id: string, tail = 200) {
+    return this.get<{ logs: string }>(`/docker/catalog/${encodeURIComponent(id)}/logs?tail=${tail}`, { cache: false });
+  }
+
+  /** Toggle the per-app reverse proxy's own sign-in page. */
+  async setDockerCatalogProxyAuth(id: string, authRequired: boolean) {
+    return this.post(`/docker/catalog/${encodeURIComponent(id)}/proxy`, { auth_required: authRequired });
+  }
+
+  /** Uninstall — the app's data under `apps_dir()` is kept on purpose. */
+  async uninstallDockerCatalogApp(id: string) {
+    return this.delete(`/docker/catalog/${encodeURIComponent(id)}`);
+  }
+
+  /** Is a host port free? `used_by` names what holds it (`container`,
+   * `homevault`, `host`) and `detail` gives the container name when known. */
+  async checkDockerPort(port: number) {
+    return this.get<DockerPortStatus>(`/docker/port-check?port=${Number(port)}`, { cache: false });
   }
 
   // ==============================================
