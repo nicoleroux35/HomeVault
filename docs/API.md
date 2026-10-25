@@ -871,8 +871,12 @@ Unified list for the desktop activity taskbar. Merges the active
 `PROGRESS_MANAGER` jobs (backup/restore/verify, cache mover, antivirus scan,
 Explorer copy/move, Docker install/update, ddrescue/photorec, RAG reindex,
 Ollama model pull, cloud sync) with aria2's active downloads (admin only, and
-only when aria2 is already running — the call never starts it). Non-admins see
-only jobs they own. `ApiResponse<ActivityTask[]>` where `ActivityTask =
+only when aria2 is already running — the call never starts it) **and** the
+synthetic rows a server-side poller writes for live host work HomeVault did not
+start: `raid_resync` (`/proc/mdstat`), `pool_scrub` (`zpool status` / `btrfs
+scrub status`) and `syncthing_sync` (a folder still catching up) — ROADMAP 28.3.
+Non-admins see only jobs they own, so the ownerless synthetic rows are
+admin-only. `ApiResponse<ActivityTask[]>` where `ActivityTask =
 { id, kind, state, label, progress: number|null, detail: string|null }`; `state`
 is `pending`/`running`/`failed`/`cancelled` — a job that failed or was cancelled
 stays in the list for 60 s after its last event so its outcome is visible, and a

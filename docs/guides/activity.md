@@ -50,6 +50,9 @@ Response — `ApiResponse<ActivityTask[]>`:
 | `ollama_pull` | AI model download (`src/handlers/chat.rs`) — **determinate** (streamed `completed`/`total`) |
 | `cloud_sync` | rclone sync/copy (`src/handlers/rclone.rs`) — indeterminate |
 | `download_torrent` / `download_url` | aria2 active download — **determinate** when the total size is known |
+| `raid_resync` | mdadm resync / recovery / reshape / consistency check, read from `/proc/mdstat` (`src/activity_poller.rs`) — **synthetic**, ownerless (admin-only) |
+| `pool_scrub` | ZFS `zpool status` scrub/resilver or `btrfs scrub status` (`src/activity_poller.rs`) — **synthetic**, ownerless |
+| `syncthing_sync` | Syncthing folder still catching up (`src/activity_poller.rs`) — **synthetic**, ownerless |
 
 ### `ProgressManager` changes (`src/sse/progress.rs`)
 
@@ -62,6 +65,12 @@ Response — `ApiResponse<ActivityTask[]>`:
   an unknown/removed id), so `GET /api/progress/{job_id}/status` agrees with the
   feed and the SSE stream. It used to synthesise a fresh `Running` / 0 % /
   `"Waiting..."` event for any tracked id (fixed 2026-10-12).
+- `emit_message_only(job_id, msg)` — advances the retained message **without**
+  claiming a percentage (`has_progress` untouched). `emit_progress` always sets
+  that flag, which is what tells `0 %` apart from "nothing reported yet"; the
+  activity poller (ROADMAP 28.3) needs to keep advancing a no-number source's
+  *message* while its bar stays indeterminate, so it goes through this instead
+  — otherwise an honest `progress: null` became a fake `0 %` that never moved.
 - `JobType` is serde-**adjacently** tagged (`tag = "type"`, `content = "name"`):
   `{"type":"backup"}` for the built-in kinds, `{"type":"custom","name":
   "explorer_copy"}` for the feature slugs in the table above. Internal tagging
@@ -91,6 +100,89 @@ instead, and it does **not** count towards the dock badge — nothing is running
 any more. `is_visible()` / `state_slug()` are pure and unit-tested, including
 the "no timestamp ⇒ not shown" case (a terminal state with no evidence of
 *when* would otherwise stay forever).
+
+## Live-hardware poller (ROADMAP 28.3, phase 2)
+
+Until 2026-10-24 the feed could only show work **HomeVault started**: a job is a
+`PROGRESS_MANAGER` entry some handler created. Everything the *host* does on its
+own — a Syncthing folder finishing a large scan, an mdadm array resyncing, a
+`zpool scrub`, a btrfs scrub — was invisible, even though it is exactly the kind
+of long, slow, "is it stuck?" work the taskbar exists for.
+
+`src/activity_poller.rs` closes that gap. `web::run()` spawns
+`run_poller_loop(state)` at startup with `state.clone()`; every `POLL_INTERVAL`
+(5 s) it reads the enabled sources and **synthesises** a `PROGRESS_MANAGER` job
+per live operation.
+
+### Sources
+
+| Source | Read | Live when | `kind` |
+|---|---|---|---|
+| mdadm | `/proc/mdstat` (`tokio::fs`, no privilege) | a `mdN` array carries a `[==>…]` status line with `resync` / `recovery` / `reshape` / `check` and is not `DELAYED`/`PENDING` | `raid_resync` |
+| ZFS | `sudo zpool status <pool>` | the `scan:` block says `scrub in progress` or `resilver in progress` | `pool_scrub` |
+| btrfs | `sudo btrfs scrub status <mount>` | `Status: running` | `pool_scrub` |
+| Syncthing | `GET /rest/system/config` + `GET /rest/db/status?folder=…` per folder, through `handlers::syncthing::folder_backlogs` | `needBytes > 0` and the folder is not paused | `syncthing_sync` |
+
+Every subprocess is bounded (`ZPOOL_PROBE_TIMEOUT` / `BTRFS_PROBE_TIMEOUT`, 10 s
+each, `run_timed_async` — ROADMAP X.9), and the module carries its own
+`every_subprocess_is_bounded` source guard.
+
+### One row per operation, not one per poll
+
+The job id is a **deterministic function of the source** — `sys:raid:md0:resync`,
+`sys:pool:tank:scrub`, `sys:syncthing:<folder-id>` — so a poller tick that sees
+the same operation again **advances** the same job instead of creating a new
+one. This is the whole design: an id that changed every tick would fill the
+panel with a ghost row per five seconds and no bar would ever move.
+
+### When an operation ends
+
+`plan_reconcile(known, live)` computes, purely, which ids to create/advance and
+which to drop: `finished` is `known − live`, and it keeps **only** ids carrying
+the `sys:` prefix (`SYNTHETIC_PREFIX`). The poller therefore can never complete
+a job another handler created — a real backup named `md0` is not a resync. A
+synthetic job discovered part-way through (the manager's cleanup pruned it) is
+re-created at its real percentage, not at 0 %.
+
+At startup the loop seeds `known` from whatever synthetic ids the *previous*
+process left in the manager (`synthetic_ids_in_manager`), so a restart does not
+orphan a scrub row.
+
+### Failure policy
+
+A source that cannot be read is a **gap, never a fabricated value**:
+
+- `/proc/mdstat` missing means "no md arrays on this host" — an empty list, not
+  an error and not "healthy".
+- a `zpool`/`btrfs` probe that times out or fails (tool absent) contributes
+  nothing; other sources are unaffected.
+- Syncthing is only probed when its `config.xml` exists
+  (`syncthing_config_present`, on the blocking pool), so a box that never
+  installed it does no HTTP work at all.
+- the loop is unkillable: a failing tick is logged and the next one runs.
+
+A probe failure is **never** turned into a red row: a failed measurement is not
+new information about the array.
+
+### Deliberate non-coverage
+
+- `luksFormat` — one-shot, no progress to read. A row could only ever say
+  "running" until it succeeded or failed, which the Storage screen already
+  reports.
+- The kernel's own `recovery` progress on a **non-md** device (e.g. a
+  hardware RAID controller) — no portable source.
+
+### Tests
+
+The parsers are pure and fully unit-tested without hardware: `parse_mdstat` /
+`parse_md_status_line` / `parse_md_percent` against an idle, resyncing,
+delayed and inactive `/proc/mdstat`; `parse_zpool_scan` against a scrubbing, a
+finished and a young (no estimate) pool; `parse_btrfs_scrub_status` against
+running, finished and aborted; `folder_sync_progress` on the bytes-not-files
+rule; and `plan_reconcile`/`apply_plan` for the one-row-per-operation rule. The
+integration suite (`tests/activity_poller_integration.rs`) drives a real
+`/proc/mdstat` fixture through `tick()` and reads the result back through
+`GET /api/activity` — the contract the taskbar consumes.
 
 ## Frontend
 
@@ -149,21 +241,27 @@ the "no timestamp ⇒ not shown" case (a terminal state with no evidence of
 - A job that `failed`/`cancelled` stays for `FAILED_GRACE` and carries
   `state`; a `completed` one never appears. The badge counts active rows only.
 - `activityStore` must not persist anything to `localStorage`.
-
-## Not yet covered (phase 2)
-
-Syncthing folder sync and Storage operations (mdadm resync, `zpool`/`btrfs`
-scrub, `luksFormat`, RAID rebuild) — these need a **poller** that turns live
-system state (`/proc/mdstat`, `zpool status`, the Syncthing API) into synthetic
-jobs, plus live testing against real hardware, so they are a separate change.
+- The poller's synthetic rows carry the `sys:` id prefix and no owner; the
+  sweep only ever completes ids with that prefix (`plan_reconcile`), so a job
+  another handler created is never touched.
+- A poller source that cannot be read contributes **nothing**. A missing
+  `/proc/mdstat`, a timed-out `zpool`, a Syncthing daemon that is not there —
+  all are gaps, never a fabricated "healthy" and never a red row.
+- The poller never spawns without a deadline and never blocks a worker on file
+  I/O (`tokio::fs` for `/proc/mdstat`, `spawn_blocking` for the Syncthing path
+  probe).
 
 ## Tests
 
 - Logic: `src/sse/progress.rs` `#[cfg(test)]`, `src/handlers/activity.rs`
-  `#[cfg(test)]`.
-- Integration: `tests/activity_integration.rs`.
+  `#[cfg(test)]`, `src/activity_poller.rs` `#[cfg(test)]` (the parsers and the
+  reconciliation, no hardware).
+- Integration: `tests/activity_integration.rs`,
+  `tests/activity_poller_integration.rs` (a real `/proc/mdstat` fixture through
+  `tick()` read back over `/api/activity`).
 - E2E: `tests/e2e/desktop/desktop.spec.ts` section 13 (13.9 backoff, 13.10 a
-  failed row keeps its outcome and no badge).
+  failed row keeps its outcome and no badge, 13.11 a synthetic `raid_resync`
+  row renders and drops out when it disappears).
 
 ## Related docs
 
