@@ -142,6 +142,25 @@ Linux account — so a user's SFTP key must be set (`PUT /shares/sftp/users/key`
 which provisions the account) *before* granting them a share, not after.
 Granting first fails with a `setfacl` error.
 
+## Deadlines on every host tool (2026-10-24, ROADMAP X.2)
+
+The handlers already wrap a share operation in `run_share_op`
+(`spawn_blocking` + `tokio::time::timeout`), but that outer timeout only stops
+**waiting** for the `spawn_blocking` future — it does not kill the `sudo
+systemctl`/`exportfs`/`tee` child, which keeps the blocking thread pinned. Every
+host command of this module now carries its own deadline, so the child is killed
+at the ceiling:
+
+| Call | Deadline | Why |
+|---|---|---|
+| `sudo tee`/`sudo tee -a`, `sudo mkdir -p` | `SHARES_WRITE_TIMEOUT` 30 s | a config write; `run_timed_with_stdin` feeds the body and closes stdin |
+| `systemctl start/stop/restart/reload`, `exportfs -ra` | `SHARES_SERVICE_TIMEOUT` 60 s | a real service start can wait on its dependencies |
+
+`run_command` keeps a non-zero exit as *data* (the callers either surface the
+stderr or only care that the reload ran). A source guard
+(`test_no_subprocess_of_this_module_runs_without_a_deadline`) fails if a bare
+`.output()`/`.spawn()`/`.status()`/`wait_with_output()` comes back.
+
 ## Frontend
 
 - `frontend/src/routes/Shares.svelte` (uses `$state(...)` for all reactive
@@ -176,6 +195,10 @@ Granting first fails with a `setfacl` error.
   (`spawn_blocking` + timeout). `SftpJailService::rebuild_jails` keeps its
   async DB resolution phase separate from its blocking reconciliation phase —
   keep that split when touching it.
+- **Every host command carries a deadline** (see above): `run_command` /
+  `run_timed_with_stdin` are the only allowed shapes. The handler's outer
+  `tokio::time::timeout` stops waiting but does **not** kill the child, so a
+  bare `.output()` in this module is a regression the source guard test catches.
 - **WebDAV has no systemd unit.** Never reintroduce `systemctl` calls for the
   `webdav` protocol, a generated `homevault-webdav.py`, or a root-owned DAV
   process. `SharesService::start/stop/restart_service(Webdav)` returns an

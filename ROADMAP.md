@@ -1,6 +1,6 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-24 (X.2: `network.rs` and `vpn.rs` bounded — two modules left) — current version: 1.0.0
+Last updated: 2026-10-24 (X.2 closed — every subprocess bounded) — current version: 1.0.0
 
 ## How to read this file
 
@@ -151,19 +151,16 @@ and the client resolves through a validating resolver, so the connection is
 pinned to an address that was just checked. **No P1 is left.**
 
 **Suggested order from here.** Every remaining finding is P2 or
-cross-cutting, so the order is the one the Process section gives: X.2 first,
-because a missing deadline turns a defect into an outage — and it is now the
-only systemic item left that can wedge a request. Explorer left that list on
-2026-10-24 (X.1 closed, and its subprocesses bounded with it), the storage group
-(`disk.rs`, `pools.rs`, `snapshots.rs`) followed the same day, `cache.rs` with
-it, and `network.rs` and `vpn.rs` the same day; `encryption.rs` was already
-clean. **What is left of X.2 is two modules and 17 call sites**: `shares.rs`
-(11) and `health.rs` (6) — do them together. After that:
-28/29 (small,
-self-contained), 10b (10.5/10.6/10.7 — the residual hardening), 32/33
-(residuals of closed items), 16.4 (the only remaining *feature*: a scheduler
-for persisted sync jobs) and 31 (pure maintainability, do it last, one tab at a
-time).
+cross-cutting. **X.2 closed on 2026-10-24** — every `std::process::Command` of
+the tree now runs under `utils::process::run_timed` / `run_timed_async` (or the
+detached twin used by the OpenVPN daemon parent), with a source guard per
+module. What is left of the cross-cutting list is process, not outage: X.3
+(silent `else {}` in CloudSync/Health/Desktop/NotificationCenter), X.5 (counts),
+X.6 (shape-only tests), X.7 (hand-rolled auth in `security.rs`) and X.8 (a
+missing token is `400`, not `401`). Then: 28/29 (small, self-contained), 10b
+(10.5/10.6/10.7 — the residual hardening), 32/33 (residuals of closed items),
+16.4 (the only remaining *feature*: a scheduler for persisted sync jobs) and 31
+(pure maintainability, do it last, one tab at a time).
 
 ---
 
@@ -351,38 +348,20 @@ items 25/13.)*
       *Acceptance:* zero `std::process::Command` / blocking `std::fs` reachable
       from a handler's async body. A CI grep (or a clippy lint) would keep it
       that way.
-- [ ] **X.2 — No timeout on subprocesses.** Absent from `health.rs`,
-      `shares.rs` (17 call sites, counted 2026-10-24)
-      (*rclone left this list with item 16, 2026-10-23; `explorer.rs` and
-      `src/browser.rs` left it on 2026-10-24 with X.1; **`disk.rs`, `pools.rs`
-      and `snapshots.rs` left it the same day** — every `lsblk`/`df`/`blkid`/
-      `mdadm`/`zpool`/`btrfs`/`smartctl`/`mount`/`umount`/`wipefs`/`mkfs`/
-      `sudo tee` call of those three modules now runs under a deadline, with
-      three source guards that fail if a bare `.output()` comes back;
-      **`cache.rs` followed** — `df`/`find`/`rsync` are bounded, which is what
-      lets a wedged mover release its process-wide single-flight slot;
-      **`network.rs` followed** — every `ip`/`wpa_cli`/`dhclient`/`netplan`/
-      `ethtool`/`ping`/`ps` call is bounded, with a source guard that fails if a
-      bare `.output()` comes back, because those reads sit behind the Network
-      screen's own poll; **`vpn.rs` followed** — every `wg`/`wg-quick`/
-      `openvpn`/`pgrep` call is bounded, with a source guard that fails if a
-      bare `.output()` comes back and keeps the daemonizing `openvpn` parent on
-      the new `run_timed_detached`; `encryption.rs` was **verified already clean** (every
-      `cryptsetup`/`mount`/`umount`/`tee` call goes through its own `run_timed`,
-      ROADMAP 9) — the entry above was stale, not a gap).* Present
-      in Docker, Firewall, Restic, Syncthing, disk quotas (2026-10-22), System
-      Journal (2026-10-23, `JOURNAL_READ_TIMEOUT`), and — since 2026-10-23 —
-      **everything the Dashboard/Widgets surface shells out to**, through the
-      shared `src/utils/process.rs` (`run_timed` / `run_timed_async`,
-      `HOST_PROBE_TIMEOUT` 10 s, `SMART_PROBE_TIMEOUT` 20 s) plus
-      `utils/proc.rs`'s `probe()`. That module is the reference implementation
-      now: a new handler should call it rather than inventing a deadline.
-      **What is actually left:** `network.rs` (39 call sites: `ip`, `netplan`,
-      `nmcli`, `wpa_cli`), `vpn.rs` (16: `wg`, `openvpn`, `systemctl`),
-      `shares.rs` (11: `setfacl`, `chpasswd`, `smbpasswd`) and `health.rs`
-      (6: `smartctl`/`df` probes). Everything named in the old wording —
-      `zpool`/`mdadm`/`smartctl`/`df`, `cryptsetup`/`mount`, `rsync`/`find` —
-      is bounded as of 2026-10-24.
+**X.2 — No timeout on subprocesses.** Closed on 2026-10-24 — see Done
+(2026-10-24 (k)). Every `std::process::Command` of the tree now runs under
+`src/utils/process.rs` — `run_timed` (blocking), `run_timed_async` /
+`run_timed_async_result` (async), `run_timed_with_stdin` (`sudo tee`),
+`run_timed_to_file` (extraction) and the new `run_timed_detached` (the
+OpenVPN daemon parent) — with per-module ceilings and a source guard in each
+module that fails if a bare `.output()`/`.spawn()`/`.status()` comes back. The
+modules closed by this item: `disk.rs`, `pools.rs`, `snapshots.rs`, `cache.rs`,
+`explorer.rs`/`browser.rs`, `network.rs`, `vpn.rs`, `shares.rs` and
+`health.rs`; `encryption.rs` was already clean (ROADMAP 9). *(History: rclone
+left with item 16 on 2026-10-23, and Docker, Firewall, Restic, Syncthing, disk
+quotas, the System Journal and the Dashboard/Widgets surface were already
+bounded.)* The acceptance is now a source guard per module rather than a hand
+count.
 - [ ] **X.3 — Empty `else {}` error handling in the UI.** CloudSync (6),
       Health, Desktop (power), NotificationCenter — *the boot hydration's two
       are fixed (2026-10-24, item 26: `App.svelte` no longer swallows the
@@ -469,6 +448,37 @@ items 25/13.)*
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-24 (k)** — Shares/Protocols and Health — **X.2 closed**: no
+`systemctl`/`exportfs`/`sudo tee`/`sudo mkdir` call of `shares.rs` and no
+`df`/`lsblk`/`mdadm`/`smartctl`/`systemctl` probe of `health.rs` runs without a
+deadline. For shares the handler already wrapped the operation in
+`run_share_op` (`spawn_blocking` + `tokio::time::timeout`), but that outer
+timeout only stops **waiting** for the future — it does not kill the `sudo
+systemctl`/`exportfs`/`tee` child, which keeps the blocking thread pinned.
+Every call now carries its own ceiling behind one local `run_command`:
+`SHARES_WRITE_TIMEOUT` 30 s (`sudo tee`/`tee -a`, `sudo mkdir -p` — the two
+`tee` helpers moved to `run_timed_with_stdin`, which feeds the body from its
+own thread, replacing a hand-rolled `.spawn()` + `wait_with_output()`) and
+`SHARES_SERVICE_TIMEOUT` 60 s (`systemctl start/stop/restart/reload`,
+`exportfs -ra` — a real service start can wait on its dependencies). For health
+every probe now goes through `run_command`: `df`/`lsblk`/`mdadm`/`systemctl` at
+`HOST_PROBE_TIMEOUT` (10 s) and `smartctl` (through `smart::std_command`) at
+`SMART_PROBE_TIMEOUT` (20 s, a drive may need to spin up); a timeout or failed
+spawn degrades that check to `Unknown` through `degrade`, never a fabricated
+healthy reading. `run_command` keeps a non-zero exit as data in both modules.
+Tests: `src/shares.rs` 32 → **37** unit (source guard, kill path,
+exit-status-as-data, missing tool, deadline ordering), `src/health.rs` 17 →
+**22** (the same four plus the probe-budget ordering),
+`tests/health_integration.rs` 15 → **16** —
+`test_a_slow_host_probe_is_waited_out_not_dropped` puts a shim `df` (250 ms)
+first on `PATH` and requires `GET /api/health` to come back `200` *after*
+really waiting for it. **No behavioural shares integration case**, by design:
+every host call of `shares.rs` is a mutation (writing `/etc` or starting a
+service), which the suite must never do to the real host — the source guard and
+the helper tests carry that half. **Written, not run** (per instruction). Docs:
+[guides/shares.md](docs/guides/shares.md), [guides/health.md](docs/guides/health.md),
+`CHANGELOG.md`, `TESTING.md`.
 
 **2026-10-24 (j)** — VPN — no `wg`/`wg-quick`/`openvpn`/`pgrep` call runs
 without a deadline (X.2 for `vpn.rs`). Every command used to be a bare

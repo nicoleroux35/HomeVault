@@ -528,3 +528,49 @@ async fn test_an_unreadable_check_keeps_the_endpoint_answer_well_formed() {
         )
     );
 }
+
+/// ROADMAP X.2 — a host probe that answers *slowly* is waited out, not dropped.
+///
+/// `check_disk_space` shells out to `df` on every health tick. That call used
+/// to be unbounded; it is now bounded by `HOST_PROBE_TIMEOUT`, and the failure
+/// mode that matters is the one this test pins: a bounded probe must still
+/// return the tool's answer when the tool is merely slow (a busy host, a
+/// mount-table read). A shim `df` sleeps 250 ms, so the endpoint must still
+/// answer `200` after waiting for it — not fail, not hang.
+#[tokio::test]
+async fn test_a_slow_host_probe_is_waited_out_not_dropped() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = health_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let shim_dir = tempfile::tempdir().expect("shim dir");
+    let shim = shim_dir.path().join("df");
+    std::fs::write(
+        &shim,
+        "#!/bin/sh\n# A bounded probe must wait for a slow tool, not kill it early.\nsleep 0.25\nexit 0\n",
+    )
+    .expect("write shim");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod shim");
+    }
+    let previous_path = std::env::var("PATH").ok();
+    std::env::set_var("PATH", shim_dir.path());
+
+    let started = std::time::Instant::now();
+    let (status, body) = send(&mut router, Method::GET, "/api/health", Some(&token), None).await;
+    let elapsed = started.elapsed();
+
+    if let Some(path) = previous_path {
+        std::env::set_var("PATH", path);
+    }
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        elapsed >= std::time::Duration::from_millis(200),
+        "the shim was never actually waited for ({elapsed:?}) — the probe skipped it"
+    );
+}
