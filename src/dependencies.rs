@@ -1725,4 +1725,95 @@ mod tests {
             );
         }
     }
+
+    /// Vendored shadcn components: every module named in the design-system
+    /// guide must exist in `frontend/src/lib/components/ui/`, and every module
+    /// on disk must be named in the guide — both directions.
+    ///
+    /// Regression (2026-10-25): the §4 layer table advertised **30** generated
+    /// components while only **11** were vendored. None of the 19 missing ones
+    /// was imported anywhere either, so the doc described an intention, not the
+    /// code — the same class of false invariant as ROADMAP X.4. The cost is
+    /// concrete: a developer reads "use `Progress`", `grep`s for it, finds
+    /// nothing, and hand-rolls a bar in the screen (which §4 forbids).
+    ///
+    /// The guide is the contract; this test keeps it honest in both
+    /// directions, so a component can no longer be deleted from the tree while
+    /// the doc keeps promising it, nor added to the tree and left undocumented.
+    #[test]
+    fn test_documented_shadcn_components_match_the_tree() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let ui = root.join("frontend/src/lib/components/ui");
+        let doc = std::fs::read_to_string(root.join("docs/guides/design-system.md"))
+            .expect("cannot read docs/guides/design-system.md");
+
+        // 1. Every directory in ui/ is a component and must be documented.
+        let mut on_disk: Vec<String> = std::fs::read_dir(&ui)
+            .expect("cannot read frontend/src/lib/components/ui")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        on_disk.sort();
+        assert!(
+            on_disk.len() >= 5,
+            "the scan found only {} components under ui/ — it is not walking the tree",
+            on_disk.len()
+        );
+
+        // The doc names them in one backticked, comma-separated run inside the
+        // "Framework" row of the layer table.
+        let framework_row = doc
+            .lines()
+            .find(|l| l.contains("| Framework | `lib/components/ui/` |"))
+            .expect("the §4 layer table no longer has its Framework row");
+        let missing_from_doc: Vec<&String> = on_disk
+            .iter()
+            .filter(|name| !framework_row.contains(&format!("`{name}`")))
+            .collect();
+        assert!(
+            missing_from_doc.is_empty(),
+            "these components are vendored under ui/ but not listed in the \
+             design-system guide's Framework row:\n  {missing_from_doc:?}\n\
+             Add them to that row in the same change."
+        );
+
+        // 2. Conversely, the row must not name a component that is not there.
+        let documented_phantom: Vec<&str> = [
+            "accordion",
+            "calendar",
+            "collapsible",
+            "command",
+            "context-menu",
+            "date-picker",
+            "dropdown-menu",
+            "input-group",
+            "pagination",
+            "popover",
+            "progress",
+            "scroll-area",
+            "separator",
+            "skeleton",
+            "slider",
+            "tabs",
+            "textarea",
+            "toggle",
+            "toggle-group",
+            "tooltip",
+        ]
+        .into_iter()
+        // `toggle` and `tabs` are substring-ambiguous (`toggle-group`,
+        // `tabsLabel`), so match the exact backticked token only.
+        .filter(|name| framework_row.contains(&format!("`{name}`")))
+        .filter(|name| !on_disk.iter().any(|d| d == name))
+        .collect();
+        assert!(
+            documented_phantom.is_empty(),
+            "the Framework row names components that are NOT vendored under \
+             ui/:\n  {documented_phantom:?}\n\
+             Either add them with `npx shadcn-svelte@latest add <name>` or drop \
+             them from the guide — a component with no caller is a bug in the \
+             doc, not an asset."
+        );
+    }
 }
