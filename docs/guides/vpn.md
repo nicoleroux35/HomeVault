@@ -115,6 +115,35 @@ and `/etc/openvpn` are chowned `homevault:homevault 0750` by
 `prepare_vpn_directories`, which is what lets the unprivileged service write
 the configs directly.
 
+## Deadlines on every host tool (2026-10-24, ROADMAP X.2)
+
+Every command of this module used to be a bare `Command::output()` (or, for the
+two stdin cases, a hand-rolled `.spawn()` + `wait_with_output()`). A `wg`
+blocked on a missing kernel module, an `openvpn --daemon` parent that never
+exits or a `pgrep` on a huge process table pinned the calling thread with no
+ceiling — and the VPN screen polls the server status and the peer list. Each
+call now goes through `crate::utils::process::run_timed` behind one local
+`run_command(cmd, timeout)` helper:
+
+| Call | Deadline | Why |
+|---|---|---|
+| `wg show`/`--version`/`genkey`/`genpsk`, `pgrep`, `ip route`, `sudo cat`/`test` | `VPN_PROBE_TIMEOUT` 10 s | one-shot read; the screen polls it |
+| `wg set`, `wg-quick up`, `sudo chmod`, `systemctl enable`, `sudo kill` | `VPN_WRITE_TIMEOUT` 30 s | root op; can wait on the sudo/PAM stack or the kernel |
+| `openvpn --config … --daemon` | `VPN_WRITE_TIMEOUT` 30 s | `run_timed_detached` — see below |
+
+Two stdin cases (`wg pubkey`, `wg set … preshared-key /dev/stdin`) go through
+`run_timed_with_stdin`, which feeds the input from its own thread and closes
+stdin afterwards. The OpenVPN daemon start uses the new
+`utils::process::run_timed_detached`: the parent forks and exits at once but the
+daemon keeps the inherited write ends of any pipe, so `run_timed`'s drain
+threads would never see EOF and its deadline could never fire — the helper
+detaches both streams to `/dev/null` and only waits for the exit status.
+`run_command` keeps a non-zero exit as *data* (`wg show` on a stopped interface
+means "not running"). A source guard
+(`test_no_subprocess_of_this_module_runs_without_a_deadline`) fails if a bare
+`.output()`/`.spawn()`/`.status()`/`wait_with_output()` comes back, and requires
+`run_timed_detached(` to stay in the daemon path.
+
 ## Public endpoint detection
 
 The server card and the generated client configs embed the detected public
@@ -134,16 +163,21 @@ config ships the `YOUR-SERVER-IP` placeholder the admin must replace.
    on stop/delete), `.auth` files are 0600;
 4. no uploaded profile can execute a command — the engine re-validates
    whatever a stale upload might contain;
-5. a failed start never leaves a half-connected daemon behind.
+5. a failed start never leaves a half-connected daemon behind;
+6. every host command carries a deadline (see above); `run_command`,
+   `run_timed_with_stdin` and — for the daemonizing OpenVPN parent —
+   `run_timed_detached` are the only allowed shapes. A bare `Command::output()`
+   in this module is a regression the source guard test catches.
 
 ## Tests
 
-- `src/vpn.rs` unit (29): peer-IP allocation, config extraction, client
+- `src/vpn.rs` unit (34): peer-IP allocation, config extraction, client
   config builder, saved-config listing, **profile-content deny list matrix**
   (per-directive, comments/values must not match, case-insensitivity,
   `script-security` levels), **log parsers** (`Initialization Sequence
   Completed` marker, fatal/transport error extraction, timestamp stripping
-  in the summary);
+  in the summary), and **subprocess deadlines** (source guard, kill path,
+  exit-status-as-data, missing tool, deadline ordering);
 - `tests/vpn_integration.rs` (25): guards on every endpoint, name
   sanitisation (traversal, encoded slash, control characters, empty,
   oversized), read-only success paths, **400 profile-content tests** (exec

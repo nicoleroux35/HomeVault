@@ -1,6 +1,6 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-24 (X.2: `network.rs` bounded — three modules left) — current version: 1.0.0
+Last updated: 2026-10-24 (X.2: `network.rs` and `vpn.rs` bounded — two modules left) — current version: 1.0.0
 
 ## How to read this file
 
@@ -156,10 +156,10 @@ because a missing deadline turns a defect into an outage — and it is now the
 only systemic item left that can wedge a request. Explorer left that list on
 2026-10-24 (X.1 closed, and its subprocesses bounded with it), the storage group
 (`disk.rs`, `pools.rs`, `snapshots.rs`) followed the same day, `cache.rs` with
-it, and `network.rs` the same day; `encryption.rs` was already clean. **What is
-left of X.2 is three modules and 33 call sites**: `vpn.rs` (16), `shares.rs`
-(11) and `health.rs` (6) — do `vpn.rs` first (it sits behind the VPN screen's
-own poll), then `shares.rs` + `health.rs` together. After that: 28/29 (small,
+it, and `network.rs` and `vpn.rs` the same day; `encryption.rs` was already
+clean. **What is left of X.2 is two modules and 17 call sites**: `shares.rs`
+(11) and `health.rs` (6) — do them together. After that:
+28/29 (small,
 self-contained), 10b (10.5/10.6/10.7 — the residual hardening), 32/33
 (residuals of closed items), 16.4 (the only remaining *feature*: a scheduler
 for persisted sync jobs) and 31 (pure maintainability, do it last, one tab at a
@@ -352,7 +352,7 @@ items 25/13.)*
       from a handler's async body. A CI grep (or a clippy lint) would keep it
       that way.
 - [ ] **X.2 — No timeout on subprocesses.** Absent from `health.rs`,
-      `vpn.rs`, `shares.rs` (33 call sites, counted 2026-10-24)
+      `shares.rs` (17 call sites, counted 2026-10-24)
       (*rclone left this list with item 16, 2026-10-23; `explorer.rs` and
       `src/browser.rs` left it on 2026-10-24 with X.1; **`disk.rs`, `pools.rs`
       and `snapshots.rs` left it the same day** — every `lsblk`/`df`/`blkid`/
@@ -364,7 +364,10 @@ items 25/13.)*
       **`network.rs` followed** — every `ip`/`wpa_cli`/`dhclient`/`netplan`/
       `ethtool`/`ping`/`ps` call is bounded, with a source guard that fails if a
       bare `.output()` comes back, because those reads sit behind the Network
-      screen's own poll; `encryption.rs` was **verified already clean** (every
+      screen's own poll; **`vpn.rs` followed** — every `wg`/`wg-quick`/
+      `openvpn`/`pgrep` call is bounded, with a source guard that fails if a
+      bare `.output()` comes back and keeps the daemonizing `openvpn` parent on
+      the new `run_timed_detached`; `encryption.rs` was **verified already clean** (every
       `cryptsetup`/`mount`/`umount`/`tee` call goes through its own `run_timed`,
       ROADMAP 9) — the entry above was stale, not a gap).* Present
       in Docker, Firewall, Restic, Syncthing, disk quotas (2026-10-22), System
@@ -466,6 +469,37 @@ items 25/13.)*
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-24 (j)** — VPN — no `wg`/`wg-quick`/`openvpn`/`pgrep` call runs
+without a deadline (X.2 for `vpn.rs`). Every command used to be a bare
+`Command::output()` — except the two stdin cases, which hand-rolled a `.spawn()`
++ `wait_with_output()`. A `wg` blocked on a missing kernel module, an
+`openvpn --daemon` parent that never exits or a `pgrep` on a huge process table
+pinned the calling thread with no ceiling, and the VPN screen polls the server
+status and the peer list. All call sites now go through
+`crate::utils::process::run_timed` behind one local `run_command(cmd, timeout)`,
+with `VPN_PROBE_TIMEOUT` 10 s (`wg show`/`--version`/`genkey`/`genpsk`,
+`pgrep`, `ip route`, `sudo cat`/`test`) and `VPN_WRITE_TIMEOUT` 30 s (`wg set`,
+`wg-quick up`, `sudo chmod`, `systemctl enable`, `sudo kill`). The two stdin
+paths (`wg pubkey`, `wg set … preshared-key /dev/stdin`) use
+`run_timed_with_stdin`, which feeds the input from its own thread and bounds the
+wait. **The OpenVPN daemon start needed a new primitive:** `openvpn --daemon`'s
+parent forks and exits at once, but the daemon keeps the inherited write ends of
+any pipe, so `run_timed`'s drain threads would never see EOF and its deadline
+could never fire — `utils::process` gained `run_timed_detached` (both streams to
+`/dev/null`, only the exit status is waited for, killed at the deadline), and
+the start path uses it. `run_command` keeps a non-zero exit as data (`wg show`
+on a stopped interface means "not running"). Tests: `src/vpn.rs` 29 → **34**
+unit — `test_no_subprocess_of_this_module_runs_without_a_deadline` (source
+guard, and it requires `run_timed_detached(` to stay in the daemon path),
+`test_run_command_kills_a_hung_tool_and_names_the_deadline`,
+`test_run_command_keeps_a_non_zero_exit_as_data`,
+`test_run_command_reports_a_missing_tool`, the deadline-ordering check;
+`src/utils/process.rs` 16 → **19** — three `run_timed_detached` cases (a fast
+command's status, a hung command killed at the deadline, a missing program).
+**Written, not run** (per instruction). Docs:
+[guides/vpn.md](docs/guides/vpn.md) (*Deadlines on every host tool*,
+*Invariants*), `CHANGELOG.md`, `TESTING.md`.
 
 **2026-10-24 (i)** — Network — no `ip`/`wpa_cli`/`dhclient`/`netplan`/`ethtool`/
 `ping`/`ps` call runs without a deadline (X.2 for `network.rs`: the largest of
