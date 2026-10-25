@@ -88,12 +88,13 @@ Two structural facts explain most of the list:
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | 32 | Virtual Machines — residual | P2 | 2 |
 | 33 | Transfer quotas — residual | P2 | 1 |
-| — | Cross-cutting (6 systemic) | — | 6 |
+| — | Cross-cutting (5 systemic) | — | 5 |
 
-Total open findings: **19** (13 per-area + 6 cross-cutting). Item 27 (2
+Total open findings: **18** (13 per-area + 5 cross-cutting). Item 27 (2
 findings) left the open list on 2026-10-24 — see Done — and with it the last
 P1; **X.1 closed the same day** (Explorer was its last module — see Done
-2026-10-24 (f)), which also bounded every subprocess of that module.
+2026-10-24 (f)), and **X.2 closed the same day too** (Done 2026-10-24 (k)), so
+no subprocess of the tree runs without a deadline.
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
