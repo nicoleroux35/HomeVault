@@ -1,7 +1,7 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-24 (31.1 closed — the Docker screen runs on `api.ts`;
-16.4 and 28.3 earlier the same day) — current version: 1.0.0
+Last updated: 2026-10-24 (**open work list empty** — 31.1 was the last item) —
+current version: 1.0.0
 
 ## How to read this file
 
@@ -82,17 +82,40 @@ Two structural facts explain most of the list:
 
 | # | Area | Verdict | Blocking items |
 |---|---|---|---|
-| 28 | Activity taskbar | P2 | 0 |
-| 31 | Docker — `api.ts` consolidation | P2 | 1 |
-| — | Cross-cutting | — | 0 |
+| — | *(nothing open)* | — | 0 |
 
-Total open findings: **1** (1 per-area + 0 cross-cutting) — **no defect left**:
-what remains is one maintainability item (31). Item 28 closed on 2026-10-24
+Total open findings: **0** — every area item and every cross-cutting item is
+closed and **nothing is left to implement** from this file. The last one, **31**
+(Docker's `api.ts` consolidation), closed on 2026-10-24 (Done (u)): 59 wrappers,
+61 rewritten call sites, the screen's private `authedFetch` deleted, so no
+screen carries an HTTP path of its own any more. Item 28 closed the same day
 (Done (t)): **28.3**, its last finding and the last *feature* of the list, is a
 live-hardware poller — `/proc/mdstat`, `zpool status` / `btrfs scrub status`
 and the Syncthing API now feed synthetic rows into the taskbar, so a resync, a
 scrub or a folder catching up is visible even though HomeVault did not start
-it. The 2026-10-24 sweep closed, in order: **X.7/X.8**
+it.
+
+**What "empty" means — and what it does not.** This file lists *defects and
+debt found by auditing the current code*, each with a `path:line`. An empty
+list is therefore not a claim that the product is feature-complete: it means
+no known defect, no broken invariant and no named maintenance debt is
+outstanding. New work arrives by one of three routes, none of them an audit of
+code that already passed one:
+
+1. **A new audit pass** over an area that has had no production-ready review
+   (see *Current state*: everything not in that list is still on its original
+   implementation plus incremental feature work).
+2. **A live-hardware pass** on a real host. Several fixes are written-but-not-
+   executed, and a few features were never exercised against the hardware they
+   drive — `docs/guides/docker.md` (*Invariants*) still records that a live
+   catalog install was reviewed but not executed (no outbound network in the
+   verification environment), and the Explorer's in-ZFS-snapshot navigation has
+   never been driven live for the same reason.
+3. **A new feature request**, which belongs in a design note and then in the
+   `docs/guides/` page — not in this file. The Process rules below describe how
+   a confirmed finding is written up.
+
+The 2026-10-24 sweep closed, in order: **X.7/X.8**
 (Done (n), one auth primitive and one status contract), **28.1/28.2 + 29.1/29.2**
 (Done (o), activity backoff and a discovery switch that reaches the host),
 **X.9** (Done (p), the 98 subprocess sites X.2 never reached, now behind a
@@ -169,8 +192,12 @@ chain is walked hop by hop with every hop re-validated before it is dialled,
 and the client resolves through a validating resolver, so the connection is
 pinned to an address that was just checked. **No P1 is left.**
 
-**Suggested order from here.** Every remaining finding is P2 — **the
-cross-cutting list is empty**. **X.2 closed on 2026-10-24** — every
+**Suggested order from here.** There is nothing left to order: the per-area
+list and the cross-cutting list are **both empty** (31, the last item, closed
+on 2026-10-24 — Done (u)). What follows is the history of how the list drained;
+every finding it mentions is P2 at most and **none is open**.
+
+**X.2 closed on 2026-10-24** — every
 `std::process::Command` of the tree now runs under `utils::process::run_timed` /
 `run_timed_async` (or the detached twin used by the OpenVPN daemon parent),
 with a source guard per module. **X.3 closed the same day** — every mutating
@@ -188,24 +215,24 @@ that got a guard, and the 98 sites it missed are now bounded too, behind a
 tree-wide source guard. **10b, 32/33 and 16.4 all closed the same day** (Done
 (q), (r), (s)). **28.3 closed on 2026-10-24 too** (Done (t)): the taskbar no
 longer only shows work HomeVault started — a poller turns `/proc/mdstat`, a
-`zpool`/`btrfs` scrub and the Syncthing API into synthetic rows. What is left is
-one maintenance item: 31 (Docker's `api.ts` consolidation — pure
-maintainability, ~50 wrappers and ~100 call sites, do it last, one tab at a
-time).
+`zpool`/`btrfs` scrub and the Syncthing API into synthetic rows. The last
+maintenance item, 31 (Docker's `api.ts` consolidation), closed on 2026-10-24
+too (Done (u)) — 59 wrappers, 61 rewritten call sites, one tab at a time as
+the item required.
 
 ---
 
 ## P0 — Broken
 
-None. Item 6 (Apps Center / app-proxy) was closed on 2026-10-23 — see
-"Done".
+None — and none open. Item 6 (Apps Center / app-proxy) was the last one and
+closed on 2026-10-23 — see "Done".
 
 ---
 
 ## P1 — Needs work
 
-None. Item 27 (Web shortcuts) was the last one and closed on 2026-10-24 — see
-"Done".
+None — and none open. Item 27 (Web shortcuts) was the last one and closed on
+2026-10-24 — see "Done".
 
 ---
 
@@ -245,6 +272,9 @@ contract now lives in [guides/shortcuts.md](docs/guides/shortcuts.md) (guards
 ---
 
 ## P2 — Small gaps
+
+None open — 31.1 was the last one. Every sub-section below is a closed item,
+kept as the pointer to its Done entry and its guide.
 
 ### 16.4. Cloud Sync (rclone) — a persisted sync job never runs on its own
 
@@ -310,6 +340,9 @@ immediate.
 ---
 
 ## Cross-cutting — fix once, unblocks many
+
+None open. Every X item below is closed; **X.6** stopped being a finding on
+2026-10-24 and became a standing **Process** rule instead.
 
 **X.1 — Blocking work on the async runtime.** Closed on 2026-10-24 — see Done
 (2026-10-24 (f)). `handlers/explorer.rs` was the last module on the list and is

@@ -103,6 +103,15 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The roadmap's open-work list is empty (2026-10-24, ROADMAP 31.1).** With
+  the Docker screen moved onto `api.ts`, the last item left the list — every
+  P0, P1, P2 and cross-cutting finding is closed, and `ROADMAP.md` now says so
+  instead of keeping a stale "1 open finding" index. The file also states what
+  an empty list means: it lists defects and debt *found by auditing the current
+  code*, so "empty" is not a claim of feature-completeness. New entries arrive
+  from a fresh audit pass, a live-hardware pass, or a feature request written
+  up as a design note first.
+
 - **One HTTP client, everywhere: the Docker app stops hand-rolling its own
   (2026-10-24, ROADMAP 31.1).** `Docker.svelte` was the last screen talking to
   the server with a private helper — a `fetch('/api' + path)` that read the
