@@ -916,10 +916,10 @@
         smartTestStatus = { in_progress: true, progress_pct: 99, remaining_minutes: resp.data?.estimated_remaining_minutes || 0, last_result: null };
         startSmartPolling();
       } else {
-        // silent error
+        dlg.notify(resp.message || resp.error || translate('common.action_failed'));
       }
-    } catch {
-      // silent
+    } catch (e) {
+      dlg.notify(e instanceof Error ? e.message : translate('common.action_failed'));
     } finally {
       smartBusy = false;
     }
