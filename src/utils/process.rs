@@ -27,7 +27,7 @@
 //! killed (not merely abandoned) when the deadline expires.
 
 use std::io::Read as _;
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, ExitStatus, Output, Stdio};
 use std::time::{Duration, Instant};
 
 /// Default deadline for a one-shot host probe (SMART status/temperature,
@@ -89,6 +89,49 @@ pub fn run_timed_to_file(
     cmd.stdout(Stdio::from(sink));
     // stdout is the caller's file, not a pipe to drain.
     run_timed_inner(cmd, deadline, StdinInput::Closed, false)
+}
+
+/// Run a command with **both** streams detached (`/dev/null`) under a hard
+/// deadline, killing the child on expiry. Only the exit status comes back.
+///
+/// `openvpn --daemon` is why this exists: the parent forks and exits at once,
+/// but the daemon keeps the inherited write ends of any pipe we hand it, so
+/// [`run_timed`]'s drain threads never see EOF and its deadline can never
+/// fire. There is nothing to read here anyway — the daemon's own output goes
+/// to its `--log` file — so both streams are `/dev/null` and the caller reads
+/// the log itself.
+pub fn run_timed_detached(cmd: &mut Command, deadline: Duration) -> Result<ExitStatus, String> {
+    let program = cmd.get_program().to_string_lossy().into_owned();
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to run {}: {}", program, e))?;
+
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {
+                if started.elapsed() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "{} did not finish within {} seconds",
+                        program,
+                        deadline.as_secs()
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                return Err(format!("Failed to wait for {}: {}", program, e));
+            }
+        }
+    }
 }
 
 /// How the child's stdin is fed: closed, or a byte slice written by a thread.
@@ -409,6 +452,41 @@ mod tests {
         let mut cmd = Command::new("homevault-no-such-binary");
         let err = run_timed_with_stdin(&mut cmd, Duration::from_secs(1), b"x")
             .expect_err("a missing program is an error");
+        assert!(err.contains("Failed to run"), "{err}");
+    }
+
+    #[test]
+    fn run_timed_detached_returns_a_fast_command_status() {
+        let status = run_timed_detached(&mut Command::new("true"), Duration::from_secs(5))
+            .expect("true must finish");
+        assert!(status.success());
+        let status = run_timed_detached(&mut Command::new("false"), Duration::from_secs(5))
+            .expect("false still runs to completion");
+        assert_eq!(status.code(), Some(1));
+    }
+
+    #[test]
+    fn run_timed_detached_kills_a_command_that_overruns_its_deadline() {
+        // `openvpn --daemon`'s parent normally exits at once; a parent that
+        // never does must not park the caller (`start_openvpn_connection`)
+        // forever.
+        let started = Instant::now();
+        let err = run_timed_detached(
+            &mut Command::new("sleep").arg("30"),
+            Duration::from_millis(150),
+        )
+        .expect_err("a hung command must not succeed");
+        assert!(err.contains("did not finish within"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn run_timed_detached_reports_a_missing_program() {
+        let err = run_timed_detached(
+            &mut Command::new("homevault-no-such-binary"),
+            Duration::from_secs(1),
+        )
+        .expect_err("a missing program is an error");
         assert!(err.contains("Failed to run"), "{err}");
     }
 

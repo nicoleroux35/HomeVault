@@ -390,6 +390,24 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **VPN — every `wg`/`wg-quick`/`openvpn`/`pgrep` call is bounded (2026-10-24,
+  ROADMAP X.2).** Every command was a bare `Command::output()` (except two
+  stdin cases that hand-rolled `.spawn()` + `wait_with_output()`), so a `wg`
+  blocked on a missing kernel module, an `openvpn --daemon` parent that never
+  exits or a `pgrep` on a huge process table pinned the calling thread with no
+  ceiling — and the VPN screen polls the server status and the peer list. All
+  call sites now go through `crate::utils::process::run_timed` behind one local
+  `run_command(cmd, timeout)`, with `VPN_PROBE_TIMEOUT` 10 s and
+  `VPN_WRITE_TIMEOUT` 30 s. The two stdin paths use `run_timed_with_stdin`.
+  **New primitive:** the OpenVPN daemon start uses `run_timed_detached`
+  (`utils::process`) — `openvpn --daemon`'s daemon keeps the inherited write
+  ends of any pipe, so `run_timed`'s drain threads would never see EOF and its
+  deadline could not fire; the helper detaches both streams to `/dev/null` and
+  only waits for the exit status. Tests: `src/vpn.rs` 29 → **34** (a source
+  guard that also requires the detached helper in the daemon path, the kill
+  path, exit-status-as-data, a missing tool, the deadline ordering),
+  `src/utils/process.rs` 16 → **19** (three `run_timed_detached` cases). Docs:
+  [guides/vpn.md](docs/guides/vpn.md).
 - **Network — every `ip`/`wpa_cli`/`dhclient`/`netplan`/`ethtool`/`ping`/`ps`
   call is bounded (2026-10-24, ROADMAP X.2).** The module runs on the blocking
   pool (its handlers wrap it in `spawn_blocking`), so a wedged tool did not
