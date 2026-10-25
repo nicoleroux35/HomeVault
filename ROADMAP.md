@@ -88,15 +88,14 @@ Two structural facts explain most of the list:
 
 Total open findings: **2** (2 per-area + 0 cross-cutting) — **no defect left**:
 what remains is one feature (28.3, a live-hardware poller) and one
-maintainability item (31). **16.4 closed on 2026-10-24** — see Done (s) — so a
-persisted sync job can finally run on its own. **32 (Virtual
-Machines) and 33 (Transfer quotas) closed on 2026-10-24** — see Done (r) — so
-the only defect-shaped work left is none: what remains is two features
-(28.3, 16.4) and one maintainability item (31). **10b (10.5, 10.6,
-10.7) closed on 2026-10-24** — see Done (q) — so the File Explorer has no
-residual finding left, and **X.9 closed the same day** (Done (p)): every
-`std::process::Command`/`tokio::process::Command` of `src/` is bounded, enforced
-by a tree-wide source guard rather than a hand count. Item 27 (2
+maintainability item (31). The 2026-10-24 sweep closed, in order: **X.7/X.8**
+(Done (n), one auth primitive and one status contract), **28.1/28.2 + 29.1/29.2**
+(Done (o), activity backoff and a discovery switch that reaches the host),
+**X.9** (Done (p), the 98 subprocess sites X.2 never reached, now behind a
+tree-wide source guard), **10b** (Done (q), the Explorer's resolved leaf,
+streamed chunk and mapped permit), **32/33** (Done (r), the screen relay's
+heartbeat and the ISO bounds), and **16.4** (Done (s), the Cloud Sync
+scheduler). Item 27 (2
 findings) left the open list on 2026-10-24 — see Done — and with it the last
 P1; **X.1 closed the same day** (Explorer was its last module — see Done
 2026-10-24 (f)), **X.2 closed the same day too** (Done 2026-10-24 (k)), so no
