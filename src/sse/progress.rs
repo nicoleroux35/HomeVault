@@ -361,6 +361,36 @@ impl ProgressManager {
         }
     }
 
+    /// Emit progress for a job that **cannot report a percentage**, keeping it
+    /// indeterminate.
+    ///
+    /// [`Self::emit_progress`] always marks the job as having reported a
+    /// percentage, so re-emitting it for an operation whose source has no
+    /// number (a `zpool scrub` that has not estimated yet, an mdadm resync the
+    /// kernel reports as `DELAYED`) turned an honest "indeterminate" row into
+    /// a fake `0 %` that then never moved. The activity poller (ROADMAP 28.3)
+    /// is the caller: it advances a row's *message* every tick while its
+    /// percentage is `None`, and the feed must keep answering `progress: null`
+    /// (a sliding bar, no `%`) for as long as the source says nothing.
+    pub fn emit_message_only(&self, job_id: &str, message: &str) -> bool {
+        if let Some(job) = self.jobs.read().get(job_id) {
+            let event = ProgressEvent::new(
+                job_id.to_string(),
+                job.job_type.clone(),
+                ProgressState::Running,
+                0.0,
+                message,
+            );
+            *job.last_event.lock() = Some(event.clone());
+            // `has_progress` stays as it was: a job that *did* report a number
+            // once keeps answering with it, and one that never did keeps
+            // answering `null`.
+            job.sender.send(event).is_ok()
+        } else {
+            false
+        }
+    }
+
     /// Emit progress with additional metadata
     pub fn emit_progress_extended(
         &self,
@@ -679,6 +709,47 @@ mod tests {
         assert_eq!(s.progress, Some(42.0));
         assert_eq!(s.message, "42/100 files");
         assert_eq!(s.state, ProgressState::Running);
+    }
+
+    /// ROADMAP 28.3 — a job that cannot report a percentage stays
+    /// indeterminate when its message advances.
+    ///
+    /// `emit_progress` flags the job as having reported a percentage (it is
+    /// what tells `0 %` apart from "nothing reported yet"), so the activity
+    /// poller re-emitting a no-number source through it turned an honest
+    /// indeterminate row into a fake 0 % that then never moved.
+    /// `emit_message_only` advances the message without claiming a number.
+    #[test]
+    fn emit_message_only_keeps_a_job_indeterminate() {
+        let m = ProgressManager::new();
+        let id = m.create_job(JobType::Custom("raid_resync".into()), "resync");
+        assert_eq!(snap(&m.list_activity(), &id).progress, None);
+
+        // Three ticks of a source that has no number: still null, never 0.
+        for i in 0..3 {
+            m.emit_message_only(&id, &format!("resync {i}"));
+            let list = m.list_activity();
+            let s = snap(&list, &id);
+            assert_eq!(
+                s.progress, None,
+                "tick {i}: a no-number source must stay indeterminate"
+            );
+        }
+        assert_eq!(snap(&m.list_activity(), &id).message, "resync 2");
+    }
+
+    /// A job that already reported a number keeps it when a later tick has no
+    /// number — the bar must not fall back to indeterminate mid-operation.
+    #[test]
+    fn emit_message_only_does_not_erase_a_known_percentage() {
+        let m = ProgressManager::new();
+        let id = m.create_job(JobType::Backup, "start");
+        m.emit_progress(&id, 29.4, "29 %");
+        m.emit_message_only(&id, "still going");
+        let list = m.list_activity();
+        let s = snap(&list, &id);
+        assert_eq!(s.progress, Some(29.4));
+        assert_eq!(s.message, "still going");
     }
 
     #[test]

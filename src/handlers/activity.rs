@@ -27,6 +27,16 @@
 //! Docker install/update, ddrescue/photorec) with aria2's currently-active
 //! downloads. It is a read-only endpoint (`require_auth`).
 //!
+//! Since ROADMAP 28.3 the list also carries the **synthetic** jobs written by
+//! `crate::activity_poller` — one row per live host operation HomeVault did not
+//! start itself: an mdadm array resyncing/recovering/reshaping/checking
+//! (`/proc/mdstat`), a ZFS or btrfs scrub in progress, and a Syncthing folder
+//! that is still catching up. They are ordinary `PROGRESS_MANAGER` jobs pushed
+//! by a background poller, so this handler needs no branch for them: the poller
+//! creates them with a `kind` of `raid_resync` / `pool_scrub` /
+//! `syncthing_sync` and no owner, which makes them admin-only like every other
+//! ownerless job.
+//!
 //! Scoping: a non-admin only sees jobs they own (`owner == their username`);
 //! an admin sees every job. The aria2 branch additionally requires admin and
 //! **never starts aria2** — it checks the live process handle first, so polling

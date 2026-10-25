@@ -246,15 +246,30 @@ pub struct SyncthingErrors {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn find_syncthing_config() -> Option<String> {
-    let paths: Vec<String> = vec![
+/// Whether a Syncthing `config.xml` exists on this host — the cheap gate the
+/// activity poller uses before it probes the daemon every poll interval
+/// (ROADMAP 28.3). Blocking file I/O: callers on an async body go through
+/// `spawn_blocking`.
+pub fn syncthing_config_present() -> bool {
+    syncthing_config_paths()
+        .iter()
+        .any(|p| std::path::Path::new(p).exists())
+}
+
+/// The paths a Syncthing daemon may keep its config in, in probe order.
+fn syncthing_config_paths() -> Vec<String> {
+    vec![
         crate::config::paths::syncthing_config_path()
             .to_string_lossy()
             .into_owned(),
         "/root/.config/syncthing/config.xml".to_string(),
         "/var/lib/syncthing/.config/syncthing/config.xml".to_string(),
         "/etc/syncthing/config.xml".to_string(),
-    ];
+    ]
+}
+
+fn find_syncthing_config() -> Option<String> {
+    let paths = syncthing_config_paths();
     for p in &paths {
         if std::path::Path::new(p).exists() {
             return std::fs::read_to_string(p).ok();
@@ -945,6 +960,46 @@ pub async fn handle_syncthing_connections(
             e
         ))),
     }
+}
+
+/// Every configured folder's transfer backlog, for the activity poller.
+///
+/// Same two reads `handle_syncthing_folders` performs (`system/config` for the
+/// folder list and the paused flag, then one `db/status` per folder for the
+/// byte counters), minus the HTTP envelope and the admin gate — the caller is
+/// the server-side activity poller (ROADMAP 28.3), not a request.
+///
+/// Returns an empty list whenever the daemon is not answering: a box that does
+/// not run Syncthing must not produce a warning every poll interval, and "no
+/// folders" is the truth there. There is no `?` on the config read for exactly
+/// that reason.
+pub async fn folder_backlogs() -> Vec<crate::activity_poller::SyncthingFolderNeed> {
+    let Ok(config_raw) = syncthing_get("system/config").await else {
+        return Vec::new();
+    };
+    let Ok(config) = serde_json::from_str::<SyncthingConfig>(&config_raw) else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for folder in config.folders {
+        let encoded_id: String =
+            url::form_urlencoded::byte_serialize(folder.id.as_bytes()).collect();
+        let db_info: Option<DbFolderStatus> =
+            syncthing_get(&format!("db/status?folder={}", encoded_id))
+                .await
+                .ok()
+                .and_then(|r| serde_json::from_str(&r).ok());
+
+        out.push(crate::activity_poller::SyncthingFolderNeed {
+            id: folder.id.clone(),
+            label: folder.label.clone(),
+            global_bytes: db_info.as_ref().map(|f| f.global_bytes).unwrap_or(0),
+            need_bytes: db_info.as_ref().map(|f| f.need_bytes).unwrap_or(0),
+            paused: folder.paused,
+        });
+    }
+    out
 }
 
 /// Restart Syncthing
