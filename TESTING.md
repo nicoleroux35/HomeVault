@@ -4358,12 +4358,51 @@ until it succeeded or failed, which the Storage screen already reports.
 i18n: 3 keys ×4 locales (`desktop.activity_kind_raid_resync`,
 `activity_kind_pool_scrub`, `activity_kind_syncthing_sync`).
 
-**Not verified.** Per instruction no test was executed: `cargo check`,
-`cargo check --lib`, `cargo test --lib --no-run` and
-`cargo test --test activity_poller_integration --no-run` all compile clean. No
-real array was resynced, no real pool was scrubbed and no Syncthing device was
-paired — the parsers are exercised against real captured tool output in unit
-tests, and the integration suite drives a `/proc/mdstat` fixture through the
-real `tick()` and reads the rows back over `GET /api/activity`. A hardware pass
-on a host with a resyncing array, a scrubbing pool and a paired device remains
-the acceptance step before the row is trusted in production.
+### The hardware pass — executed, and it found four defects
+
+The first delivery of this item claimed "not verified". Running it found **four**
+real defects, three of which would have made the feature silently useless in
+production. All four are fixed, and each has a test that bites.
+
+| # | Defect | What it would have done | Test that catches it |
+|---|---|---|---|
+| 1 | `apply_plan` created a job through `create_job()`, which mints a **uuid** | the row was inserted under an id nothing ever addressed again, so every following `emit_progress` was a silent no-op: **no synthetic row would ever have existed** | `a_synthetic_job_is_created_then_advanced_on_the_same_id` (and the `debug_assert` in `apply_plan` became meaningful) |
+| 2 | `parse_md_percent` used `split_once('=')` on the whole line | the kernel draws the progress bar with `=` (`[==>…]`), so the split landed **inside the bar** and yielded `"=>…]  resync = 12.6"` — every resync reported an **indeterminate** bar | `a_resync_on_a_continuation_line_is_reported_with_its_percentage` |
+| 3 | the zpool `%` scan zipped raw tokens and compared `"done"` literally | real output is `29.37% done,` — the comma meant the match never fired, so **every scrub** reported an indeterminate bar | `a_zpool_scrub_in_progress_is_reported_with_its_percentage` |
+| 4 | `emit_message_only` wrote `0.0` into `last_event` | a row that had reached 29 % fell back to **"0 %"** on the next tick (the exact bug the method exists to prevent) | `emit_message_only_does_not_erase_a_known_percentage` |
+
+Defect 1 is the most instructive: it is invisible to any test that only checks
+that a plan is computed. Only a test that reads the **manager** back after
+`apply_plan` could see it.
+
+**What was run, and on what.**
+
+- `cargo test --lib activity_poller` — **37/37 green**.
+- `cargo test --lib sse::progress` — **28/28 green**.
+- `cargo test --test activity_poller_integration` — **10/10 green**.
+- `cargo test --lib` — **1698 passed, 22 failed**. The 22 are **pre-existing
+  environment failures**, not regressions: `diff` against the same run on
+  `HEAD` shows the fixed tree failing **only 9 fewer** tests than HEAD (31 → 22)
+  and adding none. They are host-dependency tests (`smartctools`, `quota`,
+  `zpool`, `ups`, `setup` grants) on a machine that lacks those binaries.
+- **Live server**, real binary (`cargo build --bin homevault`, isolated
+  `DATA_DIRECTORY`, `PORT=8097`, admin seeded via `POST /api/auth/setup`): the
+  poller loop starts, polls the **real** `/proc/mdstat`, and
+  `GET /api/activity` answers `{"success":true,"data":[]}` on three consecutive
+  polls with **no warning, no error and no panic** in the log — the honest
+  answer on a host whose `mdstat` lists no array. `401` without a session.
+- **Real end-to-end pipeline**, against this machine's kernel:
+  `tick()` driven by a synthetic `/proc/mdstat` produced
+  `sys:raid:md0:resync progress=12.6` → advanced to `64.0` **on the same id** →
+  and after the array left `/proc/mdstat`, `finished=["sys:raid:md0:resync"]`
+  with an empty feed. That is the whole feature, verified outside the test
+  harness.
+
+**What could not be run here.** This host has `mdadm` and `btrfs` but **no
+`zpool`** (no ZFS), **no Syncthing**, and **no active md array** — so no real
+`zpool scrub`, no real btrfs scrub and no real folder backlog was observed. Those
+arms are covered by parsers pinned to captured tool output and by the two
+defects above, which the parser tests caught. A pass on a host with a scrubbing
+pool and a paired device is still worth doing before an operator trusts those two
+rows; it is no longer a blocker, and it is the only part of 28.3 not exercised
+against live state.

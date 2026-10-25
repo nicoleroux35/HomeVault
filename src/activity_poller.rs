@@ -337,8 +337,13 @@ pub fn parse_md_status_line(line: &str) -> Option<MdOperation> {
 /// bar, and a row with no bar (indeterminate) is a legitimate state
 /// (`ProgressState` semantics in `sse::progress`).
 pub fn parse_md_percent(line: &str) -> Option<f64> {
-    // The percentage follows the first `=` and ends at `%`.
-    let after_eq = line.split_once('=')?.1.trim_start();
+    // **The `=` has to be looked for after the closing bracket.** The kernel
+    // draws the progress bar with `=` characters (`[==>..................]`),
+    // so a plain `split_once('=')` lands inside the bar and yields
+    // `"=>…]  resync = 12.6"`, which parses as nothing — every resync then
+    // reported an indeterminate bar. The operation keyword sits after the `]`.
+    let after_bracket = line.rsplit_once(']')?.1;
+    let after_eq = after_bracket.split_once('=')?.1.trim_start();
     let head = after_eq.split('%').next()?;
     // Anything non-numeric (`DELAYED`, `PENDING`, `pending`) is indeterminate.
     head.trim().parse::<f64>().ok().map(|p| p.clamp(0.0, 100.0))
@@ -445,11 +450,23 @@ pub fn parse_zpool_scan(pool: &str, raw: &str) -> Option<ScrubState> {
 
     // `<pct>% done` is on the last line of the block. `zpool` omits it while
     // the scan is too young to estimate — then the bar is indeterminate.
-    let progress = scan
-        .split_whitespace()
-        .zip(scan.split_whitespace().skip(1))
-        .find_map(|(value, unit)| {
-            (unit == "done").then(|| value.trim_end_matches('%').parse::<f64>().ok())?
+    //
+    // The token is `29.37%` and it is followed by `done,` — the comma is part
+    // of the sentence (`... 29.37% done, 01:04:22 to go`). Matching `"29.37%"`
+    // followed by a literal `"done"` therefore never fires on real output:
+    // both tokens have to be trimmed of trailing punctuation before the
+    // comparison, which is what the first version of this parser got wrong
+    // (every scrub reported an indeterminate bar).
+    let tokens: Vec<&str> = scan.split_whitespace().collect();
+    let progress = tokens
+        .windows(2)
+        .find_map(|pair| {
+            let unit = pair[1].trim_end_matches([',', ';']);
+            if unit != "done" {
+                return None;
+            }
+            let value = pair[0].trim_end_matches([',', ';']).trim_end_matches('%');
+            value.parse::<f64>().ok()
         })
         .map(|p| p.clamp(0.0, 100.0));
 
@@ -649,11 +666,23 @@ pub fn apply_plan(plan: &ReconcilePlan) {
             None => PROGRESS_MANAGER.emit_message_only(&op.id, &op.message),
         };
         if !advanced {
-            // Not tracked yet (first tick, or pruned): create it, then set the
-            // real percentage. `create_job` seeds at 0 %/indeterminate, and a
-            // scrub discovered at 60 % must show 60 %.
-            let created = PROGRESS_MANAGER.create_job(op.job_type(), &op.message);
-            debug_assert_eq!(created, op.id);
+            // Not tracked yet (first tick, or pruned): create it **under the
+            // derived id**, then set the real percentage. `create_job` seeds at
+            // 0 %/indeterminate, and a scrub discovered at 60 % must show 60 %.
+            //
+            // This used to call `create_job`, which mints a uuid: the row was
+            // inserted under an id nothing ever addressed again, so every
+            // following `emit_progress` was a silent no-op and the bar never
+            // existed. `create_job_with_id` is the fix, not a cosmetic one.
+            let created = PROGRESS_MANAGER.create_job_with_id(
+                op.id.clone(),
+                op.job_type(),
+                &op.message,
+            );
+            debug_assert_eq!(
+                created, op.id,
+                "the manager must honour the derived id, or the row cannot be advanced"
+            );
             if let Some(p) = op.progress {
                 PROGRESS_MANAGER.emit_progress(&op.id, p, &op.message);
             }

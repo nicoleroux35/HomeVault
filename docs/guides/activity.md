@@ -164,6 +164,28 @@ A source that cannot be read is a **gap, never a fabricated value**:
 A probe failure is **never** turned into a red row: a failed measurement is not
 new information about the array.
 
+### Four traps worth knowing before touching this module
+
+All four were shipped bugs caught by the item's own tests, not by re-reading
+the code. They are documented because each one fails **silently** — the feed
+still answers `200`, it just never shows the row.
+
+1. **`create_job()` mints a uuid — use `create_job_with_id()`.** The whole
+   design rests on the id being derived from the source. Creating the job with
+   the uuid constructor inserts it under an id nothing addresses again, so
+   every later `emit_progress(&op.id, …)` is a no-op and the row never exists.
+   `apply_plan` carries a `debug_assert` on that id for exactly this reason.
+2. **`/proc/mdstat` draws its progress bar with `=`.** `[==>……]  resync =
+   12.6%` — so `split_once('=')` lands *inside the bar*. Look for the `=` after
+   the closing `]`, which is what `parse_md_percent` does now.
+3. **`zpool` punctuation.** The token is `29.37%` followed by `done,` — with the
+   comma. Comparing against a literal `"done"` never matches; both tokens must
+   be trimmed of `,`/`;` and `%` first.
+4. **`emit_message_only` must keep the last percentage.** `list_activity`
+   answers with `last_event.progress` once `has_progress` is set, so writing a
+   bare `0.0` on a message-only tick drops a row that had reached 29 % back to
+   "0 %" — the exact failure the method exists to prevent.
+
 ### Deliberate non-coverage
 
 - `luksFormat` — one-shot, no progress to read. A row could only ever say
