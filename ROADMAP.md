@@ -1,6 +1,6 @@
 # HomeVault Roadmap
 
-Last updated: 2026-10-24 (X.2 and X.3 closed — subprocesses bounded, actions surfaced) — current version: 1.0.0
+Last updated: 2026-10-24 (X.2, X.3 and X.5 closed — counts recounted) — current version: 1.0.0
 
 ## How to read this file
 
@@ -88,15 +88,17 @@ Two structural facts explain most of the list:
 | 31 | Docker — `api.ts` consolidation | P2 | 1 |
 | 32 | Virtual Machines — residual | P2 | 2 |
 | 33 | Transfer quotas — residual | P2 | 1 |
-| — | Cross-cutting (4 systemic) | — | 4 |
+| — | Cross-cutting (2 systemic) | — | 2 |
 
-Total open findings: **17** (13 per-area + 4 cross-cutting). Item 27 (2
+Total open findings: **15** (13 per-area + 2 cross-cutting). Item 27 (2
 findings) left the open list on 2026-10-24 — see Done — and with it the last
 P1; **X.1 closed the same day** (Explorer was its last module — see Done
 2026-10-24 (f)), **X.2 closed the same day too** (Done 2026-10-24 (k)), so no
-subprocess of the tree runs without a deadline, and **X.3 closed on
-2026-10-24** (Done 2026-10-24 (l)) — every mutating screen now surfaces its
-failure.
+subprocess of the tree runs without a deadline, **X.3 closed on 2026-10-24**
+(Done 2026-10-24 (l)) — every mutating screen now surfaces its failure — and
+**X.5 closed the same day** (Done 2026-10-24 (m)): every count in `TESTING.md`
+was re-derived. **X.6 became a standing Process rule** rather than a finding,
+so only X.7 and X.8 remain cross-cutting.
 
 **Suggested order.** No P0 remains — item 6 (Apps Center / app-proxy) was
 closed on 2026-10-23, and **20 (System Journal) closed the same day**: the
@@ -159,13 +161,14 @@ the tree now runs under `utils::process::run_timed` / `run_timed_async` (or the
 detached twin used by the OpenVPN daemon parent), with a source guard per
 module. **X.3 closed the same day** — every mutating screen surfaces its
 failure through `notifyError`, including the Shares/Backup/Storage sites the
-original item had missed. What is left of the cross-cutting list is process,
-not outage: X.5 (counts), X.6 (shape-only tests), X.7 (hand-rolled auth in
-`security.rs`) and X.8 (a missing token is `400`, not `401`). Then: 28/29
-(small, self-contained), 10b (10.5/10.6/10.7 — the residual hardening), 32/33
-(residuals of closed items), 16.4 (the only remaining *feature*: a scheduler
-for persisted sync jobs) and 31 (pure maintainability, do it last, one tab at a
-time).
+original item had missed. **X.5 closed the same day** — the `TESTING.md`
+counts are re-derived and every dual figure is in place; X.6 became a Process
+rule. What is left of the cross-cutting list is two real defects: **X.7**
+(hand-rolled auth in `security.rs`) and **X.8** (a missing token is `400`, not
+`401`). Then: 28/29 (small, self-contained), 10b (10.5/10.6/10.7 — the residual
+hardening), 32/33 (residuals of closed items), 16.4 (the only remaining
+*feature*: a scheduler for persisted sync jobs) and 31 (pure maintainability,
+do it last, one tab at a time).
 
 ---
 
@@ -391,18 +394,15 @@ screen are the acceptance; read-path loads that keep the last known value
       gaps, per-user notification read state). Its last remaining instance
       (DB-backup serialisation, tracked as item 22.1) was closed on 2026-10-24,
       so the pointer is definitively redundant.
-- [ ] **X.5 — `TESTING.md` counts drift where the specs grew.** The Dashboard row
-      stated "37 runtime tests, recounted on 2026-09-14 via
-      `grep -cE '^\s*test\('`". *Re-counted 2026-10-23 with both figures: 48
-      runtime (`npx playwright test --list --project=firefox`) / 45 `test(` (the
-      grep, lower because §5 is a responsive loop).* Keep the dual figure
-      whenever a responsive loop makes them differ — as the Quotas row does
-      (38 runtime / 36 `test(`). The same recount applies to the rows this
-      change touched.
-- [ ] **X.6 — Tests verify shape, not behaviour.** None of the P0 defects is
-      caught by the 50+ integration tests around the same code, because they
-      assert status codes and `total`. For each item above, the "Tests" line
-      names the assertion that would have caught it — add that one first.
+**X.5 — `TESTING.md` counts drift where the specs grew.** Closed on 2026-10-24 —
+see Done (2026-10-24 (m)). Every count was re-derived from the tree: 43 E2E
+specs (1684 runtime via `--list` / 1609 `test(`), the 29 that differ now carry
+the dual figure, and 27 stale Rust tracker figures were corrected. The method
+and the full table live in `TESTING.md` → 2026-10-24 recount.
+**X.6 — Tests verify shape, not behaviour.** Moved to the **Process** section
+(2026-10-24) — it is a standing method rule, not a fixable finding: every new
+item must name the assertion that would have caught its defect, and add it with
+the fix. It no longer counts as an open finding.
 - [ ] **X.7 — Hand-rolled auth checks that bypass `require_auth`.** The
       Dashboard's two (`dashboard.rs:2274,2328`, no `expires_at` predicate) are
       **fixed** (2026-10-23): both preference handlers now go through
@@ -448,12 +448,49 @@ screen are the acceptance; read-path loads that keep the last known value
   blast radius, then P2. Within an app, always fix X.1/X.2 (offload + timeout)
   before the feature-level findings — they are what turn a defect into an
   outage.
+- **A test asserts behaviour, not shape** (ex-X.6, made a standing rule on
+  2026-10-24). None of the P0 defects closed on 2026-10-23 was caught by the
+  50+ integration tests around the same code, because those assert status codes
+  and `total`. Every new item must name, in its own *Tests* line, the one
+  assertion that would have caught its defect, and that assertion is added with
+  the fix. A suite that only checks that a screen renders and answers `200` is
+  not acceptance for a behaviour change.
+- **A tracker row keeps the dual figure** (ex-X.5, 2026-10-24). A Playwright
+  spec whose tests are built in a `for` loop has fewer `test(` lines than
+  runtime cases; the `TESTING.md` row must carry both (`N runtime / M test(`),
+  and it must be recounted in the same change that adds or removes tests.
 
 ---
 
 ## Done
 
 One line per closed item. The detail lives in the named guide, not here.
+
+**2026-10-24 (m)** — Test accounting — **X.5 closed**: every count in
+`TESTING.md` was re-derived from the tree instead of trusted. Method: test
+attributes for Rust, `grep -cE '^\s*test\('` for the Playwright specs, and
+`npx playwright test --list --project=firefox` (**lists**, never runs) for the
+runtime figure. Result: **43 E2E specs, 1684 runtime cases, 1609 `test(`** — the
+gap is the `for`-loop-parameterised tests, which is exactly what the item
+warned about. The **29 specs where the two differ** now carry the dual figure
+in their tracker row (`N runtime / M test(`), in the Quotas style; the full
+table is in `TESTING.md` → 2026-10-24 recount. The same pass found the Rust half
+of the drift — the recent X.2/X.3 passes had updated their Done entries but not
+the rows — and corrected **27 stale figures**: `login_integration.rs` 62→61,
+`login_pam_integration.rs` 3→9, `setup.rs` 85→88, `setup_integration.rs` 60→59,
+`quota.rs` 21→20 (both rows), `handlers/user_homes.rs` 7→8, `pools.rs` 24→35,
+`snapshots.rs` 4→6, `storage_integration.rs` 28→30, `disk.rs` 66→70,
+`browser.rs` 11→17, `handlers/explorer.rs` 17→38, `media_ticket.rs` 4→5,
+`share_links_integration.rs` 11→12, `rescue/validator.rs` 34→25,
+`rescue/jobs.rs` 5→4, `progress_integration.rs` 8→9, `handlers/chat.rs` 14→17,
+`settings_persistence.rs` 7→15, `security_integration.rs` 25→26,
+`settings_core_integration.rs` 28→32, `incus.rs` 14→22, `handlers/vm.rs` 17→21,
+`vm_integration.rs` 24→26, `power_integration.rs` 4→9. **X.6 was reclassified**
+from an open finding to a standing Process rule ("a test asserts behaviour, not
+shape"): it is a method note, not a defect, so it must not inflate the open
+count — it now sits in the Process section next to the dual-figure rule. No test
+was executed. Docs: `TESTING.md` (the recount addendum and every reconciled
+row), `ROADMAP.md`.
 
 **2026-10-24 (l)** — UI action feedback — **X.3 closed**: no mutating handler
 swallows its failure in an empty `else {}` any more. The four areas the item
