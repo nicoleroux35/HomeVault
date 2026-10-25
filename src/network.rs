@@ -20,11 +20,49 @@
 
 //! Network interface service (inventory, configuration, Wi-Fi).
 
+use crate::utils::process::{run_timed, run_timed_with_stdin, HOST_PROBE_TIMEOUT};
 use serde::{Deserialize, Serialize};
 use std::net::{Ipv4Addr, Ipv6Addr, UdpSocket};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+// ---------------------------------------------------------------------------
+// Deadlines (ROADMAP X.2)
+//
+// Every host command of the Network module used to be a bare
+// `Command::output`. The module runs entirely on the blocking pool (its handlers wrap it in
+// `spawn_blocking`), but with no ceiling a wedged `sudo wpa_cli` waiting on the
+// control socket, a `dhclient` parked on a dead DHCP server, or a
+// `netplan apply` blocked on systemd-networkd pinned that blocking thread
+// forever — and the Network screen polls these reads on every page view, so the
+// calls piled up behind one another. Each value below is a ceiling for the
+// slowest honest case, not an estimate.
+// ---------------------------------------------------------------------------
+
+/// A read-only host probe: `ip … show`, `wpa_cli status/list_networks/
+/// scan_results`, `ethtool`, `sudo cat`, `ps`.
+pub const NET_PROBE_TIMEOUT: Duration = HOST_PROBE_TIMEOUT;
+
+/// A network mutation: `ip addr add|flush|route`, `dhclient`, `wpa_cli`
+/// connect/select/save, `netplan apply`, `sudo tee`, `sudo chmod`, `sudo rm`.
+/// Root operations can wait on the sudo/PAM stack or on systemd-networkd, so
+/// this is longer than a probe while staying finite.
+pub const NET_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A `ping` — it already carries its own `-c 1 -W 2`, so the deadline only has
+/// to cover process teardown.
+pub const NET_PING_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Run one host command under a deadline, keeping the reason it failed.
+///
+/// The Network module is synchronous by design (it runs on the blocking pool),
+/// so this is the blocking helper. The timeout is a parameter rather than a
+/// constant baked into each call site so the kill path is unit-testable,
+/// exactly like `disk::bounded` and `cache::run_command`.
+fn run_command(cmd: &mut Command, timeout: Duration) -> Result<Output, String> {
+    run_timed(cmd, timeout)
+}
 
 /// Run a wpa_cli command via sudo.
 /// wpa_supplicant's control socket is root-owned and not accessible to the
@@ -50,28 +88,30 @@ fn ip_sudo(program: &str) -> Command {
     cmd
 }
 
+/// Run a privileged command under [`NET_WRITE_TIMEOUT`].
+///
+/// The one-liner every mutation site needs: the caller passes the argv it would
+/// have given `Command::args`, and cannot forget the deadline because it never
+/// touches `Command` itself.
+fn ip_sudo_run(program: &str, args: &[&str]) -> Result<Output, String> {
+    let mut cmd = ip_sudo(program);
+    cmd.args(args);
+    run_command(&mut cmd, NET_WRITE_TIMEOUT)
+}
+
 /// Write `content` to a root-owned path via `sudo tee` (the process may not
 /// be root, and `std::fs::write` would then `EACCES` — the silent bug this
 /// replaces). Used for `/etc/resolv.conf` and the `/proc/sys/net/ipv6/...`
 /// toggles. `path` is either a fixed literal or built from an interface
 /// name already validated against `list_interfaces()`.
 fn write_as_root(path: &str, content: &str) -> Result<(), String> {
-    use std::io::Write;
-    use std::process::Stdio;
-    let mut child = Command::new("sudo")
-        .args(["tee", path])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    child
-        .stdin
-        .take()
-        .ok_or("write_as_root: no stdin")?
-        .write_all(content.as_bytes())
-        .map_err(|e| e.to_string())?;
-    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    let mut cmd = Command::new("sudo");
+    cmd.args(["tee", path]);
+    // `run_timed_with_stdin` feeds the content from its own thread and closes
+    // stdin afterwards (which is what `tee` waits for) — a `tee` that never
+    // reads must still be killed at the deadline, so this cannot stay a bare
+    // `.spawn` + `wait_with_output`.
+    let out = run_timed_with_stdin(&mut cmd, NET_WRITE_TIMEOUT, content.as_bytes())?;
     if !out.status.success() {
         return Err(format!(
             "failed to write {}: {}",
@@ -285,7 +325,8 @@ pub fn list_wifi_networks() -> Vec<WifiNetwork> {
         None => return Vec::new(),
     };
 
-    let output = wpa_cli(&wifi_iface, &["list_networks"]).output();
+    let mut cmd = wpa_cli(&wifi_iface, &["list_networks"]);
+    let output = run_command(&mut cmd, NET_PROBE_TIMEOUT);
 
     match output {
         Ok(out) if out.status.success() => parse_wpa_list_networks(
@@ -301,7 +342,8 @@ pub fn list_wifi_networks() -> Vec<WifiNetwork> {
 pub fn get_wifi_status() -> Option<WifiConnection> {
     let wifi_iface = get_wifi_interface()?;
 
-    let output = wpa_cli(&wifi_iface, &["status"]).output().ok()?;
+    let mut cmd = wpa_cli(&wifi_iface, &["status"]);
+    let output = run_command(&mut cmd, NET_PROBE_TIMEOUT).ok()?;
 
     if !output.status.success() {
         return None;
@@ -345,7 +387,8 @@ pub fn scan_wifi_networks() -> Vec<WifiNetwork> {
 
     // Trigger scan (non-blocking) — runs via sudo since wpa_supplicant's
     // control socket is root-owned and the homevault service is unprivileged.
-    let scan_trigger = wpa_cli(&wifi_iface, &["scan"]).output();
+    let mut scan_cmd = wpa_cli(&wifi_iface, &["scan"]);
+    let scan_trigger = run_command(&mut scan_cmd, NET_PROBE_TIMEOUT);
     if let Err(e) = &scan_trigger {
         tracing::error!(
             "scan_wifi_networks: failed to trigger scan on {}: {}",
@@ -365,7 +408,8 @@ pub fn scan_wifi_networks() -> Vec<WifiNetwork> {
     // empirically too short and regularly returned empty results.
     std::thread::sleep(Duration::from_millis(3000));
 
-    let output = wpa_cli(&wifi_iface, &["scan_results"]).output();
+    let mut results_cmd = wpa_cli(&wifi_iface, &["scan_results"]);
+    let output = run_command(&mut results_cmd, NET_PROBE_TIMEOUT);
 
     match output {
         Ok(out) if out.status.success() => parse_wifi_scan_results(
@@ -381,9 +425,8 @@ pub fn wifi_connect(ssid: &str, password: &str, security: &str) -> Result<(), St
     let wifi_iface = get_wifi_interface().ok_or("No WiFi interface found")?;
 
     // Add network
-    let output = wpa_cli(&wifi_iface, &["add_network"])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut add_cmd = wpa_cli(&wifi_iface, &["add_network"]);
+    let output = run_command(&mut add_cmd, NET_WRITE_TIMEOUT)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -404,9 +447,8 @@ pub fn wifi_connect(ssid: &str, password: &str, security: &str) -> Result<(), St
     let quoted_password = quote_wpa_value(password);
 
     let set_arg = |arg: &str, value: &str| -> Result<(), String> {
-        let out = wpa_cli(&wifi_iface, &["set_network", &network_id, arg, value])
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = wpa_cli(&wifi_iface, &["set_network", &network_id, arg, value]);
+        let out = run_command(&mut cmd, NET_WRITE_TIMEOUT)?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
             tracing::error!(
@@ -446,9 +488,8 @@ pub fn wifi_connect(ssid: &str, password: &str, security: &str) -> Result<(), St
     }
 
     // Enable and connect
-    let output = wpa_cli(&wifi_iface, &["enable_network", &network_id])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut enable_cmd = wpa_cli(&wifi_iface, &["enable_network", &network_id]);
+    let output = run_command(&mut enable_cmd, NET_WRITE_TIMEOUT)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -460,13 +501,15 @@ pub fn wifi_connect(ssid: &str, password: &str, security: &str) -> Result<(), St
     }
 
     // Force selection of this network
-    let select_out = wpa_cli(&wifi_iface, &["select_network", &network_id]).output();
+    let mut select_cmd = wpa_cli(&wifi_iface, &["select_network", &network_id]);
+    let select_out = run_command(&mut select_cmd, NET_WRITE_TIMEOUT);
     if let Err(e) = &select_out {
         tracing::error!("wifi_connect: wpa_cli select_network failed: {}", e);
     }
 
     // Save config
-    let save_out = wpa_cli(&wifi_iface, &["save_config"]).output();
+    let mut save_cmd = wpa_cli(&wifi_iface, &["save_config"]);
+    let save_out = run_command(&mut save_cmd, NET_WRITE_TIMEOUT);
     if let Err(e) = &save_out {
         tracing::error!("wifi_connect: wpa_cli save_config failed: {}", e);
     }
@@ -485,9 +528,8 @@ pub fn wifi_disconnect(ssid: &str) -> Result<(), String> {
     let wifi_iface = get_wifi_interface().ok_or("No WiFi interface found")?;
 
     // Find network ID
-    let output = wpa_cli(&wifi_iface, &["list_networks"])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut list_cmd = wpa_cli(&wifi_iface, &["list_networks"]);
+    let output = run_command(&mut list_cmd, NET_PROBE_TIMEOUT)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -511,9 +553,8 @@ pub fn wifi_disconnect(ssid: &str) -> Result<(), String> {
     }
 
     if let Some(id) = network_id {
-        let output = wpa_cli(&wifi_iface, &["remove_network", &id])
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut remove_cmd = wpa_cli(&wifi_iface, &["remove_network", &id]);
+        let output = run_command(&mut remove_cmd, NET_WRITE_TIMEOUT)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -525,7 +566,8 @@ pub fn wifi_disconnect(ssid: &str) -> Result<(), String> {
             return Err(format!("Failed to remove network: {}", stderr));
         }
 
-        let save_out = wpa_cli(&wifi_iface, &["save_config"]).output();
+        let mut save_cmd = wpa_cli(&wifi_iface, &["save_config"]);
+        let save_out = run_command(&mut save_cmd, NET_WRITE_TIMEOUT);
         if let Err(e) = &save_out {
             tracing::error!("wifi_disconnect: wpa_cli save_config failed: {}", e);
         }
@@ -556,12 +598,9 @@ pub fn apply_interface_config(name: &str, config: &InterfaceConfig) -> Result<()
     match config.method {
         IpMethod::Dhcp => {
             // Use dhclient for DHCP
-            let _output = ip_sudo("dhclient").args(["-r", name]).output();
-            let _ = ip_sudo("ip").args(["addr", "flush", "dev", name]).output();
-            let output = ip_sudo("dhclient")
-                .args([name])
-                .output()
-                .map_err(|e| e.to_string())?;
+            let _ = ip_sudo_run("dhclient", &["-r", name]);
+            let _ = ip_sudo_run("ip", &["addr", "flush", "dev", name]);
+            let output = ip_sudo_run("dhclient", &[name])?;
 
             if !output.status.success() {
                 return Err("Failed to obtain DHCP lease".to_string());
@@ -584,18 +623,16 @@ pub fn apply_interface_config(name: &str, config: &InterfaceConfig) -> Result<()
             }
 
             // Flush existing IPv4 addresses
-            let _ = ip_sudo("ip")
-                .args(["-4", "addr", "flush", "dev", name])
-                .output();
+            let _ = ip_sudo_run("ip", &["-4", "addr", "flush", "dev", name]);
 
             // Calculate prefix length from netmask
             let prefix = netmask_to_prefix(netmask);
 
             // Set static IP
-            let output = ip_sudo("ip")
-                .args(["addr", "add", &format!("{}/{}", ip, prefix), "dev", name])
-                .output()
-                .map_err(|e| e.to_string())?;
+            let output = ip_sudo_run(
+                "ip",
+                &["addr", "add", &format!("{}/{}", ip, prefix), "dev", name],
+            )?;
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -604,10 +641,10 @@ pub fn apply_interface_config(name: &str, config: &InterfaceConfig) -> Result<()
 
             // Set gateway if provided (replace keeps other interfaces' routes intact)
             if let Some(gw) = gateway {
-                let output = ip_sudo("ip")
-                    .args(["-4", "route", "replace", "default", "via", gw, "dev", name])
-                    .output()
-                    .map_err(|e| e.to_string())?;
+                let output = ip_sudo_run(
+                    "ip",
+                    &["-4", "route", "replace", "default", "via", gw, "dev", name],
+                )?;
 
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -657,10 +694,7 @@ fn apply_ipv6_config(
             sysctl("accept_ra", "2");
 
             // Use dhclient for DHCPv6
-            let output = ip_sudo("dhclient")
-                .args(["-6", name])
-                .output()
-                .map_err(|e| e.to_string())?;
+            let output = ip_sudo_run("dhclient", &["-6", name])?;
 
             if !output.status.success() {
                 return Err("Failed to obtain DHCPv6 lease".to_string());
@@ -676,22 +710,23 @@ fn apply_ipv6_config(
             sysctl("disable_ipv6", "0");
 
             // Flush existing IPv6 addresses (except link-local)
-            let _ = ip_sudo("ip")
-                .args(["-6", "addr", "flush", "dev", name, "scope", "global"])
-                .output();
+            let _ = ip_sudo_run(
+                "ip",
+                &["-6", "addr", "flush", "dev", name, "scope", "global"],
+            );
 
             // Set static IPv6
-            let output = ip_sudo("ip")
-                .args([
+            let output = ip_sudo_run(
+                "ip",
+                &[
                     "-6",
                     "addr",
                     "add",
                     &format!("{}/{}", ipv6, prefix),
                     "dev",
                     name,
-                ])
-                .output()
-                .map_err(|e| e.to_string())?;
+                ],
+            )?;
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -703,10 +738,10 @@ fn apply_ipv6_config(
                 if gw.parse::<Ipv6Addr>().is_err() {
                     return Err(format!("Invalid IPv6 gateway: {}", gw));
                 }
-                let output = ip_sudo("ip")
-                    .args(["-6", "route", "replace", "default", "via", gw, "dev", name])
-                    .output()
-                    .map_err(|e| e.to_string())?;
+                let output = ip_sudo_run(
+                    "ip",
+                    &["-6", "route", "replace", "default", "via", gw, "dev", name],
+                )?;
 
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -727,10 +762,7 @@ fn apply_ipv6_config(
 /// Bring interface up or down.
 pub fn set_interface_state(name: &str, up: bool) -> Result<(), String> {
     let action = if up { "up" } else { "down" };
-    let output = ip_sudo("ip")
-        .args(["link", "set", name, action])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let output = ip_sudo_run("ip", &["link", "set", name, action])?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -926,10 +958,7 @@ fn netplan_path(name: &str) -> String {
 /// netplan warns on files open to group/other). Best-effort on every caller —
 /// a failed chmod must never poison a successful write/restore.
 fn chmod_netplan_file(path: &str) {
-    let _ = ip_sudo("chmod")
-        .args(["600", path])
-        .output()
-        .map_err(|e| e.to_string());
+    let _ = ip_sudo_run("chmod", &["600", path]);
 }
 
 /// Read a root-owned file via `sudo cat`, mirroring `write_as_root` (the
@@ -937,10 +966,9 @@ fn chmod_netplan_file(path: &str) {
 /// the root systemd service routes through sudo transparently). `path` is
 /// built from an interface name already validated against the live list.
 fn read_as_root(path: &str) -> Result<String, String> {
-    let out = Command::new("sudo")
-        .args(["cat", path])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut cmd = Command::new("sudo");
+    cmd.args(["cat", path]);
+    let out = run_command(&mut cmd, NET_PROBE_TIMEOUT)?;
     if !out.status.success() {
         return Err(format!(
             "failed to read {}: {}",
@@ -956,10 +984,9 @@ fn read_as_root(path: &str) -> Result<String, String> {
 /// sudoers for the legacy unprivileged mode).
 fn remove_netplan_file(name: &str) -> Result<(), String> {
     let path = netplan_path(name);
-    let out = Command::new("sudo")
-        .args(["rm", "-f", &path])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut cmd = Command::new("sudo");
+    cmd.args(["rm", "-f", &path]);
+    let out = run_command(&mut cmd, NET_WRITE_TIMEOUT)?;
     if !out.status.success() {
         return Err(format!(
             "failed to remove {}: {}",
@@ -974,10 +1001,7 @@ fn remove_netplan_file(name: &str) -> Result<(), String> {
 /// systemd-networkd / NetworkManager instead of sitting idle until the next
 /// reboot.
 fn netplan_apply() -> Result<(), String> {
-    let output = ip_sudo("netplan")
-        .args(["apply"])
-        .output()
-        .map_err(|e| format!("netplan could not be run: {}", e))?;
+    let output = ip_sudo_run("netplan", &["apply"])?;
     if !output.status.success() {
         return Err(format!(
             "netplan apply failed (exit {}): {}",
@@ -1396,9 +1420,9 @@ pub fn apply_persisted_config(
 /// polling continues until the grace window expires).
 fn read_route_tables() -> (String, String) {
     fn stdout_of(args: &[&str]) -> String {
-        Command::new("ip")
-            .args(args)
-            .output()
+        let mut cmd = Command::new("ip");
+        cmd.args(args);
+        run_command(&mut cmd, NET_PROBE_TIMEOUT)
             .ok()
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
@@ -1474,10 +1498,9 @@ fn detect_ipv6_method(name: &str) -> Ipv6Method {
 }
 
 fn get_default_ipv6_gateway() -> Option<String> {
-    let output = Command::new("ip")
-        .args(["-6", "route", "show", "default"])
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("ip");
+    cmd.args(["-6", "route", "show", "default"]);
+    let output = run_command(&mut cmd, NET_PROBE_TIMEOUT).ok()?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     for part in text.split_whitespace() {
@@ -1591,10 +1614,9 @@ pub fn get_connection_summary() -> ConnectionSummary {
 }
 
 fn ping_host(host: &str) -> Option<u64> {
-    let output = Command::new("ping")
-        .args(["-c", "1", "-W", "2", host])
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("ping");
+    cmd.args(["-c", "1", "-W", "2", host]);
+    let output = run_command(&mut cmd, NET_PING_TIMEOUT).ok()?;
 
     if !output.status.success() {
         return None;
@@ -1618,10 +1640,9 @@ fn ping_host(host: &str) -> Option<u64> {
 }
 
 fn get_primary_interface() -> Option<String> {
-    let output = Command::new("ip")
-        .args(["route", "show", "default"])
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("ip");
+    cmd.args(["route", "show", "default"]);
+    let output = run_command(&mut cmd, NET_PROBE_TIMEOUT).ok()?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     // Parse "default via 192.168.1.1 dev eth0"
@@ -1654,10 +1675,9 @@ fn determine_connection_type() -> String {
 pub fn discover_lan_ipv4_addresses() -> Vec<Ipv4Addr> {
     let mut addresses = Vec::new();
 
-    if let Ok(output) = Command::new("ip")
-        .args(["-o", "-4", "addr", "show", "scope", "global"])
-        .output()
-    {
+    let mut cmd = Command::new("ip");
+    cmd.args(["-o", "-4", "addr", "show", "scope", "global"]);
+    if let Ok(output) = run_command(&mut cmd, NET_PROBE_TIMEOUT) {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
@@ -1864,10 +1884,9 @@ fn read_interface_mac(name: &str) -> Option<String> {
 }
 
 fn read_interface_ip(name: &str) -> (Option<String>, Option<String>) {
-    let output = match Command::new("ip")
-        .args(["-4", "addr", "show", name])
-        .output()
-    {
+    let mut cmd = Command::new("ip");
+    cmd.args(["-4", "addr", "show", name]);
+    let output = match run_command(&mut cmd, NET_PROBE_TIMEOUT) {
         Ok(o) => o,
         Err(_) => return (None, None),
     };
@@ -1892,9 +1911,9 @@ fn read_interface_ip(name: &str) -> (Option<String>, Option<String>) {
 }
 
 fn read_interface_ipv6_primary(name: &str) -> (Option<String>, Option<u8>) {
-    let output = Command::new("ip")
-        .args(["-6", "addr", "show", name, "scope", "global"])
-        .output();
+    let mut cmd = Command::new("ip");
+    cmd.args(["-6", "addr", "show", name, "scope", "global"]);
+    let output = run_command(&mut cmd, NET_PROBE_TIMEOUT);
 
     if let Ok(output) = output {
         let text = String::from_utf8_lossy(&output.stdout);
@@ -1917,9 +1936,9 @@ fn read_interface_ipv6_primary(name: &str) -> (Option<String>, Option<u8>) {
 fn read_all_ipv6_addresses(name: &str) -> Vec<String> {
     let mut addresses = Vec::new();
 
-    let output = Command::new("ip")
-        .args(["-6", "addr", "show", name])
-        .output();
+    let mut cmd = Command::new("ip");
+    cmd.args(["-6", "addr", "show", name]);
+    let output = run_command(&mut cmd, NET_PROBE_TIMEOUT);
 
     if let Ok(output) = output {
         let text = String::from_utf8_lossy(&output.stdout);
@@ -1958,7 +1977,9 @@ fn read_interface_stats(name: &str) -> (u64, u64) {
 }
 
 fn read_ethtool(name: &str) -> (Option<u32>, Option<String>) {
-    let output = match Command::new("ethtool").args([name]).output() {
+    let mut cmd = Command::new("ethtool");
+    cmd.args([name]);
+    let output = match run_command(&mut cmd, NET_PROBE_TIMEOUT) {
         Ok(o) => o,
         Err(_) => return (None, None),
     };
@@ -2077,7 +2098,8 @@ fn parse_wpa_list_networks(
 
 fn get_current_wifi_ssid() -> Option<String> {
     let wifi_iface = get_wifi_interface()?;
-    let output = wpa_cli(&wifi_iface, &["status"]).output().ok()?;
+    let mut cmd = wpa_cli(&wifi_iface, &["status"]);
+    let output = run_command(&mut cmd, NET_PROBE_TIMEOUT).ok()?;
 
     if !output.status.success() {
         return None;
@@ -2170,10 +2192,9 @@ fn prefix_to_netmask(prefix: u8) -> String {
 }
 
 fn get_default_gateway() -> Option<String> {
-    let output = Command::new("ip")
-        .args(["route", "show", "default"])
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("ip");
+    cmd.args(["route", "show", "default"]);
+    let output = run_command(&mut cmd, NET_PROBE_TIMEOUT).ok()?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     for part in text.split_whitespace() {
@@ -2226,7 +2247,9 @@ fn has_dhcp_lease(name: &str) -> bool {
     // UI (informational), and the two lease-file checks above already cover
     // the common case, so left as-is pending a real regex dependency or a
     // proper `ps`-output split — flagging here as a known gap.
-    let output = Command::new("ps").args(["aux"]).output().ok();
+    let mut cmd = Command::new("ps");
+    cmd.args(["aux"]);
+    let output = run_command(&mut cmd, NET_PROBE_TIMEOUT).ok();
 
     if let Some(out) = output {
         let text = String::from_utf8_lossy(&out.stdout);
@@ -2859,5 +2882,102 @@ mod tests {
             cache.get(now + PUBLIC_IP_NEG_TTL + Duration::from_secs(5)),
             Some(ip("198.51.100.2"))
         );
+    }
+
+    // -- subprocess deadlines (ROADMAP X.2) -----------------------------
+
+    /// The defect this guards against is invisible to a behavioural test: a
+    /// bare command call still answers correctly on an idle box and only pins
+    /// the blocking thread when `ip`/`wpa_cli`/`dhclient`/`netplan` stops
+    /// answering — and the Network screen polls those reads on every page view,
+    /// so the calls pile up behind the wedged one. So the invariant is asserted
+    /// at the source.
+    ///
+    /// `concat!` keeps each pattern out of this file's own source, so the
+    /// assertion cannot count itself.
+    #[test]
+    fn test_no_subprocess_of_this_module_runs_without_a_deadline() {
+        let src = include_str!("network.rs");
+        let production = src.split("#[cfg(test)]").next().unwrap_or(src);
+        for unbounded in [
+            concat!(".", "output()"),
+            concat!(".", "spawn()"),
+            concat!(".", "status()"),
+            concat!("wait_with_", "output()"),
+        ] {
+            assert!(
+                !production.contains(unbounded),
+                "`{unbounded}` waits without a deadline — use `run_command`/`ip_sudo_run` (ROADMAP X.2)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_run_command_kills_a_hung_tool_and_names_the_deadline() {
+        let started = Instant::now();
+        let error = run_command(Command::new("sleep").arg("30"), Duration::from_millis(120))
+            .expect_err("a hung tool must not succeed");
+        assert!(error.contains("did not finish within"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the deadline must be enforced, not waited out"
+        );
+    }
+
+    #[test]
+    fn test_run_command_keeps_a_non_zero_exit_as_data() {
+        // `wpa_cli` reports a refusal with a non-zero exit and the sentence on
+        // stdout/stderr; the caller reads that, so a non-zero exit must arrive
+        // as output, never as an error.
+        let out = run_command(&mut Command::new("false"), Duration::from_secs(5))
+            .expect("`false` still runs to completion");
+        assert_eq!(out.status.code(), Some(1));
+    }
+
+    #[test]
+    fn test_run_command_reports_a_missing_tool() {
+        let error = run_command(
+            &mut Command::new("homevault-no-such-binary"),
+            Duration::from_secs(1),
+        )
+        .expect_err("a missing tool is an error");
+        assert!(error.contains("Failed to run"), "{error}");
+    }
+
+    #[test]
+    fn test_network_deadlines_are_ceilings_and_ordered() {
+        // A probe is the shortest; a root mutation may wait on the sudo/PAM
+        // stack or systemd-networkd; `ping` carries its own `-W 2`, so its
+        // deadline only has to cover teardown.
+        assert!(NET_PROBE_TIMEOUT >= Duration::from_secs(1));
+        assert!(NET_WRITE_TIMEOUT >= NET_PROBE_TIMEOUT);
+        // Still finite: a wedged `dhclient`/`netplan apply` must free the
+        // blocking thread the Network screen polls on.
+        assert!(NET_WRITE_TIMEOUT <= Duration::from_secs(120));
+        assert!(NET_PING_TIMEOUT >= Duration::from_secs(2));
+        assert!(NET_PING_TIMEOUT <= NET_PROBE_TIMEOUT);
+    }
+
+    #[test]
+    fn test_wpa_cli_and_ip_sudo_prefix_sudo_and_keep_the_argv() {
+        // The privilege prefix is part of the contract: the service account is
+        // not in `netdev`, and every mutation needs root. Assert the argv the
+        // helpers build without running anything.
+        let cmd = wpa_cli("wlan0", &["status"]);
+        assert_eq!(cmd.get_program(), "sudo");
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec!["wpa_cli", "-i", "wlan0", "status"]);
+
+        let mut cmd = ip_sudo("ip");
+        cmd.args(["-4", "addr", "show", "eth0"]);
+        assert_eq!(cmd.get_program(), "sudo");
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec!["ip", "-4", "addr", "show", "eth0"]);
     }
 }
