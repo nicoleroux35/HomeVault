@@ -34,7 +34,7 @@
 
 //! System health checks (disks, SMART, services) executed on demand.
 
-use crate::utils::process::{run_timed, HOST_PROBE_TIMEOUT, SMART_PROBE_TIMEOUT};
+use crate::utils::process::{HOST_PROBE_TIMEOUT, SMART_PROBE_TIMEOUT, run_timed};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -441,7 +441,7 @@ impl HealthService {
                     message: format!("Could not query mdadm: {}", e),
                     details: None,
                     timestamp: chrono::Utc::now(),
-                })
+                });
             }
         };
 
@@ -540,7 +540,7 @@ impl HealthService {
             if parts.len() < 2 {
                 continue;
             }
-            if parts[1] != "disk" {
+            if parts[1] != "disk" || crate::disk::DiskService::is_pseudo_disk_name(parts[0]) {
                 continue;
             }
 
