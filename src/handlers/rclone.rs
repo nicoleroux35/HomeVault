@@ -34,9 +34,9 @@
 //! copy/sync operations).
 
 use axum::{
+    Json,
     extract::{Path, State},
     http::HeaderMap,
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -266,6 +266,9 @@ pub fn validate_provider_slug(raw: &str) -> Result<String, String> {
 /// authority here: `CloudSync.svelte` used to build `/mnt/rclone/<name>`
 /// itself, and any admin-gated client could post anything.
 pub fn validate_mount_point(raw: &str) -> Result<String, String> {
+    if raw.chars().any(|c| c.is_control()) {
+        return Err("Mount point contains control characters".to_string());
+    }
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err("Mount point is required".to_string());
@@ -276,14 +279,14 @@ pub fn validate_mount_point(raw: &str) -> Result<String, String> {
             MAX_MOUNT_POINT_LEN
         ));
     }
-    if trimmed.chars().any(|c| c.is_control()) {
-        return Err("Mount point contains control characters".to_string());
-    }
     if !trimmed.starts_with('/') {
         return Err(format!(
             "Mount point must be an absolute path under {}",
             RCLONE_MOUNT_BASE
         ));
+    }
+    if trimmed.split('/').any(|seg| seg == "." || seg == "..") {
+        return Err("Mount point must not contain '.' or '..'".to_string());
     }
     let path = FsPath::new(trimmed);
     if path
@@ -725,7 +728,7 @@ async fn wait_until_mounted(
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                return Err(mount_failure_message(mount_point, Some(status), log_tail))
+                return Err(mount_failure_message(mount_point, Some(status), log_tail));
             }
             Ok(None) => {}
             Err(e) => return Err(format!("Could not poll the rclone mount: {}", e)),
@@ -891,7 +894,7 @@ fn rclone_config_fallback_paths() -> Vec<std::path::PathBuf> {
 /// not, since that is how a fresh config gets created outside `/etc` — then
 /// the first of rclone's fallback locations that exists, then
 /// [`DEFAULT_RCLONE_CONFIG`].
-fn rclone_config_path() -> std::path::PathBuf {
+pub fn rclone_config_path() -> std::path::PathBuf {
     if let Ok(overridden) = std::env::var("RCLONE_CONFIG") {
         if !overridden.is_empty() {
             return std::path::PathBuf::from(overridden);
@@ -902,6 +905,19 @@ fn rclone_config_path() -> std::path::PathBuf {
         .into_iter()
         .find(|path| path.exists())
         .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_RCLONE_CONFIG))
+}
+
+/// Constructs a [`tokio::process::Command`] preconfigured with `rclone` and
+/// `--config <rclone_config_path()>`.
+///
+/// Subprocess invocations that read or write remotes must use this helper so
+/// that the CLI subprocess uses the exact same config file that the backend
+/// reads and writes (honouring `RCLONE_CONFIG` overrides and the
+/// `/etc/rclone.conf` system default).
+pub fn rclone_command() -> Command {
+    let mut cmd = Command::new("rclone");
+    cmd.arg("--config").arg(rclone_config_path());
+    cmd
 }
 
 /// Parse rclone config file to get remotes with their types
@@ -1030,11 +1046,8 @@ pub async fn handle_list_remotes(
     }
 
     // Fallback: use rclone listremotes command
-    let output = run_timed_async_result(
-        Command::new("rclone").args(["listremotes"]),
-        RCLONE_PROBE_TIMEOUT,
-    )
-    .await;
+    let output =
+        run_timed_async_result(rclone_command().args(["listremotes"]), RCLONE_PROBE_TIMEOUT).await;
 
     match output {
         Ok(output) => {
@@ -1641,13 +1654,13 @@ pub async fn handle_mount_start(
             return Json(ApiResponse::error(&format!(
                 "Failed to create mount point: {}",
                 e
-            )))
+            )));
         }
         Err(e) => {
             return Json(ApiResponse::error(&format!(
                 "Failed to create mount point: {}",
                 e
-            )))
+            )));
         }
     }
 
@@ -1657,7 +1670,7 @@ pub async fn handle_mount_start(
         None => format!("{}:", remote),
     };
 
-    let mut command = Command::new("rclone");
+    let mut command = rclone_command();
     command
         .arg("mount")
         .arg(&source)
@@ -1897,7 +1910,7 @@ async fn run_sync_core(admin_username: &str, req: &SyncRequest) -> SyncOutcome {
     );
 
     let output =
-        run_timed_async_result(Command::new("rclone").args(&args), RCLONE_TRANSFER_TIMEOUT).await;
+        run_timed_async_result(rclone_command().args(&args), RCLONE_TRANSFER_TIMEOUT).await;
 
     match output {
         Ok(output) => {
@@ -2064,7 +2077,7 @@ pub async fn handle_list_sync_jobs(
             return Json(ApiResponse::error(&format!(
                 "Failed to list sync jobs: {}",
                 e
-            )))
+            )));
         }
     };
     let views: Vec<SyncJobView> = jobs.into_iter().map(SyncJobView::from).collect();
@@ -2105,7 +2118,7 @@ pub async fn handle_create_sync_job(
             return Json(ApiResponse::error(&format!(
                 "Failed to save sync job: {}",
                 e
-            )))
+            )));
         }
     };
     let created = match repo.get_by_id(id).await {
@@ -2117,7 +2130,7 @@ pub async fn handle_create_sync_job(
             return Json(ApiResponse::error(&format!(
                 "Failed to load sync job: {}",
                 e
-            )))
+            )));
         }
     };
     Json(ApiResponse::success(SyncJobView::from(created)))
@@ -2211,7 +2224,7 @@ pub async fn handle_run_sync_job(
             return Json(ApiResponse::error(&format!(
                 "Failed to load sync job: {}",
                 e
-            )))
+            )));
         }
     };
 
@@ -2257,7 +2270,7 @@ pub async fn handle_update_sync_job_schedule(
             return Json(ApiResponse::error(&format!(
                 "Failed to load sync job: {}",
                 e
-            )))
+            )));
         }
     };
 
@@ -2456,7 +2469,7 @@ pub async fn handle_copy(
     );
 
     let output =
-        run_timed_async_result(Command::new("rclone").args(&args), RCLONE_TRANSFER_TIMEOUT).await;
+        run_timed_async_result(rclone_command().args(&args), RCLONE_TRANSFER_TIMEOUT).await;
 
     match output {
         Ok(output) => {
@@ -2706,7 +2719,7 @@ pub async fn handle_delete_remote(
                 "Failed to read config {}: {}",
                 config_path.display(),
                 e
-            )))
+            )));
         }
     };
 
@@ -2873,6 +2886,22 @@ mod tests {
         // built from an unset HOME.
         let resolved = with_env_override(None, rclone_config_path);
         assert!(resolved.is_absolute(), "got {}", resolved.display());
+    }
+
+    #[test]
+    fn test_rclone_command_passes_explicit_config_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("custom.conf");
+        with_env_override(Some(&path), || {
+            let cmd = rclone_command();
+            let std_cmd = cmd.as_std();
+            let args: Vec<&std::ffi::OsStr> = std_cmd.get_args().collect();
+            assert_eq!(
+                args,
+                &[std::ffi::OsStr::new("--config"), path.as_os_str(),],
+                "rclone_command must pass `--config <rclone_config_path()>` as its first arguments"
+            );
+        });
     }
 
     #[test]
