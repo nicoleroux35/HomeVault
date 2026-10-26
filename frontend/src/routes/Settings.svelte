@@ -383,7 +383,16 @@
         draft.general = {
           server_name: data.general?.server_name || 'HomeVault',
           timezone: data.general?.timezone || 'UTC',
-          language: data.general?.language || $languageStore,
+          // When the browser/OS or `localStorage['hv-language']` resolved a
+          // non-English UI locale while the server still holds the unconfigured
+          // `'en'` default, seed the selector from `$languageStore` so it
+          // reflects the active interface language instead of "English".
+          language:
+            typeof localStorage !== 'undefined' && localStorage.getItem('hv-language')
+              ? $languageStore
+              : data.general?.language && data.general.language !== 'en'
+                ? data.general.language
+                : $languageStore || data.general?.language || 'en',
           // The live flag, not the stored one: the server reports what the
           // appliance actually does (ROADMAP 29.1).
           mdns_enabled: data.general?.mdns_enabled !== false
