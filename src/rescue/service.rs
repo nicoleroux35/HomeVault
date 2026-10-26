@@ -25,7 +25,7 @@
 
 use super::jobs;
 use super::models::*;
-use super::validator::{check_clone_safety, ClonePlan, SecurityValidator};
+use super::validator::{ClonePlan, SecurityValidator, check_clone_safety};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::process::Command;
@@ -153,7 +153,7 @@ impl RescueService {
                 continue;
             }
             let name = field("NAME");
-            if name.is_empty() {
+            if name.is_empty() || crate::disk::DiskService::is_pseudo_disk_name(&name) {
                 continue;
             }
             let transport = match field("TRAN") {

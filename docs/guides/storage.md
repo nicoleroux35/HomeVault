@@ -198,6 +198,11 @@ idle box.
   check.
 - Partition free-space comes from a real `lsblk` read (a past RAID bug hardcoded
   `size/2`).
+- Physical disk enumeration (`DiskService::list_disks`,
+  `get_available_devices`, Dashboard/Health/Rescue `lsblk` scans) excludes
+  in-memory and flash-translation pseudo-disks (`zram*`, `ram*`, `mtdblock*`)
+  via `DiskService::is_pseudo_disk_name`, and reads `/sys/block/mmcblk*/device/{type,name}`
+  when `lsblk` leaves `VENDOR`/`MODEL` empty on SD/eMMC cards.
 - `PoolService::parse_size` must keep handling **both** size-suffix styles: the
   single-letter `T`/`G`/`M`/`K` used by `zpool list`/`mdadm`, and the
   two-letter `TiB`/`GiB`/`MiB`/`KiB` used by `btrfs filesystem show`. A real
