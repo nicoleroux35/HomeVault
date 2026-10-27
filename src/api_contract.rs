@@ -97,7 +97,12 @@ mod tests {
     #[test]
     fn test_matching_contract_is_compatible() {
         assert!(client_is_compatible(Some(&CONTRACT_VERSION.to_string())));
-        assert!(client_is_compatible(Some(" 1 ")));
+        // Padding must be trimmed. Spelled from the constant, not from a
+        // literal: this assertion used to hardcode " 1 " and turned red the
+        // day CONTRACT_VERSION was bumped to 2.
+        assert!(client_is_compatible(Some(&format!(
+            " {CONTRACT_VERSION} "
+        ))));
     }
 
     #[test]

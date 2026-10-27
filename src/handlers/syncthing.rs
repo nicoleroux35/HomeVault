@@ -312,17 +312,27 @@ fn get_api_key() -> Option<String> {
 /// which is what a daemon with the GUI API key disabled expects. The error
 /// message never contains the key.
 fn api_key_header(raw: &str) -> Result<Option<HeaderValue>, String> {
-    let key = raw.trim();
-    if key.is_empty() {
-        return Ok(None);
-    }
-    HeaderValue::from_str(key).map(Some).map_err(|_| {
+    /// Shared so the two rejection paths cannot drift apart; the key itself is
+    /// never echoed back.
+    fn unusable_key() -> String {
         format!(
             "{KEY_ERROR} in config.xml is not a valid HTTP header value (it contains \
              control characters or non-ASCII bytes); regenerate it in Syncthing's \
              GUI (Actions → Settings → GUI) or remove the <apikey> line"
         )
-    })
+    }
+
+    let key = raw.trim();
+    if key.is_empty() {
+        return Ok(None);
+    }
+    // `HeaderValue::from_str` accepts obs-text (0x80–0xFF), so a UTF-8 key
+    // built a header and went out byte-for-byte — no daemon matches it, and the
+    // message has always promised "non-ASCII bytes" are refused.
+    if !key.is_ascii() || key.chars().any(|c| c.is_control()) {
+        return Err(unusable_key());
+    }
+    HeaderValue::from_str(key).map(Some).map_err(|_| unusable_key())
 }
 
 /// Build the outgoing header set from an already-read key.
@@ -480,6 +490,14 @@ pub const DEVICE_ID_LEN: usize = 56;
 /// Folder ID: non-empty, ≤ [`MAX_FOLDER_ID_LEN`], letters, digits, `-`, `_`
 /// and `.` only, and not the `.`/`..` path aliases.
 pub fn validate_folder_id(raw: &str) -> Result<String, String> {
+    // Checked on the raw input: `trim()` below would drop a trailing newline,
+    // so the charset check never saw it and `"photos\n"` was stored verbatim.
+    if raw.chars().any(|c| c.is_control()) {
+        return Err(format!(
+            "Folder ID '{}' may only contain letters, digits, '-', '_' and '.'",
+            raw.escape_debug()
+        ));
+    }
     let id = raw.trim();
     if id.is_empty() {
         return Err("Folder ID must not be empty".to_string());

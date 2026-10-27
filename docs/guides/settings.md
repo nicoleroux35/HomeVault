@@ -129,8 +129,10 @@ evidence the roadmap tracked.
   chosen language.
 - Only the four shipped locales (`en`, `fr`, `de`, `es`) are accepted.
   `normalize_language()` trims, lowercases and keeps the primary subtag, so a
-  browser tag (`fr-BE`) or a hand-edited value (`FR`) normalises instead of
-  being refused; an unsupported tag answers `400`. `reset_settings()` puts the
+  browser tag (`fr-BE`, `es-419`, `de_AT`) or a hand-edited value (`FR`)
+  normalises instead of being refused; a tag that is not
+  `language[-script][-region]` (`en-US-extra-extra`) and one whose language is
+  not shipped both answer `400`. `reset_settings()` puts the
   process back on `en`.
 - The General card saves the language through `POST /settings/language` rather
   than the PUT, because the locale has to change immediately. A failure is
@@ -160,7 +162,9 @@ instead of the plain success toast.
 
 - Every `upsc` read validates the device name (`validate_ups_name`, a
   `[A-Za-z0-9._-]` label) and the variable (`validate_ups_variable`) before it
-  reaches the argv; both refuse before any process starts.
+  reaches the argv; both refuse before any process starts. Neither value may
+  contain whitespace (a trailing newline is refused, not trimmed away) and a
+  name may not start with `-`, which `upsc` would read as an option.
 - Writes go through the scoped sudoers grant built by `nut_grants()` in
   `src/setup.rs`: `tee /etc/nut/ups.conf`, `systemctl restart
   nut-driver-enumerator.service` and `systemctl restart nut-server.service`.

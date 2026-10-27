@@ -2334,12 +2334,16 @@ mod tests {
         // The runtime argv and the grant must be the same shape: `sudo` is
         // added by the caller, and the unit list comes from one constant.
         for unit in crate::ups::NUT_UNITS {
-            let argv = crate::ups::nut_restart_args(unit).join(" ");
+            // `nut_restart_args` starts with the binary (`sudo` + that argv is
+            // what `restart_nut` spawns), while the grant already spells the
+            // systemctl path — so the tail is what has to match.
+            let argv = crate::ups::nut_restart_args(unit);
+            let tail = argv[1..].join(" ");
             assert!(
                 grants
                     .iter()
-                    .any(|g| g.ends_with(&format!("/usr/bin/systemctl {argv}"))),
-                "no grant covers `systemctl {argv}`"
+                    .any(|g| g.ends_with(&format!("/usr/bin/systemctl {tail}"))),
+                "no grant covers `systemctl {tail}`"
             );
         }
         // Never the bare binaries: `tee` unscoped can rewrite /etc/shadow and

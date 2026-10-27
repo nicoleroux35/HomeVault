@@ -2927,8 +2927,10 @@ mod tests {
         assert_eq!(MIN_ISO_BYTES, 10_000_000);
         assert!(MIN_ISO_BYTES < MAX_ISO_BYTES);
         let src = include_str!("vm.rs");
+        // Built by `concat!` so this file cannot match its own needle.
+        let literal = concat!("meta.len() < 10", "_000_000");
         assert!(
-            !src.contains("meta.len() < 10_000_000"),
+            !src.contains(literal),
             "the import path must compare against MIN_ISO_BYTES, not a literal"
         );
         assert!(

@@ -855,6 +855,11 @@ install_optional aria2 "aria2 (multi-protocol downloader)"
 # like the rest of install_optional — the absence is probed at runtime.
 install_optional netplan.io "Netplan (persist interface configuration)"
 
+# `dhclient` renews/releases the DHCP lease from the Setup wizard and the
+# Network screen (`src/setup.rs`). Debian netinst and Raspberry Pi OS (dhcpcd)
+# do not ship it, so the action used to fail with nothing to install.
+install_optional isc-dhcp-client "DHCP client (dhclient)"
+
 # Security tools (antivirus scanning, firewall). Non-fatal like the rest of
 # install_optional: HomeVault must still run fine if these are declined, and
 # detects their absence at runtime to degrade the UI instead of crashing.

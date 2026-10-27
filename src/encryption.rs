@@ -831,7 +831,9 @@ mod tests {
             validate_passphrase("abababababababab", "vault"),
             Err(PassphraseProblem::TooSimple)
         );
-        assert_eq!(validate_passphrase("abcabcabcabc", "vault"), Ok(()));
+        // Repetition is fine as long as the variety rule is met: four
+        // distinct characters (`a`, `b`, `c`, `d`) clears it, three does not.
+        assert_eq!(validate_passphrase("abcdabcdabcd", "vault"), Ok(()));
     }
 
     #[test]

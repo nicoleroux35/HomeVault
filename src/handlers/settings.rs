@@ -200,11 +200,21 @@ pub fn normalize_language(input: &str) -> Result<String, String> {
     if trimmed.is_empty() {
         return Err("Language must not be empty".to_string());
     }
-    let primary = trimmed
-        .split(['-', '_'])
-        .next()
-        .unwrap_or(trimmed)
-        .to_ascii_lowercase();
+    // Shape first: `language`, `language-REGION` or `language-SCRIPT-REGION`.
+    // Splitting and keeping the first subtag alone silently accepted junk such
+    // as `en-US-extra-extra`, which then got persisted as the default language.
+    let subtags: Vec<&str> = trimmed.split(['-', '_']).collect();
+    let well_formed = subtags.len() <= 3
+        && subtags.iter().all(|part| {
+            !part.is_empty() && part.len() <= 8 && part.chars().all(|c| c.is_ascii_alphanumeric())
+        });
+    if !well_formed {
+        return Err(format!(
+            "Unsupported language '{}'. Supported: {:?}",
+            trimmed, SUPPORTED_LANGUAGES
+        ));
+    }
+    let primary = subtags[0].to_ascii_lowercase();
     if SUPPORTED_LANGUAGES.contains(&primary.as_str()) {
         Ok(primary)
     } else {
