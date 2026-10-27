@@ -34,10 +34,10 @@
 //! SMART-backed health — session-auth, per-user.
 
 use axum::{
+    Json as AxumJson,
     extract::{Path, State},
     http::HeaderMap,
     response::Response,
-    Json as AxumJson,
 };
 use chrono::Utc;
 use once_cell::sync::Lazy;
@@ -48,8 +48,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
 
-use crate::handlers::admin_guard::require_auth;
 use crate::handlers::AppState;
+use crate::handlers::admin_guard::require_auth;
 use crate::storage::models::Widget;
 use crate::utils::ProcParser;
 use crate::utils::ResponseHelper;
@@ -325,7 +325,10 @@ pub fn validate_widget_preference(req: &UpdateWidgetPreferenceRequest) -> Result
             "Invalid widget key: 1-{MAX_WIDGET_ID_LEN} characters from A-Z, a-z, 0-9, '-', '_', '.' or ':'"
         ));
     }
-    for (label, value) in [("position_x", req.position_x), ("position_y", req.position_y)] {
+    for (label, value) in [
+        ("position_x", req.position_x),
+        ("position_y", req.position_y),
+    ] {
         if !(-MAX_WIDGET_PANEL_OFFSET..=MAX_WIDGET_PANEL_OFFSET).contains(&value) {
             return Err(format!(
                 "Invalid {label}: must be between -{MAX_WIDGET_PANEL_OFFSET} and {MAX_WIDGET_PANEL_OFFSET}"
@@ -428,7 +431,7 @@ pub async fn handle_widget_data(
             return ResponseHelper::json_error_with_status(
                 axum::http::StatusCode::NOT_FOUND,
                 format!("Unknown widget '{id}'"),
-            )
+            );
         }
     };
 
@@ -454,7 +457,7 @@ pub async fn handle_add_widget(
         Ok(count) if count >= MAX_WIDGETS_PER_USER => {
             return ResponseHelper::json_error(format!(
                 "You already have the maximum of {MAX_WIDGETS_PER_USER} widgets"
-            ))
+            ));
         }
         Ok(_) => {}
         Err(e) => return ResponseHelper::json_error(format!("Failed to add widget: {e}")),
@@ -467,7 +470,7 @@ pub async fn handle_add_widget(
             return ResponseHelper::json_error(format!(
                 "Widget with ID '{}' already exists",
                 req.id
-            ))
+            ));
         }
         Ok(None) => {}
         Err(e) => return ResponseHelper::json_error(format!("Failed to add widget: {e}")),
@@ -645,19 +648,17 @@ pub async fn handle_storage_data(
         return response;
     }
 
-    let output = run_probe(Command::new("df")
-        .args([
-            "-h",
-            "--output=source,size,used,avail,pcent,target",
-            "-x",
-            "tmpfs",
-            "-x",
-            "devtmpfs",
-            "-x",
-            "squashfs",
-        ])
-        )
-        .await;
+    let output = run_probe(Command::new("df").args([
+        "-h",
+        "--output=source,size,used,avail,pcent,target",
+        "-x",
+        "tmpfs",
+        "-x",
+        "devtmpfs",
+        "-x",
+        "squashfs",
+    ]))
+    .await;
 
     let filesystems = if let Ok(output) = output {
         let output_str = String::from_utf8_lossy(&output.stdout);
@@ -866,10 +867,13 @@ async fn collect_disk_health() -> (Vec<DiskHealth>, Vec<FsHealth>) {
     let mut filesystems = Vec::new();
 
     // Get disk list using lsblk
-    if let Ok(lsblk_output) = run_probe(Command::new("lsblk")
-        .args(["-d", "-n", "-o", "NAME,SIZE,TYPE,VENDOR,MODEL,SERIAL,TRAN"])
-        )
-        .await
+    if let Ok(lsblk_output) = run_probe(Command::new("lsblk").args([
+        "-d",
+        "-n",
+        "-o",
+        "NAME,SIZE,TYPE,VENDOR,MODEL,SERIAL,TRAN",
+    ]))
+    .await
     {
         // Parse every disk line first, then look up SMART/role/usage for all
         // of them concurrently (3 subprocess-backed async calls per disk,
@@ -884,7 +888,10 @@ async fn collect_disk_health() -> (Vec<DiskHealth>, Vec<FsHealth>) {
             .lines()
             .filter_map(|line| {
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 3 && parts[2] == "disk" {
+                if parts.len() >= 3
+                    && parts[2] == "disk"
+                    && !crate::disk::DiskService::is_pseudo_disk_name(parts[0])
+                {
                     let name = parts[0].to_string();
                     let device = format!("/dev/{}", name);
                     let size = parse_size(parts.get(1).unwrap_or(&"0"));
@@ -933,19 +940,17 @@ async fn collect_disk_health() -> (Vec<DiskHealth>, Vec<FsHealth>) {
     }
 
     // Get filesystem data using df
-    if let Ok(df_output) = run_probe(Command::new("df")
-        .args([
-            "-B1",
-            "--output=source,fstype,size,used,avail,target",
-            "-x",
-            "tmpfs",
-            "-x",
-            "devtmpfs",
-            "-x",
-            "squashfs",
-        ])
-        )
-        .await
+    if let Ok(df_output) = run_probe(Command::new("df").args([
+        "-B1",
+        "--output=source,fstype,size,used,avail,target",
+        "-x",
+        "tmpfs",
+        "-x",
+        "devtmpfs",
+        "-x",
+        "squashfs",
+    ]))
+    .await
     {
         let stdout = String::from_utf8_lossy(&df_output.stdout);
         for line in stdout.lines().skip(1) {
@@ -1153,10 +1158,7 @@ async fn detect_disk_role(device_name: &str) -> String {
     // read-only probe ("must be super-user" otherwise), so a bare call
     // silently failed and every array member was reported as a plain disk
     // (ROADMAP 7.4).
-    if let Ok(output) = run_probe(Command::new("sudo")
-        .args(["mdadm", "--examine", &device])
-        )
-        .await
+    if let Ok(output) = run_probe(Command::new("sudo").args(["mdadm", "--examine", &device])).await
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if stdout.contains("raid") {
@@ -1165,21 +1167,15 @@ async fn detect_disk_role(device_name: &str) -> String {
     }
 
     // Check if part of ZFS — same `sudo` reason as `mdadm --examine` above.
-    if let Ok(output) = run_probe(Command::new("sudo")
-        .args(["zpool", "status", &device])
-        )
-        .await
-    {
+    if let Ok(output) = run_probe(Command::new("sudo").args(["zpool", "status", &device])).await {
         if output.status.success() {
             return "ZFS Pool".to_string();
         }
     }
 
     // Check mount points
-    if let Ok(output) = run_probe(Command::new("lsblk")
-        .args(["-n", "-o", "MOUNTPOINT", &device])
-        )
-        .await
+    if let Ok(output) =
+        run_probe(Command::new("lsblk").args(["-n", "-o", "MOUNTPOINT", &device])).await
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mount = stdout.trim();
@@ -1195,10 +1191,7 @@ async fn detect_disk_role(device_name: &str) -> String {
 
 async fn get_disk_usage_percent(device_name: &str) -> f64 {
     // Get partitions for this disk and calculate average usage
-    if let Ok(output) = run_probe(Command::new("lsblk")
-        .args(["-n", "-o", "NAME,MOUNTPOINT"])
-        )
-        .await
+    if let Ok(output) = run_probe(Command::new("lsblk").args(["-n", "-o", "NAME,MOUNTPOINT"])).await
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut total_usage = 0.0;
@@ -1212,7 +1205,8 @@ async fn get_disk_usage_percent(device_name: &str) -> f64 {
                 && parts[1] != "MOUNTPOINT"
             {
                 let partition = format!("/dev/{}", parts[0]);
-                if let Ok(df_output) = run_probe(Command::new("df").args(["-B1", &partition])).await {
+                if let Ok(df_output) = run_probe(Command::new("df").args(["-B1", &partition])).await
+                {
                     let df_stdout = String::from_utf8_lossy(&df_output.stdout);
                     let lines: Vec<&str> = df_stdout.lines().collect();
                     if lines.len() >= 2 {
@@ -1431,11 +1425,7 @@ async fn get_raid_volumes() -> Vec<StorageVolume> {
     // needs it: `zpool` opens `/dev` nodes that are `660 root:disk`, and the
     // service account is not in the `disk` group — without it this read
     // silently reported "no pool" on a host that has one (ROADMAP 7.4).
-    if let Ok(output) = run_probe(Command::new("sudo")
-        .args(["zpool", "list", "-H", "-p"])
-        )
-        .await
-    {
+    if let Ok(output) = run_probe(Command::new("sudo").args(["zpool", "list", "-H", "-p"])).await {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
@@ -1490,11 +1480,7 @@ async fn get_raid_device_info(device_name: &str, raid_level: &str) -> Option<Sto
     let device_path = format!("/dev/{}", device_name);
 
     // Get filesystem info using df
-    if let Ok(output) = run_probe(Command::new("df")
-        .args(["-B1", &device_path])
-        )
-        .await
-    {
+    if let Ok(output) = run_probe(Command::new("df").args(["-B1", &device_path])).await {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let lines: Vec<&str> = stdout.lines().collect();
@@ -2129,16 +2115,13 @@ fn get_gpu_details() -> Vec<GpuDetails> {
 
     // Try rocm-smi (AMD GPUs)
     let mut rocm_found = false;
-    if let Ok(output) = run_probe_blocking(std::process::Command::new("rocm-smi")
-        .args([
-            "--showtemp",
-            "--showuse",
-            "--showmeminfo",
-            "--showpower",
-            "--showclocks",
-        ])
-        )
-    {
+    if let Ok(output) = run_probe_blocking(std::process::Command::new("rocm-smi").args([
+        "--showtemp",
+        "--showuse",
+        "--showmeminfo",
+        "--showpower",
+        "--showclocks",
+    ])) {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if !stdout.contains("No devices") && !stdout.is_empty() {
@@ -2279,7 +2262,8 @@ fn get_network_details() -> NetworkDetails {
     }
 
     // Parse IP addresses from `ip -json addr show`
-    let ip_output = run_probe_blocking(std::process::Command::new("ip").args(["-json", "addr", "show"]));
+    let ip_output =
+        run_probe_blocking(std::process::Command::new("ip").args(["-json", "addr", "show"]));
     let mut ipv4_map: HashMap<String, Vec<String>> = HashMap::new();
     let mut ipv6_map: HashMap<String, Vec<String>> = HashMap::new();
     if let Ok(ref output) = ip_output {
@@ -2430,9 +2414,8 @@ fn get_network_details() -> NetworkDetails {
 fn get_drive_temperatures() -> Vec<TempItem> {
     let mut temps = Vec::new();
 
-    if let Ok(output) = run_probe_blocking(std::process::Command::new("lsblk")
-        .args(["-d", "-n", "-o", "NAME"])
-        )
+    if let Ok(output) =
+        run_probe_blocking(std::process::Command::new("lsblk").args(["-d", "-n", "-o", "NAME"]))
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
@@ -2817,9 +2800,18 @@ mod tests {
     #[test]
     fn test_mean_core_usage_averages_and_rounds() {
         let cores = vec![
-            PerCoreUsageItem { core: "C0".into(), usage_percent: 10 },
-            PerCoreUsageItem { core: "C1".into(), usage_percent: 21 },
-            PerCoreUsageItem { core: "C2".into(), usage_percent: 30 },
+            PerCoreUsageItem {
+                core: "C0".into(),
+                usage_percent: 10,
+            },
+            PerCoreUsageItem {
+                core: "C1".into(),
+                usage_percent: 21,
+            },
+            PerCoreUsageItem {
+                core: "C2".into(),
+                usage_percent: 30,
+            },
         ];
         assert_eq!(mean_core_usage(&cores), 20); // 61/3 = 20.33
         assert_eq!(mean_core_usage(&[]), 0, "no core answered");
@@ -2842,7 +2834,11 @@ mod tests {
             DISK_HEALTH_TTL
         ));
         // A clock that appears to go backwards must not panic.
-        assert!(snapshot_is_fresh(now + Duration::from_secs(5), now, DISK_HEALTH_TTL));
+        assert!(snapshot_is_fresh(
+            now + Duration::from_secs(5),
+            now,
+            DISK_HEALTH_TTL
+        ));
     }
 
     // --- calculate_disk_summary: bucket disks by health_score ---
@@ -3003,7 +2999,9 @@ mod tests {
 
     #[test]
     fn test_validate_add_widget_rejects_a_malformed_or_oversized_tile() {
-        for bad in ["", "2", "2x", "x2", "2x2x2", "0x1", "7x1", "1x7", "axb", "-1x2"] {
+        for bad in [
+            "", "2", "2x", "x2", "2x2x2", "0x1", "7x1", "1x7", "axb", "-1x2",
+        ] {
             let mut req = add_request();
             req.size = bad.to_string();
             assert!(validate_add_widget(&req).is_err(), "size {bad:?}");
