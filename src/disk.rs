@@ -276,7 +276,7 @@ async fn run_timed(
 /// named. Keeping one implementation is the point: this module used to carry
 /// its own copy, and every other call in it still awaited its output bare.
 async fn bounded(cmd: &mut Command, timeout: Duration) -> Result<std::process::Output, DiskError> {
-    use crate::utils::process::{run_timed_async_result, ProcessFailure};
+    use crate::utils::process::{ProcessFailure, run_timed_async_result};
     let program = cmd.as_std().get_program().to_string_lossy().into_owned();
     match run_timed_async_result(cmd, timeout).await {
         Ok(output) => Ok(output),
@@ -693,6 +693,34 @@ pub struct RemovableDisk {
 pub struct DiskService;
 
 impl DiskService {
+    /// Whether a `TYPE="disk"` block-device name reported by `lsblk` is an
+    /// in-memory or flash-translation pseudo-disk (`zram0` compressed RAM
+    /// swap on Raspberry Pi OS / Fedora, `ram0` brd, `mtdblock0`) rather than
+    /// a physical storage drive.
+    pub fn is_pseudo_disk_name(name: &str) -> bool {
+        let name = name.trim_start_matches("/dev/");
+        name.starts_with("zram") || name.starts_with("ram") || name.starts_with("mtdblock")
+    }
+
+    /// Reads the `(vendor, model)` identity of an SD/eMMC block device from a
+    /// sysfs `/sys/block` tree (`<sys_block>/<name>/device/{type,name}`),
+    /// because `lsblk` leaves `VENDOR` and `MODEL` blank for `mmcblk*` cards.
+    pub fn read_sysfs_mmc_identity_from(
+        sys_block_dir: &std::path::Path,
+        name: &str,
+    ) -> (Option<String>, Option<String>) {
+        let dev_dir = sys_block_dir
+            .join(name.trim_start_matches("/dev/"))
+            .join("device");
+        let read_trimmed = |leaf: &str| -> Option<String> {
+            std::fs::read_to_string(dev_dir.join(leaf))
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        };
+        (read_trimmed("type"), read_trimmed("name"))
+    }
+
     /// List all physical disks via `lsblk`, enriched with SMART data and role detection.
     pub async fn list_disks() -> Result<Vec<DiskInfo>, DiskError> {
         let mut disks = Vec::new();
@@ -722,20 +750,27 @@ impl DiskService {
             }
 
             let name = fields.get("NAME").cloned().unwrap_or_default();
-            if name.is_empty() {
+            if name.is_empty() || Self::is_pseudo_disk_name(&name) {
                 continue;
             }
             let size = Self::parse_size(fields.get("SIZE").map(String::as_str).unwrap_or("0"));
             let unknown = || "Unknown".to_string();
+            let (mmc_vendor, mmc_model) = if name.starts_with("mmcblk") {
+                Self::read_sysfs_mmc_identity_from(std::path::Path::new("/sys/block"), &name)
+            } else {
+                (None, None)
+            };
             let vendor = fields
                 .get("VENDOR")
                 .cloned()
                 .filter(|s| !s.is_empty())
+                .or(mmc_vendor)
                 .unwrap_or_else(unknown);
             let model = fields
                 .get("MODEL")
                 .cloned()
                 .filter(|s| !s.is_empty())
+                .or(mmc_model)
                 .unwrap_or_else(unknown);
             let serial = fields
                 .get("SERIAL")
@@ -746,6 +781,7 @@ impl DiskService {
                 .get("TRAN")
                 .cloned()
                 .filter(|s| !s.is_empty())
+                .or_else(|| name.starts_with("mmcblk").then(|| "mmc".to_string()))
                 .unwrap_or_else(unknown);
 
             let (smart_status, read_errors, write_errors, bad_sectors) =
@@ -2118,7 +2154,7 @@ impl DiskService {
     /// system path can block on a slow filesystem or a locked file, and this
     /// runs inside the array-creation job while `PERSIST_LOCK` is held.
     async fn write_file_as_root(path: &str, content: &str) -> Result<(), DiskError> {
-        use crate::utils::process::{run_timed_async_with_stdin, ProcessFailure};
+        use crate::utils::process::{ProcessFailure, run_timed_async_with_stdin};
         let output = run_timed_async_with_stdin(
             Command::new("sudo").args(["tee", path]),
             MOUNT_TIMEOUT,
@@ -2262,7 +2298,7 @@ impl DiskService {
                 return Err(DiskError::Parse(format!(
                     "Unsupported filesystem: {}",
                     filesystem
-                )))
+                )));
             }
         };
 
@@ -2623,7 +2659,7 @@ impl DiskService {
         }
 
         for (idx, row) in rows.iter().enumerate() {
-            if row.r#type != "disk" {
+            if row.r#type != "disk" || Self::is_pseudo_disk_name(&row.name) {
                 continue;
             }
 
@@ -3167,7 +3203,7 @@ impl DiskService {
                     supports_short_test: false,
                     supports_long_test: false,
                     supports_conveyance_test: false,
-                }
+                };
             }
         };
 
@@ -3196,7 +3232,7 @@ impl DiskService {
                 return Err(DiskError::Parse(format!(
                     "Unknown test type: {}",
                     test_type
-                )))
+                )));
             }
         };
 
@@ -3238,7 +3274,7 @@ impl DiskService {
                     progress_pct: 0,
                     remaining_minutes: 0,
                     last_result: None,
-                }
+                };
             }
         };
 
@@ -3423,7 +3459,7 @@ impl DiskService {
                 return Err(DiskError::Parse(format!(
                     "Invalid filesystem: {}. Supported: ext4, xfs, btrfs, zfs",
                     other
-                )))
+                )));
             }
         }
 
@@ -3622,7 +3658,7 @@ impl DiskService {
                 return Err(DiskError::Parse(format!(
                     "Invalid filesystem: {}. Supported: ext4, xfs, btrfs, zfs",
                     other
-                )))
+                )));
             }
         }
 
@@ -3952,8 +3988,8 @@ mod tests {
 
     #[test]
     fn test_sub_progress_maps_a_window_onto_the_parent_scale() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         struct Capture(Arc<AtomicUsize>);
         impl CreateProgress for Capture {
@@ -4152,6 +4188,34 @@ UUID=0d5c8f2e-1111-2222-3333-444455556666 /mnt/raid/by-uuid ext4 rw 0 0
         assert_eq!(fields.get("MOUNTPOINT").map(String::as_str), Some(""));
         assert_eq!(fields.get("FSTYPE").map(String::as_str), Some(""));
         assert_eq!(fields.get("TRAN").map(String::as_str), Some("usb"));
+    }
+
+    #[test]
+    fn test_is_pseudo_disk_name_excludes_zram_ram_and_mtdblock_only() {
+        assert!(DiskService::is_pseudo_disk_name("zram0"));
+        assert!(DiskService::is_pseudo_disk_name("/dev/zram1"));
+        assert!(DiskService::is_pseudo_disk_name("ram0"));
+        assert!(DiskService::is_pseudo_disk_name("mtdblock0"));
+        assert!(!DiskService::is_pseudo_disk_name("sda"));
+        assert!(!DiskService::is_pseudo_disk_name("nvme0n1"));
+        assert!(!DiskService::is_pseudo_disk_name("mmcblk0"));
+    }
+
+    #[test]
+    fn test_read_sysfs_mmc_identity_from_reads_sd_card_type_and_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dev = tmp.path().join("mmcblk0").join("device");
+        std::fs::create_dir_all(&dev).unwrap();
+        std::fs::write(dev.join("type"), "SD\n").unwrap();
+        std::fs::write(dev.join("name"), "SL128\n").unwrap();
+
+        let (vendor, model) = DiskService::read_sysfs_mmc_identity_from(tmp.path(), "mmcblk0");
+        assert_eq!(vendor.as_deref(), Some("SD"));
+        assert_eq!(model.as_deref(), Some("SL128"));
+
+        let (missing_v, missing_m) = DiskService::read_sysfs_mmc_identity_from(tmp.path(), "sda");
+        assert!(missing_v.is_none());
+        assert!(missing_m.is_none());
     }
 
     #[test]
@@ -4436,11 +4500,13 @@ recommended polling time: \t (   5) minutes.
         );
         // A by-id path is not the same name: the intersection is empty, which
         // means "wipe nothing" rather than "wipe the wrong device".
-        assert!(wipe_targets(
-            &["/dev/disk/by-id/ata-ST1000-x".to_string()],
-            &["/dev/sda".to_string()]
-        )
-        .is_empty());
+        assert!(
+            wipe_targets(
+                &["/dev/disk/by-id/ata-ST1000-x".to_string()],
+                &["/dev/sda".to_string()]
+            )
+            .is_empty()
+        );
     }
 
     // -- ROADMAP 8.2: a silent array fails the create -------------------------
@@ -4850,7 +4916,9 @@ recommended polling time: \t (   5) minutes.
             .collect();
         assert_eq!(
             tail,
-            vec!["mirror", "/dev/sda", "/dev/sdb", "mirror", "/dev/sdc", "/dev/sdd"],
+            vec![
+                "mirror", "/dev/sda", "/dev/sdb", "mirror", "/dev/sdc", "/dev/sdd"
+            ],
             "{args:?}"
         );
         // A bare device name still gets its `/dev/` prefix.
