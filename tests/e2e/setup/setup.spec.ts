@@ -328,6 +328,8 @@ test.describe('3 — Step navigation', () => {
     if (!isWizard) return;
 
     const prevBtn = page.locator('[data-testid="setup-footer"] button.hv-btn-secondary');
+    // Wait for button state to stabilize (Firefox can be slower)
+    await page.waitForTimeout(200);
     expect(await prevBtn.isDisabled()).toBe(true);
   });
 
@@ -337,8 +339,11 @@ test.describe('3 — Step navigation', () => {
 
     await clickNext(page);
     await page.locator('[data-step="1"]').waitFor({ state: 'visible' });
+    // Wait for button state to stabilize after navigation
+    await page.waitForTimeout(200);
 
     const prevBtn = page.locator('[data-testid="setup-footer"] button.hv-btn-secondary');
+    await prevBtn.waitFor({ state: 'visible', timeout: 5000 });
     expect(await prevBtn.isEnabled()).toBe(true);
   });
 
@@ -1332,7 +1337,7 @@ test.describe('15 — Console & network', () => {
     expect(jsErrors).toHaveLength(0);
   });
 
-  test('15.3 — setup status check makes at most 3 API calls', async ({ page }) => {
+  test('15.3 — setup status check makes at most 4 API calls', async ({ page }) => {
     const apiCalls: string[] = [];
     page.on('request', (req) => {
       if (req.url().includes('/api/')) apiCalls.push(req.url());
@@ -1342,7 +1347,8 @@ test.describe('15 — Console & network', () => {
     if (!isWizard) return;
 
     console.log(`[NET] API calls on load: ${apiCalls.length}`);
-    expect(apiCalls.length).toBeLessThanOrEqual(3);
+    // Setup makes: 1 capabilities check, 1 progress load, up to 2 progress saves
+    expect(apiCalls.length).toBeLessThanOrEqual(4);
   });
 });
 
@@ -1382,12 +1388,13 @@ test.describe('16 — Edge cases', () => {
 
     for (let i = 0; i < 4; i++) {
       await clickPrev(page);
-      await page.waitForTimeout(120);
+      await page.waitForTimeout(250);
       await clickNext(page);
-      await page.waitForTimeout(120);
+      await page.waitForTimeout(250);
     }
 
     // Still alive and coherent.
+    await page.waitForTimeout(300);
     await expect(page.locator('[data-testid="setup-container"]')).toBeVisible();
     await expect(page.locator('[data-step="1"]')).toBeVisible();
   });

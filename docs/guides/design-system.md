@@ -412,10 +412,56 @@ per-app.**
 | Layer | Location | Contents |
 |---|---|---|
 | Primitives | `lib/components/theme/` | `Button`, `Input`, `Select`, `Toggle`, `Checkbox`, `Radio`, `Alert`, `Badge`, `Spinner`, `Modal`, `Toast`, `Drawer`, `Icon`, `UserAvatar`, `PathField`/`FolderPicker`/`PathPickerField`/`FloatingPathPicker`. Barrel export via `index.ts`. |
-| Framework | `lib/components/ui/` | shadcn-svelte / Melt UI generated components (`button`, `dialog`, `input`, `select`, `switch`, `checkbox`, `radio-group`, `alert`, `badge`, `spinner`, `accordion`, `calendar`, `collapsible`, `command`, `context-menu`, `date-picker`, `dropdown-menu`, `input-group`, `pagination`, `popover`, `progress`, `scroll-area`, `separator`, `skeleton`, `slider`, `sonner`, `tabs`, `textarea`, `toggle`, `toggle-group`, `tooltip`). The theme primitives delegate to these. Import individual modules, never a barrel. |
+| Framework | `lib/components/ui/` | shadcn-svelte generated components — **exactly 11 on disk**: `alert`, `badge`, `button`, `checkbox`, `dialog`, `input`, `radio-group`, `select`, `sonner`, `spinner`, `switch`. The theme primitives delegate to these. Import individual modules, never a barrel. See *What is actually vendored* below before assuming another component exists. |
 | Charts | `lib/components/charts/` | LayerChart (Svelte 5 / d3) wrappers themed with `--hv-*` tokens: `DonutChart`, `BarsChart`, `TrendLineChart`. Barrel export via `index.ts`. |
 | Page composites | `lib/components/app/` | `PageLayout`, `StatCard`, `DataTable`, `SectionCard`, `EmptyState`, `FormRow` — the shared page anatomy that kills per-app reinvention. |
 | Desktop shell | `lib/components/desktop/` | `WindowFrame`, `WindowHeader`, `WindowSidebar`, `WindowToolbar`, `WindowFooter`, `HvLaunchpad`. |
+
+#### What is actually vendored — the list is 11, not 30
+
+The table above used to advertise ~30 generated components (`accordion`,
+`calendar`, `collapsible`, `command`, `context-menu`, `date-picker`,
+`dropdown-menu`, `input-group`, `pagination`, `popover`, `progress`,
+`scroll-area`, `separator`, `skeleton`, `slider`, `tabs`, `textarea`, `toggle`,
+`toggle-group`, `tooltip` …). **None of the 19 extra ones exists in the tree,
+and none is imported anywhere** — `grep -rl 'components/ui/<name>' frontend/src`
+returns 0 for every one of them. The doc described an intention, not the code:
+the same class of false invariant as ROADMAP X.4. The directory is the truth:
+
+```
+$ ls frontend/src/lib/components/ui/
+alert  badge  button  checkbox  dialog  input
+radio-group  select  sonner  spinner  switch
+```
+
+**Do not generate the missing ones speculatively.** Every pattern they would
+cover is already solved in the tree, and a second implementation would be dead
+weight to maintain — and a per-app skin, which this section forbids:
+
+| Would-be shadcn component | What the tree actually uses |
+|---|---|
+| `progress` | a plain `role="progressbar"` bar — `routes/Quotas.svelte`, `routes/Users.svelte`, `routes/Desktop.svelte`, `components/backup/BackupProgressIsland.svelte` |
+| `skeleton` | the tokenised `.hv-skeleton` / `.hv-skeleton-text` / `-rect` / `-circle` utilities (`base.css` + `utilities.css`, `--hv-skeleton-bg` / `--hv-skeleton-shimmer`) — used by `components/app/DataTable.svelte` (its `loadingRows`), `routes/Docker.svelte`, `routes/Journal.svelte`, `routes/Explorer.svelte` and `routes/Storage.svelte` |
+| `tooltip` | the native `title` attribute and the `aria-label`-only icon buttons of §7.1 (no custom tooltip layer exists) |
+| `textarea` | the native `<textarea>` styled by `base.css` (7 screens: Chat, CloudSync, Restic, Docker, Settings, Explorer, Shares) |
+| `separator` | the hairline tokens `--hv-shell-border-soft` / `border-t` inside `DataTable` and `SectionCard` |
+| `accordion`, `collapsible` | the native `<details>` — `routes/VirtualMachines.svelte` (the resize form). It is the only one: elsewhere, secondary content is a `Modal` rather than an inline disclosure |
+| `calendar`, `date-picker` | **nothing needs one yet** — no `<input type="date">`/`datetime-local` and no date-picker exists anywhere in the tree. Ship dates as text or via the server's own scheduling form until a screen genuinely requires calendar entry |
+| `tabs`, `popover`, `dropdown-menu` | the desktop shell's own `WindowSidebar` / `WindowHeader`, plus the two `position: fixed` card popovers of the Docker screen |
+| `slider` | numeric `<input type="number">` and the range fields of the Settings cards |
+| `command`, `pagination`, `scroll-area`, `context-menu`, `input-group`, `toggle`, `toggle-group` | unused concepts — the launcher has its own search, `DataTable` paginates server-side, scrolling is native, and `Toggle` is a `theme/` **primitive**, not a shadcn component |
+
+**The rule for the future.** Generate a shadcn component *the day a screen
+needs it* — `npx shadcn-svelte@latest add <name>` (`components.json` is wired:
+style `vega`, `tailwind.css: src/app.css`, base colour `neutral`) — and add it
+to the list above in the same change. A component that exists without a caller
+is a bug in this document, not an asset.
+
+**Icon libraries — the boundary is enforced.** `@tabler/icons-svelte` is the
+product's set; `@lucide/svelte` is allowed **only** inside `components/ui/**`
+(the generated primitives import it, see §4.6/§721 of the icon rules). Verified
+by grep: zero `@lucide/svelte` imports outside `ui/`. `@phosphor-icons/web`
+feeds the generated sprite (`npm run icons:generate`).
 
 ### 4.1 Page anatomy (PageLayout)
 
