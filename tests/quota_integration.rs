@@ -227,7 +227,7 @@ async fn test_home_get_requires_session() {
 
     let (_, body) = send(&mut r, Method::GET, "/api/users/alice/home", None, None).await;
     assert_eq!(body["success"], json!(false));
-    assert_eq!(body["message"], json!("Invalid session"));
+    assert_eq!(body["message"], json!("No session token provided"));
 }
 
 #[tokio::test]
@@ -246,7 +246,7 @@ async fn test_home_put_requires_admin() {
     )
     .await;
     assert_eq!(body["success"], json!(false));
-    assert_eq!(body["message"], json!("Admin access required"));
+    assert_eq!(body["message"], json!("Admin privileges required for this operation"));
 }
 
 #[tokio::test]

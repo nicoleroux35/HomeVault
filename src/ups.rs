@@ -361,7 +361,14 @@ pub struct UpsConfigEntry {
 /// becomes `[name]` in the config file, so anything else (brackets, spaces,
 /// newlines) is rejected outright.
 pub fn validate_ups_name(name: &str) -> Result<(), String> {
-    let name = name.trim();
+    // Checked on the raw input: `trim()` used to hide a trailing newline, and a
+    // leading `-` was accepted outright — `upsc -L` is an option, not a name.
+    if name.chars().any(char::is_whitespace) {
+        return Err("UPS name must not contain whitespace".to_string());
+    }
+    if name.starts_with('-') {
+        return Err("UPS name must not start with '-'".to_string());
+    }
     if name.is_empty() || name.len() > 32 {
         return Err("UPS name must be 1–32 characters".to_string());
     }
@@ -379,7 +386,11 @@ pub fn validate_ups_name(name: &str) -> Result<(), String> {
 /// same allow-list reasoning as `validate_ups_name` applies: no spaces, no
 /// leading `-` (which `upsc` would read as an option), no metacharacters.
 pub fn validate_ups_variable(var: &str) -> Result<(), String> {
-    let var = var.trim();
+    // Same reason as `validate_ups_name`: a leading space or a trailing newline
+    // must be refused, not trimmed into a valid-looking identifier.
+    if var.chars().any(char::is_whitespace) {
+        return Err("UPS variable must not contain whitespace".to_string());
+    }
     if var.is_empty() || var.len() > 64 {
         return Err("UPS variable must be 1–64 characters".to_string());
     }

@@ -1658,10 +1658,9 @@ pub async fn handle_docker_image_build(
         Ok(u) => u,
         Err(response) => return response,
     };
-    if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
-    }
-
+    // Validate the request before probing the daemon: a context outside the
+    // allowed roots is refused on its own merits (and the refusal must not
+    // depend on whether Docker happens to be installed).
     let Some(context) = state.path_guard.validate(req.context.trim()) else {
         return ResponseHelper::json_error(
             "Build context is outside the allowed directories".to_string(),
@@ -1669,6 +1668,9 @@ pub async fn handle_docker_image_build(
     };
     if !context.is_dir() {
         return ResponseHelper::json_error("Build context is not a directory".to_string());
+    }
+    if !DockerService::is_available() {
+        return ResponseHelper::json_error("Docker is not available".to_string());
     }
 
     let build_req = crate::docker::BuildImageRequest {

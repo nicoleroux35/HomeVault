@@ -290,7 +290,10 @@ pub async fn run_timed_async_with_stdin(
     let program = cmd.as_std().get_program().to_string_lossy().into_owned();
     cmd.kill_on_drop(true)
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
+        // Piped, like `run_timed_with_stdin`: the caller (`sudo tee`) reports
+        // the tool's own output, and `wait_with_output` drains it inside the
+        // deadline, so a chatty child cannot fill the pipe and hang.
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
     let mut child = cmd.spawn().map_err(|e| ProcessFailure::Spawn {

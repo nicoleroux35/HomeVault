@@ -34,6 +34,87 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The unit gate is green again — and it was hiding real bugs (2026-10-27).**
+  `cargo test --lib` had been failing on `main` since 2026-10-25 (`1698 passed;
+  22 failed`), which turned every required check red and made the branch
+  unmergeable. Sixteen of the 22 were assertions that had drifted away from the
+  code they describe; behind the other six were product bugs:
+
+  - `DiskService::not_mounted_error` matched `"not in /etc/mtab"`, which
+    util-linux's `not found in /etc/mtab` does **not** contain — a teardown
+    aborted on a device that was already unmounted.
+  - `dhclient` (Setup wizard / Network: DHCP lease renew and release) had no
+    install source at all: `isc-dhcp-client` was in neither the inventory nor
+    `install.sh`, so the action failed on a Debian netinst or Raspberry Pi OS
+    (dhcpcd) with nothing to install. `busctl` (mDNS hostname) was likewise
+    absent from `BASE_BINARIES`. The audit that exists to catch exactly this was
+    permanently red because it scanned **test** fixtures too — including its own
+    needle — so it could never report a real gap.
+  - `settings_persistence::export()` re-emitted the legacy `theme`/`density`
+    keys that ROADMAP 26.2 promised were no longer written.
+  - `api_key_header` let a non-ASCII Syncthing key through
+    (`HeaderValue::from_str` accepts obs-text), so the value went out
+    byte-for-byte and matched no daemon, while the error message already claimed
+    such keys were refused.
+  - `validate_layout_blob` started its depth count at 1, so a valid four-level
+    layout was refused (and `MAX_LAYOUT_DEPTH` meant three).
+  - `normalize_language` kept the first subtag and so accepted
+    `en-US-extra-extra` as English.
+  - `parse_timezone` was case-sensitive although `docs/guides/scheduled-tasks.md`
+    documents `europe/paris → Europe/Paris`.
+  - `trim()` ran before the control-character checks in `validate_mount_point`,
+    the Syncthing folder ID and the UPS name/variable, so a trailing newline was
+    silently removed instead of refused; a UPS name starting with `-` was
+    accepted outright.
+  - `PathGuard::validate` and `resolve_unconfined` accepted a `.`/`..` leaf —
+    both `file_name()` and `components()` normalise a trailing `.` away — and
+    returned an in-root **directory** as if it were the file to create.
+  - `run_timed_async_with_stdin` discarded the child's stdout (`Stdio::null()`)
+    while its synchronous twin keeps it, so `sudo tee` callers lost the tool's
+    own message.
+  - `Database::wal_checkpoint` discarded the `(busy, log, checkpointed)` row
+    `PRAGMA wal_checkpoint(TRUNCATE)` returns, so a busy checkpoint was a
+    silent no-op: the `-wal` stayed at hundreds of kilobytes and the backup
+    copy of the `.db` file could miss its newest pages. It now pins one
+    connection, sets `busy_timeout` on it (a `PRAGMA` is per connection, and
+    `configure_sqlite` only reached the connections it happened to use),
+    retries while busy and fails loudly if it cannot fold the log.
+
+  Three source-scanning guards (`share_links`, `vm`, `dependencies`) matched the
+  needle they were asserting on and could never pass; they now build it with
+  `concat!`. Verification: `cargo test --lib` **1720/1720**,
+  `cargo test --locked --tests` compiles every target; the remaining
+  integration-test drift (`integration.yml`) is tracked separately.
+
+- **The integration suite is green again, and two more real bugs fell out
+  (2026-10-27).** `cargo test --locked --tests` now passes end to end (62 test
+  binaries). Beyond the `401`-vs-`400` drift (~16 assertions still expected the
+  pre-ROADMAP-X.8 status), three product bugs surfaced:
+
+  - **"Mark all notifications as read" never worked.**
+    `NotificationRepository::mark_all_read` ran `INSERT … SELECT … ON CONFLICT`,
+    which SQLite parses as a join constraint (`near "DO": syntax error`) unless
+    the SELECT ends with `WHERE true`. Every call answered `400`; nothing could
+    mark the feed read in one action.
+  - **A Docker build context outside the allowed roots** was only refused
+    *after* probing the daemon, so the answer was "Docker is not available" on a
+    host without Docker — and the refusal depended on an unrelated fact. The
+    path check now runs first.
+  - **The refusal reason for the envelope modules** (Syncthing, Downloader,
+    VPN) was re-derived from the HTTP status, which cannot tell a missing token
+    from an expired one (both `401`), so a caller who never sent a token was
+    told "Invalid or expired session". `admin_guard` now exposes the decision
+    itself (`Denial` + `check_auth` / `check_admin`) and those modules relay it.
+
+  Test-harness fixes in the same change: five tests replaced `PATH` with the
+  shim directory instead of prepending it, so the shim's own `sleep`/`cat`/`rm`
+  vanished and the probe they were timing never ran; the VM test router lacked
+  the `/api/vm/isos/download` route the real router registers (405); three
+  suites read `body["error"]` where the envelope carries `message`; the 16 KiB
+  layout boundary blob was one over-long string (refused by the per-value cap)
+  instead of many short values; and the cache-mover test polled "not running"
+  before the spawned run had claimed its slot, racing the second trigger.
+
 - **A VM's screen console no longer stays alive on a half-open connection
   (2026-10-24, ROADMAP 32.1).** The noVNC relay was a raw two-way byte pipe with
   no ping and no timeout, so closing a laptop lid, dropping Wi-Fi or suspending

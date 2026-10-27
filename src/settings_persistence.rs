@@ -133,9 +133,13 @@ pub struct PersistedNotifications {
 /// any key without a field, and keeps theirs), and they are dropped from the
 /// live model (`AppearanceSettings`) and from every response.
 pub struct PersistedAppearance {
+    /// Legacy (ROADMAP 26.2): read so an older `settings.json` still loads, and
+    /// omitted from the output once cleared, so `export()` never re-emits them.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
     pub wallpaper: Option<String>,
     pub accent_color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub density: Option<String>,
 }
 
@@ -286,6 +290,14 @@ impl SettingsPersistence {
     pub fn export(&self) -> Result<String, String> {
         let mut settings = self.load_all();
         settings.schema_version = CURRENT_SETTINGS_SCHEMA;
+        // ROADMAP 26.2: `theme`/`density` are still *read* from an older file
+        // but are no longer written, so an export must not re-emit them — the
+        // storage blob keeps them (it round-trips the same struct) and only the
+        // exported document is cleaned, which is what the doc above promises.
+        if let Some(appearance) = settings.appearance.as_mut() {
+            appearance.theme = None;
+            appearance.density = None;
+        }
         if let Some(email) = settings.email.as_mut() {
             email.smtp_password = None;
         }

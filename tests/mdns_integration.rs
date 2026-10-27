@@ -266,7 +266,13 @@ async fn disabling_discovery_removes_the_service_file_and_the_name_override() {
     std::env::set_var(homevault::mdns::SERVICE_FILE_ENV, &service_path);
     let shims = shim_dir();
     let previous_path = std::env::var("PATH").ok();
-    std::env::set_var("PATH", shims.path());
+    // Prepend, never replace: the fake `sudo` calls `cat`/`rm` itself, so a PATH
+    // holding only the shim directory made it fail with "cat: not found".
+    let shim_path = match previous_path.as_deref() {
+        Some(path) => format!("{}:{path}", shims.path().display()),
+        None => shims.path().display().to_string(),
+    };
+    std::env::set_var("PATH", shim_path);
 
     let mut r = router(state);
     let token = login(&mut r, "admin1", "Password123!").await;
@@ -330,7 +336,13 @@ async fn enabling_discovery_writes_the_service_file_and_pins_the_name_again() {
     std::env::set_var(homevault::mdns::SERVICE_FILE_ENV, &service_path);
     let shims = shim_dir();
     let previous_path = std::env::var("PATH").ok();
-    std::env::set_var("PATH", shims.path());
+    // Prepend, never replace: the fake `sudo` calls `cat`/`rm` itself, so a PATH
+    // holding only the shim directory made it fail with "cat: not found".
+    let shim_path = match previous_path.as_deref() {
+        Some(path) => format!("{}:{path}", shims.path().display()),
+        None => shims.path().display().to_string(),
+    };
+    std::env::set_var("PATH", shim_path);
 
     let mut r = router(state);
     let token = login(&mut r, "admin2", "Password123!").await;

@@ -1021,15 +1021,9 @@ pub async fn handle_downloader_task(
 /// answers a `Json<ApiResponse>` envelope, so the guard's status is relayed as
 /// a number and its message re-derived from that status.
 async fn guard_admin(state: &AppStateArc, headers: &HeaderMap) -> Result<String, (u16, String)> {
-    match crate::handlers::admin_guard::require_admin(state, headers).await {
+    match crate::handlers::admin_guard::check_admin(state, headers).await {
         Ok(username) => Ok(username),
-        Err(resp) => {
-            let status = resp.status();
-            Err((
-                status.as_u16(),
-                crate::handlers::admin_guard::denial_message(status),
-            ))
-        }
+        Err(reason) => Err((reason.status().as_u16(), reason.message().to_string())),
     }
 }
 

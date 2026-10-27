@@ -362,7 +362,9 @@ async fn test_pull_and_model_set_require_admin() {
         Some(json!({"name": "gemma3:1b"})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // `require_admin` answers 403 Forbidden (not 400): the caller is
+    // authenticated, just not allowed. The body still names the missing right.
+    assert_eq!(status, StatusCode::FORBIDDEN);
     assert!(err_text(&body).to_lowercase().contains("admin"));
 
     let (status, body) = send(
@@ -373,7 +375,7 @@ async fn test_pull_and_model_set_require_admin() {
         Some(json!({"model": "gemma3:1b"})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::FORBIDDEN);
     assert!(err_text(&body).to_lowercase().contains("admin"));
 }
 
