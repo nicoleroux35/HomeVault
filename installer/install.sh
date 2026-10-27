@@ -525,20 +525,20 @@ bar() {
 # from /dev/tty too: under `curl | sudo bash` stdin is the script itself.
 # ---------------------------------------------------------------------------
 ui_msg()   { whiptail --backtitle "HomeVault installer" --title "$1" \
-                --scrolltext --msgbox "$2" 20 78 2>&4 </dev/tty; }
+                --scrolltext --msgbox "$2" 20 78 >&4 2>&4 </dev/tty; }
 ui_yesno() { # $1 title, $2 text, $3 default (y|n)
     if [[ "${3:-y}" == "n" ]]; then
         whiptail --backtitle "HomeVault installer" --title "$1" --defaultno \
-            --yesno "$2" 14 78 2>&4 </dev/tty
+            --yesno "$2" 14 78 >&4 2>&4 </dev/tty
     else
         whiptail --backtitle "HomeVault installer" --title "$1" \
-            --yesno "$2" 14 78 2>&4 </dev/tty
+            --yesno "$2" 14 78 >&4 2>&4 </dev/tty
     fi
 }
 ui_input() { whiptail --backtitle "HomeVault installer" --title "$1" \
                 --output-fd 1 --inputbox "$2" 12 78 "${3:-}" 2>&4 </dev/tty; }
 ui_info()  { whiptail --backtitle "HomeVault installer" --title "$1" \
-                --infobox "$2" 10 72 2>&4 </dev/tty; }
+                --infobox "$2" 10 72 >&4 2>&4 </dev/tty; }
 
 # One prompt, three backends. `--yes` and a missing terminal both take the
 # documented default instead of blocking an unattended run.
@@ -730,6 +730,10 @@ pkg_available() {
 install_packages() {
     local label="$1" mode="$2"
     shift 2
+    if [[ "$mode" == "optional" ]] && [[ "${HV_SKIP_OPTIONAL:-0}" == "1" ]]; then
+        info "Skipping optional package group: $label (HV_SKIP_OPTIONAL=1)"
+        return 0
+    fi
     local missing=()
     local already=()
     for pkg in "$@"; do
@@ -1095,6 +1099,10 @@ init_incus_daemon() {
 }
 
 install_incus() {
+    if [[ "${HV_SKIP_OPTIONAL:-0}" == "1" ]]; then
+        info "Skipping Incus (HV_SKIP_OPTIONAL=1)"
+        return 0
+    fi
     if command -v incus &> /dev/null; then
         ok "Incus (containers + VMs) already installed"
         # Upgrade path: make sure the VM boot modules land on an existing
@@ -1262,6 +1270,10 @@ fi
 install_optional zstd "zstd (required by the Ollama installer)"
 
 install_ollama() {
+    if [[ "${HV_SKIP_OPTIONAL:-0}" == "1" ]]; then
+        info "Skipping Ollama (HV_SKIP_OPTIONAL=1)"
+        return 0
+    fi
     case "$(uname -m)" in
         armv7l|armv6l)
             warn "Ollama has no 32-bit ARM build — the AI assistant stays offline on $(uname -m)."

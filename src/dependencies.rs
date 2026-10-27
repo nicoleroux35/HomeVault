@@ -1371,8 +1371,8 @@ mod tests {
             "install.sh must open fd 4 on /dev/tty for whiptail's drawing"
         );
         assert!(
-            text.contains("2>&4"),
-            "whiptail must draw on fd 4, never on the log-redirected stdout/stderr"
+            text.contains(">&4 2>&4"),
+            "whiptail must draw its stdout/stderr TUI on fd 4, never on the log-redirected stdout/stderr"
         );
         // The engine's own output would paint over the whiptail screens, so in
         // TUI mode stdout/stderr go to the log file only.
