@@ -129,6 +129,14 @@ registry; a tracked child whose mount disappeared is reported
   of hardcoding `/mnt/rclone/<name>`.
 - **No blocking `std::fs` on the async runtime.** The config read happens in
   `spawn_blocking` (`load_remotes`), as does `create_dir_all`.
+- **Subprocesses always receive `--config` explicitly.** All subprocess
+  invocations (`rclone mount`, `rclone sync`, `rclone copy`, and fallback
+  `rclone listremotes`) pass `--config <rclone_config_path()>` via
+  `rclone_command()`. This guarantees that the spawned CLI processes access the
+  exact same configuration file that the backend reads and writes (honouring
+  `RCLONE_CONFIG` overrides or the `/etc/rclone.conf` system default), rather
+  than falling back to `$HOME/.config/rclone/rclone.conf`, which may not exist
+  or may belong to another user.
 
 ## Frontend
 
