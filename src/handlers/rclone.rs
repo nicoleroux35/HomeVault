@@ -900,7 +900,7 @@ fn rclone_config_fallback_paths() -> Vec<std::path::PathBuf> {
 /// not, since that is how a fresh config gets created outside `/etc` — then
 /// the first of rclone's fallback locations that exists, then
 /// [`DEFAULT_RCLONE_CONFIG`].
-fn rclone_config_path() -> std::path::PathBuf {
+pub fn rclone_config_path() -> std::path::PathBuf {
     if let Ok(overridden) = std::env::var("RCLONE_CONFIG") {
         if !overridden.is_empty() {
             return std::path::PathBuf::from(overridden);
@@ -911,6 +911,21 @@ fn rclone_config_path() -> std::path::PathBuf {
         .into_iter()
         .find(|path| path.exists())
         .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_RCLONE_CONFIG))
+}
+
+/// Constructs a [`tokio::process::Command`] preconfigured with `rclone` and
+/// `--config <rclone_config_path()>`.
+///
+/// Subprocess invocations that read or write remotes must use this helper so
+/// that the CLI subprocess uses the exact same config file that the backend
+/// reads and writes (honouring `RCLONE_CONFIG` overrides and the
+/// `/etc/rclone.conf` system default). `$HOME/.config/rclone/rclone.conf` was
+/// the fallback rclone itself picked, so a remote the backend had just written
+/// to `/etc/rclone.conf` was invisible to `rclone mount`/`sync`/`copy`.
+pub fn rclone_command() -> Command {
+    let mut cmd = Command::new("rclone");
+    cmd.arg("--config").arg(rclone_config_path());
+    cmd
 }
 
 /// Parse rclone config file to get remotes with their types
@@ -1039,11 +1054,8 @@ pub async fn handle_list_remotes(
     }
 
     // Fallback: use rclone listremotes command
-    let output = run_timed_async_result(
-        Command::new("rclone").args(["listremotes"]),
-        RCLONE_PROBE_TIMEOUT,
-    )
-    .await;
+    let output =
+        run_timed_async_result(rclone_command().args(["listremotes"]), RCLONE_PROBE_TIMEOUT).await;
 
     match output {
         Ok(output) => {
@@ -1666,7 +1678,7 @@ pub async fn handle_mount_start(
         None => format!("{}:", remote),
     };
 
-    let mut command = Command::new("rclone");
+    let mut command = rclone_command();
     command
         .arg("mount")
         .arg(&source)
@@ -1905,8 +1917,7 @@ async fn run_sync_core(admin_username: &str, req: &SyncRequest) -> SyncOutcome {
         &format!("Sync {} -> {}", req.source, req.destination),
     );
 
-    let output =
-        run_timed_async_result(Command::new("rclone").args(&args), RCLONE_TRANSFER_TIMEOUT).await;
+    let output = run_timed_async_result(rclone_command().args(&args), RCLONE_TRANSFER_TIMEOUT).await;
 
     match output {
         Ok(output) => {
@@ -2464,8 +2475,7 @@ pub async fn handle_copy(
         &format!("Copy {} -> {}", req.source, req.destination),
     );
 
-    let output =
-        run_timed_async_result(Command::new("rclone").args(&args), RCLONE_TRANSFER_TIMEOUT).await;
+    let output = run_timed_async_result(rclone_command().args(&args), RCLONE_TRANSFER_TIMEOUT).await;
 
     match output {
         Ok(output) => {
@@ -2882,6 +2892,22 @@ mod tests {
         // built from an unset HOME.
         let resolved = with_env_override(None, rclone_config_path);
         assert!(resolved.is_absolute(), "got {}", resolved.display());
+    }
+
+    #[test]
+    fn test_rclone_command_passes_explicit_config_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("custom.conf");
+        with_env_override(Some(&path), || {
+            let cmd = rclone_command();
+            let std_cmd = cmd.as_std();
+            let args: Vec<&std::ffi::OsStr> = std_cmd.get_args().collect();
+            assert_eq!(
+                args,
+                &[std::ffi::OsStr::new("--config"), path.as_os_str(),],
+                "rclone_command must pass `--config <rclone_config_path()>` as its first arguments"
+            );
+        });
     }
 
     #[test]
