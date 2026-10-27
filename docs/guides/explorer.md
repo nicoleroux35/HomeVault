@@ -535,6 +535,13 @@ work, and the last one whose host commands had no deadline.
 - **Recents are per-user and server-side.** The rows are keyed by the session
   user and purged when the account is deleted; the client never sends another
   user's key.
+- **Directory navigation and watcher refreshes are sequence-guarded.**
+  `Explorer.svelte` tracks `loadSeq` and `watchSeq` so out-of-order
+  `listDirectory` or `refreshCurrentDir` responses and stale SSE `EventSource`
+  watchers from a previous folder can never overwrite the active directory
+  listing. When multiple sidebar roots share the same `kind` (e.g. `/media` and
+  `/mnt` both classify as `media`), `rootLabel` appends the root path so the
+  sidebar and breadcrumb stay distinct.
 - **Rewind restores by copy, not by writing into the snapshot.** The snapshot
   path is read-only (`.zfs/snapshot/…`); "restore" copies the old version out to
   a chosen destination, so a snapshot is never mutated.
