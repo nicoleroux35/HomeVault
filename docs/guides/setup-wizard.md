@@ -160,8 +160,8 @@ and the mDNS name (`homevault.local`) is predictable, so any website the
 operator visits could `POST /api/auth/setup` and claim the first admin. The
 guard therefore refuses:
 
-- an `Origin` header that does not match the request's `Host` (authority only,
-scheme-agnostic);
+- an `Origin` header that does not match the request's `Host` header or HTTP/2
+  `:authority` pseudo-header (authority only, scheme-agnostic);
 - `Origin: null` (sandboxed iframe, `file://`);
 - `Sec-Fetch-Site` other than `same-origin` / `none` — so `cross-site` **and**
   `same-site` (a sibling subdomain is a different origin) are refused;

@@ -31,9 +31,9 @@
 //!   cargo test --test setup_integration -- --nocapture
 
 use axum::extract::ConnectInfo;
-use axum::{routing::get, Router};
+use axum::{Router, routing::get};
 use http::{Method, Request, StatusCode};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -48,11 +48,11 @@ static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 use homevault::config::PathGuard;
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{
+    AppState,
     auth::{
         handle_check_username, handle_setup, handle_setup_progress_get, handle_setup_progress_put,
         handle_setup_rebaseline, handle_setup_status, handle_setup_verify_totp,
     },
-    AppState,
 };
 use homevault::middleware::rate_limit::RateLimitState;
 use homevault::storage::Database;
@@ -1444,10 +1444,12 @@ async fn test_setup_guard_blocks_setup_from_a_public_peer() {
         "a public peer must not reach first-run setup: {:?}",
         body
     );
-    assert!(body["message"]
-        .as_str()
-        .unwrap_or("")
-        .contains("local network"));
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("local network")
+    );
 }
 
 // ------------------------------------------------------------------------
@@ -1511,10 +1513,12 @@ async fn test_setup_guard_rejects_a_cross_site_origin() {
     .await;
 
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert!(body["message"]
-        .as_str()
-        .unwrap_or("")
-        .contains("own interface"));
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("own interface")
+    );
 }
 
 /// `Sec-Fetch-Site: cross-site` alone (no Origin) is enough to refuse.
@@ -1575,6 +1579,68 @@ async fn test_setup_guard_allows_a_same_origin_request() {
 
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["username"], json!("firstadmin"));
+}
+
+/// Over HTTP/2 (the default when built-in TLS is enabled on `:8443`), browsers
+/// send the `:authority` pseudo-header (`request.uri().authority()`) rather
+/// than an HTTP/1.1 `Host` header. Same-origin verification must accept a
+/// matching `:authority` and still reject a mismatched `Origin`.
+#[tokio::test]
+async fn test_setup_guard_allows_http2_authority_without_host_header() {
+    let (state, _tmp, _lock) = setup_state().await;
+    let app = create_app(state);
+
+    let mut bad_req = Request::builder()
+        .method(Method::POST)
+        .uri("https://homevault.local:8443/api/auth/setup")
+        .header("content-type", "application/json")
+        .header("origin", "https://evil.example")
+        .header("sec-fetch-site", "same-origin")
+        .body(axum::body::Body::from(
+            serde_json::to_vec(&json!({
+                "username": "attacker",
+                "password": "SecurePass123"
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    bad_req
+        .extensions_mut()
+        .insert(ConnectInfo(peer("192.168.1.30")));
+    let mut app_bad = app.clone();
+    let bad_resp = ServiceExt::<Req>::ready(&mut app_bad)
+        .await
+        .unwrap()
+        .call(bad_req)
+        .await
+        .unwrap();
+    assert_eq!(bad_resp.status(), StatusCode::FORBIDDEN);
+
+    let mut ok_req = Request::builder()
+        .method(Method::POST)
+        .uri("https://homevault.local:8443/api/auth/setup")
+        .header("content-type", "application/json")
+        .header("origin", "https://homevault.local:8443")
+        .header("sec-fetch-site", "same-origin")
+        .body(axum::body::Body::from(
+            serde_json::to_vec(&json!({
+                "username": "h2admin",
+                "password": "SecurePass123"
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    ok_req
+        .extensions_mut()
+        .insert(ConnectInfo(peer("192.168.1.30")));
+    let mut app_ok = app.clone();
+    let ok_resp = ServiceExt::<Req>::ready(&mut app_ok)
+        .await
+        .unwrap()
+        .call(ok_req)
+        .await
+        .unwrap();
+    assert_eq!(ok_resp.status(), StatusCode::OK);
 }
 
 /// A bare non-browser client (no Origin, no Sec-Fetch-Site) is still allowed.

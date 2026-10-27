@@ -96,9 +96,9 @@ fn remote_allowed_by_env() -> bool {
 /// their browser — the local-network guard does not help, because the browser
 /// itself sits on the LAN. This check closes that hole:
 ///
-/// * an `Origin` header, when present, must match the request's `Host` (same
-///   scheme-agnostic authority) — a cross-site `fetch`/form always carries a
-///   foreign `Origin`;
+/// * an `Origin` header, when present, must match the request's `Host` header
+///   or HTTP/2 `:authority` pseudo-header (same scheme-agnostic authority) — a
+///   cross-site `fetch`/form always carries a foreign `Origin`;
 /// * `Sec-Fetch-Site`, when the browser sends it, must be `same-origin` or
 ///   `none` (a user-initiated navigation / address-bar request). `cross-site`
 ///   and `same-site` (a sibling subdomain, which is a different origin) are
@@ -106,7 +106,7 @@ fn remote_allowed_by_env() -> bool {
 /// * requests with neither header are allowed: non-browser clients (curl, a
 ///   provisioning script over SSH) send neither, and they are already gated by
 ///   the local-network check plus the setup lock.
-fn is_same_origin(headers: &HeaderMap) -> bool {
+fn is_same_origin(headers: &HeaderMap, uri_authority: Option<&str>) -> bool {
     if let Some(site) = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
         let site = site.trim().to_ascii_lowercase();
         if !matches!(site.as_str(), "same-origin" | "none") {
@@ -123,7 +123,8 @@ fn is_same_origin(headers: &HeaderMap) -> bool {
         return false;
     }
 
-    // Compare authorities only: `http://nas.local:8080` vs `Host: nas.local:8080`.
+    // Compare authorities only: `http://nas.local:8080` vs `Host: nas.local:8080`
+    // (or the HTTP/2 `:authority` pseudo-header exposed on `request.uri()`).
     let Some(origin_host) = origin
         .split_once("://")
         .map(|(_, rest)| rest)
@@ -131,11 +132,17 @@ fn is_same_origin(headers: &HeaderMap) -> bool {
     else {
         return false;
     };
-    let Some(host) = headers.get("host").and_then(|v| v.to_str().ok()) else {
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| uri_authority.map(str::trim).filter(|s| !s.is_empty()));
+    let Some(host) = host else {
         return false;
     };
 
-    origin_host.eq_ignore_ascii_case(host.trim())
+    origin_host.eq_ignore_ascii_case(host)
 }
 
 // ---------------------------------------------------------------------------
@@ -174,7 +181,10 @@ fn counts_against_setup_budget(path: &str) -> bool {
 pub async fn setup_guard_middleware(request: axum::extract::Request, next: Next) -> Response {
     // Same-origin and rate limiting apply even when the local-network check is
     // deliberately lifted: they protect a different hole.
-    if !is_same_origin(request.headers()) {
+    if !is_same_origin(
+        request.headers(),
+        request.uri().authority().map(|a| a.as_str()),
+    ) {
         tracing::warn!(
             origin = ?request.headers().get("origin"),
             "Rejected a cross-origin first-run setup request"
@@ -279,5 +289,16 @@ mod tests {
         assert!(counts_against_setup_budget("/api/auth/setup"));
         assert!(counts_against_setup_budget("/api/auth/setup/verify-totp"));
         assert!(counts_against_setup_budget("/api/auth/check-username"));
+    }
+
+    #[test]
+    fn test_is_same_origin_accepts_http2_authority_when_host_header_is_absent() {
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", "https://homevault.local:8443".parse().unwrap());
+        headers.insert("sec-fetch-site", "same-origin".parse().unwrap());
+
+        assert!(is_same_origin(&headers, Some("homevault.local:8443")));
+        assert!(!is_same_origin(&headers, Some("evil.example:8443")));
+        assert!(!is_same_origin(&headers, None));
     }
 }
