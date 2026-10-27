@@ -137,7 +137,10 @@ evidence the roadmap tracked.
 - The General card saves the language through `POST /settings/language` rather
   than the PUT, because the locale has to change immediately. A failure is
   surfaced as a warning `Alert` (`settings.language_save_failed`) instead of
-  looking saved.
+  looking saved. On load, `Settings.svelte` seeds `draft.general.language` from
+  the active `$languageStore` when no non-default language has been persisted on
+  the server yet, so the selector matches the active UI language detected from
+  the browser/OS locale.
 
 ### Settings stored outside `settings.json` (ROADMAP 13.5)
 
