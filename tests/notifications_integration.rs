@@ -443,7 +443,7 @@ async fn test_list_returns_notifications_and_unread_count_tracks_reads() {
     assert_eq!(body["data"]["count"], 1);
 
     // Mark all as read.
-    let (status, _) = send(
+    let (status, body) = send(
         &mut r,
         Method::POST,
         "/api/notifications/read-all",
@@ -451,7 +451,7 @@ async fn test_list_returns_notifications_and_unread_count_tracks_reads() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     // Unread count is now 0.
     let (_, body) = send(

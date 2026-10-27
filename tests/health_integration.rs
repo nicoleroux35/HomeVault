@@ -558,7 +558,14 @@ async fn test_a_slow_host_probe_is_waited_out_not_dropped() {
             .expect("chmod shim");
     }
     let previous_path = std::env::var("PATH").ok();
-    std::env::set_var("PATH", shim_dir.path());
+    // Prepend, never replace: the shim is `/bin/sh` + `sleep`, so a PATH that
+    // holds only the shim directory also hides `sleep` — the shim then exits at
+    // once and the test reports "the probe skipped it" whatever the code did.
+    let shim_path = match previous_path.as_deref() {
+        Some(path) => format!("{}:{path}", shim_dir.path().display()),
+        None => shim_dir.path().display().to_string(),
+    };
+    std::env::set_var("PATH", shim_path);
 
     let started = std::time::Instant::now();
     let (status, body) = send(&mut router, Method::GET, "/api/health", Some(&token), None).await;

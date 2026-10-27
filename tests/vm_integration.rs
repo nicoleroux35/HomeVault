@@ -67,7 +67,8 @@ use homevault::handlers::{
     auth::handle_login,
     vm::{
         handle_console_ticket, handle_screen_ticket, handle_vm_available, handle_vm_config,
-        handle_vm_create, handle_vm_delete, handle_vm_get, handle_vm_iso_delete, handle_vm_isos,
+        handle_vm_create, handle_vm_delete, handle_vm_get, handle_vm_iso_delete,
+        handle_vm_iso_download, handle_vm_isos,
         handle_vm_list, handle_vm_os_options, handle_vm_restart, handle_vm_snapshot_create,
         handle_vm_snapshot_delete, handle_vm_snapshot_restore, handle_vm_snapshots,
         handle_vm_start, handle_vm_stop,
@@ -130,6 +131,8 @@ fn vm_router(state: Arc<AppState>) -> Router {
         .route("/api/vm/console/ticket", post(handle_console_ticket))
         .route("/api/vm/{name}/screen/ticket", post(handle_screen_ticket))
         .route("/api/vm/isos", get(handle_vm_isos))
+        // Mirrors `src/web/mod.rs`: the download verb is a POST on its own path.
+        .route("/api/vm/isos/download", post(handle_vm_iso_download))
         .route("/api/vm/isos/{name}", delete(handle_vm_iso_delete))
         .route("/api/vm/{name}", get(handle_vm_get))
         .route("/api/vm/{name}", delete(handle_vm_delete))
@@ -634,9 +637,10 @@ async fn iso_store_lists_and_deletes_through_the_blocking_pool() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["success"], false);
-    assert!(body["error"]
+    assert!(body["message"]
         .as_str()
-        .unwrap()
+        .or_else(|| body["error"].as_str())
+        .unwrap_or_default()
         .contains("not in the store"));
 }
 
@@ -871,7 +875,9 @@ async fn iso_download_rejects_an_unusable_link_before_dialling() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 
-    // A name that is not an `.iso`: refused without touching the store.
+    // A name that is not an `.iso` is never used as the stored filename: the
+    // handler falls back to the URL's own basename (and refuses with a 400 when
+    // neither is usable, which the non-http case above covers).
     let (status, body) = send(
         &mut router,
         Method::POST,
@@ -880,7 +886,8 @@ async fn iso_download_rejects_an_unusable_link_before_dialling() {
         Some(json!({"url": "https://example.com/x.iso", "name": "not-an-iso.bin"})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["name"], json!("x.iso"), "{body}");
 }
 
 /// The route is admin-only on both verbs — a download writes into the managed

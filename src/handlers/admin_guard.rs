@@ -73,17 +73,73 @@ fn session_token(headers: &HeaderMap) -> &str {
         .unwrap_or("")
 }
 
-/// The message a denial carries, derived from its status alone.
+/// Why a guard refused the caller — the decision itself, not a guess at it.
 ///
-/// Handlers that answer a JSON envelope instead of a `Response` (Syncthing,
-/// Downloader, VPN) need the wording without consuming the body. Deriving it
-/// from the status keeps the *decision* here: those modules cannot invent a
-/// different rule, only a different envelope.
-pub fn denial_message(status: StatusCode) -> String {
-    match status {
-        StatusCode::FORBIDDEN => "Admin privileges required for this operation".to_string(),
-        StatusCode::UNAUTHORIZED => "Invalid or expired session".to_string(),
-        _ => "No session token provided".to_string(),
+/// The **status cannot carry this**: a missing token and an expired one are both
+/// `401`, so a module that re-derived the wording from the status answered
+/// "Invalid or expired session" to a caller who never sent a token (and to a
+/// regression test that pins the two wordings apart). Handlers that answer a
+/// JSON envelope instead of returning the guard's `Response` (Syncthing,
+/// Downloader, VPN) relay exactly this, so they cannot invent a third rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Denial {
+    MissingToken,
+    InvalidToken,
+    NotAdmin,
+}
+
+impl Denial {
+    pub fn status(self) -> StatusCode {
+        match self {
+            Denial::NotAdmin => StatusCode::FORBIDDEN,
+            Denial::MissingToken | Denial::InvalidToken => StatusCode::UNAUTHORIZED,
+        }
+    }
+
+    pub fn message(self) -> &'static str {
+        match self {
+            Denial::MissingToken => "No session token provided",
+            Denial::InvalidToken => "Invalid or expired session",
+            Denial::NotAdmin => "Admin privileges required for this operation",
+        }
+    }
+
+    pub fn into_response(self) -> Response {
+        match self {
+            Denial::NotAdmin => ResponseHelper::json_forbidden(self.message().to_string()),
+            Denial::MissingToken | Denial::InvalidToken => {
+                ResponseHelper::json_unauthorized(self.message().to_string())
+            }
+        }
+    }
+}
+
+impl From<Denial> for Response {
+    fn from(denial: Denial) -> Self {
+        denial.into_response()
+    }
+}
+
+/// [`require_auth`] with the reason intact, for modules that relay it.
+pub async fn check_auth(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+) -> Result<String, Denial> {
+    check_auth_caller(state, headers)
+        .await
+        .map(|caller| caller.username)
+}
+
+/// [`require_admin`] with the reason intact, for modules that relay it.
+pub async fn check_admin(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+) -> Result<String, Denial> {
+    let username = check_auth(state, headers).await?;
+    if state.auth.is_admin(&username).await {
+        Ok(username)
+    } else {
+        Err(Denial::NotAdmin)
     }
 }
 
@@ -93,15 +149,9 @@ pub fn denial_message(status: StatusCode) -> String {
 // through every call site for no real benefit, so allow the lint here.
 #[allow(clippy::result_large_err)]
 pub async fn require_admin(state: &Arc<AppState>, headers: &HeaderMap) -> Result<String, Response> {
-    let username = require_auth(state, headers).await?;
-
-    if state.auth.is_admin(&username).await {
-        Ok(username)
-    } else {
-        Err(ResponseHelper::json_forbidden(
-            "Admin privileges required for this operation".to_string(),
-        ))
-    }
+    check_admin(state, headers)
+        .await
+        .map_err(Denial::into_response)
 }
 
 /// An authenticated caller: who they are, and the opaque token that proved it.
@@ -122,9 +172,28 @@ pub struct Caller {
 // through every call site for no real benefit, so allow the lint here.
 #[allow(clippy::result_large_err)]
 pub async fn require_auth(state: &Arc<AppState>, headers: &HeaderMap) -> Result<String, Response> {
-    require_auth_caller(state, headers)
-        .await
-        .map(|caller| caller.username)
+    check_auth(state, headers).await.map_err(Denial::into_response)
+}
+
+/// [`require_auth_caller`] with the reason intact, for modules that relay it.
+pub async fn check_auth_caller(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+) -> Result<Caller, Denial> {
+    let token = session_token(headers);
+    if token.is_empty() {
+        // `401`, not `400`: the caller did not authenticate. A client that
+        // branches on the status must be able to tell "you are not signed in"
+        // from "your request is malformed" (ROADMAP X.8).
+        return Err(Denial::MissingToken);
+    }
+    match state.auth.get_username_from_token(token).await {
+        Some(username) => Ok(Caller {
+            username,
+            token: token.to_string(),
+        }),
+        None => Err(Denial::InvalidToken),
+    }
 }
 
 /// Same check as [`require_auth`], but also returns the caller's own token.
@@ -137,26 +206,9 @@ pub async fn require_auth_caller(
     state: &Arc<AppState>,
     headers: &HeaderMap,
 ) -> Result<Caller, Response> {
-    let token = session_token(headers);
-
-    if token.is_empty() {
-        // `401`, not `400`: the caller did not authenticate. A client that
-        // branches on the status must be able to tell "you are not signed in"
-        // from "your request is malformed" (ROADMAP X.8).
-        return Err(ResponseHelper::json_unauthorized(
-            "No session token provided".to_string(),
-        ));
-    }
-
-    match state.auth.get_username_from_token(token).await {
-        Some(username) => Ok(Caller {
-            username,
-            token: token.to_string(),
-        }),
-        None => Err(ResponseHelper::json_unauthorized(
-            "Invalid or expired session".to_string(),
-        )),
-    }
+    check_auth_caller(state, headers)
+        .await
+        .map_err(Denial::into_response)
 }
 
 /// Validates the caller and returns only their session token.
@@ -184,7 +236,7 @@ mod tests {
     //! in at compile time), so they cost nothing at runtime and cannot go
     //! stale: every `src/handlers/*.rs` is scanned, not just a hand-kept list.
 
-    use super::denial_message;
+    use super::Denial;
     use super::SESSION_HEADER;
     use axum::http::StatusCode;
     use std::path::{Path, PathBuf};
@@ -270,8 +322,12 @@ mod tests {
                 "{module} still parses `{SESSION_HEADER}` itself — call \
                  admin_guard::require_admin instead (ROADMAP X.7)"
             );
+            // Either primitive is a delegation: `require_admin` returns the
+            // `Response`, `check_admin` returns the typed reason for modules
+            // that answer their own JSON envelope.
             assert!(
-                text.contains("admin_guard::require_admin"),
+                text.contains("admin_guard::require_admin")
+                    || text.contains("admin_guard::check_admin"),
                 "{module} must delegate its guard to admin_guard"
             );
         }
@@ -296,21 +352,22 @@ mod tests {
         );
     }
 
-    /// The message a non-`Response` module relays is derived from the status,
-    /// so it can never contradict the shared decision.
+    /// Each refusal keeps its own wording: a missing token and an expired one
+    /// share the `401` status, so the reason has to travel beside it.
     #[test]
-    fn denial_messages_match_their_status() {
+    fn each_denial_carries_its_own_status_and_message() {
+        assert_eq!(Denial::NotAdmin.status(), StatusCode::FORBIDDEN);
         assert_eq!(
-            denial_message(StatusCode::FORBIDDEN),
+            Denial::NotAdmin.message(),
             "Admin privileges required for this operation"
         );
+        for denial in [Denial::MissingToken, Denial::InvalidToken] {
+            assert_eq!(denial.status(), StatusCode::UNAUTHORIZED);
+        }
+        assert_eq!(Denial::MissingToken.message(), "No session token provided");
         assert_eq!(
-            denial_message(StatusCode::UNAUTHORIZED),
+            Denial::InvalidToken.message(),
             "Invalid or expired session"
-        );
-        assert_eq!(
-            denial_message(StatusCode::BAD_REQUEST),
-            "No session token provided"
         );
     }
 }

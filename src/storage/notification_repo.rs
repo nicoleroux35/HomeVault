@@ -170,8 +170,11 @@ impl NotificationRepository {
     pub async fn mark_all_read(&self, username: &str) -> Result<u64, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
+            // `WHERE true` is load-bearing: without it SQLite parses the `ON`
+            // of `ON CONFLICT` as a JOIN constraint of the SELECT and answers
+            // `near "DO": syntax error`, so "mark all as read" always failed.
             "INSERT INTO notification_reads (notification_id, username, read_at)
-             SELECT id, ?, ? FROM notifications
+             SELECT id, ?, ? FROM notifications WHERE true
              ON CONFLICT(notification_id, username) DO UPDATE SET read_at = excluded.read_at",
         )
         .bind(username)

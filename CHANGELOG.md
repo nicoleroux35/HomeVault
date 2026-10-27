@@ -86,6 +86,35 @@ follows [Semantic Versioning](https://semver.org/).
   `cargo test --locked --tests` compiles every target; the remaining
   integration-test drift (`integration.yml`) is tracked separately.
 
+- **The integration suite is green again, and two more real bugs fell out
+  (2026-10-27).** `cargo test --locked --tests` now passes end to end (62 test
+  binaries). Beyond the `401`-vs-`400` drift (~16 assertions still expected the
+  pre-ROADMAP-X.8 status), three product bugs surfaced:
+
+  - **"Mark all notifications as read" never worked.**
+    `NotificationRepository::mark_all_read` ran `INSERT … SELECT … ON CONFLICT`,
+    which SQLite parses as a join constraint (`near "DO": syntax error`) unless
+    the SELECT ends with `WHERE true`. Every call answered `400`; nothing could
+    mark the feed read in one action.
+  - **A Docker build context outside the allowed roots** was only refused
+    *after* probing the daemon, so the answer was "Docker is not available" on a
+    host without Docker — and the refusal depended on an unrelated fact. The
+    path check now runs first.
+  - **The refusal reason for the envelope modules** (Syncthing, Downloader,
+    VPN) was re-derived from the HTTP status, which cannot tell a missing token
+    from an expired one (both `401`), so a caller who never sent a token was
+    told "Invalid or expired session". `admin_guard` now exposes the decision
+    itself (`Denial` + `check_auth` / `check_admin`) and those modules relay it.
+
+  Test-harness fixes in the same change: five tests replaced `PATH` with the
+  shim directory instead of prepending it, so the shim's own `sleep`/`cat`/`rm`
+  vanished and the probe they were timing never ran; the VM test router lacked
+  the `/api/vm/isos/download` route the real router registers (405); three
+  suites read `body["error"]` where the envelope carries `message`; the 16 KiB
+  layout boundary blob was one over-long string (refused by the per-value cap)
+  instead of many short values; and the cache-mover test polled "not running"
+  before the spawned run had claimed its slot, racing the second trigger.
+
 - **A VM's screen console no longer stays alive on a half-open connection
   (2026-10-24, ROADMAP 32.1).** The noVNC relay was a raw two-way byte pipe with
   no ping and no timeout, so closing a laptop lid, dropping Wi-Fi or suspending

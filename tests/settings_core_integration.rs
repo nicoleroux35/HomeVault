@@ -339,7 +339,7 @@ async fn test_writes_reject_missing_and_bogus_token() {
     let mut router = settings_router(state);
     for (method, uri, body) in admin_write_endpoints() {
         let (status, _) = send(&mut router, method.clone(), uri, None, Some(body.clone())).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{method} {uri} no token");
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri} no token");
 
         let (status, _) = send(
             &mut router,
@@ -637,7 +637,7 @@ async fn test_a_non_admin_cannot_change_the_appliance_look() {
         Some(json!({"accent_color": "#efefef"})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert!(
         body["message"].as_str().unwrap_or("").contains("Admin"),
         "{body}"
