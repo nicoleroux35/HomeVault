@@ -214,6 +214,16 @@ impl PathGuard {
             return None;
         }
 
+        // A `.`/`..` leaf is a directory-shaped request, not a file to create.
+        // `canonicalize` below would resolve it to an in-root *directory* and
+        // hand that back as if it were the target, so the leaf has to be
+        // refused first. Both `file_name()` and `components()` normalise a
+        // trailing `.` away, so only the raw last segment still shows it.
+        let leaf_raw = path.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+        if leaf_raw == "." || leaf_raw == ".." {
+            return None;
+        }
+
         // For relative paths, try to resolve them relative to allowed roots
         if !p.is_absolute() {
             // Try each allowed root and return the first valid resolved path

@@ -578,8 +578,9 @@ async fn test_an_invalid_unit_filter_is_a_clean_400() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["success"], json!(false));
     assert!(
-        body["error"]
+        body["message"]
             .as_str()
+            .or_else(|| body["error"].as_str())
             .unwrap_or_default()
             .contains("Unit filter"),
         "{body}"

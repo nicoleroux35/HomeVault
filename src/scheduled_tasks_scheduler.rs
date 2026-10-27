@@ -39,7 +39,7 @@ use crate::power::{host_power_action, PowerAction};
 use crate::snapshots::SnapshotService;
 use crate::storage::scheduled_task_repo::{ScheduledTask, ScheduledTaskRepository};
 use chrono::{DateTime, Utc};
-use chrono_tz::Tz;
+use chrono_tz::{TZ_VARIANTS, Tz};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::str::FromStr;
@@ -213,9 +213,21 @@ pub fn parse_timezone(name: &str) -> Result<Tz, String> {
     if trimmed.is_empty() {
         return Err("Timezone must not be empty".to_string());
     }
-    Tz::from_str(trimmed).map_err(|_| {
-        format!("Unknown timezone '{trimmed}' — use an IANA name such as 'Europe/Paris'")
-    })
+    // IANA names are conventionally mixed case; the same zone typed in another
+    // case (`europe/paris`) is still that zone, and the canonical spelling is
+    // what gets stored. chrono-tz's `FromStr` is an exact match (the
+    // `case-insensitive` feature is not enabled), hence the variant scan.
+    // An unknown name stays an error — never a silent UTC fallback.
+    if let Ok(tz) = Tz::from_str(trimmed) {
+        return Ok(tz);
+    }
+    TZ_VARIANTS
+        .iter()
+        .copied()
+        .find(|tz| tz.name().eq_ignore_ascii_case(trimmed))
+        .ok_or_else(|| {
+            format!("Unknown timezone '{trimmed}' — use an IANA name such as 'Europe/Paris'")
+        })
 }
 
 /// The next occurrence of `cron`, evaluated **in `timezone`** and returned as

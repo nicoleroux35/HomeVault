@@ -120,10 +120,10 @@ async fn guard_admin(
     state: &AppStateArc,
     headers: &HeaderMap,
 ) -> Result<String, (axum::http::StatusCode, Json<ApiError>)> {
-    match crate::handlers::admin_guard::require_admin(state, headers).await {
+    match crate::handlers::admin_guard::check_admin(state, headers).await {
         Ok(username) => Ok(username),
-        Err(resp) => {
-            let status = resp.status();
+        Err(reason) => {
+            let status = reason.status();
             if status == axum::http::StatusCode::FORBIDDEN {
                 tracing::warn!("Non-admin caller denied access to the VPN API");
             }
@@ -131,7 +131,7 @@ async fn guard_admin(
                 status,
                 Json(ApiError {
                     success: false,
-                    error: crate::handlers::admin_guard::denial_message(status),
+                    error: reason.message().to_string(),
                 }),
             ))
         }

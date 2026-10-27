@@ -266,6 +266,11 @@ pub fn validate_provider_slug(raw: &str) -> Result<String, String> {
 /// authority here: `CloudSync.svelte` used to build `/mnt/rclone/<name>`
 /// itself, and any admin-gated client could post anything.
 pub fn validate_mount_point(raw: &str) -> Result<String, String> {
+    // Checked on the **raw** input: `trim()` below silently removes a trailing
+    // newline, so the check used to run after the evidence was gone.
+    if raw.chars().any(|c| c.is_control()) {
+        return Err("Mount point contains control characters".to_string());
+    }
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err("Mount point is required".to_string());
@@ -276,14 +281,18 @@ pub fn validate_mount_point(raw: &str) -> Result<String, String> {
             MAX_MOUNT_POINT_LEN
         ));
     }
-    if trimmed.chars().any(|c| c.is_control()) {
-        return Err("Mount point contains control characters".to_string());
-    }
     if !trimmed.starts_with('/') {
         return Err(format!(
             "Mount point must be an absolute path under {}",
             RCLONE_MOUNT_BASE
         ));
+    }
+    // `.` and `..` segments: `Path::components()` skips `CurDir` in the middle
+    // of a path, so the containment check below would accept
+    // `/mnt/rclone/./x` and `/mnt/rclone/..` while `mount` resolved them
+    // somewhere else.
+    if trimmed.split('/').any(|seg| seg == "." || seg == "..") {
+        return Err("Mount point must not contain '.' or '..'".to_string());
     }
     let path = FsPath::new(trimmed);
     if path

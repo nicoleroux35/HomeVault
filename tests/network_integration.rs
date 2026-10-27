@@ -275,7 +275,7 @@ async fn test_interface_config_update_no_token() {
         Some(json!({"method": "dhcp"})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -290,7 +290,7 @@ async fn test_interface_state_no_token() {
         Some(json!({"up": true})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -305,7 +305,7 @@ async fn test_wifi_connect_no_token() {
         Some(json!({"ssid": "SomeNetwork", "password": "x"})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -320,7 +320,7 @@ async fn test_wifi_disconnect_no_token() {
         Some(json!({"ssid": "SomeNetwork"})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -726,7 +726,14 @@ async fn test_a_slow_host_tool_is_waited_out_not_dropped() {
             .expect("chmod shim");
     }
     let previous_path = std::env::var("PATH").ok();
-    std::env::set_var("PATH", shim_dir.path());
+    // Prepend, never replace: the shim is `/bin/sh` + `sleep`, so a PATH that
+    // holds only the shim directory also hides `sleep` — the shim then exits at
+    // once and the test reports "the probe skipped it" whatever the code did.
+    let shim_path = match previous_path.as_deref() {
+        Some(path) => format!("{}:{path}", shim_dir.path().display()),
+        None => shim_dir.path().display().to_string(),
+    };
+    std::env::set_var("PATH", shim_path);
 
     let started = std::time::Instant::now();
     let (status, body) = send(

@@ -526,9 +526,26 @@ async fn test_monitor_layout_accepts_a_16_kib_boundary_blob() {
     let mut r = widgets_router(state);
     let token = login(&mut r, "u", "Password123!").await;
 
-    // Build `{"note":"…"}` sized to the cap. `{"note":"` + body + `"}`.
-    let overhead = r#"{"note":""}"#.len();
-    let blob = format!(r#"{{"note":"{}"}}"#, "x".repeat(16 * 1024 - overhead));
+    // The byte cap is exclusive **and** every string value is capped at 256
+    // characters, so a boundary blob is many short values: the single 16 KiB
+    // string this test used to build was refused for the per-value cap (the
+    // test above pins that refusal), not for its size.
+    let mut map = std::collections::BTreeMap::new();
+    let mut blob = String::from("{}");
+    let mut i = 0usize;
+    while blob.len() + 128 < 16 * 1024 {
+        map.insert(format!("k{i}"), "x".repeat(100));
+        blob = serde_json::to_string(&map).expect("serialize the layout");
+        i += 1;
+    }
+    let deficit = 16 * 1024 - blob.len();
+    assert!(
+        (1..=128).contains(&deficit),
+        "unexpected base size {} (deficit {deficit})",
+        blob.len()
+    );
+    // Pad one value; 100 + deficit stays under the 256-character cap.
+    blob = blob.replacen(&"x".repeat(100), &"x".repeat(100 + deficit), 1);
     assert_eq!(blob.len(), 16 * 1024);
     let (status, body) = post_layout(&mut r, &token, &blob).await;
     assert_eq!(status, StatusCode::OK, "{body}");

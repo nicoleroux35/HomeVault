@@ -2548,7 +2548,11 @@ impl DiskService {
         lower.contains("not mounted")
             || lower.contains("not currently mounted")
             || lower.contains("no mount point")
-            || lower.contains("not in /etc/mtab")
+            // util-linux: `umount: /dev/sdb: not found in /etc/mtab`. The
+            // substring used to be "not in /etc/mtab", which that wording does
+            // not contain — so a teardown aborted on a device that was already
+            // unmounted.
+            || lower.contains("not found in /etc/mtab")
     }
 
     /// Get device paths from RAID for cleanup
@@ -4053,7 +4057,10 @@ UUID=0d5c8f2e-1111-2222-3333-444455556666 /mnt/raid/by-uuid ext4 rw 0 0
             "/mnt/raid/my array"
         );
         assert_eq!(unescape_mount_field("a\\011b\\012c"), "a\tb\nc");
-        assert_eq!(unescape_mount_field("back\\\\slash"), "back\\slash");
+        // A backslash is escaped as `\134`, never as `\\` (proc(5)); the
+        // literal in this assertion used to be `back\\\\slash`, which is a
+        // *broken* escape and is kept verbatim by design.
+        assert_eq!(unescape_mount_field("back\\134slash"), "back\\slash");
     }
 
     #[test]
@@ -4467,7 +4474,14 @@ recommended polling time: \t (   5) minutes.
     #[test]
     fn test_resync_percent_only_reports_a_running_sync() {
         assert_eq!(resync_percent("resync", "30 100"), Some(30.0));
-        assert_eq!(resync_percent("rebuild", "1 3"), Some(100.0 / 3.0));
+        // `(1.0 / 3.0) * 100.0` and `100.0 / 3.0` differ in the last bit, so
+        // this compares with a tolerance instead of pinning one association
+        // order of the arithmetic.
+        let third = resync_percent("rebuild", "1 3").expect("a running rebuild");
+        assert!(
+            (third - 100.0 / 3.0).abs() < 1e-9,
+            "one third of a rebuild is ~33.33 %, got {third}"
+        );
         // `idle`/`none` is the steady state, not "0 %".
         assert_eq!(resync_percent("idle", "none"), None);
         assert_eq!(resync_percent("resync", "none"), None);

@@ -55,8 +55,8 @@ const KEY_ERROR: &str = "Syncthing API key";
 /// each failure carries — belongs to `admin_guard` (ROADMAP X.7). This module
 /// answers a `Json<ApiResponse>` envelope that is always `200`, so the guard's
 /// response is flattened to its message instead of being returned as-is.
-fn denial(resp: axum::response::Response) -> String {
-    crate::handlers::admin_guard::denial_message(resp.status())
+fn denial(reason: crate::handlers::admin_guard::Denial) -> String {
+    reason.message().to_string()
 }
 
 /// Response wrapper
@@ -312,17 +312,27 @@ fn get_api_key() -> Option<String> {
 /// which is what a daemon with the GUI API key disabled expects. The error
 /// message never contains the key.
 fn api_key_header(raw: &str) -> Result<Option<HeaderValue>, String> {
-    let key = raw.trim();
-    if key.is_empty() {
-        return Ok(None);
-    }
-    HeaderValue::from_str(key).map(Some).map_err(|_| {
+    /// Shared so the two rejection paths cannot drift apart; the key itself is
+    /// never echoed back.
+    fn unusable_key() -> String {
         format!(
             "{KEY_ERROR} in config.xml is not a valid HTTP header value (it contains \
              control characters or non-ASCII bytes); regenerate it in Syncthing's \
              GUI (Actions → Settings → GUI) or remove the <apikey> line"
         )
-    })
+    }
+
+    let key = raw.trim();
+    if key.is_empty() {
+        return Ok(None);
+    }
+    // `HeaderValue::from_str` accepts obs-text (0x80–0xFF), so a UTF-8 key
+    // built a header and went out byte-for-byte — no daemon matches it, and the
+    // message has always promised "non-ASCII bytes" are refused.
+    if !key.is_ascii() || key.chars().any(|c| c.is_control()) {
+        return Err(unusable_key());
+    }
+    HeaderValue::from_str(key).map(Some).map_err(|_| unusable_key())
 }
 
 /// Build the outgoing header set from an already-read key.
@@ -480,6 +490,14 @@ pub const DEVICE_ID_LEN: usize = 56;
 /// Folder ID: non-empty, ≤ [`MAX_FOLDER_ID_LEN`], letters, digits, `-`, `_`
 /// and `.` only, and not the `.`/`..` path aliases.
 pub fn validate_folder_id(raw: &str) -> Result<String, String> {
+    // Checked on the raw input: `trim()` below would drop a trailing newline,
+    // so the charset check never saw it and `"photos\n"` was stored verbatim.
+    if raw.chars().any(|c| c.is_control()) {
+        return Err(format!(
+            "Folder ID '{}' may only contain letters, digits, '-', '_' and '.'",
+            raw.escape_debug()
+        ));
+    }
     let id = raw.trim();
     if id.is_empty() {
         return Err("Folder ID must not be empty".to_string());
@@ -742,7 +760,7 @@ pub async fn handle_syncthing_status(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> Json<ApiResponse<SyncthingStatus>> {
-    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+    if let Err(resp) = crate::handlers::admin_guard::check_admin(&state, &headers).await {
         return Json(ApiResponse::error(&denial(resp)));
     }
     // First check if syncthing binary exists
@@ -807,7 +825,7 @@ pub async fn handle_syncthing_config(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> Json<ApiResponse<SyncthingConfig>> {
-    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+    if let Err(resp) = crate::handlers::admin_guard::check_admin(&state, &headers).await {
         return Json(ApiResponse::error(&denial(resp)));
     }
     let raw = match syncthing_get("system/config").await {
@@ -829,7 +847,7 @@ pub async fn handle_syncthing_devices(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> Json<ApiResponse<Vec<SyncthingDeviceWithStatus>>> {
-    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+    if let Err(resp) = crate::handlers::admin_guard::check_admin(&state, &headers).await {
         return Json(ApiResponse::error(&denial(resp)));
     }
     let config_raw = match syncthing_get("system/config").await {
@@ -883,7 +901,7 @@ pub async fn handle_syncthing_folders(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> Json<ApiResponse<Vec<FolderStatus>>> {
-    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+    if let Err(resp) = crate::handlers::admin_guard::check_admin(&state, &headers).await {
         return Json(ApiResponse::error(&denial(resp)));
     }
     let config_raw = match syncthing_get("system/config").await {
@@ -945,7 +963,7 @@ pub async fn handle_syncthing_connections(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> Json<ApiResponse<ConnectionsResponse>> {
-    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+    if let Err(resp) = crate::handlers::admin_guard::check_admin(&state, &headers).await {
         return Json(ApiResponse::error(&denial(resp)));
     }
     let raw = match syncthing_get("system/connections").await {
@@ -1007,7 +1025,7 @@ pub async fn handle_syncthing_restart(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> Json<ApiResponse<String>> {
-    let admin_username = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
+    let admin_username = match crate::handlers::admin_guard::check_admin(&state, &headers).await {
         Ok(u) => u,
         Err(resp) => return Json(ApiResponse::error(&denial(resp))),
     };
@@ -1034,7 +1052,7 @@ pub async fn handle_syncthing_pause_device(
     headers: HeaderMap,
     Json(req): Json<PauseDeviceRequest>,
 ) -> Json<ApiResponse<String>> {
-    let admin_username = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
+    let admin_username = match crate::handlers::admin_guard::check_admin(&state, &headers).await {
         Ok(u) => u,
         Err(resp) => return Json(ApiResponse::error(&denial(resp))),
     };
@@ -1057,7 +1075,7 @@ pub async fn handle_syncthing_resume_device(
     headers: HeaderMap,
     Json(req): Json<PauseDeviceRequest>,
 ) -> Json<ApiResponse<String>> {
-    let admin_username = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
+    let admin_username = match crate::handlers::admin_guard::check_admin(&state, &headers).await {
         Ok(u) => u,
         Err(resp) => return Json(ApiResponse::error(&denial(resp))),
     };
@@ -1085,7 +1103,7 @@ pub async fn handle_syncthing_scan_folder(
     headers: HeaderMap,
     Json(req): Json<ScanFolderRequest>,
 ) -> Json<ApiResponse<String>> {
-    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+    if let Err(resp) = crate::handlers::admin_guard::check_admin(&state, &headers).await {
         return Json(ApiResponse::error(&denial(resp)));
     }
     let folder: String = url::form_urlencoded::byte_serialize(req.folder.as_bytes()).collect();
@@ -1100,7 +1118,7 @@ pub async fn handle_syncthing_errors(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
 ) -> Json<ApiResponse<Vec<String>>> {
-    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+    if let Err(resp) = crate::handlers::admin_guard::check_admin(&state, &headers).await {
         return Json(ApiResponse::error(&denial(resp)));
     }
     let raw = syncthing_get("system/error").await;
@@ -1153,7 +1171,7 @@ pub async fn handle_syncthing_create_folder(
     headers: HeaderMap,
     Json(req): Json<CreateFolderRequest>,
 ) -> Json<ApiResponse<serde_json::Value>> {
-    let admin_username = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
+    let admin_username = match crate::handlers::admin_guard::check_admin(&state, &headers).await {
         Ok(u) => u,
         Err(resp) => return Json(ApiResponse::error(&denial(resp))),
     };
@@ -1228,7 +1246,7 @@ pub async fn handle_syncthing_delete_folder(
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Json<ApiResponse<String>> {
-    let admin_username = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
+    let admin_username = match crate::handlers::admin_guard::check_admin(&state, &headers).await {
         Ok(u) => u,
         Err(resp) => return Json(ApiResponse::error(&denial(resp))),
     };
@@ -1263,7 +1281,7 @@ pub async fn handle_syncthing_create_device(
     headers: HeaderMap,
     Json(req): Json<CreateDeviceRequest>,
 ) -> Json<ApiResponse<serde_json::Value>> {
-    let admin_username = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
+    let admin_username = match crate::handlers::admin_guard::check_admin(&state, &headers).await {
         Ok(u) => u,
         Err(resp) => return Json(ApiResponse::error(&denial(resp))),
     };
@@ -1320,7 +1338,7 @@ pub async fn handle_syncthing_delete_device(
     headers: HeaderMap,
     axum::extract::Path(device_id): axum::extract::Path<String>,
 ) -> Json<ApiResponse<String>> {
-    let admin_username = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
+    let admin_username = match crate::handlers::admin_guard::check_admin(&state, &headers).await {
         Ok(u) => u,
         Err(resp) => return Json(ApiResponse::error(&denial(resp))),
     };

@@ -346,7 +346,10 @@ async fn test_create_refuses_a_degraded_create_the_level_cannot_support() {
         .await;
 
         assert_eq!(status, StatusCode::BAD_REQUEST, "{level}: {body}");
-        let message = body["error"].as_str().unwrap_or_default();
+        let message = body["message"]
+            .as_str()
+            .or_else(|| body["error"].as_str())
+            .unwrap_or_default();
         assert!(
             message.contains("cannot start degraded"),
             "{level} must name the refusal: {message}"
