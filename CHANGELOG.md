@@ -72,6 +72,13 @@ follows [Semantic Versioning](https://semver.org/).
   - `run_timed_async_with_stdin` discarded the child's stdout (`Stdio::null()`)
     while its synchronous twin keeps it, so `sudo tee` callers lost the tool's
     own message.
+  - `Database::wal_checkpoint` discarded the `(busy, log, checkpointed)` row
+    `PRAGMA wal_checkpoint(TRUNCATE)` returns, so a busy checkpoint was a
+    silent no-op: the `-wal` stayed at hundreds of kilobytes and the backup
+    copy of the `.db` file could miss its newest pages. It now pins one
+    connection, sets `busy_timeout` on it (a `PRAGMA` is per connection, and
+    `configure_sqlite` only reached the connections it happened to use),
+    retries while busy and fails loudly if it cannot fold the log.
 
   Three source-scanning guards (`share_links`, `vm`, `dependencies`) matched the
   needle they were asserting on and could never pass; they now build it with
