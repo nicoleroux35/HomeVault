@@ -68,7 +68,9 @@ aes-gcm = "0.11"
 libc = "0.2"
 dirs = "7"
 uuid = { version = "1.0", features = ["serde", "v4"] }
-image = "0.25"
+# image: only enable formats actually used (png for thumbnails in explorer.rs).
+# Default enables avif/exr which pull paste (unmaintained, RUSTSEC-2024-0436).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "ico", "bmp", "tiff"] }
 tokio-util = { version = "0.7", features = ["io"] }
 url = "2"
 # SSE Progress System
@@ -94,9 +96,19 @@ mime_guess = "2"
 # self-signed certificate generation (rcgen) and introspection (x509-parser).
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 rcgen = "0.14"
+# rustls-pemfile 2.2.0 is marked unmaintained (RUSTSEC-2025-0134).
+# The crate is still functional and the rustls project continues to use it.
+# There is no maintained drop-in replacement yet. The RustCrypto pem-rfc7468
+# has a different API and would require rewriting src/tls.rs. Since the
+# unmaintained status is the only issue (no known vulnerabilities), we
+# continue using 2.2.0 and will migrate when a maintained replacement emerges.
 rustls-pemfile = "2"
 x509-parser = "0.18"
 time = "0.3"
+# dav-server 0.11.0 uses lru 0.16.4 which has RUSTSEC-2026-0253 (unsound).
+# No newer version of dav-server exists. The lru issue is a use-after-free
+# in pop() during panic, which is unlikely in our WebDAV usage. We accept
+# this warning until dav-server updates its dependencies.
 dav-server = { version = "0.11.0", default-features = false, features = ["localfs"] }
 percent-encoding = "2.3.2"
 base64 = "0.23.1"
