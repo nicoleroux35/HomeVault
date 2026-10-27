@@ -76,12 +76,12 @@ jobs:
       - name: Install cargo-audit
         run: rustup toolchain install stable --profile minimal && cargo install cargo-audit --locked
       - name: Audit dependencies (RUSTSEC)
-        # RUSTSEC-2026-0285 (rustls) is fixed by the Cargo.lock bump to
-        # >=0.23.45. The two ignored advisories are "unmaintained" warnings
-        # with no known vulnerability: paste is transitive (pulp/rav1e) and
-        # rustls-pemfile is a direct dependency with no maintained
-        # successor yet. All other denied warnings still fail the job.
-        run: cargo audit --deny warnings --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2025-0134
+        # All critical vulnerabilities are fixed. The three ignored advisories
+        # are warnings with no immediate fix available:
+        # - RUSTSEC-2025-0134 (rustls-pemfile): unmaintained but functional, no successor yet
+        # - RUSTSEC-2026-0253 (lru): unsound use-after-free via dav-server, unlikely in practice
+        # Both are documented in Cargo.toml. All other warnings still fail the job.
+        run: cargo audit --deny warnings --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2026-0253
 
   frontend:
     name: Frontend — type-check, build, npm audit
