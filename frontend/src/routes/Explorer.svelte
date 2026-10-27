@@ -288,8 +288,11 @@
   }
 
   let diskRefreshInterval: ReturnType<typeof setInterval>;
+  let watchSeq = 0;
+  let loadSeq = 0;
 
   async function connectWatcher(path: string) {
+    const seq = ++watchSeq;
     // Close any existing watcher
     if (watchEventSource) {
       watchEventSource.close();
@@ -297,25 +300,32 @@
     }
     try {
       const ticketRes = await api.getExplorerWatchTicket(path);
+      if (seq !== watchSeq || currentPath !== path) return;
       if (!ticketRes.success || !ticketRes.data?.ticket) return;
       watchTicket = ticketRes.data.ticket;
       const url = api.getExplorerWatchUrl(watchTicket, path);
       const es = new EventSource(url);
       es.addEventListener('change', () => {
-        refreshCurrentDir();
+        if (seq === watchSeq && currentPath === path) {
+          refreshCurrentDir();
+        }
       });
       es.onerror = () => {
         // Reconnect after a delay
         es.close();
         if (watchEventSource === es) watchEventSource = null;
         setTimeout(() => {
-          if (!watchEventSource) connectWatcher(path);
+          if (seq === watchSeq && !watchEventSource && currentPath === path) {
+            connectWatcher(path);
+          }
         }, 5000);
       };
       watchEventSource = es;
     } catch {
       // Ticket fetch failed — fall back to a delayed retry
-      setTimeout(() => connectWatcher(path), 5000);
+      setTimeout(() => {
+        if (seq === watchSeq && currentPath === path) connectWatcher(path);
+      }, 5000);
     }
   }
 
@@ -338,9 +348,6 @@
     }
 
     diskRefreshInterval = setInterval(loadDisks, 30000);
-
-    // Start the real-time filesystem watcher
-    connectWatcher('/');
 
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', onVisibilityChange);
@@ -750,8 +757,11 @@
     ) {
       return;
     }
+    const pathAtStart = currentPath;
+    const seqAtStart = loadSeq;
     try {
-      const result = await api.listDirectory(currentPath);
+      const result = await api.listDirectory(pathAtStart);
+      if (seqAtStart !== loadSeq || currentPath !== pathAtStart) return;
       if (result.success && result.data) {
         listing = result.data;
         const paths = new Set(result.data.entries.map((e: FileEntry) => e.path));
@@ -784,7 +794,14 @@
     return storageDisks.find(d => d.name === name);
   }
 
+  function storageDiskLabel(disk: StorageDisk): string {
+    const clean = (s?: string) => (s && s.trim() && s.trim().toLowerCase() !== 'unknown' ? s.trim() : '');
+    return clean(disk.model) || clean(disk.vendor) || disk.name;
+  }
+
   async function loadDirectory(path: string) {
+    const seq = ++loadSeq;
+    currentPath = path;
     loading = true;
     error = '';
     selected = new Set();
@@ -800,9 +817,9 @@
         api.listDirectory(path),
         api.getThumbnailTicket(path),
       ]);
+      if (seq !== loadSeq) return;
       if (result.success && result.data) {
         listing = result.data;
-        currentPath = path;
         if (ticket) thumbnailTicket = ticket;
         resetPaging();
         recordRecent(path);
@@ -812,9 +829,12 @@
         error = result.error || result.message || translate('explorer.load_failed');
       }
     } catch (e: any) {
+      if (seq !== loadSeq) return;
       error = translate('explorer.error_prefix', { error: String(e?.message || e) });
     }
-    loading = false;
+    if (seq === loadSeq) {
+      loading = false;
+    }
   }
 
   function handleSearchInput(value: string) {
@@ -1453,10 +1473,17 @@
     return currentPath.slice(base.length).split('/').filter(Boolean);
   });
 
-  function rootLabel(root: { kind: string; name: string }): string {
+  function rootLabel(root: { path?: string; kind: string; name: string }): string {
     const key = `explorer.root_${root.kind}`;
     const label = translate(key);
-    return label === key ? root.name : label;
+    if (label === key) return root.name;
+    // When multiple roots share the same translated kind (e.g. `/media` and
+    // `/mnt` both carry `kind === "media"`), disambiguate with the root path
+    // so the sidebar and breadcrumb do not render two identical labels.
+    if (roots.filter((r) => r.kind === root.kind).length > 1 && root.path) {
+      return `${label} (${root.path})`;
+    }
+    return label;
   }
 
   // The inline editor is offered only for text/code previews that were not
@@ -1570,7 +1597,7 @@
         {#each storageDisks as disk}
           {@const mountPoint = disk.mount_point}
           <WindowSidebarItem
-            label={disk.model || disk.vendor || disk.name}
+            label={storageDiskLabel(disk)}
             detail={formatSize(disk.size)}
             class="disk-btn"
             dropActive={!!mountPoint && sidebarDropTarget === mountPoint}
