@@ -564,12 +564,17 @@ mod tests {
         // …and the handler maps that to a response rather than unwrapping: the
         // source must not contain the old `unwrap()` on this path.
         let src = include_str!("share_links.rs");
+        // Built by `concat!` so the needle does not occur literally in this
+        // file: written as one string literal, the assertion matched its own
+        // argument and could never pass.
+        let forbidden = concat!("acquire_owned().await", ".unwrap()");
         assert!(
-            !src.contains("acquire_owned().await.unwrap()"),
+            !src.contains(forbidden),
             "the public stream path must not unwrap the semaphore (ROADMAP 10.7)"
         );
+        let answer = concat!("StatusCode::", "SERVICE_UNAVAILABLE");
         assert!(
-            src.contains("SERVICE_UNAVAILABLE"),
+            src.contains(answer),
             "a closed pool must answer 503, not panic"
         );
     }

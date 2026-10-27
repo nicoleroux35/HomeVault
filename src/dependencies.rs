@@ -180,6 +180,13 @@ fn check_wpa_cli() -> bool {
 fn check_netplan() -> bool {
     binary_present("netplan", "/usr/sbin/netplan")
 }
+// The Setup wizard renews/releases the DHCP lease with `resolve_bin("dhclient")`
+// (`src/setup.rs`), which ships in `isc-dhcp-client` — NOT in the base: Debian
+// netinst and Raspberry Pi OS (dhcpcd) can boot without it, and the call then
+// failed with no package to install.
+fn check_dhclient() -> bool {
+    binary_present("dhclient", "/usr/sbin/dhclient")
+}
 fn check_sensors() -> bool {
     binary_present("sensors", "/usr/bin/sensors")
 }
@@ -442,6 +449,15 @@ fn specs() -> Vec<DependencySpec> {
             required: false,
             used_by: "Persisting interface configuration across reboots (Network app)",
             check_installed: check_netplan,
+            check_running: None,
+        },
+        DependencySpec {
+            name: "dhclient",
+            package: "isc-dhcp-client",
+            category: "Network",
+            required: false,
+            used_by: "DHCP lease renew/release (Setup wizard, Network app)",
+            check_installed: check_dhclient,
             check_running: None,
         },
         DependencySpec {
@@ -1142,6 +1158,10 @@ mod tests {
     /// iputils-ping).
     const BASE_BINARIES: &[&str] = &[
         "blkid",
+        // systemd, like `systemctl` / `journalctl` / `timedatectl` below: the
+        // mDNS hostname is set and read back through `busctl` against
+        // `org.freedesktop.Avahi` (`src/mdns.rs`).
+        "busctl",
         "cat",
         "chmod",
         "chown",
@@ -1214,8 +1234,18 @@ mod tests {
             }
             let text = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("cannot read {path:?}: {e}"));
+            // Audit **production** code only. Every module's tests live at the
+            // bottom behind a column-0 `#[cfg(test)]`, and they build fixtures
+            // such as `Command::new("homevault-no-such-binary")`, a pipe into
+            // `sleep`, or their own copy of this scan's needle — auditing those
+            // reported binaries HomeVault never runs (and this guard's own text
+            // reported itself, which kept the whole audit red).
+            let text = match text.find("\n#[cfg(test)]") {
+                Some(i) => &text[..i],
+                None => &text[..],
+            };
             for needle in NEEDLES {
-                let mut rest = text.as_str();
+                let mut rest = text;
                 while let Some(i) = rest.find(needle) {
                     let tail = &rest[i + needle.len()..];
                     let Some(end) = tail.find('"') else { break };

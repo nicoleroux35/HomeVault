@@ -85,6 +85,12 @@ pub enum DbError {
         db_version: i64,
         binary_version: i64,
     },
+    /// `PRAGMA wal_checkpoint(TRUNCATE)` kept answering `busy`: another
+    /// connection is reading, so the WAL was neither folded nor truncated.
+    #[error(
+        "The write-ahead log could not be checkpointed: another connection is still reading"
+    )]
+    CheckpointBusy,
 }
 
 /// Wraps a shared SQLite connection pool and provides lifecycle management.
@@ -112,6 +118,14 @@ impl Database {
     }
 
     /// Tune SQLite pragmas for better performance and safety.
+    /// Applies the engine pragmas once, at startup.
+    ///
+    /// NOTE: `PRAGMA` is per **connection**, and each statement below runs on
+    /// one pooled connection — a connection the pool opens later does not
+    /// inherit `foreign_keys`, `busy_timeout` or `mmap_size`. Moving these onto
+    /// `SqliteConnectOptions` (so `connect_with` applies them to every
+    /// connection) is a behaviour change worth its own change: it would enforce
+    /// foreign keys on connections that have been running without them.
     async fn configure_sqlite(pool: &SqlitePool) -> Result<(), DbError> {
         // WAL mode allows concurrent reads while writing.
         sqlx::query("PRAGMA journal_mode = WAL")
@@ -320,10 +334,32 @@ impl Database {
     /// appliance — an unbounded `-wal` is both a disk-space hazard and the
     /// reason a naive copy of the `.db` file looks empty.
     pub async fn wal_checkpoint(&self) -> Result<(), DbError> {
-        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
-            .execute(self.pool.as_ref())
+        // `PRAGMA wal_checkpoint(TRUNCATE)` answers `(busy, log, checkpointed)`
+        // and **silently does nothing** when it is busy: another connection is
+        // reading, so the WAL keeps every page. `execute()` threw that row away,
+        // so the caller believed the log had been folded (a backup that copies
+        // the `.db` file then misses the newest pages) while `-wal` stayed at
+        // hundreds of kilobytes. Keep asking, then fail loudly.
+        // Pinned to one connection: `PRAGMA busy_timeout` is a *connection*
+        // setting, and `configure_sqlite` only reaches whichever connection it
+        // happened to use. A fresh pooled connection starts at 0 ms and answers
+        // `busy = 1` immediately, which is exactly how the checkpoint became a
+        // silent no-op on a slower runner.
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query("PRAGMA busy_timeout = 5000")
+            .execute(&mut *conn)
             .await?;
-        Ok(())
+        for attempt in 0..4u32 {
+            let (busy, _, _): (i64, i64, i64) =
+                sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE)")
+                    .fetch_one(&mut *conn)
+                    .await?;
+            if busy == 0 {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(20 * u64::from(attempt + 1))).await;
+        }
+        Err(DbError::CheckpointBusy)
     }
 
     /// Fast structural check (`PRAGMA quick_check`), suitable for every boot.

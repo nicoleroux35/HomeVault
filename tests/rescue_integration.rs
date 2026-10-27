@@ -244,7 +244,7 @@ async fn test_ddrescue_clone_no_token() {
         Some(json!({"source": "/dev/loop0", "destination": "/dev/loop1"})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -274,7 +274,7 @@ async fn test_testdisk_analyze_no_token() {
         Some(json!({"device": "/dev/loop0"})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -289,7 +289,7 @@ async fn test_testdisk_rebuild_no_token() {
         Some(json!({"device": "/dev/loop0"})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -304,7 +304,7 @@ async fn test_photorec_recover_no_token() {
         Some(json!({"device": "/dev/loop0", "output_dir": "/tmp/out"})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -319,7 +319,7 @@ async fn test_mdadm_diagnose_no_token() {
         Some(json!({"name": "md0"})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -334,7 +334,7 @@ async fn test_mdadm_repair_no_token() {
         Some(json!({"name": "md0"})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

@@ -70,7 +70,10 @@ reason. Before this, a stalled remote held the HTTP request *and* the
 the handle. It:
 
 1. validates the request (`validate_mount_point`, `validate_remote_name`,
-   `validate_remote_subpath`) **before** anything is created or spawned;
+   `validate_remote_subpath`) **before** anything is created or spawned — the
+   mount point must be an absolute path under the base with no `.`/`..` segment
+   and no control character (a trailing newline used to be removed by `trim()`
+   before the check ran, and `Path::components()` hides a `.` segment);
 2. requires the remote to exist in the resolved config (`load_remotes`);
 3. refuses a mount point this process already owns or that is already in
    `/proc/self/mounts` (one FUSE server per directory);

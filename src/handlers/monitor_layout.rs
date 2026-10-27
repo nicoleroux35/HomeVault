@@ -96,7 +96,10 @@ pub fn validate_layout_blob(blob: &str) -> Result<(), String> {
     }
 
     let mut nodes = 0usize;
-    check_layout_value(&value, 1, &mut nodes)
+    // The root container is level 0; the accepted maximum is therefore "four
+    // nested objects under the root", which is what MAX_LAYOUT_DEPTH now means
+    // (`{"a":{"b":{"c":{"d":1}}}}` is accepted, five levels is not).
+    check_layout_value(&value, 0, &mut nodes)
 }
 
 /// Recursive structural check: depth, node count, key length, string length.

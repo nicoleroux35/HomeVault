@@ -150,8 +150,16 @@ fn resolve_unconfined(path: &str) -> Option<PathBuf> {
         return None;
     }
     let p = Path::new(path);
+    // `file_name()` normalises a trailing `.` away and returns `None` for `..`,
+    // so a directory-shaped leaf has to be caught from the raw last segment —
+    // otherwise `/tmp/sub/.` resolved to `/tmp/sub/sub` instead of being
+    // refused.
+    let leaf_raw = path.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+    if leaf_raw == "." || leaf_raw == ".." {
+        return None;
+    }
     let leaf = p.file_name()?;
-    if leaf == "." || leaf == ".." || leaf.to_string_lossy().contains('\0') {
+    if leaf.to_string_lossy().contains('\0') {
         return None;
     }
     match p.parent() {

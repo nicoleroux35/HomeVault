@@ -909,7 +909,14 @@ async fn test_a_slow_host_tool_is_waited_out_not_dropped() {
         std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).expect("chmod shim");
     }
     let previous_path = std::env::var("PATH").ok();
-    std::env::set_var("PATH", shim_dir.path());
+    // Prepend, never replace: the shim is `/bin/sh` + `sleep`, so a PATH that
+    // holds only the shim directory also hides `sleep` — the shim then exits at
+    // once and the test reports "the probe skipped it" whatever the code did.
+    let shim_path = match previous_path.as_deref() {
+        Some(path) => format!("{}:{path}", shim_dir.path().display()),
+        None => shim_dir.path().display().to_string(),
+    };
+    std::env::set_var("PATH", shim_path);
 
     let started = std::time::Instant::now();
     let (status, body) = send(
@@ -1005,7 +1012,14 @@ async fn test_a_finished_mover_run_releases_its_single_flight_slot() {
         }
     }
     let previous_path = std::env::var("PATH").ok();
-    std::env::set_var("PATH", shim_dir.path());
+    // Prepend, never replace: the shim is `/bin/sh` + `sleep`, so a PATH that
+    // holds only the shim directory also hides `sleep` — the shim then exits at
+    // once and the test reports "the probe skipped it" whatever the code did.
+    let shim_path = match previous_path.as_deref() {
+        Some(path) => format!("{}:{path}", shim_dir.path().display()),
+        None => shim_dir.path().display().to_string(),
+    };
+    std::env::set_var("PATH", shim_path);
 
     let (status, body) = send(
         &mut router,
@@ -1018,7 +1032,19 @@ async fn test_a_finished_mover_run_releases_its_single_flight_slot() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["data"]["job_id"].is_string(), "{body}");
 
-    // The run is spawned, not awaited: wait for the slot to come back.
+    // The run is spawned, not awaited. Wait for it to *claim* the slot first:
+    // polling only for "not running" could observe the window before the
+    // spawned task starts, and the second trigger below then races it.
+    let mut claimed = false;
+    for _ in 0..200 {
+        if homevault::cache::mover_is_running() {
+            claimed = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(claimed, "the spawned mover never claimed its single-flight slot");
+    // …then for the slot to come back.
     let mut released = false;
     for _ in 0..200 {
         if !homevault::cache::mover_is_running() {
