@@ -262,7 +262,7 @@ setup fingerprint, sessions, snapshots — survive a reinstall of the system dis
 
 ## Deployment model (runs as root)
 
-Since commit `2d5ba40` (2026-09-04) there is **no dedicated `homevault` service
+Since the 2026-09-04 deployment change there is **no dedicated `homevault` service
 account**. The systemd unit `installer/install.sh` writes has no `User=`/`Group=` so systemd runs
 it as **root**; `installer/install.sh` only creates `/home/homevault` as a
 home-folder root and the first admin's real Linux account at setup. Consequences:

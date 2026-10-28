@@ -1007,7 +1007,7 @@ re-run against the rebuilt binary.
 **2026-10-20 — (a) the Terminal suite re-run against a production bundle after the 2026-10-19
 dependency refresh; (b) Network config persistence implemented.**
 
-**(a) Terminal.** The 2026-10-19 dep refresh (`f95451a`, npm `@xterm/xterm`
+**(a) Terminal.** The 2026-10-19 dep refresh (`f1fd451`, npm `@xterm/xterm`
 **5 → 6**) was never re-run against the Terminal suite. The four failures
 recorded on 2026-09-16/17 ("proven pre-existing by `git stash`") rebuild into
 exactly two causes — a dev-server artifact and a fresh-instance modal — and one
