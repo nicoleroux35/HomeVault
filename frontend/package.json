@@ -28,7 +28,7 @@
     "@types/node": "^26.1.0",
     "@types/qrcode": "^1.5.6",
     "@typescript/native": "npm:typescript@^7.0.2",
-    "autoprefixer": "^10.5.0",
+    "autoprefixer": "^10.6.2",
     "lightningcss": "^1.29.3",
     "postcss": "^8.5.29",
     "svelte": "^5.55.5",
