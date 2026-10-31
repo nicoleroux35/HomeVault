@@ -41,7 +41,7 @@
     "@lucide/svelte": "^1.45.0",
     "@novnc/novnc": "^1.7.0",
     "@phosphor-icons/web": "^2.1.2",
-    "@tabler/icons-svelte": "^3.49.0",
+    "@tabler/icons-svelte": "^3.50.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/xterm": "^6.0.0",
