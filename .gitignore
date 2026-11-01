@@ -105,3 +105,11 @@ ses_*
 # enforced on the author's machine; the docs/ tree is the public reference.
 /AGENTS.md
 /CLAUDE.md
+
+# Local design exports (screen canvases produced while designing Shares and
+# Explorer) and the root build artefact produced by installer/build.sh. They
+# are outputs, not sources: the screens live in frontend/src, the binary is
+# rebuilt on demand.
+/explorer-example.html
+/settings-example.html
+/homevault-linux-x86_64
