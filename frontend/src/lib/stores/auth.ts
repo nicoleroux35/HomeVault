@@ -26,6 +26,7 @@
 import { writable, derived, get } from 'svelte/store';
 import type { User } from '$lib/types/api';
 import { api } from '$lib/services/api';
+import { signInWithPasskey } from '$lib/stores/passkey';
 
 /** Tracks the current user session and authentication lifecycle. */
 interface AuthState {
@@ -60,14 +61,20 @@ function createAuthStore() {
      * On success the API tokens are stored and the UI transitions to authenticated.
      * When the server responds with `requires_2fa` the caller should prompt for a TOTP.
      */
-    async login(username: string, password: string, totpCode?: string, rememberMe = false) {
+    async login(
+      username: string,
+      password: string,
+      totpCode?: string,
+      rememberMe = false,
+      rememberDevice = false,
+    ) {
       update(state => ({ ...state, isLoading: true }));
 
       // Accounts with 2FA enabled must complete login through the dedicated
       // verification endpoint once a TOTP code is available; `/auth/login`
       // has no way to accept one and would just report `requires_2fa` again.
       const response = totpCode
-        ? await api.loginWith2FA(username, password, totpCode, rememberMe)
+        ? await api.loginWith2FA(username, password, totpCode, rememberMe, rememberDevice)
         : await api.login({ username, password, remember_me: rememberMe });
 
       if (response.success && response.data) {
@@ -163,6 +170,47 @@ function createAuthStore() {
 
         return { success: false, error: response.message || response.error || 'Login failed' };
       }
+    },
+
+    /**
+     * Authenticate with a passkey (WebAuthn). The ceremony runs in
+     * `stores/passkey.ts`; this adopts the session it produces, using the same
+     * ordering rules as `login()` — tokens persisted **before** the store
+     * updates, so a store that reacts to `user` is never tokenless.
+     */
+    async loginWithPasskey(username: string, rememberMe = false) {
+      update(state => ({ ...state, isLoading: true }));
+      const result = await signInWithPasskey(username, rememberMe);
+      if (!result.ok) {
+        update(state => ({ ...state, isLoading: false }));
+        // `cancelled` / `unsupported` are not credentials failures: the caller
+        // renders its own sentence rather than "wrong password".
+        return { success: false, error: result.error, cancelled: true };
+      }
+
+      const data = result.data as any;
+      if (data.token) {
+        api.setTokens(data.token, data.csrf_token || '');
+      }
+      const user: User = {
+        username: data.username,
+        is_admin: data.is_admin,
+      };
+      const profile = await api.getCurrentUser();
+      const fullUser = profile.success && profile.data ? profile.data : user;
+      set({
+        user: fullUser,
+        isAuthenticated: data.is_admin,
+        isLoading: false,
+        mustChangePassword: data.must_change_password
+          ? data.username
+          : null,
+      });
+      return {
+        success: true,
+        isAdmin: data.is_admin,
+        mustChangePassword: !!data.must_change_password,
+      };
     },
 
     /**

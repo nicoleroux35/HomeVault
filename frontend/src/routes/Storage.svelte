@@ -147,6 +147,34 @@
   let snapViewPool = '';
   let snapViewRows: PoolSnapshotRow[] = [];
   let snapViewLoading = false;
+
+  /**
+   * Immutable snapshots (P2.5): a snapshot can be locked for a number of days.
+   * The lock exists twice — a row here and a filesystem hold (`zfs hold` / a
+   * read-only Btrfs subvolume) — so it survives a direct `zfs destroy`. A
+   * release before its horizon is break-glass and needs the phrase the server
+   * returns, typed exactly.
+   */
+  interface SnapshotLockRow {
+    id: number;
+    pool: string;
+    snapshot: string;
+    tag: string;
+    locked_until: string;
+    reason: string | null;
+    created_by: string;
+    created_at: string;
+    expired: boolean;
+    break_glass_phrase: string;
+  }
+  let snapshotLocks: SnapshotLockRow[] = [];
+  let snapshotLocksLoaded = false;
+  let snapLocksError = '';
+  let lockModal = false;
+  let lockBusy = false;
+  let lockError = '';
+  let lockBusyId = 0;
+  let lockForm = { pool: '', snapshot: '', days: 30, reason: '' };
   let activeTab: 'disks' | 'virtual' | 'partitions' | 'removable' | 'encryption' | 'cache' | 'snapshots' = 'disks';
 
   interface VirtualDisk {
@@ -353,9 +381,95 @@
     }
   }
 
+  // ── Immutable snapshots (P2.5) ──
+  async function loadSnapshotLocks() {
+    snapLocksError = '';
+    try {
+      const res = await api.get<{ locks: SnapshotLockRow[] }>('/snapshots/locks', { cache: false });
+      if (res.success && res.data) snapshotLocks = res.data.locks ?? [];
+      else snapLocksError = res.message || $t('storage.snapshots.locks_load_failed');
+    } catch {
+      snapLocksError = $t('storage.snapshots.locks_load_failed');
+    } finally {
+      snapshotLocksLoaded = true;
+    }
+  }
+
+  function openLock(pool: string, snapshot: string) {
+    lockForm = { pool, snapshot, days: 30, reason: '' };
+    lockError = '';
+    lockModal = true;
+  }
+
+  async function saveLock() {
+    const days = Number(lockForm.days);
+    if (!Number.isInteger(days) || days < 1) {
+      lockError = $t('storage.snapshots.locks_days_invalid');
+      return;
+    }
+    lockBusy = true;
+    lockError = '';
+    try {
+      const res = await api.post('/snapshots/locks', {
+        pool: lockForm.pool,
+        snapshot: lockForm.snapshot,
+        days,
+        reason: lockForm.reason.trim() || null,
+      });
+      if (!res.success) {
+        lockError = res.message || $t('storage.snapshots.locks_failed');
+        return;
+      }
+      lockModal = false;
+      await loadSnapshotLocks();
+    } catch {
+      lockError = $t('storage.snapshots.locks_failed');
+    } finally {
+      lockBusy = false;
+    }
+  }
+
+  /**
+   * Release one lock. Before its horizon this is break-glass: the dialog
+   * requires the exact phrase the server returned, and the release is
+   * journaled as break-glass. After the horizon no phrase is needed.
+   */
+  async function releaseLock(row: SnapshotLockRow) {
+    const question = row.expired
+      ? $t('storage.snapshots.locks_release_confirm', { snapshot: row.snapshot })
+      : $t('storage.snapshots.locks_break_glass_confirm', {
+          snapshot: row.snapshot,
+          until: new Date(row.locked_until).toLocaleString(),
+        });
+    const answer = await dlg.ask(question, {
+      requireText: row.expired ? undefined : row.break_glass_phrase,
+    });
+    if (!answer) return;
+    lockBusyId = row.id;
+    snapLocksError = '';
+    try {
+      const res = await api.delete(`/snapshots/locks/${row.id}`, {
+        confirmation: row.expired ? null : row.break_glass_phrase,
+      });
+      if (!res.success) {
+        // Keep the reason on screen: `loadSnapshotLocks()` clears this field,
+        // so a failed release must not fall through to a reload (it used to,
+        // and the refusal vanished without a word).
+        snapLocksError = res.message || $t('storage.snapshots.locks_release_failed');
+      } else {
+        await loadSnapshotLocks();
+      }
+    } catch {
+      snapLocksError = $t('storage.snapshots.locks_release_failed');
+    } finally {
+      lockBusyId = 0;
+    }
+  }
+
   async function viewPoolSnapshots(pool: string) {
     snapViewPool = pool;
     snapViewLoading = true;
+    void loadSnapshotLocks();
     try {
       const res = await api.getPoolSnapshots(pool);
       snapViewRows = res.success ? (res.data?.snapshots ?? []) : [];
@@ -1062,7 +1176,7 @@
     { id: 'snapshots', label: $t('storage.tabs.snapshots'), icon: IconCamera, count: snapshotSchedules.length || undefined }
   ]}
   bind:activeTab
-  onTabChange={(id) => { if (id === 'snapshots') loadSnapshotSchedules(); }}
+  onTabChange={(id) => { if (id === 'snapshots') { loadSnapshotSchedules(); loadSnapshotLocks(); } }}
   footerMode="status"
 >
   {#snippet icon()}
@@ -1496,13 +1610,70 @@
                   {#each snapViewRows as snap (snap.name)}
                     <li class="flex items-center justify-between gap-2 text-xs">
                       <span class="font-mono truncate">{snap.name}</span>
-                      {#if snap.auto}<span class="text-[var(--hv-primary)] text-t-caption uppercase">{$t('storage.snapshots.snapshots_auto')}</span>{/if}
+                      <span class="flex items-center gap-2">
+                        {#if snap.auto}<span class="text-[var(--hv-primary)] text-t-caption uppercase">{$t('storage.snapshots.snapshots_auto')}</span>{/if}
+                        {#if $isAdmin}
+                          <button
+                            type="button"
+                            class="grid place-items-center w-7 h-7 flex-none rounded-md border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic"
+                            data-testid="snapshots-lock-{snap.name}"
+                            aria-label={$t('storage.snapshots.locks_lock_snapshot', { snapshot: snap.name })}
+                            onclick={() => openLock(snapViewPool, snap.name)}
+                          >
+                            <IconLock size={15} stroke={1.9} />
+                          </button>
+                        {/if}
+                      </span>
                     </li>
                   {/each}
                 </ul>
               {/if}
             </div>
           {/if}
+
+          <!-- Immutable snapshots (P2.5): the locks are enforced by the
+               filesystem, not by this screen, so a lock is never a promise
+               the appliance cannot keep. -->
+          <div data-testid="snapshots-locks" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] flex flex-col gap-3">
+            <div>
+              <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('storage.snapshots.locks_title')}</h3>
+              <p class="m-0 mt-1 text-xs text-[var(--hv-shell-text-2)] leading-relaxed">{$t('storage.snapshots.locks_desc')}</p>
+            </div>
+            {#if snapLocksError}
+              <div data-testid="snapshots-locks-error">
+                <Alert variant="error">{snapLocksError}</Alert>
+              </div>
+            {/if}
+            {#if !snapshotLocksLoaded}
+              <p class="m-0 text-xs text-[var(--hv-shell-text-2)]">{$t('storage.analyzing_devices')}</p>
+            {:else if snapshotLocks.length === 0}
+              <p class="m-0 text-xs text-[var(--hv-shell-text-2)]" data-testid="snapshots-locks-empty">{$t('storage.snapshots.locks_empty')}</p>
+            {:else}
+              <ul class="m-0 p-0 list-none flex flex-col gap-2">
+                {#each snapshotLocks as lock (lock.id)}
+                  <li data-testid="snapshots-lock-{lock.id}" class="flex items-start justify-between gap-3 flex-wrap p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
+                    <div class="flex flex-col gap-1 min-w-0">
+                      <code class="font-mono text-xs text-[var(--hv-shell-text-strong)] break-all">{lock.snapshot}</code>
+                      <span class="text-xs text-[var(--hv-shell-text-2)]">
+                        {lock.expired
+                          ? $t('storage.snapshots.locks_lapsed', { until: new Date(lock.locked_until).toLocaleString() })
+                          : $t('storage.snapshots.locks_until', { until: new Date(lock.locked_until).toLocaleString() })}
+                      </span>
+                      {#if lock.reason}
+                        <span class="text-xs text-[var(--hv-shell-text-2)]">{lock.reason}</span>
+                      {/if}
+                      <span class="text-xs text-[var(--hv-shell-text-3)]">{$t('storage.snapshots.locks_by', { user: lock.created_by })}</span>
+                    </div>
+                    {#if $isAdmin}
+                      <Button variant="ghost" data-testid="snapshots-lock-release-{lock.id}" disabled={lockBusyId === lock.id} onclick={() => releaseLock(lock)}>
+                        <IconLockOpen size={16} stroke={1.9} /> {$t('storage.snapshots.locks_release')}
+                      </Button>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
         </div>
       {/if}
     </div>
@@ -1561,6 +1732,54 @@
     <div class="flex gap-2.5 justify-end">
       <Button variant="ghost" onclick={() => (snapScheduleModal = false)}>{$t('common.cancel')}</Button>
       <Button variant="primary" data-testid="snapshots-save-btn" onclick={saveSnapSchedule} disabled={snapBusyId === 'form'}>{$t('common.save')}</Button>
+    </div>
+  {/snippet}
+</Modal>
+
+<!-- SNAPSHOT LOCK MODAL (P2.5) -->
+<Modal open={lockModal} title={$t('storage.snapshots.locks_new_title')} size="md" onclose={() => (lockModal = false)}>
+  {#snippet icon()}
+    <IconLock size={20} stroke={1.9} />
+  {/snippet}
+  <div class="flex flex-col gap-4 p-1">
+    {#if lockError}
+      <div data-testid="snapshots-lock-error" role="alert">
+        <Alert variant="error">{lockError}</Alert>
+      </div>
+    {/if}
+    <p class="m-0 text-c-label text-[var(--hv-shell-text)] leading-relaxed">{$t('storage.snapshots.locks_new_desc')}</p>
+    <div class="flex flex-col gap-1.5">
+      <span class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('storage.snapshots.locks_snapshot')}</span>
+      <code class="text-xs font-mono text-[var(--hv-shell-text)] break-all" data-testid="snapshots-lock-snapshot">{lockForm.snapshot}</code>
+    </div>
+    <label class="flex flex-col gap-1.5">
+      <span class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('storage.snapshots.locks_days')}</span>
+      <input
+        class={inpSel}
+        type="number"
+        min="1"
+        max="3650"
+        bind:value={lockForm.days}
+        data-testid="snapshots-lock-days"
+      />
+      <span class="text-xs text-[var(--hv-shell-text-2)]">{$t('storage.snapshots.locks_days_hint')}</span>
+    </label>
+    <label class="flex flex-col gap-1.5">
+      <span class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('storage.snapshots.locks_reason')}</span>
+      <input
+        class={inpSel}
+        type="text"
+        maxlength="200"
+        bind:value={lockForm.reason}
+        placeholder={$t('storage.snapshots.locks_reason_placeholder')}
+        data-testid="snapshots-lock-reason"
+      />
+    </label>
+  </div>
+  {#snippet footer()}
+    <div class="flex gap-2.5 justify-end">
+      <Button variant="ghost" onclick={() => (lockModal = false)}>{$t('common.cancel')}</Button>
+      <Button variant="primary" data-testid="snapshots-lock-save" onclick={saveLock} disabled={lockBusy}>{$t('storage.snapshots.locks_save')}</Button>
     </div>
   {/snippet}
 </Modal>

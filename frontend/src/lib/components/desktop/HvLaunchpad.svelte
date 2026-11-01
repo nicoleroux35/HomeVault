@@ -363,6 +363,7 @@
               ondragstart={(e) => handleDragStart(e, app)}
               ondragend={handleDragEnd}
               title={app.name}
+              data-app-id={app.id}
             >
               <span class="lp-card-icon" style="--lp-ic: {app.iconBg ?? app.color ?? 'var(--hv-primary)'};">
                 {#if app.customIcon}

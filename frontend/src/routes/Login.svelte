@@ -21,9 +21,10 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { api } from '$lib/services/api';
   import { authStore } from '$lib/stores/auth';
+  import { passkeySupported } from '$lib/stores/passkey';
   import { appGate } from '$lib/stores/appGate';
   import { translations, languageStore } from '$lib/stores/i18n';
-  import { IconAlertTriangle, IconArrowLeft, IconEye, IconEyeOff, IconLock, IconLogin, IconRefresh, IconShieldCheckered, IconUser, IconWifiOff } from '@tabler/icons-svelte';
+  import { IconAlertTriangle, IconArrowLeft, IconEye, IconEyeOff, IconFingerprint, IconLock, IconLogin, IconRefresh, IconShieldCheckered, IconUser, IconWifiOff } from '@tabler/icons-svelte';
   import { Modal, Button } from '$lib/components/theme';
   import { Switch } from '$lib/components/ui/switch/index.js';
   import { cn } from '$lib/utils.js';
@@ -32,6 +33,7 @@
   let password = '';
   let showPassword = false;
   let rememberMe = false;
+  let rememberDevice = false;
   let totpCode = '';
   let codeDigits: string[] = ['', '', '', '', '', ''];
   let codeInputs: HTMLInputElement[] = [];
@@ -289,6 +291,65 @@
     codeInputs[lastIndex]?.focus();
   }
 
+  // --- Passkey sign-in (WebAuthn, Phase 1 P1.3) --------------------------
+  //
+  // Shown only when the browser can actually run a ceremony, and only for a
+  // username that has passkeys (the server answers an empty allow-list
+  // otherwise, and the browser would show an empty chooser).
+  // Declared as plain `let` to stay in the component's legacy (non-runes)
+  // mode: a single `$state` would flip the whole file to runes and break its
+  // `export let` props. `onMount` sets it once, after the first render, and
+  // Svelte's legacy reactivity picks that up like every other assignment here.
+  let passkeyAvailable = false;
+  let passkeyBusy = false;
+
+  onMount(() => {
+    // A security key works without a platform authenticator, so the button is
+    // offered whenever WebAuthn itself is available.
+    passkeyAvailable = passkeySupported();
+  });
+
+  async function handlePasskeyLogin() {
+    if (!username.trim()) {
+      showLoginError('login.validation.username_required');
+      return;
+    }
+    passkeyBusy = true;
+    inlineError = '';
+    try {
+      const result = await authStore.loginWithPasskey(username.trim(), rememberMe);
+      if (result.success) {
+        if (result.mustChangePassword) {
+          passkeyBusy = false;
+          appGate.requirePasswordChange();
+          return;
+        }
+        if (!result.isAdmin) {
+          passkeyBusy = false;
+          showLoginError('login.error.not_admin');
+          return;
+        }
+        unlocking = true;
+        setTimeout(gotoDesktop, 700);
+        return;
+      }
+      // A cancelled ceremony or an unsupported browser is not a bad password.
+      passkeyBusy = false;
+      if (result.error === 'cancelled' || result.error === 'unsupported') {
+        const key =
+          result.error === 'cancelled'
+            ? 'login.passkey_cancelled'
+            : 'login.passkey_unsupported';
+        inlineError = t(key);
+        return;
+      }
+      inlineError = t('login.passkey_failed');
+    } catch {
+      passkeyBusy = false;
+      inlineError = t('login.passkey_failed');
+    }
+  }
+
   async function handleLogin() {
     if (!username && !password) { showLoginError('login.validation.required'); return; }
     if (!username) { showLoginError('login.validation.username_required'); return; }
@@ -300,7 +361,13 @@
 
     isLoading = true;
     try {
-      const result = await authStore.login(username, password, totpCode || undefined, rememberMe);
+      const result = await authStore.login(
+        username,
+        password,
+        totpCode || undefined,
+        rememberMe,
+        rememberDevice,
+      );
       if (result.success) {
         // An admin-chosen password (creation or reset) windows this session
         // to the password-change flow: the gate switches the login shell to
@@ -387,12 +454,86 @@
   let recoveryResetError = '';
   let recoveryResetSuccess = false;
 
+  // Account recovery through the rescue address — for the user who no longer
+  // has the offline recovery code. The server answers the same thing whether
+  // or not the account exists, so the form can never be used as a name oracle.
+  let showEmailRecovery = false;
+  let emailRecoverySent = false;
+  let emailRecoveryCode = '';
+  let emailRecoveryBusy = false;
+  let emailRecoveryError = '';
+  let emailRecoveryNotice = '';
+
+  function openEmailRecovery() {
+    showEmailRecovery = true;
+    emailRecoverySent = false;
+    emailRecoveryCode = '';
+    emailRecoveryError = '';
+    emailRecoveryNotice = '';
+  }
+
+  async function sendAccountRecoveryMail() {
+    emailRecoveryError = '';
+    if (!recoveryUsername.trim()) {
+      emailRecoveryError = t('login.recovery_error_invalid');
+      return;
+    }
+    emailRecoveryBusy = true;
+    try {
+      const res = await api.requestAccountRecovery(recoveryUsername.trim());
+      if (res.success) {
+        emailRecoverySent = true;
+        emailRecoveryNotice = res.message || t('login.email_recovery_sent');
+      } else {
+        emailRecoveryError = res.message || t('login.recovery_error_invalid');
+      }
+    } catch {
+      emailRecoveryError = t('login.error.network');
+    } finally {
+      emailRecoveryBusy = false;
+    }
+  }
+
+  /**
+   * Exchange the six-digit rescue code for a fresh offline recovery code, then
+   * hand that to the ordinary reset modal: one reset path, one password policy.
+   */
+  async function verifyAccountRecoveryCode() {
+    emailRecoveryError = '';
+    if (!recoveryUsername.trim() || emailRecoveryCode.trim().length < 6) {
+      emailRecoveryError = t('login.recovery_error_invalid');
+      return;
+    }
+    emailRecoveryBusy = true;
+    try {
+      const res = await api.verifyAccountRecovery(recoveryUsername.trim(), emailRecoveryCode.trim());
+      if (res.success && res.data?.recovery_code) {
+        recoveryCodeInput = formatRecoveryCode(res.data.recovery_code);
+        newPassword = '';
+        newPasswordConfirm = '';
+        recoveryResetError = '';
+        showNewPasswordModal = true;
+      } else {
+        emailRecoveryError = res.message || t('login.recovery_error_invalid');
+      }
+    } catch {
+      emailRecoveryError = t('login.error.network');
+    } finally {
+      emailRecoveryBusy = false;
+    }
+  }
+
   function openForgotPassword() {
     showForgotPassword = true;
     recoveryUsername = username;
     recoveryCodeInput = '';
     recoveryVerifyError = '';
     recoveryResetSuccess = false;
+    showEmailRecovery = false;
+    emailRecoverySent = false;
+    emailRecoveryCode = '';
+    emailRecoveryError = '';
+    emailRecoveryNotice = '';
     inlineError = '';
   }
 
@@ -402,6 +543,11 @@
     recoveryResetSuccess = false;
     recoveryVerifyError = '';
     recoveryResetError = '';
+    showEmailRecovery = false;
+    emailRecoverySent = false;
+    emailRecoveryCode = '';
+    emailRecoveryError = '';
+    emailRecoveryNotice = '';
   }
 
   // Recovery codes are 32 digits shown as 8 groups of 4. Keep only digits and
@@ -667,21 +813,64 @@
                       <input id="recovery-username" type="text" class={textInputClass} bind:value={recoveryUsername} placeholder={t('login.username_placeholder')} disabled={isVerifyingRecovery} required autocomplete="username" />
                     </div>
                   </div>
-                  <div class="mt-4 flex flex-col gap-1.5">
-                    <label for="recovery-code" class="text-xs font-medium uppercase tracking-[0.1em] text-[var(--hv-login-muted)]">{t('login.recovery_code_label')}</label>
-                    <div class={fieldWrapperClass}>
-                      <IconShieldCheckered size={19} stroke={1.7} class="shrink-0 text-[var(--hv-login-muted)]" />
-                      <input id="recovery-code" type="text" class={textInputClass} value={recoveryCodeInput} oninput={handleRecoveryCodeInput} placeholder={t('login.recovery_code_placeholder')} disabled={isVerifyingRecovery} inputmode="numeric" maxlength="39" autocomplete="off" required />
+                  {#if !showEmailRecovery}
+                    <div class="mt-4 flex flex-col gap-1.5">
+                      <label for="recovery-code" class="text-xs font-medium uppercase tracking-[0.1em] text-[var(--hv-login-muted)]">{t('login.recovery_code_label')}</label>
+                      <div class={fieldWrapperClass}>
+                        <IconShieldCheckered size={19} stroke={1.7} class="shrink-0 text-[var(--hv-login-muted)]" />
+                        <input id="recovery-code" type="text" class={textInputClass} value={recoveryCodeInput} oninput={handleRecoveryCodeInput} placeholder={t('login.recovery_code_placeholder')} disabled={isVerifyingRecovery} inputmode="numeric" maxlength="39" autocomplete="off" required />
+                      </div>
                     </div>
-                  </div>
-                  {#if recoveryVerifyError}<p class="m-0 mt-2 text-t-body text-[var(--hv-login-error)]" role="alert" data-testid="login-reset-error">{recoveryVerifyError}</p>{/if}
-                  <Button variant="primary" class={ctaClass} size="lg" fullWidth type="submit" disabled={isVerifyingRecovery} data-testid="login-recovery-submit">
-                    {#if isVerifyingRecovery}<div class="hv-spinner"></div><span>{t('login.signing_in')}</span>{:else}<span>{t('login.recovery_submit')}</span>{/if}
-                  </Button>
+                    {#if recoveryVerifyError}<p class="m-0 mt-2 text-t-body text-[var(--hv-login-error)]" role="alert" data-testid="login-reset-error">{recoveryVerifyError}</p>{/if}
+                    <Button variant="primary" class={ctaClass} size="lg" fullWidth type="submit" disabled={isVerifyingRecovery} data-testid="login-recovery-submit">
+                      {#if isVerifyingRecovery}<div class="hv-spinner"></div><span>{t('login.signing_in')}</span>{:else}<span>{t('login.recovery_submit')}</span>{/if}
+                    </Button>
+                  {/if}
                   <Button variant="ghost" fullWidth type="button" onclick={backToLoginFromForgot} disabled={isVerifyingRecovery} data-testid="login-back">
                     <IconArrowLeft size={16} stroke={2} />{t('login.back')}
                   </Button>
                 </form>
+
+                <!-- Lost the written recovery code: prove control of the
+                     rescue mailbox instead. -->
+                {#if !showEmailRecovery}
+                  <Button
+                    variant="ghost"
+                    fullWidth
+                    type="button"
+                    onclick={openEmailRecovery}
+                    disabled={isVerifyingRecovery}
+                    data-testid="login-email-recovery-link"
+                  >
+                    {t('login.email_recovery_link')}
+                  </Button>
+                {:else}
+                  <div class="flex flex-col gap-3 border-t border-[var(--hv-login-hairline)] pt-3" data-testid="login-email-recovery">
+                    <p class="m-0 text-t-body leading-relaxed text-[var(--hv-shell-text-2)]">{t('login.email_recovery_intro')}</p>
+                    {#if emailRecoveryNotice}
+                      <p class="m-0 text-t-body text-[var(--hv-success-text)]" role="status" data-testid="login-email-recovery-notice">{emailRecoveryNotice}</p>
+                    {/if}
+                    {#if !emailRecoverySent}
+                      <Button variant="primary" class={ctaClass} size="lg" fullWidth type="button" onclick={sendAccountRecoveryMail} disabled={emailRecoveryBusy} data-testid="login-email-recovery-send">
+                        {#if emailRecoveryBusy}<div class="hv-spinner"></div>{:else}<span>{t('login.email_recovery_send')}</span>{/if}
+                      </Button>
+                    {:else}
+                      <div class="flex flex-col gap-1.5">
+                        <label for="email-recovery-code" class="text-xs font-medium uppercase tracking-[0.1em] text-[var(--hv-login-muted)]">{t('login.email_recovery_code_label')}</label>
+                        <div class={fieldWrapperClass}>
+                          <IconShieldCheckered size={19} stroke={1.7} class="shrink-0 text-[var(--hv-login-muted)]" />
+                          <input id="email-recovery-code" data-testid="login-email-recovery-code" type="text" class={textInputClass} bind:value={emailRecoveryCode} inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000" disabled={emailRecoveryBusy} />
+                        </div>
+                      </div>
+                      <Button variant="primary" class={ctaClass} size="lg" fullWidth type="button" onclick={verifyAccountRecoveryCode} disabled={emailRecoveryBusy || emailRecoveryCode.trim().length < 6} data-testid="login-email-recovery-verify">
+                        {#if emailRecoveryBusy}<div class="hv-spinner"></div>{:else}<span>{t('login.email_recovery_verify')}</span>{/if}
+                      </Button>
+                    {/if}
+                    {#if emailRecoveryError}
+                      <p class="m-0 text-t-body text-[var(--hv-login-error)]" role="alert" data-testid="login-email-recovery-error">{emailRecoveryError}</p>
+                    {/if}
+                  </div>
+                {/if}
               {/if}
             </div>
           {:else if !requires2fa}
@@ -744,9 +933,21 @@
                     {t('login.forgot_password_link')}
                   </button>
                 </div>
-                <Button variant="primary" class={ctaClass} size="lg" fullWidth type="submit" disabled={isLoading}>
+                <Button variant="primary" class={ctaClass} size="lg" fullWidth type="submit" disabled={isLoading || passkeyBusy}>
                   {#if isLoading}<div class="hv-spinner"></div><span>{t('login.signing_in')}</span>{:else}<span>{t('login.sign_in')}</span>{/if}
                 </Button>
+                {#if passkeyAvailable}
+                  <button
+                    type="button"
+                    data-testid="login-passkey"
+                    class="mx-auto flex h-11 cursor-pointer items-center justify-center gap-2 rounded-lg border border-[var(--hv-login-hairline)] bg-transparent px-4 text-t-body font-medium text-[var(--hv-shell-text-2)] transition-colors hover:text-[var(--hv-shell-text-strong)] disabled:opacity-60"
+                    onclick={handlePasskeyLogin}
+                    disabled={isLoading || passkeyBusy}
+                  >
+                    {#if passkeyBusy}<div class="hv-spinner"></div>{:else}<IconFingerprint size={18} stroke={1.8} />{/if}
+                    <span>{passkeyBusy ? t('login.passkey_verifying') : t('login.passkey_button')}</span>
+                  </button>
+                {/if}
               </div>
             </form>
           {:else}
@@ -812,6 +1013,13 @@
                     <circle cx="16" cy="16" r={TOTP_R} class={cn('fill-none stroke-[2.5] stroke-linecap-round transition-[stroke-dashoffset] duration-[900ms] ease-linear', timerColorClass)} stroke-dasharray={TOTP_CIRC} stroke-dashoffset={TOTP_CIRC * (1 - totpProgress)}></circle>
                   </svg>
                   <span class={cn('text-t-body tabular-nums', timerColorClass)}>{String(totpRemaining).padStart(2, '0')}s</span>
+                </div>
+
+                <!-- Opt-in convenience: a trusted browser skips the second
+                     factor for 30 days (docs/guides/identity.md). -->
+                <div data-testid="login-remember-device" class="flex items-center justify-center gap-2.5">
+                  <Switch bind:checked={rememberDevice} disabled={isLoading} aria-label={t('login.remember_device')} />
+                  <span class="text-sm text-[var(--hv-shell-text-2)]">{t('login.remember_device')}</span>
                 </div>
 
                 <Button variant="primary" class={ctaClass} size="lg" fullWidth type="submit" disabled={isLoading}>

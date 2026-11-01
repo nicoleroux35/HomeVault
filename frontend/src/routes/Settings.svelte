@@ -86,6 +86,14 @@
   import AntiRansomwareCard from '$lib/components/settings/AntiRansomwareCard.svelte';
   import FirewallCard from '$lib/components/settings/FirewallCard.svelte';
   import TlsCard from '$lib/components/settings/TlsCard.svelte';
+  import AcmeCard from '$lib/components/settings/AcmeCard.svelte';
+  import AutoBlockCard from '$lib/components/settings/AutoBlockCard.svelte';
+  import ConfigBackupCard from '$lib/components/settings/ConfigBackupCard.svelte';
+  import ConnectedClientsCard from '$lib/components/settings/ConnectedClientsCard.svelte';
+  import DdnsCard from '$lib/components/settings/DdnsCard.svelte';
+  import ReachabilityCard from '$lib/components/settings/ReachabilityCard.svelte';
+  import SyslogCard from '$lib/components/settings/SyslogCard.svelte';
+  import WolCard from '$lib/components/settings/WolCard.svelte';
   import UpsCard from '$lib/components/settings/UpsCard.svelte';
   import SnmpCard from '$lib/components/settings/SnmpCard.svelte';
   import McpCard from '$lib/components/settings/McpCard.svelte';
@@ -1092,12 +1100,17 @@
         </div>
       {/if}
       {#if activeCategory === 'security'}
-        <!-- The four security sub-cards carry their own header (title +
+        <!-- The seven security sub-cards carry their own header (title +
              subtitle, two lines) via the shared SettingsCard shell, so they
              need no section label above them — their `settings-card-title` IS
              the card heading (E2E 12.1 reads those). They stay *direct*
              children of the panel so E2E 2.5's clip check still covers them. -->
         <TlsCard class="mt-6" />
+        <AcmeCard class="mt-3" />
+        <DdnsCard class="mt-3" />
+        <ReachabilityCard class="mt-3" />
+        <AutoBlockCard class="mt-3" />
+        <ConnectedClientsCard class="mt-3" />
         <AntivirusCard class="mt-3" />
         <AntiRansomwareCard class="mt-3" />
         <FirewallCard class="mt-3" />
@@ -1371,6 +1384,7 @@
       {#if activeCategory === 'monitoring'}
         <UpsCard class="mt-6" />
         <SnmpCard class="mt-3" />
+        <SyslogCard class="mt-3" />
       {/if}
       {#if activeCategory === 'widgets'}
         <div data-testid="settings-card-title" class={secLabelFirst}></div>
@@ -1602,6 +1616,13 @@
       {/if}
 
       {#if activeCategory === 'system'}
+        <!-- Full configuration backup: one archive that can rebuild the box. -->
+        <ConfigBackupCard class="mt-6" />
+
+        <!-- Wake-on-LAN: wake a sleeping machine, and the hosts a scheduled
+             task can wake before it runs. -->
+        <WolCard class="mt-3" />
+
         <!-- Host power management (admin actions, confirmed) -->
         <div data-testid="settings-card-title" class={secLabelFirst}></div>
         <div data-testid="settings-card" class={settingsCard}>

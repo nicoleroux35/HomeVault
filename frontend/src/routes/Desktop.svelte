@@ -70,6 +70,8 @@
   const Docker = () => import('./Docker.svelte');
   const Network = () => import('./Network.svelte');
   const Restic = () => import('./Restic.svelte');
+  const Destinations = () => import('./Destinations.svelte');
+  const Replication = () => import('./Replication.svelte');
   const Shares = () => import('./Shares.svelte');
   const Explorer = () => import('./Explorer.svelte');
   const Groups = () => import('./Groups.svelte');
@@ -1046,7 +1048,10 @@
   // all — neither in the launcher, the global search, nor as a reopenable
   // dock entry (ROADMAP 20.1: the System Journal reads host logs, which
   // include every account name, source address and sudo attempt).
-  const ADMIN_ONLY_APP_IDS = new Set(['journal']);
+  // `destinations` and `replication` are admin-only on the backend (they drive
+  // root-owned units and receive/send data on the admin's behalf), so their
+  // tiles are hidden from a member session rather than shown and then 403'd.
+  const ADMIN_ONLY_APP_IDS = new Set(['journal', 'destinations', 'replication']);
 
   // Applications configuration. Structural fields (id/icon/color/category/
   // component) never change; `name`/`desc` below are the English fallback
@@ -1063,6 +1068,8 @@
     { id: 'network', name: 'Network', icon: 'wifi', color: 'var(--hv-app-network-grad)', category: 'Network', desc: 'Interfaces & routing', component: Network, customIcon: launchpadIcons.network },
     { id: 'vpn', name: 'VPN', icon: 'lock', color: 'var(--hv-app-vpn-grad)', category: 'Network', desc: 'WireGuard & OpenVPN access', component: VPN, customIcon: launchpadIcons.vpn },
     { id: 'backup', name: 'Backup', icon: 'backup', color: 'var(--hv-app-backup-grad)', category: 'Storage', desc: 'Snapshots & restores', component: Restic, customIcon: launchpadIcons.backup },
+    { id: 'destinations', name: 'Backup destination', icon: 'backup', color: 'var(--hv-app-backup-grad)', category: 'Storage', desc: 'Receive backups from another machine', component: Destinations, customIcon: launchpadIcons.backup },
+    { id: 'replication', name: 'Replication', icon: 'storage', color: 'var(--hv-app-storage-grad)', category: 'Storage', desc: 'Copy snapshots to another dataset', component: Replication, customIcon: launchpadIcons.storage },
     { id: 'users', name: 'Users', icon: 'people', color: 'var(--hv-app-users-grad)', category: 'System', desc: 'Accounts & permissions', component: Users, customIcon: launchpadIcons.users },
     { id: 'groups', name: 'Groups', icon: 'group', color: 'var(--hv-app-groups-grad)', category: 'System', desc: 'User groups & roles', component: Groups, customIcon: launchpadIcons.groups },
     { id: 'quotas', name: 'Quotas', icon: 'gauge', color: 'var(--hv-app-quotas-grad)', category: 'System', desc: 'Transfer quota usage', component: Quotas, customIcon: launchpadIcons.quotas },

@@ -18,14 +18,17 @@
      ======================================================================== -->
 <script lang="ts">
   import { onDestroy, tick } from 'svelte';
-  import { searchStore, closeSearch, updateQuery, selectNext, selectPrev, executeSelected, type SearchableItem } from '$lib/stores/search';
+  import { get } from 'svelte/store';
+  import { searchStore, closeSearch, updateQuery, selectNext, selectPrev, executeSelected, setFilesLoading, type SearchableItem } from '$lib/stores/search';
+  import { mergeFileHits } from '$lib/stores/search';
+  import { queryFiles, openHitInExplorer } from '$lib/stores/fileProvider';
   import SearchResults from './SearchResults.svelte';
   import { IconSearch } from '@tabler/icons-svelte';
   import { t } from '$lib/stores/i18n';
 
-  export let searchIndex: SearchableItem[];
+  let { searchIndex }: { searchIndex: SearchableItem[] } = $props();
 
-  let inputRef: HTMLInputElement;
+  let inputRef: HTMLInputElement | undefined = $state();
 
   // Focus the field as soon as the overlay has been rendered. `tick()` (not a
   // `setTimeout(…, 50)`) is the point: the old delay left a window in which the
@@ -33,9 +36,11 @@
   // pressed during it went nowhere — the keydown only reached the overlay's own
   // handler when focus was already inside it (E2E `6.4`, deterministic on
   // Chromium, invisible on Firefox because its round trip outran the timer).
-  $: if ($searchStore.isOpen) {
-    tick().then(() => inputRef?.focus());
-  }
+  $effect(() => {
+    if ($searchStore.isOpen) {
+      tick().then(() => inputRef?.focus());
+    }
+  });
 
   // Escape closes the overlay from anywhere while it is open, not only from
   // inside it: it is a modal dialog (`aria-modal`), so the key must work even
@@ -61,15 +66,56 @@
     }
   }
 
+  // Every keystroke runs the local index synchronously (apps, settings,
+  // actions — it answers instantly) and hands the query to the cross-root file
+  // provider, which debounces and merges its own hits in when they land
+  // (QW-12). The provider drops a superseded answer itself, and `mergeFileHits`
+  // checks the query again so a response can never land under a newer query.
   function handleInput(e: Event) {
     const target = e.target as HTMLInputElement;
-    updateQuery(target.value, searchIndex);
+    const query = target.value;
+    updateQuery(query, searchIndex);
+    const localResults = get(searchStore).results;
+    queryFiles(
+      query,
+      (forQuery, items) => {
+        const state = get(searchStore);
+        if (state.query !== forQuery) return;
+        mergeFileHits(items, { ...state, results: localResults }, forQuery);
+      },
+      (forQuery, note) => {
+        if (get(searchStore).query === forQuery) fileNote = note;
+      },
+      (loading, forQuery) => {
+        setFilesLoading(loading, forQuery);
+        if (!loading) filesReady(forQuery);
+      },
+      openHitInExplorer
+    );
   }
 
-  // Lock body scroll while the overlay is open; always release on teardown.
-  $: if (typeof document !== 'undefined') {
-    document.body.style.overflow = $searchStore.isOpen ? 'hidden' : '';
+  /** The coverage note for the current query ("2 folders could not be read"). */
+  let fileNote = $state('');
+  /** `true` once the file provider answered for the current query. */
+  let filesAnswered = $state(false);
+
+  function filesReady(forQuery: string) {
+    if (get(searchStore).query === forQuery) filesAnswered = true;
   }
+
+  // A new overlay session starts with no provider state.
+  $effect(() => {
+    if (!$searchStore.isOpen && (fileNote || filesAnswered)) {
+      fileNote = '';
+      filesAnswered = false;
+    }
+  });
+
+  // Lock body scroll while the overlay is open; always release on teardown.
+  $effect(() => {
+    if (typeof document === 'undefined') return;
+    document.body.style.overflow = $searchStore.isOpen ? 'hidden' : '';
+  });
 
   onDestroy(() => {
     if (typeof document !== 'undefined') document.body.style.overflow = '';
@@ -114,7 +160,14 @@
         <kbd class="search-hint">ESC</kbd>
       </div>
 
-      <SearchResults />
+      <SearchResults {fileNote} />
+      <!-- The file provider is still walking the roots: say so instead of
+           letting "no results" imply the file does not exist (QW-12). -->
+      {#if $searchStore.filesLoading}
+        <div class="files-status" data-testid="search-files-loading" role="status">
+          {$t('search.files_searching')}
+        </div>
+      {/if}
     </div>
   </div>
 {/if}
@@ -161,6 +214,13 @@
       transform: translateY(0);
       opacity: 1;
     }
+  }
+
+  .files-status {
+    padding: var(--hv-space-2) 20px var(--hv-space-3);
+    border-top: 1px solid var(--hv-shell-border-soft);
+    font-size: var(--hv-font-size-sm);
+    color: var(--hv-shell-text-3);
   }
 
   .search-input-wrapper {

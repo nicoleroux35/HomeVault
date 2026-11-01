@@ -23,6 +23,8 @@
   import { Spinner, Button } from '$lib/components/theme';
   import { PageLayout, EmptyState } from '$lib/components/app';
   import { IconHeart, IconActivity, IconHeartbeat } from '@tabler/icons-svelte';
+  import SecurityAdvisorCard from '$lib/components/health/SecurityAdvisorCard.svelte';
+  import { isAdmin } from '$lib/stores/auth';
 
   // Matches `HealthCheckResult` in src/health.rs, as actually returned by
   // GET /api/health (`data.checks`, each `{name, status, message, details}`).
@@ -111,6 +113,14 @@
   {#snippet icon()}
     <IconHeart stroke={1.8} />
   {/snippet}
+
+  <!-- Security Advisor (QW-10): admin-only, because the report names accounts,
+       the firewall state, the certificate and the shares. It sits above the
+       per-check grid on purpose — it answers "what should I fix first?",
+       which is the question that brought the user here. -->
+  {#if $isAdmin}
+    <SecurityAdvisorCard />
+  {/if}
 
   {#if loading}
     <div data-testid="health-loading" class="flex flex-col items-center gap-3 py-20 text-muted-foreground">

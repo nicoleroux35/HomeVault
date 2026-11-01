@@ -27,6 +27,7 @@
   import Login from './routes/Login.svelte';
   import Desktop from './routes/Desktop.svelte';
   import SetupWizard from './routes/SetupWizard.svelte';
+  import PublicShare from './routes/PublicShare.svelte';
 
   // Wallpaper/accent color are saved server-side, once for the whole
   // appliance (an admin saves them from Settings → Appearance), but the local
@@ -107,11 +108,12 @@
   $: gateRoute = $appGate.route;
 
   // The gate is the authority; the address bar follows it.
-  $: if (ready && gateRoute === 'app' && currentPath !== '/desktop') {
+  $: if (ready && gateRoute === 'app' && currentPath !== '/desktop' && !currentPath.startsWith('/share/')) {
     navigate('/desktop');
   }
   $: if (
     ready &&
+    !currentPath.startsWith('/share/') &&
     (gateRoute === 'login' ||
       gateRoute === 'setup' ||
       gateRoute === 'recovery' ||
@@ -133,7 +135,9 @@
 </script>
 
 {#if ready && $translationsReady && $appGate.route !== 'loading'}
-  {#if $appGate.route === 'setup'}
+  {#if currentPath.startsWith('/share/')}
+    <PublicShare />
+  {:else if $appGate.route === 'setup'}
     <SetupWizard />
   {:else if $appGate.route === 'recovery'}
     <Login recoveryMode />

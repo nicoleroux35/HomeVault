@@ -32,8 +32,10 @@
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
   import { t, translate } from '$lib/stores/i18n';
   import { explorerShareIntent } from '$lib/stores/explorerShareIntent';
+  import { explorerIntent } from '$lib/stores/explorerIntent';
+  import { get } from 'svelte/store';
   import FolderPicker from '$lib/components/theme/FolderPicker.svelte';
-  import { IconAlertCircle, IconArchive, IconArrowBackUp, IconArrowUp, IconClock, IconCloud, IconCloudCheck, IconCloudUpload, IconCopy, IconDatabase, IconDownload, IconHistory, IconPlayerEject, IconPencil, IconEye, IconFileZip, IconFolderMinus, IconFolderOpen, IconFolderPlus, IconServer, IconHome, IconLayoutGrid, IconList, IconLoader, IconLock, IconRefresh, IconSearch, IconShare, IconShield, IconShieldCheckered, IconStar, IconStarFilled, IconTrash, IconUpload, IconUsb, IconX } from '@tabler/icons-svelte';
+  import { IconAlertCircle, IconArchive, IconArrowBackUp, IconArrowUp, IconBolt, IconClock, IconCloud, IconCloudCheck, IconCloudUpload, IconCopy, IconDatabase, IconDownload, IconHistory, IconPlayerEject, IconPencil, IconEye, IconFileZip, IconFolderMinus, IconFolderOpen, IconFolderPlus, IconServer, IconHome, IconLayoutGrid, IconList, IconLoader, IconLock, IconRefresh, IconSearch, IconShare, IconShield, IconShieldCheckered, IconStar, IconStarFilled, IconTrash, IconUpload, IconUsb, IconX } from '@tabler/icons-svelte';
   import ShareLinkModal from '$lib/components/explorer/ShareLinkModal.svelte';
   import ExplorerWidget from '$lib/components/explorer/ExplorerWidget.svelte';
 
@@ -218,10 +220,63 @@
   let showTrash = $state(false);
   let trashItems = $state<TrashEntry[]>([]);
   let trashLoading = $state(false);
+  let showRetention = $state(false);
+  let retentionDaysDraft = $state(30);
+  let maxSizeGbDraft = $state(10);
+  let retentionSaving = $state(false);
+  let purging = $state(false);
 
   let showCompress = $state(false);
   let compressName = $state('archive.tar.gz');
   let compressFormat = $state<'tar.gz' | 'zip'>('tar.gz');
+
+  // --- Instant copy (reflink) policy ----------------------------------------
+  //
+  // One appliance-wide switch, shown as a row of two explicit choices rather
+  // than a bare checkbox: "Instant" vs "Always copy" says what each does in
+  // plain words, and the evidence line below reports which of the user's
+  // folders can share extents, so the choice is never a blind bet.
+  interface ReflinkMount { mount_point: string; fs_type: string; reflink: boolean; }
+  let showInstantCopy = $state(false);
+  let instantCopyMode = $state<'auto' | 'off'>('auto');
+  interface InstantCopySettings { mode: 'auto' | 'off'; mounts: ReflinkMount[]; }
+  let instantCopyMounts = $state<ReflinkMount[]>([]);
+  let instantCopyLoading = $state(false);
+  let instantCopySaving = $state(false);
+  let instantCopyError = $state('');
+
+  async function openInstantCopy() {
+    instantCopyError = '';
+    showInstantCopy = true;
+    instantCopyLoading = true;
+    const r = await api.getInstantCopySettings();
+    instantCopyLoading = false;
+    if (r.success && r.data) {
+      instantCopyMode = r.data.mode === 'off' ? 'off' : 'auto';
+      instantCopyMounts = Array.isArray(r.data.mounts) ? r.data.mounts : [];
+    } else {
+      instantCopyError = r.message || (r as any).error || translate('explorer.instant_copy_load_failed');
+    }
+  }
+
+  async function saveInstantCopy(mode: 'auto' | 'off') {
+    if (instantCopySaving || mode === instantCopyMode) return;
+    instantCopySaving = true;
+    instantCopyError = '';
+    const previous = instantCopyMode;
+    instantCopyMode = mode;
+    const r = await api.setInstantCopyMode(mode);
+    instantCopySaving = false;
+    if (r.success && r.data) {
+      instantCopyMode = r.data.mode === 'off' ? 'off' : 'auto';
+      instantCopyMounts = Array.isArray(r.data.mounts) ? r.data.mounts : instantCopyMounts;
+      dlg.notify(translate('explorer.instant_copy_saved'));
+    } else {
+      // Roll the control back so what the screen shows is what is stored.
+      instantCopyMode = previous;
+      instantCopyError = r.message || (r as any).error || translate('explorer.instant_copy_save_failed');
+    }
+  }
 
   let jobProgress = $state<{ message: string; progress: number } | null>(null);
   let jobUnsubscribe: (() => void) | null = null;
@@ -341,6 +396,15 @@
       isAdmin = false;
     }
     await loadDirectory('/');
+
+    // Deep link from the global search (QW-12): "open this folder, and select
+    // this entry". Consumed once and cleared, so reopening the Explorer later
+    // never jumps back to a stale folder.
+    const intent = get(explorerIntent);
+    if (intent?.path) {
+      explorerIntent.set(null);
+      await openExplorerIntent(intent.path, intent.select);
+    }
 
     // Deep link: ?rewind=open starts the Rewind drawer for the live folder.
     if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('rewind') === 'open') {
@@ -799,6 +863,21 @@
     return clean(disk.model) || clean(disk.vendor) || disk.name;
   }
 
+  /**
+   * Open `path` and, when `select` names one of its entries, highlight it.
+   *
+   * The selection is applied **after** the listing lands and is silent when
+   * the entry is gone by then — a folder renamed between the search and the
+   * click must not throw, and the user still gets the folder they asked for.
+   */
+  async function openExplorerIntent(path: string, select?: string) {
+    await loadDirectory(path);
+    if (!select) return;
+    if (listing?.entries?.some((e) => e.path === select)) {
+      selected = new Set([select]);
+    }
+  }
+
   async function loadDirectory(path: string) {
     const seq = ++loadSeq;
     currentPath = path;
@@ -1033,6 +1112,39 @@
   function openTrash() {
     showTrash = true;
     loadTrash();
+    if (isAdmin) loadTrashPolicy();
+  }
+
+  async function loadTrashPolicy() {
+    const r = await api.getTrashPolicy();
+    if (r.success && r.data) {
+      retentionDaysDraft = r.data.retention_days;
+      maxSizeGbDraft = Math.round(r.data.max_bytes / (1024 ** 3));
+    }
+  }
+
+  async function saveTrashPolicy() {
+    retentionSaving = true;
+    const r = await api.setTrashPolicy(retentionDaysDraft, Math.round(maxSizeGbDraft) * (1024 ** 3));
+    retentionSaving = false;
+    if (r.success) {
+      dlg.notify(translate('explorer.retention_saved'));
+    } else {
+      dlg.notify(r.message || r.error || translate('explorer.retention_save_failed'));
+    }
+  }
+
+  async function purgeTrashNow() {
+    if (!(await dlg.ask(translate('explorer.confirm_purge_now')))) return;
+    purging = true;
+    const r = await api.purgeTrashNow();
+    purging = false;
+    if (r.success && r.data) {
+      dlg.notify(translate('explorer.purge_now_done', { count: String(r.data.purged) }));
+      await loadTrash();
+    } else {
+      dlg.notify(r.message || r.error || translate('explorer.purge_now_failed'));
+    }
   }
 
   function closeTrash() {
@@ -1247,6 +1359,10 @@
     if (strategy === null) return; // cancelled at the collision prompt
     let success = 0;
     let failCount = 0;
+    // How many single-file copies the server reported as instant. Only
+    // shown when it actually happened — the reply is the authority, so a
+    // filesystem that cannot clone never produces a "copied instantly" toast.
+    let instant = 0;
     for (const it of items) {
       const targetPath = joinPath(dest, it.name);
       const r = await api.copyItem(it.path, targetPath, strategy);
@@ -1254,6 +1370,7 @@
         if (await watchJob(r.data.job_id)) success++;
       } else if (r.success) {
         success++;
+        if (r.data?.instant === true) instant++;
       } else {
         failCount++;
       }
@@ -1264,6 +1381,10 @@
           ? translate('explorer.copy_failed')
           : translate('explorer.copy_partial', { done: String(success), total: String(items.length) })
       );
+    } else if (instant > 0 && instant === success) {
+      // Every file was shared instead of rewritten: say so, because the whole
+      // benefit is invisible otherwise (no progress bar, no waiting).
+      dlg.notify(translate('explorer.copied_instantly', { count: String(instant) }));
     }
     if (success > 0) {
       selected = new Set();
@@ -1705,6 +1826,7 @@
       <button data-testid="explorer-network-btn" class={cn(toolbarBtn, showNetwork && 'text-[var(--hv-primary)]')} onclick={openNetwork} title={$t('explorer.network')} aria-label={$t('explorer.network')}><IconServer size={16} /></button>
       {#if isAdmin}
         <button data-testid="explorer-format-btn" class={toolbarBtn} onclick={() => { formatError = ''; showFormat = true; }} title={$t('explorer.format_drive')} aria-label={$t('explorer.format_drive')}><IconDatabase size={16} /></button>
+        <button data-testid="explorer-instant-copy-btn" class={toolbarBtn} onclick={openInstantCopy} title={$t('explorer.instant_copy_title')} aria-label={$t('explorer.instant_copy_title')}><IconBolt size={16} /></button>
       {/if}
     {/if}
     <div data-testid="explorer-breadcrumb" class="flex items-center gap-0.5 flex-1 min-w-0 px-1 overflow-hidden">
@@ -1794,6 +1916,53 @@
         <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('explorer.trash')}</h3>
         <Button variant="ghost" onclick={emptyTrash} disabled={trashItems.length === 0}><IconTrash size={14} /> {$t('explorer.empty_trash')}</Button>
       </div>
+      {#if isAdmin}
+        <div data-testid="explorer-trash-retention" class="mx-4 mb-3 rounded-xl border border-[var(--hv-shell-border)] bg-[var(--hv-shell-border-soft)]">
+          <button
+            type="button"
+            data-testid="explorer-trash-retention-toggle"
+            class="flex w-full items-center justify-between gap-2 bg-transparent border-0 px-3 py-2.5 cursor-pointer text-left"
+            aria-expanded={showRetention}
+            onclick={() => (showRetention = !showRetention)}
+          >
+            <span class="text-c-base font-semibold text-[var(--hv-shell-text-strong)]">{$t('explorer.retention_title')}</span>
+            <span class="text-c-xs text-[var(--hv-shell-text-2)]">{showRetention ? $t('explorer.retention_hide') : $t('explorer.retention_show')}</span>
+          </button>
+          {#if showRetention}
+            <div class="flex flex-col gap-3 px-3 pb-3">
+              <p class="m-0 text-c-xs text-[var(--hv-shell-text-2)] leading-relaxed">{$t('explorer.retention_desc')}</p>
+              <label class="flex flex-wrap items-center justify-between gap-2 text-c-base text-[var(--hv-shell-text)]">
+                <span>{$t('explorer.retention_days_label')}</span>
+                <select
+                  data-testid="explorer-trash-retention-days"
+                  class="h-10 min-w-[150px] rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-card)] px-3 text-sm outline-none focus:border-[var(--hv-primary)]"
+                  bind:value={retentionDaysDraft}
+                >
+                  <option value={0}>{$t('explorer.retention_forever')}</option>
+                  <option value={7}>{$t('explorer.retention_days_value', { count: '7' })}</option>
+                  <option value={30}>{$t('explorer.retention_days_value', { count: '30' })}</option>
+                  <option value={90}>{$t('explorer.retention_days_value', { count: '90' })}</option>
+                </select>
+              </label>
+              <label class="flex flex-wrap items-center justify-between gap-2 text-c-base text-[var(--hv-shell-text)]">
+                <span>{$t('explorer.retention_size_label')}</span>
+                <input
+                  data-testid="explorer-trash-retention-size"
+                  class="h-10 w-[150px] rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-card)] px-3 text-sm outline-none focus:border-[var(--hv-primary)]"
+                  type="number"
+                  min="0"
+                  step="1"
+                  bind:value={maxSizeGbDraft}
+                />
+              </label>
+              <div class="flex flex-wrap gap-2">
+                <Button variant="primary" onclick={saveTrashPolicy} disabled={retentionSaving}>{$t('explorer.retention_save')}</Button>
+                <Button variant="ghost" onclick={purgeTrashNow} disabled={purging}>{$t('explorer.purge_now')}</Button>
+              </div>
+            </div>
+          {/if}
+        </div>
+      {/if}
       {#if trashLoading}
         <div data-testid="explorer-state-message" class={stateMessage} role="status">
           <span class="sr-only">{$t('explorer.loading')}</span>
@@ -2095,6 +2264,90 @@
     <div class="flex gap-2.5 justify-end">
       <Button variant="ghost" onclick={() => showNetwork = false}>{$t('common.close')}</Button>
       <Button variant="primary" onclick={openNetwork}>{$t('explorer.network_scan')}</Button>
+    </div>
+  {/snippet}
+</Modal>
+
+<!-- Instant copy (reflink) policy — admin only, non-destructive -->
+<Modal open={showInstantCopy} title={$t('explorer.instant_copy_title')} size="md" onclose={() => (showInstantCopy = false)}>
+  <p class="m-0 mb-3 text-c-base text-[var(--hv-shell-text-2)] leading-relaxed">{$t('explorer.instant_copy_desc')}</p>
+  {#if instantCopyLoading}
+    <div class="flex items-center gap-2 py-6 text-sm text-[var(--hv-shell-text-2)]" role="status">
+      <IconLoader size={16} class="animate-spin" /> {$t('explorer.loading')}
+    </div>
+  {:else}
+    <!-- Two explicit choices, each with its consequence spelled out. A
+         radio group (not a bare checkbox) so the current policy is always
+         announced, and each option keeps a 44px touch target. -->
+    <fieldset class="m-0 border-0 p-0">
+      <legend class="mb-2 text-c-label font-medium text-[var(--hv-shell-text-strong)]">{$t('explorer.instant_copy_mode_label')}</legend>
+      <div class="flex flex-col gap-2">
+        <label class="flex cursor-pointer items-start gap-3 rounded-xl border border-[var(--hv-shell-border)] px-3 py-3 hover:bg-[var(--hv-subtle-hover)]">
+          <input
+            data-testid="explorer-instant-copy-auto"
+            class="mt-1 h-4 w-4 flex-none accent-[var(--hv-primary)]"
+            type="radio"
+            name="instant-copy-mode"
+            value="auto"
+            checked={instantCopyMode === 'auto'}
+            disabled={instantCopySaving}
+            onchange={() => saveInstantCopy('auto')}
+          />
+          <span class="min-w-0">
+            <span class="block text-c-base font-medium text-[var(--hv-shell-text-strong)]">{$t('explorer.instant_copy_auto')}</span>
+            <span class="block text-c-xs text-[var(--hv-shell-text-2)] leading-relaxed">{$t('explorer.instant_copy_auto_desc')}</span>
+          </span>
+        </label>
+        <label class="flex cursor-pointer items-start gap-3 rounded-xl border border-[var(--hv-shell-border)] px-3 py-3 hover:bg-[var(--hv-subtle-hover)]">
+          <input
+            data-testid="explorer-instant-copy-off"
+            class="mt-1 h-4 w-4 flex-none accent-[var(--hv-primary)]"
+            type="radio"
+            name="instant-copy-mode"
+            value="off"
+            checked={instantCopyMode === 'off'}
+            disabled={instantCopySaving}
+            onchange={() => saveInstantCopy('off')}
+          />
+          <span class="min-w-0">
+            <span class="block text-c-base font-medium text-[var(--hv-shell-text-strong)]">{$t('explorer.instant_copy_off')}</span>
+            <span class="block text-c-xs text-[var(--hv-shell-text-2)] leading-relaxed">{$t('explorer.instant_copy_off_desc')}</span>
+          </span>
+        </label>
+      </div>
+    </fieldset>
+
+    <!-- Evidence: which folders can actually share extents. Knowing this
+         before copying is the difference between a feature and a guess. -->
+    <div class="mt-4" data-testid="explorer-instant-copy-mounts">
+      <h4 class="m-0 mb-1.5 text-c-label font-medium text-[var(--hv-shell-text-strong)]">{$t('explorer.instant_copy_mounts_title')}</h4>
+      {#if instantCopyMounts.length === 0}
+        <p class="m-0 text-c-xs text-[var(--hv-shell-text-2)]">{$t('explorer.instant_copy_mounts_empty')}</p>
+      {:else}
+        <!-- Bounded so a host with many mounted filesystems scrolls the list
+             instead of pushing the policy radios out of the dialog. -->
+        <ul class="m-0 flex max-h-64 list-none flex-col gap-1 overflow-y-auto p-0">
+          {#each instantCopyMounts as m (m.mount_point)}
+            <li class="flex items-center justify-between gap-2 rounded-lg border border-[var(--hv-shell-border-soft)] px-3 py-2">
+              <span class="min-w-0 flex-1 truncate text-c-base text-[var(--hv-shell-text)]" title={m.mount_point}>{m.mount_point}</span>
+              <span class="flex-none text-c-xs text-[var(--hv-shell-text-2)]">{m.fs_type}</span>
+              <span class="flex-none text-c-xs" class:text-[var(--hv-success)]={m.reflink} class:text-[var(--hv-shell-text-2)]={!m.reflink}>
+                {m.reflink ? $t('explorer.instant_copy_mount_yes') : $t('explorer.instant_copy_mount_no')}
+              </span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </div>
+  {/if}
+  {#if instantCopyError}
+    <p data-testid="explorer-instant-copy-error" class="mt-3 mb-0 flex items-start gap-1.5 text-c-xs text-[var(--hv-error)]" role="alert">
+      <IconAlertCircle size={14} class="mt-0.5 flex-none" />{instantCopyError}
+    </p>
+  {/if}
+  {#snippet footer()}
+    <div class="flex justify-end gap-2.5">
+      <Button variant="ghost" onclick={() => (showInstantCopy = false)}>{$t('common.close')}</Button>
     </div>
   {/snippet}
 </Modal>

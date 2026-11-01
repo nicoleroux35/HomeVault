@@ -25,13 +25,13 @@
   import { t, translate } from '$lib/stores/i18n';
   import { explorerShareIntent } from '$lib/stores/explorerShareIntent';
   import { onAppVisible } from '$lib/utils/autoRevalidate';
-  import { Spinner, Button, Toggle, Modal } from '$lib/components/theme';
+  import { Spinner, Button, Toggle, Modal, Alert } from '$lib/components/theme';
   import PathField from '$lib/components/theme/PathField.svelte';
   import { PageLayout, ConfirmDialog, tileBtn, dangerHover, StatCard, EmptyState } from '$lib/components/app';
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
   import { notifyError, notifySuccess } from '$lib/utils/notify';
   import { cn } from '$lib/utils.js';
-  import { IconShare, IconPlus, IconSettings, IconPlayerPlay, IconSquare, IconRefresh, IconShield, IconTrash, IconUser, IconUsers } from '@tabler/icons-svelte';
+  import { IconShare, IconPlus, IconSettings, IconPlayerPlay, IconSquare, IconRefresh, IconShield, IconTrash, IconUser, IconUsers, IconGauge } from '@tabler/icons-svelte';
 
   interface Share {
     name: string;
@@ -39,6 +39,67 @@
     share_type: string;
     enabled: boolean;
     comment: string;
+  }
+
+  /**
+   * The per-share quota, as the API answers it. `supported: false` means the
+   * filesystem holding the share cannot cap one folder — the card then shows
+   * the reason instead of a field that would not hold.
+   */
+  interface ShareQuotaState {
+    share_name: string;
+    share_type: string;
+    backend: string;
+    supported: boolean;
+    filesystem: string;
+    reason: string | null;
+    quota_bytes: number;
+    used_bytes: number;
+    free_bytes: number;
+    percent: number;
+    quota_human: string;
+    used_human: string;
+    min_bytes: number;
+    max_bytes: number;
+  }
+
+  /** Per-share Time Machine state (`GET /shares/smb/time-machine`). */
+  interface SmbTimeMachine {
+    enabled: boolean;
+    quota_gb: number;
+  }
+
+  /** One rsync module as the API renders it (never its password). */
+  interface RsyncModule {
+    name: string;
+    path: string;
+    comment: string;
+    read_only: boolean;
+    users: string[];
+    enabled: boolean;
+  }
+
+  interface RsyncSettings {
+    enabled: boolean;
+    port: number;
+    max_connections: number;
+    chroot: boolean;
+  }
+
+  interface RsyncState {
+    settings: RsyncSettings;
+    modules: RsyncModule[];
+    share_candidates: { name: string; path: string; used: boolean }[];
+    users_with_secret: string[];
+    available_users: string[];
+    service_active: boolean;
+    binary_available: boolean;
+    config_path: string;
+    module_limit: number;
+    default_port: number;
+    connection_limit: number;
+    ssh_path: string;
+    ssh_hint: string;
   }
 
   interface SmbConfig {
@@ -107,6 +168,14 @@
   }
 
   let shares = $state<Share[]>([]);
+  // Per-share quota state, keyed `<name>:<type>` (the API inspects the
+  // filesystem per share, so an unsupported one carries its reason).
+  let quotas = $state<Record<string, ShareQuotaState>>({});
+  // Which share's quota editor is open (`<name>:<type>`), and its GB value.
+  let quotaEditor = $state<string | null>(null);
+  let quotaInput = $state('');
+  let quotaBusy = $state(false);
+  let quotaNotice = $state<{ kind: 'ok' | 'error'; text: string } | null>(null);
   let loading = $state(true);
   let showCreateModal = $state(false);
   let serviceStatus = $state<SvcStatus[]>([]);
@@ -120,7 +189,7 @@
     comment: ''
   });
 
-  let activeTab = $state<'list' | 'smb' | 'nfs' | 'ftp' | 'webdav' | 'sftp'>('list');
+  let activeTab = $state<'list' | 'smb' | 'nfs' | 'ftp' | 'webdav' | 'sftp' | 'rsync'>('list');
 
   let smbMode = $state<'simple' | 'advanced'>('simple');
   let nfsMode = $state<'simple' | 'advanced'>('simple');
@@ -141,7 +210,32 @@
   let permissionsSyncing = $state(false);
   let newGrant = $state({ grantee_type: 'user', grantee_name: '', permission: 'r', recursive: true });
 
-  let smbConfig: SmbConfig = $state({ workgroup: 'WORKGROUP', security_mode: 'user', protocol_version: 'SMB3', allow_guest: false, create_mask: '0755', directory_mask: '0755', additional_params: [] });
+  /**
+   * Fallbacks for the SMB form. The server always answers with every field,
+   * but the form merges the response over these: a partial or older payload
+   * must degrade to one field showing a default, never blank the whole tab
+   * (`allow_guest: undefined` used to break the guest switch's binding).
+   */
+  const SMB_CONFIG_DEFAULTS: SmbConfig = { workgroup: 'WORKGROUP', security_mode: 'user', protocol_version: 'SMB3', allow_guest: false, create_mask: '0755', directory_mask: '0755', additional_params: [] };
+
+  let smbConfig: SmbConfig = $state({ ...SMB_CONFIG_DEFAULTS });
+  let smbRecycle = $state<Record<string, boolean>>({});
+  let recycleSaving = $state<string | null>(null);
+  let smbTimeMachine = $state<Record<string, SmbTimeMachine>>({});
+  let tmSaving = $state<string | null>(null);
+  let tmQuotaDrafts = $state<Record<string, string>>({});
+
+  // Rsync server (Shares → Rsync)
+  let rsync = $state<RsyncState | null>(null);
+  let rsyncLoading = $state(false);
+  let rsyncSaving = $state(false);
+  let rsyncError = $state('');
+  let rsyncModuleModal = $state(false);
+  let rsyncModuleForm = $state({ name: '', path: '', comment: '', read_only: false, users: [] as string[], enabled: true });
+  let rsyncModuleEditing = $state(false);
+  let rsyncBusyName = $state<string | null>(null);
+  let rsyncSecretDrafts = $state<Record<string, string>>({});
+  let rsyncSecretBusy = $state<string | null>(null);
   let nfsConfig: NfsConfig = $state({ networks: ['*'], default_access: 'rw', version: '4', root_squash: 'root_squash', custom_options: [] });
   let ftpConfig: FtpConfig = $state({ port: 21, allowed_users: [], passive_ports: '30000-31000', max_clients: 10, force_tls: false, allow_anonymous: false, chroot: true, welcome_message: 'Welcome to HomeVault FTP' });
   let webdavConfig: WebdavConfig = $state({ port: 8082, path_prefix: '/', require_ssl: false, require_auth: true, compression: false, locking: true, allowed_methods: [] });
@@ -159,6 +253,7 @@
 
   let tabCounts = $derived<Record<string, number>>({
     list: totalShares, smb: smbShares, nfs: nfsShares, ftp: ftpShares, webdav: webdavShares, sftp: sftpShares,
+    rsync: rsync?.modules.length ?? 0,
   });
 
   const TABS: { id: typeof activeTab; label: string }[] = [
@@ -168,6 +263,7 @@
     { id: 'ftp', label: 'FTP' },
     { id: 'webdav', label: 'WebDAV' },
     { id: 'sftp', label: 'SFTP' },
+    { id: 'rsync', label: 'Rsync' },
   ];
 
   onMount(() => {
@@ -204,8 +300,83 @@
     const response = await api.get('/shares');
     if (response.success && response.data) {
       shares = response.data;
+      await loadQuotas();
     }
     loading = false;
+  }
+
+  // Quotas are read per share (the backend inspects the filesystem that holds
+  // it, which is what makes "supported" truthful). One request per share, all
+  // in parallel, and a failure leaves the bar out rather than blanking the
+  // screen.
+  async function loadQuotas() {
+    const results = await Promise.all(
+      shares.map((share) => api.getShareQuota(share.name, share.share_type)),
+    );
+    const next: Record<string, ShareQuotaState> = {};
+    results.forEach((res, index) => {
+      if (res.success && res.data) {
+        const share = shares[index];
+        next[`${share.name}:${share.share_type}`] = res.data as ShareQuotaState;
+      }
+    });
+    quotas = next;
+  }
+
+  function quotaKey(share: Share): string {
+    return `${share.name}:${share.share_type}`;
+  }
+
+  function quotaOf(share: Share): ShareQuotaState | undefined {
+    return quotas[quotaKey(share)];
+  }
+
+  function openQuota(share: Share) {
+    const current = quotaOf(share);
+    quotaEditor = quotaKey(share);
+    // The editor speaks GB (what an admin thinks in); the API takes bytes.
+    quotaInput = current && current.quota_bytes > 0
+      ? String(Math.round(current.quota_bytes / 1_000_000_000))
+      : '';
+    quotaNotice = null;
+  }
+
+  function closeQuota() {
+    quotaEditor = null;
+    quotaInput = '';
+    quotaNotice = null;
+  }
+
+  async function saveQuota(share: Share) {
+    const gigabytes = Number(quotaInput);
+    if (!Number.isFinite(gigabytes) || gigabytes < 0) {
+      quotaNotice = { kind: 'error', text: $t('shares.quota_invalid') };
+      return;
+    }
+    quotaBusy = true;
+    quotaNotice = null;
+    const bytes = gigabytes === 0 ? 0 : Math.round(gigabytes * 1_000_000_000);
+    const res = await api.setShareQuota(share.name, share.share_type, bytes);
+    quotaBusy = false;
+    if (res.success && res.data) {
+      quotas = { ...quotas, [quotaKey(share)]: res.data as ShareQuotaState };
+      quotaNotice = { kind: 'ok', text: $t('shares.quota_saved') };
+    } else {
+      quotaNotice = { kind: 'error', text: res.message || $t('shares.quota_save_error') };
+    }
+  }
+
+  async function clearQuota(share: Share) {
+    quotaBusy = true;
+    quotaNotice = null;
+    const res = await api.clearShareQuota(share.name, share.share_type);
+    quotaBusy = false;
+    if (res.success && res.data) {
+      quotas = { ...quotas, [quotaKey(share)]: res.data as ShareQuotaState };
+      quotaNotice = { kind: 'ok', text: $t('shares.quota_cleared') };
+    } else {
+      quotaNotice = { kind: 'error', text: res.message || $t('shares.quota_save_error') };
+    }
   }
 
   async function loadServiceStatus() {
@@ -245,8 +416,186 @@
   async function loadSmbConfig() {
     configLoading = true;
     const resp = await api.get('/shares/smb/config');
-    if (resp.success && resp.data) smbConfig = resp.data;
+    if (resp.success && resp.data) smbConfig = { ...SMB_CONFIG_DEFAULTS, ...resp.data };
+    const recycle = await api.get('/shares/smb/recycle');
+    if (recycle.success && recycle.data) smbRecycle = recycle.data;
+    await loadSmbTimeMachine();
     configLoading = false;
+  }
+
+  async function loadSmbTimeMachine() {
+    const resp = await api.get('/shares/smb/time-machine');
+    if (resp.success && resp.data) {
+      smbTimeMachine = resp.data as Record<string, SmbTimeMachine>;
+      const drafts: Record<string, string> = {};
+      for (const [name, tm] of Object.entries(smbTimeMachine)) {
+        drafts[name] = tm.quota_gb ? String(tm.quota_gb) : '';
+      }
+      tmQuotaDrafts = drafts;
+    }
+  }
+
+  /** Turn Time Machine on/off for one SMB share. The server validates the
+   *  quota (0 = unlimited) before it touches `smb.conf`. */
+  async function toggleSmbTimeMachine(name: string, enabled: boolean) {
+    const previous = smbTimeMachine[name] ?? { enabled: false, quota_gb: 0 };
+    const quota = Number(tmQuotaDrafts[name] ?? '') || 0;
+    smbTimeMachine = { ...smbTimeMachine, [name]: { enabled, quota_gb: enabled ? quota : 0 } };
+    tmSaving = name;
+    const resp = await api.put(`/shares/${encodeURIComponent(name)}/smb/time-machine`, {
+      enabled,
+      quota_gb: enabled ? quota : 0,
+    });
+    tmSaving = null;
+    if (resp.success) notifySuccess('common.saved');
+    else {
+      smbTimeMachine = { ...smbTimeMachine, [name]: previous };
+      notifyError(resp);
+    }
+  }
+
+  /** Save the maximum size macOS must respect; 0 (empty) means unlimited. */
+  async function saveSmbTimeMachineQuota(name: string) {
+    const enabled = smbTimeMachine[name]?.enabled ?? false;
+    const quota = Number(tmQuotaDrafts[name] ?? '') || 0;
+    tmSaving = name;
+    const resp = await api.put(`/shares/${encodeURIComponent(name)}/smb/time-machine`, {
+      enabled,
+      quota_gb: enabled ? quota : 0,
+    });
+    tmSaving = null;
+    if (resp.success) {
+      smbTimeMachine = { ...smbTimeMachine, [name]: { enabled, quota_gb: enabled ? quota : 0 } };
+      notifySuccess('common.saved');
+    } else {
+      notifyError(resp);
+    }
+  }
+
+  async function loadRsync() {
+    rsyncLoading = true;
+    rsyncError = '';
+    const resp = await api.get('/shares/rsync');
+    if (resp.success && resp.data) rsync = resp.data as RsyncState;
+    else rsyncError = resp.message || translate('shares.rsync_load_failed');
+    rsyncLoading = false;
+  }
+
+  async function saveRsyncSettings() {
+    if (!rsync) return;
+    rsyncSaving = true;
+    rsyncError = '';
+    const resp = await api.put('/shares/rsync/config', rsync.settings);
+    rsyncSaving = false;
+    if (resp.success && resp.data) {
+      rsync = resp.data as RsyncState;
+      notifySuccess('common.saved');
+    } else {
+      rsyncError = resp.message || translate('shares.rsync_save_failed');
+    }
+  }
+
+  function openRsyncModule(module?: RsyncModule) {
+    rsyncModuleEditing = !!module;
+    rsyncModuleForm = module
+      ? { ...module, users: [...module.users] }
+      : { name: '', path: '', comment: '', read_only: false, users: [], enabled: true };
+    rsyncModuleModal = true;
+  }
+
+  async function saveRsyncModule() {
+    if (!rsync) return;
+    const form = rsyncModuleForm;
+    // The server refuses all three, but a round trip that fails after the
+    // dialog has already looked acceptable is the wrong order: the reason
+    // belongs next to the field, before anything is sent.
+    if (!rsyncModuleEditing && !form.path) {
+      rsyncError = translate('shares.rsync_need_share');
+      return;
+    }
+    if (!rsyncModuleEditing && !/^[a-z0-9][a-z0-9._-]*$/.test(form.name)) {
+      rsyncError = translate('shares.rsync_name_lowercase');
+      return;
+    }
+    if (form.users.length === 0) {
+      rsyncError = translate('shares.rsync_need_account');
+      return;
+    }
+    rsyncSaving = true;
+    rsyncError = '';
+    const resp = rsyncModuleEditing
+      ? await api.put(`/shares/rsync/modules/${encodeURIComponent(form.name)}`, {
+          read_only: form.read_only, users: form.users, comment: form.comment, enabled: form.enabled,
+        })
+      : await api.post('/shares/rsync/modules', {
+          name: form.name, path: form.path, comment: form.comment,
+          read_only: form.read_only, users: form.users, enabled: form.enabled,
+        });
+    rsyncSaving = false;
+    if (resp.success && resp.data) {
+      rsync = resp.data as RsyncState;
+      rsyncModuleModal = false;
+      notifySuccess('common.saved');
+    } else {
+      rsyncError = resp.message || translate('shares.rsync_save_failed');
+    }
+  }
+
+  async function toggleRsyncModule(module: RsyncModule, enabled: boolean) {
+    rsyncBusyName = module.name;
+    rsyncError = '';
+    const resp = await api.put(`/shares/rsync/modules/${encodeURIComponent(module.name)}`, { enabled });
+    rsyncBusyName = null;
+    if (resp.success && resp.data) rsync = resp.data as RsyncState;
+    else rsyncError = resp.message || translate('shares.rsync_save_failed');
+  }
+
+  async function deleteRsyncModule(module: RsyncModule) {
+    if (!(await dlg.ask(translate('shares.rsync_delete_confirm', { name: module.name })))) return;
+    rsyncBusyName = module.name;
+    const resp = await api.delete(`/shares/rsync/modules/${encodeURIComponent(module.name)}`);
+    rsyncBusyName = null;
+    if (resp.success && resp.data) rsync = resp.data as RsyncState;
+    else notifyError(resp);
+  }
+
+  async function saveRsyncSecret(user: string) {
+    const password = (rsyncSecretDrafts[user] ?? '').trim();
+    if (!password) return;
+    rsyncSecretBusy = user;
+    rsyncError = '';
+    const resp = await api.put(`/shares/rsync/users/${encodeURIComponent(user)}/secret`, { password });
+    rsyncSecretBusy = null;
+    if (resp.success) {
+      rsyncSecretDrafts = { ...rsyncSecretDrafts, [user]: '' };
+      await loadRsync();
+      notifySuccess('common.saved');
+    } else {
+      rsyncError = resp.message || translate('shares.rsync_save_failed');
+    }
+  }
+
+  function toggleRsyncUser(username: string) {
+    const users = rsyncModuleForm.users.includes(username)
+      ? rsyncModuleForm.users.filter((u) => u !== username)
+      : [...rsyncModuleForm.users, username];
+    rsyncModuleForm = { ...rsyncModuleForm, users };
+  }
+
+  /** Turn the recycle bin on or off for one SMB share. Optimistic: the switch
+   *  moves immediately and reverts if the server rejects the change. */
+  async function toggleSmbRecycle(name: string, enabled: boolean) {
+    const previous = smbRecycle[name] ?? false;
+    smbRecycle = { ...smbRecycle, [name]: enabled };
+    recycleSaving = name;
+    const resp = await api.put(`/shares/${encodeURIComponent(name)}/smb/recycle`, { enabled });
+    recycleSaving = null;
+    if (resp.success) {
+      notifySuccess('common.saved');
+    } else {
+      smbRecycle = { ...smbRecycle, [name]: previous };
+      notifyError(resp);
+    }
   }
 
   async function saveSmbConfig() {
@@ -373,6 +722,7 @@
     else if (tab === 'ftp') loadFtpConfig();
     else if (tab === 'webdav') loadWebdavConfig();
     else if (tab === 'sftp') { loadSftpConfig(); loadSftpGrantees(); }
+    else if (tab === 'rsync') loadRsync();
   }
 
   // Arrow-key navigation across the tab strip (WAI-ARIA tabs pattern).
@@ -610,6 +960,80 @@
               <div class="text-c-xl font-semibold mb-2 text-[var(--hv-shell-text-strong)]">{share.name}</div>
               <code class="block font-[family-name:var(--hv-font-mono)] text-c-base text-[var(--hv-shell-text-2)] bg-[var(--hv-shell-border-soft)] px-2.5 py-2 rounded-lg overflow-x-auto whitespace-nowrap">{share.path}</code>
               {#if share.comment}<p class="text-c-base text-[var(--hv-shell-text)] leading-relaxed mt-2.5 mb-0">{share.comment}</p>{/if}
+
+              <!-- Quota (QW-07): a bar when a ceiling is set, the reason when
+                   the filesystem cannot enforce one, and an editor behind a
+                   button so the card stays readable. -->
+              {#if quotaOf(share)?.supported === false}
+                <p class="m-0 mt-2.5 text-c-sm text-[var(--hv-shell-text-2)]" data-testid="shares-quota-unsupported">
+                  {$t('shares.quota_unsupported', { fs: quotaOf(share)?.filesystem ?? '' })} — {quotaOf(share)?.reason ?? ''}
+                </p>
+              {:else if quotaOf(share) && (quotaOf(share)!.quota_bytes > 0)}
+                <div class="mt-2.5" data-testid="shares-quota">
+                  <div class="flex items-center justify-between gap-2 text-c-sm text-[var(--hv-shell-text-2)]">
+                    <span>{$t('shares.quota_usage', { used: quotaOf(share)!.used_human, quota: quotaOf(share)!.quota_human })}</span>
+                    <span data-testid="shares-quota-percent">{quotaOf(share)!.percent}%</span>
+                  </div>
+                  <div
+                    class="mt-1 h-2 rounded-full bg-[var(--hv-shell-border-soft)] overflow-hidden"
+                    role="progressbar"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-valuenow={quotaOf(share)!.percent}
+                    aria-label={$t('shares.quota_bar_label', { name: share.name })}
+                  >
+                    <div
+                      class="h-full rounded-full"
+                      class:bg-[var(--hv-error)]={quotaOf(share)!.percent >= 95}
+                      class:bg-[var(--hv-warning)]={quotaOf(share)!.percent >= 80 && quotaOf(share)!.percent < 95}
+                      class:bg-[var(--hv-primary)]={quotaOf(share)!.percent < 80}
+                      style="width:{quotaOf(share)!.percent}%"
+                    ></div>
+                  </div>
+                </div>
+              {/if}
+
+              {#if quotaEditor === quotaKey(share)}
+                <div class="mt-3 p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]" data-testid="shares-quota-editor">
+                  {#if quotaNotice}
+                    <p
+                      class="m-0 mb-2 text-c-sm"
+                      class:text-[var(--hv-error)]={quotaNotice.kind === 'error'}
+                      class:text-[var(--hv-success)]={quotaNotice.kind === 'ok'}
+                      role={quotaNotice.kind === 'error' ? 'alert' : 'status'}
+                      data-testid="shares-quota-notice"
+                    >
+                      {quotaNotice.text}
+                    </p>
+                  {/if}
+                  <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)]" for={`quota-${quotaKey(share)}`}>
+                    {$t('shares.quota_field')}
+                    <input
+                      id={`quota-${quotaKey(share)}`}
+                      class="mt-1 w-full h-11 px-3 rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-card)] text-[var(--hv-shell-text-strong)]"
+                      type="number"
+                      min="0"
+                      step="1"
+                      placeholder="0"
+                      bind:value={quotaInput}
+                      data-testid="shares-quota-input"
+                    />
+                  </label>
+                  <p class="m-0 mt-1 text-c-sm text-[var(--hv-shell-text-2)]">{$t('shares.quota_hint')}</p>
+                  <div class="flex flex-wrap gap-2 mt-3">
+                    <button class={cn(btn, 'fill')} disabled={quotaBusy} onclick={() => saveQuota(share)} data-testid="shares-quota-save">
+                      {$t('common.save')}
+                    </button>
+                    <button class={cn(btn, 'ghost')} disabled={quotaBusy} onclick={() => clearQuota(share)} data-testid="shares-quota-clear">
+                      {$t('shares.quota_clear')}
+                    </button>
+                    <button class={cn(btn, 'ghost')} disabled={quotaBusy} onclick={closeQuota} data-testid="shares-quota-cancel">
+                      {$t('common.cancel')}
+                    </button>
+                  </div>
+                </div>
+              {/if}
+
               <div class="flex gap-2.5 mt-4">
                 <button data-testid="shares-btn" class={cn(btn, 'fill flex-1')} onclick={() => handleToggleShare(share.name, share.share_type, !share.enabled)}>
                   {#if share.enabled}<IconSquare size={16} />{:else}<IconPlayerPlay size={16} />{/if}
@@ -617,6 +1041,15 @@
                 </button>
                 <button data-testid="shares-icon-btn" class={iconBtn} onclick={() => openPermissions(share)} title={$t('shares.permissions_button')} aria-label={$t('shares.permissions_button')}>
                   <IconShield size={18} />
+                </button>
+                <button
+                  data-testid="shares-quota-btn"
+                  class={iconBtn}
+                  onclick={() => openQuota(share)}
+                  title={$t('shares.quota_button')}
+                  aria-label={$t('shares.quota_button')}
+                >
+                  <IconGauge size={18} />
                 </button>
                 <button data-testid="shares-icon-btn" class={cn(iconBtn, dangerHover)} onclick={() => handleDeleteShare(share.name, share.share_type)} title={$t('common.delete')} aria-label={$t('common.delete')}>
                   <IconTrash size={18} />
@@ -643,6 +1076,75 @@
             <label class={field}><span class={fieldLabel}>{$t('shares.directory_mask')}</span><input class={inp} bind:value={smbConfig.directory_mask} /></label>
           {/if}
           <Button variant="primary" size="lg" onclick={saveSmbConfig}>{$t('common.save')}</Button>
+        </div>
+      {/if}
+
+      {#if smbShares > 0}
+        <div data-testid="shares-recycle" class="flex flex-col gap-4 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+          <div>
+            <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('shares.recycle_title')}</h3>
+            <p class="m-0 mt-1 text-c-base text-[var(--hv-shell-text)] leading-relaxed">{$t('shares.recycle_desc')}</p>
+          </div>
+          <div class="flex flex-col gap-3">
+            {#each shares.filter(s => s.share_type.toLowerCase() === 'smb') as share (share.name)}
+              {@const holder = { get checked() { return smbRecycle[share.name] ?? false; }, set checked(v) { toggleSmbRecycle(share.name, v); } }}
+              <div data-testid="shares-recycle-row" class="flex items-center justify-between gap-3 flex-wrap p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
+                <div class="flex flex-col min-w-0">
+                  <span id={`shares-recycle-name-${share.name}`} class="font-semibold text-c-card-title text-[var(--hv-shell-text-strong)] truncate">{share.name}</span>
+                  <code class="font-[family-name:var(--hv-font-mono)] text-c-label text-[var(--hv-shell-text-2)] truncate">{share.path}</code>
+                </div>
+                <Toggle bind:checked={holder.checked} disabled={recycleSaving === share.name} ariaLabelledby={`shares-recycle-name-${share.name}`} />
+              </div>
+            {/each}
+          </div>
+        </div>
+
+        <div data-testid="shares-time-machine" class="flex flex-col gap-4 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+          <div>
+            <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('shares.tm_title')}</h3>
+            <p class="m-0 mt-1 text-c-base text-[var(--hv-shell-text)] leading-relaxed">{$t('shares.tm_desc')}</p>
+            <p class="m-0 mt-1 text-c-label text-[var(--hv-shell-text-2)] leading-relaxed">{$t('shares.tm_bonjour_hint')}</p>
+          </div>
+          <div class="flex flex-col gap-3">
+            {#each shares.filter(s => s.share_type.toLowerCase() === 'smb') as share (share.name)}
+              {@const tm = smbTimeMachine[share.name] ?? { enabled: false, quota_gb: 0 }}
+              {@const tmHolder = { get checked() { return tm.enabled; }, set checked(v: boolean) { toggleSmbTimeMachine(share.name, v); } }}
+              <div data-testid="shares-time-machine-row" class="flex flex-col gap-2 p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
+                <div class="flex items-center justify-between gap-3 flex-wrap">
+                  <div class="flex flex-col min-w-0">
+                    <span id={`shares-tm-name-${share.name}`} class="font-semibold text-c-card-title text-[var(--hv-shell-text-strong)] truncate">{share.name}</span>
+                    <code class="font-[family-name:var(--hv-font-mono)] text-c-label text-[var(--hv-shell-text-2)] truncate">{share.path}</code>
+                  </div>
+                  <Toggle
+                    bind:checked={tmHolder.checked}
+                    disabled={tmSaving === share.name}
+                    ariaLabelledby={`shares-tm-name-${share.name}`}
+                  />
+                </div>
+                {#if tm.enabled}
+                  <div class="flex items-end gap-2 flex-wrap">
+                    <label class="flex flex-col gap-1 flex-1 min-w-[160px]">
+                      <span class="text-c-label font-semibold text-[var(--hv-shell-text)]">{$t('shares.tm_quota')}</span>
+                      <input
+                        class={inp}
+                        type="number"
+                        min="0"
+                        step="1"
+                        inputmode="numeric"
+                        placeholder={$t('shares.tm_quota_unlimited')}
+                        bind:value={tmQuotaDrafts[share.name]}
+                        data-testid="shares-tm-quota"
+                      />
+                    </label>
+                    <Button variant="ghost" onclick={() => saveSmbTimeMachineQuota(share.name)} disabled={tmSaving === share.name}>
+                      {$t('common.save')}
+                    </Button>
+                  </div>
+                  <p class="m-0 text-c-label text-[var(--hv-shell-text-2)]">{$t('shares.tm_quota_hint')}</p>
+                {/if}
+              </div>
+            {/each}
+          </div>
         </div>
       {/if}
     </div>
@@ -757,6 +1259,130 @@
         {/if}
       </div>
     </div>
+
+  {:else if activeTab === 'rsync'}
+    <div data-testid="shares-rsync" class="flex flex-col gap-4 max-w-[760px]">
+      {#if rsyncLoading}
+        <div data-testid="shares-loading" class="flex items-center justify-center py-12"><Spinner /></div>
+      {:else if rsync}
+        {#if rsyncError}
+          <Alert variant="error">{rsyncError}</Alert>
+        {/if}
+
+        {#if !rsync.binary_available}
+          <Alert variant="warning">{$t('shares.rsync_missing_binary')}</Alert>
+        {/if}
+
+        <div data-testid="shares-rsync-settings" class="flex flex-col gap-4 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+          <div>
+            <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('shares.rsync_title')}</h3>
+            <p class="m-0 mt-1 text-c-base text-[var(--hv-shell-text)] leading-relaxed">{$t('shares.rsync_desc')}</p>
+          </div>
+          <div class="flex items-center justify-between gap-4 flex-wrap">
+            <span class="text-c-base font-semibold text-[var(--hv-shell-text-strong)]">{$t('shares.rsync_enable')}</span>
+            <Toggle bind:checked={rsync.settings.enabled} label={$t('shares.rsync_enable')} />
+          </div>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <label class={field}>
+              <span class={fieldLabel}>{$t('shares.rsync_port')}</span>
+              <input class={inp} type="number" min="1" max="65535" bind:value={rsync.settings.port} />
+            </label>
+            <label class={field}>
+              <span class={fieldLabel}>{$t('shares.rsync_max_connections')}</span>
+              <input class={inp} type="number" min="1" max={rsync.connection_limit} bind:value={rsync.settings.max_connections} />
+            </label>
+          </div>
+          <p class="m-0 text-c-label text-[var(--hv-shell-text-2)]">
+            {$t('shares.rsync_service_state', { state: rsync.service_active ? $t('shares.rsync_running') : $t('shares.rsync_stopped') })}
+          </p>
+          <Button variant="primary" size="lg" onclick={saveRsyncSettings} disabled={rsyncSaving}>
+            {rsyncSaving ? $t('shares.syncing') : $t('common.save')}
+          </Button>
+          <p class="m-0 text-c-label text-[var(--hv-shell-text-2)]">{$t('shares.rsync_ssh_hint')}</p>
+          <code class="text-c-label font-[family-name:var(--hv-font-mono)] break-all text-[var(--hv-shell-text-2)]">{rsync.ssh_path}</code>
+        </div>
+
+        <div data-testid="shares-rsync-modules" class="flex flex-col gap-3 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+          <div class="flex items-center justify-between gap-3 flex-wrap">
+            <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('shares.rsync_modules_title')}</h3>
+            <Button variant="primary" onclick={() => openRsyncModule()} disabled={rsync.modules.length >= rsync.module_limit}>
+              <IconPlus size={16} stroke={2} /> {$t('shares.rsync_add_module')}
+            </Button>
+          </div>
+          <p class="m-0 text-c-base text-[var(--hv-shell-text)] leading-relaxed">{$t('shares.rsync_modules_desc')}</p>
+
+          {#if rsync.modules.length === 0}
+            <EmptyState title={$t('shares.rsync_empty_title')} description={$t('shares.rsync_empty_desc')} />
+          {:else}
+            <div class="flex flex-col gap-3">
+              {#each rsync.modules as module (module.name)}
+                {@const moduleHolder = { get checked() { return module.enabled; }, set checked(v: boolean) { toggleRsyncModule(module, v); } }}
+                <div data-testid="shares-rsync-module" class="flex flex-col gap-2 p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
+                  <div class="flex items-center justify-between gap-3 flex-wrap">
+                    <div class="flex flex-col min-w-0">
+                      <span id={`shares-rsync-module-${module.name}`} class="font-semibold text-c-card-title text-[var(--hv-shell-text-strong)] truncate">{module.name}</span>
+                      <code class="font-[family-name:var(--hv-font-mono)] text-c-label text-[var(--hv-shell-text-2)] truncate">{module.path}</code>
+                      <span class="text-c-label text-[var(--hv-shell-text-2)]">
+                        {module.users.length > 0 ? module.users.join(', ') : $t('shares.rsync_no_users')}
+                        {module.read_only ? ` · ${$t('shares.rsync_read_only')}` : ''}
+                      </span>
+                    </div>
+                    <div class="flex items-center gap-1">
+                      <Toggle
+                        bind:checked={moduleHolder.checked}
+                        disabled={rsyncBusyName === module.name}
+                        ariaLabelledby={`shares-rsync-module-${module.name}`}
+                      />
+                      <button type="button" class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic" data-testid="shares-rsync-edit" aria-label={$t('tasks.edit', { name: module.name })} onclick={() => openRsyncModule(module)}>
+                        <IconUser size={18} stroke={1.8} />
+                      </button>
+                      <button type="button" class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic" data-testid="shares-rsync-delete" aria-label={$t('tasks.delete', { name: module.name })} disabled={rsyncBusyName === module.name} onclick={() => deleteRsyncModule(module)}>
+                        <IconTrash size={18} stroke={1.8} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        <div data-testid="shares-rsync-passwords" class="flex flex-col gap-3 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+          <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('shares.rsync_passwords_title')}</h3>
+          <p class="m-0 text-c-base text-[var(--hv-shell-text)] leading-relaxed">{$t('shares.rsync_passwords_desc')}</p>
+          {#if rsync.available_users.length === 0}
+            <p class="m-0 text-c-base text-[var(--hv-shell-text)]">{$t('shares.rsync_no_accounts')}</p>
+          {:else}
+            {#each rsync.available_users as user (user)}
+              <div class="flex items-end gap-2 flex-wrap p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
+                <div class="flex flex-col min-w-[140px]">
+                  <span class="font-semibold text-c-card-title text-[var(--hv-shell-text-strong)]">{user}</span>
+                  <span class="text-c-label text-[var(--hv-shell-text-2)]">
+                    {rsync.users_with_secret.includes(user) ? $t('shares.rsync_password_set') : $t('shares.rsync_password_missing')}
+                  </span>
+                </div>
+                <label class="flex flex-col gap-1 flex-1 min-w-[160px]">
+                  <span class="text-c-label font-semibold text-[var(--hv-shell-text)]">{$t('shares.rsync_password')}</span>
+                  <input
+                    class={inp}
+                    type="password"
+                    autocomplete="new-password"
+                    placeholder={$t('shares.rsync_password_placeholder')}
+                    bind:value={rsyncSecretDrafts[user]}
+                    data-testid="shares-rsync-password"
+                  />
+                </label>
+                <Button variant="ghost" onclick={() => saveRsyncSecret(user)} disabled={rsyncSecretBusy === user || !(rsyncSecretDrafts[user] ?? '').trim()}>
+                  {$t('common.save')}
+                </Button>
+              </div>
+            {/each}
+          {/if}
+        </div>
+      {:else}
+        <Alert variant="error">{rsyncError || $t('shares.rsync_load_failed')}</Alert>
+      {/if}
+    </div>
   {/if}
 
   {#snippet footer()}
@@ -830,6 +1456,86 @@
   {#snippet footer()}
     <Button variant="ghost" size="lg" onclick={closeCreate}>{$t('common.cancel')}</Button>
     <Button variant="primary" size="lg" onclick={handleCreateShare}>{$t('common.create')}</Button>
+  {/snippet}
+</Modal>
+
+<!-- Rsync module -->
+<Modal
+  open={rsyncModuleModal}
+  title={rsyncModuleEditing ? $t('shares.rsync_edit_module') : $t('shares.rsync_add_module')}
+  size="md"
+  onclose={() => (rsyncModuleModal = false)}
+>
+  {#snippet icon()}
+    <IconGauge size={22} stroke={1.9} />
+  {/snippet}
+  {#snippet children()}
+    <div class="flex flex-col gap-4">
+      {#if !rsyncModuleEditing}
+        <label class={field}>
+          <span class={fieldLabel}>{$t('shares.rsync_module_name')}</span>
+          <input class={inp} bind:value={rsyncModuleForm.name} placeholder="media" data-testid="shares-rsync-module-name" />
+        </label>
+        <label class={field}>
+          <span class={fieldLabel}>{$t('shares.rsync_module_share')}</span>
+          <select class={inp} bind:value={rsyncModuleForm.path} data-testid="shares-rsync-module-path">
+            <option value="">{$t('shares.rsync_pick_share')}</option>
+            {#each rsync?.share_candidates ?? [] as candidate (candidate.path)}
+              <option value={candidate.path} disabled={candidate.used}>
+                {candidate.name} — {candidate.path}
+              </option>
+            {/each}
+          </select>
+        </label>
+      {:else}
+        <p class="m-0 text-c-base text-[var(--hv-shell-text)]">
+          <strong>{rsyncModuleForm.name}</strong> — <code class="font-[family-name:var(--hv-font-mono)] text-c-label">{rsyncModuleForm.path}</code>
+        </p>
+      {/if}
+      <label class={field}>
+        <span class={fieldLabel}>{$t('shares.comment_label')}</span>
+        <input class={inp} bind:value={rsyncModuleForm.comment} placeholder={$t('shares.optional')} />
+      </label>
+      <label class="flex items-center justify-between gap-4 flex-wrap">
+        <span class="text-c-base font-semibold text-[var(--hv-shell-text-strong)]">{$t('shares.rsync_read_only')}</span>
+        <Toggle bind:checked={rsyncModuleForm.read_only} label={$t('shares.rsync_read_only')} />
+      </label>
+      <label class="flex items-center justify-between gap-4 flex-wrap">
+        <span class="text-c-base font-semibold text-[var(--hv-shell-text-strong)]">{$t('shares.rsync_module_enabled')}</span>
+        <Toggle bind:checked={rsyncModuleForm.enabled} label={$t('shares.rsync_module_enabled')} />
+      </label>
+      <fieldset class="m-0 p-0 border-0 flex flex-col gap-2">
+        <legend class="p-0 text-c-label font-semibold text-[var(--hv-shell-text)]">{$t('shares.rsync_module_users')}</legend>
+        {#if (rsync?.available_users ?? []).length === 0}
+          <p class="m-0 text-c-base text-[var(--hv-shell-text)]">{$t('shares.rsync_no_accounts')}</p>
+        {:else}
+          {#each rsync?.available_users ?? [] as user (user)}
+            <label class="flex items-center gap-3 min-h-[44px] cursor-pointer">
+              <input
+                type="checkbox"
+                class="h-4 w-4 flex-none"
+                checked={rsyncModuleForm.users.includes(user)}
+                onchange={() => toggleRsyncUser(user)}
+                data-testid="shares-rsync-module-user"
+              />
+              <span class="text-c-base text-[var(--hv-shell-text-strong)]">{user}</span>
+              {#if !(rsync?.users_with_secret ?? []).includes(user)}
+                <span class="text-c-label text-[var(--hv-warning,#B45309)]">{$t('shares.rsync_no_password_yet')}</span>
+              {/if}
+            </label>
+          {/each}
+        {/if}
+      </fieldset>
+      {#if rsyncError}
+        <Alert variant="error">{rsyncError}</Alert>
+      {/if}
+    </div>
+  {/snippet}
+  {#snippet footer()}
+    <Button variant="ghost" size="lg" onclick={() => (rsyncModuleModal = false)}>{$t('common.cancel')}</Button>
+    <Button variant="primary" size="lg" onclick={saveRsyncModule} disabled={rsyncSaving}>
+      {rsyncSaving ? $t('shares.syncing') : $t('common.save')}
+    </Button>
   {/snippet}
 </Modal>
 

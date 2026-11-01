@@ -21,6 +21,13 @@
   import SearchItem from './SearchItem.svelte';
   import { IconSearchOff } from '@tabler/icons-svelte';
   import { t } from '$lib/stores/i18n';
+
+  /**
+   * What the cross-root file provider could not cover ("2 folders could not be
+   * read", "the list was cut — refine the search"). Rendered under the results
+   * so an incomplete file answer never looks complete (QW-12).
+   */
+  let { fileNote = '' }: { fileNote?: string } = $props();
 </script>
 
 {#if $searchStore.results.length > 0}
@@ -33,8 +40,11 @@
       />
     {/each}
   </div>
+  {#if fileNote}
+    <p class="files-note" data-testid="search-files-note">{fileNote}</p>
+  {/if}
 {:else if $searchStore.query}
-  <div class="no-results">
+  <div class="no-results" data-testid="search-no-results">
     <IconSearchOff size={48} stroke={2} />
     <p>{$t('search.no_results', { query: $searchStore.query })}</p>
   </div>
@@ -59,6 +69,14 @@
 {/if}
 
 <style>
+  .files-note {
+    margin: 0;
+    padding: var(--hv-space-2) 20px var(--hv-space-3);
+    border-top: 1px solid var(--hv-shell-border-soft);
+    font-size: var(--hv-font-size-sm);
+    color: var(--hv-shell-text-3);
+  }
+
   .results-list {
     max-height: 400px;
     overflow-y: auto;

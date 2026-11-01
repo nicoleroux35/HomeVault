@@ -98,7 +98,7 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
     subtitleKey: 'settings.nav_subtitle_security',
     icon: IconShieldCheckered,
     accent: 'var(--hv-settings-cat-security)',
-    keywords: ['security', 'https', 'tls', 'ssl', 'certificate', 'antivirus', 'clamav', 'ransomware', 'firewall', 'ufw']
+    keywords: ['security', 'https', 'tls', 'ssl', 'certificate', 'acme', 'letsencrypt', 'ddns', 'dynamic dns', 'duckdns', 'dynv6', 'cloudflare', 'reachability', 'port 443', 'antivirus', 'clamav', 'ransomware', 'firewall', 'ufw']
   },
   {
     key: 'appearance',

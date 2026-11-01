@@ -15,9 +15,9 @@ export interface IconEntry {
 }
 
 export const iconCount = {
-  phosphor: 53,
-  tabler: 84,
-  total: 137
+  phosphor: 55,
+  tabler: 85,
+  total: 140
 };
 
 export const iconLookup: Record<string, IconEntry> = {
@@ -171,9 +171,16 @@ export const iconLookup: Record<string, IconEntry> = {
     "phosphor": "phosphor-option",
     "tabler": "tabler-option"
   },
+  "pause": {
+    "phosphor": "phosphor-pause"
+  },
   "power": {
     "phosphor": "phosphor-power",
     "tabler": "tabler-power"
+  },
+  "radio": {
+    "phosphor": "phosphor-radio",
+    "tabler": "tabler-radio"
   },
   "rewind": {
     "phosphor": "phosphor-rewind"

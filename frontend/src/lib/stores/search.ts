@@ -25,7 +25,7 @@ import { writable, get } from 'svelte/store';
 /** An item the user can find via the search overlay. */
 export interface SearchableItem {
   id: string;
-  type: 'app' | 'setting' | 'action';
+  type: 'app' | 'setting' | 'action' | 'file';
   title: string;
   description: string;
   icon: string;
@@ -39,31 +39,102 @@ interface SearchState {
   query: string;
   results: SearchableItem[];
   selectedIndex: number;
+  /**
+   * `true` while the cross-root file provider is still answering. The overlay
+   * shows a row for it instead of "no results" — a file search that hides its
+   * own latency reads as "the file does not exist".
+   */
+  filesLoading: boolean;
+  /**
+   * What the file provider could not cover, in plain words: the roots whose
+   * walk ran out of budget, and the roots that could not be read. Empty when
+   * the answer is complete.
+   */
+  filesNote: string;
 }
 
 const initialState: SearchState = {
   isOpen: false,
   query: '',
   results: [],
-  selectedIndex: 0
+  selectedIndex: 0,
+  filesLoading: false,
+  filesNote: ''
 };
 
 export const searchStore = writable<SearchState>(initialState);
 
 /** Open the search overlay and reset all search state. */
 export function openSearch() {
-  searchStore.update(s => ({ ...s, isOpen: true, query: '', results: [], selectedIndex: 0 }));
+  searchStore.update(s => ({
+    ...s,
+    isOpen: true,
+    query: '',
+    results: [],
+    selectedIndex: 0,
+    filesLoading: false,
+    filesNote: ''
+  }));
 }
 
 /** Close the search overlay and clear state. */
 export function closeSearch() {
-  searchStore.update(s => ({ ...s, isOpen: false, query: '', results: [], selectedIndex: 0 }));
+  searchStore.update(s => ({
+    ...s,
+    isOpen: false,
+    query: '',
+    results: [],
+    selectedIndex: 0,
+    filesLoading: false,
+    filesNote: ''
+  }));
 }
 
 /** Run a search against the provided index and store the results. */
 export function updateQuery(query: string, searchIndex: SearchableItem[]) {
   const results = search(query, searchIndex);
   searchStore.update(s => ({ ...s, query, results, selectedIndex: 0 }));
+}
+
+/**
+ * Merge the cross-root file hits into whatever the local index already found.
+ *
+ * The local index (apps, settings, actions) always comes first: it is what the
+ * user asked for 99 % of the time, and it answers instantly, so a file hit
+ * that had to walk the disk must never push "Settings" off the list. File hits
+ * then appear in the provider's own order (exact name → prefix → shortest),
+ * deduplicated against the local results by id.
+ *
+ * `onlyIfQuery` guards against a stale answer: an HTTP response that lands
+ * after the user typed something else must be dropped, not merged into the
+ * new query's results.
+ */
+export function mergeFileHits(
+  fileHits: SearchableItem[],
+  state: SearchState,
+  onlyIfQuery?: string
+) {
+  searchStore.update(s => {
+    if (!s.isOpen) return s;
+    if (onlyIfQuery !== undefined && s.query !== onlyIfQuery) return s;
+    const seen = new Set(state.results.map(item => item.id));
+    const local = state.results.filter(item => item.type !== 'file');
+    const files = fileHits.filter(item => !seen.has(item.id));
+    return {
+      ...s,
+      results: [...local, ...files],
+      filesLoading: false,
+      filesNote: state.filesNote
+    };
+  });
+}
+
+/** Mark the file provider as running (or done) for the current query. */
+export function setFilesLoading(loading: boolean, query?: string) {
+  searchStore.update(s => {
+    if (query !== undefined && s.query !== query) return s;
+    return { ...s, filesLoading: loading };
+  });
 }
 
 /** Move selection to the next result (wraps at end). */

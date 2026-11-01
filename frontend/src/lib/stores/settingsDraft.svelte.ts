@@ -82,7 +82,7 @@ export interface TlsDraft {
   enabled: boolean;
   https_port: number | null;
   http_port: number;
-  mode: 'self-signed' | 'manual';
+  mode: 'self-signed' | 'manual' | 'acme';
   cert_path: string;
   key_path: string;
   redirect: boolean;

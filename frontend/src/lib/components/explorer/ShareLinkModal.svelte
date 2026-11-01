@@ -52,6 +52,10 @@
     created_at: string;
     share_path: string;
     expired: boolean;
+    protected: boolean;
+    max_downloads: number | null;
+    download_count: number;
+    exhausted: boolean;
   }
 
   let {
@@ -64,9 +68,12 @@
     initialPath?: string;
   } = $props();
 
-const links = $state<ShareLink[]>([]);
+  const links = $state<ShareLink[]>([]);
   let mode = $state<'anyone' | 'signed_in'>('anyone');
   let expiresDays = $state<number>(30);
+  let password = $state('');
+  let limitMode = $state<'none' | 'one' | 'custom'>('none');
+  let maxDownloads = $state<number>(10);
   let creating = $state(false);
   let error = $state('');
   let copiedToken = $state('');
@@ -105,7 +112,18 @@ const links = $state<ShareLink[]>([]);
     if (!initialPath || creating) return;
     creating = true;
     error = '';
-    const r = await api.createShareLink(initialPath, mode, expiresDays);
+    // "One-time" is the smallest download cap, not a second mechanism: the
+    // server already refuses the next reservation once a completed download
+    // reached `max_downloads`, so there is one rule to reason about.
+    const maxDownloadLimit =
+      limitMode === 'none' ? undefined : limitMode === 'one' ? 1 : maxDownloads;
+    const r = await api.createShareLink(
+      initialPath,
+      mode,
+      expiresDays,
+      password || undefined,
+      maxDownloadLimit,
+    );
     creating = false;
     if (r.success && r.data) {
       const created = r.data as ShareLink;
@@ -113,6 +131,9 @@ const links = $state<ShareLink[]>([]);
       showQr(created);
       mode = 'anyone';
       expiresDays = 30;
+      password = '';
+      limitMode = 'none';
+      maxDownloads = 10;
     } else {
       error = r.message || r.error || $t('explorer.share_link_create_failed');
     }
@@ -189,6 +210,27 @@ const links = $state<ShareLink[]>([]);
         </select>
       </div>
     </div>
+    <label class="block mt-3 text-c-label font-semibold text-[var(--hv-shell-text-strong)]" for="share-password">
+      {$t('explorer.share_link_password')}
+      <input id="share-password" class="mt-1 w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-card)] text-[var(--hv-shell-text-strong)]" type="password" autocomplete="new-password" minlength="8" maxlength="256" bind:value={password} />
+    </label>
+    <label class="block mt-3 text-c-label font-semibold text-[var(--hv-shell-text-strong)]" for="share-limit">
+      {$t('explorer.share_link_limit')}
+      <select id="share-limit" class={selectClass + ' mt-1'} bind:value={limitMode}>
+        <option value="none">{$t('explorer.share_link_limit_none')}</option>
+        <option value="one">{$t('explorer.share_link_limit_one')}</option>
+        <option value="custom">{$t('explorer.share_link_limit_custom')}</option>
+      </select>
+    </label>
+    {#if limitMode === 'custom'}
+      <label class="block mt-2 text-c-label font-semibold text-[var(--hv-shell-text-strong)]" for="share-max-downloads">
+        {$t('explorer.share_link_max_downloads')}
+        <input id="share-max-downloads" class="mt-1 w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-card)] text-[var(--hv-shell-text-strong)]" type="number" min="1" max="100000" bind:value={maxDownloads} />
+      </label>
+    {/if}
+    {#if limitMode !== 'none'}
+      <p class="mt-2 text-xs text-[var(--hv-shell-text-2)]">{$t('explorer.share_link_limit_note')}</p>
+    {/if}
     {#if mode === 'anyone'}
       <p class="mt-2 text-xs text-[var(--hv-shell-text-2)]">{$t('explorer.share_link_anyone_note')}</p>
     {:else}
@@ -207,6 +249,11 @@ const links = $state<ShareLink[]>([]);
         <span class="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-2)]">
           <IconLink size={14} />
           {fileLink.mode === 'anyone' ? $t('explorer.share_link_mode_anyone') : $t('explorer.share_link_mode_signed_in')}
+          {#if fileLink.protected}<Badge>{$t('explorer.share_link_protected')}</Badge>{/if}
+          {#if fileLink.max_downloads !== null}<Badge>{fileLink.download_count}/{fileLink.max_downloads}</Badge>{/if}
+          {#if fileLink.exhausted}
+            <Badge variant="warning">{$t('explorer.share_link_exhausted')}</Badge>
+          {/if}
           {#if fileLink.expired}
             <Badge variant="warning">{$t('explorer.share_link_expired')}</Badge>
           {/if}
@@ -224,7 +271,7 @@ const links = $state<ShareLink[]>([]);
           <p class="m-0 text-xs text-[var(--hv-shell-text-2)] mb-1">{$t('explorer.share_link_url')}</p>
           <p class="m-0 text-sm font-mono text-[var(--hv-shell-text-strong)] break-all select-all">{api.getShareLinkUrl(fileLink.share_path)}</p>
           <div class="mt-2 flex gap-2 flex-wrap">
-            <Button size="sm" variant="secondary" disabled={fileLink.expired} onclick={() => copyLink(fileLink.token, fileLink.share_path)}>
+            <Button size="sm" variant="secondary" disabled={fileLink.expired || fileLink.exhausted} onclick={() => copyLink(fileLink.token, fileLink.share_path)}>
               {#if copiedToken === fileLink.token}
                 <IconCheck size={14} /> {$t('explorer.share_link_copied')}
               {:else}
@@ -258,16 +305,20 @@ const links = $state<ShareLink[]>([]);
             <span class="block text-micro text-[var(--hv-shell-text-2)]">
               {link.expired
                 ? $t('explorer.share_link_expired')
-                : link.expires_at
-                  ? new Date(link.expires_at).toLocaleDateString()
-                  : $t('explorer.share_link_no_expiry')}
+                : link.exhausted
+                  ? $t('explorer.share_link_exhausted')
+                  : link.max_downloads !== null
+                    ? `${link.download_count}/${link.max_downloads}`
+                    : link.expires_at
+                      ? new Date(link.expires_at).toLocaleDateString()
+                      : $t('explorer.share_link_no_expiry')}
             </span>
           </span>
           <button
             class="hv-ic grid place-items-center w-8 h-8 rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:text-[var(--hv-shell-text-strong)] disabled:opacity-40"
             title={$t('common.copy')}
             aria-label={$t('common.copy')}
-            disabled={link.expired}
+            disabled={link.expired || link.exhausted}
             onclick={() => copyLink(link.token, link.share_path)}
           >
             {#if copiedToken === link.token}<IconCheck size={15} />{:else}<IconCopy size={15} />{/if}

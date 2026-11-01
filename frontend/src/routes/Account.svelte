@@ -24,6 +24,9 @@
   import UserAvatar from '$lib/components/theme/UserAvatar.svelte';
   import { Button } from '$lib/components/theme';
   import { PageLayout, SectionCard, ConfirmDialog } from '$lib/components/app';
+  import TrustedDevicesCard from '$lib/components/account/TrustedDevicesCard.svelte';
+  import PasskeysCard from '$lib/components/account/PasskeysCard.svelte';
+  import RescueEmailCard from '$lib/components/account/RescueEmailCard.svelte';
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
   import { cn } from '$lib/utils.js';
   import type { User as UserType } from '$lib/types/api';
@@ -633,6 +636,14 @@
             </Button>
           </div>
         </SectionCard>
+
+        <!-- Trusted devices and the rescue address: what makes the second
+             factor survivable (see docs/guides/identity.md). -->
+        <TrustedDevicesCard />
+        <!-- Passkeys: a separate credential, never merged into the password
+             or the TOTP record (see docs/guides/identity.md). -->
+        <PasskeysCard />
+        <RescueEmailCard />
 
         <!-- Recent sign-ins -->
         <SectionCard data-testid="account-card" class="col-span-2 w-full @max-[880px]:col-span-1">

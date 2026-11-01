@@ -412,6 +412,26 @@ class ApiClient {
     }
   }
 
+  /** Generic PATCH request (partial update; the passkey label uses it). */
+  async patch<T = any>(endpoint: string, data?: any): Promise<ApiResponse<T>> {
+    this.invalidateForMutation(endpoint);
+
+    try {
+      const response = await fetch(`${this.baseUrl}${endpoint}`, {
+        method: 'PATCH',
+        headers: this.getHeaders(),
+        body: JSON.stringify(data ?? {}),
+      });
+
+      return await this.parseResponse<T>(response);
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Network error',
+      };
+    }
+  }
+
   /**
    * Generic DELETE request. `data`, when provided, is sent as a JSON body
    * (used by endpoints like share-permission revoke that identify the
@@ -451,10 +471,24 @@ class ApiClient {
    * one. The code must be submitted here instead, against the dedicated
    * verification endpoint.
    */
-  async loginWith2FA(username: string, password: string, totpCode: string, rememberMe = false) {
+  async loginWith2FA(
+    username: string,
+    password: string,
+    totpCode: string,
+    rememberMe = false,
+    rememberDevice = false,
+  ) {
     return this.post<LoginResponse>(
       '/auth/2fa/verify',
-      { username, password, totp_code: totpCode, remember_me: rememberMe },
+      {
+        username,
+        password,
+        totp_code: totpCode,
+        remember_me: rememberMe,
+        // Opt-in: the server answers with `hv_trusted_device` (HttpOnly) and
+        // this browser may skip the second factor for 30 days.
+        remember_device: rememberDevice,
+      },
       false
     );
   }
@@ -2011,6 +2045,16 @@ class ApiClient {
     return this.get(`/explorer/list?path=${encodeURIComponent(path)}`, { cache: false });
   }
 
+  /**
+   * Cross-root file search for the desktop's ⌘K overlay (QW-12). Confined
+   * server-side to the roots this session's Explorer would list; `files_only`
+   * drops directories from the answer.
+   */
+  async searchAllFiles(query: string, limit = 8, filesOnly = false) {
+    const qs = `q=${encodeURIComponent(query)}&limit=${limit}${filesOnly ? '&files_only=true' : ''}`;
+    return this.get(`/search/files?${qs}`, { cache: false });
+  }
+
   async searchFiles(path: string, query: string, maxResults: number = 100, fuzzy = false) {
     const qs = `path=${encodeURIComponent(path)}&query=${encodeURIComponent(query)}&max_results=${maxResults}${fuzzy ? '&fuzzy=true' : ''}`;
     return this.get(`/explorer/search?${qs}`, { cache: false });
@@ -2119,8 +2163,8 @@ class ApiClient {
     return this.get('/explorer/shares', { cache: false });
   }
 
-  async createShareLink(path: string, mode: 'anyone' | 'signed_in', expiresDays: number) {
-    return this.post('/explorer/shares', { path, mode, expires_days: expiresDays });
+  async createShareLink(path: string, mode: 'anyone' | 'signed_in', expiresDays: number, password?: string, maxDownloads?: number) {
+    return this.post('/explorer/shares', { path, mode, expires_days: expiresDays, password, max_downloads: maxDownloads });
   }
 
   async revokeShareLink(token: string) {
@@ -2174,6 +2218,42 @@ class ApiClient {
 
   async emptyTrash() {
     return this.delete('/explorer/trash');
+  }
+
+  /** Appliance-wide trash retention policy (age limit + size ceiling). */
+  async getTrashPolicy() {
+    return this.get('/explorer/trash/policy', { cache: false });
+  }
+
+  async setTrashPolicy(retentionDays: number, maxBytes: number) {
+    return this.put('/explorer/trash/policy', {
+      retention_days: retentionDays,
+      max_bytes: maxBytes,
+    });
+  }
+
+  /** Run the retention pass now, with the saved policy. */
+  async purgeTrashNow() {
+    return this.post('/explorer/trash/purge-now', {});
+  }
+
+  /**
+   * The instant-copy (reflink) policy, plus which mounts under the user's
+   * roots can actually clone — evidence for the settings panel, never a gate.
+   */
+  async getInstantCopySettings() {
+    return this.get<{ mode: 'auto' | 'off'; mounts: { mount_point: string; fs_type: string; reflink: boolean }[] }>(
+      '/explorer/instant-copy',
+      { cache: false }
+    );
+  }
+
+  /**
+   * Save the instant-copy policy (admin only). `auto` tries a clone per file
+   * and silently falls back; `off` always uses the verified byte stream.
+   */
+  async setInstantCopyMode(mode: 'auto' | 'off') {
+    return this.put('/explorer/instant-copy', { mode });
   }
 
   /**
@@ -3297,7 +3377,7 @@ class ApiClient {
   async setTlsSettings(data: {
     enabled: boolean;
     https_port?: number | null;
-    mode: 'self-signed' | 'manual';
+    mode: 'self-signed' | 'manual' | 'acme';
     cert_path?: string | null;
     key_path?: string | null;
     redirect: boolean;
@@ -3307,6 +3387,324 @@ class ApiClient {
 
   async regenerateTlsCert() {
     return this.post('/settings/tls/regenerate');
+  }
+
+  // --- Certificate automation (ACME, admin-only) ---
+
+  async getAcmeSettings() {
+    return this.get('/settings/acme', { cache: false });
+  }
+
+  /**
+   * `dns_api_token` is write-only on the wire: send `'set'` to keep the stored
+   * value, `''` to clear it, or a new token to replace it. The response echoes
+   * `'set'`/`''`, never the token.
+   */
+  async setAcmeSettings(data: {
+    enabled: boolean;
+    domain: string;
+    contact_email: string;
+    directory_url: string;
+    tos_agreed: boolean;
+    challenge: 'http-01' | 'dns-01';
+    provider: 'manual' | 'cloudflare';
+    dns_api_token: string;
+    dns_propagation_seconds: number;
+  }) {
+    return this.put('/settings/acme', data);
+  }
+
+  async issueAcmeCertificate() {
+    return this.post('/settings/acme/issue');
+  }
+
+  async confirmAcmeDnsRecord() {
+    return this.post('/settings/acme/confirm');
+  }
+
+  async testAcmeChallenge() {
+    return this.post('/settings/acme/test-challenge');
+  }
+
+  // --- Dynamic DNS (admin-only) ---
+
+  async getDdnsSettings() {
+    return this.get('/settings/ddns', { cache: false });
+  }
+
+  /** `token` is write-only here too: `'set'` keeps, `''` clears. */
+  async setDdnsSettings(data: {
+    enabled: boolean;
+    provider: 'duckdns' | 'dynv6' | 'cloudflare' | 'custom';
+    hostname: string;
+    token: string;
+    custom_update_url: string;
+  }) {
+    return this.put('/settings/ddns', data);
+  }
+
+  async updateDdnsNow() {
+    return this.post('/settings/ddns/update');
+  }
+
+  // --- Reachability advisor (admin-only, read-only) ---
+
+  async getReachability() {
+    return this.get('/settings/reachability', { cache: false });
+  }
+
+  /** Full configuration backup (admin-only). */
+  async getConfigBackupState() {
+    return this.get('/settings/config-backup', { cache: false });
+  }
+
+  async exportConfigBackup(includeSecrets: boolean, passphrase?: string) {
+    return this.post('/settings/config-backup/export', {
+      include_secrets: includeSecrets,
+      passphrase: passphrase ?? null,
+    });
+  }
+
+  /**
+   * The archive is binary, so it is fetched raw (never inside a JSON string).
+   * The session token travels in the header, as everywhere else; the browser
+   * then saves the file from this URL.
+   */
+  getConfigBackupArchiveUrl(id: string) {
+    return `${this.baseUrl}/settings/config-backup/archives/${encodeURIComponent(id)}`;
+  }
+
+  /** Uploads an archive; the passphrase travels in a header, never a URL. */
+  private async configBackupUpload(path: string, file: Blob, passphrase?: string) {
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/octet-stream',
+      };
+      const token = localStorage.getItem('session-token');
+      if (token) headers['x-session-token'] = token;
+      const csrf = localStorage.getItem('csrf-token');
+      if (csrf) headers['x-csrf-token'] = csrf;
+      if (passphrase) headers['x-backup-passphrase'] = passphrase;
+      const response = await fetch(`${this.baseUrl}${path}`, {
+        method: 'POST',
+        headers,
+        body: file,
+      });
+      const body = await response.json().catch(() => ({}));
+      return {
+        success: !!body?.success,
+        data: body?.data,
+        message: body?.message || body?.error,
+        status: response.status,
+      } as any;
+    } catch (error) {
+      return { success: false, message: String(error) } as any;
+    }
+  }
+
+  async inspectConfigBackup(file: Blob, passphrase?: string) {
+    return this.configBackupUpload('/settings/config-backup/inspect', file, passphrase);
+  }
+
+  async restoreConfigBackup(file: Blob, passphrase?: string) {
+    return this.configBackupUpload('/settings/config-backup/restore', file, passphrase);
+  }
+
+  /** Per-share size quota (admin-only): state, usage and support. */
+  async getShareQuota(name: string, shareType: string) {
+    return this.get(
+      `/shares/${encodeURIComponent(name)}/${encodeURIComponent(shareType)}/quota`,
+      { cache: false },
+    );
+  }
+
+  /** `quotaBytes: 0` removes the ceiling. */
+  async setShareQuota(name: string, shareType: string, quotaBytes: number) {
+    return this.put(
+      `/shares/${encodeURIComponent(name)}/${encodeURIComponent(shareType)}/quota`,
+      { quota_bytes: quotaBytes },
+    );
+  }
+
+  async clearShareQuota(name: string, shareType: string) {
+    return this.delete(
+      `/shares/${encodeURIComponent(name)}/${encodeURIComponent(shareType)}/quota`,
+    );
+  }
+
+  /** Who is connected over SMB / NFS / SFTP / FTP (admin-only). */
+  async getConnectedClients() {
+    return this.get('/security/connected-clients', { cache: false });
+  }
+
+  /** Names a client id, never a pid: the server re-collects before acting. */
+  async kickConnectedClient(id: string) {
+    return this.post('/security/connected-clients/kick', { id });
+  }
+
+  /** Login auto-block (admin-only): policy, the ban list, pardon. */
+  async getAutoBlock() {
+    return this.get('/security/auto-block', { cache: false });
+  }
+
+  /** Read-only hardening audit (admin-only). Never cached: the card must show
+   *  a fixed finding on the very next run, without a restart. */
+  async getSecurityAdvisor() {
+    return this.get('/security/advisor', { cache: false });
+  }
+
+  async setAutoBlock(data: {
+    enabled: boolean;
+    threshold: number;
+    window_seconds: number;
+    ban_seconds: number;
+    apply_firewall: boolean;
+    dos_enabled: boolean;
+    dos_requests_per_minute: number;
+  }) {
+    return this.put('/security/auto-block', data);
+  }
+
+  /** Lift one address: its row and, when installed, its firewall rule. */
+  async pardonAutoBlock(ip: string) {
+    return this.post('/security/auto-block/pardon', { ip });
+  }
+
+  async clearAutoBlockBans() {
+    return this.post('/security/auto-block/clear');
+  }
+
+  /** Wake-on-LAN (admin-only): saved hosts, and sending a magic packet. */
+  async getWolHosts() {
+    return this.get('/power/wol/hosts', { cache: false });
+  }
+
+  async createWolHost(data: { label: string; mac: string; broadcast: string }) {
+    return this.post('/power/wol/hosts', data);
+  }
+
+  async updateWolHost(id: number, data: { label: string; mac: string; broadcast: string }) {
+    return this.put(`/power/wol/hosts/${id}`, data);
+  }
+
+  async deleteWolHost(id: number) {
+    return this.delete(`/power/wol/hosts/${id}`);
+  }
+
+  /** Answers `sent`, never `woken`: the packet is unacknowledged. */
+  async wakeWolHost(id: number) {
+    return this.post('/power/wol/wake', { id });
+  }
+
+  /** Remote syslog forwarding (admin-only). */
+  async getSyslogSettings() {
+    return this.get('/settings/syslog', { cache: false });
+  }
+
+  async setSyslogSettings(data: {
+    enabled: boolean;
+    protocol: 'udp' | 'tcp' | 'tls';
+    host: string;
+    port: number;
+    format: 'rfc5424' | 'rfc3164';
+    facility: number;
+    ca_pem: string;
+    include_app_events: boolean;
+  }) {
+    return this.put('/settings/syslog', data);
+  }
+
+  /** Sends one real message to the configured collector. */
+  async testSyslog() {
+    return this.post('/settings/syslog/test');
+  }
+
+  // --- Identity: trusted devices and the rescue address (own account) ---
+
+  // Passkeys / WebAuthn (Phase 1 P1.3). The two ceremonies are two calls
+  // each: `begin` (server issues a single-use challenge) then `finish` (the
+  // server verifies the signed response). The browser handles the
+  // `navigator.credentials` call in between — see stores/passkey.ts.
+  async getPasskeys() {
+    return this.get('/passkeys', { cache: false });
+  }
+
+  async beginPasskeyRegistration() {
+    return this.post('/passkeys/register/begin');
+  }
+
+  async finishPasskeyRegistration(payload: {
+    client_data_json: string;
+    attestation_object: string;
+    credential_id: string;
+    label: string;
+  }) {
+    return this.post('/passkeys/register/finish', payload);
+  }
+
+  async beginPasskeyLogin(username: string) {
+    return this.post('/passkeys/login/begin', { username });
+  }
+
+  async finishPasskeyLogin(payload: {
+    credential_id: string;
+    client_data_json: string;
+    authenticator_data: string;
+    signature: string;
+    username: string;
+    remember_me?: boolean;
+  }) {
+    return this.post('/passkeys/login/finish', payload);
+  }
+
+  async renamePasskey(id: string, label: string) {
+    return this.patch(`/passkeys/${encodeURIComponent(id)}`, { label });
+  }
+
+  async deletePasskey(id: string) {
+    return this.delete(`/passkeys/${encodeURIComponent(id)}`);
+  }
+
+  async getTrustedDevices() {
+    return this.get('/identity/devices', { cache: false });
+  }
+
+  async revokeTrustedDevice(id: string) {
+    return this.post('/identity/devices/revoke', { id });
+  }
+
+  async revokeAllTrustedDevices() {
+    return this.post('/identity/devices/revoke-all');
+  }
+
+  async getRescueEmail() {
+    return this.get('/identity/rescue-email', { cache: false });
+  }
+
+  async setRescueEmail(email: string) {
+    return this.post('/identity/rescue-email', { email });
+  }
+
+  async verifyRescueEmail(code: string) {
+    return this.post('/identity/rescue-email/verify', { code });
+  }
+
+  async clearRescueEmail() {
+    return this.delete('/identity/rescue-email');
+  }
+
+  // --- Account recovery through the rescue address (public) ---
+
+  async requestAccountRecovery(username: string) {
+    return this.post('/auth/recover', { username }, false);
+  }
+
+  /**
+   * A correct six-digit code is exchanged for a fresh offline recovery code —
+   * the same one the ordinary reset screen consumes.
+   */
+  async verifyAccountRecovery(username: string, code: string) {
+    return this.post('/auth/recover/verify', { username, code }, false);
   }
 
 }

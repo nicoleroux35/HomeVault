@@ -74,7 +74,10 @@
         enabled: !!d.enabled,
         https_port: d.effective_https_port ?? 8443,
         http_port: d.http_port ?? 8080,
-        mode: d.mode === 'manual' ? 'manual' : 'self-signed',
+        mode:
+          d.mode === 'manual' ? 'manual'
+          : d.mode === 'acme' ? 'acme'
+          : 'self-signed',
         cert_path: d.cert_path ?? '',
         key_path: d.key_path ?? '',
         redirect: !!d.redirect,
@@ -209,7 +212,14 @@
             <input type="radio" name="tls-mode" value="manual" bind:group={draft.tls.mode} />
             <span>{$t('settings.tls_mode_manual')}</span>
           </label>
+          <label class="tls-radio">
+            <input type="radio" name="tls-mode" value="acme" bind:group={draft.tls.mode} />
+            <span>{$t('settings.tls_mode_acme')}</span>
+          </label>
         </div>
+        {#if draft.tls.mode === 'acme'}
+          <p class={settingsRowHint}>{$t('settings.tls_mode_acme_hint')}</p>
+        {/if}
       </div>
 
       {#if draft.tls.mode === 'manual'}

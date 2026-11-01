@@ -55,6 +55,11 @@ self.addEventListener('fetch', (event) => {
   // Skip API requests to backend
   if (url.pathname.startsWith('/api')) return;
 
+  // Skip share links entirely. They are one-off grants: a cached copy would
+  // keep working after the link expired, was revoked, or used up its download
+  // limit (`cache-first` below would even replay it with no network request).
+  if (url.pathname.startsWith('/share/')) return;
+
   // Skip WebSocket connections
   if (request.url.includes('/ws')) return;
 
