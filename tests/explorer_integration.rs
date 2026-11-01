@@ -63,7 +63,7 @@
 //!   cargo test --test explorer_integration -- --nocapture
 
 use axum::{
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use http::{Method, Request, StatusCode};
@@ -81,13 +81,16 @@ use homevault::handlers::explorer::{
     handle_explorer_download, handle_explorer_download_ticket, handle_explorer_eject,
     handle_explorer_extract, handle_explorer_favorites_add, handle_explorer_favorites_list,
     handle_explorer_favorites_remove, handle_explorer_format, handle_explorer_history,
+    handle_explorer_instant_copy_get, handle_explorer_instant_copy_update,
     handle_explorer_list, handle_explorer_mkdir, handle_explorer_move,
     handle_explorer_network_discovery, handle_explorer_permissions, handle_explorer_preview,
     handle_explorer_recents_clear, handle_explorer_recents_list, handle_explorer_recents_touch,
     handle_explorer_rename, handle_explorer_roots, handle_explorer_save, handle_explorer_search,
     handle_explorer_snapshots, handle_explorer_thumbnail, handle_explorer_thumbnail_ticket,
     handle_explorer_trash, handle_explorer_trash_empty, handle_explorer_trash_list,
-    handle_explorer_trash_purge, handle_explorer_trash_restore, handle_explorer_upload,
+    handle_explorer_trash_policy_get, handle_explorer_trash_policy_update,
+    handle_explorer_trash_purge, handle_explorer_trash_purge_now,
+    handle_explorer_trash_restore, handle_explorer_upload,
     handle_explorer_upload_chunk, handle_explorer_upload_complete,
     handle_explorer_upload_session_abort, handle_explorer_upload_session_start,
     handle_explorer_watch, handle_explorer_watch_ticket,
@@ -163,6 +166,14 @@ fn explorer_router(state: Arc<AppState>) -> Router {
         .route("/api/explorer/copy", post(handle_explorer_copy))
         .route("/api/explorer/move", post(handle_explorer_move))
         .route(
+            "/api/explorer/instant-copy",
+            get(handle_explorer_instant_copy_get),
+        )
+        .route(
+            "/api/explorer/instant-copy",
+            put(handle_explorer_instant_copy_update),
+        )
+        .route(
             "/api/explorer/permissions",
             get(handle_explorer_permissions),
         )
@@ -210,6 +221,14 @@ fn explorer_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/explorer/trash/{id}",
             delete(handle_explorer_trash_purge),
+        )
+        .route(
+            "/api/explorer/trash/policy",
+            get(handle_explorer_trash_policy_get).put(handle_explorer_trash_policy_update),
+        )
+        .route(
+            "/api/explorer/trash/purge-now",
+            post(handle_explorer_trash_purge_now),
         )
         .route("/api/explorer/roots", get(handle_explorer_roots))
         .route("/api/explorer/save", post(handle_explorer_save))
@@ -779,6 +798,293 @@ async fn test_copy_and_move_a_file() {
         !h.root.join("a.txt").exists(),
         "move must remove the source"
     );
+}
+
+// ---------------------------------------------------------------------------
+// QW-03 — instant copy (reflink) policy and per-copy reporting
+// ---------------------------------------------------------------------------
+
+/// A copy answers which strategy it used, and the answer must be true: a
+/// `clone`/`kernel_clone` claim is only legal on a filesystem that really can
+/// share extents, and the bytes must match either way.
+#[tokio::test]
+async fn test_copy_reports_the_method_it_actually_used() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "bob", "Password123!").await;
+
+    let payload: Vec<u8> = (0..32 * 1024u32).map(|i| (i % 241) as u8).collect();
+    std::fs::write(h.root.join("src.bin"), &payload).unwrap();
+
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        &format!(
+            "/api/explorer/copy?source={}&destination={}",
+            p(&h.root, "src.bin"),
+            p(&h.root, "dst.bin")
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], json!(true), "{body}");
+
+    let method = body["data"]["method"]
+        .as_str()
+        .expect("a single-file copy must report its method");
+    assert!(
+        ["clone", "kernel_clone", "kernel_copy", "stream"].contains(&method),
+        "unexpected method slug: {method}"
+    );
+    let instant = body["data"]["instant"].as_bool().unwrap();
+    assert_eq!(
+        instant,
+        method == "clone" || method == "kernel_clone",
+        "`instant` must agree with the slug"
+    );
+    if instant {
+        assert!(
+            homevault::browser::reflink::is_reflink_capable(&h.root),
+            "a clone was claimed on a filesystem that cannot clone: method={method}"
+        );
+    }
+    // Whatever happened, the bytes are exact — a clone skips the read-back
+    // hash, so this is the assertion that makes that omission safe.
+    assert_eq!(std::fs::read(h.root.join("dst.bin")).unwrap(), payload);
+}
+
+/// `mode=off` must copy correctly through the verified stream and never claim
+/// a clone.
+#[tokio::test]
+async fn test_instant_copy_off_still_copies_and_never_claims_a_clone() {
+    let h = setup().await;
+    create_test_user(&h.state, "admin", "Password123!", 2).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "admin", "Password123!").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/explorer/instant-copy",
+        Some(&token),
+        Some(json!({"mode": "off"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["mode"], json!("off"));
+
+    std::fs::write(h.root.join("a.bin"), b"stream me").unwrap();
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        &format!(
+            "/api/explorer/copy?source={}&destination={}",
+            p(&h.root, "a.bin"),
+            p(&h.root, "b.bin")
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], json!(true), "{body}");
+    assert_eq!(body["data"]["method"], json!("stream"), "{body}");
+    assert_eq!(body["data"]["instant"], json!(false), "{body}");
+    assert_eq!(std::fs::read(h.root.join("b.bin")).unwrap(), b"stream me");
+}
+
+/// A directory copy on `mode=off` builds the whole tree correctly.
+#[tokio::test]
+async fn test_instant_copy_off_directory_copy_is_complete() {
+    let h = setup().await;
+    create_test_user(&h.state, "admin", "Password123!", 2).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "admin", "Password123!").await;
+
+    let (_, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/explorer/instant-copy",
+        Some(&token),
+        Some(json!({"mode": "off"})),
+    )
+    .await;
+    assert_eq!(body["data"]["mode"], json!("off"));
+
+    let src = h.root.join("tree");
+    std::fs::create_dir_all(src.join("sub")).unwrap();
+    std::fs::write(src.join("one.txt"), b"one").unwrap();
+    std::fs::write(src.join("sub/two.txt"), b"two").unwrap();
+
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        &format!(
+            "/api/explorer/copy?source={}&destination={}",
+            p(&h.root, "tree"),
+            p(&h.root, "tree2")
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], json!(true), "{body}");
+    assert!(
+        body["data"]["job_id"].is_string(),
+        "a directory copy runs as a tracked job: {body}"
+    );
+
+    // The job is spawned on the runtime; poll the filesystem rather than the
+    // SSE stream so the assertion does not depend on event timing.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if h.root.join("tree2/sub/two.txt").exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        std::fs::read_to_string(h.root.join("tree2/one.txt")).unwrap(),
+        "one"
+    );
+    assert_eq!(
+        std::fs::read_to_string(h.root.join("tree2/sub/two.txt")).unwrap(),
+        "two"
+    );
+}
+
+/// The policy endpoints: auth required, admin required to write, and a
+/// round-trip that a later GET sees.
+#[tokio::test]
+async fn test_instant_copy_policy_requires_auth_and_admin() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    create_test_user(&h.state, "admin", "Password123!", 2).await;
+    let mut r = explorer_router(h.state.clone());
+
+    // Unauthenticated.
+    let (status, _) = send(&mut r, Method::GET, "/api/explorer/instant-copy", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let bob = login(&mut r, "bob", "Password123!").await;
+    let admin = login(&mut r, "admin", "Password123!").await;
+
+    // A regular user may read the policy…
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/instant-copy",
+        Some(&bob),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["mode"], json!("auto"), "the default policy");
+    assert!(
+        body["data"]["mounts"].is_array(),
+        "the mounts are evidence for the UI: {body}"
+    );
+
+    // …but not change it.
+    let (status, _) = send(
+        &mut r,
+        Method::PUT,
+        "/api/explorer/instant-copy",
+        Some(&bob),
+        Some(json!({"mode": "off"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // An admin can, and the change round-trips.
+    let (status, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/explorer/instant-copy",
+        Some(&admin),
+        Some(json!({"mode": "off"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["mode"], json!("off"));
+
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/instant-copy",
+        Some(&bob),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"]["mode"], json!("off"), "the policy persisted");
+}
+
+/// A typo in the mode is rejected, not silently coerced: an admin must never
+/// be told a policy was saved when it was ignored.
+#[tokio::test]
+async fn test_instant_copy_policy_rejects_an_unknown_mode() {
+    let h = setup().await;
+    create_test_user(&h.state, "admin", "Password123!", 2).await;
+    let mut r = explorer_router(h.state.clone());
+    let admin = login(&mut r, "admin", "Password123!").await;
+
+    let (_, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/explorer/instant-copy",
+        Some(&admin),
+        Some(json!({"mode": "instant-please"})),
+    )
+    .await;
+    assert_eq!(
+        body["success"],
+        json!(false),
+        "an unknown mode must be refused: {body}"
+    );
+
+    // The stored policy is untouched.
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/instant-copy",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"]["mode"], json!("auto"));
+}
+
+/// A move on one filesystem is an atomic rename: nothing was copied, so it
+/// must report no method at all rather than a method it never used.
+#[tokio::test]
+async fn test_same_filesystem_move_reports_no_copy_method() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "bob", "Password123!").await;
+
+    std::fs::write(h.root.join("m1.txt"), b"move me").unwrap();
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        &format!(
+            "/api/explorer/move?source={}&destination={}",
+            p(&h.root, "m1.txt"),
+            p(&h.root, "m2.txt")
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], json!(true), "{body}");
+    assert_eq!(
+        body["data"]["method"],
+        json!(null),
+        "an atomic rename copied nothing: {body}"
+    );
+    assert_eq!(body["data"]["instant"], json!(null), "{body}");
+    assert_eq!(std::fs::read(h.root.join("m2.txt")).unwrap(), b"move me");
 }
 
 #[tokio::test]
@@ -1381,6 +1687,158 @@ async fn test_restore_unknown_id_fails_cleanly() {
         &mut r,
         Method::POST,
         "/api/explorer/trash/restore?id=00000000-0000-0000-0000-000000000000",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_clean_rejection(status, &body);
+}
+
+// ===========================================================================
+// 6b. Trash retention policy
+// ===========================================================================
+
+#[tokio::test]
+async fn test_trash_policy_defaults_are_readable_by_any_signed_in_user() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "bob", "Password123!").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/trash/policy",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["success"], json!(true), "{body}");
+    // Documented defaults: a month, 10 GiB.
+    assert_eq!(body["data"]["retention_days"], json!(30));
+    assert_eq!(body["data"]["max_bytes"], json!(10u64 * 1024 * 1024 * 1024));
+}
+
+#[tokio::test]
+async fn test_trash_policy_update_is_admin_only() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "bob", "Password123!").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/explorer/trash/policy",
+        Some(&token),
+        Some(json!({"retention_days": 7, "max_bytes": 0})),
+    )
+    .await;
+    assert_clean_rejection(status, &body);
+}
+
+#[tokio::test]
+async fn test_trash_policy_admin_can_save_and_read_it_back() {
+    let h = setup().await;
+    create_test_user(&h.state, "root", "Password123!", 2).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "root", "Password123!").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/explorer/trash/policy",
+        Some(&token),
+        Some(json!({"retention_days": 7, "max_bytes": 0})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["retention_days"], json!(7));
+    assert_eq!(body["data"]["max_bytes"], json!(0));
+
+    // Zero is a real value ("limit off"), not a rejection or a reset to the
+    // default — a fresh GET must return exactly what was saved.
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/trash/policy",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"]["retention_days"], json!(7));
+    assert_eq!(body["data"]["max_bytes"], json!(0));
+}
+
+#[tokio::test]
+async fn test_trash_purge_now_honours_a_disabled_policy() {
+    // A policy with both limits at 0 means "keep everything": `purge-now` must
+    // report a clean no-op and leave every trashed item in place. (The age and
+    // size rules themselves are covered by the `browser::trash_policy_tests`
+    // unit tests; this exercises the endpoint end-to-end without risking real
+    // trash on the host.)
+    let h = setup().await;
+    create_test_user(&h.state, "root", "Password123!", 2).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "root", "Password123!").await;
+
+    let file = h.root.join("keep-me.txt");
+    std::fs::write(&file, b"data").unwrap();
+    send(
+        &mut r,
+        Method::POST,
+        &format!("/api/explorer/trash?path={}", file.display()),
+        Some(&token),
+        None,
+    )
+    .await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/explorer/trash/policy",
+        Some(&token),
+        Some(json!({"retention_days": 0, "max_bytes": 0})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["success"], json!(true), "{body}");
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/trash/purge-now",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["purged"], json!(0), "{body}");
+    assert_eq!(body["data"]["freed_bytes"], json!(0), "{body}");
+
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/trash",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"].as_array().unwrap().len(), 1, "{body}");
+}
+
+#[tokio::test]
+async fn test_trash_purge_now_is_admin_only() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "bob", "Password123!").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/trash/purge-now",
         Some(&token),
         None,
     )
@@ -2620,9 +3078,10 @@ async fn test_compress_survives_dash_named_files() {
     assert!(archive.exists());
 }
 
-/// POST delete is admin-only and (ROADMAP 10.4) even an admin — who has no
-/// root confinement anywhere else — deletes through the PathGuard here, and
-/// is refused for a *browsing root itself*.
+/// POST delete is admin-only and (ROADMAP 10.4) an admin — who has no root
+/// confinement anywhere else — still deletes through the PathGuard here, is
+/// refused for a *browsing root itself*, and is refused outside the roots
+/// unless the target is appliance scratch (`/tmp`, `$TMPDIR`, `/var/tmp`).
 #[tokio::test]
 async fn test_admin_delete_confined_by_path_guard_and_refuses_roots() {
     let h = setup().await;
@@ -2678,6 +3137,84 @@ async fn test_admin_delete_confined_by_path_guard_and_refuses_roots() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(!h.root.join("doomed.txt").exists());
+}
+
+/// The scratch-area exemption on the admin delete.
+///
+/// Confinement alone was asymmetric: `mkdir`/upload accept any path for an
+/// admin, so a folder the appliance created outside the roots (the E2E
+/// suite's `/tmp/hv-fx-e2e-*`, a harness `tempdir()`) could be created but
+/// never removed — which is exactly how E2E 13.1 failed. The exemption is
+/// deliberately narrow: scratch areas only, never the rest of the
+/// filesystem, and the browsing-root guard still wins.
+#[tokio::test]
+async fn test_admin_delete_allows_scratch_outside_roots_only() {
+    let h = setup().await;
+    create_test_user(&h.state, "admin", "Password123!", 2).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "admin", "Password123!").await;
+
+    // A directory under the OS temp dir but *outside* the PathGuard root is
+    // removable — this is the `mkdir` → `delete` round-trip that used to fail.
+    let scratch = std::env::temp_dir().join(format!("hv-scratch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(scratch.join("nested")).unwrap();
+    std::fs::write(scratch.join("nested").join("f.txt"), b"x").unwrap();
+    assert!(
+        !h.root.starts_with(&scratch) && !scratch.starts_with(&h.root),
+        "the probe must really sit outside the PathGuard root"
+    );
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        &format!(
+            "/api/explorer/delete?path={}",
+            scratch.to_string_lossy()
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["success"], json!(true), "{body}");
+    assert!(!scratch.exists(), "the scratch tree must be gone");
+
+    // Outside the roots *and* outside scratch stays refused, whatever the
+    // admin flag says.
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/delete?path=/usr/local/does-not-exist-hv-test",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], json!(false), "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("outside allowed directory"),
+        "a non-scratch path outside the roots must stay refused: {body}"
+    );
+
+    // The scratch exemption never overrides the browsing-root refusal.
+    let root_str = h.root.to_string_lossy().to_string();
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        &format!("/api/explorer/delete?path={root_str}"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], json!(false), "{body}");
+    assert!(
+        body["message"].as_str().unwrap().contains("browsing root"),
+        "{body}"
+    );
+    assert!(h.root.is_dir(), "the browsing root must survive");
 }
 
 /// (ROADMAP 10.1) An archive whose member names traverse (`../…`) is refused

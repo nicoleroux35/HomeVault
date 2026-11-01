@@ -89,6 +89,7 @@ use homevault::handlers::{
         handle_share_delete, handle_share_get, handle_share_service_restart,
         handle_share_service_start, handle_share_service_stop, handle_share_toggle,
         handle_share_update, handle_shares_list, handle_smb_config_get, handle_smb_config_update,
+        handle_smb_recycle_list, handle_smb_recycle_set,
         handle_webdav_config_get, handle_webdav_config_update,
     },
     AppState,
@@ -161,6 +162,11 @@ fn shares_router(state: Arc<AppState>) -> Router {
         // per-protocol service config
         .route("/api/shares/smb/config", get(handle_smb_config_get))
         .route("/api/shares/smb/config", put(handle_smb_config_update))
+        .route("/api/shares/smb/recycle", get(handle_smb_recycle_list))
+        .route(
+            "/api/shares/{name}/smb/recycle",
+            put(handle_smb_recycle_set),
+        )
         .route("/api/shares/nfs/config", get(handle_nfs_config_get))
         .route("/api/shares/nfs/config", put(handle_nfs_config_update))
         .route("/api/shares/ftp/config", get(handle_ftp_config_get))
@@ -346,6 +352,12 @@ async fn test_all_endpoints_reject_missing_token() {
             Method::PUT,
             "/api/shares/smb/config",
             Some(valid_smb_config()),
+        ),
+        (Method::GET, "/api/shares/smb/recycle", None),
+        (
+            Method::PUT,
+            "/api/shares/x/smb/recycle",
+            Some(json!({"enabled": true})),
         ),
         (Method::GET, "/api/shares/nfs/config", None),
         (Method::GET, "/api/shares/ftp/config", None),
@@ -592,6 +604,50 @@ async fn test_every_protocol_config_get_returns_defaults_when_unconfigured() {
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(b["data"]["port"], json!(2222));
+}
+
+#[tokio::test]
+async fn test_smb_recycle_map_returns_an_object_for_an_admin() {
+    // No `/etc/samba/smb.conf` in this sandbox, so the map is expected to be
+    // empty — this only pins the shape of a successful response: a
+    // share-name → enabled map, never an array or a bare string.
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = shares_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/shares/smb/recycle",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body["data"].is_object(),
+        "recycle state must be a name→bool map: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_smb_recycle_set_rejects_a_forged_share_name() {
+    // A name containing `..` could forge an extra smb.conf section; it must
+    // be rejected by validation *before* any file is touched — a clean 4xx,
+    // never a 500 from the write path.
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = shares_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+    let (status, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/shares/bad..name/smb/recycle",
+        Some(&token),
+        Some(json!({"enabled": true})),
+    )
+    .await;
+    assert_clean_rejection(status, &body);
 }
 
 #[tokio::test]

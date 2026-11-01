@@ -1354,3 +1354,175 @@ test.describe('17 — i18n', () => {
     expect(text).not.toMatch(/\baccount\.[a-z0-9_]+/i);
   });
 });
+
+// ===========================================================================
+// 18. Passkeys (Phase 1 P1.3)
+//
+// The Account screen's Passkeys card (frontend/src/lib/components/account/
+// PasskeysCard.svelte). The ceremonies themselves need a real authenticator,
+// which a headless browser does not have: the server half is covered end to
+// end by `tests/passkey_integration.rs` (a software authenticator signs for
+// real), and these tests pin the card — its states, its actions and its
+// refusals — against a **mocked** endpoint. That is deliberate: the point here
+// is the UI contract, not the cryptography.
+// ===========================================================================
+
+/** Mock `GET /api/passkeys` with a fixed answer. */
+async function mockPasskeys(
+  page: Page,
+  body: Record<string, unknown>,
+  status = 200,
+) {
+  await page.route('**/api/passkeys', (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    return route.fulfill({
+      status,
+      contentType: 'application/json',
+      body: JSON.stringify(body),
+    });
+  });
+}
+
+const PASSKEYS_EMPTY = {
+  success: true,
+  data: {
+    passkeys: [],
+    supported: true,
+    relying_party: { id: 'vault.home', origin: 'https://vault.home:8443' },
+    max: 20,
+  },
+};
+
+const PASSKEYS_ONE = {
+  success: true,
+  data: {
+    passkeys: [
+      {
+        credential_id: 'Y3JlZC0x',
+        label: 'MacBook Touch ID',
+        algorithm: 'es256',
+        attestation_fmt: 'none',
+        user_verified: true,
+        created_at: '2026-10-01T10:00:00Z',
+        last_used_at: '2026-10-30T08:12:00Z',
+      },
+    ],
+    supported: true,
+    relying_party: { id: 'vault.home', origin: 'https://vault.home:8443' },
+    max: 20,
+  },
+};
+
+test.describe('18 — Passkeys', () => {
+  test('18.1 — the card renders with its title and the add control', async ({ page }) => {
+    await mockPasskeys(page, PASSKEYS_EMPTY);
+    await gotoAccount(page, readOnly);
+    const card = acc(page).locator('[data-testid="account-card"]', {
+      has: page.locator('[data-testid="passkeys-empty"], [data-testid="passkeys-list"]'),
+    });
+    await expect(card).toBeVisible({ timeout: 10_000 });
+    await expect(card.locator('[data-testid="passkeys-add"]')).toBeVisible();
+  });
+
+  test('18.2 — an empty list says so instead of rendering nothing', async ({ page }) => {
+    await mockPasskeys(page, PASSKEYS_EMPTY);
+    await gotoAccount(page, readOnly);
+    await expect(acc(page).locator('[data-testid="passkeys-empty"]')).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(acc(page).locator('[data-testid="passkeys-list"]')).toHaveCount(0);
+  });
+
+  test('18.3 — a registered passkey shows its label and its origin binding', async ({ page }) => {
+    await mockPasskeys(page, PASSKEYS_ONE);
+    await gotoAccount(page, readOnly);
+    await expect(acc(page).locator('[data-testid="passkey-label"]').first()).toHaveText(
+      'MacBook Touch ID',
+      { timeout: 10_000 },
+    );
+    // The origin is shown: a passkey bound to another address is the one
+    // confusing failure mode, and the card makes it visible.
+    await expect(acc(page).locator('[data-testid="passkeys-origin"]')).toContainText(
+      'https://vault.home:8443',
+    );
+  });
+
+  test('18.4 — revoking asks for confirmation and never fires without it', async ({ page }) => {
+    let deleted = false;
+    await mockPasskeys(page, PASSKEYS_ONE);
+    await page.route('**/api/passkeys/*', (route) => {
+      if (route.request().method() !== 'DELETE') return route.fallback();
+      deleted = true;
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: true, data: { deleted: true } }),
+      });
+    });
+    await gotoAccount(page, readOnly);
+    await acc(page).locator('[data-testid="passkey-revoke"]').first().click();
+    // A confirmation dialog appears; cancelling it must leave the passkey.
+    const dialog = page.locator('[role="dialog"]');
+    await expect(dialog.first()).toBeVisible({ timeout: 10_000 });
+    const cancel = dialog.getByRole('button', { name: /cancel|annuler|abbrechen|cancelar/i });
+    if (await cancel.count()) await cancel.first().click();
+    await page.waitForTimeout(300);
+    expect(deleted, 'cancelling must not revoke').toBe(false);
+  });
+
+  test('18.5 — a failing list surfaces an error, not an empty list', async ({ page }) => {
+    await mockPasskeys(page, { success: false, message: 'boom' }, 500);
+    await gotoAccount(page, readOnly);
+    // An error is not "you have no passkeys": the two must stay distinct.
+    await expect(acc(page).locator('[data-testid="passkeys-err"]')).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(acc(page).locator('[data-testid="passkeys-empty"]')).toHaveCount(0);
+  });
+
+  test('18.6 — the passkey stays out of the URL and localStorage holds no credential', async ({
+    page,
+  }) => {
+    await mockPasskeys(page, PASSKEYS_ONE);
+    await gotoAccount(page, readOnly);
+    await expect(acc(page).locator('[data-testid="passkey-label"]').first()).toBeVisible({
+      timeout: 10_000,
+    });
+    expect(page.url()).not.toMatch(/credential|passkey|Y3JlZC0x/);
+    const dump = await page.evaluate(() => JSON.stringify(localStorage));
+    expect(dump).not.toContain('Y3JlZC0x');
+  });
+
+  test('18.7 — the card is readable at 360 / 768 / 1920 px', async ({ page }) => {
+    await mockPasskeys(page, PASSKEYS_ONE);
+    for (const [w, h] of [
+      [360, 740],
+      [768, 1024],
+      [1920, 1080],
+    ] as const) {
+      await page.setViewportSize({ width: w, height: h });
+      await gotoAccount(page, readOnly);
+      await expect(acc(page).locator('[data-testid="passkey-label"]').first()).toBeVisible({
+        timeout: 10_000,
+      });
+      const overflow = await acc(page).evaluate((el) => el.scrollWidth - el.clientWidth);
+      expect(overflow).toBeLessThanOrEqual(2);
+    }
+  });
+
+  test('18.8 — a browser without WebAuthn gets a sentence, never a dead button', async ({
+    page,
+  }) => {
+    // Remove the API before the app boots: the card must fall back to an
+    // explanation, not to a button that cannot work.
+    await page.addInitScript(() => {
+      // @ts-expect-error — deliberately removing the API.
+      delete window.PublicKeyCredential;
+    });
+    await mockPasskeys(page, PASSKEYS_EMPTY);
+    await gotoAccount(page, readOnly);
+    await expect(acc(page).locator('[data-testid="passkeys-unsupported"]')).toBeVisible({
+      timeout: 10_000,
+    });
+  });
+});

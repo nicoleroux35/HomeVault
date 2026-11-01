@@ -51,7 +51,7 @@ use homevault::config::PathGuard;
 use homevault::handlers::auth::handle_login;
 use homevault::handlers::share_links::{
     handle_share_link_create, handle_share_link_delete, handle_share_link_download,
-    handle_share_links_list,
+    handle_share_link_unlock, handle_share_links_list,
 };
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::AppState;
@@ -115,6 +115,7 @@ fn router(state: Arc<AppState>) -> Router {
             delete(handle_share_link_delete),
         )
         .route("/share/{token}", get(handle_share_link_download))
+        .route("/share/{token}/unlock", post(handle_share_link_unlock))
         .with_state(state)
 }
 
@@ -289,6 +290,37 @@ async fn test_share_link_create_and_list() {
     let links = body["data"].as_array().expect("array");
     assert_eq!(links.len(), 1);
     assert_eq!(links[0]["token"], token);
+}
+
+#[tokio::test]
+async fn test_share_link_password_limit_and_redaction() {
+    let h = setup().await;
+    let mut router = router(h.state.clone());
+    create_test_user(&h.state, "admin", "pass", 2).await;
+    let admin = login(&mut router, "admin", "pass").await;
+    let file = make_file(&h.root, "protected.txt", "secret");
+    let (status, body) = send(&mut router, Method::POST, "/api/explorer/shares", Some(&admin), Some(json!({
+        "path": file, "password": "correct horse", "max_downloads": 1
+    }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["protected"], true);
+    assert!(body["data"].get("password_hash").is_none());
+    let token = body["data"]["token"].as_str().unwrap().to_string();
+
+    let (status, _) = send(&mut router, Method::GET, &format!("/share/{token}"), None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = send(&mut router, Method::GET, &format!("/share/{token}"), None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let request = Request::builder().method(Method::GET).uri(format!("/share/{token}"))
+        .header("x-share-password", "correct horse").body(axum::body::Body::empty()).unwrap();
+    let response = ServiceExt::<Req>::ready(&mut router).await.unwrap().call(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(&bytes[..], b"secret");
+
+    let (status, _) = send(&mut router, Method::GET, &format!("/share/{token}"), None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -726,7 +758,7 @@ async fn test_share_download_reachable_through_production_router() {
     // Mint a link through the repository directly, then hit the full app.
     let repo = homevault::storage::ShareLinkRepository::new(h.state.db.pool());
     let link = repo
-        .create("admin", &"A".repeat(48), &file, "anyone", None)
+        .create("admin", &"A".repeat(48), &file, "anyone", None, None, None)
         .await
         .expect("create link");
 
@@ -748,4 +780,568 @@ async fn test_share_download_reachable_through_production_router() {
         .await
         .unwrap();
     assert_eq!(&bytes[..], b"prod payload");
+}
+
+// ---------------------------------------------------------------------------
+// Password unlock, download cap and one-time links (ROADMAP-DSM QW-04)
+// ---------------------------------------------------------------------------
+
+/// Sends a fully built request and reads the whole response — status, headers
+/// and body — which is what `Set-Cookie`, `HEAD` and cookie-carrying `GET`s
+/// need (the `send` helper above only returns status + JSON).
+async fn raw(router: &mut Router, req: Req) -> (StatusCode, http::HeaderMap, Vec<u8>) {
+    let resp = ServiceExt::<Req>::ready(router)
+        .await
+        .unwrap()
+        .call(req)
+        .await
+        .unwrap();
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap()
+        .to_vec();
+    (status, headers, bytes)
+}
+
+fn public_get(uri: &str) -> http::request::Builder {
+    Request::builder().method(Method::GET).uri(uri)
+}
+
+/// The slot is released by a spawned task (or by the stream's `Drop`), so a
+/// follow-up request must not race it.
+async fn settle() {
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+}
+
+/// The nonce out of a `Set-Cookie` header, for replaying the unlock.
+fn unlock_nonce(headers: &http::HeaderMap) -> String {
+    let cookie = headers
+        .get(http::header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .expect("unlock must set a cookie");
+    cookie
+        .split(';')
+        .next()
+        .and_then(|pair| pair.split_once('='))
+        .map(|(_, value)| value.to_string())
+        .expect("cookie must carry a value")
+}
+
+async fn password_link(
+    router: &mut Router,
+    state: &AppState,
+    root: &Path,
+    name: &str,
+    password: &str,
+    max_downloads: Option<i64>,
+) -> (String, String) {
+    create_test_user(state, "admin", "pass", 2).await;
+    let admin = login(router, "admin", "pass").await;
+    let file = make_file(root, name, "protected payload");
+    let (s, body) = send(
+        router,
+        Method::POST,
+        "/api/explorer/shares",
+        Some(&admin),
+        Some(json!({
+            "path": file,
+            "password": password,
+            "max_downloads": max_downloads,
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "link created: {body}");
+    let token = body["data"]["token"].as_str().expect("token").to_string();
+    (admin, token)
+}
+
+#[tokio::test]
+async fn test_share_link_download_cap_counts_completed_transfers_only() {
+    let h = setup().await;
+    let mut router = router(h.state.clone());
+    create_test_user(&h.state, "admin", "pass", 2).await;
+    let admin = login(&mut router, "admin", "pass").await;
+    let file = make_file(&h.root, "capped.txt", "capped payload");
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/explorer/shares",
+        Some(&admin),
+        Some(json!({"path": file, "max_downloads": 2})),
+    )
+    .await;
+    let token = body["data"]["token"].as_str().unwrap().to_string();
+    assert_eq!(body["data"]["max_downloads"], 2);
+    assert_eq!(body["data"]["download_count"], 0);
+    assert_eq!(body["data"]["exhausted"], false);
+
+    for attempt in 1..=2 {
+        let (status, _, bytes) = raw(
+            &mut router,
+            public_get(&format!("/share/{token}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "download {attempt} must be served");
+        assert_eq!(&bytes[..], b"capped payload");
+        settle().await;
+    }
+
+    // The third download is the one refused: the N-th was the last.
+    let (status, _, _) = raw(
+        &mut router,
+        public_get(&format!("/share/{token}"))
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // The owner sees the truth, and the hash/active count never leave the server.
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/explorer/shares",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"][0]["download_count"], 2);
+    assert_eq!(body["data"][0]["exhausted"], true);
+    assert!(body["data"][0].get("password_hash").is_none());
+    assert!(body["data"][0].get("active_downloads").is_none());
+}
+
+/// The regression this pins is invisible to `to_bytes`: hyper stops polling a
+/// body once it has written the full `Content-Length` and **drops** the stream
+/// without ever observing `Poll::Ready(None)`. Reading exactly that many bytes
+/// and dropping the body is what a real browser download looks like, and it
+/// used to record *every* completed download as interrupted — so a one-time
+/// link was never spent and a cap never advanced.
+#[tokio::test]
+async fn test_share_link_completed_download_counts_when_hyper_frames_the_body() {
+    use futures_util::StreamExt;
+
+    let h = setup().await;
+    let mut router = router(h.state.clone());
+    create_test_user(&h.state, "admin", "pass", 2).await;
+    let admin = login(&mut router, "admin", "pass").await;
+    let payload = "hyper-framed payload";
+    let file = make_file(&h.root, "framed.txt", payload);
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/explorer/shares",
+        Some(&admin),
+        Some(json!({"path": file, "max_downloads": 1})),
+    )
+    .await;
+    let token = body["data"]["token"].as_str().unwrap().to_string();
+
+    let response = ServiceExt::<Req>::ready(&mut router)
+        .await
+        .unwrap()
+        .call(
+            public_get(&format!("/share/{token}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let expected = payload.len();
+
+    // Read exactly what the browser would write, then drop the body the way
+    // hyper does for a sized response.
+    let mut stream = response.into_body().into_data_stream();
+    let mut received = 0usize;
+    while received < expected {
+        let chunk = stream.next().await.expect("a chunk").expect("chunk bytes");
+        received += chunk.len();
+    }
+    assert_eq!(received, expected);
+    drop(stream);
+    settle().await;
+
+    // One completed download: the one-time link is spent.
+    let (_, list) = send(
+        &mut router,
+        Method::GET,
+        "/api/explorer/shares",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(list["data"][0]["download_count"], 1);
+    assert_eq!(list["data"][0]["exhausted"], true);
+
+    let (status, _, _) = raw(
+        &mut router,
+        public_get(&format!("/share/{token}"))
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_share_link_one_time_link_is_dead_after_one_completed_download() {
+    let h = setup().await;
+    let mut router = router(h.state.clone());
+    create_test_user(&h.state, "admin", "pass", 2).await;
+    let admin = login(&mut router, "admin", "pass").await;
+    let file = make_file(&h.root, "once.txt", "one shot");
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/explorer/shares",
+        Some(&admin),
+        Some(json!({"path": file, "max_downloads": 1})),
+    )
+    .await;
+    let token = body["data"]["token"].as_str().unwrap().to_string();
+
+    let (status, _, bytes) = raw(
+        &mut router,
+        public_get(&format!("/share/{token}"))
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(&bytes[..], b"one shot");
+    settle().await;
+
+    let (status, _, _) = raw(
+        &mut router,
+        public_get(&format!("/share/{token}"))
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_share_link_aborted_download_does_not_spend_a_slot() {
+    let h = setup().await;
+    let mut router = router(h.state.clone());
+    create_test_user(&h.state, "admin", "pass", 2).await;
+    let admin = login(&mut router, "admin", "pass").await;
+    let file = make_file(&h.root, "aborted.txt", "aborted payload");
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/explorer/shares",
+        Some(&admin),
+        Some(json!({"path": file, "max_downloads": 1})),
+    )
+    .await;
+    let token = body["data"]["token"].as_str().unwrap().to_string();
+
+    // Reserve a slot, then walk away before a single byte was read — the shape
+    // of a browser tab closed mid-transfer.
+    let response = ServiceExt::<Req>::ready(&mut router)
+        .await
+        .unwrap()
+        .call(
+            public_get(&format!("/share/{token}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    drop(response);
+    settle().await;
+
+    // The abandoned transfer must not have spent the one-time link.
+    let (status, _, bytes) = raw(
+        &mut router,
+        public_get(&format!("/share/{token}"))
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an interrupted download must not consume the cap"
+    );
+    assert_eq!(&bytes[..], b"aborted payload");
+    settle().await;
+
+    // …and this one did.
+    let (status, _, _) = raw(
+        &mut router,
+        public_get(&format!("/share/{token}"))
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_share_link_head_probe_is_honest_and_never_consumes_the_cap() {
+    let h = setup().await;
+    let mut router = router(h.state.clone());
+    let (admin, token) = password_link(&mut router, &h.state, &h.root, "probe.txt", "open sesame", Some(1)).await;
+
+    let head = |password: Option<&str>| {
+        let mut req = Request::builder()
+            .method(Method::HEAD)
+            .uri(format!("/share/{token}"));
+        if let Some(password) = password {
+            req = req.header("x-share-password", password);
+        }
+        req.body(axum::body::Body::empty()).unwrap()
+    };
+
+    // No password: refused, and the reason is machine-readable so the public
+    // page knows to ask for one instead of showing "unavailable".
+    let (status, headers, body) = raw(&mut router, head(None)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        headers.get("x-hv-share-auth").and_then(|v| v.to_str().ok()),
+        Some("password")
+    );
+    assert!(body.is_empty());
+
+    // Wrong password: refused, still no quota spent.
+    let (status, _, _) = raw(&mut router, head(Some("wrong password"))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Right password: the probe says "downloadable" and spends nothing.
+    let (status, _, body) = raw(&mut router, head(Some("open sesame"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_empty(), "a HEAD must not carry the file");
+
+    let (_, list) = send(
+        &mut router,
+        Method::GET,
+        "/api/explorer/shares",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(list["data"][0]["download_count"], 0);
+    assert_eq!(list["data"][0]["exhausted"], false);
+
+    // The real download works, then the probe tells the truth about the spent
+    // link instead of promising a download that would be refused.
+    let (status, _, bytes) = raw(
+        &mut router,
+        public_get(&format!("/share/{token}"))
+            .header("x-share-password", "open sesame")
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(&bytes[..], b"protected payload");
+    settle().await;
+
+    let (status, _, _) = raw(&mut router, head(Some("open sesame"))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_share_link_unlock_cookie_flow() {
+    let h = setup().await;
+    let mut router = router(h.state.clone());
+    let (_admin, token) =
+        password_link(&mut router, &h.state, &h.root, "unlocked.txt", "correct horse", None).await;
+    let unlock_uri = format!("/share/{token}/unlock");
+
+    // A wrong password is refused, and says which factor failed.
+    let (status, headers, _) = raw(
+        &mut router,
+        Request::builder()
+            .method(Method::POST)
+            .uri(&unlock_uri)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(json!({"password": "wrong"}).to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        headers.get("x-hv-share-auth").and_then(|v| v.to_str().ok()),
+        Some("password")
+    );
+
+    // The right one mints a short-lived, path-scoped, HttpOnly cookie.
+    let (status, headers, _) = raw(
+        &mut router,
+        Request::builder()
+            .method(Method::POST)
+            .uri(&unlock_uri)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({"password": "correct horse"}).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let cookie = headers
+        .get(http::header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .expect("Set-Cookie");
+    assert!(cookie.starts_with("hv_share_unlock="));
+    assert!(cookie.contains(&format!("Path=/share/{token}")));
+    assert!(cookie.contains("HttpOnly"));
+    assert!(cookie.contains("SameSite=Lax"));
+    let nonce = unlock_nonce(&headers);
+
+    // The cookie — not the password — authorises the download.
+    let (status, headers, bytes) = raw(
+        &mut router,
+        public_get(&format!("/share/{token}"))
+            .header(http::header::COOKIE, format!("hv_share_unlock={nonce}"))
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(&bytes[..], b"protected payload");
+    // A grant that can expire, be revoked or run out must not be replayed from
+    // a cache — that would keep a spent one-time link alive in that browser.
+    assert_eq!(
+        headers.get(http::header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+        Some("no-store")
+    );
+
+    // A forged nonce is not an unlock, and neither is the password in the URL —
+    // it would land in the access log and the browser history.
+    let (status, _, _) = raw(
+        &mut router,
+        public_get(&format!("/share/{token}"))
+            .header(http::header::COOKIE, "hv_share_unlock=forged")
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = raw(
+        &mut router,
+        public_get(&format!("/share/{token}?password=correct%20horse"))
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a password in the query string must never authenticate"
+    );
+}
+
+#[tokio::test]
+async fn test_share_link_wrong_passwords_are_throttled() {
+    let h = setup().await;
+    let mut router = router(h.state.clone());
+    let (_admin, token) =
+        password_link(&mut router, &h.state, &h.root, "throttled.txt", "correct horse", None).await;
+
+    // Empty probes (the public page asking "is a password needed?") are free.
+    for _ in 0..20 {
+        let (status, _, _) = raw(
+            &mut router,
+            Request::builder()
+                .method(Method::HEAD)
+                .uri(format!("/share/{token}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    // Eight real guesses are checked with Argon2, the ninth is refused before
+    // the hash is ever touched.
+    for attempt in 1..=8 {
+        let (status, _, _) = raw(
+            &mut router,
+            public_get(&format!("/share/{token}"))
+                .header("x-share-password", "guess")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "attempt {attempt}");
+    }
+    let (status, _, _) = raw(
+        &mut router,
+        public_get(&format!("/share/{token}"))
+            .header("x-share-password", "guess")
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+
+    // Even the correct password waits out the window.
+    let (status, _, _) = raw(
+        &mut router,
+        public_get(&format!("/share/{token}"))
+            .header("x-share-password", "correct horse")
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// The unlock endpoint must be reachable through the *real* production router,
+/// next to the download — not only in the minimal test router above.
+#[tokio::test]
+async fn test_share_unlock_reachable_through_production_router() {
+    let h = setup().await;
+    create_test_user(&h.state, "admin", "pass", 2).await;
+
+    let repo = homevault::storage::ShareLinkRepository::new(h.state.db.pool());
+    let hash = h.state.auth.hash_password("hunter2").unwrap();
+    let link = repo
+        .create(
+            "admin",
+            &"B".repeat(48),
+            &make_file(&h.root, "prod-unlock.txt", "unlocked over the app"),
+            "anyone",
+            None,
+            Some(&hash),
+            Some(1),
+        )
+        .await
+        .expect("create link");
+
+    let mut app = homevault::web::create_app(h.state.clone());
+    let (status, headers, _) = raw(
+        &mut app,
+        Request::builder()
+            .method(Method::POST)
+            .uri(format!("/share/{}/unlock", link.token))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(json!({"password": "hunter2"}).to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let nonce = unlock_nonce(&headers);
+
+    let (status, _, bytes) = raw(
+        &mut app,
+        public_get(&format!("/share/{}", link.token))
+            .header(http::header::COOKIE, format!("hv_share_unlock={nonce}"))
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(&bytes[..], b"unlocked over the app");
 }

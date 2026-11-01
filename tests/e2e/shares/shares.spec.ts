@@ -416,6 +416,27 @@ test.describe('3 — Validation', () => {
     );
     expect(status).toBe(400);
   });
+
+  test('3.8 — the SMB recycle toggle rejects a forged share name without touching smb.conf', async ({
+    page,
+  }) => {
+    await gotoShares(page, adminTokens);
+    // A name containing `..` could forge an extra smb.conf section. It must be
+    // refused by validation *before* the write path — a clean 4xx, never a 500.
+    const res = await page.evaluate(
+      async ({ token, csrf }) => {
+        const r = await fetch('/api/shares/bad..name/smb/recycle', {
+          method: 'PUT',
+          headers: { 'x-session-token': token, 'x-csrf-token': csrf, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: true }),
+        });
+        return r.status;
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf },
+    );
+    expect(res).toBe(400);
+    expect(res).not.toBe(500);
+  });
 });
 
 // ===========================================================================
@@ -505,6 +526,28 @@ test.describe('4 — All user interactions', () => {
     await expect(modal(page)).toBeVisible();
     await expect(modal(page).locator('[data-testid="shares-grant"]')).toBeVisible();
     await page.keyboard.press('Escape').catch(() => {});
+  });
+
+  test('4.8 — the SMB tab shows one recycle row per SMB share (or none)', async ({ page }) => {
+    await gotoShares(page, adminTokens);
+    const smbCount = await page.evaluate(async (token) => {
+      const r = await fetch('/api/shares', { headers: { 'x-session-token': token } });
+      const b = await r.json();
+      return Array.isArray(b?.data)
+        ? b.data.filter((s: any) => String(s.share_type).toLowerCase() === 'smb').length
+        : -1;
+    }, adminTokens.token);
+    expect(smbCount).toBeGreaterThanOrEqual(0);
+
+    await switchTab(page, 'SMB');
+    const card = win(page).locator('[data-testid="shares-recycle"]');
+    if (smbCount === 0) {
+      // No SMB share → no recycle card to show.
+      await expect(card).toHaveCount(0);
+    } else {
+      await expect(card).toBeVisible();
+      await expect(win(page).locator('[data-testid="shares-recycle-row"]')).toHaveCount(smbCount);
+    }
   });
 });
 

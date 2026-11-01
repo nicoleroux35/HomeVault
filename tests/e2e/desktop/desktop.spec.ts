@@ -1020,6 +1020,151 @@ test.describe('6 — Global search', () => {
 });
 
 // ===========================================================================
+// 6b. Cross-root file search (QW-12)
+//
+// The ⌘K overlay asks the server for files matching the query in addition to
+// filtering its local index. `GET /api/search/files` is covered end-to-end by
+// `tests/global_search_integration.rs`; what these tests pin is the overlay's
+// own half: the provider runs, a hit is rendered with its folder, picking it
+// opens the Explorer on that folder with the entry selected, a partial answer
+// says it is partial, and nothing about the file travels in the URL.
+// ===========================================================================
+
+test.describe('6b — Cross-root file search', () => {
+  const fileApi = (page: Page) =>
+    page.route('**/api/search/files*', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: {
+            query: 'report',
+            hits: [
+              {
+                name: 'budget-report.pdf',
+                path: '/srv/finance/budget-report.pdf',
+                is_directory: false,
+                size_bytes: 2048,
+                modified: '2026-10-01 10:00',
+                permissions: '-rw-r--r--',
+                owner: 'nicolas',
+                filesystem: null,
+                root: '/srv',
+                root_kind: 'shares',
+              },
+            ],
+            roots: [{ path: '/srv', kind: 'shares', name: 'srv' }],
+            timed_out: [],
+            unreadable: [],
+            truncated: false,
+            elapsed_ms: 12,
+          },
+        }),
+      }),
+    );
+
+  test('6b.1 — a matching file is listed with the folder it lives in', async ({ page }) => {
+    await fileApi(page);
+    await gotoDesktop(page, adminTokens);
+    await page.keyboard.press('Control+k');
+    await page.locator('.search-overlay .search-input').fill('budget-report');
+    const fileRow = page.locator('.search-item', { hasText: 'budget-report.pdf' });
+    await expect(fileRow).toBeVisible({ timeout: 10_000 });
+    // The folder, not just the name: a cross-root search is only useful if it
+    // says *where*.
+    await expect(fileRow).toContainText('/srv/finance');
+    await expect(fileRow.locator('.item-type')).toContainText(/file|fichier|datei|archivo/i);
+  });
+
+  test('6b.2 — picking a file hit opens the Explorer on its folder and selects it', async ({
+    page,
+  }) => {
+    await fileApi(page);
+    await gotoDesktop(page, adminTokens);
+    await page.keyboard.press('Control+k');
+    await page.locator('.search-overlay .search-input').fill('budget-report');
+    await page.locator('.search-item', { hasText: 'budget-report.pdf' }).click();
+    await expect(page.locator('.search-overlay')).toHaveCount(0);
+    await expect(page.locator('[data-testid="explorer-page"]')).toBeVisible({ timeout: 15_000 });
+    // The intent's folder is on screen (the listing may be empty on this host,
+    // which is why the assertion is on the path the Explorer navigated to).
+    await expect
+      .poll(() => page.evaluate(() => document.body.innerText.includes('/srv/finance')), {
+        timeout: 10_000,
+      })
+      .toBe(true);
+  });
+
+  test('6b.3 — a partial answer says which locations did not answer', async ({ page }) => {
+    await page.route('**/api/search/files*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: {
+            query: 'report',
+            hits: [],
+            roots: [],
+            timed_out: ['/mnt/slow-share'],
+            unreadable: ['/srv/gone'],
+            truncated: false,
+            elapsed_ms: 1500,
+          },
+        }),
+      });
+    });
+    await gotoDesktop(page, adminTokens);
+    await page.keyboard.press('Control+k');
+    await page.locator('.search-overlay .search-input').fill('report');
+    const note = page.locator('[data-testid="search-files-note"]');
+    await expect(note).toBeVisible({ timeout: 10_000 });
+    // An incomplete answer must never read as a complete one.
+    await expect(note).toContainText('2');
+    await expect(page.locator('[data-testid="search-no-results"]')).toBeVisible();
+  });
+
+  test('6b.4 — a failing file provider does not hide the local results', async ({ page }) => {
+    await page.route('**/api/search/files*', (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: false, message: 'unavailable' }),
+      }),
+    );
+    await gotoDesktop(page, adminTokens);
+    await page.keyboard.press('Control+k');
+    await page.locator('.search-overlay .search-input').fill('settings');
+    await expect(page.locator('.search-item').first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('[data-testid="search-files-note"]')).toBeVisible({ timeout: 10_000 });
+  });
+
+  test('6b.5 — a one-character query never touches the network', async ({ page }) => {
+    let calls = 0;
+    page.on('request', (r) => {
+      if (r.url().includes('/api/search/files')) calls += 1;
+    });
+    await gotoDesktop(page, adminTokens);
+    await page.keyboard.press('Control+k');
+    await page.locator('.search-overlay .search-input').fill('a');
+    await page.waitForTimeout(600);
+    expect(calls, 'a single character would turn ⌘K into a full disk walk').toBe(0);
+  });
+
+  test('6b.6 — the file path never appears in the URL', async ({ page }) => {
+    await fileApi(page);
+    await gotoDesktop(page, adminTokens);
+    await page.keyboard.press('Control+k');
+    await page.locator('.search-overlay .search-input').fill('budget-report');
+    await expect(page.locator('.search-item', { hasText: 'budget-report.pdf' })).toBeVisible({
+      timeout: 10_000,
+    });
+    expect(page.url()).not.toMatch(/budget-report|\/srv\/finance/);
+  });
+});
+
+// ===========================================================================
 // 7. Power menu (never confirms a destructive action)
 // ===========================================================================
 

@@ -32,10 +32,13 @@
  * explicit error state (`data-testid="health-error"`) with a Retry button —
  * never the empty state and never a silent blank window.
  *
- * **This suite is entirely read-only.** The screen's only action is the
- * "Refresh" button, which just re-runs the one GET. Endpoint auth / payload
- * shape are covered by `tests/health_integration.rs`; the check logic by
- * `src/health.rs`'s unit tests.
+ * **This suite is read-only.** The screen's only actions are GETs: the one
+ * `/api/health` read (auto-revalidated) and, since QW-10, the Security
+ * Advisor's `/api/security/advisor` read plus its "Re-check" button (which is
+ * the same GET again — the advisor has no write route at all). Endpoint auth /
+ * payload shape are covered by `tests/health_integration.rs` and
+ * `tests/security_advisor_integration.rs`; the check logic by `src/health.rs`
+ * and `src/security_advisor.rs`'s unit tests.
  *
  * Run (all):    npx playwright test tests/e2e/health/health.spec.ts --project=firefox
  * Run (single): npx playwright test tests/e2e/health/health.spec.ts -g "1.1"
@@ -140,6 +143,17 @@ test.beforeAll(async ({ playwright }) => {
     throw new Error(`Could not log in as ${ADMIN_USER} — seed this account first.`);
   }
   adminTokens = { username: ADMIN_USER, password: ADMIN_PASS, token, csrf };
+
+  // A freshly seeded server answers `GET /api/whats-new` with `seen: false`,
+  // and the desktop then opens a bits-ui modal whose full-screen overlay
+  // swallows every pointer event ("dialog-overlay intercepts pointer events"
+  // on the dock, in every test that has to open an app). Acknowledging the
+  // release once here — the same authenticated + CSRF'd call the modal's own
+  // close button makes — takes the overlay out of every test's path
+  // (`desktop.spec.ts` and `explorer.spec.ts` carry the same guard).
+  await ctx.post('/api/whats-new/seen', {
+    headers: { 'X-Session-Token': token, 'X-CSRF-Token': csrf },
+  });
   await ctx.dispose();
 });
 
@@ -599,5 +613,212 @@ test.describe('12 — Memory regression', () => {
       if (i === 0) baseline = n;
       else expect(n).toBeLessThan(baseline + 400);
     }
+  });
+});
+
+// ===========================================================================
+// 13. Security Advisor (QW-10)
+//
+// The card sits above the per-check grid and is rendered for admin sessions
+// only (`$isAdmin`). It has no write path at all: one `GET /api/security/advisor`
+// per mount, plus the explicit "Re-check" button. The report itself is covered
+// by `tests/security_advisor_integration.rs` and `src/security_advisor.rs`.
+// ===========================================================================
+
+/** The advisor card root, scoped to the Health window. */
+function advisor(page: Page) {
+  return win(page).locator('[data-testid="advisor-card"]');
+}
+
+test.describe('13 — Security Advisor', () => {
+  test('13.1 — the card renders above the checks with a score', async ({ page }) => {
+    await openHealth(page, adminTokens);
+    await expect(advisor(page)).toBeVisible();
+    await expect(advisor(page).locator('[data-testid="advisor-rerun"]')).toBeVisible();
+
+    // The score is a real number out of 100, and it is a progressbar (a real
+    // reading, not decoration).
+    const bar = advisor(page).locator('[role="progressbar"]');
+    await expect(bar).toBeVisible();
+    const now = Number(await bar.getAttribute('aria-valuenow'));
+    expect(Number.isFinite(now)).toBe(true);
+    expect(now).toBeGreaterThanOrEqual(0);
+    expect(now).toBeLessThanOrEqual(100);
+
+    // The card comes before the first health check card in DOM order.
+    const order = await win(page).evaluate((el) => {
+      const a = el.querySelector('[data-testid="advisor-card"]');
+      const c = el.querySelector('[data-testid="health-card"]');
+      if (!a || !c) return 'missing';
+      return a.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING
+        ? 'advisor-first'
+        : 'checks-first';
+    });
+    expect(order).toBe('advisor-first');
+  });
+
+  test('13.2 — the summary line matches the counts the API returned', async ({ page }) => {
+    await openHealth(page, adminTokens);
+    const data = await page.evaluate(async () => {
+      const r = await fetch('/api/security/advisor', {
+        headers: { 'x-session-token': localStorage.getItem('session-token') || '' },
+      });
+      return (await r.json())?.data;
+    });
+    expect(data?.score).toBeGreaterThanOrEqual(0);
+    await expect(advisor(page).locator('[data-testid="advisor-score"]')).toContainText(
+      String(data.score),
+    );
+    // Every finding in the payload carries a severity the card knows how to
+    // render — no "unknown" bucket.
+    for (const f of data.findings) {
+      expect(['pass', 'info', 'warn', 'fail']).toContain(f.severity);
+      expect((f.title || '').length).toBeGreaterThan(0);
+    }
+  });
+
+  test('13.3 — actionable findings list their fix and a deep link', async ({ page }) => {
+    await openHealth(page, adminTokens);
+    const items = advisor(page).locator('[data-testid="advisor-finding"]');
+    const n = await items.count();
+    if (n === 0) {
+      // A perfectly hardened box: the card says so instead of showing an
+      // empty list.
+      await expect(advisor(page).locator('[data-testid="advisor-nothing-to-fix"]')).toBeVisible();
+      return;
+    }
+    for (let i = 0; i < n; i++) {
+      const item = items.nth(i);
+      const severity = await item.getAttribute('data-severity');
+      expect(['warn', 'fail']).toContain(severity);
+      expect((await item.locator('[data-testid="advisor-finding-title"]').innerText()).trim().length)
+        .toBeGreaterThan(0);
+      await expect(item.locator('[data-testid="advisor-open"]')).toBeVisible();
+    }
+  });
+
+  test('13.4 — the full checklist is behind a native disclosure', async ({ page }) => {
+    await openHealth(page, adminTokens);
+    const all = advisor(page).locator('[data-testid="advisor-all"]');
+    await expect(all).toBeVisible();
+    // `<details>` is closed by default: the settled checks do not crowd the
+    // thing the user came to fix.
+    expect(await all.evaluate((el: HTMLDetailsElement) => el.open)).toBe(false);
+    await all.locator('summary').click();
+    expect(await all.evaluate((el: HTMLDetailsElement) => el.open)).toBe(true);
+  });
+
+  test('13.5 — "Re-check" issues exactly one more request and keeps the view', async ({ page }) => {
+    await openHealth(page, adminTokens);
+    let hits = 0;
+    page.on('response', (r) => {
+      if (r.url().includes('/api/security/advisor')) hits += 1;
+    });
+    await advisor(page).locator('[data-testid="advisor-rerun"]').click();
+    await expect.poll(() => hits, { timeout: 15_000 }).toBeGreaterThan(0);
+    await expect(advisor(page).locator('[role="progressbar"]')).toBeVisible();
+    // No stale score under an error: the two states are mutually exclusive.
+    await expect(advisor(page).locator('[data-testid="advisor-error"]')).toHaveCount(0);
+  });
+
+  test('13.6 — a failing advisor call surfaces an error and never a stale score', async ({ page }) => {
+    await openHealth(page, adminTokens);
+    await page.route('**/api/security/advisor', (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: false, message: 'advisor unavailable' }),
+      }),
+    );
+    await advisor(page).locator('[data-testid="advisor-rerun"]').click();
+    await expect(advisor(page).locator('[data-testid="advisor-error"]')).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(advisor(page).locator('[role="progressbar"]')).toHaveCount(0);
+    // The rest of the Health screen is unaffected by the advisor failing.
+    await expect(win(page).locator('[data-testid="health-card"]').first()).toBeVisible();
+    await page.unroute('**/api/security/advisor');
+  });
+
+  test('13.7 — the report never puts a credential in the DOM or storage', async ({ page }) => {
+    await openHealth(page, adminTokens);
+    const html = await advisor(page).innerHTML();
+    expect(html).not.toMatch(/argon2|totp_secret|password_hash|csrf/i);
+    const dump = await page.evaluate(() => JSON.stringify(localStorage));
+    expect(dump).not.toContain(ADMIN_PASS);
+    expect(page.url()).not.toMatch(/token|session|password|secret/i);
+  });
+
+  test('13.8 — a finding deep-links into the screen that owns the setting', async ({ page }) => {
+    await openHealth(page, adminTokens);
+    const open = advisor(page).locator('[data-testid="advisor-open"]').first();
+    if ((await open.count()) === 0) return; // nothing actionable on this box
+    const findingId = await advisor(page)
+      .locator('[data-testid="advisor-finding"]')
+      .first()
+      .getAttribute('data-finding-id');
+    expect(findingId).toBeTruthy();
+
+    // The card asks the desktop to open the owning app; the desktop owns every
+    // window, so what is asserted is the request the card sent (its `source`),
+    // never a claim about which app happened to already be on screen.
+    const request = page.evaluate(
+      () =>
+        new Promise<{ id: string; category: string | null; source: string }>((resolve) => {
+          window.addEventListener(
+            'hv-open-app',
+            (e) => resolve((e as CustomEvent).detail),
+            { once: true },
+          );
+        }),
+    );
+    await open.click();
+    const detail = await request;
+    expect(detail.source).toBe('security-advisor');
+    expect(detail.id.length).toBeGreaterThan(0);
+    // A Settings finding carries the category it points at; any other app has
+    // no category to pass.
+    if (detail.id === 'settings') expect(detail.category).toBeTruthy();
+
+    // The window is still usable after the deep link: nothing was mutated.
+    await expect(advisor(page)).toBeVisible();
+    await expect(win(page).locator('[data-testid="health-card"]').first()).toBeVisible();
+  });
+
+  test('13.9 — the advisor card stays readable at 360 / 768 / 1920 px', async ({ page }) => {
+    for (const [w, h] of [
+      [360, 740],
+      [768, 1024],
+      [1920, 1080],
+    ] as const) {
+      await page.setViewportSize({ width: w, height: h });
+      await openHealth(page, adminTokens);
+      await expect(advisor(page)).toBeVisible();
+      const overflow = await advisor(page).evaluate((el) => el.scrollWidth - el.clientWidth);
+      expect(overflow).toBeLessThanOrEqual(2);
+    }
+  });
+
+  test('13.10 — the deep-link buttons are keyboard reachable with a visible focus ring', async ({
+    page,
+  }) => {
+    await openHealth(page, adminTokens);
+    const open = advisor(page).locator('[data-testid="advisor-open"]').first();
+    if ((await open.count()) === 0) return;
+    await open.focus();
+    await expect(open).toBeFocused();
+    const request = page.evaluate(
+      () =>
+        new Promise<{ id: string; source: string }>((resolve) => {
+          window.addEventListener(
+            'hv-open-app',
+            (e) => resolve((e as CustomEvent).detail),
+            { once: true },
+          );
+        }),
+    );
+    // Enter activates the same handler as a click (a real <button>).
+    await page.keyboard.press('Enter');
+    expect((await request).source).toBe('security-advisor');
   });
 });

@@ -243,6 +243,25 @@ async function apiPost(page: Page, t: Tokens, uri: string, body?: unknown): Prom
   );
 }
 
+async function apiPut(page: Page, t: Tokens, uri: string, body?: unknown): Promise<Api> {
+  return page.evaluate(
+    async ({ token, csrf, uri, body }) => {
+      const r = await fetch(uri, {
+        method: 'PUT',
+        headers: {
+          'x-session-token': token,
+          'x-csrf-token': csrf,
+          ...(body ? { 'Content-Type': 'application/json' } : {}),
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const b = await r.json().catch(() => ({}));
+      return { http: r.status, success: b?.success, data: b?.data, message: b?.message };
+    },
+    { token: t.token, csrf: t.csrf, uri, body },
+  );
+}
+
 async function apiDelete(page: Page, t: Tokens, uri: string): Promise<Api> {
   return page.evaluate(
     async ({ token, csrf, uri }) => {
@@ -356,6 +375,17 @@ test.beforeAll(async ({ playwright }) => {
   const lg = await apiLogin(sharedCtx, username, ownedPassword);
   if (!lg.token) throw new Error('throwaway non-admin could not log in after the password change');
   plainUser = { username, password: ownedPassword, token: lg.token, csrf: lg.csrf };
+
+  // A freshly seeded server answers `GET /api/whats-new` with `seen: false`,
+  // and the desktop then opens a bits-ui modal whose full-screen overlay
+  // swallows every pointer event ("dialog-overlay intercepts pointer events"
+  // on the dock, in every test that has to open an app). Acknowledging the
+  // release once here — the same authenticated + CSRF'd call the modal's own
+  // close button makes — takes the overlay out of every test's path.
+  // `desktop.spec.ts` carries the same guard for the same reason.
+  await sharedCtx.post('/api/whats-new/seen', {
+    headers: { 'X-Session-Token': adminTokens.token, 'X-CSRF-Token': adminTokens.csrf },
+  });
 });
 
 test.afterAll(async () => {
@@ -392,6 +422,13 @@ test.afterAll(async () => {
       if (/\/hv-fx-e2e-/.test(String(e.original_path || '')) && e.id) {
         await sharedCtx.delete(`/api/explorer/trash/${e.id}`, { headers: adminHeaders }).catch(() => {});
       }
+    }
+    // Favorites are per-user and server-side: the `e2ework` shortcut `openWork`
+    // pins would otherwise accumulate one row per run and, once `.first()`
+    // picked a stale one, break every later run. Sweep them all (not just this
+    // run's, since a filtered `-g` run skips describe 15's own cleanup).
+    for (const p of await staleWorkFavorites()) {
+      await sharedCtx.delete('/api/explorer/favorites', { headers: adminHeaders, data: { path: p } }).catch(() => {});
     }
   } finally {
     await sharedCtx.dispose();
@@ -462,15 +499,21 @@ test.describe('1 — Page load', () => {
     await expect(sidebar).toHaveClass(/hv-winsidebar--collapsed/);
     await expect(labels).toHaveCount(0);
     await expect(sidebar.locator('.hv-winsidebar-item').first()).toHaveAttribute('title', /.+/);
-    const collapsedBox = (await sidebar.boundingBox())!;
-    expect(collapsedBox.width).toBeLessThanOrEqual(70);
+    // The rail width animates (`transition: width …` in `WindowSidebar`), and
+    // `toHaveClass` resolves on the very first frame — measuring right then
+    // caught the box mid-transition (72px on the way from 256 to 64) and made
+    // this test fail intermittently. Poll until the width settles instead.
+    await expect
+      .poll(async () => (await sidebar.boundingBox())?.width ?? Infinity, { timeout: 5_000 })
+      .toBeLessThanOrEqual(70);
 
     // Expand back → labels and full width return.
     await toggle.click();
     await expect(sidebar).not.toHaveClass(/hv-winsidebar--collapsed/);
     await expect(labels.first()).toBeVisible();
-    const expandedBox = (await sidebar.boundingBox())!;
-    expect(expandedBox.width).toBeGreaterThan(150);
+    await expect
+      .poll(async () => (await sidebar.boundingBox())?.width ?? 0, { timeout: 5_000 })
+      .toBeGreaterThan(150);
   });
 
   test('1.7 — the status footer shows the folder summary and the selection count', async ({ page }) => {
@@ -609,6 +652,29 @@ test.describe('4 — Interactions', () => {
     await openNewFolder(page);
     await page.locator('[data-slot="dialog-content"]').getByRole('button', { name: /^cancel$|^annuler$/i }).click();
     await expect(page.locator('[data-slot="dialog-content"] [data-testid="explorer-new-folder-input"]')).toHaveCount(0);
+  });
+
+  test('4.5 — the Trash view exposes the admin retention settings', async ({ page }) => {
+    await gotoExplorer(page, adminTokens);
+    await win(page)
+      .locator('[data-testid="explorer-sidebar"] .disk-btn')
+      .filter({ hasText: /trash|corbeille|papierkorb|papelera/i })
+      .first()
+      .click();
+
+    const panel = win(page).locator('[data-testid="explorer-trash-retention"]');
+    await expect(panel).toBeVisible();
+    // Collapsed by default; expanding reveals the age + size controls.
+    await expect(win(page).locator('[data-testid="explorer-trash-retention-days"]')).toHaveCount(0);
+    await win(page).locator('[data-testid="explorer-trash-retention-toggle"]').click();
+    await expect(win(page).locator('[data-testid="explorer-trash-retention-days"]')).toBeVisible();
+    await expect(win(page).locator('[data-testid="explorer-trash-retention-size"]')).toBeVisible();
+    await expect(win(page).locator('[data-testid="explorer-trash-retention-days"] option')).toHaveCount(4);
+
+    // The panel reads the real policy — a fresh install shows the default 30 days.
+    const pol = await apiGet(page, adminTokens, '/api/explorer/trash/policy');
+    expect(pol.http).toBe(200);
+    expect(pol.data?.retention_days).toBeGreaterThanOrEqual(0);
   });
 });
 
@@ -813,6 +879,7 @@ test.describe('10 — Security', () => {
       [`/api/explorer/delete?path=${q(`${WORK}/x`)}`, 'POST'],
       [`/api/explorer/trash?path=${q(`${WORK}/x`)}`, 'POST'],
       [`/api/explorer/trash`, 'GET'],
+      [`/api/explorer/trash/policy`, 'GET'],
     ] as const) {
       const r = await noAuth(uri, method);
       expect(r.success, `${method} ${uri}`).toBe(false);
@@ -857,6 +924,23 @@ test.describe('10 — Security', () => {
     await expect(cell).toBeVisible();
     // The filename must not have injected a real <img> element.
     expect(await page.locator('img[src="x"]').count()).toBe(0);
+  });
+
+  test('10.7 — a non-admin can read the trash policy but cannot change it', async ({ page }) => {
+    await gotoExplorer(page, adminTokens);
+    // Reading the policy is fine for any signed-in user (the panel is
+    // admin-only in the UI, but the value itself is not a secret).
+    const read = await apiGet(page, plainUser, '/api/explorer/trash/policy');
+    expect(read.http).toBe(200);
+    expect(read.success).toBe(true);
+
+    // Changing when deleted files are purged is an admin decision.
+    const write = await apiPut(page, plainUser, '/api/explorer/trash/policy', {
+      retention_days: 7,
+      max_bytes: 0,
+    });
+    expect(write.http).not.toBe(200);
+    expect(write.success).toBe(false);
   });
 });
 
@@ -1126,6 +1210,25 @@ async function favList(page: Page, t: Tokens): Promise<any[]> {
   return Array.isArray(r.data) ? (r.data as any[]) : [];
 }
 
+/** Every favorite that points into an `hv-fx-e2e-_` work dir, wherever it
+ *  points. `DELETE /api/explorer/favorites` is per-path, so a run that only
+ *  removes *its own* favorite leaves the ones an earlier run (or a filtered
+ *  `-g "17 …"` run, which skips describe 15's `afterAll`) created behind. */
+async function staleWorkFavorites(): Promise<string[]> {
+  const paths: string[] = [];
+  try {
+    const r = await sharedCtx.get('/api/explorer/favorites', { headers: adminHeaders });
+    const body = await r.json().catch(() => ({}));
+    for (const f of (body?.data as any[]) || []) {
+      const p = String(f?.path || '');
+      if (p && (f?.label === 'e2ework' || /\/hv-fx-e2e-/.test(p))) paths.push(p);
+    }
+  } catch {
+    /* best effort */
+  }
+  return paths;
+}
+
 // Reaching WORK by walking the file list means clicking through a very
 // large /tmp, which is slow and flaky (rows reflow as the list renders and
 // on the 8 s auto-refresh). Instead each test opens WORK in one click via a
@@ -1135,10 +1238,13 @@ async function favList(page: Page, t: Tokens): Promise<any[]> {
 // ReferenceError — `openWork is not defined` — on every run).
 async function openWork(page: Page) {
   // Re-create the favorite with a known label every time (15.3 toggles it,
-  // and the UI re-pin path would relabel it to the raw folder name).
-  await sharedCtx
-    .delete('/api/explorer/favorites', { headers: adminHeaders, data: { path: WORK } })
-    .catch(() => {});
+  // and the UI re-pin path would relabel it to the raw folder name). Every
+  // stale work favorite goes first: otherwise the sidebar holds several
+  // `e2ework` entries and `.first()` clicks an old one, whose path then
+  // never matches `WORK` in the `currentPath` poll below.
+  for (const p of await staleWorkFavorites()) {
+    await sharedCtx.delete('/api/explorer/favorites', { headers: adminHeaders, data: { path: p } }).catch(() => {});
+  }
   await sharedCtx
     .post('/api/explorer/favorites', { headers: adminHeaders, data: { path: WORK, label: 'e2ework' } })
     .catch(() => {});
@@ -1487,5 +1593,255 @@ test.describe('16 — Share by link & editor close guard', () => {
     await guard.getByRole('button', { name: /discard edits|ignorer les modifications/i }).click();
     await expect(guard).not.toBeVisible({ timeout: 10_000 });
     await expect(page.locator('[data-slot="dialog-content"]')).not.toBeVisible({ timeout: 10_000 });
+  });
+
+  test('16.4 — a password one-time link prompts on the public page, downloads once, then dies', async ({ page, browser }) => {
+    await openWork(page);
+    const fname = `${uniq('onetime_')}.txt`;
+    const body = 'ONE-TIME-PAYLOAD';
+    expect((await apiUpload(page, adminTokens, WORK, fname, body)).success).toBe(true);
+
+    const row = fileRow(page, fname);
+    await expect(row).toBeVisible({ timeout: 10_000 });
+    await row.locator('[data-testid="explorer-row-share-link"]').click();
+    const modal = page.locator('[data-slot="dialog-content"]');
+    await expect(modal).toBeVisible({ timeout: 10_000 });
+
+    // The form asks for exactly what this link needs: a password, one download.
+    await modal.locator('#share-password').fill('neighbour-pass');
+    await modal.locator('#share-limit').selectOption('one');
+    await modal.getByRole('button', { name: /create link|créer le lien/i }).click();
+    await expect(modal.locator('[data-testid="share-link-active"]')).toBeVisible({ timeout: 10_000 });
+
+    const urlText = (await modal.locator('.select-all').first().textContent()) || '';
+    const m = urlText.match(/(\/share\/[A-Za-z0-9]+)/);
+    expect(m).not.toBeNull();
+    const sharePath = m![1];
+
+    // A neighbour with no HomeVault account: a separate context, so no session,
+    // no CSRF token and no cookies from the admin's browser.
+    const visitor = await browser.newContext();
+    try {
+      const vpage = await visitor.newPage();
+      await vpage.goto(`${BASE}${sharePath}`);
+      const passwordField = vpage.locator('#public-share-password');
+      await expect(passwordField).toBeVisible({ timeout: 10_000 });
+
+      // A wrong password is refused with a visible alert, never a URL hint.
+      await passwordField.fill('not-the-password');
+      await vpage.getByRole('button', { name: /download file|télécharger le fichier/i }).click();
+      await expect(vpage.getByRole('alert')).toContainText(
+        /incorrect|indisponible|faux|nicht verfügbar|incorrecta/i,
+      );
+      expect(vpage.url()).not.toContain('not-the-password');
+
+      // The right one is exchanged for a cookie and the browser downloads.
+      await passwordField.fill('neighbour-pass');
+      const [download] = await Promise.all([
+        vpage.waitForEvent('download', { timeout: 20_000 }),
+        vpage.getByRole('button', { name: /download file|télécharger le fichier/i }).click(),
+      ]);
+      expect(download.suggestedFilename()).toBe(fname);
+
+      // The one-time link is dead after the completed download. `HEAD` spends
+      // no slot, so polling it can never race the counter.
+      await expect
+        .poll(async () => (await vpage.request.head(`${BASE}${sharePath}`)).status(), {
+          timeout: 20_000,
+        })
+        .toBe(400);
+
+      // …and a fresh visit says so instead of asking for the password again.
+      // (A new page in the same context, not `reload()`: after an attachment
+      // response Firefox reloads that URL as a download.)
+      const after = await visitor.newPage();
+      await after.goto(`${BASE}${sharePath}`);
+      await expect(after.getByRole('alert')).toBeVisible({ timeout: 10_000 });
+      await expect(after.locator('#public-share-password')).toHaveCount(0);
+    } finally {
+      await visitor.close();
+    }
+
+    await modal.getByRole('button', { name: /^revoke$/i }).first().click();
+  });
+
+  test('16.5 — an open link downloads straight away, with no password prompt', async ({ page, browser }) => {
+    await openWork(page);
+    const fname = `${uniq('open_')}.txt`;
+    expect((await apiUpload(page, adminTokens, WORK, fname, 'OPEN-PAYLOAD')).success).toBe(true);
+    const file = `${WORK}/${fname}`;
+
+    const created = await page.evaluate(
+      async ({ token, csrf, file }) => {
+        const r = await fetch('/api/explorer/shares', {
+          method: 'POST',
+          headers: { 'x-session-token': token, 'x-csrf-token': csrf, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: file }),
+        });
+        const b = await r.json().catch(() => ({}));
+        return { status: r.status, data: b?.data };
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf, file },
+    );
+    expect(created.status).toBe(200);
+    const sharePath = (created.data as { share_path: string }).share_path;
+
+    const visitor = await browser.newContext();
+    try {
+      const vpage = await visitor.newPage();
+      // A link that needs nothing must not show a page at all: a plain
+      // navigation is the download (that is the whole point of the feature).
+      const [download] = await Promise.all([
+        vpage.waitForEvent('download', { timeout: 20_000 }),
+        vpage.goto(`${BASE}${sharePath}`).catch(() => null),
+      ]);
+      expect(download.suggestedFilename()).toBe(fname);
+      await expect(vpage.locator('#public-share-password')).toHaveCount(0);
+    } finally {
+      await visitor.close();
+      await sharedCtx
+        .delete(`/api/explorer/shares/${encodeURIComponent(sharePath.split('/').pop() || '')}`, {
+          headers: adminHeaders,
+        })
+        .catch(() => {});
+    }
+  });
+});
+
+// ===========================================================================
+// 17. Instant copy (reflink) — QW-03
+// ===========================================================================
+
+test.describe('17 — Instant copy (reflink)', () => {
+  test('17.1 — a copy reports the strategy it used, and the bytes are exact', async ({ page }) => {
+    await openWork(page);
+    const dir = `${WORK}/${uniq('rl_')}`;
+    await apiPost(page, adminTokens, `/api/explorer/mkdir?path=${q(dir)}`);
+    const body = 'REF-LINK-PROBE-' + 'x'.repeat(200);
+    expect((await apiUpload(page, adminTokens, dir, 'src.txt', body)).success).toBe(true);
+
+    const r = await apiPost(
+      page,
+      adminTokens,
+      `/api/explorer/copy?source=${q(`${dir}/src.txt`)}&destination=${q(`${dir}/dst.txt`)}`,
+    );
+    expect(r.success).toBe(true);
+    // The reply names the strategy, and `instant` must agree with it. Whether
+    // a clone is possible depends on the host (`/tmp` is ext4 here), so the
+    // expectation is derived from the mounts the server reports instead of
+    // being hardcoded — on a Btrfs box this test still has to be true.
+    const method = r.data?.method;
+    expect(['clone', 'kernel_clone', 'kernel_copy', 'stream']).toContain(method);
+    expect(r.data?.instant).toBe(method === 'clone' || method === 'kernel_clone');
+    const settings = await apiGet(page, adminTokens, '/api/explorer/instant-copy');
+    const mount = (settings.data?.mounts ?? [])
+      .filter(
+        (m: { mount_point: string }) =>
+          dir === m.mount_point || dir.startsWith(m.mount_point.replace(/\/$/, '') + '/'),
+      )
+      .sort((a: { mount_point: string }, b: { mount_point: string }) => b.mount_point.length - a.mount_point.length)[0];
+    if (mount) {
+      // A clone on a filesystem the server itself reports as unable to share
+      // extents would be a lie; the converse is what the feature is for.
+      expect(r.data?.instant).toBe(mount.reflink);
+    }
+    // The copy is byte-identical either way.
+    expect((await apiDownloadLen(page, adminTokens, `${dir}/dst.txt`)).len).toBe(body.length);
+  });
+
+  test('17.2 — mode=off still copies correctly and never claims a clone', async ({ page }) => {
+    await openWork(page);
+    const original = await apiGet(page, adminTokens, '/api/explorer/instant-copy');
+    const restore = original.data?.mode === 'off' ? 'off' : 'auto';
+    try {
+      expect((await apiPut(page, adminTokens, '/api/explorer/instant-copy', { mode: 'off' })).success).toBe(true);
+
+      const dir = `${WORK}/${uniq('rloff_')}`;
+      await apiPost(page, adminTokens, `/api/explorer/mkdir?path=${q(dir)}`);
+      expect((await apiUpload(page, adminTokens, dir, 'a.txt', 'STREAM-PROBE')).success).toBe(true);
+
+      const r = await apiPost(
+        page,
+        adminTokens,
+        `/api/explorer/copy?source=${q(`${dir}/a.txt`)}&destination=${q(`${dir}/b.txt`)}`,
+      );
+      expect(r.success).toBe(true);
+      expect(r.data?.method).toBe('stream');
+      expect(r.data?.instant).toBe(false);
+      expect((await apiDownloadLen(page, adminTokens, `${dir}/b.txt`)).len).toBe('STREAM-PROBE'.length);
+    } finally {
+      await apiPut(page, adminTokens, '/api/explorer/instant-copy', { mode: restore });
+    }
+  });
+
+  test('17.3 — the admin panel reads and writes the policy, and shows the mounts', async ({ page }) => {
+    await gotoExplorer(page, adminTokens);
+    const original = await apiGet(page, adminTokens, '/api/explorer/instant-copy');
+    const restore = original.data?.mode === 'off' ? 'off' : 'auto';
+    try {
+      // Open the panel from the toolbar (admin only).
+      await win(page).locator('[data-testid="explorer-instant-copy-btn"]').click({ force: true });
+      const modal = page.locator('[data-slot="dialog-content"]');
+      await expect(modal).toBeVisible({ timeout: 10_000 });
+
+      // Both options are offered, and the evidence list is rendered.
+      await expect(modal.locator('[data-testid="explorer-instant-copy-auto"]')).toBeVisible();
+      await expect(modal.locator('[data-testid="explorer-instant-copy-off"]')).toBeVisible();
+      await expect(modal.locator('[data-testid="explorer-instant-copy-mounts"]')).toBeVisible();
+
+      // Choosing "always make a full copy" persists it on the server.
+      await modal.locator('[data-testid="explorer-instant-copy-off"]').check({ force: true });
+      await expect
+        .poll(async () => (await apiGet(page, adminTokens, '/api/explorer/instant-copy')).data?.mode, {
+          timeout: 10_000,
+        })
+        .toBe('off');
+
+      // And switching back to auto persists that too.
+      await modal.locator('[data-testid="explorer-instant-copy-auto"]').check({ force: true });
+      await expect
+        .poll(async () => (await apiGet(page, adminTokens, '/api/explorer/instant-copy')).data?.mode, {
+          timeout: 10_000,
+        })
+        .toBe('auto');
+    } finally {
+      await apiPut(page, adminTokens, '/api/explorer/instant-copy', { mode: restore });
+    }
+  });
+
+  test('17.4 — the policy refuses a non-admin writer and an unknown mode', async ({ page }) => {
+    // A regular user may read it… (openWork logs the admin in; the plain user
+    // is exercised through its own context below.)
+    await gotoExplorer(page, adminTokens);
+
+    // …but an unknown mode is refused rather than silently coerced.
+    const bad = await apiPut(page, adminTokens, '/api/explorer/instant-copy', { mode: 'instant-please' });
+    expect(bad.http).not.toBe(500);
+    expect(bad.success).toBe(false);
+
+    // The stored policy was not changed by the rejected write.
+    const after = await apiGet(page, adminTokens, '/api/explorer/instant-copy');
+    expect(['auto', 'off']).toContain(after.data?.mode);
+
+    // A non-admin session cannot write it.
+    const denied = await apiPut(page, plainUser, '/api/explorer/instant-copy', { mode: 'off' });
+    expect(denied.http).toBe(403);
+  });
+
+  test('17.5 — a same-filesystem move reports no copy method at all', async ({ page }) => {
+    await openWork(page);
+    const dir = `${WORK}/${uniq('rlmv_')}`;
+    await apiPost(page, adminTokens, `/api/explorer/mkdir?path=${q(dir)}`);
+    expect((await apiUpload(page, adminTokens, dir, 'm1.txt', 'MOVE-ME')).success).toBe(true);
+
+    const r = await apiPost(
+      page,
+      adminTokens,
+      `/api/explorer/move?source=${q(`${dir}/m1.txt`)}&destination=${q(`${dir}/m2.txt`)}`,
+    );
+    expect(r.success).toBe(true);
+    // An atomic rename copied nothing: reporting a method would be invented.
+    expect(r.data?.method ?? null).toBeNull();
+    expect((await apiDownloadLen(page, adminTokens, `${dir}/m2.txt`)).len).toBe('MOVE-ME'.length);
   });
 });

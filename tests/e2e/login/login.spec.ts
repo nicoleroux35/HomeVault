@@ -2232,3 +2232,101 @@ test.describe('26 — Plain-HTTP warning', () => {
     await expect(page.locator('[data-testid="login-insecure-banner"]')).toHaveCount(0);
   });
 });
+
+// ===========================================================================
+// 27. Passkey sign-in (Phase 1 P1.3)
+//
+// The button under the sign-in form. A headless browser has no authenticator,
+// so the ceremony cannot complete here — what is pinned is the contract: the
+// button appears when the browser can run one, it never fires without a
+// username, and a cancelled/failed ceremony is reported as such rather than as
+// a wrong password. The cryptography is covered end to end by
+// `tests/passkey_integration.rs`.
+// ===========================================================================
+
+test.describe('27 — Passkey sign-in', () => {
+  test('27.1 — the passkey button is offered when the browser supports WebAuthn', async ({
+    page,
+  }) => {
+    await page.goto('/login');
+    await page.waitForSelector('#username', { timeout: 15_000 });
+    await expect(page.locator('[data-testid="login-passkey"]')).toBeVisible({ timeout: 10_000 });
+  });
+
+  test('27.2 — a browser without WebAuthn shows no passkey button at all', async ({ page }) => {
+    await page.addInitScript(() => {
+      // @ts-expect-error — deliberately removing the API.
+      delete window.PublicKeyCredential;
+    });
+    await page.goto('/login');
+    await page.waitForSelector('#username', { timeout: 15_000 });
+    // A button that cannot work is worse than no button.
+    await expect(page.locator('[data-testid="login-passkey"]')).toHaveCount(0);
+  });
+
+  test('27.3 — the button refuses to start without a username', async ({ page }) => {
+    let called = false;
+    page.on('request', (r) => {
+      if (r.url().includes('/api/passkeys/login/begin')) called = true;
+    });
+    await page.goto('/login');
+    await page.waitForSelector('#username', { timeout: 15_000 });
+    await page.locator('[data-testid="login-passkey"]').click();
+    await page.waitForTimeout(500);
+    // The username field is what identifies whose passkeys to offer.
+    expect(called).toBe(false);
+    await expect(page.locator('[data-testid="login-inline-error"]')).toBeVisible();
+  });
+
+  test('27.4 — a cancelled ceremony reads as cancelled, never as a bad password', async ({
+    page,
+  }) => {
+    await page.route('**/api/passkeys/login/begin', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: {
+            challenge: 'Y2hhbGxlbmdl',
+            rp_id: 'localhost',
+            timeout: 60000,
+            allow_credentials: [],
+            user_verification: 'preferred',
+          },
+        }),
+      }),
+    );
+    // The browser refuses the prompt exactly as a user pressing Escape would.
+    await page.addInitScript(() => {
+      const original = navigator.credentials.get?.bind(navigator.credentials);
+      Object.defineProperty(navigator, 'credentials', {
+        configurable: true,
+        value: {
+          ...navigator.credentials,
+          get: async () => {
+            const error = new Error('cancelled');
+            error.name = 'NotAllowedError';
+            throw error;
+          },
+          create: original,
+        },
+      });
+    });
+    await page.goto('/login');
+    await page.waitForSelector('#username', { timeout: 15_000 });
+    await page.locator('#username').fill('e2eadmin');
+    await page.locator('[data-testid="login-passkey"]').click();
+    const error = page.locator('[data-testid="login-inline-error"]');
+    await expect(error).toBeVisible({ timeout: 10_000 });
+    // The sentence names the cancellation — "invalid credentials" would send
+    // the user hunting for a password that was never wrong.
+    await expect(error).toContainText(/cancel|annul|abbrech|cancelar/i);
+  });
+
+  test('27.5 — the passkey path puts no credential in the URL', async ({ page }) => {
+    await page.goto('/login');
+    await page.waitForSelector('#username', { timeout: 15_000 });
+    expect(page.url()).not.toMatch(/passkey|credential|challenge/);
+  });
+});
