@@ -204,6 +204,84 @@ pub struct AdvertisedService {
     pub svc_type: &'static str,
     pub port: u16,
     pub txt: Vec<String>,
+    /// When set, this service is published in its **own** `<service-group>`
+    /// carrying this name. macOS resolves one Time Machine volume per
+    /// `_adisk._tcp` advertisement, so each share needs a distinct service
+    /// group; every other protocol shares HomeVault's single group.
+    pub group: Option<String>,
+}
+
+/// The DNS-SD type macOS looks for when building its Time Machine volume
+/// list. It carries no live port — discovery only — so the conventional
+/// `9` (discard) is published, exactly like DSM's own advertisement.
+pub const ADISK_SERVICE_TYPE: &str = "_adisk._tcp";
+/// Port advertised for `_adisk._tcp`: never connected to, only discovered.
+pub const ADISK_PORT: u16 = 9;
+
+/// The stable `adVU` UUID macOS keys a Time Machine volume on.
+///
+/// Derived from the published host name and the share name, so the same
+/// volume keeps its identity across restarts and config rewrites (a fresh
+/// random UUID on every publish would make macOS treat the same disk as a new
+/// destination each time). Shape: a canonical 8-4-4-4-12 UUID with version 5
+/// and the RFC 4122 variant bits set, computed from SHA-256 rather than
+/// pulling in a second hash crate.
+pub fn adisk_uuid(host: &str, share: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"homevault-adisk:");
+    hasher.update(host.as_bytes());
+    hasher.update(b":");
+    hasher.update(share.as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    // Version 5 (name-based) and the RFC 4122 variant, so the value is a
+    // well-formed UUID any client accepts.
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
+}
+
+/// The `_adisk._tcp` advertisement for one Time Machine share.
+///
+/// `adVF=0x82` is the flag pair macOS reads as "Time Machine destination,
+/// password required": the share is reached over SMB with a HomeVault account,
+/// never anonymously.
+pub fn adisk_service(host: &str, share: &str) -> AdvertisedService {
+    AdvertisedService {
+        svc_type: ADISK_SERVICE_TYPE,
+        port: ADISK_PORT,
+        txt: vec![
+            "sys=adVF=0x82".to_string(),
+            format!(
+                "dk0=adVF=0x82,adVN={},adVU={}",
+                share,
+                adisk_uuid(host, share)
+            ),
+        ],
+        group: Some(format!("HomeVault Time Machine ({share})")),
+    }
+}
+
+/// The `adVN` value carried by an `_adisk._tcp` advertisement, if any. Used by
+/// the UI/tests to tell which share an advertisement belongs to.
+pub fn adisk_share_name(svc: &AdvertisedService) -> Option<&str> {
+    if svc.svc_type != ADISK_SERVICE_TYPE {
+        return None;
+    }
+    svc.txt.iter().find_map(|record| {
+        let rest = record.strip_prefix("dk0=")?;
+        rest.split(',').find_map(|field| field.strip_prefix("adVN="))
+    })
 }
 
 /// Ensure `host-name=<host_name>` is set in the `[server]` section of an
@@ -352,7 +430,7 @@ pub fn render_service_file(web_port: u16, services: &[AdvertisedService]) -> Str
     xml.push_str("    <txt-record>path=/</txt-record>\n");
     xml.push_str("  </service>\n");
 
-    for svc in services {
+    for svc in services.iter().filter(|s| s.group.is_none()) {
         xml.push_str("  <service>\n");
         xml.push_str(&format!("    <type>{}</type>\n", svc.svc_type));
         xml.push_str(&format!("    <port>{}</port>\n", svc.port));
@@ -363,6 +441,27 @@ pub fn render_service_file(web_port: u16, services: &[AdvertisedService]) -> Str
     }
 
     xml.push_str("</service-group>\n");
+
+    // Services that need their own group (one Time Machine volume each) come
+    // after the main group. A `service-group` carries exactly one `<name>`,
+    // which is what macOS uses to tell two `_adisk._tcp` advertisements apart.
+    for svc in services.iter().filter(|s| s.group.is_some()) {
+        let name = svc.group.as_deref().unwrap_or("HomeVault");
+        xml.push_str("<service-group>\n");
+        xml.push_str(&format!(
+            "  <name>{}</name>\n",
+            xml_escape(name)
+        ));
+        xml.push_str("  <service>\n");
+        xml.push_str(&format!("    <type>{}</type>\n", svc.svc_type));
+        xml.push_str(&format!("    <port>{}</port>\n", svc.port));
+        for t in &svc.txt {
+            xml.push_str(&format!("    <txt-record>{}</txt-record>\n", xml_escape(t)));
+        }
+        xml.push_str("  </service>\n");
+        xml.push_str("</service-group>\n");
+    }
+
     xml
 }
 
@@ -402,15 +501,32 @@ pub fn detect_services() -> Vec<AdvertisedService> {
     let mut out = Vec::new();
     for st in enabled_share_types() {
         match st {
-            ShareType::Smb if unit_active("smbd") => out.push(AdvertisedService {
-                svc_type: "_smb._tcp",
-                port: 445,
-                txt: vec![],
-            }),
+            ShareType::Smb if unit_active("smbd") => {
+                out.push(AdvertisedService {
+                    svc_type: "_smb._tcp",
+                    port: 445,
+                    txt: vec![],
+                    group: None,
+                });
+                // Time Machine: one `_adisk._tcp` advertisement per share
+                // whose SMB profile makes it a backup destination. Sorted by
+                // name so the generated file is deterministic.
+                let mut tm_shares: Vec<String> = SharesService::get_smb_time_machine_map()
+                    .into_iter()
+                    .filter(|(_, tm)| tm.enabled)
+                    .map(|(name, _)| name)
+                    .collect();
+                tm_shares.sort();
+                let host = mdns_hostname();
+                for share in tm_shares {
+                    out.push(adisk_service(&host, &share));
+                }
+            }
             ShareType::Nfs if unit_active("nfs-server") => out.push(AdvertisedService {
                 svc_type: "_nfs._tcp",
                 port: 2049,
                 txt: vec![],
+                group: None,
             }),
             ShareType::Ftp if unit_active("vsftpd") => {
                 let port = SharesService::get_ftp_config()
@@ -420,6 +536,7 @@ pub fn detect_services() -> Vec<AdvertisedService> {
                     svc_type: "_ftp._tcp",
                     port,
                     txt: vec![],
+                    group: None,
                 });
             }
             ShareType::Webdav if crate::webdav::running_port().is_some() => {
@@ -428,6 +545,7 @@ pub fn detect_services() -> Vec<AdvertisedService> {
                     svc_type: "_webdav._tcp",
                     port,
                     txt: vec!["path=/".into()],
+                    group: None,
                 });
             }
             ShareType::Sftp if unit_active("homevault-sftp") => {
@@ -438,6 +556,7 @@ pub fn detect_services() -> Vec<AdvertisedService> {
                     svc_type: "_sftp-ssh._tcp",
                     port,
                     txt: vec![],
+                    group: None,
                 });
             }
             _ => {}
@@ -808,16 +927,19 @@ mod tests {
                 svc_type: "_smb._tcp",
                 port: 445,
                 txt: vec![],
+                group: None,
             },
             AdvertisedService {
                 svc_type: "_sftp-ssh._tcp",
                 port: 2222,
                 txt: vec![],
+                group: None,
             },
             AdvertisedService {
                 svc_type: "_webdav._tcp",
                 port: 8082,
                 txt: vec!["path=/".into()],
+                group: None,
             },
         ];
         let xml = render_service_file(9000, &svcs);
@@ -833,10 +955,64 @@ mod tests {
             svc_type: "_smb._tcp",
             port: 445,
             txt: vec!["name=A & B <x>".into()],
+            group: None,
         }];
         let xml = render_service_file(80, &svcs);
         assert!(xml.contains("A &amp; B &lt;x&gt;"));
         assert!(!xml.contains("A & B <x>"));
+    }
+
+    #[test]
+    fn test_adisk_advertisement_names_the_share_and_a_stable_uuid() {
+        let svc = adisk_service("homevault", "macbackup");
+        assert_eq!(svc.svc_type, ADISK_SERVICE_TYPE);
+        assert_eq!(svc.port, ADISK_PORT);
+        assert_eq!(adisk_share_name(&svc), Some("macbackup"));
+        // Version/variant bits and the canonical shape.
+        let uuid = adisk_uuid("homevault", "macbackup");
+        assert_eq!(uuid.len(), 36, "{uuid}");
+        assert_eq!(uuid.as_bytes()[14], b'5', "version 5: {uuid}");
+        assert!(matches!(uuid.as_bytes()[19], b'8' | b'9' | b'a' | b'b'), "{uuid}");
+        // Stable across calls, distinct per host and per share.
+        assert_eq!(uuid, adisk_uuid("homevault", "macbackup"));
+        assert_ne!(uuid, adisk_uuid("homevault", "other"));
+        assert_ne!(uuid, adisk_uuid("hv-dev-1", "macbackup"));
+        // The share name is only read from an `_adisk` advertisement.
+        let smb = AdvertisedService {
+            svc_type: "_smb._tcp",
+            port: 445,
+            txt: vec![],
+            group: None,
+        };
+        assert_eq!(adisk_share_name(&smb), None);
+    }
+
+    #[test]
+    fn test_each_time_machine_share_gets_its_own_service_group() {
+        let svcs = vec![
+            AdvertisedService {
+                svc_type: "_smb._tcp",
+                port: 445,
+                txt: vec![],
+                group: None,
+            },
+            adisk_service("homevault", "macbackup"),
+        ];
+        let xml = render_service_file(8080, &svcs);
+        // Two groups: the shared one and the Time Machine volume's own.
+        assert_eq!(xml.matches("<service-group>").count(), 2, "{xml}");
+        assert!(xml.contains("<name>HomeVault Time Machine (macbackup)</name>"), "{xml}");
+        assert!(xml.contains("<type>_adisk._tcp</type>"), "{xml}");
+        assert!(
+            xml.contains("adVN=macbackup,adVU="),
+            "macOS keys the volume on adVN/adVU: {xml}"
+        );
+        // `_smb._tcp` stays in the shared group, not the Time Machine one.
+        let tm_group = xml
+            .split("<name>HomeVault Time Machine (macbackup)</name>")
+            .nth(1)
+            .expect("the Time Machine group");
+        assert!(!tm_group.contains("_smb._tcp"), "{tm_group}");
     }
 
     #[test]

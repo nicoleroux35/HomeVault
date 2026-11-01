@@ -374,6 +374,260 @@ mod tests {
         }
     }
 
+    /// Tranche T1 (2026-10-29) added the reachability surfaces: certificate
+    /// automation, dynamic DNS, the reachability checklist, trusted devices and
+    /// the rescue address. Every one of them is a whole card rendered from the
+    /// translation map, so a key missing from one locale would show a raw key in
+    /// exactly that locale. Pin the prefix families instead of listing ~80 keys
+    /// one by one: any key that exists in English must exist and be non-empty in
+    /// the other three.
+    #[test]
+    fn test_the_t1_surfaces_are_translated_in_every_locale() {
+        let sources = embedded_translation_sources();
+        let mut maps = std::collections::HashMap::new();
+        for (code, toml_src) in &sources {
+            let parsed: toml::Value = toml::from_str(toml_src).expect("parse");
+            maps.insert(*code, flatten_toml(&parsed, ""));
+        }
+
+        let english = maps.get("en").expect("en is embedded");
+        let prefixes = [
+            "settings.acme_",
+            "settings.ddns_",
+            "settings.reachability_",
+            "settings.tls_mode_acme",
+            "account.section_devices",
+            "account.devices_",
+            "account.section_rescue",
+            "account.rescue_",
+            "login.email_recovery_",
+            "login.remember_device",
+        ];
+        let expected: Vec<&String> = english
+            .keys()
+            .filter(|key| prefixes.iter().any(|p| key.starts_with(p)))
+            .collect();
+        assert!(
+            expected.len() >= 60,
+            "the T1 surfaces should carry their own strings, found {}",
+            expected.len()
+        );
+
+        for (code, map) in &maps {
+            for key in &expected {
+                let value = map
+                    .get(*key)
+                    .unwrap_or_else(|| panic!("{key} missing from {code}.toml"));
+                assert!(
+                    !value.trim().is_empty(),
+                    "{key} is empty in {code}.toml — a blank label is worse than a raw key"
+                );
+            }
+        }
+
+        // The ACME-mode radio is useless without its explanation: the label and
+        // the hint are one control, and the hint must name the automation card.
+        for (code, map) in &maps {
+            let hint = map
+                .get("settings.tls_mode_acme_hint")
+                .unwrap_or_else(|| panic!("settings.tls_mode_acme_hint missing from {code}.toml"));
+            assert!(
+                hint.to_lowercase().contains("automat") || hint.contains("Automat"),
+                "the ACME mode hint in {code}.toml must point at certificate automation: {hint}"
+            );
+        }
+    }
+
+    /// QW-10 added the Security Advisor card, whose whole chrome (title,
+    /// severities, summary, the two placeholders, the per-app deep-link
+    /// labels) is rendered from the translation map. A key missing from one
+    /// locale would show a raw `health.advisor_*` string in exactly that
+    /// locale, and the placeholder names must match — the frontend replaces
+    /// `%name%`, while a TOML interpolation written `{name}` would survive into
+    /// the UI verbatim (the QW batch-B defect). Both are pinned here.
+    #[test]
+    fn security_advisor_keys_are_at_parity_in_every_locale() {
+        let sources = embedded_translation_sources();
+        assert_eq!(sources.len(), 4, "four locales ship");
+        let mut by_locale = std::collections::HashMap::new();
+        for (code, toml_src) in &sources {
+            let parsed: toml::Value = toml::from_str(toml_src).expect("parse");
+            by_locale.insert(*code, flatten_toml(&parsed, ""));
+        }
+
+        let english = by_locale.get("en").expect("en is embedded");
+        let prefix = "health.advisor_";
+        let expected: Vec<String> = english
+            .keys()
+            .filter(|key| key.starts_with(prefix))
+            .cloned()
+            .collect();
+        assert!(
+            expected.len() >= 20,
+            "the advisor card should carry its own strings, found {}",
+            expected.len()
+        );
+
+        for (code, map) in &by_locale {
+            for key in &expected {
+                let value = map
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{key} missing from {code}.toml"));
+                assert!(
+                    !value.trim().is_empty(),
+                    "{key} is empty in {code}.toml — a blank label is worse than a raw key"
+                );
+                // A TOML `{name}` interpolation is dead text in the frontend.
+                assert!(
+                    !value.contains('{'),
+                    "{key} in {code}.toml uses a TOML interpolation the frontend cannot                      replace (expects %name%): {value}"
+                );
+            }
+        }
+
+        // The two placeholders are data, not prose: their names must match what
+        // the card passes, in every locale.
+        for (code, map) in &by_locale {
+            for (key, placeholder) in [
+                ("health.advisor_score_value", "%score%"),
+                ("health.advisor_summary", "%pass%"),
+            ] {
+                let value = map.get(key).unwrap();
+                assert!(
+                    value.contains(placeholder),
+                    "{key} in {code}.toml must interpolate {placeholder}: {value}"
+                );
+            }
+            let all_checks = map.get("health.advisor_all_checks").unwrap();
+            assert!(
+                all_checks.contains("%count%"),
+                "health.advisor_all_checks in {code}.toml must interpolate %count%: {all_checks}"
+            );
+        }
+
+        // Every app the report can deep-link to has its own label; the card
+        // falls back to the generic "Open" when one is missing, so a gap here
+        // is a quiet degradation rather than a raw key — still worth pinning.
+        for code in ["en", "fr", "de", "es"] {
+            let map = by_locale.get(code).unwrap();
+            for app in ["settings", "users", "shares", "account", "health"] {
+                let key = format!("health.advisor_open_{app}");
+                assert!(
+                    map.contains_key(&key),
+                    "{key} missing from {code}.toml (the card would fall back to a generic label)"
+                );
+            }
+        }
+    }
+
+    /// QW-12 added the cross-root file provider to the ⌘K overlay: a result
+    /// row's type badge, the "still looking" line, and the two honesty notes
+    /// (a partial answer, a cut answer). A locale missing one would show a raw
+    /// `search.*` key in the overlay, and `files_partial` must keep its
+    /// `%count%` placeholder — the frontend replaces `%name%`, never `{name}`.
+    #[test]
+    fn file_search_keys_are_at_parity_in_every_locale() {
+        let sources = embedded_translation_sources();
+        assert_eq!(sources.len(), 4, "four locales ship");
+        for (code, toml_src) in &sources {
+            let parsed: toml::Value = toml::from_str(toml_src).expect("parse");
+            let map = flatten_toml(&parsed, "");
+            for key in [
+                "search.type_file",
+                "search.files_searching",
+                "search.files_partial",
+                "search.files_truncated",
+                "search.files_unavailable",
+            ] {
+                let value = map
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{key} missing from {code}.toml"));
+                assert!(
+                    !value.trim().is_empty(),
+                    "{key} is empty in {code}.toml — a blank label is worse than a raw key"
+                );
+                assert!(
+                    !value.contains('{'),
+                    "{key} in {code}.toml uses a TOML interpolation the frontend cannot                      replace (expects %name%): {value}"
+                );
+            }
+            let partial = map.get("search.files_partial").unwrap();
+            assert!(
+                partial.contains("%count%"),
+                "search.files_partial in {code}.toml must interpolate %count%: {partial}"
+            );
+        }
+    }
+
+    /// Phase 1 P1.3 added passkeys: the Account card's chrome and the login
+    /// screen's passkey button. A locale missing one would show a raw
+    /// `account.passkeys_*` / `login.passkey_*` key exactly there, and a TOML
+    /// `{name}` placeholder would survive into the UI verbatim.
+    #[test]
+    fn passkey_keys_are_at_parity_in_every_locale() {
+        let sources = embedded_translation_sources();
+        assert_eq!(sources.len(), 4, "four locales ship");
+        let mut by_locale = std::collections::HashMap::new();
+        for (code, toml_src) in &sources {
+            let parsed: toml::Value = toml::from_str(toml_src).expect("parse");
+            by_locale.insert(*code, flatten_toml(&parsed, ""));
+        }
+
+        let english = by_locale.get("en").expect("en is embedded");
+        let account_keys: Vec<String> = english
+            .keys()
+            .filter(|key| {
+                key.starts_with("account.passkeys_") || *key == "account.section_passkeys"
+            })
+            .cloned()
+            .collect();
+        let login_keys: Vec<String> = english
+            .keys()
+            .filter(|key| key.starts_with("login.passkey_"))
+            .cloned()
+            .collect();
+        assert!(
+            account_keys.len() >= 20,
+            "the passkey card should carry its own strings, found {}",
+            account_keys.len()
+        );
+        assert!(
+            login_keys.len() >= 5,
+            "the login button too, found {}",
+            login_keys.len()
+        );
+
+        for (code, map) in &by_locale {
+            for key in account_keys.iter().chain(login_keys.iter()) {
+                let value = map
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{key} missing from {code}.toml"));
+                assert!(
+                    !value.trim().is_empty(),
+                    "{key} is empty in {code}.toml — a blank label is worse than a raw key"
+                );
+                assert!(
+                    !value.contains('{'),
+                    "{key} in {code}.toml uses a TOML interpolation the frontend cannot \
+                     replace (expects %name%): {value}"
+                );
+            }
+            // The two placeholders are data, not prose: their names must match
+            // what the components pass, in every locale.
+            for (key, placeholder) in [
+                ("account.passkeys_revoke_message", "%label%"),
+                ("account.passkeys_max", "%max%"),
+                ("account.passkeys_origin", "%origin%"),
+            ] {
+                let value = map.get(key).unwrap();
+                assert!(
+                    value.contains(placeholder),
+                    "{key} in {code}.toml must interpolate {placeholder}: {value}"
+                );
+            }
+        }
+    }
+
     /// ROADMAP 28.3 added three activity `kind` slugs (a RAID resync, a pool
     /// scrub, a Syncthing folder catching up). The desktop renders a row's name
     /// as `desktop.activity_kind_<slug>`, falling back to the **raw slug** when

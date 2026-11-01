@@ -56,6 +56,16 @@ pub const EVENT_CATALOG: &[NotificationEvent] = &[
         label_key: "notifications.events.app_updates",
     },
     NotificationEvent {
+        id: "certificate.issued",
+        group: "system",
+        label_key: "notifications.events.certificate_issued",
+    },
+    NotificationEvent {
+        id: "certificate.renewal_failed",
+        group: "system",
+        label_key: "notifications.events.certificate_renewal_failed",
+    },
+    NotificationEvent {
         id: "health.authentication",
         group: "health",
         label_key: "notifications.events.health_authentication",

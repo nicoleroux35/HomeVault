@@ -312,9 +312,8 @@ impl SettingsPersistence {
     /// unknown timezone, a webhook URL that is not a URL). The error names the
     /// offending field, which the old bare `serde_json` error never did.
     pub fn import(&self, json: &str) -> Result<PersistedSettings, String> {
-        let mut settings: PersistedSettings = serde_json::from_str(json).map_err(|e| {
-            format!("Settings file is not valid for this HomeVault version: {e}")
-        })?;
+        let mut settings: PersistedSettings = serde_json::from_str(json)
+            .map_err(|e| format!("Settings file is not valid for this HomeVault version: {e}"))?;
         validate_import(&settings)?;
         settings.schema_version = CURRENT_SETTINGS_SCHEMA;
         self.storage
@@ -344,6 +343,14 @@ impl SettingsPersistence {
         // Built-in HTTPS/TLS config (data/tls.json) is separate from settings.json
         // but is still "a setting" from the admin's point of view — clear it too.
         crate::tls::clear_settings();
+        // Certificate automation (data/acme.json + data/acme/) is a setting
+        // too: resetting must not leave a domain, a provider token or an
+        // installed certificate behind.
+        crate::acme::clear_settings();
+        crate::acme::clear_challenges();
+        // Dynamic DNS (data/ddns.json): same rule, the domain and the provider
+        // token are settings.
+        crate::ddns::clear_settings();
         Ok(())
     }
 }
@@ -393,7 +400,10 @@ pub fn validate_import(settings: &PersistedSettings) -> Result<(), String> {
         if let Some(from) = &email.from_address {
             let from = from.trim();
             if !from.is_empty() && !crate::handlers::settings::is_valid_email_address(from) {
-                return Err(format!("email.from_address '{}' is not a valid address", from));
+                return Err(format!(
+                    "email.from_address '{}' is not a valid address",
+                    from
+                ));
             }
         }
         // The relay fields become lines of the generated msmtp configuration,
@@ -411,9 +421,7 @@ pub fn validate_import(settings: &PersistedSettings) -> Result<(), String> {
             use_tls: email.use_tls.unwrap_or(true),
         };
         if probe.is_explicit() {
-            probe
-                .validate()
-                .map_err(|e| format!("email: {}", e))?;
+            probe.validate().map_err(|e| format!("email: {}", e))?;
         }
     }
 
@@ -1068,7 +1076,11 @@ mod tests {
     #[test]
     fn test_an_export_carries_the_current_schema_version() {
         let (p, _dir) = persistence();
-        save(&p, &email_with_password("pw"), &AppearanceSettings::default());
+        save(
+            &p,
+            &email_with_password("pw"),
+            &AppearanceSettings::default(),
+        );
         let json: serde_json::Value = serde_json::from_str(&p.export().unwrap()).unwrap();
         assert_eq!(
             json["schema_version"], CURRENT_SETTINGS_SCHEMA,

@@ -48,7 +48,9 @@ pub const EVENT_TARGET: &str = "homevault::event";
 /// Record a plain-English application event at info level (the normal
 /// case: something happened successfully).
 pub fn log_event(message: impl std::fmt::Display) {
+    let message = message.to_string();
     tracing::info!(target: EVENT_TARGET, "{}", message);
+    forward(&message, crate::syslog_forward::SEVERITY_INFO);
 }
 
 /// Record a plain-English application event at warn level — failed logins,
@@ -56,5 +58,20 @@ pub fn log_event(message: impl std::fmt::Display) {
 /// an *operation* (nothing crashed) but represent something an admin
 /// should notice.
 pub fn log_event_warn(message: impl std::fmt::Display) {
+    let message = message.to_string();
     tracing::warn!(target: EVENT_TARGET, "{}", message);
+    forward(&message, crate::syslog_forward::SEVERITY_WARNING);
+}
+
+/// Hand the event to the remote-syslog forwarder (QUICK-WIN QW-08).
+///
+/// One call site for both levels, so a new event function cannot ship without
+/// being forwarded. The call is a queue push: it never touches the network, so
+/// a dead collector can never slow down or fail the mutation that logged it.
+/// While forwarding is off it is a cheap settings read and nothing else.
+fn forward(message: &str, severity: u8) {
+    if !crate::syslog_forward::forwarding_enabled() {
+        return;
+    }
+    crate::syslog_forward::enqueue(severity, "audit", message);
 }

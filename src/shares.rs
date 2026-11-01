@@ -263,6 +263,29 @@ fn get_config_dir() -> PathBuf {
     PathBuf::from(crate::config::paths::CONFIG_DIR)
 }
 
+/// Environment override for the Samba configuration file.
+///
+/// Same seam as `HV_AVAHI_CONF` (`src/mdns.rs`): a test can point the
+/// generation/parse path at a temp file and prove what lands on disk without
+/// touching `/etc`. Unset in production, where the compiled-in path is the
+/// only correct one. Setting it also tells the mutating helpers not to bounce
+/// a real service — see [`smb_conf_is_overridden`].
+pub const SMB_CONF_ENV: &str = "HV_SMB_CONF";
+
+/// The `smb.conf` this process reads and edits.
+pub fn smb_conf_path() -> String {
+    std::env::var(SMB_CONF_ENV)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "/etc/samba/smb.conf".to_string())
+}
+
+/// Whether the config path is a test override (never the host's real file).
+fn smb_conf_is_overridden() -> bool {
+    smb_conf_path() != "/etc/samba/smb.conf"
+}
+
 fn get_smb_config_path() -> PathBuf {
     get_config_dir().join("smb.json")
 }
@@ -314,6 +337,63 @@ pub(crate) fn write_file_as_root(path: &str, content: &str) -> std::io::Result<(
         ));
     }
     Ok(())
+}
+
+/// Write a configuration file that this process may already be allowed to
+/// write.
+///
+/// Production goes through `sudo tee` (see [`write_file_as_root`]), because
+/// `/etc/samba/smb.conf` is root-owned. A test (or a future root-run mode)
+/// points the same code at a path it owns; trying the direct write first
+/// keeps that seam honest without weakening the privileged path — a denial
+/// falls back to `sudo tee`, which is exactly what the appliance needs.
+fn write_config_file(path: &str, content: &str) -> std::io::Result<()> {
+    match std::fs::write(path, content) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            write_file_as_root(path, content)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Append to a configuration file this process may already be allowed to
+/// write — the append counterpart of [`write_config_file`], with the same
+/// `sudo tee -a` fallback.
+fn append_config_file(path: &str, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        Ok(mut file) => {
+            file.write_all(content.as_bytes())?;
+            file.flush()
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            append_file_as_root(path, content)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Ask `smbd` to re-read its configuration.
+///
+/// Skipped when [`SMB_CONF_ENV`] points somewhere other than the host's real
+/// file: an overridden path means the caller is editing a copy, and bouncing
+/// the production service from a test would be both surprising and
+/// unnecessary.
+fn reload_smbd(context: &str) {
+    if smb_conf_is_overridden() {
+        return;
+    }
+    let mut cmd = Command::new("sudo");
+    cmd.arg("systemctl");
+    cmd.args(["reload", "smbd"]);
+    if let Err(e) = run_command(&mut cmd, SHARES_SERVICE_TIMEOUT).map(|o| o.status.success()) {
+        warn!("Failed to reload smbd after {}: {}", context, e);
+    }
 }
 
 /// Appends to a root-owned system config file (`/etc/samba/smb.conf`,
@@ -593,6 +673,265 @@ fn smb_share_section(name: &str, comment: &str, path: &str) -> String {
     )
 }
 
+// ---------------------------------------------------------------------------
+// Per-share Samba VFS features (recycle bin, Time Machine)
+// ---------------------------------------------------------------------------
+//
+// Two independent per-share features share Samba's single `vfs objects`
+// line: the recycle bin (a network delete lands in a recoverable folder) and
+// Time Machine (`vfs_fruit`, so macOS can use the share as a backup target).
+// Because `vfs objects` may only be set once per share section, both toggles
+// are rendered into **one** HomeVault-managed block. A marked block keeps
+// each toggle idempotent and leaves every line an admin added by hand
+// untouched (the same idea as [`NFS_DISABLED_TAG`]).
+
+/// Folder a share's recycle bin writes into. Deliberately the *same* name the
+/// Explorer Trash reads (see [`crate::browser::TRASH_DIR_NAME`]), so a file
+/// deleted from a network client and a file deleted from the web Explorer end
+/// up in one place.
+pub const RECYCLE_DIR_NAME: &str = crate::browser::TRASH_DIR_NAME;
+
+/// Marker lines around the directives HomeVault manages inside a share's
+/// `smb.conf` section. `# homevault-recycle:begin/end` is the historical
+/// marker of the recycle-only block; it is still recognised so an existing
+/// install upgrades in place instead of stacking a second block.
+const SMB_VFS_BEGIN: &str = "# homevault-smb-vfs:begin";
+const SMB_VFS_END: &str = "# homevault-smb-vfs:end";
+const SMB_LEGACY_BEGIN: &str = "# homevault-recycle:begin";
+const SMB_LEGACY_END: &str = "# homevault-recycle:end";
+
+/// Largest Time Machine quota accepted, in GiB (1 PiB): a typo must not turn
+/// into a `fruit:time machine max size` Samba reads as something else.
+pub const MAX_TIME_MACHINE_QUOTA_GB: u32 = 1_048_576;
+
+/// The VFS features currently enabled on one share, derived from its managed
+/// `smb.conf` block. Serialised as-is for the Shares → SMB tab.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SmbVfsFlags {
+    pub recycle: bool,
+    pub time_machine: bool,
+}
+
+/// Time Machine state of one SMB share, as the UI and the mDNS publisher read
+/// it: the toggle plus the optional maximum size macOS is told to respect.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SmbTimeMachine {
+    pub enabled: bool,
+    /// Quota in GiB; `0` means "no quota" (macOS grows until the share fills).
+    pub quota_gb: u32,
+}
+
+/// Validate a Time Machine quota in GiB (`0` = unlimited).
+pub fn validate_time_machine_quota(quota_gb: u32) -> Result<(), String> {
+    if quota_gb > MAX_TIME_MACHINE_QUOTA_GB {
+        return Err(format!(
+            "a Time Machine quota above {MAX_TIME_MACHINE_QUOTA_GB} GiB is not supported (0 = unlimited)"
+        ));
+    }
+    Ok(())
+}
+
+/// Render the managed block for one share section. Returns an empty string
+/// when neither feature is on — the caller then removes the block entirely.
+///
+/// `vfs objects` lists `fruit` before `streams_xattr` (the order `vfs_fruit`
+/// documents) and `recycle` last, so a delete is offered the fruit-handled
+/// stream before the recycle module captures it.
+fn smb_vfs_block(flags: SmbVfsFlags, quota_gb: u32) -> String {
+    if !flags.recycle && !flags.time_machine {
+        return String::new();
+    }
+    let mut modules: Vec<&str> = Vec::new();
+    if flags.time_machine {
+        modules.push("fruit");
+        modules.push("streams_xattr");
+    }
+    if flags.recycle {
+        modules.push("recycle");
+    }
+
+    let mut block = format!("{SMB_VFS_BEGIN}\n  vfs objects = {}\n", modules.join(" "));
+    if flags.time_machine {
+        // `fruit:time machine = yes` is the switch macOS' Time Machine looks
+        // for; `fruit:metadata = stream` and the model/rename/wiping options
+        // are what vfs_fruit's Time Machine recipe requires for a reliable
+        // first backup and incremental backups afterwards.
+        block.push_str("  fruit:time machine = yes\n");
+        block.push_str("  fruit:time machine max size = ");
+        if quota_gb == 0 {
+            block.push_str("0\n");
+        } else {
+            block.push_str(&format!("{quota_gb}G\n"));
+        }
+        block.push_str("  fruit:metadata = stream\n");
+        block.push_str("  fruit:model = MacSamba\n");
+        block.push_str("  fruit:posix_rename = yes\n");
+        block.push_str("  fruit:veto_appledouble = no\n");
+        block.push_str("  fruit:wipe_intentionally_left_blank_rfork = yes\n");
+        block.push_str("  fruit:delete_empty_adfiles = yes\n");
+    }
+    if flags.recycle {
+        block.push_str(&format!(
+            "  recycle:repository = {RECYCLE_DIR_NAME}\n  recycle:keeptree = yes\n  recycle:versions = yes\n  recycle:touch = yes\n  recycle:maxsize = 0\n  recycle:exclude = *.tmp, *.temp, *.swp, .DS_Store, Thumbs.db\n  recycle:directory_mode = 0700\n"
+        ));
+    }
+    block.push_str(SMB_VFS_END);
+    block
+}
+
+/// Remove every HomeVault-managed block (current or legacy recycle marker)
+/// from one `smb.conf` share section, then append a fresh block when `flags`
+/// enables something. Pure — the caller writes the result back — and
+/// idempotent. Lines the admin added by hand are preserved verbatim.
+fn apply_vfs_to_section(section: &str, flags: SmbVfsFlags, quota_gb: u32) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut skipping = false;
+    for line in section.lines() {
+        let trimmed = line.trim();
+        if trimmed == SMB_VFS_BEGIN || trimmed == SMB_LEGACY_BEGIN {
+            skipping = true;
+            continue;
+        }
+        if skipping {
+            if trimmed == SMB_VFS_END || trimmed == SMB_LEGACY_END {
+                skipping = false;
+            }
+            continue;
+        }
+        kept.push(line);
+    }
+
+    let mut out = kept.join("\n");
+    let block = smb_vfs_block(flags, quota_gb);
+    if !block.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&block);
+    }
+    // Preserve the original trailing newline so a disable on a section that
+    // never had a block round-trips byte-for-byte.
+    if section.ends_with('\n') && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// The features a share section currently enables, parsed from its managed
+/// block. A section without a block has every feature off.
+fn section_vfs_flags(section: &str) -> SmbVfsFlags {
+    let mut flags = SmbVfsFlags::default();
+    for line in section.lines() {
+        let trimmed = line.trim();
+        let Some(modules) = trimmed
+            .strip_prefix("vfs objects =")
+            .or_else(|| trimmed.strip_prefix("vfs objects = "))
+        else {
+            continue;
+        };
+        flags.recycle |= modules.split_whitespace().any(|m| m == "recycle");
+        flags.time_machine |= modules.split_whitespace().any(|m| m == "fruit")
+            && section.lines().any(|l| {
+                l.trim()
+                    .eq_ignore_ascii_case("fruit:time machine = yes")
+            });
+    }
+    flags
+}
+
+/// The Time Machine quota (GiB) a share section declares, `0` when absent.
+fn section_time_machine_quota(section: &str) -> u32 {
+    for line in section.lines() {
+        let trimmed = line.trim();
+        let Some(value) = trimmed.strip_prefix("fruit:time machine max size =") else {
+            continue;
+        };
+        let value = value.trim();
+        let Some(digits) = value
+            .strip_suffix('G')
+            .or_else(|| value.strip_suffix('g'))
+        else {
+            continue;
+        };
+        return digits.trim().parse::<u32>().unwrap_or(0);
+    }
+    0
+}
+
+/// The legacy recycle-only block, kept for tests and for the recycle toggle's
+/// helpers.
+#[cfg(test)]
+fn smb_recycle_block() -> String {
+    smb_vfs_block(
+        SmbVfsFlags {
+            recycle: true,
+            time_machine: false,
+        },
+        0,
+    )
+}
+
+/// Toggle only the recycle feature, leaving Time Machine untouched.
+fn apply_recycle_to_section(section: &str, enabled: bool) -> String {
+    let mut flags = section_vfs_flags(section);
+    flags.recycle = enabled;
+    apply_vfs_to_section(section, flags, section_time_machine_quota(section))
+}
+
+/// Whether `section` (one `smb.conf` share section) carries the recycle module.
+fn section_has_recycle(section: &str) -> bool {
+    section_vfs_flags(section).recycle
+}
+
+/// Parse the live `smb.conf` into `share name → (VFS flags, Time Machine
+/// quota)`.
+///
+/// One parser feeding both per-share maps, so the recycle and Time Machine
+/// views can never disagree about which block a section owns. Shares are
+/// delimited by their `[name]` line; `global`/`homes` are not shares. A
+/// missing or unreadable file yields an empty map, which is what "no SMB
+/// share is configured" looks like.
+fn smb_section_states() -> HashMap<String, (SmbVfsFlags, u32)> {
+    let mut map = HashMap::new();
+    let Ok(config) = std::fs::read_to_string(smb_conf_path()) else {
+        return map;
+    };
+    let mut current: Option<String> = None;
+    let mut body = String::new();
+    for line in config.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            if let Some(name) = current.take() {
+                map.insert(
+                    name,
+                    (
+                        section_vfs_flags(&body),
+                        section_time_machine_quota(&body),
+                    ),
+                );
+            }
+            body.clear();
+            let name = trimmed[1..trimmed.len() - 1].to_string();
+            if name != "global" && name != "homes" {
+                current = Some(name);
+            }
+            continue;
+        }
+        body.push_str(line);
+        body.push('\n');
+    }
+    if let Some(name) = current {
+        map.insert(
+            name,
+            (
+                section_vfs_flags(&body),
+                section_time_machine_quota(&body),
+            ),
+        );
+    }
+    map
+}
+
 /// Build the `/etc/exports` line for a share: `path *(options)`. An empty
 /// options list keeps the historical safe default; the options token is
 /// guarded by [`validate_nfs_options`].
@@ -780,12 +1119,12 @@ impl SharesService {
         match share_type {
             ShareType::Smb => {
                 validate_share_name(name).map_err(ShareError::InvalidField)?;
-                let config_path = "/etc/samba/smb.conf";
-                if !std::path::Path::new(config_path).exists() {
+                let config_path = smb_conf_path();
+                if !std::path::Path::new(&config_path).exists() {
                     warn!("Samba config file not found: {}", config_path);
-                    return Err(ShareError::ConfigNotFound(config_path.to_string()));
+                    return Err(ShareError::ConfigNotFound(config_path.clone()));
                 }
-                let config = std::fs::read_to_string(config_path)?;
+                let config = std::fs::read_to_string(&config_path)?;
                 let share_section = format!("[{}]", name);
 
                 if let Some(start) = config.find(&share_section) {
@@ -808,7 +1147,7 @@ impl SharesService {
                     new_config.push_str(&new_content);
                     new_config.push_str(&after_section[end..]);
 
-                    write_file_as_root("/etc/samba/smb.conf", &new_config)?;
+                    write_config_file(&config_path, &new_config)?;
                 }
             }
             ShareType::Nfs => Self::set_nfs_share_enabled(name, enabled)?,
@@ -835,6 +1174,151 @@ impl SharesService {
         }
 
         Ok(())
+    }
+
+    /// Map of SMB share name → recycle-bin enabled, derived from the live
+    /// `smb.conf` (a share is recycling when its managed block lists the
+    /// `recycle` module). The UI reads this instead of re-deriving the state
+    /// from raw config lines.
+    pub fn get_smb_recycle_map() -> HashMap<String, bool> {
+        smb_section_states()
+            .into_iter()
+            .map(|(name, (flags, _))| (name, flags.recycle))
+            .collect()
+    }
+
+    /// Enable or disable the recycle bin for one SMB share. Rewrites only that
+    /// share's section in `smb.conf` — preserving every other section and
+    /// every hand-added line — then asks `smbd` to reload. The change reaches
+    /// the Trash screen too, because the repository folder is the one the
+    /// Explorer already reads.
+    pub fn set_smb_recycle(name: &str, enabled: bool) -> Result<(), ShareError> {
+        validate_share_name(name).map_err(ShareError::InvalidField)?;
+
+        let config_path = smb_conf_path();
+        if !std::path::Path::new(&config_path).exists() {
+            warn!("Samba config file not found: {}", config_path);
+            return Err(ShareError::ConfigNotFound(config_path));
+        }
+        let config = std::fs::read_to_string(&config_path)?;
+        let share_section = format!("[{name}]");
+
+        let Some(start) = config.find(&share_section) else {
+            return Err(ShareError::NotFound(name.to_string()));
+        };
+        let after_section = &config[start..];
+        let end = after_section.find("\n[").unwrap_or(after_section.len());
+        let section = &config[start..start + end];
+
+        if section_has_recycle(section) == enabled {
+            // Already in the requested state — do not rewrite the file or
+            // bounce the service for a no-op.
+            return Ok(());
+        }
+
+        let new_section = apply_recycle_to_section(section, enabled);
+        let mut new_config = config[..start].to_string();
+        new_config.push_str(&new_section);
+        new_config.push_str(&config[start + end..]);
+        write_config_file(&config_path, &new_config)?;
+        reload_smbd(&format!(
+            "{} the recycle bin on share {}",
+            if enabled { "enabling" } else { "disabling" },
+            name
+        ));
+
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Time Machine (per-share `vfs_fruit` profile)
+    // -----------------------------------------------------------------------
+
+    /// Every SMB share's Time Machine state, derived from the live config —
+    /// the same "the file is the source of truth" rule as the recycle map. A
+    /// share with no config file simply has no entry.
+    pub fn get_smb_time_machine_map() -> HashMap<String, SmbTimeMachine> {
+        smb_section_states()
+            .into_iter()
+            .map(|(name, (flags, quota_gb))| {
+                (
+                    name,
+                    SmbTimeMachine {
+                        enabled: flags.time_machine,
+                        quota_gb: if flags.time_machine { quota_gb } else { 0 },
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Enable or disable Time Machine on one SMB share, optionally with a
+    /// maximum size macOS must respect (`quota_gb = 0` means unlimited).
+    ///
+    /// Rewrites only this share's managed block, preserving every other
+    /// section, the recycle block's own directives and every hand-added line.
+    /// The mDNS publisher picks the change up on its next tick, which is what
+    /// makes the volume appear in macOS' Time Machine preferences.
+    pub fn set_smb_time_machine(
+        name: &str,
+        enabled: bool,
+        quota_gb: u32,
+    ) -> Result<(), ShareError> {
+        validate_share_name(name).map_err(ShareError::InvalidField)?;
+        validate_time_machine_quota(quota_gb).map_err(ShareError::InvalidField)?;
+
+        let config_path = smb_conf_path();
+        if !std::path::Path::new(&config_path).exists() {
+            warn!("Samba config file not found: {}", config_path);
+            return Err(ShareError::ConfigNotFound(config_path));
+        }
+        let config = std::fs::read_to_string(&config_path)?;
+        let share_section = format!("[{name}]");
+
+        let Some(start) = config.find(&share_section) else {
+            return Err(ShareError::NotFound(name.to_string()));
+        };
+        let after_section = &config[start..];
+        let end = after_section.find("\n[").unwrap_or(after_section.len());
+        let section = &config[start..start + end];
+
+        let mut flags = section_vfs_flags(section);
+        let quota = if enabled { quota_gb } else { 0 };
+        if flags.time_machine == enabled
+            && (!enabled || section_time_machine_quota(section) == quota)
+        {
+            // A no-op must not rewrite the file or bounce smbd.
+            return Ok(());
+        }
+        flags.time_machine = enabled;
+        let new_section = apply_vfs_to_section(section, flags, quota);
+        let mut new_config = config[..start].to_string();
+        new_config.push_str(&new_section);
+        new_config.push_str(&config[start + end..]);
+        write_config_file(&config_path, &new_config)?;
+        reload_smbd(&format!(
+            "{} Time Machine on share {}",
+            if enabled { "enabling" } else { "disabling" },
+            name
+        ));
+        Ok(())
+    }
+
+    /// Distinct filesystem paths of every configured SMB share. The Explorer
+    /// uses these to also surface each share's own recycle folder in the
+    /// Trash screen, so a file deleted over the network is visible and
+    /// restorable next to a file deleted from the web UI.
+    pub fn smb_share_paths() -> Vec<std::path::PathBuf> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        if let Ok(shares) = Self::parse_smb_config() {
+            for share in shares {
+                if !share.path.is_empty() && seen.insert(share.path.clone()) {
+                    out.push(std::path::PathBuf::from(share.path));
+                }
+            }
+        }
+        out
     }
 
     /// Return the SMB service config, or a default if no config file exists.
@@ -864,7 +1348,8 @@ impl SharesService {
     }
 
     fn apply_smb_config(config: &SmbConfig) -> Result<(), ShareError> {
-        let smb_conf = "/etc/samba/smb.conf";
+        let smb_conf = smb_conf_path();
+        let smb_conf = smb_conf.as_str();
         if !std::path::Path::new(smb_conf).exists() {
             warn!("Samba config file not found: {}", smb_conf);
             let content = format!(
@@ -873,7 +1358,7 @@ impl SharesService {
                 if config.allow_guest { "yes" } else { "no" },
                 config.create_mask, config.directory_mask
             );
-            write_file_as_root(smb_conf, &content)?;
+            write_config_file(smb_conf, &content)?;
         } else {
             let mut lines: Vec<String> = fs::read_to_string(smb_conf)?
                 .lines()
@@ -956,7 +1441,7 @@ impl SharesService {
                     lines.insert(insert_after + offset, param.clone());
                 }
             }
-            write_file_as_root(smb_conf, &lines.join("\n"))?;
+            write_config_file(smb_conf, &lines.join("\n"))?;
         }
 
         let mut cmd = Command::new("sudo");
@@ -1233,17 +1718,11 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
     }
 
     fn create_smb_share(share: &Share) -> Result<(), ShareError> {
-        let config_path = "/etc/samba/smb.conf";
+        let config_path = smb_conf_path();
         let share_section = smb_share_section(&share.name, &share.comment, &share.path);
 
-        append_file_as_root(config_path, &share_section)?;
-
-        let mut cmd = Command::new("sudo");
-        cmd.arg("systemctl");
-        cmd.args(["reload", "smbd"]);
-        if let Err(e) = run_command(&mut cmd, SHARES_SERVICE_TIMEOUT).map(|o| o.status.success()) {
-            warn!("Failed to reload smbd: {}", e);
-        }
+        append_config_file(&config_path, &share_section)?;
+        reload_smbd(&format!("creating share {}", share.name));
 
         Ok(())
     }
@@ -1355,13 +1834,13 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
     }
 
     fn parse_smb_config() -> Result<Vec<Share>, ShareError> {
-        let config_path = "/etc/samba/smb.conf";
-        if !std::path::Path::new(config_path).exists() {
+        let config_path = smb_conf_path();
+        if !std::path::Path::new(&config_path).exists() {
             warn!("Samba config file not found: {}", config_path);
             return Ok(Vec::new());
         }
 
-        let config = std::fs::read_to_string(config_path).map_err(|e| {
+        let config = std::fs::read_to_string(&config_path).map_err(|e| {
             warn!("Failed to read Samba config: {}", e);
             e
         })?;
@@ -1401,7 +1880,13 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
                         share.comment = stripped.to_string();
                     } else if trimmed == "browseable = no" {
                         share.enabled = false;
-                    } else if !trimmed.is_empty() && !trimmed.starts_with(';') {
+                    } else if !trimmed.is_empty()
+                        && !trimmed.starts_with(';')
+                        && !trimmed.starts_with('#')
+                    {
+                        // `#` lines are Samba comments — including the
+                        // HomeVault recycle block's markers and directives —
+                        // and are not user-visible options.
                         share.options.push(trimmed.to_string());
                     }
                 }
@@ -1589,12 +2074,12 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
     }
 
     fn delete_smb_share(name: &str) -> Result<(), ShareError> {
-        let config_path = "/etc/samba/smb.conf";
-        if !std::path::Path::new(config_path).exists() {
+        let config_path = smb_conf_path();
+        if !std::path::Path::new(&config_path).exists() {
             warn!("Samba config file not found: {}", config_path);
-            return Err(ShareError::ConfigNotFound(config_path.to_string()));
+            return Err(ShareError::ConfigNotFound(config_path.clone()));
         }
-        let config = std::fs::read_to_string(config_path)?;
+        let config = std::fs::read_to_string(&config_path)?;
         let share_section = format!("[{}]", name);
 
         if let Some(start) = config.find(&share_section) {
@@ -1604,16 +2089,8 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
             let mut new_config = config[..start].to_string();
             new_config.push_str(&after_section[end..]);
 
-            write_file_as_root("/etc/samba/smb.conf", &new_config)?;
-
-            let mut cmd = Command::new("sudo");
-            cmd.arg("systemctl");
-            cmd.args(["reload", "smbd"]);
-            if let Err(e) =
-                run_command(&mut cmd, SHARES_SERVICE_TIMEOUT).map(|o| o.status.success())
-            {
-                warn!("Failed to reload smbd after deleting share {}: {}", name, e);
-            }
+            write_config_file(&config_path, &new_config)?;
+            reload_smbd(&format!("deleting share {}", name));
         } else {
             return Err(ShareError::NotFound(name.to_string()));
         }
@@ -1743,12 +2220,12 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
     }
 
     fn update_smb_share(name: &str, update: ShareUpdate) -> Result<(), ShareError> {
-        let config_path = "/etc/samba/smb.conf";
-        if !std::path::Path::new(config_path).exists() {
-            return Err(ShareError::ConfigNotFound(config_path.to_string()));
+        let config_path = smb_conf_path();
+        if !std::path::Path::new(&config_path).exists() {
+            return Err(ShareError::ConfigNotFound(config_path.clone()));
         }
 
-        let config = std::fs::read_to_string(config_path)?;
+        let config = std::fs::read_to_string(&config_path)?;
         let share_section = format!("[{}]", name);
 
         if let Some(start) = config.find(&share_section) {
@@ -1798,16 +2275,8 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
             new_config.push_str(&new_content);
             new_config.push_str(&after_section[end..]);
 
-            write_file_as_root("/etc/samba/smb.conf", &new_config)?;
-
-            let mut cmd = Command::new("sudo");
-            cmd.arg("systemctl");
-            cmd.args(["reload", "smbd"]);
-            if let Err(e) =
-                run_command(&mut cmd, SHARES_SERVICE_TIMEOUT).map(|o| o.status.success())
-            {
-                warn!("Failed to reload smbd after updating share {}: {}", name, e);
-            }
+            write_config_file(&config_path, &new_config)?;
+            reload_smbd(&format!("updating share {}", name));
         } else {
             return Err(ShareError::NotFound(name.to_string()));
         }
@@ -2375,6 +2844,207 @@ mod tests {
             1,
             "exactly one path directive: {section:?}"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Per-share recycle bin
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_smb_recycle_block_targets_the_explorer_trash_folder() {
+        let block = smb_recycle_block();
+        assert!(block.starts_with(SMB_VFS_BEGIN), "{block:?}");
+        assert!(block.ends_with(SMB_VFS_END), "{block:?}");
+        assert!(block.contains("vfs objects = recycle"), "{block:?}");
+        assert!(
+            block.contains(&format!("recycle:repository = {RECYCLE_DIR_NAME}")),
+            "the repository must be the folder the Explorer Trash reads: {block:?}"
+        );
+        assert!(section_has_recycle(&block));
+    }
+
+    #[test]
+    fn test_apply_recycle_enable_is_idempotent() {
+        let base = smb_share_section("media", "Family media", "/mnt/pool/media");
+        let once = apply_recycle_to_section(&base, true);
+        let twice = apply_recycle_to_section(&once, true);
+        assert_eq!(once, twice, "enabling twice must not stack blocks");
+        assert_eq!(once.matches(SMB_VFS_BEGIN).count(), 1, "{once:?}");
+        assert!(section_has_recycle(&once));
+    }
+
+    #[test]
+    fn test_apply_recycle_disable_removes_the_block_and_keeps_the_section() {
+        let base = smb_share_section("media", "Family media", "/mnt/pool/media");
+        let enabled = apply_recycle_to_section(&base, true);
+        let disabled = apply_recycle_to_section(&enabled, false);
+        assert!(!section_has_recycle(&disabled));
+        assert!(!disabled.contains(SMB_VFS_BEGIN), "{disabled:?}");
+        // Every original directive survives the round-trip.
+        assert!(disabled.contains("\n[media]\n"), "{disabled:?}");
+        assert!(disabled.contains("  path = /mnt/pool/media"), "{disabled:?}");
+        // Disabling a share that never had a block is a no-op.
+        assert_eq!(apply_recycle_to_section(&base, false), base);
+    }
+
+    #[test]
+    fn test_apply_recycle_preserves_hand_added_lines() {
+        let base = format!(
+            "{}{}",
+            smb_share_section("media", "Family media", "/mnt/pool/media"),
+            "  veto files = /lost+found/\n"
+        );
+        let enabled = apply_recycle_to_section(&base, true);
+        assert!(enabled.contains("veto files = /lost+found/"), "{enabled:?}");
+        let disabled = apply_recycle_to_section(&enabled, false);
+        assert!(disabled.contains("veto files = /lost+found/"), "{disabled:?}");
+        assert!(!disabled.contains(SMB_VFS_BEGIN), "{disabled:?}");
+    }
+
+    // -----------------------------------------------------------------
+    // Per-share Time Machine (vfs_fruit)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_time_machine_block_enables_fruit_and_its_recipe() {
+        let block = smb_vfs_block(
+            SmbVfsFlags {
+                recycle: false,
+                time_machine: true,
+            },
+            500,
+        );
+        assert!(block.contains("vfs objects = fruit streams_xattr"), "{block:?}");
+        assert!(block.contains("fruit:time machine = yes"), "{block:?}");
+        assert!(
+            block.contains("fruit:time machine max size = 500G"),
+            "the quota is part of the profile: {block:?}"
+        );
+        assert!(block.contains("fruit:metadata = stream"), "{block:?}");
+        assert!(!block.contains("recycle:"), "{block:?}");
+        let flags = section_vfs_flags(&block);
+        assert!(flags.time_machine);
+        assert!(!flags.recycle);
+        assert_eq!(section_time_machine_quota(&block), 500);
+    }
+
+    #[test]
+    fn test_time_machine_quota_zero_is_unlimited() {
+        let block = smb_vfs_block(
+            SmbVfsFlags {
+                recycle: false,
+                time_machine: true,
+            },
+            0,
+        );
+        assert!(block.contains("fruit:time machine max size = 0\n"), "{block:?}");
+        assert_eq!(section_time_machine_quota(&block), 0);
+    }
+
+    #[test]
+    fn test_recycle_and_time_machine_share_one_vfs_objects_line() {
+        let both = smb_vfs_block(
+            SmbVfsFlags {
+                recycle: true,
+                time_machine: true,
+            },
+            0,
+        );
+        // Samba accepts only one `vfs objects` line per share: fruit must come
+        // first, recycle last, and there must be exactly one line.
+        assert_eq!(
+            both
+                .lines()
+                .filter(|l| l.trim().starts_with("vfs objects ="))
+                .count(),
+            1,
+            "{both:?}"
+        );
+        assert!(both.contains("vfs objects = fruit streams_xattr recycle"), "{both:?}");
+        assert!(both.contains("recycle:repository ="), "{both:?}");
+        let flags = section_vfs_flags(&both);
+        assert!(flags.time_machine && flags.recycle);
+    }
+
+    #[test]
+    fn test_toggling_one_feature_keeps_the_other() {
+        let base = smb_share_section("tm", "Mac backups", "/mnt/pool/tm");
+        let tm = apply_vfs_to_section(
+            &base,
+            SmbVfsFlags {
+                recycle: false,
+                time_machine: true,
+            },
+            120,
+        );
+        // Turning the recycle bin on must not drop the Time Machine profile.
+        let both = apply_recycle_to_section(&tm, true);
+        assert!(section_vfs_flags(&both).recycle);
+        assert!(section_vfs_flags(&both).time_machine);
+        assert_eq!(section_time_machine_quota(&both), 120);
+        // …and turning recycle off keeps Time Machine and its quota.
+        let tm_only = apply_recycle_to_section(&both, false);
+        assert!(!section_vfs_flags(&tm_only).recycle);
+        assert!(section_vfs_flags(&tm_only).time_machine);
+        assert_eq!(section_time_machine_quota(&tm_only), 120);
+        assert!(tm_only.contains("fruit:time machine max size = 120G"));
+    }
+
+    #[test]
+    fn test_a_legacy_recycle_block_is_upgraded_not_stacked() {
+        let base = smb_share_section("media", "Family media", "/mnt/pool/media");
+        let legacy = format!(
+            "{base}{SMB_LEGACY_BEGIN}\n  vfs objects = recycle\n  recycle:repository = {RECYCLE_DIR_NAME}\n{SMB_LEGACY_END}\n"
+        );
+        assert!(section_has_recycle(&legacy));
+        let upgraded = apply_vfs_to_section(
+            &legacy,
+            SmbVfsFlags {
+                recycle: true,
+                time_machine: true,
+            },
+            0,
+        );
+        assert!(!upgraded.contains(SMB_LEGACY_BEGIN), "{upgraded:?}");
+        assert_eq!(upgraded.matches(SMB_VFS_BEGIN).count(), 1, "{upgraded:?}");
+        assert!(section_has_recycle(&upgraded));
+        assert!(section_vfs_flags(&upgraded).time_machine);
+    }
+
+    #[test]
+    fn test_disabling_both_features_removes_the_managed_block() {
+        let base = smb_share_section("tm", "Mac backups", "/mnt/pool/tm");
+        let both = apply_vfs_to_section(
+            &base,
+            SmbVfsFlags {
+                recycle: true,
+                time_machine: true,
+            },
+            0,
+        );
+        let off = apply_vfs_to_section(&both, SmbVfsFlags::default(), 0);
+        assert_eq!(off, base);
+        assert!(!off.contains(SMB_VFS_BEGIN), "{off:?}");
+    }
+
+    #[test]
+    fn test_time_machine_quota_validation_bounds() {
+        assert!(validate_time_machine_quota(0).is_ok());
+        assert!(validate_time_machine_quota(1).is_ok());
+        assert!(validate_time_machine_quota(MAX_TIME_MACHINE_QUOTA_GB).is_ok());
+        assert!(validate_time_machine_quota(MAX_TIME_MACHINE_QUOTA_GB + 1).is_err());
+    }
+
+    #[test]
+    fn test_section_parsers_ignore_a_quota_without_the_fruit_module() {
+        // A hand-written quota alone does not make a share a Time Machine
+        // target: the module and the explicit switch are what count.
+        let section = format!(
+            "{}\n  fruit:time machine max size = 100G\n",
+            smb_share_section("x", "x", "/mnt/x")
+        );
+        assert!(!section_vfs_flags(&section).time_machine);
+        assert_eq!(section_time_machine_quota(&section), 100);
     }
 
     #[test]

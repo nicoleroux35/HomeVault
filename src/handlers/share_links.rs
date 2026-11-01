@@ -11,7 +11,9 @@
  *   a link (owner or admin), and serve the public token-authenticated
  *   download. The token is the secret — high-entropy, never logged; links
  *   default to 30 days and can be restricted to signed-in users, in which
- *   case the session token must travel in a header, never in a URL.
+ *   case the session token must travel in a header, never in a URL. A link
+ *   can also carry a password (Argon2, never returned) and a download cap
+ *   (`max_downloads = 1` is the one-time link).
  *
  * Dependencies:
  *   - axum (>= 0.8)
@@ -35,6 +37,7 @@
 //!   GET    /api/explorer/shares            list the caller's links
 //!   POST   /api/explorer/shares            create a link for a file
 //!   DELETE /api/explorer/shares/{token}    revoke a link (owner or admin)
+//!   POST   /share/{token}/unlock           exchange the password for a cookie
 //!   GET    /share/{token}                  public download (no session)
 //!
 //! Security / privacy posture (matches CLAUDE.md's compliance baseline):
@@ -42,6 +45,14 @@
 //! - Links default to `anyone` + a 30-day expiry; a link can be restricted to
 //!   `signed_in` (download requires a valid session via the `x-session-token`
 //!   header) or set to never expire. Revoking a link cuts access instantly.
+//! - A password never enters a URL: the public page posts it once to
+//!   `/share/{token}/unlock` and receives a short-lived, path-scoped, HttpOnly
+//!   unlock cookie, so the download itself is an ordinary navigation (ranges,
+//!   resume, no multi-gigabyte blob in the browser's memory). API clients can
+//!   keep sending the password in the `x-share-password` header instead.
+//! - A `max_downloads` cap reserves a slot per in-flight transfer and counts
+//!   it only when the last byte was written, so a failed or abandoned download
+//!   never consumes a one-time link.
 //! - The session token is never accepted on the public download URL — a
 //!   `signed_in` link only works from a client that can send the header, so
 //!   the token never travels in a query string or access log.
@@ -50,7 +61,7 @@
 use axum::{
     body::Body,
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
 };
 use bytes::Bytes;
@@ -115,6 +126,178 @@ fn share_acquire(token: &str, bytes: u64) -> bool {
     }
 }
 
+/// Lifetime of an unlock cookie minted by `POST /share/{token}/unlock`.
+///
+/// Long enough for a browser to start and finish a large download (a video
+/// seek re-requests with `Range`), short enough that a shared machine does not
+/// stay unlocked. The cookie is scoped to the one link's path and `HttpOnly`,
+/// so a script can never read it, and it identifies the *unlock* rather than
+/// the password — which therefore never reaches a URL, a log or the browser's
+/// history.
+const SHARE_UNLOCK_TTL: Duration = Duration::from_secs(15 * 60);
+const SHARE_UNLOCK_COOKIE: &str = "hv_share_unlock";
+
+/// Wrong-password budget per link inside [`SHARE_PASSWORD_WINDOW`].
+///
+/// Argon2 verification is deliberately expensive (tens of milliseconds and a
+/// sizable memory arena), so an unthrottled password check on a public route
+/// is a CPU/memory amplifier. This caps the cost an attacker can force while
+/// leaving a household plenty of room for typos.
+const SHARE_PASSWORD_MAX_FAILURES: u32 = 8;
+const SHARE_PASSWORD_WINDOW: Duration = Duration::from_secs(5 * 60);
+
+struct Unlock {
+    nonce: String,
+    expires_at: Instant,
+}
+
+struct PasswordFailures {
+    count: u32,
+    since: Instant,
+}
+
+/// Password unlocks and wrong-password accounting for public links.
+///
+/// Deliberately in memory: an unlock is worth minutes, never survives a
+/// restart, and a fresh password recreates it. Both maps are swept lazily on
+/// every access, so a long-running server cannot grow them without bound.
+/// `now` is a parameter (not `Instant::now()` inside) so the window and the
+/// expiry are testable without sleeping.
+#[derive(Default)]
+struct ShareAuthState {
+    unlocks: HashMap<String, Unlock>,
+    failures: HashMap<String, PasswordFailures>,
+}
+
+impl ShareAuthState {
+    fn prune(&mut self, now: Instant) {
+        self.unlocks.retain(|_, u| u.expires_at > now);
+        self.failures
+            .retain(|_, f| now.duration_since(f.since) < SHARE_PASSWORD_WINDOW);
+    }
+
+    fn unlocked(&mut self, token: &str, nonce: &str, now: Instant) -> bool {
+        self.prune(now);
+        self.unlocks
+            .get(token)
+            .is_some_and(|u| u.nonce == nonce && u.expires_at > now)
+    }
+
+    fn grant(&mut self, token: &str, nonce: &str, now: Instant) {
+        self.prune(now);
+        self.unlocks.insert(
+            token.to_string(),
+            Unlock {
+                nonce: nonce.to_string(),
+                expires_at: now + SHARE_UNLOCK_TTL,
+            },
+        );
+    }
+
+    fn revoke(&mut self, token: &str) {
+        self.unlocks.remove(token);
+        self.failures.remove(token);
+    }
+
+    fn may_try_password(&mut self, token: &str, now: Instant) -> bool {
+        self.prune(now);
+        self.failures
+            .get(token)
+            .is_none_or(|f| f.count < SHARE_PASSWORD_MAX_FAILURES)
+    }
+
+    fn note_password_failure(&mut self, token: &str, now: Instant) {
+        self.prune(now);
+        let entry = self
+            .failures
+            .entry(token.to_string())
+            .or_insert(PasswordFailures { count: 0, since: now });
+        entry.count += 1;
+    }
+
+    fn clear_password_failures(&mut self, token: &str) {
+        self.failures.remove(token);
+    }
+}
+
+static SHARE_AUTH: LazyLock<Mutex<ShareAuthState>> =
+    LazyLock::new(|| Mutex::new(ShareAuthState::default()));
+
+/// A share token is minted from `[A-Za-z0-9]`, so anything else in the path is
+/// not a link this server created. Checking it before the token is echoed
+/// anywhere (a cookie `Path`, a header) keeps a crafted path from injecting
+/// into a response header.
+fn token_is_well_formed(token: &str) -> bool {
+    !token.is_empty()
+        && token.len() <= 128
+        && token
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// A browser address-bar navigation asks for HTML; a download manager, an API
+/// client and `fetch()` (whose default is `Accept: */*`) do not. Only the first
+/// kind can meaningfully be handed the public page instead of a JSON refusal,
+/// which is what lets `/share/<token>` stay a one-click download *and* explain
+/// itself when the visitor has to type a password first.
+fn wants_html(method: &Method, headers: &HeaderMap) -> bool {
+    *method == Method::GET
+        && headers
+            .get(header::ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|accept| accept.contains("text/html"))
+}
+
+/// The `hv_session` cookie a login sets, so a browser navigating to a
+/// `signed_in` link is recognised without an `x-session-token` header (a
+/// navigation cannot carry one).
+fn session_cookie(headers: &HeaderMap) -> Option<String> {
+    let raw = headers.get(header::COOKIE)?.to_str().ok()?;
+    crate::app_proxy::cookie::session_from_cookie_header(raw).map(str::to_string)
+}
+
+/// The unlock nonce from the request's cookies, if any.
+fn share_unlock_cookie(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(header::COOKIE)?
+        .to_str()
+        .ok()?
+        .split(';')
+        .filter_map(|part| part.trim().split_once('='))
+        .find_map(|(name, value)| {
+            (name == SHARE_UNLOCK_COOKIE && !value.is_empty()).then(|| value.to_string())
+        })
+}
+
+fn unlock_cookie(token: &str, nonce: &str, over_tls: bool) -> String {
+    let secure = if over_tls { "; Secure" } else { "" };
+    format!(
+        "{SHARE_UNLOCK_COOKIE}={nonce}; Path=/share/{token}; HttpOnly; SameSite=Lax{secure}; Max-Age={}",
+        SHARE_UNLOCK_TTL.as_secs()
+    )
+}
+
+/// A `401` that says *why* the caller was refused (`password` vs `session`) so
+/// the public page can show the right next step. It reveals nothing beyond what
+/// possession of the token already proves.
+fn share_auth_refusal(message: &str, reason: &str) -> Response {
+    let mut response = ResponseHelper::json_unauthorized(message.to_string());
+    if let Ok(value) = HeaderValue::from_str(reason) {
+        response.headers_mut().insert("x-hv-share-auth", value);
+    }
+    response
+}
+
+fn share_not_found() -> Response {
+    ResponseHelper::json_error("Share link not found".to_string())
+}
+
+/// The recipient's page, for a browser navigation that cannot be answered with
+/// the file itself. It then probes the link and shows the right next step.
+async fn share_page(nonce: Option<axum::Extension<crate::middleware::CspNonce>>) -> Response {
+    crate::handlers::spa::serve_spa(nonce).await
+}
+
 /// Stream wrapper that applies the per-token bandwidth bucket and holds the
 /// global concurrency permit for the life of the response body.
 struct RateLimitedShareStream<S> {
@@ -146,6 +329,65 @@ where
     }
 }
 
+struct CompletionShareStream<S> {
+    inner: S,
+    token: String,
+    repo: ShareLinkRepository,
+    expected: u64,
+    sent: u64,
+    finished: bool,
+}
+
+impl<S> Drop for CompletionShareStream<S> {
+    fn drop(&mut self) {
+        // The transfer ends here far more often than in `poll_next`, in both
+        // directions:
+        // - a client that disconnects mid-stream is never polled again, and
+        // - **hyper stops polling a body whose `Content-Length` it has fully
+        //   written**, so a *successful* download usually ends with this drop
+        //   and no `Poll::Ready(None)` at all. Completion therefore follows the
+        //   byte count (`sent == expected`), never the poll that happened to
+        //   come last — otherwise every real download would be recorded as
+        //   interrupted and a one-time link would never be spent.
+        let complete = self.sent == self.expected;
+        self.finish(complete);
+    }
+}
+
+impl<S> Stream for CompletionShareStream<S>
+where
+    S: Stream<Item = Result<Bytes, std::io::Error>> + Unpin,
+{
+    type Item = Result<Bytes, std::io::Error>;
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match Pin::new(&mut self.inner).poll_next(cx) {
+            Poll::Ready(Some(Ok(chunk))) => { self.sent += chunk.len() as u64; Poll::Ready(Some(Ok(chunk))) }
+            Poll::Ready(Some(Err(error))) => { self.finish(false); Poll::Ready(Some(Err(error))) }
+            Poll::Ready(None) => {
+                // Same rule as `Drop`: the bytes actually written decide.
+                let complete = self.sent == self.expected;
+                self.finish(complete);
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<S> CompletionShareStream<S> {
+    fn finish(&mut self, completed: bool) {
+        if self.finished { return; }
+        self.finished = true;
+        // `Drop` can run outside a runtime (a caller dropping the response), and
+        // `tokio::spawn` would panic there. Losing the release is recoverable —
+        // the slot is released on the next server start — a panic is not.
+        if tokio::runtime::Handle::try_current().is_err() { return; }
+        let token = self.token.clone();
+        let repo = self.repo.clone();
+        tokio::spawn(async move { let _ = repo.finish_download(&token, completed).await; });
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ShareLinkCreateRequest {
     pub path: String,
@@ -153,6 +395,8 @@ pub struct ShareLinkCreateRequest {
     pub mode: Option<String>,
     /// Lifetime in days; `None`/omitted → default; `0` → never expires.
     pub expires_days: Option<i64>,
+    pub password: Option<String>,
+    pub max_downloads: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -164,6 +408,16 @@ pub struct ShareLinkView {
     pub share_path: String,
     /// True when `expires_at` is set and already in the past.
     pub expired: bool,
+    /// True when the link carries a password (the hash itself never leaves
+    /// the server).
+    pub protected: bool,
+    /// True once `max_downloads` has been consumed — the link is now dead.
+    pub exhausted: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ShareUnlockRequest {
+    pub password: String,
 }
 
 /// Pure helper so the repo's unit tests can pin the token shape.
@@ -208,11 +462,16 @@ fn to_view(link: ShareLink) -> ShareLinkView {
         None => false,
     };
     let share_path = format!("/share/{}", link.token);
-    ShareLinkView {
-        link,
-        share_path,
-        expired,
-    }
+    let protected = link.password_hash.is_some();
+    let exhausted = is_exhausted(&link);
+    ShareLinkView { link, share_path, expired, protected, exhausted }
+}
+
+/// A capped link with no slots left. `download_count` only rises when a
+/// transfer completed, so a failed or abandoned download never spends a slot.
+fn is_exhausted(link: &ShareLink) -> bool {
+    link.max_downloads
+        .is_some_and(|max| link.download_count >= max)
 }
 
 /// GET /api/explorer/shares — the caller's share links, newest first.
@@ -285,6 +544,9 @@ pub async fn handle_share_link_create(
         return ResponseHelper::json_error("Only files can be shared by link".to_string())
             .into_response();
     }
+    if !file_path.is_file() {
+        return ResponseHelper::json_error("Only regular files can be shared by link".to_string()).into_response();
+    }
 
     let mode = req.mode.unwrap_or_else(|| "anyone".to_string());
     if !ALLOWED_MODES.contains(&mode.as_str()) {
@@ -303,6 +565,16 @@ pub async fn handle_share_link_create(
     let repo = ShareLinkRepository::new(state.db.pool());
     let token = generate_share_token();
     let expires_at = compute_expiry(expires_days);
+    if req.password.as_ref().is_some_and(|p| p.len() < 8 || p.len() > 256) {
+        return ResponseHelper::json_error("Share password must be between 8 and 256 characters".to_string()).into_response();
+    }
+    if req.max_downloads.is_some_and(|n| !(1..=100_000).contains(&n)) {
+        return ResponseHelper::json_error("max_downloads must be between 1 and 100000".to_string()).into_response();
+    }
+    let password_hash = match req.password.as_deref().map(|p| state.auth.hash_password(p)).transpose() {
+        Ok(hash) => hash,
+        Err(_) => return ResponseHelper::json_error("Could not protect share link".to_string()).into_response(),
+    };
     match repo
         .create(
             &session.username,
@@ -310,6 +582,8 @@ pub async fn handle_share_link_create(
             &path,
             &mode,
             expires_at.as_deref(),
+            password_hash.as_deref(),
+            req.max_downloads,
         )
         .await
     {
@@ -353,6 +627,9 @@ pub async fn handle_share_link_delete(
 
     match repo.delete(&token).await {
         Ok(()) => {
+            // A revoked link must also drop any unlock in flight, so a cookie
+            // minted a minute ago cannot outlive the revoke.
+            SHARE_AUTH.lock().revoke(&token);
             crate::events::log_event(format!(
                 "User '{}' revoked share link for file '{}' (created by '{}')",
                 username, link.path, link.username
@@ -363,45 +640,222 @@ pub async fn handle_share_link_delete(
     }
 }
 
+/// POST /share/{token}/unlock — exchange the link's password for a
+/// short-lived, path-scoped unlock cookie.
+///
+/// The password is verified exactly once, here; every later request (the
+/// download, a `Range` seek, a resume) carries the cookie instead. That keeps
+/// the password out of every URL and lets the browser download the file the
+/// way it downloads anything else — streamed to disk with ranges, rather than
+/// fetched into a JavaScript blob first.
+///
+/// Public by design (the token is the only credential) but deliberately
+/// indistinguishable for a nonexistent, expired or password-less link: all
+/// answer the same refusal, so the endpoint cannot be used as a token oracle.
+pub async fn handle_share_link_unlock(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+    over_tls: Option<axum::Extension<crate::middleware::ArrivedOverTls>>,
+    axum::extract::Json(req): axum::extract::Json<ShareUnlockRequest>,
+) -> Response {
+    if !token_is_well_formed(&token) {
+        return share_not_found();
+    }
+
+    let repo = ShareLinkRepository::new(state.db.pool());
+    let Some(link) = repo.find_by_token(&token).await.ok().flatten() else {
+        return share_not_found();
+    };
+    if is_expired(&link) {
+        return share_not_found();
+    }
+    let Some(hash) = link.password_hash.as_deref() else {
+        return ResponseHelper::json_error(
+            "This share link is not password protected".to_string(),
+        );
+    };
+
+    let now = Instant::now();
+    if !SHARE_AUTH.lock().may_try_password(&token, now) {
+        return ResponseHelper::json_error_with_status(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many incorrect password attempts, try again in a few minutes".to_string(),
+        );
+    }
+    // Bound the input before Argon2 sees it: hashing a megabyte from a public
+    // route is free work for an attacker.
+    if req.password.is_empty() || req.password.len() > 256 {
+        SHARE_AUTH.lock().note_password_failure(&token, now);
+        return share_auth_refusal("The share password is incorrect", "password");
+    }
+    if !state.auth.verify_password(&req.password, hash) {
+        SHARE_AUTH.lock().note_password_failure(&token, now);
+        return share_auth_refusal("The share password is incorrect", "password");
+    }
+
+    SHARE_AUTH.lock().clear_password_failures(&token);
+    let nonce = generate_share_token();
+    SHARE_AUTH.lock().grant(&token, &nonce, now);
+    let cookie = unlock_cookie(&token, &nonce, over_tls.is_some());
+    let mut response =
+        ResponseHelper::json_success(serde_json::json!({ "unlocked": true }));
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        response.headers_mut().append(header::SET_COOKIE, value);
+    }
+    response
+}
+
 /// GET /share/{token} — the public download. No session required for
 /// `anyone` links; `signed_in` links need the `x-session-token` header
 /// (never a query-string token — that would leak into logs).
 pub async fn handle_share_link_download(
     State(state): State<Arc<AppState>>,
     Path(token): Path<String>,
+    method: Method,
     headers: HeaderMap,
+    nonce: Option<axum::Extension<crate::middleware::CspNonce>>,
 ) -> Response {
-    if token.len() > 128 || token.is_empty() {
-        return ResponseHelper::json_error("Share link not found".to_string()).into_response();
+    // A human navigating to a link gets the public page whenever the answer is
+    // not the file itself — a password form, "this link is unavailable", or an
+    // explanation for a signed-in-only link. A JSON error in the address bar
+    // helps nobody, and the page's own `fetch` probes send `Accept: */*`, so
+    // they still receive the status and the `x-hv-share-auth` reason.
+    let page = wants_html(&method, &headers);
+    if !token_is_well_formed(&token) {
+        if page {
+            return share_page(nonce).await;
+        }
+        return share_not_found();
     }
 
     let repo = ShareLinkRepository::new(state.db.pool());
     let Some(link) = repo.find_by_token(&token).await.ok().flatten() else {
         // Deliberately indistinguishable from an expired link: don't confirm
         // whether the token ever existed.
-        return ResponseHelper::json_error("Share link not found".to_string()).into_response();
+        if page {
+            return share_page(nonce).await;
+        }
+        return share_not_found();
     };
 
     if is_expired(&link) {
-        return ResponseHelper::json_error("Share link not found".to_string()).into_response();
+        if page {
+            return share_page(nonce).await;
+        }
+        return share_not_found();
+    }
+
+    // Either an unlock cookie minted by `/share/{token}/unlock` (the browser
+    // path) or the password itself in a header (the API path). The password is
+    // never read from the query string: that would put it in the access log.
+    if let Some(hash) = &link.password_hash {
+        let unlocked = share_unlock_cookie(&headers).is_some_and(|nonce| {
+            SHARE_AUTH
+                .lock()
+                .unlocked(&token, &nonce, Instant::now())
+        });
+        if !unlocked {
+            let supplied = headers
+                .get("x-share-password")
+                .and_then(|h| h.to_str().ok())
+                .unwrap_or("");
+            // An empty password is a probe (the public page checks whether a
+            // password is needed at all), not a guess: it costs no budget.
+            if supplied.is_empty() {
+                if page {
+                    return share_page(nonce).await;
+                }
+                return share_auth_refusal(
+                    "A valid share password is required",
+                    "password",
+                );
+            }
+            let now = Instant::now();
+            if !SHARE_AUTH.lock().may_try_password(&token, now) {
+                return ResponseHelper::json_error_with_status(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "Too many incorrect password attempts, try again in a few minutes"
+                        .to_string(),
+                );
+            }
+            if supplied.len() > 256 || !state.auth.verify_password(supplied, hash) {
+                SHARE_AUTH.lock().note_password_failure(&token, now);
+                if page {
+                    return share_page(nonce).await;
+                }
+                return share_auth_refusal("The share password is incorrect", "password");
+            }
+            SHARE_AUTH.lock().clear_password_failures(&token);
+        }
     }
 
     if link.mode == "signed_in" {
-        let session_token = headers
+        // A header (API client) or the login cookie a browser already holds:
+        // a plain navigation cannot send a header, so without the cookie a
+        // signed-in owner could never open their own link in a tab.
+        let from_header = headers
             .get("x-session-token")
             .and_then(|h| h.to_str().ok())
-            .unwrap_or("");
-        if session_token.is_empty() || state.auth.get_session(session_token).await.is_err() {
-            return ResponseHelper::json_unauthorized(
-                "This share requires a HomeVault session".to_string(),
-            )
-            .into_response();
+            .filter(|token| !token.is_empty());
+        let mut authorised = false;
+        for candidate in [from_header.map(str::to_string), session_cookie(&headers)]
+            .into_iter()
+            .flatten()
+        {
+            if state.auth.get_session(&candidate).await.is_ok() {
+                authorised = true;
+                break;
+            }
+        }
+        if !authorised {
+            if page {
+                return share_page(nonce).await;
+            }
+            return share_auth_refusal(
+                "This share requires a HomeVault session",
+                "session",
+            );
         }
     }
 
     let file_path = std::path::Path::new(&link.path);
     if !file_path.exists() || !file_path.is_file() {
-        return ResponseHelper::json_error("Share link not found".to_string()).into_response();
+        if page {
+            return share_page(nonce).await;
+        }
+        return share_not_found();
+    }
+
+    // The cap is checked before reserving so that even a `HEAD` probe reports
+    // the truth: a spent link is gone, not "downloadable until you try".
+    if is_exhausted(&link) {
+        if page {
+            return share_page(nonce).await;
+        }
+        return ResponseHelper::json_error(
+            "This share link has reached its download limit".to_string(),
+        );
+    }
+
+    let is_head = method == Method::HEAD;
+    if !is_head && !repo.reserve_download(&token).await.unwrap_or(false) {
+        return ResponseHelper::json_error(
+            "This share link has reached its download limit".to_string(),
+        );
+    }
+    // Every return between the reservation above and the response body must
+    // release the slot; only the streaming body releases itself (on completion,
+    // on a read error and on a client disconnect). A `HEAD` reserves nothing.
+    let reserved = !is_head;
+    macro_rules! release_slot {
+        () => {
+            if reserved {
+                let _ = repo.finish_download(&token, false).await;
+            }
+        };
     }
 
     // Stream the file — mirrors handle_explorer_download's response shape
@@ -414,13 +868,15 @@ pub async fn handle_share_link_download(
         Ok(f) => f,
         Err(e) => {
             tracing::warn!("Failed to open shared file '{}': {}", link.path, e);
-            return ResponseHelper::json_error("Share link not found".to_string()).into_response();
+            release_slot!();
+            return share_not_found();
         }
     };
     let metadata = match file.metadata().await {
         Ok(m) => m,
         Err(_) => {
-            return ResponseHelper::json_error("Share link not found".to_string()).into_response()
+            release_slot!();
+            return share_not_found();
         }
     };
     let total = metadata.len();
@@ -429,6 +885,7 @@ pub async fn handle_share_link_download(
     let range = match crate::handlers::explorer::parse_range(&headers, total) {
         Ok(r) => r,
         Err(()) => {
+            release_slot!();
             return Response::builder()
                 .status(StatusCode::RANGE_NOT_SATISFIABLE)
                 .header("Content-Range", format!("bytes */{}", total))
@@ -473,6 +930,7 @@ pub async fn handle_share_link_download(
             tracing::error!(
                 "Share streams: the concurrency semaphore is closed; refusing a public stream"
             );
+            release_slot!();
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "The share streaming pool is unavailable, try again shortly",
@@ -480,25 +938,30 @@ pub async fn handle_share_link_download(
                 .into_response();
         }
     };
-    let body = if total == 0 {
+    let body = if is_head || total == 0 {
+        if reserved { let _ = repo.finish_download(&token, true).await; }
         Body::empty()
     } else {
         use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
         let start = range.map(|(s, _)| s).unwrap_or(0);
         if start > 0 {
-            if let Err(e) = file.seek(SeekFrom::Start(start)).await {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Failed to seek file: {}", e),
-                )
-                    .into_response();
+            if file.seek(SeekFrom::Start(start)).await.is_err() {
+                let _ = repo.finish_download(&token, false).await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to seek file").into_response();
             }
         }
         let limited = file.take(send_len);
-        let stream = RateLimitedShareStream {
-            inner: tokio_util::io::ReaderStream::new(limited),
+        let stream = CompletionShareStream {
+            inner: RateLimitedShareStream {
+                inner: tokio_util::io::ReaderStream::new(limited),
+                token: token.clone(),
+                _permit: permit,
+            },
             token: token.clone(),
-            _permit: permit,
+            repo: repo.clone(),
+            expected: send_len,
+            sent: 0,
+            finished: false,
         };
         Body::from_stream(stream)
     };
@@ -511,6 +974,10 @@ pub async fn handle_share_link_download(
         range,
         digest,
     )
+    // A public link is a grant that can expire, be revoked or run out of
+    // downloads *after* this response was produced: nothing may keep a copy.
+    // (The service worker refuses `/share/` for the same reason.)
+    .header(header::CACHE_CONTROL, "no-store")
     .body(body)
     .unwrap_or_else(|_| {
         (
@@ -594,5 +1061,138 @@ mod tests {
         );
         drop(held);
         assert!(sem.try_acquire_owned().is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Password unlock + download-cap arithmetic
+    // -----------------------------------------------------------------------
+
+    fn link(max_downloads: Option<i64>, download_count: i64) -> ShareLink {
+        ShareLink {
+            id: 1,
+            token: "tok".to_string(),
+            username: "u".to_string(),
+            path: "/f.bin".to_string(),
+            mode: "anyone".to_string(),
+            expires_at: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            password_hash: None,
+            max_downloads,
+            download_count,
+            active_downloads: 0,
+        }
+    }
+
+    #[test]
+    fn an_uncapped_link_is_never_exhausted() {
+        assert!(!is_exhausted(&link(None, 9_999)));
+    }
+
+    #[test]
+    fn the_nth_download_is_the_last_one() {
+        // A cap of 2 is spent once two downloads *completed*.
+        assert!(!is_exhausted(&link(Some(2), 0)));
+        assert!(!is_exhausted(&link(Some(2), 1)));
+        assert!(is_exhausted(&link(Some(2), 2)));
+    }
+
+    #[test]
+    fn a_one_time_link_is_dead_after_one_completed_download() {
+        // `max_downloads = 1` is what the UI calls a one-time link.
+        assert!(!is_exhausted(&link(Some(1), 0)));
+        assert!(is_exhausted(&link(Some(1), 1)));
+    }
+
+    #[test]
+    fn only_minted_tokens_are_welformed() {
+        assert!(token_is_well_formed(&generate_share_token()));
+        assert!(token_is_well_formed("aZ09-_"));
+        assert!(!token_is_well_formed(""));
+        // A path segment is echoed into a cookie `Path`, so anything that could
+        // break a header out of it must be refused before that happens.
+        assert!(!token_is_well_formed("abc;Path=/"));
+        assert!(!token_is_well_formed("a b"));
+        assert!(!token_is_well_formed(&"A".repeat(129)));
+    }
+
+    #[test]
+    fn the_unlock_cookie_is_scoped_http_only_and_short_lived() {
+        let cookie = unlock_cookie("tok123", "nonce", true);
+        assert!(cookie.starts_with("hv_share_unlock=nonce;"));
+        assert!(cookie.contains("Path=/share/tok123"));
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("SameSite=Lax"));
+        assert!(cookie.contains("Secure"));
+        assert!(cookie.contains(&format!("Max-Age={}", SHARE_UNLOCK_TTL.as_secs())));
+        // Plain HTTP must not set a cookie the browser would then reject.
+        assert!(!unlock_cookie("tok123", "nonce", false).contains("Secure"));
+    }
+
+    #[test]
+    fn the_unlock_cookie_is_found_among_others() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("theme=dark; hv_share_unlock=abc123; lang=fr"),
+        );
+        assert_eq!(share_unlock_cookie(&headers).as_deref(), Some("abc123"));
+        let empty = HeaderMap::new();
+        assert_eq!(share_unlock_cookie(&empty), None);
+        let mut blank = HeaderMap::new();
+        blank.insert(header::COOKIE, HeaderValue::from_static("hv_share_unlock="));
+        assert_eq!(share_unlock_cookie(&blank), None);
+    }
+
+    #[test]
+    fn an_unlock_expires_and_is_bound_to_its_link() {
+        let mut state = ShareAuthState::default();
+        let now = Instant::now();
+        state.grant("tok", "nonce", now);
+        assert!(state.unlocked("tok", "nonce", now));
+        assert!(state.unlocked(
+            "tok",
+            "nonce",
+            now + SHARE_UNLOCK_TTL - Duration::from_secs(1)
+        ));
+        // Expired…
+        assert!(!state.unlocked("tok", "nonce", now + SHARE_UNLOCK_TTL));
+        // …another link's token never accepts it…
+        assert!(!state.unlocked("other", "nonce", now));
+        // …and neither does another nonce on the same link.
+        state.grant("tok", "nonce", now);
+        assert!(!state.unlocked("tok", "forged", now));
+    }
+
+    #[test]
+    fn revoking_a_link_drops_its_unlock_and_its_failures() {
+        let mut state = ShareAuthState::default();
+        let now = Instant::now();
+        state.grant("tok", "nonce", now);
+        state.note_password_failure("tok", now);
+        state.revoke("tok");
+        assert!(!state.unlocked("tok", "nonce", now));
+        assert!(state.may_try_password("tok", now));
+    }
+
+    #[test]
+    fn the_password_budget_is_finite_and_refills_after_the_window() {
+        let mut state = ShareAuthState::default();
+        let now = Instant::now();
+        for attempt in 1..=SHARE_PASSWORD_MAX_FAILURES {
+            assert!(state.may_try_password("tok", now), "attempt {attempt} allowed");
+            state.note_password_failure("tok", now);
+        }
+        // The budget is spent: Argon2 must not be reachable any more.
+        assert!(!state.may_try_password("tok", now));
+        assert!(!state.may_try_password("tok", now + SHARE_PASSWORD_WINDOW / 2));
+        // …until the window has passed, so a household is never locked out by
+        // yesterday's typos (and a restart clears it anyway).
+        assert!(state.may_try_password("tok", now + SHARE_PASSWORD_WINDOW));
+        // A correct password clears the count immediately.
+        state.note_password_failure("tok", now);
+        state.clear_password_failures("tok");
+        assert!(state.may_try_password("tok", now));
+        // Failures on one link never punish another.
+        assert!(state.may_try_password("other", now));
     }
 }

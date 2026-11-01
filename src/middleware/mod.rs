@@ -27,6 +27,7 @@
 //! HTTP middleware: logging, rate limiting, CSRF protection, the first-run
 //! setup guard, and security headers.
 
+pub mod auto_block;
 pub mod contract;
 pub mod csp_nonce;
 pub mod csrf;
@@ -38,6 +39,7 @@ pub mod rate_limit;
 pub mod security_headers;
 pub mod setup_guard;
 
+pub use auto_block::auto_block_middleware;
 pub use contract::contract_middleware;
 pub use csp_nonce::{stamp_nonce, CspNonce, NONCE_PLACEHOLDER};
 pub use csrf::csrf_middleware;

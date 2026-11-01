@@ -31,6 +31,12 @@ use tokio::sync::RwLock;
 
 use crate::utils::process::{run_timed, ARCHIVE_TIMEOUT, HOST_PROBE_TIMEOUT};
 
+pub mod reflink;
+
+pub use reflink::{
+    CopyMethod, CopyStats, InstantCopyMode, InstantCopyService, InstantCopySettings,
+};
+
 /// Name of the per-root trash directory files are moved into on delete.
 pub const TRASH_DIR_NAME: &str = ".homevault-trash";
 
@@ -162,6 +168,42 @@ pub struct TrashEntry {
     pub size_bytes: u64,
 }
 
+/// How long trashed files are kept before the background cleanup removes
+/// them. Two independent limits, both opt-out with `0`: a trashed item is
+/// removed once it is older than `retention_days`, and the oldest items are
+/// removed until the whole trash fits in `max_bytes`. A policy of
+/// `{ retention_days: 0, max_bytes: 0 }` keeps everything until the user
+/// empties the trash by hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrashPolicy {
+    /// Age in days after which a trashed item is permanently removed.
+    /// `0` disables the age limit.
+    pub retention_days: u32,
+    /// Total size ceiling for one trash root, in bytes. `0` disables it.
+    pub max_bytes: u64,
+}
+
+impl Default for TrashPolicy {
+    /// Keep deleted files for a month, but never let a trash root grow past
+    /// 10 GiB — enough that a home user rarely notices it, small enough that
+    /// a forgotten trash cannot silently fill the disk.
+    fn default() -> Self {
+        Self {
+            retention_days: 30,
+            max_bytes: 10 * 1024 * 1024 * 1024,
+        }
+    }
+}
+
+/// Outcome of one trash cleanup pass, for logging and the "Purge now" toast.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrashPurgeReport {
+    /// How many items were permanently removed.
+    pub purged: usize,
+    /// Total bytes reclaimed by those removals.
+    pub freed_bytes: u64,
+}
+
 /// Errors that can occur during file browser operations.
 #[derive(Error, Debug)]
 pub enum BrowserError {
@@ -176,7 +218,11 @@ pub enum BrowserError {
 }
 
 /// Metadata about a single file or directory entry.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `PartialEq` exists for the global file search's merge/rank tests
+/// (`src/global_search.rs`), which compare whole hits — not for the listing
+/// endpoints, which only serialize.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileInfo {
     pub name: String,
     pub path: String,
@@ -259,6 +305,13 @@ impl Default for FsCache {
 }
 
 pub struct FileBrowser;
+
+/// The two counters [`FileBrowser::copy_dir_all_tracked`] shares with its
+/// caller: files finished, and the paths this run created.
+struct CopyTracking<'a> {
+    copied: &'a std::sync::atomic::AtomicU64,
+    created: &'a mut Vec<std::path::PathBuf>,
+}
 
 impl FileBrowser {
     /// Async listing using tokio's read_dir + parallel metadata via FuturesUnordered
@@ -670,11 +723,25 @@ impl FileBrowser {
     /// Move using atomic rename when possible (same filesystem).
     /// Falls back to copy+delete for cross-filesystem moves.
     pub fn move_item(source: &str, destination: &str) -> Result<(), BrowserError> {
+        Self::move_item_with_mode(source, destination, InstantCopyMode::default()).map(|_| ())
+    }
+
+    /// [`Self::move_item`] with an explicit instant-copy policy.
+    ///
+    /// Returns the strategy the cross-filesystem fallback used, so the caller
+    /// can report it. A same-filesystem move is an `fsync`'d atomic rename and
+    /// reports `None`: nothing was copied at all, which is better than a clone
+    /// and must not be described as one.
+    pub fn move_item_with_mode(
+        source: &str,
+        destination: &str,
+        mode: InstantCopyMode,
+    ) -> Result<Option<reflink::Invocation>, BrowserError> {
         // Try atomic rename first
         match std::fs::rename(source, destination) {
             Ok(_) => {
                 Self::fsync_parent_dir(Path::new(destination));
-                return Ok(());
+                return Ok(None);
             }
             Err(e)
                 if e.kind() == std::io::ErrorKind::CrossesDevices
@@ -688,17 +755,19 @@ impl FileBrowser {
         // Cross-device fallback
         let src_path = Path::new(source);
         if src_path.is_dir() {
-            Self::copy_dir_all(src_path, Path::new(destination))?;
+            Self::copy_dir_all_with_mode(src_path, Path::new(destination), mode, None)?;
             std::fs::remove_dir_all(source)?;
             Self::fsync_parent_dir(Path::new(destination));
+            Ok(None)
         } else {
             // Verified copy first — only remove the source once a
-            // byte-identical, fsync'd copy is confirmed on disk.
-            Self::copy_file_verified(src_path, Path::new(destination))?;
+            // byte-identical copy (or a clone, which is byte-identical by
+            // construction) is confirmed on disk.
+            let inv = Self::copy_file_instant(src_path, Path::new(destination), mode)?;
             std::fs::remove_file(source)?;
             Self::fsync_parent_dir(Path::new(destination));
+            Ok(Some(inv))
         }
-        Ok(())
     }
 
     pub fn copy_item(source: &str, destination: &str) -> Result<(), BrowserError> {
@@ -757,6 +826,15 @@ impl FileBrowser {
 
     /// Lists everything currently in `trash_root`, newest first.
     pub fn list_trash(trash_root: &Path) -> Vec<TrashEntry> {
+        Self::collect_trash(trash_root, false)
+    }
+
+    /// Shared body of [`Self::list_trash`] and the retention pass. When
+    /// `measure_tree` is set, a directory entry reports the recursive size of
+    /// everything under it instead of the directory inode's own size — the
+    /// listing UI only needs the cheap number, while the size cap must count
+    /// the bytes it would actually reclaim.
+    fn collect_trash(trash_root: &Path, measure_tree: bool) -> Vec<TrashEntry> {
         let mut entries = Vec::new();
         let Ok(dir) = std::fs::read_dir(trash_root) else {
             return entries;
@@ -796,18 +874,118 @@ impl FileBrowser {
                 .to_string();
             let metadata = entry.metadata().ok();
 
+            let size_bytes = if measure_tree {
+                Self::path_size(&entry.path())
+            } else {
+                metadata.as_ref().map(|m| m.len()).unwrap_or(0)
+            };
+
             entries.push(TrashEntry {
                 id,
                 name,
                 original_path,
                 deleted_at,
                 is_directory: metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false),
-                size_bytes: metadata.map(|m| m.len()).unwrap_or(0),
+                size_bytes,
             });
         }
 
         entries.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at));
         entries
+    }
+
+    /// Recursive size in bytes of a file or directory tree. Symlinks are
+    /// counted by their own length and never followed, so a symlink loop in
+    /// the trash cannot spin this into an infinite walk.
+    pub fn path_size(path: &Path) -> u64 {
+        let Ok(meta) = std::fs::symlink_metadata(path) else {
+            return 0;
+        };
+        if !meta.is_dir() {
+            return meta.len();
+        }
+        let mut total = 0;
+        if let Ok(dir) = std::fs::read_dir(path) {
+            for entry in dir.flatten() {
+                total += Self::path_size(&entry.path());
+            }
+        }
+        total
+    }
+
+    /// Parses a `.trashinfo` `DeletionDate=` value (`%Y-%m-%d %H:%M:%S`,
+    /// local time).
+    pub fn parse_trash_deleted_at(s: &str) -> Option<chrono::NaiveDateTime> {
+        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok()
+    }
+
+    /// Chooses which trashed items a cleanup pass should permanently delete.
+    /// Pure — no filesystem access — so the retention rules are unit-testable.
+    ///
+    /// Age first: every item older than `retention_days` goes. Then, if the
+    /// survivors still exceed `max_bytes`, the oldest of them go too until the
+    /// total fits. Items whose `DeletionDate` cannot be parsed are never aged
+    /// out, but they still count toward the size total.
+    pub fn select_purge(
+        entries: &[TrashEntry],
+        policy: &TrashPolicy,
+        now: chrono::NaiveDateTime,
+    ) -> Vec<String> {
+        let mut purge: Vec<String> = Vec::new();
+        let mut kept: Vec<&TrashEntry> = Vec::new();
+
+        for entry in entries {
+            let expired = policy.retention_days > 0
+                && Self::parse_trash_deleted_at(&entry.deleted_at)
+                    .map(|deleted| (now - deleted).num_days() >= i64::from(policy.retention_days))
+                    .unwrap_or(false);
+            if expired {
+                purge.push(entry.id.clone());
+            } else {
+                kept.push(entry);
+            }
+        }
+
+        if policy.max_bytes > 0 {
+            let mut total: u64 = kept.iter().map(|e| e.size_bytes).sum();
+            if total > policy.max_bytes {
+                kept.sort_by(|a, b| a.deleted_at.cmp(&b.deleted_at));
+                for entry in kept {
+                    if total <= policy.max_bytes {
+                        break;
+                    }
+                    purge.push(entry.id.clone());
+                    total = total.saturating_sub(entry.size_bytes);
+                }
+            }
+        }
+
+        purge
+    }
+
+    /// Applies `policy` to one trash root, permanently deleting whatever the
+    /// rules select, and reports what was reclaimed. Best-effort: an item that
+    /// fails to delete is skipped, never aborting the rest of the pass.
+    pub fn purge_trash(trash_root: &Path, policy: &TrashPolicy) -> TrashPurgeReport {
+        let mut report = TrashPurgeReport::default();
+        if !trash_root.exists() {
+            return report;
+        }
+        let entries = Self::collect_trash(trash_root, true);
+        let now = chrono::Local::now().naive_local();
+        let sizes: HashMap<String, u64> = entries
+            .iter()
+            .map(|e| (e.id.clone(), e.size_bytes))
+            .collect();
+
+        for id in Self::select_purge(&entries, policy, now) {
+            if Self::purge_trash_item(trash_root, &id).is_ok() {
+                report.purged += 1;
+                report.freed_bytes += sizes.get(&id).copied().unwrap_or(0);
+            }
+        }
+
+        report
     }
 
     /// Finds the on-disk trashed path + recorded original path for a trash `id`.
@@ -1057,7 +1235,49 @@ impl FileBrowser {
     }
 
     fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), BrowserError> {
-        std::fs::create_dir_all(dst)?;
+        // The trash/restore paths never report a method, so the tally is
+        // discarded here; they still get the cascade (a restore onto btrfs is
+        // exactly where a clone pays off).
+        Self::copy_dir_inner(src, dst, InstantCopyMode::default(), None, None)
+    }
+
+    /// [`Self::copy_dir_all`] with an explicit policy and an optional tally.
+    ///
+    /// `stats` records how each file was produced; the Explorer's tracked job
+    /// passes one so the activity row can say "copied instantly".
+    pub fn copy_dir_all_with_mode(
+        src: &Path,
+        dst: &Path,
+        mode: InstantCopyMode,
+        stats: Option<&reflink::CopyStats>,
+    ) -> Result<(), BrowserError> {
+        Self::copy_dir_inner(src, dst, mode, stats, None)
+    }
+
+    /// One directory-copy walk shared by every entry point.
+    ///
+    /// `tracking` is what distinguishes [`Self::copy_dir_all_with_mode`] from
+    /// [`Self::copy_dir_all_tracked`]: with it, every file is counted for
+    /// progress and every path *this run created* (never a pre-existing one,
+    /// and never one it merely overwrote) is recorded so a failed copy can
+    /// remove exactly its own partial output.
+    fn copy_dir_inner(
+        src: &Path,
+        dst: &Path,
+        mode: InstantCopyMode,
+        stats: Option<&reflink::CopyStats>,
+        mut tracking: Option<&mut CopyTracking<'_>>,
+    ) -> Result<(), BrowserError> {
+        if !dst.exists() {
+            std::fs::create_dir_all(dst)?;
+            if let Some(t) = tracking.as_deref_mut() {
+                t.created.push(dst.to_path_buf());
+            }
+        } else if !dst.is_dir() {
+            return Err(BrowserError::Io(std::io::Error::other(
+                "destination exists and is not a directory",
+            )));
+        }
 
         for entry in std::fs::read_dir(src)? {
             let entry = entry?;
@@ -1066,11 +1286,29 @@ impl FileBrowser {
             let dst_path = dst.join(entry.file_name());
 
             if ty.is_symlink() {
+                let existed = dst_path.exists();
                 Self::copy_symlink(&src_path, &dst_path)?;
+                if let Some(t) = tracking.as_deref_mut() {
+                    if !existed {
+                        t.created.push(dst_path);
+                    }
+                    t.copied.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
             } else if ty.is_dir() {
-                Self::copy_dir_all(&src_path, &dst_path)?;
+                let child = tracking.as_deref_mut();
+                Self::copy_dir_inner(&src_path, &dst_path, mode, stats, child)?;
             } else {
-                Self::copy_file_verified(&src_path, &dst_path)?;
+                let existed = dst_path.exists();
+                let inv = Self::copy_file_instant(&src_path, &dst_path, mode)?;
+                if let Some(s) = stats {
+                    s.record(inv.method);
+                }
+                if let Some(t) = tracking.as_deref_mut() {
+                    if !existed {
+                        t.created.push(dst_path);
+                    }
+                    t.copied.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
             }
         }
 
@@ -1110,44 +1348,28 @@ impl FileBrowser {
         copied: &std::sync::atomic::AtomicU64,
         created: &mut Vec<std::path::PathBuf>,
     ) -> Result<(), BrowserError> {
-        if !dst.exists() {
-            std::fs::create_dir_all(dst)?;
-            created.push(dst.to_path_buf());
-        } else if !dst.is_dir() {
-            return Err(BrowserError::Io(std::io::Error::other(
-                "destination exists and is not a directory",
-            )));
-        }
+        let mut tracking = CopyTracking { copied, created };
+        Self::copy_dir_inner(
+            src,
+            dst,
+            InstantCopyMode::default(),
+            None,
+            Some(&mut tracking),
+        )
+    }
 
-        for entry in std::fs::read_dir(src)? {
-            let entry = entry?;
-            let ty = entry.file_type()?;
-            let src_path = entry.path();
-            let dst_path = dst.join(entry.file_name());
-
-            if ty.is_symlink() {
-                let existed = dst_path.exists();
-                Self::copy_symlink(&src_path, &dst_path)?;
-                if !existed {
-                    created.push(dst_path);
-                }
-                copied.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            } else if ty.is_dir() {
-                Self::copy_dir_all_tracked(&src_path, &dst_path, copied, created)?;
-            } else {
-                let existed = dst_path.exists();
-                Self::copy_file_verified(&src_path, &dst_path)?;
-                if !existed {
-                    created.push(dst_path);
-                }
-                copied.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-        }
-
-        if let Ok(meta) = std::fs::symlink_metadata(src) {
-            Self::preserve_metadata(&meta, dst);
-        }
-        Ok(())
+    /// [`Self::copy_dir_all_tracked`] with the instant-copy policy and a
+    /// per-method tally the completing job reports in its activity message.
+    pub fn copy_dir_all_tracked_with_mode(
+        src: &Path,
+        dst: &Path,
+        copied: &std::sync::atomic::AtomicU64,
+        created: &mut Vec<std::path::PathBuf>,
+        mode: InstantCopyMode,
+        stats: &reflink::CopyStats,
+    ) -> Result<(), BrowserError> {
+        let mut tracking = CopyTracking { copied, created };
+        Self::copy_dir_inner(src, dst, mode, Some(stats), Some(&mut tracking))
     }
 
     /// Computes the SHA-256 of everything readable from `reader`, in 64 KiB
@@ -1179,7 +1401,30 @@ impl FileBrowser {
     /// error is returned — so a caller performing a move never deletes the
     /// source unless a byte-identical copy is confirmed on disk. Source
     /// permission bits, ownership (uid/gid) and mtime are preserved.
+    ///
+    /// Since QW-03 (2026-10-29) this is the *last* strategy, not the only
+    /// one: [`copy_file_instant`] first tries a copy-on-write clone
+    /// (`FICLONE`) and then a kernel-side `copy_file_range`, and only falls
+    /// back to this verified stream when both are refused. Every path keeps
+    /// the same atomic temp-file + `rename` + metadata contract; the clone
+    /// path skips the read-back hash because a clone is byte-identical by
+    /// construction (and hashing it would re-read the whole file, cancelling
+    /// the entire point).
     fn copy_file_verified(src: &Path, dst: &Path) -> Result<u64, BrowserError> {
+        Self::copy_file_instant(src, dst, InstantCopyMode::Auto).map(|inv| inv.bytes)
+    }
+
+    /// [`Self::copy_file_verified`] with the instant-copy cascade in front and
+    /// the strategy reported back.
+    ///
+    /// Used by the compiled copy tree (which folds the per-file results into
+    /// the job's activity row) and by the Explorer's single-file copy. The
+    /// trash/restore call sites keep the plain `copy_file_verified`.
+    pub fn copy_file_instant(
+        src: &Path,
+        dst: &Path,
+        mode: InstantCopyMode,
+    ) -> Result<reflink::Invocation, BrowserError> {
         let src_meta = std::fs::symlink_metadata(src)?;
 
         // Written next to `dst` (not to a shared temp dir) so the final
@@ -1192,32 +1437,15 @@ impl FileBrowser {
         );
         let tmp_path = dst.with_file_name(tmp_name);
 
-        let (total, src_hash) = match Self::stream_copy_hashed(src, &tmp_path) {
-            Ok(v) => v,
+        let invocation = match reflink::copy_file_cascade(src, &tmp_path, mode, |s, t| {
+            Self::stream_copy_verified(s, t)
+        }) {
+            Ok(inv) => inv,
             Err(e) => {
                 let _ = std::fs::remove_file(&tmp_path);
                 return Err(e);
             }
         };
-
-        let dst_hash_result = std::fs::File::open(&tmp_path)
-            .and_then(|f| Self::sha256_reader(std::io::BufReader::new(f)));
-        let dst_hash = match dst_hash_result {
-            Ok(h) => h,
-            Err(e) => {
-                let _ = std::fs::remove_file(&tmp_path);
-                return Err(BrowserError::Io(e));
-            }
-        };
-
-        if src_hash != dst_hash {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(BrowserError::IntegrityMismatch(format!(
-                "SHA-256 mismatch after copying {} -> {}",
-                src.display(),
-                dst.display()
-            )));
-        }
 
         // Preserve metadata on the temp file before the atomic swap, so
         // `dst` never has a window with the wrong permissions/ownership.
@@ -1232,6 +1460,39 @@ impl FileBrowser {
         // new directory entry even though the file's own blocks are on disk.
         Self::fsync_parent_dir(dst);
 
+        Ok(invocation)
+    }
+
+    /// The verified stream on its own: `src` → `tmp_dst`, hashed, `fsync`'d,
+    /// then read back and compared. Returns the byte count; `tmp_dst` is left
+    /// in place on success and removed on a mismatch.
+    fn stream_copy_verified(src: &Path, tmp_dst: &Path) -> Result<u64, BrowserError> {
+        let (total, src_hash) = match Self::stream_copy_hashed(src, tmp_dst) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = std::fs::remove_file(tmp_dst);
+                return Err(e);
+            }
+        };
+
+        let dst_hash_result = std::fs::File::open(tmp_dst)
+            .and_then(|f| Self::sha256_reader(std::io::BufReader::new(f)));
+        let dst_hash = match dst_hash_result {
+            Ok(h) => h,
+            Err(e) => {
+                let _ = std::fs::remove_file(tmp_dst);
+                return Err(BrowserError::Io(e));
+            }
+        };
+
+        if src_hash != dst_hash {
+            let _ = std::fs::remove_file(tmp_dst);
+            return Err(BrowserError::IntegrityMismatch(format!(
+                "SHA-256 mismatch after copying {} -> {}",
+                src.display(),
+                tmp_dst.display()
+            )));
+        }
         Ok(total)
     }
 
@@ -1707,6 +1968,167 @@ mod collision_tests {
             non_colliding_path(&taken),
             dir.path().join("archive.tar (1).gz")
         );
+    }
+}
+
+#[cfg(test)]
+mod trash_policy_tests {
+    use super::*;
+
+    /// Builds a trashed entry as `list_trash` would, with an explicit age.
+    fn entry(id: &str, days_old: i64, size_bytes: u64, now: chrono::NaiveDateTime) -> TrashEntry {
+        let deleted = now - chrono::Duration::days(days_old);
+        TrashEntry {
+            id: id.to_string(),
+            name: format!("{id}.bin"),
+            original_path: format!("/data/{id}.bin"),
+            deleted_at: deleted.format("%Y-%m-%d %H:%M:%S").to_string(),
+            is_directory: false,
+            size_bytes,
+        }
+    }
+
+    fn epoch() -> chrono::NaiveDateTime {
+        chrono::NaiveDateTime::parse_from_str("2026-06-01 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap()
+    }
+
+    #[test]
+    fn test_no_policy_keeps_everything() {
+        let now = epoch();
+        let entries = vec![entry("a", 3650, 10, now), entry("b", 1, 10, now)];
+        let policy = TrashPolicy {
+            retention_days: 0,
+            max_bytes: 0,
+        };
+        assert!(FileBrowser::select_purge(&entries, &policy, now).is_empty());
+    }
+
+    #[test]
+    fn test_retention_ages_out_only_the_old_enough() {
+        let now = epoch();
+        let entries = vec![
+            entry("old", 31, 10, now),
+            entry("edge", 30, 10, now),
+            entry("fresh", 3, 10, now),
+        ];
+        let policy = TrashPolicy {
+            retention_days: 30,
+            max_bytes: 0,
+        };
+        let purged = FileBrowser::select_purge(&entries, &policy, now);
+        assert_eq!(purged, vec!["old".to_string(), "edge".to_string()]);
+    }
+
+    #[test]
+    fn test_size_cap_purges_oldest_first_until_it_fits() {
+        let now = epoch();
+        // 4 items of 1 KiB each, 3 KiB allowed → the two oldest go.
+        let entries = vec![
+            entry("newest", 1, 1024, now),
+            entry("newer", 2, 1024, now),
+            entry("older", 3, 1024, now),
+            entry("oldest", 4, 1024, now),
+        ];
+        let policy = TrashPolicy {
+            retention_days: 0,
+            max_bytes: 2048,
+        };
+        let purged = FileBrowser::select_purge(&entries, &policy, now);
+        assert_eq!(purged, vec!["oldest".to_string(), "older".to_string()]);
+    }
+
+    #[test]
+    fn test_age_and_size_limits_combine_without_double_purging() {
+        let now = epoch();
+        let entries = vec![
+            entry("ancient", 100, 1024, now), // aged out
+            entry("recent-a", 1, 1024, now),
+            entry("recent-b", 2, 1024, now),
+        ];
+        let policy = TrashPolicy {
+            retention_days: 30,
+            max_bytes: 1024,
+        };
+        let mut purged = FileBrowser::select_purge(&entries, &policy, now);
+        purged.sort();
+        // `ancient` by age, then `recent-b` (oldest survivor) to fit 1 KiB.
+        assert_eq!(purged, vec!["ancient".to_string(), "recent-b".to_string()]);
+    }
+
+    #[test]
+    fn test_unparsable_deletion_date_is_never_aged_out() {
+        let now = epoch();
+        let entries = vec![TrashEntry {
+            id: "weird".to_string(),
+            name: "weird.bin".to_string(),
+            original_path: "/data/weird.bin".to_string(),
+            deleted_at: "not-a-date".to_string(),
+            is_directory: false,
+            size_bytes: 5,
+        }];
+        let policy = TrashPolicy {
+            retention_days: 1,
+            max_bytes: 0,
+        };
+        assert!(FileBrowser::select_purge(&entries, &policy, now).is_empty());
+    }
+
+    #[test]
+    fn test_path_size_walks_directories_recursively() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a").join("b");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(dir.path().join("top.bin"), vec![0u8; 100]).unwrap();
+        std::fs::write(nested.join("deep.bin"), vec![0u8; 250]).unwrap();
+        assert_eq!(FileBrowser::path_size(dir.path()), 350);
+    }
+
+    #[test]
+    fn test_purge_trash_removes_aged_items_and_reports_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let trash = dir.path().join(".homevault-trash");
+        std::fs::create_dir_all(&trash).unwrap();
+
+        // One long-expired item and one fresh one, both plain files.
+        let now = chrono::Local::now().naive_local();
+        for (id, days, size) in [("gone", 90, 120u64), ("kept", 0, 60u64)] {
+            let name = format!("{id}_payload.bin");
+            std::fs::write(trash.join(&name), vec![0u8; size as usize]).unwrap();
+            let deleted = (now - chrono::Duration::days(days))
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string();
+            std::fs::write(
+                trash.join(format!("{name}.trashinfo")),
+                format!("Path=/data/payload.bin\nDeletionDate={deleted}\n"),
+            )
+            .unwrap();
+        }
+
+        let policy = TrashPolicy {
+            retention_days: 30,
+            max_bytes: 0,
+        };
+        let report = FileBrowser::purge_trash(&trash, &policy);
+        assert_eq!(report.purged, 1);
+        assert_eq!(report.freed_bytes, 120);
+
+        let remaining = FileBrowser::list_trash(&trash);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "kept");
+    }
+
+    #[test]
+    fn test_purge_trash_on_missing_root_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = FileBrowser::purge_trash(&dir.path().join("absent"), &TrashPolicy::default());
+        assert_eq!(report, TrashPurgeReport::default());
+    }
+
+    #[test]
+    fn test_default_policy_is_documented_bounds() {
+        let policy = TrashPolicy::default();
+        assert_eq!(policy.retention_days, 30);
+        assert_eq!(policy.max_bytes, 10 * 1024 * 1024 * 1024);
     }
 }
 

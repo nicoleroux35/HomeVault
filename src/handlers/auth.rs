@@ -176,6 +176,22 @@ pub async fn handle_login(
     let user_agent = headers.get("user-agent").and_then(|h| h.to_str().ok());
     let over_tls = over_tls.is_some();
 
+    // QW-05: a banned address is refused before its password is even looked at,
+    // so it cannot keep incrementing an account's failure counter (that is what
+    // used to let one address lock a legitimate user out). The middleware does
+    // this for every unauthenticated /api call; this second check exists because
+    // the login route is also reached from tests and from hand-mounted routers
+    // where the layer is absent — and a ban that only holds when a layer is
+    // mounted is a ban that silently stops working.
+    if let crate::auto_block::BanCheck::Blocked { expires_at, .. } =
+        crate::auto_block::check(&state, &ip_address).await
+    {
+        return ResponseHelper::json_error_with_status(
+            axum::http::StatusCode::FORBIDDEN,
+            crate::auto_block::blocked_message(&expires_at),
+        );
+    }
+
     match state
         .auth
         .authenticate(&req.username, &req.password, &ip_address, user_agent)
@@ -189,7 +205,22 @@ pub async fn handle_login(
                 .unwrap_or(false);
 
             if two_fa_enabled {
-                return ResponseHelper::json_2fa_required();
+                // A browser trusted through "remember this device" may skip the
+                // second factor; the password was still checked above, and the
+                // device row is bound to this exact account.
+                let trusted = crate::handlers::identity::may_skip_second_factor(
+                    &state.db.pool(),
+                    &req.username,
+                    &headers,
+                )
+                .await;
+                if !trusted {
+                    return ResponseHelper::json_2fa_required();
+                }
+                crate::events::log_event(format!(
+                    "User '{}' signed in from a trusted device, second factor skipped",
+                    req.username
+                ));
             }
 
             match state
@@ -249,6 +280,15 @@ pub async fn handle_login(
                 "Failed login attempt for user '{}' from {}",
                 req.username, ip_address
             ));
+            // QW-05: one more failure for this address. The call bans it when the
+            // configured window trips, and does nothing while the feature is off
+            // (the default) or for a protected address.
+            //
+            // The caller is deliberately empty: on a failed sign-in there is no
+            // authenticated caller, and the address *is* the source of the
+            // attempt. Passing it as both arguments made `must_not_ban` always
+            // true, so no ban was ever recorded.
+            crate::auto_block::record_failure(&state, &ip_address, "").await;
             let (message, status) = match &e {
                 AuthError::UserNotFound => (
                     "Invalid username or password".to_string(),
@@ -333,12 +373,27 @@ pub async fn handle_2fa_verify(
                 is_admin: session.is_admin,
                 must_change_password,
             };
-            crate::app_proxy::cookie::attach_session(
+            let response = crate::app_proxy::cookie::attach_session(
                 ResponseHelper::json_success(response),
                 &token,
                 req.remember_me,
                 over_tls,
-            )
+            );
+            if req.remember_device {
+                // A trusted-device cookie is a convenience, never a
+                // requirement: failing to store it must not fail a sign-in
+                // that already succeeded.
+                crate::handlers::identity::trust_this_browser(
+                    &state.db.pool(),
+                    &req.username,
+                    user_agent,
+                    over_tls,
+                    response,
+                )
+                .await
+            } else {
+                response
+            }
         }
         Err(e) => {
             crate::events::log_event_warn(format!(
@@ -455,9 +510,17 @@ pub async fn handle_2fa_setup(
             }
 
             match state.auth.disable_2fa(&username).await {
-                Ok(_) => ResponseHelper::json_success(serde_json::json!({
-                    "enabled": false
-                })),
+                Ok(_) => {
+                    // A trusted device means "skip the second factor". With no
+                    // second factor left the rows are meaningless, and keeping
+                    // them would restore trust silently if 2FA is re-enabled.
+                    let _ = crate::identity::DeviceStore::new(state.db.pool().as_ref())
+                        .revoke_all(&username)
+                        .await;
+                    ResponseHelper::json_success(serde_json::json!({
+                        "enabled": false
+                    }))
+                }
                 Err(e) => ResponseHelper::json_error(format!("Failed to disable 2FA: {}", e)),
             }
         }

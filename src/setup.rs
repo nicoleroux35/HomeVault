@@ -1076,6 +1076,13 @@ homevault ALL=(root) NOPASSWD: {tee} {smb_conf}, {tee} -a {smb_conf}, {tee} {vsf
 # `gpasswd` are resolved for why these are scoped to exact arguments.
 homevault ALL=(root) NOPASSWD: {groupadd} homevault-sftp, {useradd} -M -s /usr/sbin/nologin -G homevault-sftp *, {usermod_sftp} -a -G homevault-sftp *, {gpasswd} -d * homevault-sftp, {chmod} 644 {sftp_keys_glob}, {chpasswd}, {rm} -f {sftp_keys_glob}
 
+# Rsync server (`src/rsync_server.rs`) and backup destination
+# (`src/backup_target.rs`): two dedicated units HomeVault generates and drives,
+# plus the unprivileged service accounts they drop to. The config files
+# themselves are written by the service account (the unit is root-owned, so it
+# is named explicitly rather than granting `tee` for /etc/systemd/system/*).
+homevault ALL=(root) NOPASSWD: {service_grants}
+
 # Users/Groups admin page (`src/groups.rs`, `src/storage/database.rs`) —
 # creating/deleting a `homevault_`-prefixed group, adding/removing a user
 # from one (including the admin group itself, and the host's own
@@ -1191,6 +1198,7 @@ homevault ALL=(root) NOPASSWD: {power_grants}
             timedatectl = timedatectl,
             nut_grants = nut_sudoers,
             power_grants = power_grants(&systemctl),
+            service_grants = service_grants(&systemctl, &tee, &groupadd, &useradd, &chmod),
         );
 
         match std::fs::write("/etc/sudoers.d/homevault", sudoers_content) {
@@ -1291,9 +1299,22 @@ impl StorageBins<'_> {
             grant(self.zfs, "set *"),
             grant(self.zfs, "snapshot *"),
             grant(self.zfs, "userspace *"),
+            // Snapshot replication (Backup → Replication) and immutable
+            // snapshots (Storage → Snapshots): `send`/`receive` move a
+            // dataset, `hold`/`release` pin one against deletion, `diff`
+            // proves a replicated dataset matches its source. Each stays a
+            // named subcommand — never the bare `zfs`.
+            grant(self.zfs, "send *"),
+            grant(self.zfs, "receive *"),
+            grant(self.zfs, "hold *"),
+            grant(self.zfs, "release *"),
+            grant(self.zfs, "diff *"),
             grant(self.btrfs, "filesystem *"),
             grant(self.btrfs, "scrub *"),
             grant(self.btrfs, "subvolume *"),
+            grant(self.btrfs, "send *"),
+            grant(self.btrfs, "receive *"),
+            grant(self.btrfs, "property *"),
             // Read-only UUID lookup (`-s UUID -o value <device>`).
             grant(self.blkid, "-s UUID -o value *"),
         ]
@@ -1330,6 +1351,10 @@ impl StorageBins<'_> {
     fn mount_grants(&self) -> Vec<String> {
         vec![
             grant(self.mkdir, "-p /etc/homevault"),
+            // Generated per-service state: Rsync modules (`src/rsync_server.rs`)
+            // and backup-destination tenants (`src/backup_target.rs`).
+            grant(self.mkdir, "-p /etc/homevault-rsync"),
+            grant(self.mkdir, "-p /etc/homevault-backup"),
             grant(self.mkdir, "-p /mnt/*"),
             grant(self.mkdir, "-p /media/*"),
             grant(self.mkdir, "-p /run/media/*"),
@@ -1525,6 +1550,51 @@ fn nut_grants(systemctl: &str, tee: &str, ups_conf: &str) -> Vec<String> {
 
 /// The sudoers entry for host power actions (ROADMAP 24.2).
 ///
+/// Grants for the two generated service units (Rsync server, backup
+/// destination) and the accounts they run as.
+///
+/// The units are named explicitly — the alternative, granting `systemctl`
+/// whole, can stop `sshd` or HomeVault itself — and `tee` is scoped to the two
+/// unit files, never `/etc/systemd/system/*`.
+fn service_grants(
+    systemctl: &str,
+    tee: &str,
+    groupadd: &str,
+    useradd: &str,
+    chmod: &str,
+) -> String {
+    let units = ["homevault-rsync", "homevault-rest-server"];
+    let mut grants: Vec<String> = Vec::new();
+    for unit in units {
+        grants.push(grant(tee, &format!("/etc/systemd/system/{unit}.service")));
+        for verb in ["enable", "start", "stop", "restart", "disable"] {
+            grants.push(grant(systemctl, &format!("{verb} {unit}")));
+        }
+        // Both daemons chroot/serve as a dedicated system account.
+        grants.push(grant(groupadd, &format!("--system {unit}")));
+        grants.push(grant(
+            useradd,
+            &format!(
+                "--system --gid {unit} --home-dir /nonexistent --shell /usr/sbin/nologin {unit}"
+            ),
+        ));
+    }
+    // The generated files are re-permissioned after every write.
+    grants.push(grant(chmod, "600 /etc/homevault-rsync/*"));
+    grants.push(grant(chmod, "600 /etc/homevault-backup/*"));
+    grants.push(grant(chmod, "640 /etc/homevault-rsync/*"));
+    grants.push(grant(chmod, "640 /etc/homevault-backup/*"));
+    grants.push(grant(chmod, "644 /etc/systemd/system/homevault-rsync.service"));
+    grants.push(grant(
+        chmod,
+        "644 /etc/systemd/system/homevault-rest-server.service",
+    ));
+    sudoers_line(&grants)
+        .strip_prefix("homevault ALL=(root) NOPASSWD: ")
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// Exactly the verbs [`crate::power::PowerAction::systemctl_verb`] returns,
 /// built from the same enum so the grant and the executed command cannot
 /// drift. The bare `shutdown` binary is deliberately absent: the old

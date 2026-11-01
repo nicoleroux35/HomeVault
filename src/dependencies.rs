@@ -99,6 +99,12 @@ struct DependencySpec {
 /// `firewall::ufw_available()` by checking via `sudo` instead. We don't
 /// want to shell out through `sudo` just to ask "does this file exist", so
 /// the well-known absolute install path is checked directly instead.
+/// Public probe used by features that must report "this optional tool is not
+/// installed" instead of failing (Rsync server, backup target, replication).
+pub fn binary_available(bin: &str, default_path: &str) -> bool {
+    binary_present(bin, default_path)
+}
+
 fn binary_present(bin: &str, default_path: &str) -> bool {
     let via_which = run_timed(Command::new("which").arg(bin), DEP_PROBE_TIMEOUT)
         .map(|o| o.status.success() && !o.stdout.is_empty())
@@ -192,6 +198,12 @@ fn check_sensors() -> bool {
 }
 fn check_rsync() -> bool {
     binary_present("rsync", "/usr/bin/rsync")
+}
+fn check_pv() -> bool {
+    binary_present("pv", "/usr/bin/pv")
+}
+fn check_rest_server() -> bool {
+    binary_present("rest-server", "/usr/local/bin/rest-server")
 }
 fn check_smbd() -> bool {
     binary_present("smbd", "/usr/sbin/smbd")
@@ -483,8 +495,29 @@ fn specs() -> Vec<DependencySpec> {
             package: "rsync",
             category: "Storage",
             required: true,
-            used_by: "Cache-tier mover",
+            used_by: "Cache-tier mover + the opt-in Rsync server (Shares → Rsync)",
             check_installed: check_rsync,
+            check_running: None,
+        },
+        DependencySpec {
+            name: "pv",
+            package: "pv",
+            category: "Backup",
+            required: false,
+            used_by: "Snapshot replication bandwidth limit (Backup → Replication)",
+            check_installed: check_pv,
+            check_running: None,
+        },
+        // rest-server is not an apt package: `install.sh` fetches the
+        // upstream release like it does for Ollama, so the apt cross-check
+        // exempts it (`NON_APT_PACKAGES`) and asserts the dedicated step.
+        DependencySpec {
+            name: "rest-server",
+            package: "rest-server",
+            category: "Backup",
+            required: false,
+            used_by: "Receiving restic backups as a destination (Backup → Destinations)",
+            check_installed: check_rest_server,
             check_running: None,
         },
         // --- Data recovery (Rescue app, CLI tools) ---
@@ -979,9 +1012,9 @@ mod tests {
         let installed = install_sh_packages();
         let mut missing = Vec::new();
         for spec in specs() {
-            // Ollama isn't an apt package — `install.sh` installs it via its
-            // own script (`install_ollama`), asserted separately below.
-            if spec.package == "ollama" {
+            // Ollama and rest-server are not apt packages — `install.sh`
+            // installs them through their own step, asserted separately below.
+            if NON_APT_PACKAGES.contains(&spec.package) {
                 continue;
             }
             // The email dependency is deliberately "any one of these".
@@ -1113,6 +1146,11 @@ mod tests {
     /// SNMP, the email fallbacks) or because they come from a driver
     /// HomeVault cannot install (GPU vendor tools) — those degrade to
     /// `lspci` on their own.
+    /// Packages `install.sh` installs through a dedicated step (upstream
+    /// release download) rather than apt, so the apt cross-check below cannot
+    /// find them in `install_packages`, and each has its own assertion.
+    const NON_APT_PACKAGES: &[&str] = &["ollama", "rest-server"];
+
     const BINARIES_WITH_DEDICATED_CHECK: &[&str] = &[
         "clamscan",
         "docker",

@@ -297,6 +297,11 @@ fn validate_request(
     let payload_json = serde_json::to_string(&req.payload)
         .map_err(|e| ResponseHelper::json_error(format!("Invalid payload: {e}")))?;
     TaskAction::from_parts(&req.task_type, &payload_json).map_err(ResponseHelper::json_error)?;
+    // The optional "wake first" pre-step rides on the same payload but is not a
+    // task type, so it has its own gate. Validating it here (not only at run
+    // time) is what turns "host_id: 0" or a `delay` typo into a 400 on save
+    // instead of a task that fires at 03:00 and wakes nothing.
+    crate::wol::parse_wake_plan(&payload_json).map_err(ResponseHelper::json_error)?;
     Ok((payload_json, next_run, timezone))
 }
 

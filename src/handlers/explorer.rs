@@ -50,7 +50,7 @@ use std::task::{Context, Poll};
 use tokio::io::AsyncWriteExt;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 
-use crate::browser::{FileBrowser, TRASH_DIR_NAME};
+use crate::browser::{reflink, CopyMethod, FileBrowser, InstantCopyMode};
 use crate::handlers::admin_guard::{require_admin, require_auth};
 use crate::handlers::AppState;
 use crate::utils::process::{run_timed, run_timed_to_file, ARCHIVE_TIMEOUT, HOST_PROBE_TIMEOUT};
@@ -139,6 +139,45 @@ fn validate_path_access(
     }
 }
 
+/// The temporary directories the appliance may delete from even outside its
+/// configured roots.
+///
+/// `TMPDIR` is honoured so a deployment (or the test harness) can relocate the
+/// scratch area; `/tmp` and `/var/tmp` are the POSIX defaults (`/var/tmp`
+/// survives a reboot, hence the separate entry). The trailing slash is
+/// stripped so a prefix test cannot match a sibling like `/tmpfoo`.
+fn temp_root_candidates() -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = std::env::var_os("TMPDIR") {
+        let p = PathBuf::from(dir);
+        if p.is_absolute() {
+            out.push(p);
+        }
+    }
+    out.push(PathBuf::from("/tmp"));
+    out.push(PathBuf::from("/var/tmp"));
+    out
+}
+
+/// True when `path` lives inside a temporary directory.
+///
+/// Both sides are compared after `canonicalize` so a symlinked `/tmp` (common
+/// on macOS-style layouts and on hosts that move it onto another volume) still
+/// matches its own contents; an unresolvable candidate is compared textually,
+/// which can only make the answer stricter.
+///
+/// This does **not** by itself authorise a delete: it is the second half of
+/// the rule "an admin may delete outside the allowed roots only what the
+/// appliance itself treats as scratch", and the *first* half (the admin check)
+/// plus the root/mount guards still apply.
+fn is_under_temp_root(path: &std::path::Path) -> bool {
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    temp_root_candidates().into_iter().any(|root| {
+        let root = std::fs::canonicalize(&root).unwrap_or(root);
+        resolved == root || resolved.starts_with(&root)
+    })
+}
+
 /// Normalises a path **without** confining it to the allowed roots.
 ///
 /// Used for admin sessions, who may browse the whole filesystem but must still
@@ -192,38 +231,6 @@ fn sanitize_upload_filename(name: &str) -> Option<String> {
         return None;
     }
     Some(file_name.to_string())
-}
-
-/// Picks the trash directory for a given item path: the `.homevault-trash`
-/// folder at the top of whichever allowed root contains it, so trash stays
-/// visible/manageable within the same tree the user already has access to.
-/// Falls back to a single app-owned trash dir (for admins browsing outside
-/// any configured root) rather than scattering trash folders across
-/// arbitrary system directories like `/etc` or `/root`.
-fn resolve_trash_root(state: &Arc<AppState>, path: &str) -> std::path::PathBuf {
-    let p = std::path::Path::new(path);
-    for root in state.path_guard.allowed_roots() {
-        if p.starts_with(root) {
-            return root.join(TRASH_DIR_NAME);
-        }
-    }
-    crate::config::paths::base_dir().join("trash")
-}
-
-/// Every trash directory a session can see: one per allowed root, plus the
-/// app-owned fallback for admins (who can trash items outside any
-/// configured root).
-fn all_trash_roots(state: &Arc<AppState>, is_admin: bool) -> Vec<std::path::PathBuf> {
-    let mut roots: Vec<std::path::PathBuf> = state
-        .path_guard
-        .allowed_roots()
-        .iter()
-        .map(|r| r.join(TRASH_DIR_NAME))
-        .collect();
-    if is_admin {
-        roots.push(crate::config::paths::base_dir().join("trash"));
-    }
-    roots
 }
 
 // ---------------------------------------------------------------------------
@@ -484,6 +491,94 @@ async fn load_quotas_or_refuse(
     }
 }
 
+/// The share quota that bounds a destination path, if any.
+///
+/// A transfer is refused when it would push the share that holds the
+/// destination past its ceiling (QW-07). The lookup is cheap on purpose:
+/// `share_quotas` is a handful of rows, so it is read once per request rather
+/// than per file.
+///
+/// Returns `None` when the destination is not inside a share with a quota.
+async fn share_quota_for(
+    state: &AppState,
+    destination: &std::path::Path,
+) -> Option<(String, u64, u64)> {
+    let repo = crate::storage::ShareQuotaRepository::new(state.db.pool());
+    let rows = match repo.all().await {
+        Ok(rows) => rows,
+        Err(e) => {
+            // Fail open here **only** for reading the list: the filesystem
+            // limit (refquota/qgroup/project) is still in force, and refusing
+            // every upload because a lookup failed would take the box down. The
+            // per-request transfer quota above stays fail-closed.
+            tracing::warn!("Share quota list could not be read; relying on the filesystem: {e}");
+            return None;
+        }
+    };
+    if rows.is_empty() {
+        return None;
+    }
+    let dest = destination.to_string_lossy().to_string();
+    let shares = match tokio::task::spawn_blocking(crate::shares::SharesService::get_shares).await {
+        Ok(Ok(shares)) => shares,
+        _ => return None,
+    };
+    for (name, share_type, quota_bytes) in rows {
+        let Some(share) = shares
+            .iter()
+            .find(|s| s.name == name && s.share_type.as_str() == share_type)
+        else {
+            continue;
+        };
+        // A prefix match on a path component boundary, never a bare
+        // `starts_with` (which would make /srv/photos-archive belong to
+        // /srv/photos).
+        let root = share.path.trim_end_matches('/');
+        if dest == root || dest.starts_with(&format!("{root}/")) {
+            return match crate::share_quota::inspect(&share.path, quota_bytes).await {
+                Ok(state) => Some((name, state.used_bytes, quota_bytes)),
+                Err(e) => {
+                    tracing::warn!("Share quota usage could not be read for '{name}': {e}");
+                    None
+                }
+            };
+        }
+    }
+    None
+}
+
+/// Refuse a transfer that would cross the destination share's ceiling.
+///
+/// `incoming` may be `0` for the up-front check ("is there any room at all?");
+/// the per-file check passes the bytes actually written.
+// `Response` as Err mirrors the guard helpers' shape.
+#[allow(clippy::result_large_err)]
+async fn enforce_share_quota(
+    state: &AppState,
+    destination: &std::path::Path,
+    incoming: u64,
+) -> Result<(), Response> {
+    let Some((name, used, quota)) = share_quota_for(state, destination).await else {
+        return Ok(());
+    };
+    match crate::share_quota::would_exceed(used, quota, incoming) {
+        Ok(()) => Ok(()),
+        Err(exceeded) => {
+            tracing::warn!(
+                "Share quota refused a transfer into '{}': {} of {} used, {} incoming",
+                name,
+                exceeded.used_bytes,
+                exceeded.quota_bytes,
+                exceeded.incoming_bytes
+            );
+            Err(ResponseHelper::json_error_with_status(
+                StatusCode::INSUFFICIENT_STORAGE,
+                exceeded.message(),
+            ))
+        }
+    }
+}
+
 /// Starts a background job that copies a directory tree while reporting
 /// progress over the existing SSE progress system (`src/sse/progress.rs`),
 /// the same `job_id`/`tokio::spawn`/`ProgressEmitter` pattern already used
@@ -493,7 +588,12 @@ async fn load_quotas_or_refuse(
 /// self-generated UUID) — `ProgressEmitter::progress`/`complete`/`fail` are
 /// all no-ops for a job_id that was never `create_job`'d, since they look it
 /// up in the manager's map before doing anything.
-fn spawn_tracked_copy_job(source: String, destination: String, owner: String) -> (String, String) {
+fn spawn_tracked_copy_job(
+    source: String,
+    destination: String,
+    owner: String,
+    mode: InstantCopyMode,
+) -> (String, String) {
     // `owner` scopes the job in the desktop activity feed — a non-admin only
     // sees their own copy/move jobs, never another user's file paths.
     let job_id = crate::sse::PROGRESS_MANAGER.create_job_with_owner(
@@ -503,14 +603,19 @@ fn spawn_tracked_copy_job(source: String, destination: String, owner: String) ->
     );
     let jid = job_id.clone();
     tokio::spawn(async move {
-        run_tracked_copy(&jid, &source, &destination, false).await;
+        run_tracked_copy(&jid, &source, &destination, false, mode).await;
     });
     (job_id.clone(), format!("/api/progress/{}", job_id))
 }
 
 /// Same as `spawn_tracked_copy_job`, but deletes the source after a
 /// successful copy — used for the cross-filesystem move fallback.
-fn spawn_tracked_move_job(source: String, destination: String, owner: String) -> (String, String) {
+fn spawn_tracked_move_job(
+    source: String,
+    destination: String,
+    owner: String,
+    mode: InstantCopyMode,
+) -> (String, String) {
     let job_id = crate::sse::PROGRESS_MANAGER.create_job_with_owner(
         crate::sse::JobType::Custom("explorer_move".to_string()),
         "Starting move...",
@@ -518,9 +623,40 @@ fn spawn_tracked_move_job(source: String, destination: String, owner: String) ->
     );
     let jid = job_id.clone();
     tokio::spawn(async move {
-        run_tracked_copy(&jid, &source, &destination, true).await;
+        run_tracked_copy(&jid, &source, &destination, true, mode).await;
     });
     (job_id.clone(), format!("/api/progress/{}", job_id))
+}
+
+/// The appliance's instant-copy policy, read from the singleton row.
+///
+/// Any read failure answers the default (`auto`): this is a speed-up, never a
+/// gate on copying, so an unreadable policy must not stop a user from moving
+/// their own files.
+async fn instant_copy_mode(state: &Arc<AppState>) -> InstantCopyMode {
+    reflink::InstantCopyService::new(state.db.pool())
+        .effective_mode()
+        .await
+}
+
+/// The completion message of a tracked copy/move, from the per-file tally.
+///
+/// Reported from what actually happened, never from what the policy allowed:
+/// "copied instantly" only when *every* file was shared, and a mixed tree
+/// names how many were. `verb` is `"Copied"` / `"Moved"`.
+fn tracked_completion_message(stats: &reflink::CopyStats, verb: &str) -> String {
+    let total = stats.total();
+    let method = stats.slowest();
+    let cloned = stats.count(CopyMethod::Clone) + stats.count(CopyMethod::KernelClone);
+    match method {
+        Some(m) if m.is_instant() => format!("{verb} {total} file(s) instantly (no data copied)"),
+        Some(_) if cloned > 0 => format!(
+            "{verb} {total} file(s) — {cloned} cloned, {} copied",
+            total - cloned
+        ),
+        Some(_) => format!("{verb} {total} file(s)"),
+        None => format!("{verb} — nothing to copy"),
+    }
 }
 
 async fn run_tracked_copy(
@@ -528,6 +664,7 @@ async fn run_tracked_copy(
     source: &str,
     destination: &str,
     delete_source_after: bool,
+    mode: InstantCopyMode,
 ) {
     use crate::sse::ProgressEmitter;
 
@@ -558,14 +695,22 @@ async fn run_tracked_copy(
     let src_path = std::path::PathBuf::from(source);
     let dst_path = std::path::PathBuf::from(destination);
     let copied_for_copy = copied.clone();
+    // The tally lives on this side of the `spawn_blocking` boundary: the copy
+    // thread only ever increments it, and this task reads it once the join
+    // has completed, so no lock is needed and a panic on the copy thread still
+    // leaves the half-finished counts readable.
+    let stats = std::sync::Arc::new(reflink::CopyStats::default());
+    let stats_for_copy = stats.clone();
     let copy_result = tokio::task::spawn_blocking({
         let mut created: Vec<std::path::PathBuf> = Vec::new();
         move || {
-            let result = FileBrowser::copy_dir_all_tracked(
+            let result = FileBrowser::copy_dir_all_tracked_with_mode(
                 &src_path,
                 &dst_path,
                 &copied_for_copy,
                 &mut created,
+                mode,
+                &stats_for_copy,
             );
             (result, created)
         }
@@ -622,8 +767,14 @@ async fn run_tracked_copy(
 
     match final_result {
         Ok(()) => {
-            ProgressEmitter::progress(job_id, 100.0, "Done");
-            ProgressEmitter::complete(job_id, "Done");
+            let verb = if delete_source_after {
+                "Moved"
+            } else {
+                "Copied"
+            };
+            let message = tracked_completion_message(&stats, verb);
+            ProgressEmitter::progress(job_id, 100.0, &message);
+            ProgressEmitter::complete(job_id, &message);
         }
         Err(e) => {
             ProgressEmitter::fail(job_id, &e);
@@ -1017,6 +1168,15 @@ pub async fn handle_explorer_mkdir(
 /// this used to be `delete_item(&params.path, true)` on the raw query
 /// string, i.e. an authenticated `?path=/` was an unrestricted recursive
 /// delete with no root confinement.
+///
+/// **Scratch-area exemption.** Confinement alone made the admin surface
+/// asymmetric: `mkdir`/upload/copy accept any path for an admin, so a folder
+/// the appliance created outside the roots (a test harness's `tempdir()`, a
+/// staging area under `/tmp`) could be created but never removed. Deleting
+/// there is now allowed **only** when the target lives under a temporary
+/// directory (`is_under_temp_root`); everything else outside the roots is
+/// still refused, and the browsing-root and mount-point guards below apply
+/// unconditionally.
 #[axum_macros::debug_handler]
 pub async fn handle_explorer_delete(
     State(state): State<Arc<AppState>>,
@@ -1028,13 +1188,16 @@ pub async fn handle_explorer_delete(
             Ok(token) => token,
             Err(resp) => return resp,
         };
-    match state.auth.get_session(&session_token).await {
-        Ok(session) if session.is_admin => {}
+    let session = match state.auth.get_session(&session_token).await {
+        Ok(session) if session.is_admin => session,
         Ok(_) => return ResponseHelper::json_forbidden("Admin required".to_string()),
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
 
-    let path = match state.path_guard.validate(&params.path) {
+    // Normalise the leaf the same way every other admin path does, then
+    // decide confinement: inside the roots (as before), or outside them but
+    // inside the appliance's scratch space.
+    let validated = match validate_path_access(&state, &params.path, &session) {
         Some(p) => p,
         None => {
             return ResponseHelper::json_error(
@@ -1042,6 +1205,18 @@ pub async fn handle_explorer_delete(
             )
         }
     };
+    let path = match state.path_guard.validate(&params.path) {
+        // Keep the historical confined resolution for anything the guard
+        // already accepts, so this change cannot widen an in-root delete.
+        Some(confined) => confined,
+        None if is_under_temp_root(&validated) => validated,
+        None => {
+            return ResponseHelper::json_error(
+                "Access denied: path outside allowed directory".to_string(),
+            )
+        }
+    };
+
     // Refusing to delete a browsing root itself — a confirmed click on such a
     // directory is either a UI bug or a forged call, and the consequence
     // (emptying a whole volume) is not "delete one item".
@@ -1349,6 +1524,12 @@ pub async fn handle_explorer_upload(
     }
     let mut session_upload_bytes: u64 = 0;
 
+    // QW-07: the share's own ceiling, checked before a single byte is written so
+    // an obviously-full share refuses immediately instead of after the transfer.
+    if let Err(resp) = enforce_share_quota(&state, &upload_path, 0).await {
+        return resp;
+    }
+
     if !path_exists(&upload_path).await {
         return ResponseHelper::json_error(format!("Upload path does not exist: {}", params.path));
     }
@@ -1541,6 +1722,17 @@ pub async fn handle_explorer_upload(
             checksum,
             file_path.display()
         );
+        // QW-07: the bytes are on disk now, so the filesystem's own usage figure
+        // includes them. Re-checking here bounds the overrun to the file that
+        // just landed, and removes it rather than leaving the share past its
+        // ceiling. (The checkpoint is per file, not per chunk: each check is a
+        // `zfs list`/`btrfs qgroup`/`xfs_quota` probe, and a per-chunk probe
+        // would cost more than the upload.)
+        if let Err(resp) = enforce_share_quota(&state, &upload_path, 0).await {
+            let _ = tokio::fs::remove_file(&file_path).await;
+            return resp;
+        }
+
         uploaded_files.push(filename);
         uploaded_checksums.push(checksum);
     }
@@ -2234,11 +2426,32 @@ pub async fn handle_explorer_copy(
             }
         };
 
+    // The instant-copy policy decides whether the cascade even tries a clone.
+    // Read once here (cheap, indexed singleton row) and hand the same value to
+    // the job so one copy can never mix two policies.
+    let mode = instant_copy_mode(&state).await;
+
+    // QW-07: a copy into a share with a ceiling is refused when the *source*
+    // size would not fit. The size is the source's real size (stat, or a
+    // recursive walk for a tree), so the answer is "it does not fit", not "try
+    // and see". The tracked job re-checks per file as it writes.
+    let source_for_size = source.clone();
+    let incoming = tokio::task::spawn_blocking(move || {
+        crate::browser::FileBrowser::path_size(std::path::Path::new(&source_for_size))
+    })
+    .await
+    .unwrap_or(0);
+    if let Err(resp) =
+        enforce_share_quota(&state, std::path::Path::new(&destination), incoming).await
+    {
+        return resp;
+    }
+
     // Directories go through the tracked-progress job path (see
     // `spawn_tracked_copy_job`) since a large tree can take a long time;
     // single files stay on the fast synchronous path.
     if path_is_dir(std::path::Path::new(&source)).await {
-        let (job_id, sse_url) = spawn_tracked_copy_job(source, destination, username);
+        let (job_id, sse_url) = spawn_tracked_copy_job(source, destination, username, mode);
         return ResponseHelper::json_success(serde_json::json!({
             "job_id": job_id,
             "sse_url": sse_url,
@@ -2246,10 +2459,23 @@ pub async fn handle_explorer_copy(
         }));
     }
 
-    match tokio::task::spawn_blocking(move || FileBrowser::copy_item(&source, &destination)).await {
-        Ok(Ok(_)) => {
-            ResponseHelper::json_success(serde_json::json!({"message": "Item copied successfully"}))
-        }
+    // Single file: same cascade, reported inline. The method is what lets the
+    // caller say "copied instantly" instead of the speed-up being invisible.
+    match tokio::task::spawn_blocking(move || {
+        FileBrowser::copy_file_instant(
+            std::path::Path::new(&source),
+            std::path::Path::new(&destination),
+            mode,
+        )
+    })
+    .await
+    {
+        Ok(Ok(inv)) => ResponseHelper::json_success(serde_json::json!({
+            "message": "Item copied successfully",
+            "method": inv.method.slug(),
+            "instant": inv.method.is_instant(),
+            "bytes": inv.bytes,
+        })),
         Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to copy item: {}", e)),
         Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
     }
@@ -2308,6 +2534,10 @@ pub async fn handle_explorer_move(
             }
         };
 
+    // The instant-copy policy (see `instant_copy_mode`); read once so a move's
+    // cross-filesystem fallback cannot change policy halfway through.
+    let mode = instant_copy_mode(&state).await;
+
     // For directories, try the atomic rename first (instant regardless of
     // size on the same filesystem); only fall back to the tracked-progress
     // copy+delete job (see `spawn_tracked_move_job`) if that fails, e.g.
@@ -2325,7 +2555,7 @@ pub async fn handle_explorer_move(
         }
 
         tracing::warn!("Atomic directory move failed (cross-filesystem?), falling back to a tracked copy+delete job");
-        let (job_id, sse_url) = spawn_tracked_move_job(source, destination, username);
+        let (job_id, sse_url) = spawn_tracked_move_job(source, destination, username, mode);
         return ResponseHelper::json_success(serde_json::json!({
             "job_id": job_id,
             "sse_url": sse_url,
@@ -2343,13 +2573,22 @@ pub async fn handle_explorer_move(
     // as if it were a routine cross-device fallback, hiding a corruption
     // event from the caller whenever the retry happened to succeed.
     let result = tokio::task::spawn_blocking(move || {
-        FileBrowser::move_item(&source, &destination).map_err(|e| e.to_string())
+        FileBrowser::move_item_with_mode(&source, &destination, mode).map_err(|e| e.to_string())
     })
     .await;
 
     match result {
-        Ok(Ok(_)) => {
-            ResponseHelper::json_success(serde_json::json!({"message": "Item moved successfully"}))
+        Ok(Ok(inv)) => {
+            // A same-filesystem move is an atomic rename: `method` is `null`,
+            // because nothing was copied at all (better than a clone, and it
+            // must not be described as one).
+            let method = inv.as_ref().map(|i| i.method.slug());
+            let instant = inv.as_ref().map(|i| i.method.is_instant());
+            ResponseHelper::json_success(serde_json::json!({
+                "message": "Item moved successfully",
+                "method": method,
+                "instant": instant,
+            }))
         }
         Ok(Err(e)) => ResponseHelper::json_error(e),
         Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
@@ -3497,7 +3736,7 @@ pub async fn handle_explorer_trash(
                     );
                 }
             };
-            let trash_root = resolve_trash_root(&state, &validated.to_string_lossy());
+            let trash_root = crate::trash::root_for_state(&state, &validated.to_string_lossy());
             let path = validated.to_string_lossy().into_owned();
             let result =
                 tokio::task::spawn_blocking(move || FileBrowser::trash_item(&path, &trash_root))
@@ -3533,8 +3772,9 @@ pub async fn handle_explorer_trash_list(
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
 
-    let roots = all_trash_roots(&state, session.is_admin);
+    let state_for_roots = state.clone();
     let result = tokio::task::spawn_blocking(move || {
+        let roots = crate::trash::roots_for_state(&state_for_roots, session.is_admin);
         let mut entries = Vec::new();
         for root in roots {
             entries.extend(FileBrowser::list_trash(&root));
@@ -3571,9 +3811,10 @@ pub async fn handle_explorer_trash_restore(
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
 
-    let roots = all_trash_roots(&state, session.is_admin);
+    let state_for_roots = state.clone();
     let id = params.id.clone();
     let result = tokio::task::spawn_blocking(move || {
+        let roots = crate::trash::roots_for_state(&state_for_roots, session.is_admin);
         for root in roots {
             match FileBrowser::restore_trash_item(&root, &id) {
                 Ok(_) => return Ok(()),
@@ -3609,8 +3850,9 @@ pub async fn handle_explorer_trash_purge(
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
 
-    let roots = all_trash_roots(&state, session.is_admin);
+    let state_for_roots = state.clone();
     let result = tokio::task::spawn_blocking(move || {
+        let roots = crate::trash::roots_for_state(&state_for_roots, session.is_admin);
         for root in roots {
             match FileBrowser::purge_trash_item(&root, &id) {
                 Ok(_) => return Ok(()),
@@ -3647,8 +3889,9 @@ pub async fn handle_explorer_trash_empty(
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
 
-    let roots = all_trash_roots(&state, session.is_admin);
+    let state_for_roots = state.clone();
     let result = tokio::task::spawn_blocking(move || {
+        let roots = crate::trash::roots_for_state(&state_for_roots, session.is_admin);
         for root in &roots {
             FileBrowser::empty_trash(root)?;
         }
@@ -3661,6 +3904,179 @@ pub async fn handle_explorer_trash_empty(
         Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to empty trash: {}", e)),
         Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Trash retention policy
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct TrashPolicyRequest {
+    pub retention_days: u32,
+    pub max_bytes: u64,
+}
+
+/// Returns the appliance-wide trash retention policy.
+#[axum_macros::debug_handler]
+pub async fn handle_explorer_trash_policy_get(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = require_auth(&state, &headers).await {
+        return resp;
+    }
+
+    let repo = crate::storage::TrashPolicyRepository::new(state.db.pool());
+    match repo.get_settings().await {
+        Ok(settings) => ResponseHelper::json_success(settings),
+        Err(e) => ResponseHelper::json_error(format!("Failed to load trash policy: {}", e)),
+    }
+}
+
+/// Updates the trash retention policy. Admin-only: it decides when deleted
+/// files are permanently removed for every user on the appliance.
+#[axum_macros::debug_handler]
+pub async fn handle_explorer_trash_policy_update(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Json(payload): axum::extract::Json<TrashPolicyRequest>,
+) -> Response {
+    if let Err(resp) = require_admin(&state, &headers).await {
+        return resp;
+    }
+
+    let repo = crate::storage::TrashPolicyRepository::new(state.db.pool());
+    if let Err(e) = repo
+        .save_settings(payload.retention_days, payload.max_bytes)
+        .await
+    {
+        return ResponseHelper::json_error(format!("Failed to save trash policy: {}", e));
+    }
+
+    match repo.get_settings().await {
+        Ok(settings) => ResponseHelper::json_success(settings),
+        Err(e) => {
+            ResponseHelper::json_error(format!("Policy saved but could not be reloaded: {}", e))
+        }
+    }
+}
+
+/// Runs the retention pass immediately, with the saved policy. Admin-only.
+#[axum_macros::debug_handler]
+pub async fn handle_explorer_trash_purge_now(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = require_admin(&state, &headers).await {
+        return resp;
+    }
+
+    let repo = crate::storage::TrashPolicyRepository::new(state.db.pool());
+    let policy = match repo.get_settings().await {
+        Ok(s) => s.policy(),
+        Err(e) => return ResponseHelper::json_error(format!("Failed to load trash policy: {}", e)),
+    };
+
+    let state_for_purge = state.clone();
+    let result =
+        tokio::task::spawn_blocking(move || crate::trash::purge_all(&state_for_purge, &policy))
+            .await;
+
+    match result {
+        Ok(report) => ResponseHelper::json_success(report),
+        Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Instant copy (reflink) policy
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct InstantCopyRequest {
+    /// `auto` | `off`.
+    pub mode: String,
+}
+
+/// The mounts the Explorer copies between, as evidence for the settings UI.
+///
+/// Read from `/proc/self/mounts` on the blocking pool; a host where that file
+/// cannot be read answers an empty list rather than an error — the setting
+/// still works, the UI just cannot say which mounts can clone.
+fn instant_copy_mounts(state: &Arc<AppState>) -> Vec<reflink::ReflinkMount> {
+    let roots: Vec<std::path::PathBuf> = state.path_guard.allowed_roots().to_vec();
+    let raw = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
+    reflink::describe_mounts(&roots, &raw)
+}
+
+/// Returns the instant-copy policy and the mounts it applies to.
+#[axum_macros::debug_handler]
+pub async fn handle_explorer_instant_copy_get(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = require_auth(&state, &headers).await {
+        return resp;
+    }
+
+    let service = reflink::InstantCopyService::new(state.db.pool());
+    let mode = match service.stored_mode().await {
+        Ok(m) => m,
+        Err(e) => {
+            return ResponseHelper::json_error(format!("Failed to load instant-copy policy: {e}"))
+        }
+    };
+
+    // `/proc/self/mounts` + two `canonicalize` calls: blocking, so it rides
+    // the blocking pool rather than a Tokio worker.
+    let state_for_mounts = state.clone();
+    let mounts = tokio::task::spawn_blocking(move || instant_copy_mounts(&state_for_mounts))
+        .await
+        .unwrap_or_default();
+
+    let settings = reflink::InstantCopySettings {
+        mode: mode.as_str().to_string(),
+        mounts,
+    };
+    ResponseHelper::json_success(settings)
+}
+
+/// Updates the instant-copy policy. Admin-only: it changes how every user's
+/// copies are written on every storage pool.
+#[axum_macros::debug_handler]
+pub async fn handle_explorer_instant_copy_update(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Json(payload): axum::extract::Json<InstantCopyRequest>,
+) -> Response {
+    if let Err(resp) = require_admin(&state, &headers).await {
+        return resp;
+    }
+
+    // An unrecognised value is rejected instead of being coerced to `auto`:
+    // silently ignoring a typo would tell the admin their choice was saved
+    // when it was not.
+    let Some(mode) = InstantCopyMode::parse_strict(&payload.mode) else {
+        return ResponseHelper::json_error(format!(
+            "Invalid instant-copy mode '{}': expected 'auto' or 'off'",
+            payload.mode
+        ));
+    };
+
+    let service = reflink::InstantCopyService::new(state.db.pool());
+    if let Err(e) = service.save_mode(mode).await {
+        return ResponseHelper::json_error(format!("Failed to save instant-copy policy: {e}"));
+    }
+
+    let state_for_mounts = state.clone();
+    let mounts = tokio::task::spawn_blocking(move || instant_copy_mounts(&state_for_mounts))
+        .await
+        .unwrap_or_default();
+
+    ResponseHelper::json_success(reflink::InstantCopySettings {
+        mode: mode.as_str().to_string(),
+        mounts,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -3793,6 +4209,26 @@ pub async fn handle_explorer_roots(
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
 
+    match explorer_roots_for_session(&state, &session, true).await {
+        Ok(roots) => ResponseHelper::json_success(roots),
+        Err(message) => ResponseHelper::json_error(message),
+    }
+}
+
+/// The sidebar roots for one session, as a value.
+///
+/// Extracted from [`handle_explorer_roots`] so the global file search
+/// (`handlers::search`, QW-12) fans out over **exactly** the folders the
+/// Explorer offers — one definition, two callers, so the two can never drift
+/// apart and the search can never reach a folder the sidebar would not show.
+///
+/// `include_pools = false` skips the optional `PoolService::scan_pools` probe
+/// (a subprocess trio) for callers that do not need virtual-disk roots.
+pub async fn explorer_roots_for_session(
+    state: &Arc<AppState>,
+    session: &crate::storage::models::Session,
+    include_pools: bool,
+) -> Result<Vec<ExplorerRoot>, String> {
     let mut roots: Vec<ExplorerRoot> = Vec::new();
 
     let home = format!("/home/{}", session.username);
@@ -3823,27 +4259,30 @@ pub async fn handle_explorer_roots(
 
     // Every mounted virtual disk (mdadm / ZFS / Btrfs) as its own entry,
     // labelled by the disk's name rather than a raw device path.
-    if let Ok(pools) = tokio::task::spawn_blocking(crate::pools::PoolService::scan_pools).await {
-        for pool in pools.into_iter().flatten() {
-            if let Some(mp) = pool.mount_point {
-                if mp.is_empty() || roots.iter().any(|r| r.path == mp) {
-                    continue;
+    if include_pools {
+        if let Ok(pools) = tokio::task::spawn_blocking(crate::pools::PoolService::scan_pools).await
+        {
+            for pool in pools.into_iter().flatten() {
+                if let Some(mp) = pool.mount_point {
+                    if mp.is_empty() || roots.iter().any(|r| r.path == mp) {
+                        continue;
+                    }
+                    let name = pool
+                        .name
+                        .trim_start_matches("/dev/md/")
+                        .trim_start_matches("/dev/")
+                        .to_string();
+                    roots.push(ExplorerRoot {
+                        path: mp,
+                        kind: "virtualdisk".to_string(),
+                        name,
+                    });
                 }
-                let name = pool
-                    .name
-                    .trim_start_matches("/dev/md/")
-                    .trim_start_matches("/dev/")
-                    .to_string();
-                roots.push(ExplorerRoot {
-                    path: mp,
-                    kind: "virtualdisk".to_string(),
-                    name,
-                });
             }
         }
     }
 
-    ResponseHelper::json_success(roots)
+    Ok(roots)
 }
 
 // ---------------------------------------------------------------------------
@@ -4756,6 +5195,37 @@ pub async fn handle_explorer_format(
 mod tests {
     use super::*;
 
+    // --- admin delete: the scratch-area exemption ---
+
+    #[test]
+    fn test_is_under_temp_root_matches_the_scratch_areas() {
+        let tmp = std::env::temp_dir();
+        assert!(
+            is_under_temp_root(&tmp),
+            "the OS temp dir itself must be scratch"
+        );
+        assert!(
+            is_under_temp_root(&tmp.join("hv-delete-probe")),
+            "a child of the OS temp dir must be scratch"
+        );
+        // A path that merely *starts with* the string `/tmp` is not inside it
+        // — this is why the candidate list is compared component-wise.
+        assert!(
+            !is_under_temp_root(std::path::Path::new("/tmpfoo")),
+            "/tmpfoo is a sibling of /tmp, not inside it"
+        );
+    }
+
+    #[test]
+    fn test_is_under_temp_root_rejects_the_rest_of_the_filesystem() {
+        for p in ["/etc", "/etc/hostname", "/", "/usr/local", "/home"] {
+            assert!(
+                !is_under_temp_root(std::path::Path::new(p)),
+                "{p} must not be treated as a scratch area"
+            );
+        }
+    }
+
     // --- network discovery parsers ---
 
     #[test]
@@ -5174,6 +5644,88 @@ Path = stage/inside/link\nFolder = -\nAttributes =  lrwxrwxrwx\n\n";
         assert!(move_extraction_entry(&staging.join("f"), &dest.join("existing-dir")).is_err());
     }
 
+    // --- QW-03: instant copy -------------------------------------------------
+
+    /// The activity row is the only place a user learns a copy cost no data
+    /// write, so the message must be derived from what happened, never from
+    /// the policy.
+    #[test]
+    fn test_tracked_completion_message_reports_only_what_happened() {
+        let stats = reflink::CopyStats::default();
+        assert_eq!(
+            tracked_completion_message(&stats, "Copied"),
+            "Copied — nothing to copy"
+        );
+
+        for _ in 0..3 {
+            stats.record(CopyMethod::Clone);
+        }
+        assert_eq!(
+            tracked_completion_message(&stats, "Copied"),
+            "Copied 3 file(s) instantly (no data copied)"
+        );
+
+        stats.record(CopyMethod::Stream);
+        assert_eq!(
+            tracked_completion_message(&stats, "Copied"),
+            "Copied 4 file(s) — 3 cloned, 1 copied",
+            "a mixed tree must not claim the whole copy was instant"
+        );
+        assert_eq!(
+            tracked_completion_message(&stats, "Moved"),
+            "Moved 4 file(s) — 3 cloned, 1 copied",
+            "the verb follows the operation"
+        );
+    }
+
+    #[test]
+    fn test_tracked_completion_message_never_says_instant_for_a_stream() {
+        let stats = reflink::CopyStats::default();
+        stats.record(CopyMethod::KernelCopy);
+        let message = tracked_completion_message(&stats, "Copied");
+        assert_eq!(message, "Copied 1 file(s)");
+        assert!(
+            !message.contains("instant"),
+            "a kernel copy rewrites data and must never be called instant: {message}"
+        );
+    }
+
+    /// The settings endpoints must reject a value they would silently ignore:
+    /// the admin would otherwise be told their choice was saved.
+    #[test]
+    fn test_instant_copy_request_parsing_is_strict() {
+        assert_eq!(
+            InstantCopyMode::parse_strict("auto"),
+            Some(InstantCopyMode::Auto)
+        );
+        assert_eq!(
+            InstantCopyMode::parse_strict("  OFF "),
+            Some(InstantCopyMode::Off)
+        );
+        assert_eq!(
+            InstantCopyMode::parse_strict("on"),
+            Some(InstantCopyMode::Auto)
+        );
+        for bad in ["", "offf", "automatic", "yes please"] {
+            assert_eq!(
+                InstantCopyMode::parse_strict(bad),
+                None,
+                "'{bad}' must be rejected, not coerced"
+            );
+        }
+    }
+
+    /// A stored value from an old or hand-edited row still has to work: the
+    /// policy must never be able to stop a copy.
+    #[test]
+    fn test_instant_copy_stored_parse_never_fails() {
+        for raw in ["", "garbage", "AUTO", " off ", "1", "0"] {
+            let _ = InstantCopyMode::parse(raw);
+        }
+        assert_eq!(InstantCopyMode::parse("garbage"), InstantCopyMode::Auto);
+        assert_eq!(InstantCopyMode::parse("off"), InstantCopyMode::Off);
+    }
+
     /// ROADMAP 23.1 — fail closed, guarded at the source level.
     ///
     /// The regression this protects against cannot be reached from a unit test
@@ -5206,7 +5758,7 @@ Path = stage/inside/link\nFolder = -\nAttributes =  lrwxrwxrwx\n\n";
     /// the synchronous `FileBrowser`/`resolve_dest` helpers (they stat, unlink
     /// and spawn). Matching on the call and not on the module keeps the guard
     /// honest when a helper moves.
-    const BLOCKING_TOKENS: [&str; 19] = [
+    const BLOCKING_TOKENS: [&str; 20] = [
         "std::fs::",
         "std::process::Command",
         "resolve_dest(",
@@ -5214,6 +5766,7 @@ Path = stage/inside/link\nFolder = -\nAttributes =  lrwxrwxrwx\n\n";
         "FileBrowser::create_directory",
         "FileBrowser::rename_item",
         "FileBrowser::copy_item",
+        "FileBrowser::copy_file_instant",
         "FileBrowser::move_item",
         "FileBrowser::preview_file",
         "FileBrowser::compress_items",

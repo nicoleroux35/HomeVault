@@ -371,6 +371,151 @@ pub async fn handle_smb_config_update(
     }
 }
 
+/// Body for the per-share recycle-bin toggle.
+#[derive(Debug, serde::Deserialize)]
+pub struct RecycleToggleRequest {
+    pub enabled: bool,
+}
+
+/// Body for the per-share Time Machine toggle. `quota_gb = 0` (or absent)
+/// means "no maximum size"; the value is validated before it reaches
+/// `smb.conf`.
+#[derive(Debug, serde::Deserialize)]
+pub struct TimeMachineRequest {
+    pub enabled: bool,
+    #[serde(default)]
+    pub quota_gb: u32,
+}
+
+/// Returns, for every configured SMB share, whether its recycle bin is on.
+#[axum_macros::debug_handler]
+pub async fn handle_smb_recycle_list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
+    }
+
+    match run_share_op("load SMB recycle state", || {
+        Ok::<_, crate::shares::ShareError>(SharesService::get_smb_recycle_map())
+    })
+    .await
+    {
+        Ok(map) => ResponseHelper::json_success(map),
+        Err(e) => ResponseHelper::json_error(format!("Failed to load recycle state: {}", e)),
+    }
+}
+
+/// Turns the recycle bin on or off for one SMB share.
+#[axum_macros::debug_handler]
+pub async fn handle_smb_recycle_set(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    req: axum::extract::Json<RecycleToggleRequest>,
+) -> Response {
+    let admin = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
+
+    let name_for_op = name.clone();
+    let enabled = req.enabled;
+    match run_share_op("set SMB recycle", move || {
+        SharesService::set_smb_recycle(&name_for_op, enabled)
+    })
+    .await
+    {
+        Ok(_) => {
+            crate::events::log_event(format!(
+                "Admin '{}' {} the recycle bin for SMB share '{}'",
+                admin,
+                if enabled { "enabled" } else { "disabled" },
+                name
+            ));
+            ResponseHelper::json_success(serde_json::json!({ "enabled": enabled }))
+        }
+        Err(e) => ResponseHelper::json_error(format!("Failed to update recycle bin: {}", e)),
+    }
+}
+
+/// Returns every SMB share's Time Machine state (toggle + quota), derived from
+/// the live `smb.conf` like the recycle map.
+#[axum_macros::debug_handler]
+pub async fn handle_smb_time_machine_list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
+    }
+
+    match run_share_op("load SMB Time Machine state", || {
+        Ok::<_, crate::shares::ShareError>(SharesService::get_smb_time_machine_map())
+    })
+    .await
+    {
+        Ok(map) => ResponseHelper::json_success(map),
+        Err(e) => ResponseHelper::json_error(format!(
+            "Failed to load Time Machine state: {}",
+            e
+        )),
+    }
+}
+
+/// Turns Time Machine on or off for one SMB share, and stores the optional
+/// maximum size macOS must respect.
+#[axum_macros::debug_handler]
+pub async fn handle_smb_time_machine_set(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    req: axum::extract::Json<TimeMachineRequest>,
+) -> Response {
+    let admin = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
+
+    // Validate before the blocking write: a quota outside the accepted range
+    // must come back as a clear message, not as a half-written `smb.conf`.
+    if let Err(e) = crate::shares::validate_time_machine_quota(req.quota_gb) {
+        return ResponseHelper::json_error(e);
+    }
+
+    let name_for_op = name.clone();
+    let enabled = req.enabled;
+    let quota_gb = if enabled { req.quota_gb } else { 0 };
+    match run_share_op("set SMB Time Machine", move || {
+        SharesService::set_smb_time_machine(&name_for_op, enabled, quota_gb)
+    })
+    .await
+    {
+        Ok(_) => {
+            crate::events::log_event(format!(
+                "Admin '{}' {} Time Machine on SMB share '{}'{}",
+                admin,
+                if enabled { "enabled" } else { "disabled" },
+                name,
+                if enabled && quota_gb > 0 {
+                    format!(" (quota {quota_gb} GiB)")
+                } else {
+                    String::new()
+                }
+            ));
+            ResponseHelper::json_success(serde_json::json!({
+                "enabled": enabled,
+                "quota_gb": quota_gb,
+            }))
+        }
+        Err(e) => ResponseHelper::json_error(format!(
+            "Failed to update Time Machine: {}",
+            e
+        )),
+    }
+}
+
 /// Returns the current NFS server configuration.
 #[axum_macros::debug_handler]
 pub async fn handle_nfs_config_get(

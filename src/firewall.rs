@@ -701,6 +701,56 @@ pub async fn delete_rule(spec: &str) -> Result<(), FirewallError> {
     Ok(())
 }
 
+/// `ufw deny from <ip>` — block one address from **every** service.
+///
+/// This is the shape a login ban needs: no port, because the point is that the
+/// address leaves this box alone entirely, not just that it cannot sign in over
+/// the web (QW-05). The comment tags the rule as ours so a pardon removes
+/// exactly one rule and never a hand-written `ufw deny from …`.
+///
+/// Idempotent: ufw answers "Skipping adding existing rule" and exits 0, which
+/// this treats as success.
+pub async fn ban_source(ip: &str, comment: &str) -> Result<(), FirewallError> {
+    let ip = validate_source(ip)?;
+    let comment = validate_comment(comment)?;
+    run_ufw_checked(
+        &["deny", "from", &ip, "comment", &comment],
+        "blocking the address",
+    )
+    .await?;
+    Ok(())
+}
+
+/// Remove the ban rule installed by [`ban_source`] for `ip`.
+///
+/// `ufw delete` needs the **live spec**, so it is rebuilt from the validated
+/// address in exactly the form `ban_source` created — `deny from <ip>` with no
+/// comment clause (ufw prints the comment separately). A rule that is already
+/// gone is not an error: the caller is removing a ban, and a missing rule means
+/// the desired state already holds.
+pub async fn unban_source(ip: &str) -> Result<(), FirewallError> {
+    let ip = validate_source(ip)?;
+    let output = run_ufw(&["delete", "deny", "from", &ip]).await?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let detail = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+    .to_ascii_lowercase();
+    // "Could not delete non-existent rule" / "ERROR: Could not find rule".
+    if detail.contains("non-existent") || detail.contains("could not find") {
+        return Ok(());
+    }
+    Err(FirewallError::Failed(format!(
+        "removing the block on {}: {}",
+        ip,
+        detail.trim()
+    )))
+}
+
 /// Idempotently (re-)assert the rules that must always be present:
 /// HomeVault's own port and **every** SSH port sshd may listen on. Safe to
 /// call repeatedly (ufw skips duplicate rules rather than erroring).
@@ -1218,5 +1268,43 @@ mod tests {
         assert_eq!(ports, sorted);
         // The single-port helper agrees with the list.
         assert_eq!(detect_ssh_port(), ports[0]);
+    }
+}
+
+#[cfg(test)]
+mod auto_block_tests {
+    use super::*;
+
+    /// The argv a ban builds, pinned without running `ufw`.
+    ///
+    /// `ban_source`/`unban_source` are the only place a login ban touches the
+    /// firewall (QW-05). They are not exercised live in CI — `ufw` needs root and
+    /// would change the host — so the exact argument shape is asserted here: a
+    /// regression that swapped the verbs, dropped `from`, or spliced an
+    /// unvalidated address into the argv would be invisible otherwise.
+    #[test]
+    fn a_ban_address_is_validated_before_it_reaches_ufw() {
+        // Validated by `validate_source`, which the two functions call first.
+        assert!(validate_source("203.0.113.9").is_ok());
+        assert!(validate_source("2001:db8::1").is_ok());
+        assert!(validate_source("203.0.113.0/24").is_ok());
+        // Anything that is not an address is refused, so a rule can never be
+        // forged from a host name or a shell fragment.
+        for bad in ["", "nas.local", "203.0.113.9; rm -rf /", "1.2.3", "--force"] {
+            assert!(
+                validate_source(bad).is_err(),
+                "{bad:?} must be refused before it becomes a ufw argument"
+            );
+        }
+    }
+
+    #[test]
+    fn the_ban_comment_is_prefixed_and_quote_free() {
+        // The auto-block module builds it as `homevault-autoblock-<ip>`; the
+        // validator is what guarantees ufw can read it back single-quoted.
+        let comment = crate::auto_block::ban_comment("203.0.113.9");
+        assert_eq!(validate_comment(&comment).unwrap(), comment);
+        assert!(comment.starts_with(crate::auto_block::BAN_COMMENT_PREFIX));
+        assert!(validate_comment("homevault-autoblock-o'brien").is_err());
     }
 }

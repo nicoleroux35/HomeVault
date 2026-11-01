@@ -1155,6 +1155,24 @@ except Exception as e:
         let session_repo = SessionRepository::new(Arc::clone(&self.pool));
         session_repo.delete_by_username(username).await?;
 
+        // A trusted device means "skip the second factor from this browser".
+        // It was granted against the *old* password, so it must not outlive a
+        // password change: otherwise a stolen laptop keeps signing in with one
+        // factor after the owner rotated the credential it was trusted for.
+        // Best effort — the password write already succeeded and is what
+        // matters, and a device row that survives is revoked by the next
+        // 2FA change anyway.
+        if let Err(e) = crate::identity::DeviceStore::new(&self.pool)
+            .revoke_all(username)
+            .await
+        {
+            tracing::warn!(
+                "Password updated for '{}' but its trusted devices could not be revoked: {}",
+                username,
+                e
+            );
+        }
+
         Ok(())
     }
 

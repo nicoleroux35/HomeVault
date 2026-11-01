@@ -60,6 +60,25 @@ impl AtomicWriter {
         Ok(())
     }
 
+    /// Atomic write of **binary** data (the configuration-backup payload and its
+    /// staged database). The text `write` above would corrupt anything that is
+    /// not UTF-8, and a SQLite snapshot is not.
+    pub fn write_bytes<P: AsRef<Path>>(path: P, data: &[u8]) -> Result<(), AtomicWriteError> {
+        let path = path.as_ref();
+        let temp_path = path.with_extension("tmp");
+
+        let mut file = File::create(&temp_path)?;
+        file.write_all(data)?;
+        file.sync_all()?;
+
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        fs::rename(&temp_path, path)?;
+
+        Ok(())
+    }
+
     /// Read the full content of `path` as a string. Returns empty if missing.
     pub fn read<P: AsRef<Path>>(path: P) -> Result<String, AtomicWriteError> {
         let path = path.as_ref();

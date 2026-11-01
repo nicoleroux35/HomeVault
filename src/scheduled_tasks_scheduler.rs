@@ -500,11 +500,21 @@ pub async fn start_task_run(
 /// error) on both the task and the run row.
 async fn finish_run(state: &Arc<AppState>, task: &ScheduledTask, run_id: &str) {
     let repo = ScheduledTaskRepository::new(state.db.pool());
-    let result = match TaskAction::from_parts(&task.task_type, &task.payload) {
-        // Re-validate at run time: a row written directly into the DB by
-        // some other path still goes through the same validators.
-        Ok(action) => perform(&action).await,
+    // "Wake first": a task may ask for a saved host to be woken before it runs
+    // (the 03:00 backup on a box that sleeps). The pre-step is *part of* the
+    // run, so its outcome is in the run's output and a failure fails the run —
+    // silently running a backup against a sleeping host is the one thing this
+    // option exists to prevent.
+    let mut preface = String::new();
+    let woken = wake_first(state, task, &mut preface).await;
+    let result = match woken {
         Err(e) => Err(e),
+        Ok(()) => match TaskAction::from_parts(&task.task_type, &task.payload) {
+            // Re-validate at run time: a row written directly into the DB by
+            // some other path still goes through the same validators.
+            Ok(action) => perform(&action).await.map(|out| preface + &out),
+            Err(e) => Err(e),
+        },
     };
 
     match result {
@@ -520,6 +530,48 @@ async fn finish_run(state: &Arc<AppState>, task: &ScheduledTask, run_id: &str) {
                 .await;
         }
     }
+}
+
+/// Perform the optional "wake first" pre-step, appending what happened to
+/// `preface`.
+///
+/// Returns `Err` when the host cannot be woken at all (deleted, invalid MAC,
+/// the packet could not be sent): running the task anyway would defeat the
+/// option. A *sent* packet is not a confirmed boot, so the run's output says so.
+async fn wake_first(
+    state: &Arc<AppState>,
+    task: &ScheduledTask,
+    preface: &mut String,
+) -> Result<(), String> {
+    let plan = crate::wol::parse_wake_plan(&task.payload)?;
+    let Some(plan) = plan else {
+        return Ok(());
+    };
+    let repo = crate::storage::WolHostRepository::new(state.db.pool());
+    let host = repo
+        .find(plan.host_id)
+        .await
+        .map_err(|e| format!("Could not read the host to wake: {e}"))?
+        .ok_or_else(|| {
+            format!(
+                "The host to wake (id {}) no longer exists — edit the task or remove the wake step",
+                plan.host_id
+            )
+        })?;
+
+    let report = crate::wol::wake(&host, &crate::wol::live_interfaces())
+        .await
+        .map_err(|e| format!("Could not wake '{}': {e}", host.label))?;
+    preface.push_str(&format!("{}\n", report.message()));
+
+    if plan.delay_seconds > 0 {
+        preface.push_str(&format!(
+            "Waited {}s for '{}' to come up before running the task.\n",
+            plan.delay_seconds, host.label
+        ));
+        tokio::time::sleep(Duration::from_secs(plan.delay_seconds)).await;
+    }
+    Ok(())
 }
 
 /// Dispatches one validated action. Pure I/O — no schedule logic here.

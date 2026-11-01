@@ -1469,7 +1469,10 @@ Rate:             250.00MiB/s
     /// number: the bar must not fall back to indeterminate mid-operation.
     #[test]
     fn a_known_percentage_survives_a_tick_without_one() {
-        let id = scrub_job_id("tank");
+        // A pool name no other test in this file uses: the two manager tests
+        // share the process-wide `PROGRESS_MANAGER`, so reusing "tank" here
+        // made them race when the harness ran them on parallel threads.
+        let id = scrub_job_id("tank-pct-continuity");
         PROGRESS_MANAGER.remove_job(&id);
         apply_plan(&ReconcilePlan {
             live: vec![LiveOperation {

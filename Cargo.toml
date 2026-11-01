@@ -104,6 +104,18 @@ rcgen = "0.14"
 # continue using 2.2.0 and will migrate when a maintained replacement emerges.
 rustls-pemfile = "2"
 x509-parser = "0.18"
+# TLS client for the remote syslog forwarder (QUICK-WIN QW-08). Both crates are
+# already in the tree through axum-server/reqwest, so this only makes them
+# direct dependencies — no new supply chain. `ring` is named explicitly because
+# the tree also carries `aws-lc-rs`, and rustls' provider auto-detection refuses
+# to guess between two.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# Passkey (WebAuthn) signature verification — the same `ring` build rustls and
+# rcgen already pull in, used here directly for ES256 / Ed25519 assertions
+# (src/passkey.rs). Pinned to the version the tree already resolves (0.17.14),
+# so this adds no second copy of the crate.
+ring = "0.17"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 time = "0.3"
 # dav-server 0.11.0 uses lru 0.16.4 which has RUSTSEC-2026-0253 (unsound).
 # No newer version of dav-server exists. The lru issue is a use-after-free

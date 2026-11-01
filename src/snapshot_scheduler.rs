@@ -466,14 +466,32 @@ async fn run_schedule_inner(
     };
     let prefix = schedule.prefix.clone();
     let prune_backend = backend.clone();
-    let pruned =
-        tokio::task::spawn_blocking(move || prune_pool(prune_backend.as_ref(), &prefix, &policy))
+    // Immutable snapshots (P2.5): a locked snapshot is never pruned, whatever
+    // GFS would select. The set is read here, in the async context, then handed
+    // to the blocking prune.
+    let locked_names = {
+        let repo = crate::storage::SnapshotLockRepository::new(state.db.pool());
+        repo.active(Some(&schedule.pool))
             .await
-            .map_err(|e| RunScheduleError::Failed(format!("Prune task panicked: {e}")))?;
+            .map(|locks| crate::snapshot_locks::protected_names(&locks, &schedule.pool))
+            .unwrap_or_default()
+    };
+    let pruned = tokio::task::spawn_blocking(move || {
+        prune_pool(prune_backend.as_ref(), &prefix, &policy, &locked_names)
+    })
+    .await
+    .map_err(|e| RunScheduleError::Failed(format!("Prune task panicked: {e}")))?;
 
     match pruned {
-        Ok(deleted) => {
-            let summary = format!("Created {name}, pruned {} snapshot(s)", deleted.len());
+        Ok((deleted, skipped_locked)) => {
+            let summary = if skipped_locked == 0 {
+                format!("Created {name}, pruned {} snapshot(s)", deleted.len())
+            } else {
+                format!(
+                    "Created {name}, pruned {} snapshot(s), kept {skipped_locked} locked snapshot(s)",
+                    deleted.len()
+                )
+            };
             let repo = SnapshotScheduleRepository::new(state.db.pool());
             repo.mark_finished(&schedule.id, true, &summary).await.ok();
             Ok(summary)
@@ -490,12 +508,14 @@ async fn run_schedule_inner(
 }
 
 /// Lists the pool's snapshots, keeps only `{prefix}-…` auto ones, and
-/// destroys the ones GFS selects. Returns the deleted names.
+/// destroys the ones GFS selects — except `protected`, the immutable snapshots
+/// (P2.5). Returns the deleted names and how many were kept because of a lock.
 fn prune_pool(
     backend: &dyn SnapshotBackend,
     prefix: &str,
     policy: &GfsPolicy,
-) -> Result<Vec<String>, String> {
+    protected: &std::collections::HashSet<String>,
+) -> Result<(Vec<String>, usize), String> {
     let listed = backend.list().map_err(|e| e.to_string())?;
     let mut autos: Vec<NamedSnapshot> = Vec::new();
     for snap in listed {
@@ -510,11 +530,20 @@ fn prune_pool(
             autos.push((bare, ts));
         }
     }
-    let to_delete = select_gfs_deletions(&autos, policy, Utc::now());
-    for name in &to_delete {
-        backend.delete(name).map_err(|e| e.to_string())?;
+    let selected = select_gfs_deletions(&autos, policy, Utc::now());
+    let mut skipped_locked = 0;
+    let mut deleted = Vec::new();
+    for name in selected {
+        if protected.contains(&name) {
+            // Locked: retention does not get to override an explicit lock, and
+            // the run reports it instead of pretending the prune was complete.
+            skipped_locked += 1;
+            continue;
+        }
+        backend.delete(&name).map_err(|e| e.to_string())?;
+        deleted.push(name);
     }
-    Ok(to_delete)
+    Ok((deleted, skipped_locked))
 }
 
 #[cfg(test)]

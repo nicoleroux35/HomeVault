@@ -248,6 +248,8 @@ Widgets can be rearranged by drag-and-drop. Monitor panels (Resource, RAID, Secu
 - Compress/extract archives (zip); extraction validates archive members before
   unpacking and refuses anything that could escape the destination
 - Trash system (soft-delete with restore)
+- One unified Trash: files deleted over the network from an SMB share's recycle bin appear in the same Trash as files deleted from the web UI, and can be restored from either place
+- Trash retention: keep deleted files for a set number of days and cap the trash size; whatever passes a limit is removed automatically by a background cleanup, and an admin can run the cleanup on demand
 - Recently visited folders, remembered per account and shared across browsers
 - Favorites / pinned folders
 - Safe-eject external drives
@@ -256,9 +258,17 @@ Widgets can be rearranged by drag-and-drop. Monitor panels (Resource, RAID, Secu
 - Discover nearby network (SMB) shares from the toolbar
 - Format a spare drive as ext4 or exfat
 - Share a folder directly to the Shares app
+- Instant copy on copy-on-write filesystems (Btrfs, reflink-enabled XFS): a
+  copy shares the source's blocks instead of rewriting them, so "copy 40 GB"
+  finishes immediately and costs no extra space until a side changes. When the
+  filesystem cannot share blocks the copy silently falls back to a normal
+  kernel copy and then to a verified byte stream — the activity row says
+  "cloned" only when the clone really happened. An admin can turn the attempt
+  off entirely with the Instant copy setting, which also lists which mounts
+  support it
 - Collision handling on copy/move/upload (overwrite, keep_both, skip)
 - Inline text/code editor for quick edits
-- Share a file by a revocable download link (URL + QR code; 'anyone' or 'signed-in' only; default 30-day expiry)
+- Share a file by a revocable download link (URL + QR code; 'anyone' or 'signed-in' only; default 30-day expiry). A link can also require a password and allow a limited number of downloads — "one download" is the one-time link, and a download only counts once it has finished, so an interrupted transfer does not use it up. The recipient's page asks for the password only when the link has one, and the password is never put in the URL
 - Drag a file onto a folder to move it, or drag a rubber-band box to select several at once
 - Live auto-refresh pushed over SSE when files in the browsed directory change
 - Permanent delete is admin-only, path-guard confined, and refuses to delete a
@@ -266,6 +276,31 @@ Widgets can be rearranged by drag-and-drop. Monitor panels (Resource, RAID, Secu
   them and capped in number
 
 PathGuard restricts non-admin users to their home directory and allowed roots."#.to_string(),
+        },
+        FeatureDoc {
+            id: "global-search".to_string(),
+            title: "Global file search".to_string(),
+            content: r#"Pressing Control+K (or Command+K) on the desktop opens one search box for everything. It finds apps, settings categories and quick actions instantly, and it also finds files anywhere the signed-in user is allowed to look: every folder their Explorer sidebar lists, including their own home directory, the shared folders and the attached storage pools, searched in one go. Each file result shows the file's name and the folder that holds it, so two files with the same name in different shares can be told apart; picking a result opens the Explorer on that folder with the file already selected. The file search looks at names only — it does not index file contents. It is deliberately bounded: a search only starts after two characters, at most sixteen locations are searched, each has a short time budget and the whole answer has a slightly longer one, and the list is capped. When part of the answer is missing — a location that did not answer in time, or one that could not be read — the overlay says so in a sentence under the results instead of pretending the list is complete, and a search that was cut short says that too. Searching for something like a path with slashes is refused with an explanation rather than silently returning nothing. An administrator's search is bounded by the same list of folders, so it never turns into a scan of the whole machine."#.to_string(),
+        },
+        FeatureDoc {
+            id: "rsync".to_string(),
+            title: "Rsync server".to_string(),
+            content: r#"The Rsync server lets another machine copy files to or from your shares with plain rsync, the way most backup scripts expect. It is off until you turn it on. Each share you expose becomes a module with a name, an optional comment and the list of accounts allowed to use it; every module requires a password, so a module can never be an anonymous export. A module can only serve a folder that is already one of your shares, so this screen can never make another part of the machine reachable. The rsync password is separate from the HomeVault login: set one per account on the same screen, and it is only stored on the server — it is never shown again. Two more safeguards are on by default: the daemon is confined to each module's folder, and it does not wait for a reverse DNS lookup that a home network cannot answer. You do not need this server for a one-off copy: rsync over SSH works with the SFTP account and key you already configured, and that is the better choice for anything leaving your network."#.to_string(),
+        },
+        FeatureDoc {
+            id: "backup-target".to_string(),
+            title: "Backup destination".to_string(),
+            content: r#"HomeVault can also be the place another computer keeps its backups. Turn the role on, and each computer that sends backups gets its own entry with its own token, its own private repository and its own quota. The token and the repository password are shown exactly once, when the entry is created or when you rotate it — write them down on that machine, because they are never displayed again. A repository receives restic backups in append-only mode, which means the computer that sends the backups cannot delete the history it depends on: ransomware on that machine cannot reach round and wipe its own backups. When a computer grows past its quota it is locked out of its repository until you raise the quota or free space, and the screen says which entry is over. An entry can also ask for a daily integrity check, and Check now runs one immediately. Removing an entry stops that computer's access but leaves its backups on the disk."#.to_string(),
+        },
+        FeatureDoc {
+            id: "replication".to_string(),
+            title: "Snapshot replication".to_string(),
+            content: r#"Replication keeps a second copy of a dataset on another disk or another machine. A job names a source dataset and a destination — either another dataset on this machine or, over SSH, a dataset on another one — and HomeVault does the rest on a schedule you choose: it takes a snapshot of the source, sends it, and next time sends only what changed since the last successful run. A transfer can be interrupted and resumed instead of starting over, and an optional bandwidth limit keeps it from saturating a home connection. Retention only counts the copies the job itself created, so it never deletes a snapshot you made by hand and never touches the source. Before anything is sent you can preview the exact command the next run would execute, which is the quickest way to check that a destination path or SSH account is what you think it is. Replicating Btrfs snapshots over SSH is not supported yet; use a local destination for those."#.to_string(),
+        },
+        FeatureDoc {
+            id: "disaster-recovery".to_string(),
+            title: "Disaster recovery".to_string(),
+            content: r#"Disaster recovery is the plan for getting your data back, and each kind of copy answers a different question. Snapshots undo a mistake — a deleted folder, an overwritten file — but they live on the same disk, so they disappear with the pool. Replication keeps a second copy on another disk or another machine, and a backup received from another computer is a copy of that computer's data. Configuration backup covers accounts, groups, shares, permissions, quotas and settings, not data: restoring it makes the appliance behave as before, then you restore the data on top. A real rebuild is: install HomeVault, restore the configuration archive, then re-attach the data from the pool itself, from a replica, or with a restic restore — and finally re-issue what was tied to the old machine, such as the certificate, share links, tokens and passkeys. Restores are worth rehearsing: restore one folder to a scratch location and compare a checksum, and run the integrity check on each backup destination, so you know the backups are good before you need them."#.to_string(),
         },
         FeatureDoc {
             id: "storage".to_string(),
@@ -430,6 +465,7 @@ Features:
 - SFTP jail: users are chrooted to their granted shares
 - Public key authentication for SFTP
 - Share enable/disable toggle
+- A per-share recycle bin for SMB: files deleted over the network are kept in the share's own trash folder, then show up in the File Explorer's Trash where they can be restored
 - Rebuild SFTP jails (reconcile ACLs with bind mounts)"#.to_string(),
         },
         FeatureDoc {
@@ -481,7 +517,9 @@ DNS updates preserve existing search/domains. IPv6 nameservers are appended."#.t
 9. Temperatures: CPU and drive temperature sensors.
 
 A check that cannot run (a missing binary, an unreadable file, a database that will not answer) degrades to "unknown" on its own card; the other cards still run and the page still answers. The overall verdict uses exactly four values: healthy, warning, unhealthy, unknown. If the page cannot load the data at all it shows an explicit error message with a Retry button instead of pretending to have no data.
-For monitoring, two small public addresses answer without a login: one says the server process is alive, the other says it is actually ready to serve — that second one fails when the database cannot be queried or was found damaged at startup, so an external monitor can take the appliance out of rotation instead of feeding it requests that will fail. Neither reveals anything about the machine."#.to_string(),
+For monitoring, two small public addresses answer without a login: one says the server process is alive, the other says it is actually ready to serve — that second one fails when the database cannot be queried or was found damaged at startup, so an external monitor can take the appliance out of rotation instead of feeding it requests that will fail. Neither reveals anything about the machine.
+
+The same page carries the Security Advisor, above the per-check grid and for administrators only: one read-only answer to "is this box safely configured?". It runs fifteen checks over state the other screens already show — an administrator exists and none uses a default account name (admin, administrator, root), every administrator uses two-factor authentication, no administrator still holds an administrator-chosen password, HTTPS is on with a trusted certificate that is not about to expire, automatic certificate renewal, the firewall is on with the rules that keep SSH and the web interface reachable, SMB refuses guests, requires signing and does not accept SMB1, no share folder is world-writable, share size limits, snapshots scheduled on the data pools, a configuration backup exists, failed sign-ins are blocked, and HomeVault is up to date. Each finding carries a severity (pass, info, warn, fail), the evidence it is based on, the sentence that fixes it and a link to the screen that owns the setting; the card shows a weighted score out of 100 and lists the actionable findings worst first, with the rest behind a disclosure. A check that cannot read its signal says so and is never counted as a pass. The advisor only reads: it never changes a setting, and nothing it answers is cached, so a fixed finding disappears on the very next run. The report names accounts, the certificate, the firewall and the shares, so it is administrator-only."#.to_string(),
         },
         FeatureDoc {
             id: "terminal".to_string(),
@@ -577,6 +615,30 @@ Settings are exported/imported as JSON (SMTP passwords redacted in export). The 
 - Search/filter entries
 - Clear application logs
 - Auto-cleanup scheduler (configurable interval, default 90 days)
+- Wake-on-LAN: save a machine by its network-card address and wake it from the
+  settings card, or let a scheduled task wake it and wait before it runs
+- Connected clients: see who is using the box right now over SMB, NFS, SFTP
+  and FTP — the account, the address, the share or export they hold and how
+  many files are open — and disconnect a session that can be dropped (an NFS
+  export cannot: the kernel holds it)
+- Full configuration backup: export one archive holding the database (accounts,
+  groups, shares, permissions, quotas and settings), the exported settings and
+  the generated service configurations, optionally encrypted with a passphrase;
+  by default no working credential is inside. A restore is validated and staged,
+  then applied at the next start, keeping the previous database on disk
+- Per-share size quotas: cap one shared folder so it cannot fill the pool — the
+  limit is enforced by the filesystem holding it (ZFS, a Btrfs subvolume, or XFS
+  project quotas), so writes over the network are bound as well as uploads in
+  the browser, and the Shares screen shows a used-of-quota bar
+- Failed sign-in blocking: after a set number of wrong passwords from one
+  address, that address is blocked for a chosen time — the block survives a
+  restart, can optionally be installed in the firewall, and can be pardoned
+  in one click (which also removes the firewall rule). A request-rate limit
+  refuses floods of unauthenticated requests
+- Remote syslog: forward the audit events to a collector over UDP, TCP or TLS,
+  in RFC 5424 or RFC 3164, with a pinned TLS certificate. A slow or unreachable
+  collector only fills a bounded queue and never slows a request, and the card
+  shows what is waiting, what was sent and what was dropped
 
 Application events are always in plain English for audit trail purposes."#.to_string(),
         },
@@ -958,6 +1020,58 @@ This is what lets a user type homevault.local in a browser or a file manager ins
 - The generated image is cached per account and replaced whenever the seed changes."#.to_string(),
         },
         FeatureDoc {
+            id: "acme".to_string(),
+            title: "Certificate Automation".to_string(),
+            content: r#"Gets a certificate a browser accepts without the admin renewing it by hand every three months.
+
+- One public name per certificate. The admin picks the name, a contact address, and whether the authority's terms are accepted.
+- Two ways to prove the name is yours: an answer served on port 80 of that name, or a TXT record published by a DNS provider. The first needs port 80 to reach the appliance; the second works behind NAT but needs the provider credential, or a manual step.
+- With a manual DNS provider the flow stops and shows the record to create; once it exists the admin confirms and the run finishes. With a provider credential the record is published, validated and removed automatically.
+- Renewal runs on its own a month before expiry, with a backoff on failure. A refusal by the authority is final: the appliance stops retrying until the name, the challenge, the provider or the directory changes, so a permanently broken configuration does not hammer anyone.
+- The provider credential is write-only: it is never returned by the API and never appears in a log line.
+- Once a certificate is issued, the built-in HTTPS listener can use it. Switching the listener to that mode is refused until a certificate actually exists.
+- Two notification events: a certificate was installed, and a renewal failed."#.to_string(),
+        },
+        FeatureDoc {
+            id: "ddns".to_string(),
+            title: "Dynamic DNS".to_string(),
+            content: r#"Keeps a public name pointed at the address the ISP currently hands out, so a certificate stays valid and a bookmark keeps working.
+
+- Supported providers: DuckDNS, dynv6, Cloudflare (an A record managed through its API), and any service that accepts an update URL with the address in it.
+- The worker looks at the address every five minutes and contacts the provider only when it actually changed — a home connection must not hammer a free service.
+- The address is detected without contacting anyone: a UDP socket is connected to a public resolver and the kernel's chosen source address is read. Nothing is sent.
+- The provider credential is write-only from the API's point of view and never travels in a URL when the provider offers a header.
+- A custom update URL must be HTTPS: plain HTTP would publish the address to anyone on the path.
+- The card shows the address the host would publish, the address the provider is believed to hold, and the reason the last attempt failed, if any."#.to_string(),
+        },
+        FeatureDoc {
+            id: "reachability".to_string(),
+            title: "Reachability Advisor".to_string(),
+            content: r#"Answers whether a browser outside the house will actually reach the appliance, with a certificate it trusts.
+
+- The report is an ordered list of conditions, each with a state (ok, warning, failure), what is wrong, and what to do about it — not a score.
+- Order matters: it starts with whether HTTPS is on, then whether the certificate is one a browser accepts, then whether renewal is automatic, then whether a stable name exists, then whether the names agree, then the ports.
+- A self-signed certificate is a warning, an expired one is a failure. A certificate inside its renewal window is a warning that names the number of days left.
+- A failed certificate renewal or a failed dynamic-DNS update is reported with the provider's or the authority's own reason.
+- The check on port 80 appears only when the port-80 challenge is actually configured, so DNS-based setups are not told to open a port they do not need.
+- Read-only and derived entirely from settings and the installed certificate: no probing, no external call."#.to_string(),
+        },
+        FeatureDoc {
+            id: "identity".to_string(),
+            title: "Identity (trusted devices and rescue e-mail)".to_string(),
+            content: r#"Makes a second factor survivable, so account security is not traded away for convenience.
+
+- A browser can be trusted for thirty days, after which the second factor is asked again. The owner sees a short label derived from the browser, when it was last used, and can revoke one device or all of them.
+- The device cookie is stored as a hash, never in the clear, and only ever works for its own account: presenting someone else's cookie does not skip anything.
+- Turning the second factor off revokes every trusted device, so re-enabling it does not silently restore trust.
+- A rescue e-mail address is stored only once a code sent to it has come back — a typo cannot hand account recovery to a stranger.
+- Recovery codes are six digits, valid for fifteen minutes, single use, destroyed after five wrong attempts.
+- A locked-out user asks for a code from the sign-in screen. The answer is identical whether or not the account exists, so the form cannot be used to discover names.
+- A correct recovery code is exchanged for a fresh offline recovery code, so there is one password-reset path with one password policy.
+Passkeys (WebAuthn) are a third, separate credential: an account can sign in with the fingerprint, face or PIN of its own device — a phone passkey, Touch ID, Windows Hello, or a hardware security key — instead of a password. Registering one never changes the password or the two-factor setting, and revoking one never removes either; the account card lists each passkey with a name the owner can change, when it was added and last used, and whether the authenticator confirmed the user with a PIN or biometric. Only the public half is ever stored. The sign-in screen offers a "sign in with a passkey" button when the browser supports it; a cancelled prompt says it was cancelled rather than claiming the credentials were wrong, and a locked account cannot be entered with a passkey either. Passkeys are bound to the address the appliance answers to, which the card shows — a passkey created for another address will not work, and the guide explains how to set that hostname.
+"#.to_string(),
+        },
+        FeatureDoc {
             id: "mcp".to_string(),
             title: "External Agents (MCP server)".to_string(),
             content: r#"Lets an external AI agent — a coding assistant or automation running on another machine — drive HomeVault through the Model Context Protocol, over HTTP.
@@ -1172,10 +1286,14 @@ mod tests {
         ("health", "health.md"),
         ("terminal", "terminal.md"),
         ("security", "security.md"),
+        ("identity", "identity.md"),
         ("antivirus", "antivirus.md"),
         ("ransomware", "ransomware.md"),
         ("firewall", "firewall.md"),
         ("tls", "tls.md"),
+        ("acme", "acme.md"),
+        ("ddns", "ddns.md"),
+        ("reachability", "reachability.md"),
         ("vpn", "vpn.md"),
         ("rescue", "rescue.md"),
         ("settings", "settings.md"),
@@ -1207,6 +1325,11 @@ mod tests {
         ("server-control", "server-control.md"),
         ("avatars", "avatars.md"),
         ("mcp", "mcp.md"),
+        ("global-search", "global-search.md"),
+        ("rsync", "rsync.md"),
+        ("backup-target", "backup-target.md"),
+        ("replication", "replication.md"),
+        ("disaster-recovery", "disaster-recovery.md"),
     ];
 
     fn guides_dir() -> std::path::PathBuf {

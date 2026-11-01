@@ -238,6 +238,11 @@ pub struct TwoFactorVerifyRequest {
     /// instead of the default short-lived one.
     #[serde(default)]
     pub remember_me: bool,
+    /// When true, this browser is trusted for
+    /// [`crate::identity::DEVICE_LIFETIME_DAYS`] and will not be asked for a
+    /// second factor again until that expires or the device is revoked.
+    #[serde(default)]
+    pub remember_device: bool,
 }
 
 /// Payload for enabling or disabling two-factor authentication.

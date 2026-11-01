@@ -29,6 +29,8 @@
 use std::io::Read as _;
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::time::{Duration, Instant};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt as _;
 
 /// Default deadline for a one-shot host probe (SMART status/temperature,
 /// `lsblk`, `df`, `ip`, `nvidia-smi`, `sensors`, `dpkg-query`, …).
@@ -132,6 +134,153 @@ pub fn run_timed_detached(cmd: &mut Command, deadline: Duration) -> Result<ExitS
             }
         }
     }
+}
+
+/// Run several commands wired as a pipeline (`stdout` of one into the
+/// `stdin` of the next) under one hard deadline.
+///
+/// `zfs send | [pv] | zfs receive` is why this exists: the stream is far too
+/// large to route through this process, so the stages must be connected by
+/// pipes, and the *whole* pipeline has to be cancelled — not just the first
+/// stage — when it overruns. Every stage's stderr is drained on its own thread
+/// (a chatty `zfs send` would otherwise deadlock on a full pipe buffer), a
+/// non-zero exit of any stage fails the pipeline, and on expiry every stage is
+/// killed and reaped. Only the tail of the collected stderr is reported, so a
+/// noisy tool cannot turn an error into megabytes of log line.
+pub fn run_pipeline_timed(stages: &[Vec<String>], deadline: Duration) -> Result<(), String> {
+    if stages.is_empty() {
+        return Err("nothing to run".to_string());
+    }
+    let mut children: Vec<(String, std::process::Child)> = Vec::new();
+    let mut previous_stdout: Option<std::process::ChildStdout> = None;
+    let mut stderr_threads = Vec::new();
+
+    for stage in stages {
+        let Some((program, args)) = stage.split_first() else {
+            return Err("empty command in the pipeline".to_string());
+        };
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        // A fresh process group per stage: `zfs send`/`ssh` may fork helpers
+        // that inherit our pipe ends, and killing only the direct child would
+        // leave those helpers holding the pipes open (the stderr drain thread
+        // then waits for them, not for us). With `process_group(0)` the whole
+        // tree can be signalled at once — the same reasoning (and the same
+        // call) as `rescue/service.rs`'s cancellation path.
+        #[cfg(unix)]
+        cmd.process_group(0);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        if let Some(stdout) = previous_stdout.take() {
+            cmd.stdin(Stdio::from(stdout));
+        } else {
+            cmd.stdin(Stdio::null());
+        }
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to run {}: {}", program, e))?;
+        previous_stdout = child.stdout.take();
+        if let Some(mut stderr) = child.stderr.take() {
+            stderr_threads.push(std::thread::spawn(move || {
+                let mut buffer = String::new();
+                let _ = stderr.read_to_string(&mut buffer);
+                buffer
+            }));
+        }
+        children.push((program.to_string(), child));
+    }
+
+    let started = Instant::now();
+    let mut failure: Option<String> = None;
+    let mut timed_out = false;
+    for (program, child) in children.iter_mut() {
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if !status.success() && failure.is_none() {
+                        failure = Some(format!(
+                            "{} exited with {}",
+                            program,
+                            status.code().unwrap_or(-1)
+                        ));
+                    }
+                    break;
+                }
+                Ok(None) => {
+                    if started.elapsed() >= deadline {
+                        timed_out = true;
+                        kill_process_tree(child);
+                        failure = Some(format!(
+                            "the pipeline did not finish within {} seconds",
+                            deadline.as_secs()
+                        ));
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(e) => {
+                    failure = Some(format!("Failed to wait for {}: {}", program, e));
+                    break;
+                }
+            }
+        }
+        if timed_out {
+            // Cancel the remaining stages too: leaving a `zfs receive` running
+            // after its sender was killed is how a half-written dataset stays
+            // behind.
+            for (_, child) in children.iter_mut() {
+                kill_process_tree(child);
+            }
+            break;
+        }
+    }
+
+    let stderr = stderr_threads
+        .into_iter()
+        .filter_map(|handle| handle.join().ok())
+        .collect::<Vec<String>>()
+        .join("\n");
+    match failure {
+        Some(reason) => {
+            let detail = stderr.trim();
+            Err(if detail.is_empty() {
+                reason
+            } else {
+                format!("{reason}: {}", truncate_tail(detail, 400))
+            })
+        }
+        None => Ok(()),
+    }
+}
+
+/// Kill one pipeline stage **and everything it forked**, then reap it.
+///
+/// The stage was spawned with `process_group(0)`, so its pid is also its
+/// group id: a negative `kill` signals the group, which is what closes the
+/// inherited pipe ends a forked helper would otherwise keep open.
+fn kill_process_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let pid = child.id() as i32;
+        if pid > 0 {
+            // SAFETY: `kill` on a process group we created; a failure (the
+            // group already gone) is reported by the reaping call below, and
+            // no `errno` inspection is needed here.
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// The last `max` characters of a message (never splitting a UTF-8 character).
+fn truncate_tail(value: &str, max: usize) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    if chars.len() <= max {
+        return value.to_string();
+    }
+    chars[chars.len() - max..].iter().collect()
 }
 
 /// How the child's stdin is fed: closed, or a byte slice written by a thread.
@@ -385,6 +534,74 @@ mod tests {
         )
         .expect_err("a missing program is an error");
         assert!(err.contains("Failed to run"), "{err}");
+    }
+
+    // -----------------------------------------------------------------
+    // run_pipeline_timed (replication: `zfs send | [pv] | zfs receive`)
+    // -----------------------------------------------------------------
+
+    fn stage(program: &str, args: &[&str]) -> Vec<String> {
+        let mut out = vec![program.to_string()];
+        out.extend(args.iter().map(|a| a.to_string()));
+        out
+    }
+
+    #[test]
+    fn a_pipeline_connects_one_stage_stdout_to_the_next_stdin() {
+        // `printf abc | tr a-z A-Z` — the second stage can only produce `ABC`
+        // if it actually received the first stage's output.
+        let stages = vec![
+            stage("printf", &["abc"]),
+            stage("tr", &["a-z", "A-Z"]),
+        ];
+        run_pipeline_timed(&stages, Duration::from_secs(5)).expect("the pipeline must succeed");
+        // An empty pipeline is a caller bug, not a silent success.
+        assert!(run_pipeline_timed(&[], Duration::from_secs(1)).is_err());
+    }
+
+    #[test]
+    fn a_failing_stage_fails_the_pipeline_and_reports_its_stderr() {
+        let stages = vec![
+            stage("printf", &["abc"]),
+            stage("sh", &["-c", "echo boom >&2; exit 3"]),
+        ];
+        let err = run_pipeline_timed(&stages, Duration::from_secs(5))
+            .expect_err("a non-zero exit must fail the pipeline");
+        assert!(err.contains("exited with 3"), "{err}");
+        assert!(err.contains("boom"), "stderr must reach the error: {err}");
+    }
+
+    #[test]
+    fn a_pipeline_that_overruns_is_killed_as_a_whole() {
+        let stages = vec![
+            stage("sh", &["-c", "echo start; sleep 30"]),
+            stage("cat", &[]),
+        ];
+        let started = Instant::now();
+        let err = run_pipeline_timed(&stages, Duration::from_millis(200))
+            .expect_err("an overrunning pipeline must not succeed");
+        assert!(err.contains("did not finish within"), "{err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the deadline must be enforced, not waited out"
+        );
+    }
+
+    #[test]
+    fn a_missing_program_in_a_pipeline_is_reported_by_name() {
+        let stages = vec![stage("homevault-no-such-binary", &[])];
+        let err = run_pipeline_timed(&stages, Duration::from_secs(1))
+            .expect_err("a missing program is an error");
+        assert!(err.contains("Failed to run homevault-no-such-binary"), "{err}");
+    }
+
+    #[test]
+    fn truncate_tail_never_splits_a_character() {
+        let long = "x".repeat(1000);
+        assert_eq!(truncate_tail(&long, 10).chars().count(), 10);
+        assert_eq!(truncate_tail("short", 10), "short");
+        let unicode = "é".repeat(500);
+        assert_eq!(truncate_tail(&unicode, 3), "ééé");
     }
 
     #[test]

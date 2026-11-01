@@ -118,7 +118,11 @@ fn parse_key_file(content: &str, path: &std::path::Path) -> Result<[u8; 32], Str
 /// processes cannot clobber each other (the loser re-reads the winner's key).
 /// Losing this file makes stored secrets undecryptable — back it up with the
 /// data directory (backup codes keep working: they never touch the key).
-fn load_or_create_totp_key() -> Result<[u8; 32], String> {
+///
+/// `pub(crate)` so `storage::secret_box` seals other secrets (a backup
+/// tenant's repository password) with the same appliance key instead of
+/// introducing a second key file to back up.
+pub(crate) fn load_or_create_totp_key() -> Result<[u8; 32], String> {
     use base64::Engine;
     use std::io::Write;
 

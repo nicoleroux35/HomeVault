@@ -673,6 +673,12 @@ step "Verifying and installing system packages"
 # from now on happens inside the Setup Wizard itself, for the specific admin
 # the user names there.
 mkdir -p "$INSTALL_DIR" "$DATA_DIR" "/etc/homevault"
+# Generated service state owned by the service account (create mode 0700 so a
+# half-written module list is never world-readable):
+#   /etc/homevault-rsync       Rsync server modules + per-user secrets
+#   /etc/homevault-backup      backup-destination tenants + rest-server auth
+mkdir -p /etc/homevault-rsync /etc/homevault-backup
+chmod 700 /etc/homevault-rsync /etc/homevault-backup
 # Everything lives under /var/lib/homevault:
 #   data/       SQLite DB + JSON settings
 #   compose/    Docker Compose projects (one dir per app)
@@ -850,6 +856,10 @@ else
 fi
 
 install_optional aria2 "aria2 (multi-protocol downloader)"
+# `pv` is the bandwidth limiter of the snapshot-replication pipeline
+# (Backup → Replication: `zfs send | pv -L <rate> | …`). Without it a job
+# still replicates, it just runs unthrottled and the UI says so.
+install_optional pv "pv (snapshot replication bandwidth limit)"
 
 # Network persistence — netplan materializes the Network screen's persisted
 # interface config (`/etc/netplan/99-homevault-<if>.yaml` → `netplan apply`,
@@ -1268,6 +1278,45 @@ fi
 # have it — without this line the AI assistant silently stayed offline on
 # every new host. Installed as an option because Ollama itself is optional.
 install_optional zstd "zstd (required by the Ollama installer)"
+
+# rest-server — the append-only restic backend HomeVault exposes as a backup
+# destination (Backup → Destinations, docs/guides/backup-target.md). It is not
+# an apt package: fetch the upstream release for this architecture, best-effort
+# like Ollama. Without it the destination role simply reports
+# "rest-server is not installed" and stays off; every other backup path keeps
+# working.
+install_rest_server() {
+    if [[ "${HV_SKIP_OPTIONAL:-0}" == "1" ]]; then
+        info "Skipping rest-server (HV_SKIP_OPTIONAL=1)"
+        return 0
+    fi
+    if command -v rest-server &> /dev/null; then
+        ok "rest-server (backup destination) already installed"
+        return 0
+    fi
+    local arch
+    case "$(uname -m)" in
+        x86_64)  arch="linux_amd64" ;;
+        aarch64) arch="linux_arm64" ;;
+        armv7l)  arch="linux_armv7" ;;
+        *)       warn "rest-server has no build for $(uname -m) — the backup destination role stays off."
+                 return 0 ;;
+    esac
+    # Pinned release: a moving "latest" asset name cannot be fetched by URL.
+    local version="0.14.0"
+    local url="https://github.com/restic/rest-server/releases/download/v${version}/rest-server_${version}_${arch}.tar.gz"
+    local tmp
+    tmp="$(mktemp -d)"
+    if curl -fsSL "$url" -o "$tmp/rest-server.tar.gz" 2>/dev/null \
+        && tar -xzf "$tmp/rest-server.tar.gz" -C "$tmp" 2>/dev/null \
+        && install -m 0755 "$(find "$tmp" -type f -name rest-server | head -n 1)" /usr/local/bin/rest-server 2>/dev/null; then
+        ok "rest-server installed (backup destination)"
+    else
+        warn "rest-server not installed — HomeVault cannot receive restic backups. To add it later: download https://github.com/restic/rest-server/releases into /usr/local/bin."
+    fi
+    rm -rf "$tmp"
+}
+install_rest_server
 
 install_ollama() {
     if [[ "${HV_SKIP_OPTIONAL:-0}" == "1" ]]; then

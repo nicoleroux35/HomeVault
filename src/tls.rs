@@ -50,6 +50,7 @@
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -86,6 +87,66 @@ pub fn tls_active() -> bool {
     TLS_ACTIVE.load(Ordering::Relaxed)
 }
 
+/// A clone of the config the running HTTPS listener was bound with.
+///
+/// `axum_server::RustlsConfig` is a thin `Arc<ArcSwap<ServerConfig>>`: every
+/// clone shares the same swap cell the accept loop reads, so reloading through
+/// this copy changes what the *live* listener serves — no rebind, no restart.
+static TLS_CONFIG: OnceLock<axum_server::tls_rustls::RustlsConfig> = OnceLock::new();
+
+/// The server handle, kept so `web::run`'s shutdown task and a future
+/// connection-count report can reach the listener. Certificate reloading goes
+/// through [`TLS_CONFIG`], not through this.
+static TLS_HANDLE: OnceLock<axum_server::Handle<std::net::SocketAddr>> = OnceLock::new();
+
+/// Remember the live config so a renewed pair can be swapped in place.
+pub fn set_tls_config(config: axum_server::tls_rustls::RustlsConfig) {
+    let _ = TLS_CONFIG.set(config);
+}
+
+/// Remember the server handle of the running HTTPS listener (once).
+pub fn install_reload_handle(handle: axum_server::Handle<std::net::SocketAddr>) {
+    let _ = TLS_HANDLE.set(handle);
+}
+
+/// Swap the certificate the running HTTPS listener serves, without a restart.
+///
+/// Re-reads the pair the *current* TLS settings resolve to, so an automated
+/// renewal (`data/acme/tls/{cert,key}.pem`) and a manual pair both go through
+/// the same path. New connections get the new certificate; connections already
+/// open keep theirs, which is what TLS expects.
+pub async fn reload_tls_config() -> Result<(), String> {
+    let config = TLS_CONFIG
+        .get()
+        .ok_or("the HTTPS listener is not running")?;
+    let settings = load_settings();
+    let (cert, key) = resolved_cert_key_paths(&settings)?;
+    config
+        .reload_from_pem_file(&cert, &key)
+        .await
+        .map_err(|e| format!("reload the certificate: {e}"))
+}
+
+/// Whether a live listener is available for a hot reload.
+pub fn reload_available() -> bool {
+    TLS_CONFIG.get().is_some()
+}
+
+/// Push the pair certificate automation just installed to the live listener.
+///
+/// Returns `Ok(false)` when there is nothing to do — HTTPS is off, the
+/// listener does not use the automated pair, or it was never bound. The
+/// certificate is on disk either way and the next start picks it up, so none
+/// of those is an error.
+pub async fn reload_acme_certificate() -> Result<bool, String> {
+    let settings = load_settings();
+    if !settings.enabled || settings.mode != TlsMode::Acme || !reload_available() {
+        return Ok(false);
+    }
+    reload_tls_config().await?;
+    Ok(true)
+}
+
 /// Which certificate the HTTPS listener uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -95,6 +156,9 @@ pub enum TlsMode {
     SelfSigned,
     /// The admin supplies their own PEM certificate + key.
     Manual,
+    /// Certificate automation (see [`crate::acme`]) issues and renews a
+    /// publicly trusted certificate; the listener reads the pair it installed.
+    Acme,
 }
 
 /// Persisted TLS settings (`data/tls.json`). Contains file *paths* only — never
@@ -378,6 +442,25 @@ pub fn resolved_cert_key_paths(settings: &TlsSettings) -> Result<(PathBuf, PathB
             validate_pem_path(key, "private key")?;
             Ok((PathBuf::from(cert), PathBuf::from(key)))
         }
+        TlsMode::Acme => {
+            // Automation mode is only reachable once a certificate has been
+            // issued (the handler refuses the switch before that). If the pair
+            // has gone missing since — an operator deleted data/acme, a failed
+            // restore — fall back to the self-signed pair with a loud warning
+            // rather than refusing to serve HTTPS at all.
+            if crate::acme::automation_active() {
+                Ok((
+                    crate::acme::issued_cert_path(),
+                    crate::acme::issued_key_path(),
+                ))
+            } else {
+                tracing::warn!(
+                    "TLS: automation mode selected but no issued certificate is present; \
+                     falling back to the self-signed pair"
+                );
+                ensure_self_signed()
+            }
+        }
     }
 }
 
@@ -431,6 +514,13 @@ pub fn validate_settings(new: &TlsSettings, http_port: u16) -> Result<(), String
     }
     if port == http_port {
         return Err("HTTPS port must differ from the HTTP port".to_string());
+    }
+
+    if new.enabled && new.mode == TlsMode::Acme && !crate::acme::automation_active() {
+        return Err(
+            "certificate automation must be enabled and have issued a certificate first"
+                .to_string(),
+        );
     }
 
     if new.enabled && new.mode == TlsMode::Manual {
@@ -549,6 +639,18 @@ fn fmt_ip(bytes: &[u8]) -> String {
 
 /// Certificate info for the currently-configured cert (for the Settings card).
 /// Never errors — problems are reported in [`CertInfo::error`].
+/// Days left on the certificate at `path`, or `None` when it cannot be read.
+/// Used by certificate automation to decide whether a renewal is due.
+pub fn cert_days_remaining(path: &std::path::Path) -> Option<i64> {
+    read_cert_info(path).days_remaining
+}
+
+/// RFC 3339 expiry of the certificate at `path`, or `None` when it cannot be
+/// read. Used by certificate automation to record when a renewal is due.
+pub fn cert_not_after(path: &std::path::Path) -> Option<String> {
+    read_cert_info(path).not_after
+}
+
 pub fn certificate_info(settings: &TlsSettings) -> CertInfo {
     let path = match settings.mode {
         TlsMode::SelfSigned => self_signed_cert_path(),
@@ -565,6 +667,16 @@ pub fn certificate_info(settings: &TlsSettings) -> CertInfo {
                 }
             }
         },
+        TlsMode::Acme => {
+            if crate::acme::issued_cert_path().exists() {
+                crate::acme::issued_cert_path()
+            } else {
+                return CertInfo {
+                    error: Some("no certificate issued yet".to_string()),
+                    ..Default::default()
+                };
+            }
+        }
     };
     if matches!(settings.mode, TlsMode::SelfSigned) && !path.exists() {
         return CertInfo {

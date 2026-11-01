@@ -119,13 +119,17 @@ use crate::handlers::{
         handle_explorer_disks, handle_explorer_download, handle_explorer_download_ticket,
         handle_explorer_eject, handle_explorer_extract, handle_explorer_favorites_add,
         handle_explorer_favorites_list, handle_explorer_favorites_remove, handle_explorer_format,
-        handle_explorer_history, handle_explorer_list, handle_explorer_mkdir, handle_explorer_move,
+        handle_explorer_history, handle_explorer_instant_copy_get,
+        handle_explorer_instant_copy_update, handle_explorer_list, handle_explorer_mkdir,
+        handle_explorer_move,
         handle_explorer_network_discovery, handle_explorer_permissions, handle_explorer_preview,
         handle_explorer_recents_clear, handle_explorer_recents_list, handle_explorer_recents_touch,
         handle_explorer_rename, handle_explorer_roots, handle_explorer_save,
         handle_explorer_search, handle_explorer_snapshots, handle_explorer_thumbnail,
         handle_explorer_thumbnail_ticket, handle_explorer_trash, handle_explorer_trash_empty,
-        handle_explorer_trash_list, handle_explorer_trash_purge, handle_explorer_trash_restore,
+        handle_explorer_trash_list, handle_explorer_trash_policy_get,
+        handle_explorer_trash_policy_update, handle_explorer_trash_purge,
+        handle_explorer_trash_purge_now, handle_explorer_trash_restore,
         handle_explorer_upload, handle_explorer_upload_chunk, handle_explorer_upload_complete,
         handle_explorer_upload_session_abort, handle_explorer_upload_session_start,
         handle_explorer_watch, handle_explorer_watch_ticket,
@@ -219,7 +223,7 @@ use crate::handlers::{
     },
     share_links::{
         handle_share_link_create, handle_share_link_delete, handle_share_link_download,
-        handle_share_links_list,
+        handle_share_link_unlock, handle_share_links_list,
     },
     shares::{
         handle_ftp_config_get, handle_ftp_config_update, handle_nfs_config_get,
@@ -228,9 +232,28 @@ use crate::handlers::{
         handle_share_delete, handle_share_get, handle_share_service_restart,
         handle_share_service_start, handle_share_service_stop, handle_share_toggle,
         handle_share_update, handle_shares_list, handle_smb_config_get, handle_smb_config_update,
-        handle_webdav_config_get, handle_webdav_config_update,
+        handle_smb_recycle_list, handle_smb_recycle_set, handle_smb_time_machine_list,
+        handle_smb_time_machine_set, handle_webdav_config_get, handle_webdav_config_update,
+    },
+    rsync::{
+        handle_rsync_module_create, handle_rsync_module_delete, handle_rsync_module_update,
+        handle_rsync_secret_delete, handle_rsync_secret_set, handle_rsync_settings_update,
+        handle_rsync_state,
     },
     shortcuts::handle_fetch_metadata,
+    backup_target::{
+        handle_backup_target_settings_update, handle_backup_target_state,
+        handle_backup_tenant_create, handle_backup_tenant_delete, handle_backup_tenant_rotate,
+        handle_backup_tenant_update, handle_backup_tenant_verify,
+    },
+    replication::{
+        handle_replication_job_create, handle_replication_job_delete,
+        handle_replication_job_update, handle_replication_jobs_list,
+        handle_replication_preview, handle_replication_run_now,
+    },
+    snapshot_locks::{
+        handle_snapshot_lock_create, handle_snapshot_lock_release, handle_snapshot_locks_list,
+    },
     snapshot_schedules::{
         handle_snapshot_pool_list, handle_snapshot_schedule_create,
         handle_snapshot_schedule_delete, handle_snapshot_schedule_run_now,
@@ -256,13 +279,11 @@ use crate::handlers::{
         handle_virtual_disk_scrub, handle_virtual_disk_scrub_status, handle_virtual_disks_list,
     },
     syncthing::{
-        handle_syncthing_config, handle_syncthing_connections,
-        handle_syncthing_create_device, handle_syncthing_create_folder,
-        handle_syncthing_delete_device, handle_syncthing_delete_folder,
-        handle_syncthing_devices, handle_syncthing_errors, handle_syncthing_folders,
-        handle_syncthing_pause_device, handle_syncthing_restart,
-        handle_syncthing_resume_device, handle_syncthing_scan_folder,
-        handle_syncthing_status,
+        handle_syncthing_config, handle_syncthing_connections, handle_syncthing_create_device,
+        handle_syncthing_create_folder, handle_syncthing_delete_device,
+        handle_syncthing_delete_folder, handle_syncthing_devices, handle_syncthing_errors,
+        handle_syncthing_folders, handle_syncthing_pause_device, handle_syncthing_restart,
+        handle_syncthing_resume_device, handle_syncthing_scan_folder, handle_syncthing_status,
     },
     system::{handle_server_restart, handle_server_shutdown},
     transfer_quotas::{
@@ -476,6 +497,41 @@ pub fn create_app(state: AppStateArc) -> Router {
             post(handle_generate_recovery_code),
         )
         .route("/api/auth/setup-status", get(handle_setup_status))
+        // Account recovery through a verified rescue address. Public by
+        // necessity — a locked-out user has no session — and answering the
+        // same thing whether or not the account exists.
+        .route(
+            "/api/auth/recover",
+            post(crate::handlers::identity::handle_recover_request),
+        )
+        .route(
+            "/api/auth/recover/verify",
+            post(crate::handlers::identity::handle_recover_verify),
+        )
+        // Identity: trusted devices and the rescue address of the caller's own
+        // account (no id in the path — the session names the account).
+        .route(
+            "/api/identity/devices",
+            get(crate::handlers::identity::handle_devices_list),
+        )
+        .route(
+            "/api/identity/devices/revoke",
+            post(crate::handlers::identity::handle_device_revoke),
+        )
+        .route(
+            "/api/identity/devices/revoke-all",
+            post(crate::handlers::identity::handle_devices_revoke_all),
+        )
+        .route(
+            "/api/identity/rescue-email",
+            get(crate::handlers::identity::handle_rescue_email_get)
+                .post(crate::handlers::identity::handle_rescue_email_set)
+                .delete(crate::handlers::identity::handle_rescue_email_clear),
+        )
+        .route(
+            "/api/identity/rescue-email/verify",
+            post(crate::handlers::identity::handle_rescue_email_verify),
+        )
         // The public first-run bootstrap routes (`setup`, `setup/verify-totp`,
         // `check-username`) are registered separately below, behind the
         // local-network guard. Re-baselining after a hardware change is
@@ -567,10 +623,177 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/settings/tls/regenerate",
             post(crate::handlers::tls::handle_tls_regenerate),
         )
+        // Settings - certificate automation (admin-only). Issuance runs in the
+        // background: a DNS-01 order waits minutes for propagation, which no
+        // request deadline allows.
+        .route(
+            "/api/settings/acme",
+            get(crate::handlers::acme::handle_acme_settings_get)
+                .put(crate::handlers::acme::handle_acme_settings_update),
+        )
+        .route(
+            "/api/settings/acme/issue",
+            post(crate::handlers::acme::handle_acme_issue),
+        )
+        .route(
+            "/api/settings/acme/confirm",
+            post(crate::handlers::acme::handle_acme_confirm),
+        )
+        .route(
+            "/api/settings/acme/test-challenge",
+            post(crate::handlers::acme::handle_acme_test_challenge),
+        )
+        // Settings - dynamic DNS (admin-only).
+        .route(
+            "/api/settings/ddns",
+            get(crate::handlers::ddns::handle_ddns_settings_get)
+                .put(crate::handlers::ddns::handle_ddns_settings_update),
+        )
+        .route(
+            "/api/settings/ddns/update",
+            post(crate::handlers::ddns::handle_ddns_update_now),
+        )
+        // Settings - reachability advisor (admin-only, read-only).
+        .route(
+            "/api/settings/reachability",
+            get(crate::handlers::reachability::handle_reachability_get),
+        )
+        // Settings - remote syslog forwarding (admin-only). The destination
+        // decides where this box's audit trail ends up, so both verbs are
+        // admin-gated, and `test` sends a real message to the configured
+        // collector.
+        .route(
+            "/api/settings/syslog",
+            get(crate::handlers::syslog::handle_syslog_settings_get)
+                .put(crate::handlers::syslog::handle_syslog_settings_update),
+        )
+        .route(
+            "/api/settings/syslog/test",
+            post(crate::handlers::syslog::handle_syslog_test),
+        )
+        // Wake-on-LAN (admin-only). Sending a magic packet is a network action
+        // taken by the appliance, and the saved list is what the scheduled-task
+        // "wake first" picker reads.
+        .route(
+            "/api/power/wol/hosts",
+            get(crate::handlers::wol::handle_wol_hosts_list)
+                .post(crate::handlers::wol::handle_wol_host_create),
+        )
+        .route(
+            "/api/power/wol/hosts/{id}",
+            put(crate::handlers::wol::handle_wol_host_update)
+                .delete(crate::handlers::wol::handle_wol_host_delete),
+        )
+        .route(
+            "/api/power/wol/wake",
+            post(crate::handlers::wol::handle_wol_wake),
+        )
         // Settings - export/import/reset
+        // Full configuration backup and restore (QW-11): one archive that can
+        // rebuild the box, optionally encrypted, restore staged for the next
+        // start. The archive travels as a raw body (it is binary).
+        .route(
+            "/api/settings/config-backup",
+            get(crate::handlers::config_backup::handle_config_backup_state),
+        )
+        .route(
+            "/api/settings/config-backup/export",
+            post(crate::handlers::config_backup::handle_config_backup_export),
+        )
+        .route(
+            // Catch-all on purpose: a traversal attempt (`../secrets`, `x/y`)
+            // must reach the handler and be refused there with a named reason,
+            // rather than disappearing into a router-level 404.
+            "/api/settings/config-backup/archives/{*id}",
+            get(crate::handlers::config_backup::handle_config_backup_download),
+        )
+        .route(
+            "/api/settings/config-backup/inspect",
+            post(crate::handlers::config_backup::handle_config_backup_inspect),
+        )
+        .route(
+            "/api/settings/config-backup/restore",
+            post(crate::handlers::config_backup::handle_config_backup_restore),
+        )
         .route("/api/settings/export", get(handle_settings_export))
         .route("/api/settings/import", post(handle_settings_import))
         .route("/api/settings/reset", post(handle_settings_reset))
+        // Security - login auto-block (QW-05): the policy, the blocked
+        // addresses, and the two ways to lift a block (one, or all).
+        .route(
+            "/api/security/auto-block",
+            get(crate::handlers::auto_block::handle_auto_block_get)
+                .put(crate::handlers::auto_block::handle_auto_block_update),
+        )
+        .route(
+            "/api/security/auto-block/pardon",
+            post(crate::handlers::auto_block::handle_auto_block_pardon),
+        )
+        .route(
+            "/api/security/auto-block/clear",
+            post(crate::handlers::auto_block::handle_auto_block_clear),
+        )
+        .route(
+            "/api/security/auto-block/sweep",
+            post(crate::handlers::auto_block::handle_auto_block_sweep),
+        )
+        // Security - who is connected over the file protocols (QW-06), and
+        // disconnecting one client. The body names a client id, never a pid.
+        .route(
+            "/api/security/connected-clients",
+            get(crate::handlers::connected_clients::handle_connected_clients_list),
+        )
+        .route(
+            "/api/security/connected-clients/kick",
+            post(crate::handlers::connected_clients::handle_connected_client_kick),
+        )
+        // Passkeys / WebAuthn (Phase 1 P1.3). The two ceremonies are bound to
+        // a server-generated single-use challenge and to the origin derived
+        // from the configured hostname; sign-in with a passkey creates a normal
+        // session and is recorded in the login history.
+        .route(
+            "/api/passkeys",
+            get(crate::handlers::passkey::handle_passkeys_list),
+        )
+        .route(
+            "/api/passkeys/register/begin",
+            post(crate::handlers::passkey::handle_passkey_register_begin),
+        )
+        .route(
+            "/api/passkeys/register/finish",
+            post(crate::handlers::passkey::handle_passkey_register_finish),
+        )
+        .route(
+            "/api/passkeys/login/begin",
+            post(crate::handlers::passkey::handle_passkey_login_begin),
+        )
+        .route(
+            "/api/passkeys/login/finish",
+            post(crate::handlers::passkey::handle_passkey_login_finish),
+        )
+        .route(
+            "/api/passkeys/sweep",
+            post(crate::handlers::passkey::handle_passkey_sweep),
+        )
+        .route(
+            "/api/passkeys/{id}",
+            axum::routing::patch(crate::handlers::passkey::handle_passkey_rename)
+                .delete(crate::handlers::passkey::handle_passkey_delete),
+        )
+        // Global file search (QW-12) - one query over every root the caller
+        // may read, merged and capped. Any signed-in user: the answer is
+        // confined to the roots their own Explorer session would list.
+        .route(
+            "/api/search/files",
+            get(crate::handlers::search::handle_search_files),
+        )
+        // Security - read-only hardening audit (QW-10). One answer to "is this
+        // box safely configured?", aggregated from the signals each of the
+        // other cards already shows. No write route: every fix is a deep link.
+        .route(
+            "/api/security/advisor",
+            get(crate::handlers::security_advisor::handle_security_advisor),
+        )
         // Security - sessions and login history
         .route("/api/security/sessions", get(handle_get_my_sessions))
         .route(
@@ -1111,6 +1334,57 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/snapshot-schedules/{id}/run",
             post(handle_snapshot_schedule_run_now),
         )
+        // Backup destination (P2.3): receive restic backups, append-only, one
+        // quota'd tenant per source (see docs/guides/backup-target.md).
+        .route("/api/backup-target", get(handle_backup_target_state))
+        .route(
+            "/api/backup-target/config",
+            axum::routing::put(handle_backup_target_settings_update),
+        )
+        .route(
+            "/api/backup-target/tenants",
+            post(handle_backup_tenant_create),
+        )
+        .route(
+            "/api/backup-target/tenants/{id}",
+            axum::routing::put(handle_backup_tenant_update)
+                .delete(handle_backup_tenant_delete),
+        )
+        .route(
+            "/api/backup-target/tenants/{id}/rotate",
+            post(handle_backup_tenant_rotate),
+        )
+        .route(
+            "/api/backup-target/tenants/{id}/verify",
+            post(handle_backup_tenant_verify),
+        )
+        // Snapshot replication (P2.4): scheduled catch-up on a dedicated
+        // host over SSH or a local dataset (see docs/guides/replication.md).
+        .route(
+            "/api/replication",
+            get(handle_replication_jobs_list).post(handle_replication_job_create),
+        )
+        .route(
+            "/api/replication/{id}",
+            axum::routing::put(handle_replication_job_update)
+                .delete(handle_replication_job_delete),
+        )
+        .route(
+            "/api/replication/{id}/preview",
+            get(handle_replication_preview),
+        )
+        .route(
+            "/api/replication/{id}/run",
+            post(handle_replication_run_now),
+        )
+        // Immutable snapshots (P2.5): a lock enforced by `zfs hold` / a
+        // read-only Btrfs subvolume, released early only with a typed phrase.
+        .route("/api/snapshots/locks", get(handle_snapshot_locks_list))
+        .route("/api/snapshots/locks", post(handle_snapshot_lock_create))
+        .route(
+            "/api/snapshots/locks/{id}",
+            axum::routing::delete(handle_snapshot_lock_release),
+        )
         // Historical metrics (see docs/guides/metrics.md) — read-only for
         // authed users; samples are written only by the collector loop.
         .route("/api/metrics/history", get(handle_metrics_history))
@@ -1153,6 +1427,14 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/explorer/rename", post(handle_explorer_rename))
         .route("/api/explorer/copy", post(handle_explorer_copy))
         .route("/api/explorer/move", post(handle_explorer_move))
+        .route(
+            "/api/explorer/instant-copy",
+            get(handle_explorer_instant_copy_get),
+        )
+        .route(
+            "/api/explorer/instant-copy",
+            put(handle_explorer_instant_copy_update),
+        )
         .route(
             "/api/explorer/permissions",
             get(handle_explorer_permissions),
@@ -1200,6 +1482,14 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route(
             "/api/explorer/trash/restore",
             post(handle_explorer_trash_restore),
+        )
+        .route(
+            "/api/explorer/trash/policy",
+            get(handle_explorer_trash_policy_get).put(handle_explorer_trash_policy_update),
+        )
+        .route(
+            "/api/explorer/trash/purge-now",
+            post(handle_explorer_trash_purge_now),
         )
         .route(
             "/api/explorer/trash/{id}",
@@ -1262,6 +1552,45 @@ pub fn create_app(state: AppStateArc) -> Router {
         )
         .route("/api/shares/smb/config", get(handle_smb_config_get))
         .route("/api/shares/smb/config", put(handle_smb_config_update))
+        .route("/api/shares/smb/recycle", get(handle_smb_recycle_list))
+        .route(
+            "/api/shares/{name}/smb/recycle",
+            put(handle_smb_recycle_set),
+        )
+        // Time Machine over SMB (`vfs_fruit`); the mDNS publisher picks up
+        // the `_adisk._tcp` advertisement on its next tick.
+        .route(
+            "/api/shares/smb/time-machine",
+            get(handle_smb_time_machine_list),
+        )
+        .route(
+            "/api/shares/{name}/smb/time-machine",
+            put(handle_smb_time_machine_set),
+        )
+        .route(
+            "/api/shares/{name}/{share_type}/quota",
+            get(crate::handlers::share_quota::handle_share_quota_get)
+                .put(crate::handlers::share_quota::handle_share_quota_set)
+                .delete(crate::handlers::share_quota::handle_share_quota_clear),
+        )
+        // Opt-in Rsync server: one authenticated module per flagged share,
+        // served by a dedicated unit (see docs/guides/rsync.md).
+        .route("/api/shares/rsync", get(handle_rsync_state))
+        .route(
+            "/api/shares/rsync/config",
+            axum::routing::put(handle_rsync_settings_update),
+        )
+        .route("/api/shares/rsync/modules", post(handle_rsync_module_create))
+        .route(
+            "/api/shares/rsync/modules/{name}",
+            axum::routing::put(handle_rsync_module_update)
+                .delete(handle_rsync_module_delete),
+        )
+        .route(
+            "/api/shares/rsync/users/{user}/secret",
+            axum::routing::put(handle_rsync_secret_set)
+                .delete(handle_rsync_secret_delete),
+        )
         .route("/api/shares/nfs/config", get(handle_nfs_config_get))
         .route("/api/shares/nfs/config", put(handle_nfs_config_update))
         .route("/api/shares/sftp/config", get(handle_sftp_config_get))
@@ -1352,6 +1681,18 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/users/{username}/sessions",
             axum::routing::get(handle_admin_user_sessions)
                 .delete(handle_admin_revoke_user_sessions),
+        )
+        .route(
+            // Admin view of another account's trusted browsers. Self-service
+            // revocation needs a signed-in session, which is exactly what a
+            // user who lost their second-factor device does not have.
+            "/api/users/{username}/trusted-devices",
+            axum::routing::get(crate::handlers::identity::handle_admin_user_devices)
+                .delete(crate::handlers::identity::handle_admin_devices_revoke_all),
+        )
+        .route(
+            "/api/users/{username}/trusted-devices/revoke",
+            axum::routing::post(crate::handlers::identity::handle_admin_device_revoke),
         )
         .route(
             "/api/users/{username}/role",
@@ -1753,7 +2094,16 @@ pub fn create_app(state: AppStateArc) -> Router {
     // router so the public route can reach `AppState`.
     let public_share = Router::new()
         .route("/share/{token}", get(handle_share_link_download))
+        .route("/share/{token}/unlock", post(handle_share_link_unlock))
         .with_state(state.clone());
+
+    // ACME HTTP-01 challenge answers. Public by definition — the certificate
+    // authority fetching the token has no session — and outside `/api`, so the
+    // CSRF and contract layers do not apply to it.
+    let acme_challenge = Router::new().route(
+        crate::acme::challenge_route_path().as_str(),
+        get(crate::handlers::acme::handle_acme_challenge),
+    );
 
     // Terminal WebSocket route: native PTY, no external process or proxy hop.
     let ws_api = crate::handlers::terminal_pty::create_terminal_router(state.clone());
@@ -1766,6 +2116,15 @@ pub fn create_app(state: AppStateArc) -> Router {
 
     // Nest the VM console WebSocket under /api/vm (just /console/ws).
     let api_with_terminal = api_with_terminal.nest("/api/vm", vm_ws_api);
+
+    // Login auto-block (QW-05): an address with a live ban is refused before any
+    // handler runs, but only when the request carries no session — a session
+    // granted before the ban is not revoked here (that is what "revoke sessions"
+    // is for), and an authenticated admin must never be locked out by a layer.
+    let api_with_terminal = api_with_terminal.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::middleware::auto_block_middleware,
+    ));
 
     // CSRF protection, scoped to /api/* only (not the SPA fallback or static
     // asset serving, which are GET-only anyway) — applied here, before the
@@ -1804,6 +2163,7 @@ pub fn create_app(state: AppStateArc) -> Router {
     api_with_terminal
         .merge(spa)
         .merge(public_share)
+        .merge(acme_challenge)
         .route("/static/{*path}", get(serve_static_file))
         .layer(cors)
         .layer(RequestBodyLimitLayer::new(10 * 1024 * 1024 * 1024))
@@ -1882,6 +2242,24 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let data_dir = crate::config::paths::data_dir();
     std::fs::create_dir_all(&data_dir)?;
+
+    // A staged configuration restore (QW-11) is applied **before** the database
+    // is opened: replacing a SQLite file underneath a live pool is the one thing
+    // this feature must not pretend to do, and the previous database is kept as
+    // `homevault.db.pre-restore`. Best-effort with a loud log — a restore that
+    // cannot be applied must not stop the box from booting on the old data.
+    match crate::config_backup::apply_pending_restore() {
+        Ok(Some(manifest)) => tracing::warn!(
+            created_at = %manifest.created_at,
+            entries = manifest.entries.len(),
+            "Applied a staged configuration restore (previous database kept as homevault.db.pre-restore)"
+        ),
+        Ok(None) => {}
+        Err(e) => tracing::error!(
+            "A staged configuration restore could not be applied, continuing with the current database: {e}"
+        ),
+    }
+
     let db_path = crate::config::paths::database_path();
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
 
@@ -2028,10 +2406,20 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tokio::spawn(crate::journal_cleanup_scheduler::run_scheduler_loop(
         state.clone(),
     ));
+    tokio::spawn(crate::trash_scheduler::run_scheduler_loop(state.clone()));
     tokio::spawn(crate::scheduled_tasks_scheduler::run_scheduler_loop(
         state.clone(),
     ));
     tokio::spawn(crate::snapshot_scheduler::run_scheduler_loop(state.clone()));
+    tokio::spawn(crate::snapshot_lock_scheduler::run_release_loop(
+        state.clone(),
+    ));
+    tokio::spawn(crate::replication_scheduler::run_scheduler_loop(
+        state.clone(),
+    ));
+    tokio::spawn(crate::backup_target_scheduler::run_scheduler_loop(
+        state.clone(),
+    ));
     tokio::spawn(crate::metrics::run_collector_loop(state.db.pool()));
     // Transfer quotas (ROADMAP 23.2): re-opens the counters of every subject
     // whose counting window elapsed, so the Quotas/Users screens show a reset
@@ -2195,6 +2583,20 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     });
     tracing::info!("Notification engine and progress-job cleanup started");
 
+    // Certificate automation: one daily pass that renews inside the window and
+    // backs off on failure. Started unconditionally and inert while the
+    // feature is disabled, so enabling it later needs no restart.
+    tokio::spawn(crate::acme_worker::run(state.clone()));
+
+    // Dynamic DNS: one pass every five minutes, inert while disabled. Kept in
+    // the same place as the certificate worker because the two features are
+    // only useful together: the certificate names the DDNS name.
+    tokio::spawn(crate::ddns::run());
+
+    // Remote syslog forwarding: one queue drained by one worker, inert while
+    // the feature is disabled, so enabling it later needs no restart.
+    tokio::spawn(crate::syslog_forward::run());
+
     let app = create_app(state.clone());
 
     // ---- Built-in HTTPS/TLS: optional second listener -----------------------
@@ -2208,6 +2610,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if tls_settings.enabled {
         match crate::tls::build_rustls_config(&tls_settings).await {
             Ok(rustls_config) => {
+                crate::tls::set_tls_config(rustls_config.clone());
                 let https_port = tls_settings.effective_https_port();
                 let https_addr: SocketAddr = ([0, 0, 0, 0], https_port).into();
                 // Tag every request on this listener so `security_headers`
@@ -2225,6 +2628,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     let _ = tokio::signal::ctrl_c().await;
                     shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
                 });
+                // Keep the live handle so a renewed certificate can be pushed
+                // to this listener without a restart (see `tls::reload_tls_config`).
+                crate::tls::install_reload_handle(handle.clone());
                 tokio::spawn(async move {
                     if let Err(e) = axum_server::bind_rustls(https_addr, rustls_config)
                         .handle(handle)
