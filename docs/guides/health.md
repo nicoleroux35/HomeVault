@@ -180,6 +180,131 @@ Per-check contracts that are easy to regress (all fixed 2026-10-22):
   "no SMART data" — never reintroduce one. Results are cached 600 s
   (`DISK_SMART_CACHE`).
 
+## Security Advisor (QW-10 / DSM-18)
+
+Health answers "is the machine running?". The Security / Firewall / Antivirus /
+TLS cards each answer one question about one subsystem. Nothing answered *"is
+this box safely configured, and what should I fix first?"* — which is the
+question that actually brings a home user to this screen. The Security Advisor
+does, and only that.
+
+**It is strictly read-only.** There is one route, `GET /api/security/advisor`
+(admin-only), and no write route at all. Every fix is a deep link to the screen
+that owns the setting, so a finding can never disagree with the card it points
+at.
+
+### Endpoint
+
+| Route | Auth | Answers |
+|---|---|---|
+| `GET /api/security/advisor` | admin | `{ score, counts, findings[], generated_at, app_version }` |
+
+`401` for no session or an unknown token, `403` for a signed-in non-admin — the
+report names accounts, the certificate, the firewall and the shares, so it is
+the security posture of the appliance, not public information.
+
+Response shape:
+
+```json
+{
+  "score": 76,
+  "counts": { "pass": 4, "info": 4, "warn": 7, "fail": 0, "total": 15 },
+  "findings": [
+    {
+      "id": "admins-2fa",
+      "severity": "warn",
+      "title": "1 administrator(s) do not use two-factor authentication",
+      "evidence": "1 admin(s) without 2FA",
+      "fix": "Turn on 2FA for every administrator: …",
+      "link": { "app": "account", "category": null }
+    }
+  ],
+  "generated_at": "2026-10-31T18:08:48+00:00",
+  "app_version": "1.0.0"
+}
+```
+
+`id` is API: the frontend keys on it and the tests assert on it. `severity` is
+one of `pass` / `info` / `warn` / `fail`. `link.app` is a desktop app id
+(`settings`, `users`, `shares`, `account`, `health`); `link.category` names the
+Settings category when the target is Settings.
+
+### The checklist
+
+Fifteen checks, each a pure function of an `AdvisorFacts` value
+(`src/security_advisor.rs`), so both directions of every check are unit-tested
+without an appliance.
+
+| id | Checks | Severity when it trips |
+|---|---|---|
+| `admins-count` | at least one administrator exists | `warn` if none |
+| `default-admin-name` | no account is named `admin` / `administrator` / `root` | `warn` |
+| `admins-2fa` | every administrator uses two-factor authentication | `warn` |
+| `admins-password-change` | no administrator holds an administrator-chosen password | `warn` |
+| `tls-enabled` | HTTPS is on | `warn` |
+| `tls-trusted` | the certificate is not self-signed | `info` (fine on a LAN) |
+| `tls-expiry` | the certificate is valid and not about to lapse | `fail` expired, `warn` < 14 days |
+| `acme` | automatic renewal is on | `info` |
+| `firewall-enabled` | `ufw` is active | `warn` |
+| `firewall-rules` | the SSH and web ports are still allowed through | `fail` (locks the admin out) |
+| `smb-guest` | guest access is off | `fail` |
+| `smb-signing` | `server signing = mandatory` | `warn` |
+| `smb-protocol` | the minimum protocol is not SMB1 / NT1 | `fail` |
+| `shares-world-writable` | no share folder carries the `other write` bit | `warn` |
+| `shares-quota` | at least one share has a size limit | `info` (optional safety net) |
+| `snapshots` | at least one snapshot schedule is enabled | `warn` |
+| `config-backup` | a configuration archive (`.hvbak`) exists | `warn` |
+| `login-auto-block` | repeated failed sign-ins are blocked | `info` (recommended) |
+| `updates` | no HomeVault update is available | `warn` |
+
+Checks whose premise is absent are **skipped**, not passed: `tls-*` and `acme`
+are not judged when HTTPS is off, `firewall-rules` when the firewall is off,
+the three `smb-*` checks when no share uses SMB.
+
+### Three rules the implementation is built on
+
+1. **A signal that cannot be read is never a pass.** Every fact is an
+   `Option`; an unreadable one becomes an `info` finding saying so, with the
+   screen that owns the signal as its link. A green tick on an unknown state is
+   the one thing an audit must never produce.
+2. **The score is arithmetic, not opinion.** `pass` and `info` weigh 1, `warn`
+   ½, `fail` 0; the score is the weighted percentage, **floored** so 99.6 can
+   never display as a pass-looking 100. The counting is a pure function, pinned
+   by fixture tests.
+3. **Nothing is cached.** Each call re-reads the appliance, so a fixed finding
+   disappears on the very next run — no restart, no invalidation step.
+
+The update check reads the **cached** answer
+(`handlers::settings::CACHED_UPDATE_RESULT`) only: opening the advisor never
+contacts a third party, and "not checked yet" is its own `info` finding rather
+than a pass.
+
+No secret ever reaches the payload: the report carries verdicts, evidence and
+deep links — no hash, no TOTP secret, no token. Pinned by
+`tests/security_advisor_integration.rs`.
+
+### Frontend
+
+`frontend/src/lib/components/health/SecurityAdvisorCard.svelte`, rendered at the
+top of `frontend/src/routes/Health.svelte` for `$isAdmin` sessions only. The
+score is a real `role="progressbar"` with `aria-valuenow`; the full checklist is
+a native `<details>`; every actionable finding carries an "Open …" button that
+dispatches the shared `hv-open-app` event (the same convention Explorer → Shares
+uses) with the Settings category when there is one. On a failed call the card
+shows an error instead of the previous score — an old "100" beside a network
+error would be the one misleading answer possible.
+
+### Where the signals come from
+
+`security_advisor::collect` reads the services the other screens already read —
+`UserRepository` + `User2faRepository`, `tls::load_settings` +
+`tls::certificate_info`, `acme::load_settings`, `firewall::ufw_available` +
+`firewall::get_status`, `SharesService::get_smb_config` and the share paths'
+permission bits, `ShareQuotaRepository`, `SnapshotScheduleRepository`,
+`IpBanRepository`, `PoolService::scan_pools` and `data/config-backups/`. The
+host-side probes (certificate files, SMB config, `stat` on each share path,
+pool scan, the `sudo ufw --version` probe) run inside one `spawn_blocking`.
+
 ## Invariants
 
 - `/health` requires a session (a past audit found dashboard endpoints open).
@@ -199,6 +324,13 @@ Per-check contracts that are easy to regress (all fixed 2026-10-22):
 - **Every host probe carries a deadline** (see above): `run_command` is the
   only allowed shape, and a timed-out probe degrades to `Unknown`, never to a
   fabricated value.
+- **The Security Advisor is read-only and never a green tick on an unknown.**
+  `GET /api/security/advisor` is admin-only, has no write counterpart, and
+  every `None` fact becomes an `info` finding that says the signal could not be
+  read. `tests/security_advisor_integration.rs` pins the admin matrix, the
+  report shape, the "fix it and the finding disappears on the next run"
+  criterion and the no-secret payload; `src/security_advisor.rs`'s unit tests
+  pin each check in both directions.
 
 ## Related
 

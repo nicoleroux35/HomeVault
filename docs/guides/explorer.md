@@ -27,8 +27,9 @@ to the configured `allowed_roots`.
 | `/explorer/mkdir` | POST | `?path=` | create folder |
 | `/explorer/delete` | POST | `?path=` | **admin-only** permanent delete — internal use only now (purge/empty-trash), the UI's Delete button calls `/explorer/trash` instead |
 | `/explorer/rename` | POST | `?path=&new_name=` | rename — **both** the source and the destination (a full path) are path-guard validated, so a rename can't move a file out of the allowed roots |
-| `/explorer/copy` | POST | `?source=&destination=` | copy; for a **directory** source, starts a tracked background job instead of blocking (see Advanced pool/job pattern below) |
-| `/explorer/move` | POST | `?source=&destination=` | move; for a directory, tries an instant atomic rename first, only uses a tracked job as a cross-filesystem fallback |
+| `/explorer/copy` | POST | `?source=&destination=` | copy; for a **directory** source, starts a tracked background job instead of blocking (see Advanced pool/job pattern below). A single file answers `method` (`clone` \| `kernel_copy` \| `stream`), `instant` and `bytes` — see *Instant copy (reflink)* |
+| `/explorer/move` | POST | `?source=&destination=` | move; for a directory, tries an instant atomic rename first, only uses a tracked job as a cross-filesystem fallback. A same-filesystem file move answers `method: null` (an atomic rename copies nothing, so no method is claimed) |
+| `/explorer/instant-copy` | GET / PUT | `{ mode }` (PUT) | instant-copy policy (see *Instant copy (reflink)*); GET any signed-in, PUT admin |
 | `/explorer/permissions` | GET/POST | `?path=&mode=` | read/set POSIX mode |
 | `/explorer/preview` | GET | `?path=` | text/image preview; `previewable: false` (no `content`) for anything that isn't text-like or an image |
 | `/explorer/extract` | POST | `?path=&destination=` | extract archive; checks the required tool (`tar`/`unzip`/`7z`/`gunzip`) is installed first and returns a clear error instead of a raw exec failure |
@@ -45,6 +46,8 @@ to the configured `allowed_roots`.
 | `/explorer/trash` | POST / GET / DELETE | `?path=` / — / — | move to trash / list everything in trash / empty trash |
 | `/explorer/trash/restore` | POST | `?id=` | move a trashed item back to its original path (cross-device EXDEV fallback) |
 | `/explorer/trash/{id}` | DELETE | — | permanently delete one trashed item |
+| `/explorer/trash/policy` | GET / PUT | `{ retention_days, max_bytes }` (PUT) | trash retention policy (see *Trash retention & auto-purge*); GET any signed-in, PUT admin |
+| `/explorer/trash/purge-now` | POST (admin) | — | run the retention pass now with the saved policy |
 | `/explorer/roots` | GET | — | labelled sidebar roots: `[{path, kind, name}]` — session user's home, each PathGuard root (`kind` = users/shares/media/appdata/system/storage), then every mounted virtual disk (`kind:"virtualdisk"`) |
 | `/explorer/save` | POST | `{ path, content }` | inline text/code editor — atomic temp-file + rename, 5 MB cap |
 | `/explorer/snapshots` | GET | `?path=` | ZFS snapshots covering that path, each with a read-only `browse_path` under `.zfs/snapshot/` |
@@ -58,24 +61,113 @@ to the configured `allowed_roots`.
 (`browser::CollisionStrategy`); `keep_both` uses `non_colliding_path` (` (N)`
 before the extension). Upload reports `skipped[]`.
 
-## Share by link (2026-09-12)
+## Share by link (2026-09-12, controls 2026-10-31)
 
-The Explorer can mint a revocable download link to a **file** and share it
-(URL + QR code) outside HomeVault — the arozos `file_share.html` pattern.
-Backend: `src/handlers/share_links.rs`; repo `src/storage/share_link_repo.rs`
-(rows in `explorer_share_links`, **migration 034**).
+Besides the token, a link can carry a **password**, a **download cap** and —
+through that cap — be a **one-time link**. The Explorer can mint a revocable
+download link to a **file** and share it (URL + QR code) outside HomeVault —
+the arozos `file_share.html` pattern. Backend:
+`src/handlers/share_links.rs`; repo `src/storage/share_link_repo.rs` (rows in
+`explorer_share_links`, **migrations 034 + 063**).
 
 | Endpoint | Method | Body / Query | Notes |
 |----------|--------|--------------|-------|
 | `/explorer/shares` | GET | — | the caller's links, newest first (auth) |
-| `/explorer/shares` | POST | `{ path, mode?, expires_days? }` | create a link for a file (auth) |
+| `/explorer/shares` | POST | `{ path, mode?, expires_days?, password?, max_downloads? }` | create a link for a file (auth) |
 | `/explorer/shares/{token}` | DELETE | — | revoke — owner or admin (auth) |
-| `/share/{token}` | GET | — | **public** download (outside `/api`) |
+| `/share/{token}/unlock` | POST | `{ password }` | **public** — exchanges the password for an unlock cookie |
+| `/share/{token}` | GET / HEAD | — | **public** download (outside `/api`) |
 
 Request/response shape (create/list): each link is a `ShareLinkView` —
 `token`, `username`, `path`, `mode` (`anyone` \| `signed_in`), `expires_at`
 (RFC-3339 or `null` = never), `created_at`, `share_path` (`/share/<token>`),
-`expired` (bool).
+`expired`, `protected` (a password is set), `max_downloads` (`null` = no cap),
+`download_count`, `exhausted` (the cap is spent). **`password_hash` and
+`active_downloads` are `#[serde(skip_serializing)]`** — no response, list or
+create, ever carries them.
+
+### Password, cap and one-time: the settlement rules
+
+- **A download counts when it finishes.** `reserve_download` atomically takes
+a slot (`download_count + active_downloads < max_downloads`) *before* the first
+byte, and `finish_download(completed)` releases it — incrementing
+`download_count` **only** when the whole body was written. "Written" is the
+**byte count** (`sent == expected`), evaluated in `poll_next` *and* in `Drop`:
+hyper stops polling a body once it has written its full `Content-Length` and
+drops the stream without ever observing `Poll::Ready(None)`, so keying
+completion on the end-of-stream poll recorded every real download as
+interrupted (and a one-time link was never spent). A failed, refused or
+abandoned transfer therefore never consumes the link, and a client that
+disconnects mid-stream releases its slot in `Drop`. `tests/share_links_
+integration.rs::test_share_link_completed_download_counts_when_hyper_frames_
+the_body` reproduces hyper's framing exactly (read `Content-Length` bytes, drop
+the body) because `to_bytes` — which the other tests use — cannot catch this.
+- **`max_downloads = 1` is the one-time link.** There is no separate `one_time`
+column: a second mechanism would need its own arithmetic and could disagree
+with the counter. The modal offers "No limit / One download / Custom".
+- **Every early return after the reservation releases it** (unopenable file,
+unstatable file, unsatisfiable `Range`, closed stream pool), and a `HEAD`
+reserves nothing.
+- **Exhaustion is part of the view**, so the owner sees `2/2` and a
+"Download limit reached" badge instead of a link that silently stops working.
+- **A ranged transfer counts as a download too.** A `206` for a resume or a
+  video seek reserves and settles a slot like any other transfer. The
+  alternative — counting only a range that covers the whole file — would let a
+  client take the file in two halves and never spend the link, so the cap stays
+  bypass-free at the cost of a seek costing a slot on a tightly capped link.
+
+### The password never enters a URL
+
+`POST /share/{token}/unlock` verifies the password once and answers with
+`Set-Cookie: hv_share_unlock=<nonce>; Path=/share/<token>; HttpOnly;
+SameSite=Lax[; Secure]; Max-Age=900`. The nonce lives in an in-process map
+(link → nonce → expiry, 15 minutes), so a restart simply asks for the password
+again, and revoking a link drops its unlock with it. The download then accepts
+**either** that cookie **or** an `x-share-password` header (the API path) —
+never `?password=` (it would land in the access log and the browser history).
+
+This is what lets the public page hand the file to the browser as an ordinary
+navigation: `Range`/resume work and a 40 GB file is not buffered into a
+JavaScript blob first.
+
+**Who gets the page and who gets the file.** `/share/{token}` is both the
+download and the landing page, chosen by `Accept`: a browser navigation
+(`text/html`) that cannot be answered with the file — a missing/incorrect
+password, a spent or revoked link, a `signed_in` link — receives the SPA page,
+which then probes the link (`HEAD`, `Accept: */*`) and shows the right next
+step. Everything else (a download manager, `curl`, the page's own `fetch`)
+keeps receiving the file or the JSON status, so the endpoint stays a
+one-click download for a link that needs nothing.
+
+A `signed_in` link accepts the `x-session-token` header **or** the `hv_session`
+login cookie: a top-level navigation cannot send a header, so without the
+cookie a signed-in owner could never open their own link in a tab.
+
+**Nothing may cache a share response.** The file is served with
+`Cache-Control: no-store` and `sw.js` refuses `/share/` outright — its
+cache-first strategy would otherwise let a spent one-time link (or a revoked
+one) replay from the browser's cache without ever touching the server. That is
+not hypothetical: it is what made an E2E run report a "one-time" link that
+still downloaded.
+
+Guessing is bounded: **8 wrong passwords per link per 5 minutes**, after which
+the answer is `429` — and the budget is checked *before* Argon2, because an
+unthrottled password endpoint is a CPU/memory amplifier. An **empty** password
+is a probe, not a guess, and costs no budget (the page uses it to decide whether
+to show the field at all). A password longer than 256 characters is refused
+without being hashed.
+
+A `401` carries `x-hv-share-auth: password` or `session`, so the public page
+knows whether to ask for a password or to point the visitor at sign-in.
+
+```
+POST /share/<token>/unlock  {password}
+  200  Set-Cookie hv_share_unlock=…      (HttpOnly, 15 min, Path=/share/<token>)
+  401  x-hv-share-auth: password
+  429  too many wrong passwords (8 / 5 min)
+GET  /share/<token>                      ← the cookie (or x-share-password) authorises it
+  HEAD spends no slot and is honest: a spent link answers 400 before the visitor types
+```
 
 Invariants (treat as easy to break):
 
@@ -89,20 +181,28 @@ Invariants (treat as easy to break):
 - `signed_in` links require a valid session via the **`x-session-token`
   header only** — the session token is never accepted in the public URL's
   query string (would leak into access logs), so a bare browser tab to a
-  `signed_in` link returns 401.
-- Unknown/expired/revoked tokens all answer the same "not found" error so the
-  URL can't be used to probe which links ever existed; deletion only happens
+  `signed_in` link returns 401 (the public page says so and links to sign-in).
+- Unknown/expired/revoked/spent tokens all answer the same "not found" error so
+  the URL can't be used to probe which links ever existed; deletion only happens
   by an owner or an admin (403 otherwise).
+- A path segment that is not `[A-Za-z0-9_-]{1,128}` is rejected **before** it is
+  echoed into a header or a cookie `Path`.
 - Create/revoke are recorded in the plain-English event log.
-- The public route is registered **outside `/api`** on its own stateful
+- The public routes are registered **outside `/api`** on their own stateful
   router and merged before the SPA fallback (`web/mod.rs::public_share`), so
-  it is exempt from the CSRF layer (GET-only) but still passes through CORS,
-  compression and the security-headers middleware.
+  they are exempt from the CSRF layer but still pass through CORS, compression
+  and the security-headers middleware.
 
 Frontend: `frontend/src/lib/components/explorer/ShareLinkModal.svelte` (a
-file-row "Share by link" action; QR via the existing `qrcode` npm dep, copy,
-revoke, and the user's full link list as a manager). `api.ts` gains
-`listShareLinks` / `createShareLink` / `revokeShareLink` / `getShareLinkUrl`.
+file-row "Share by link" action; password field, the No limit / One download /
+Custom limit select, QR via the existing `qrcode` npm dep, copy, revoke, and the
+user's full link list with its use count). `api.ts` gains `listShareLinks` /
+`createShareLink` / `revokeShareLink` / `getShareLinkUrl`.
+`frontend/src/routes/PublicShare.svelte` is the recipient's page: it `HEAD`s the
+link, shows the password form only when the link has one, unlocks, then lets the
+browser download. `App.svelte` renders it for any `/share/…` path, outside the
+app gate and the desktop shell.
+
 The E2E suite also cleans up links it created pointing into its `/tmp` work
 dir.
 
@@ -110,17 +210,71 @@ dir.
 
 Deleting a file no longer removes it immediately — it moves into a
 `.homevault-trash/` directory (`src/browser.rs::TRASH_DIR_NAME`) at the top
-of whichever allowed root the item lives under (resolved by
-`resolve_trash_root` in `explorer.rs`; admins working outside any configured
-root fall back to a single app-owned `base_dir()/trash`, rather than
-scattering trash folders across arbitrary system directories). Each trashed
-item gets a `<uuid>_<name>` on-disk name plus a `<same>.trashinfo` sidecar
+of whichever allowed root the item lives under. Each trashed item gets a
+`<uuid>_<name>` on-disk name plus a `<same>.trashinfo` sidecar
 (freedesktop.org Trash spec format: `Path=`/`DeletionDate=`) recording where
 to restore it. `FileBrowser::trash_item`/`list_trash`/`restore_trash_item`/
 `purge_trash_item`/`empty_trash` in `src/browser.rs`. The original permanent
 `handle_explorer_delete` handler is unchanged and still exists — it's just
 no longer what the Explorer UI's Delete button calls; purge/empty-trash use
 `FileBrowser::delete_item` directly instead.
+
+**Trash roots are canonical and shared with SMB (2026-10-29).** The two
+private helpers that used to live in `explorer.rs` (`resolve_trash_root`,
+`all_trash_roots`) moved to `src/trash.rs` so one place resolves every trash
+folder:
+
+- `crate::trash::root_for(allowed_roots, path)` — the trash folder for a
+  given item: the top of whichever allowed root contains it; an admin
+  browsing outside every configured root falls back to a single app-owned
+  `base_dir()/trash` rather than scattering trash across `/etc` or `/root`.
+- `crate::trash::roots_from(allowed_roots, share_paths, is_admin)` — every
+  recoverable trash folder: one per allowed root, **one per configured SMB
+  share** (`SharesService::smb_share_paths()` → `<share>/.homevault-trash`),
+  plus the app-owned fallback for admins. The share folders are included for
+  *every* user, so a non-admin still sees and restores what they deleted over
+  the network. A network delete and a web delete therefore land in the same
+  place and are listed, restored and cleaned up together.
+- `root_for_state` / `roots_for_state` are the same helpers bound to the live
+  `AppState`; `purge_all` runs the retention pass over the admin set.
+
+## Trash retention & auto-purge (2026-10-29)
+
+Before this, the only way a trashed file ever left the disk was the user
+emptying the trash by hand — a forgotten trash with a few large videos could
+quietly consume tens of gigabytes. Now an appliance-wide policy bounds it.
+
+- **Policy** — `browser::TrashPolicy { retention_days, max_bytes }`, default
+  **30 days / 10 GiB** (both `0` = that limit off). Persisted in the singleton
+  `trash_policy` table (`src/storage/trash_policy_repo.rs`, migration
+  **061_trash.sql**), which also stores `last_purge_at`.
+- **The rules are pure and unit-tested** — `FileBrowser::select_purge(entries,
+  policy, now)`: age first (every item older than `retention_days` goes), then,
+  if the survivors still exceed `max_bytes`, the oldest go too until the total
+  fits. An item whose `DeletionDate` cannot be parsed is never aged out but
+  still counts toward the size total. `FileBrowser::purge_trash` applies the
+  selection to one root and reports `{ purged, freed_bytes }`; a directory's
+  size is the recursive tree size (`path_size`), so the cap counts bytes it can
+  actually reclaim.
+- **Background scheduler** — `src/trash_scheduler.rs` mirrors
+  `journal_cleanup_scheduler`: it polls hourly and runs at most once per day.
+  `plan_tick` is pure, so two rules are testable: a fully-disabled policy
+  (`0/0`) does nothing at all (not even a baseline), and **`last_purge_at` only
+  advances on a successful pass**, so a disk-full / permission failure is
+  retried on the next tick instead of being postponed a whole cadence.
+- **On demand** — an admin can run the pass now from the Trash view.
+
+| Endpoint | Method | Auth | Notes |
+|----------|--------|------|-------|
+| `/explorer/trash/policy` | GET | any signed-in | current `{ retention_days, max_bytes, last_purge_at }` |
+| `/explorer/trash/policy` | PUT | admin | body `{ retention_days, max_bytes }`; `0` is a real "off" value, not a reset |
+| `/explorer/trash/purge-now` | POST | admin | runs the pass with the saved policy, returns `{ purged, freed_bytes }` |
+
+Frontend: the Trash view shows an admin-only, collapsed-by-default
+**"Trash retention"** panel (`data-testid="explorer-trash-retention"`) with an
+age select (Forever / 7 / 30 / 90 days), a size field in GB, a Save button and
+a "Clean up now" button. `api.ts`: `getTrashPolicy` / `setTrashPolicy` /
+`purgeTrashNow`.
 
 ## Directory copy/move progress
 
@@ -142,10 +296,12 @@ there. Fixed by calling `create_job` and using its returned ID.
 
 ## Transfer integrity
 
-Every file copy/move goes through `FileBrowser::copy_file_verified`
-(`src/browser.rs`): it streams the source while hashing it (SHA-256),
-`fsync`s the destination, then reads the destination back and compares the two
-hashes. A mismatch deletes the corrupt destination and returns
+Every file copy/move goes through `FileBrowser::copy_file_instant`
+(`src/browser.rs`; `copy_file_verified` is the same path with the reported
+strategy dropped): it asks `src/browser/reflink.rs` for the cheapest strategy
+that works and falls back to a streamer that hashes the source while copying
+it (SHA-256), `fsync`s the destination, then reads the destination back and
+compares the two hashes. A mismatch deletes the corrupt destination and returns
 `BrowserError::IntegrityMismatch`, so a **move never deletes the source unless
 a byte-identical copy is confirmed on disk**. `copy_dir_all`/
 `copy_dir_all_tracked` recreate symlinks as symlinks (never dereference them —
@@ -174,6 +330,172 @@ of a huge file purely to hash it.
 **Trash** files are copied with `copy_file_verified` on the cross-filesystem
 fallback too — a file is never removed from its original location unless a
 byte-identical copy exists in the trash.
+
+## Instant copy (reflink) — 2026-10-29
+
+Copying a 40 GB file on a copy-on-write filesystem should not read and rewrite
+40 GB. `src/browser/reflink.rs` gives every Explorer copy a three-step cascade,
+per file, before the verified stream above is ever used:
+
+| Step | Call | Counts as instant? |
+|------|------|--------------------|
+| 1 | `ioctl(FICLONE)` — the destination shares the source's extents | **yes** (`clone`) |
+| 2 | `copy_file_range` (`std::io::copy`, which uses it on Linux) | no (`kernel_copy`) |
+| 3 | `stream_copy_verified` — the historical hashed, read-back copy | no (`stream`) |
+
+`copy_file_instant(src, dst, mode)` in `src/browser.rs` drives the cascade and
+reports `reflink::Invocation { method, bytes }`. `CopyMethod::{Clone,
+KernelClone, KernelCopy, Stream}` carries `slug()` (the wire value),
+`rank()` (position in the cascade) and `is_instant()`; `KernelClone` is
+**reserved** — nothing produces it today, because no syscall can prove a
+kernel-side copy shared extents.
+
+Three rules make this safe rather than merely fast:
+
+1. **The atomic contract is unchanged.** The cascade still writes a
+   `.hvtmp-<uuid>` sibling of the destination, applies the source's
+   permissions/ownership/mtime *before* the swap, then `rename`s and
+   `fsync`s the parent directory. A concurrent reader sees the old complete
+   file or the new one, never a half-cloned file.
+2. **A clone skips the read-back hash on purpose.** A reflink is
+   byte-identical by construction, and hashing it would re-read the whole file
+   — cancelling the entire speed-up. The verified stream is untouched and is
+   still the guarantee whenever the clone and the range copy are refused.
+3. **A refusal falls back; a failure does not.** `EXDEV` (another
+   filesystem), `EOPNOTSUPP` (ext4, most FUSE/SMB mounts), `ENOTTY` (old
+   kernel), `EINVAL` (the kernel refused this extent map — e.g. a compressed or
+   encrypted file) and `EBADF` mean "this pair cannot share extents", so the
+   cascade moves on. `EIO`, `ENOSPC`, `EPERM` and `EROFS` are real and are
+   reported — a failing disk is never hidden behind a slow copy that happens to
+   succeed. (`is_unsupported_errno` is the single place that decides.) A
+   clone is therefore **never claimed** when the filesystem could not deliver
+   one, which is the acceptance criterion QW-03 was written against.
+
+### Policy and the API
+
+The policy is a singleton row in `instant_copy_policy` (migration
+**062_instant_copy.sql**, `id INTEGER PRIMARY KEY CHECK (id = 1)`), read and
+written through `reflink::InstantCopyService`. `InstantCopyMode::{Auto, Off}`,
+default **`auto`**; `Off` forces every copy onto the verified stream (useful
+when an admin wants copies to be real, independent data — a clone shares
+blocks with its source, which a sparse-snapshot policy may not want).
+
+| Endpoint | Method | Auth | Notes |
+|----------|--------|------|-------|
+| `/explorer/instant-copy` | GET | any signed-in | `{ mode: "auto"\|"off", mounts: [{ mount_point, fs_type, reflink }] }` |
+| `/explorer/instant-copy` | PUT | admin | body `{ mode }`; strict parse — an unknown value is a 400, never silently coerced to the default |
+
+`instant_copy_mounts` builds the evidence through
+`reflink::describe_mounts(roots, /proc/self/mounts)`: one `ReflinkMount` per
+mount under the caller's roots (plus `/` when no root resolves). Btrfs is
+reflink-capable by definition, XFS only with `reflink=1` in its mount options,
+and **ZFS is never claimed** — pool-level block cloning is invisible to the
+mount table, so the ioctl stays the authority. The list is presented as
+information in the modal; it is never a gate.
+
+`stored_mode` is lenient (`InstantCopyMode::parse` falls back to the default, so
+an old or corrupt row can never break copying) while the **request** path uses
+`parse_strict` — telling an admin their choice was saved when a typo was
+ignored would leave the appliance on a policy they never picked. The mode is
+read **once per operation** (`instant_copy_mode(&state)`) and handed to the job,
+so a single copy can never mix two policies.
+
+### What the user sees
+
+- **Single file**: the copy reply carries `method` / `instant` / `bytes`; the
+  Explorer toasts `copied_instantly` ("Copied N file(s) instantly — no data was
+  duplicated") instead of the ordinary success message.
+- **Directory** (tracked job): the per-file results are folded by
+  `reflink::CopyStats` — one lock-free `AtomicU64` per method, incremented from
+  the copy thread and summarised by the job — into
+  `tracked_completion_message(stats, verb)`:
+  "Copied 12 file(s) instantly (no data copied)", "Copied 12 file(s) — 9 cloned,
+  3 copied", or plain "Copied 12 file(s)". A **mixed** tree is never called
+  instant: the summary is the *slowest* method used (`summarize_methods`), so
+  one stream copy in a hundred files is reported honestly.
+- **Move**: a same-filesystem move is an atomic `rename` — better than a
+  clone, and the reply says so with `method: null` rather than labelling it
+  "cloned". Only the cross-filesystem fallback reports a method.
+
+Frontend: admin-only toolbar button `explorer-instant-copy-btn` opens the
+"Instant copy" modal (radio group `explorer-instant-copy-auto` /
+`explorer-instant-copy-off`, the mounts list `explorer-instant-copy-mounts`,
+error line `explorer-instant-copy-error`). `api.ts`: `getInstantCopySettings` /
+`setInstantCopyMode`.
+
+Two details the live run forced, both kept because they are correctness, not
+polish:
+
+- **The radios carry an explicit box** (`h-4 w-4 flex-none
+  accent-[var(--hv-primary)]`). `base.css`'s form-element block sets
+  `width: 100%` for text inputs and also matches `type="radio"`; without a
+  size the radio stretched across its `<label>`, the option text wrapped one
+  word per line, and the dialog grew to 1246 px in a 720 px viewport. See
+  `docs/guides/design-system.md` §7 pitfall 6.
+- **The mounts list is bounded** (`max-h-64 overflow-y-auto`) so a host with
+  many filesystems scrolls the evidence instead of pushing the policy radios
+  out of reach — the same class of bug, one mount table further along.
+
+## Global file search across roots (QW-12, 2026-10-31)
+
+The Explorer's own search is scoped to the folder you are already in
+(`GET /explorer/search?path=…`). The desktop's ⌘K overlay answered "which app
+or setting is called this", never "where is this file". `GET /api/search/files`
+closes that gap: one query, fanned out over **every root the caller may read**,
+merged, deduplicated, ranked and capped.
+
+| Route | Auth | Answers |
+|---|---|---|
+| `GET /api/search/files?q=<name>&limit=<n>&files_only=<bool>` | session | `{ query, hits[], roots[], timed_out[], unreadable[], truncated, elapsed_ms }` |
+
+`hits[]` is `FileInfo` with two extra fields: `root` (the root the hit was
+found under) and `root_kind` (`home` / `users` / `shares` / `media` / `storage`
+/ `virtualdisk` …), so a result row can say *where* the file lives.
+
+### The rules, and why each one exists
+
+- **The roots are the Explorer's, not a second list.** `handlers::search` calls
+  `explorer::explorer_roots_for_session`, the exact function the sidebar uses,
+  so a folder the Explorer would not offer can never produce a hit. That is one
+  definition with two callers, not two lists that can drift.
+- **Admins are bounded too.** The Explorer lets an admin resolve paths outside
+  the configured roots; the search does **not** — it fans out over the sidebar
+  roots only, so an admin's ⌘K never becomes a `find /`.
+- **A query names a file, never a path.** `global_search::validate_query`
+  refuses an empty or whitespace query, fewer than 2 characters (one character
+  matches everything and would walk the disk on every keystroke), more than
+  128 characters (counted in **characters**, not bytes, so an accented name is
+  not refused), and anything containing `/`, `\` or NUL. A refusal is a `400`
+  naming the rule — never a `200` with an empty list, which would read as "no
+  such file".
+- **Bounded, always.** Per-root budget `PER_ROOT_TIMEOUT` (1.5 s), total budget
+  `TOTAL_TIMEOUT` (4 s), at most `MAX_ROOTS` (16) roots after dedupe, at most
+  `MAX_RESULTS` (100) hits whatever `limit` says. A wedged network mount costs
+  its own 1.5 s and is then reported in `timed_out`, never silently dropped.
+- **The answer says when it is incomplete.** `timed_out` / `unreadable` name
+  the roots that did not answer and `truncated` says the list was cut. The
+  overlay renders that sentence under the results (`search.files_partial` /
+  `search.files_truncated`, plus `search.files_unavailable` when the provider
+  itself failed), because a search that hides its own gaps is worse than no
+  search.
+- **Dedupe and rank are pure functions.** `merge_hits` deduplicates by path
+  (the same file reached through two roots appears once), ranks exact name
+  before prefix before substring, then shorter names, then directories before
+  files, and breaks the last tie on the path so two identical runs cannot
+  reorder the list. `dedupe_roots` resolves symlinks so `/mnt/data` and
+  `/mnt/data-link` are one walk.
+- **Name search only.** Content indexing is explicitly out of scope for this
+  version; the module's docs say so and no index is built.
+
+### Frontend
+
+`frontend/src/lib/stores/fileProvider.ts` debounces keystrokes (220 ms), drops
+a superseded answer (a generation counter), and turns a hit into a row whose
+action opens the hit's **folder** in the Explorer with the entry selected —
+through the one-shot `explorerIntent` store, the same handoff convention
+`explorerShareIntent` uses for the Shares app. The local index (apps, settings,
+actions) always renders first: it answers instantly, so a file hit that had to
+walk the disk never pushes "Settings" off the list.
 
 ## Download / thumbnail tickets & resumable uploads
 
@@ -339,7 +661,15 @@ This pass closed the four blocking File Explorer findings.
   and deleting a **browsing root itself** is refused ("this is a browsing root,
   not an item") — a confirmed click on such a path is either a UI bug or a
   forged call and the consequence (emptying a whole volume) is not
-  "delete one item".
+  "delete one item". **Since 2026-10-30** one narrow exemption exists: a path
+  *outside* the roots is deletable when it lives in the appliance's scratch
+  space (`$TMPDIR`, `/tmp`, `/var/tmp`, checked by `is_under_temp_root` after
+  `canonicalize`). Without it the admin surface was asymmetric — `mkdir`,
+  upload, copy and move accept any path for an admin, so a folder created
+  outside the roots (the E2E suite's `/tmp/hv-fx-e2e-*`, a harness
+  `tempdir()`) could be created but never removed. Everything else outside the
+  roots is still refused, and the browsing-root guard runs on whichever branch
+  selected the path, so it always wins.
 - **Archiving can't be argv-injected**: `FileBrowser::compress_items` passes
   `--` before the member names, so a file literally named `-o` or `-czf` is
   treated as a file to compress, never as a tool flag.
@@ -350,6 +680,13 @@ This pass closed the four blocking File Explorer findings.
   fallback), including *partial* batch failures ("Moved 2 of 5 items to the
   trash — the rest failed"), and the resource fetch error path is also
   reported.
+- **A copy's strategy is surfaced, not just applied** (2026-10-29). The
+  toolbar's admin-only Instant copy button opens a modal that explains the
+  trade-off, shows which mounts can share data, and lets the admin choose
+  "Instant when possible" or "Always make a full copy". Copying a file whose
+  strategy was instant toasts `explorer.copied_instantly` ("Copied %count%
+  file(s) instantly — no data was duplicated") — the benefit is invisible
+  otherwise, since there is no progress bar to watch.
 
 ## Blocking work and deadlines (2026-10-24, ROADMAP X.1/X.2)
 
@@ -428,13 +765,15 @@ work, and the last one whose host commands had no deadline.
   `copyItem`/`moveItem`/`uploadFile` (all take an optional `strategy`),
   `saveFile`, `getPermissions`, `setPermissions`, `previewFile`,
   `extractArchive`, `compressItems`, `trashItem`, `getTrash`,
-  `restoreTrashItem`, `purgeTrashItem`, `emptyTrash`, `issueDownloadTicket`,
+  `restoreTrashItem`, `purgeTrashItem`, `emptyTrash`, `getTrashPolicy`,
+  `setTrashPolicy`, `purgeTrashNow`, `issueDownloadTicket`,
   `getThumbnailTicket`, `downloadFile`, `getThumbnailUrl`,
   `uploadSessionStart`/`uploadChunk`/`uploadComplete`/`uploadSessionAbort`
   (chunked upload, used by `uploadFile`),
   `getExplorerSnapshots`, `ejectDrive`, `getExplorerHistory`,
   `getExplorerRecents`/`touchExplorerRecent`/`clearExplorerRecents`,
-  `discoverNetworkResources`, `formatDrive`.
+  `discoverNetworkResources`, `formatDrive`, `getInstantCopySettings`,
+  `setInstantCopyMode`.
   Directory copy/move responses are checked for `data.job_id` and, if
   present, subscribed to via the existing `api.subscribeToProgress` (already
   used by Restic/Rescue, previously unused by Explorer).
@@ -472,8 +811,9 @@ work, and the last one whose host commands had no deadline.
 - `/explorer/delete` is **admin-only**: it is the irreversible bypass of the
   trash system. Non-admins get 403; the UI never calls it (it trashes), and
   purge/empty-trash drive `FileBrowser::delete_item` server-side. Even for
-  admins the path passes the PathGuard (delete is confined like every other
-  mutation), and deleting a browsing root itself is refused (see "2026-10-22").
+  admins the path passes the PathGuard (delete stays confined, unlike the
+  create/transfer paths), with the scratch-area exemption documented above and
+  in "2026-10-22"; deleting a browsing root itself is refused.
 - **Extraction never trusts member names.** Listing + validation precede every
   extraction; symlink members are refused; the staged tree is verified confined
   before it is merged into the destination. Never extract a member an
@@ -494,6 +834,35 @@ work, and the last one whose host commands had no deadline.
   "Blocking work and deadlines") — a real bug found in live testing had these
   blocking a Tokio worker directly inside the `async fn`, and none of the 64
   integration tests caught it because a wedged disk still answers `200` slowly.
+- **Trash roots are resolved in exactly one place (`src/trash.rs`), and include
+  the SMB shares' recycle folders.** Never re-add a private `resolve_trash_root`
+  /`all_trash_roots` in `explorer.rs`; a network delete and a web delete must
+  land in the same `.homevault-trash`, or the two paths diverge and a file lost
+  over the network becomes invisible in the Trash. The share folders are part of
+  every user's set (a non-admin recovers what they deleted over the network).
+- **The retention policy is a pure rule plus a scheduler, not a per-request
+  scan.** Age and size selection live in `FileBrowser::select_purge` (unit
+  tested); the background pass runs at most daily and only advances
+  `last_purge_at` **after** a successful pass, so a failure is retried instead
+  of skipped. A fully-disabled policy (`0/0`) removes nothing and records
+  nothing. `0` on either limit means "that limit off" — never treat it as a
+  reset to the default.
+- **A copy reports the strategy it really used, never the strategy it was
+  allowed to use.** `CopyMethod` comes from the cascade's actual outcome, so
+  "cloned" is claimed only when `FICLONE` returned 0; a mixed tree folds to its
+  *slowest* method (`summarize_methods`) and a same-filesystem move is
+  `method: null` (an atomic `rename` copied nothing). Never hardcode
+  `Clone` in a test either — the dev host's `/tmp` is ext4, so assert
+  `inv.method.is_instant() == reflink::is_reflink_capable(&src)`.
+- **A refused clone is not an error, a broken one is.** Only
+  `EXDEV`/`EOPNOTSUPP`/`ENOTTY`/`EINVAL`/`EBADF` fall through to the range copy
+  and the stream; `EIO`/`ENOSPC`/`EPERM`/`EROFS` are reported. Do not widen
+  `is_unsupported_errno` to "any errno" — that would hide a failing disk behind
+  a slow copy that happens to succeed.
+- **The instant-copy policy is read once per operation** (`instant_copy_mode`)
+  and handed to the job, so one copy can never mix two policies. The stored row
+  parses leniently (an old value can never break copying) while the request
+  path is strict (an admin is never told a typo was saved).
 - Downloads **reserve** transfer-quota usage at stream start (under the
   per-subject quota lock) and **refund** it if the client disconnects before
   the body completes — so an abandoned download is not left charged, while a

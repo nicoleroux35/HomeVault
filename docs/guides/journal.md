@@ -93,7 +93,9 @@ log/check-style content elsewhere (Health, Downloader, Syncthing).
 
 - `src/events.rs` — `log_event`/`log_event_warn`, the two functions every
   call site goes through. They write through the same `tracing` pipeline as
-  everything else — no new storage, no new table.
+  everything else — no new storage, no new table — **and** hand the sentence to
+  the remote-syslog forwarder (see *Remote syslog forwarding* below), so a new
+  audited mutation is forwarded without knowing that forwarding exists.
 - `src/handlers/journal.rs::parse_app_log_line`/`strip_target_prefix` strip
   the `homevault::mod::path: ` prefix `tracing_subscriber`'s default
   formatter prepends to every line, moving it into the entry's `unit` field
@@ -101,6 +103,85 @@ log/check-style content elsewhere (Health, Downloader, Syncthing).
   leaving it as noise in the message text — without this, a clean sentence
   like `User 'admin' logged in successfully` would render as
   `homevault::handlers::auth: User 'admin' logged in successfully`.
+
+## Remote syslog forwarding (Log Center → Log Sending)
+
+An admin can copy this box's audit stream to a collector over the network, so
+the trail survives the appliance (a stolen or failed box keeps its history on
+the collector) and a small office gets one place to read every machine.
+
+`src/syslog_forward.rs`; endpoints in `src/handlers/syslog.rs`; settings in
+`data/syslog_forward.json` (JSON storage, like DDNS and TLS — no migration).
+
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| GET | `/settings/syslog` | **admin** | configuration + live queue counters (`pending`, `enqueued`, `dropped`, `sent`, `failed`) |
+| PUT | `/settings/syslog` | **admin** | body `{ enabled, protocol, host, port, format, facility, ca_pem, include_app_events }`; validated, and `status`/`last_error`/`last_sent_at` are server-owned (a client cannot write them) |
+| POST | `/settings/syslog/test` | **admin** | sends one real message now and answers with the collector's own reason on failure |
+
+The card lives in **Settings → Monitoring** (`data-testid="syslog-*"`, save,
+test, refresh, status pill, queue counters).
+
+### The three rules that make it safe
+
+1. **A log call never waits on the collector.** `events::log_event` only pushes
+   a string into a 1024-entry queue (`enqueue`), then notifies the worker. Both
+   switches are honoured: `enabled` **and** *Send HomeVault's own events* must be
+   on, and the pair is cached for a second so the hot path is a flag read, not a
+   JSON read. A
+   slow, hung or dead collector can therefore never add latency to a sign-in or
+   make a mutation fail. When the queue is full the **oldest** entry is dropped
+   and counted — recent events are the ones worth keeping.
+2. **One worker, bounded in every direction.** `run()` wakes on `enqueue`,
+   takes at most 64 events (`BATCH_SIZE`), opens **one** connection for the
+   batch and puts a deadline on each step (5 s to connect, 5 s to write). A
+   batch that fails is dropped and counted, not retried forever: replaying an
+   audit stream hours out of order is worse than a documented gap, and
+   `last_error` plus the counters say exactly what was lost.
+3. **The credential-less path is the whole path.** The settings carry no secret
+   (a CA certificate is public material) and the forwarded text is the same
+   plain-English sentence the Journal already shows, so forwarding cannot leak
+   a token the audit line did not already contain.
+
+### Framing
+
+| Format | Shape |
+|--------|-------|
+| **RFC 5424** (default) | `<PRI>1 2026-10-31T12:00:00Z <host> homevault <pid> audit - <message>` |
+| **RFC 3164** | `<PRI>Oct 31 12:00:00 <host> homevault[<pid>]: <message>` |
+
+`PRI` is `facility × 8 + severity` (info = 6 for `log_event`, warning = 4 for
+`log_event_warn`). `MSGID` is `audit` for the event stream and `test` for the
+test button — the first thing an admin looks for on the collector. A missing
+header field is rendered as `-` (RFC 5424's "unavailable"), never as an empty
+string, which would shift every following field. A space inside a header field
+becomes `_`, so a host name can never break the frame. A message longer than
+the transport allows is truncated **on a character boundary** (a 1024-octet UDP
+datagram, 8 KiB over TCP), so a multi-byte character is never cut in half.
+
+RFC 3164's timestamp is space-padded to two digits (`Oct  3`, not `Oct 3`): a
+strict collector's ABNF is `SP DIGIT DIGIT` and refuses the single-digit form.
+
+### Transport and TLS
+
+- **UDP** — one datagram per message; `connect()` only pins the destination, so
+  an unresolvable name is reported once instead of per packet.
+- **TCP** — one connection per batch, one message per write plus a trailing
+  `
+` (accepted by rsyslog, syslog-ng and journald's gateway), then flush.
+- **TLS** — `tokio-rustls` with a client that trusts **only** the pinned CA:
+  the system roots are deliberately not loaded, because a home collector
+  presents a self-signed certificate for a local name and trusting every public
+  CA would make the pinning decorative. The crypto provider is named explicitly
+  (`ring`) since the dependency tree carries two (axum-server pulls
+  `aws-lc-rs`), and `ClientConfig::builder()` refuses to guess.
+
+### What is *not* forwarded
+
+The host sources (`/var/log/syslog`, `auth.log`, …) are not re-shipped. The OS
+already collects them, re-sending them would duplicate every line on the
+collector, and their volume cannot be bounded by this queue. What leaves the box
+is HomeVault's **own** audit stream — the same lines the `app` source shows.
 
 ## Backend
 
@@ -180,6 +261,37 @@ and shows the message inside it (`journal-clear-error` /
   to edits. Every `log_event`/`log_event_warn` call site elsewhere in the
   codebase is purely additive to whatever handler it's in; the invariants above
   stay binding.
+
+## Tests for remote syslog forwarding
+
+- `src/syslog_forward.rs` — 23 unit tests: exact RFC 5424 / RFC 3164 bytes,
+  `PRI` arithmetic, the `-` nil value, a space in a header field, day padding,
+  the configured-format choice, UDP truncation on a character boundary, the
+  strict-vs-lenient parse of protocol/format, the host/port/facility validation
+  matrix, a half-filled *disabled* entry being saveable, the TLS CA requirement
+  and its PEM parsing, `normalize`, drop-oldest queue bounds and counters,
+  batch size and order, the status rules, and a scripted transport (batch
+  rendering, empty batch, the collector's own refusal).
+- `tests/syslog_forward_integration.rs` — 11: the admin-only matrix (no token,
+  member, admin) on all three verbs, a save/reload round-trip, nine invalid
+  payloads refused with nothing stored, a disabled entry still saveable,
+  server-owned fields not writable, a **real localhost UDP collector** receiving
+  the framed test message, a **real localhost TCP collector** receiving the
+  newline-framed RFC 3164 line, an unreachable collector reported by the test
+  button without failing the save, the test button refused while disabled,
+  `events::log_event` queueing exactly one event only while forwarding is on,
+  and `update_observation` recording a failed batch without reverting a
+  destination the admin saved meanwhile (the worker never writes a stale
+  snapshot).
+- `tests/e2e/settings/syslog.spec.ts` — 16 `test(`: card shape and both
+  dropdowns, the status pill's documented states (label, not colour alone),
+  queue counters against the API, the CA field appearing only for TLS, a save
+  round-trip, enable → `idle` → disable → `disabled`, a URL-as-host refusal with
+  the reason on screen, TLS-without-CA refused, a fabricated `status` ignored,
+  the test button success and refusal paths (mocked — no packet leaves the
+  machine), the button disabled while off, a member refused on all three verbs,
+  label/switch accessibility, duplicate ids, and no horizontal overflow with the
+  CA textarea open. `afterAll` leaves forwarding **disabled**.
 
 ## Tests
 

@@ -177,6 +177,47 @@ For a machine-wide opt-out (all Avahi clients, not just HomeVault):
   setting stays admin-only on both verbs.
 - No E2E (no screen).
 
+## Time Machine `_adisk._tcp` (2026-10-31, ROADMAP P2.1)
+
+macOS builds its Time Machine destination list from **`_adisk._tcp`**, not from
+`_smb._tcp`. For every SMB share with Time Machine enabled, `src/mdns.rs`
+publishes one advertisement:
+
+```xml
+<service-group>
+  <name replace-wildcards="yes">HomeVault Time Machine (macbackup)</name>
+  <service>
+    <type>_adisk._tcp</type>
+    <port>9</port>
+    <txt-record>sys=adVF=0x82</txt-record>
+    <txt-record>dk0=adVF=0x82,adVN=macbackup,adVU=1f0c…</txt-record>
+  </service>
+</service-group>
+```
+
+- **One service group per share**, because macOS resolves one Time Machine
+  volume per advertisement — two shares in one group would look like one
+  volume. Every other protocol keeps sharing HomeVault's single group.
+- **`adVF=0x82`** is the flag pair macOS reads as "Time Machine destination,
+  password required": the share is reached over SMB with a HomeVault account,
+  never anonymously.
+- **`adVU` is stable**: a version-5 UUID derived from the published host name
+  and the share name, so the same volume keeps its identity across restarts
+  and config rewrites. A fresh random UUID on every publish would make macOS
+  treat the same disk as a new destination each time. Renaming the share or
+  the host deliberately produces a new volume.
+- **Port 9** is published because the record is discovery-only — nothing ever
+  connects to it, exactly like DSM's own advertisement.
+- The set is recomputed on every publish tick from the live
+  `get_smb_time_machine_map()`, so turning Time Machine off removes the
+  advertisement on the next pass. mDNS being off removes all of them; nothing
+  else in the appliance depends on it.
+
+Unit tests (`src/mdns.rs`): the advertisement names its share, the UUID is
+stable for the same (host, share) and different for another share or another
+host, a `_smb._tcp` record is never read as an `_adisk` one, and each Time
+Machine share gets its own service group.
+
 ## Related
 
 - [Shares](./shares.md), [Network](./network.md), `PRIVACY.md`

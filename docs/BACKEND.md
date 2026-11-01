@@ -66,10 +66,23 @@ src/
   email.rs              EmailService (mutt/sendmail/msmtp)
   permissions.rs        PermissionService (POSIX ACLs for shares)
   shares.rs             Share model/service (SMB/NFS/FTP/WebDAV/SFTP)
+  rsync_server.rs       Opt-in rsyncd: module validation, config/secrets/unit
+                        rendering, dedicated homevault-rsync service
+  backup_target.rs      Backup destination role: tenants, quotas, htpasswd and
+                        rest-server unit rendering, integrity checks
+  backup_target_scheduler.rs  Quota watchdog (revoke/restore) + daily restic check
+  replication.rs        Snapshot replication: naming, retention ownership,
+                        zfs send/btrfs send pipelines (local or SSH)
+  replication_scheduler.rs    Schedule loop + single-flight run_job
   webdav/               Built-in WebDAV server (in-process, dav-server):
                         per-member share grants, Basic auth, TLS
   browser.rs            FileBrowser (Explorer: list/copy/move/trash, collisions)
+  browser/reflink.rs    Instant copy: FICLONE -> copy_file_range -> verified stream,
+                        CopyMethod/CopyStats reporting, instant_copy_policy mode
   snapshots.rs          ZFS/Btrfs snapshot create/list/rollback
+  snapshot_locks.rs     Immutable snapshots: retention locks as a row + a
+                        filesystem hold (zfs hold / btrfs ro), break-glass
+  snapshot_lock_scheduler.rs  Hourly release of lapsed locks (fails closed)
   network.rs vpn.rs …   Domain services
   incus.rs              Incus REST client over its Unix socket (VMs + system
                         containers): list/create/lifecycle/snapshots, operation
@@ -128,6 +141,17 @@ Notable handlers (see `API.md` for the full map):
   operation-waiting lifecycle, and an xterm shell console relayed over
   `tokio-tungstenite`. See [guides/vm.md](./guides/vm.md).
 - `handlers/restic.rs` — backup repos, snapshots, schedules, retention.
+- `handlers/rsync.rs` — Shares → Rsync (modules, daemon settings, per-user
+  rsync passwords; every mutation admin-only). See
+  [guides/rsync.md](./guides/rsync.md).
+- `handlers/backup_target.rs` — the receive role: settings, tenants, quota
+  changes, token rotation (secrets returned once), on-demand integrity check.
+  See [guides/backup-target.md](./guides/backup-target.md).
+- `handlers/replication.rs` — replication jobs, the verified dry-run preview
+  and run-now. See [guides/replication.md](./guides/replication.md).
+- `handlers/snapshot_locks.rs` — immutable snapshots: list, place a lock,
+  release it (typed phrase before its horizon). See
+  [guides/snapshots.md](./guides/snapshots.md).
 - `handlers/chat.rs` — Ollama-backed AI assistant.
 - `handlers/activity.rs` — `GET /api/activity`, the unified background-job feed
   for the desktop taskbar (merges `PROGRESS_MANAGER` jobs + aria2 downloads).
@@ -311,6 +335,9 @@ the full list; line numbers drift, grep for `tokio::spawn`):
 `antivirus_scheduler`, `journal_cleanup_scheduler`,
 `scheduled_tasks_scheduler` (generic cron engine),
 `snapshot_scheduler` (GFS-pruned pool snapshots),
+`replication_scheduler` (snapshot replication jobs),
+`backup_target_scheduler` (destination quotas + daily restic check),
+`snapshot_lock_scheduler` (release of lapsed snapshot locks),
 `metrics::run_collector_loop` (60 s samples), and
 `notification_engine::run_notification_loop` (polls every 60s, turning
 health-check status transitions — `HealthService::run_all_checks`, in-memory

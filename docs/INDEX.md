@@ -50,7 +50,7 @@ methods, and notable invariants.
 | Disk Cache Tier (cache pool, mover, shares) | [guides/cache.md](./guides/cache.md) |
 | Disk Encryption (LUKS2) | [guides/encryption.md](./guides/encryption.md) |
 | RAID — **creation-only** wizard (physical disks → one tracked async job → one virtual disk; spares, degraded slots) | [guides/raid.md](./guides/raid.md) |
-| File Explorer | [guides/explorer.md](./guides/explorer.md) |
+| File Explorer (incl. reflink/instant copy, trash retention) | [guides/explorer.md](./guides/explorer.md) |
 | Shares (SMB/NFS/FTP/WebDAV + ACLs) | [guides/shares.md](./guides/shares.md) |
 | Network (interfaces, WiFi, diagnostics) | [guides/network.md](./guides/network.md) |
 | mDNS / Zeroconf (`homevault.local`, share discovery) | [guides/mdns.md](./guides/mdns.md) |
@@ -69,27 +69,38 @@ methods, and notable invariants.
 | Virtual Machines (Incus, KVM/QEMU) | [guides/vm.md](./guides/vm.md) |
 | Wallpapers | [guides/wallpapers.md](./guides/wallpapers.md) |
 | Avatars (DiceBear, generated offline) | [guides/avatars.md](./guides/avatars.md) |
-| Disk quotas (per-user home-directory size limit) | [guides/quotas.md](./guides/quotas.md) |
+| Disk quotas (per-user home-directory limit, and per-share size quotas) | [guides/quotas.md](./guides/quotas.md) |
 | Transfer quotas (upload/download, per user/group) — incl. the read-only **Quotas** app | [guides/transfer-quotas.md](./guides/transfer-quotas.md) |
-| Security (sessions, login history) | [guides/security.md](./guides/security.md) |
-| Settings (general, security, appearance, widgets, notifications, AI, monitoring, system — 8 rail groups) | [guides/settings.md](./guides/settings.md) |
+| Security (sessions, login history, CSP, brute-force, login auto-block, connected clients) | [guides/security.md](./guides/security.md) |
+| Identity (trusted devices, rescue e-mail, account recovery, **passkeys/WebAuthn**) | [guides/identity.md](./guides/identity.md) |
+| Settings (general, security, appearance, widgets, notifications, AI, monitoring, system — 8 rail groups, incl. the full configuration backup/restore) | [guides/settings.md](./guides/settings.md) |
 | Themes | [guides/themes.md](./guides/themes.md) |
 | Desktop shell & windowing | [guides/desktop.md](./guides/desktop.md) |
 | Activity taskbar (unified background-job feed) | [guides/activity.md](./guides/activity.md) |
 | Apps Center | [guides/apps-center.md](./guides/apps-center.md) |
 | Server control (restart/shutdown) | [guides/server-control.md](./guides/server-control.md) |
-| Health monitoring | [guides/health.md](./guides/health.md) |
+| Health monitoring (incl. the Security Advisor) | [guides/health.md](./guides/health.md) |
+| Global file search (⌘K) | [guides/global-search.md](./guides/global-search.md) |
+| Time Machine over SMB (`vfs_fruit`, `_adisk._tcp`) | [guides/shares.md](./guides/shares.md#time-machine-over-smb-2026-10-31-roadmap-p21) |
+| Rsync server (opt-in modules, per-user passwords, SSH alternative) | [guides/rsync.md](./guides/rsync.md) |
+| Backup destination (receive restic, append-only tenants, quotas) | [guides/backup-target.md](./guides/backup-target.md) |
+| Snapshot replication (ZFS/Btrfs, local or SSH, destination-only retention) | [guides/replication.md](./guides/replication.md) |
+| Immutable snapshots (retention locks, holds, break-glass) | [guides/snapshots.md](./guides/snapshots.md#immutable-snapshots-2026-10-31-roadmap-p25) |
+| Disaster recovery (runbook: config restore, rebuild, restic restore) | [guides/disaster-recovery.md](./guides/disaster-recovery.md) |
 | Notifications (persistent center, health/backup alerts, email, webhook, What's New) | [guides/notifications.md](./guides/notifications.md) |
 | Antivirus (ClamAV) | [guides/antivirus.md](./guides/antivirus.md) |
 | Anti-Ransomware (honeypots, rate detection) | [guides/ransomware.md](./guides/ransomware.md) |
 | Firewall (ufw) | [guides/firewall.md](./guides/firewall.md) |
-| HTTPS / TLS (built-in listener, self-signed + manual certs) | [guides/tls.md](./guides/tls.md) |
+| HTTPS / TLS (built-in listener, self-signed, manual and automated certs) | [guides/tls.md](./guides/tls.md) |
+| Certificate automation (ACME, HTTP-01 / DNS-01, renewal worker) | [guides/acme.md](./guides/acme.md) |
+| Dynamic DNS (DuckDNS, dynv6, Cloudflare, custom; change-only updates) | [guides/ddns.md](./guides/ddns.md) |
+| Reachability advisor (ordered checks with their fixes) | [guides/reachability.md](./guides/reachability.md) |
 | System Journal (log viewer, auto-cleanup) | [guides/journal.md](./guides/journal.md) |
 | Widgets (desktop monitor catalog) | [guides/widgets.md](./guides/widgets.md) |
 | Web shortcuts (pinned desktop links, SSRF-guarded metadata fetch) | [guides/shortcuts.md](./guides/shortcuts.md) |
 | Scheduled Tasks (generic cron engine: commands, snapshots, SMART, power) | [guides/scheduled-tasks.md](./guides/scheduled-tasks.md) |
 | Metrics (historical CPU/memory/load/network/temperature charts) | [guides/metrics.md](./guides/metrics.md) |
-| Power (host power management, CPU governor, disk spindown) | [guides/power.md](./guides/power.md) |
+| Power (host power management, CPU governor, disk spindown, Wake-on-LAN) | [guides/power.md](./guides/power.md) |
 | Design system (single UI identity — tokens, components, page anatomy) | [guides/design-system.md](./guides/design-system.md) |
 | Development workflow (multi-instance `.local`, real-VM tests, client contract) | [guides/development.md](./guides/development.md) |
 

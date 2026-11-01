@@ -139,6 +139,77 @@ honest case. See [storage.md](./storage.md#deadlines-on-every-host-tool-2026-10-
   two pools on the same machine may use different backends, and a host with
   both `zfs` and `btrfs` installed must not influence the choice.
 
+## Immutable snapshots (2026-10-31, ROADMAP P2.5)
+
+A **retention lock** keeps a snapshot from being destroyed before a date, even
+by an admin who runs `zfs destroy` directly. The lock is deliberately **two**
+things (`src/snapshot_locks.rs`):
+
+1. a row in `snapshot_locks` (migration `068`), which is what HomeVault's own
+   delete and prune paths consult before destroying anything;
+2. a **filesystem-side hold** — `zfs hold homevault-lock <dataset@snap>` or a
+   read-only Btrfs subvolume (`btrfs property set ro true`) — which is what
+   makes `zfs destroy` itself fail.
+
+A UI-only flag would be a promise the appliance could not keep, which is why
+the second half exists.
+
+### Lifecycle
+
+| Step | What happens |
+|------|--------------|
+| **Place** | `POST /api/snapshots/locks {pool, snapshot, days, reason?}` — admin only. The hold is applied **first**; only then is the row written. If the row cannot be written the hold is removed again, so no invisible lock is left behind. |
+| **While locked** | The scheduled-snapshot prune **skips** a locked snapshot and reports it (`kept N locked snapshot(s)`), so GFS retention never overrides an explicit lock. |
+| **Expiry** | `locked_until` is the horizon. A lapsed lock is **not** silently treated as released: `snapshot_lock_scheduler` runs hourly, executes `zfs release` / `btrfs property … ro false`, and only then marks the row released — so until that succeeds the snapshot stays protected, failing closed. |
+| **Release** | `DELETE /api/snapshots/locks/{id}`. After the horizon: a plain release. **Before** it: break-glass, refused unless the body carries `confirmation` equal to the phrase the API returned (`release <snapshot-name>`), and journaled as such. |
+| **Audit** | Rows are never deleted, only marked released — who released it, when, and why (the break-glass reason is recorded) stays readable. Break-glass writes a `BREAK-GLASS:` line to the event journal. |
+
+### Where it lives in the product
+
+Storage → **Snapshots** tab → *Protection locks* (`Storage.svelte`). The list
+shows each locked snapshot, its horizon (or that it has lapsed and is waiting
+for the release loop), the reason and who placed it. Each snapshot in a pool's
+snapshot list carries a **protect** action that opens a small dialog (days +
+optional reason). Releasing before the horizon opens a dialog whose confirm
+button stays disabled until the exact phrase is typed — the typed confirmation
+reserved for irreversible actions. A release the server refuses (pool busy, the
+hold owned by another process) keeps its reason in the section
+(`snapshots-locks-error`) instead of closing as if it had worked; the list is
+only reloaded once the release actually succeeded.
+
+`GET /api/snapshots/locks?pool=<p>` returns the active locks, the last 50
+released rows, `max_lock_days` (3650 — ten years; a longer horizon is a typo
+and an accidentally permanent snapshot on a full pool is a real operational
+problem) and the hold tag.
+
+### Rules
+
+- **One active lock per snapshot.** A second unreleased row would make "can
+  this be deleted?" ambiguous; the uniqueness is a partial index in the
+  migration, so history is still preserved.
+- **The pool decides the mechanism**, never the host: the same resolution as
+  every other snapshot operation (`SnapshotService::kind_for`).
+- **Deletion is refused while a lock is active** — through HomeVault. A direct
+  filesystem command is refused by the hold itself, which is the whole point.
+- A snapshot that no longer exists is a stale lock: the release loop forgets
+  the row rather than retrying a hold against nothing.
+
+### Tests
+
+- Unit (`src/snapshot_locks.rs`): the break-glass phrase, `decide_release`
+  (normal / break-glass / refused), the argv vectors for both backends, quota
+  and horizon validation, `protected_names`.
+- Unit (`src/snapshot_lock_scheduler.rs`): `due_for_release` never selects an
+  unexpired lock.
+- Unit (`src/snapshot_scheduler.rs`): a locked snapshot survives a prune that
+  would otherwise delete it, and is counted in the summary.
+- Integration (`tests/snapshot_locks_integration.rs`): the endpoint contract
+  (auth vs admin), duplicate-lock refusal, early release refused without the
+  phrase and journaled with it, restart persistence.
+- E2E (`tests/e2e/storage/snapshot-locks.spec.ts`): the list, the empty state,
+  the lapsed wording, the typed-confirmation gate, and that a cancelled
+  release fires no request. Mutations are mocked — no hold is ever placed.
+
 ## Related
 
 - [Storage](./storage.md), [Backup / Restic](./backup-restic.md),

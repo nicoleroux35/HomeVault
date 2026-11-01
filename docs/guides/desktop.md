@@ -53,8 +53,8 @@ screenshot when its chrome moves.
   `--hv-dock-item-size` (56px, i.e. 0.775 × the bar, the ratio measured on the
   approved reference dock) and the padding is `(72 − 56) / 2` = 8px, derived in
   CSS rather than written as a literal, with 10px kept horizontally (free
-  space, and it clears the capsule's arcs). DSM's own dock item was a column
-  whose label line was reserved even though it only painted on hover;
+  space, and it clears the capsule's arcs). The reference dock's own item was a
+  column whose label line was reserved even though it only painted on hover;
   HomeVault ships no dock labels, so that surplus goes into the tiles
   instead of dead space around them. The rationale lives on the tokens.
   **Phone** (`≤480px`) drops to 52px = the 44px touch floor (the phone tile,
@@ -441,6 +441,37 @@ redesign: `.lp-overlay`, `.lp-panel`, `.lp-card[title="…"]`,
 `.lp-search-field`, the drag handlers, the Docker external-open menu
 (`.lp-ext-*`), `.lp-empty` / `.lp-reset` and `.lp-count` all kept their
 selectors.
+
+## Global search overlay (⌘K / Ctrl+K) — file provider, 2026-10-31
+
+The overlay filters a local index built by the desktop (apps, settings
+categories, quick actions). Since QW-12 it also asks the server for **files**
+matching the same text: `GET /api/search/files?q=…` (see
+[Explorer → Global file search across roots](./explorer.md)).
+
+What the shell owns:
+
+- `stores/search.ts` — the overlay state, plus `filesLoading` and the merging
+  rule. `mergeFileHits` puts the **local** results first and appends the file
+  hits after them: the local index answers instantly, and a file hit that had
+  to walk the disk must never push "Settings" off the list. It also re-checks
+  the query before merging, so a slow answer cannot land under a newer query.
+- `stores/fileProvider.ts` — the debounce (220 ms), the generation counter that
+  drops superseded answers, the hit → row mapping (the folder is in the row's
+  description, so two identically named files in different shares are
+  distinguishable), and the open action.
+- `components/search/SearchBar.svelte` — runs both on every keystroke and
+  renders `search.files_searching` while the provider is working, so "no
+  results" never appears while a walk is still running.
+
+A file hit's action opens the hit's **folder** in the Explorer with the entry
+selected, through the one-shot `stores/explorerIntent.ts` store — the same
+handoff convention `explorerShareIntent` uses for Shares. The path travels in
+the store and in the item's closure only: never in the URL.
+
+The overlay's files section is also the place where a partial answer is told
+apart from a complete one: `search.files_partial` / `search.files_truncated`
+are rendered under the results by `SearchResults.svelte`.
 
 ## In-window anatomy (AppWindow mock, 2026-09-14)
 

@@ -9,7 +9,9 @@
 - "Remember me" checkbox
 - "Forgot password" link — offline numeric recovery code (no email)
 - Password reset flow (recovery code → new password)
-- Two-factor authentication (2FA) — entry of the 6-digit TOTP code
+- **Account recovery by e-mail** — "I lost my recovery code": submit the username, the answer is the same whether or not the account exists; a six-digit code read from the rescue address is exchanged for a fresh offline recovery code
+- Two-factor authentication (2FA) — entry of the 6-digit TOTP code, with "remember this browser for 30 days"
+- **Sign in with a passkey** — a button under the form, offered only when the browser can run a WebAuthn ceremony and only once a username is typed; a cancelled prompt reads as cancelled, never as a wrong password
 - Lockout: 5 wrong passwords lock the account for 5 minutes, then it lifts itself; the message points at the recovery-code path
 - Per-client-IP throttle on login and 2FA attempts (429)
 - Error modal with translated messages (invalid credentials, locked account, rate limiting, invalid TOTP, network timeout); inline error is an assertive live region, fields carry `aria-invalid`, focus returns to the form on close
@@ -75,7 +77,7 @@ visible from 901px, icon only below that — the touch target stays
 - Search bar with fuzzy matching on app names/descriptions
 - Keyboard navigation (arrows + Enter)
 
-### 26 available applications
+### 28 available applications
 
 | # | Application | Category | Description |
 |---|---|---|---|
@@ -105,11 +107,15 @@ visible from 901px, icon only below that — the touch target stays
 | 24 | Virtual Machines | System | VMs and containers via Incus — guided wizard, shell console, graphical screen, snapshots |
 | 25 | Scheduled Tasks | System | Generic cron engine — commands, pool snapshots, SMART self-tests, power actions, run history |
 | 26 | Metrics | Monitoring | Historical performance charts (CPU, memory, load, network, temperature) over 1 h / 24 h / 7 d |
+| 27 | Backup destination | Storage | Receive restic backups from another machine (append-only tenants, quotas) |
+| 28 | Replication | Storage | Copy pool snapshots to another dataset, locally or over SSH |
 
-> That is 24 entries in `appDefs` (23 app tiles + the Widgets editor) + Terminal + Settings +
-> My account. Storage gained a 7th tab ("Snapshots" — scheduled snapshots with GFS retention)
-> and Settings gained the Power card (Monitoring).
-> The 30 Svelte routes = these 26 apps + the Widgets editor + Login + Setup Wizard + Desktop.
+> That is 26 entries in `appDefs` (25 app tiles + the Widgets editor) + Terminal + Settings +
+> My account. Storage gained a 7th tab ("Snapshots" — scheduled snapshots with GFS retention
+> **and protection locks**) and Settings gained the Power card (Monitoring). Shares gained a
+> 7th protocol tab (Rsync) and the SMB tab gained the per-share Time Machine card.
+> The 33 Svelte routes = these 28 apps + the Widgets editor + Login + Setup Wizard + Desktop
+> + the public share page (`/share/<token>`, outside the app shell).
 
 ### Floating monitoring widgets (11 panels)
 
@@ -144,8 +150,11 @@ Each widget is a resizable, movable panel, with position persistence.
 - Profile editing (full name, email)
 - Password change (invalidates all sessions → automatic logout)
 - 2FA enrollment: TOTP secret, QR code, verification, backup codes
-- 2FA disabling (with password confirmation)
+- 2FA disabling (with password confirmation) — also revokes every trusted device
 - Display of backup codes
+- **Trusted devices** — one row per browser (label derived from the user agent, first seen, last used, expiry), revoke one or all; a trusted browser skips the second factor for 30 days
+- **Rescue e-mail** — address with a verification code (nothing is stored until the code comes back), the verified address, change and remove
+- **Passkeys (WebAuthn)** — one row per registered authenticator (label, added, last used, a "verified by PIN/biometric" badge), rename, revoke (with confirmation), "Add a passkey" with an optional name, the origin the passkeys are bound to, and an explanation instead of a button when the browser cannot run a ceremony
 
 ---
 
@@ -263,11 +272,34 @@ and in the Groups screen.
 ## 11. Health
 
 **Features:**
-- 8 health checks displayed in order:
+- Security Advisor card (administrators only, above the checks): hardening
+  score out of 100 with a progress bar, the summary counts, the actionable
+  findings worst first (each with its severity, evidence, fix sentence and an
+  "Open …" deep link to the screen that owns the setting), and the rest of the
+  checklist behind a native disclosure. Read-only — no write path; a failing
+  call shows an error instead of a stale score
+- 9 health checks displayed in order:
   - Authentication, Storage, Memory, Disk space, Disk SMART, Network, Services, Temperatures
 - Each check: status icon, translated label, message, expandable details
 - Global status badge (healthy/warning/critical/unknown)
 - Refresh button
+
+---
+
+### Global search overlay (⌘K / Ctrl+K, desktop shell)
+
+**Features:**
+- Apps, settings categories and quick actions, filtered and ranked locally
+- **File results across every readable root** (QW-12): each row shows the file
+  name and the folder it lives in, so identical names in different shares are
+  distinguishable; picking one opens the Explorer on that folder with the entry
+  selected
+- A "Looking for matching files…" line while the cross-root walk runs, so
+  "no results" never shows while a search is still in flight
+- An honesty note under the results when the answer is partial (a location did
+  not answer) or cut (too many matches), and when the file search itself is
+  unavailable
+- Keyboard: arrows to move, Enter to run, Escape to close
 
 ---
 
@@ -350,8 +382,25 @@ and in the Groups screen.
 - File search
 - Sorting: by name, size, modification date
 - Trash system: view, restore, purge, empty
+- Trash retention (admin): keep deleted files for a number of days, cap the trash size, and a "Clean up now" button that runs the pass immediately; past a limit the oldest items are removed automatically
+- Instant copy (admin): copies share the original's data on filesystems that support it (Btrfs, reflink-enabled XFS), so a large copy finishes immediately and costs no extra space; the modal can turn it off ("Always make a full copy") and lists which folders can copy instantly. When the filesystem cannot share data the copy falls back to a normal verified copy, and the message says "cloned" only when it really was
 - Archive extraction (.zip/.tar/.gz/.bz2/.xz)
 - Compression of selected items
+- Share a file by link: a revocable public URL (copyable text + QR code) that expires after 1/7/30 days or never, is open to anyone with the link or only to signed-in users, and can optionally require a password and allow only a set number of downloads — "one download" being the one-time link. The modal shows how many downloads a capped link has used, says when the limit is reached, and lets the owner revoke it at any time
+
+### Public share page (`/share/<token>`)
+
+Not an app: the page a recipient opens, rendered without signing in. It is
+served for a browser navigation that cannot be answered with the file itself —
+a password-protected link, a spent/revoked one, or a signed-in-only link. A
+link that needs nothing downloads straight away and never shows a page.
+
+- Asks for the password only when the link has one
+- The password is checked once and never appears in the URL (no query string, no history entry)
+- Downloads stream through the browser (resume and partial ranges work, so a large file is not buffered in memory); share responses are never cached
+- Clear states while checking, for a wrong password and for too many attempts (with a retry), an expired/spent/revoked link, and a link reserved to signed-in users (with a link to the sign-in page — a signed-in browser is recognised by its session cookie)
+- A one-time link is dead after the first completed download; an interrupted download does not use it up
+- Not indexed by search engines (`noindex`)
 
 ---
 
@@ -361,15 +410,17 @@ and in the Groups screen.
 
 ### Share list
 - List: name, path, type (SMB/NFS/FTP/WebDAV/SFTP), enabled status, comment
+- Size quota per share: a ceiling on one shared folder, enforced by the filesystem that holds it (ZFS `refquota`, a Btrfs subvolume's qgroup, an XFS project quota) so network clients are bound too; shown as a used-of-quota bar with the percentage, set in GB, cleared with one button, and explained instead of offered when the filesystem cannot enforce one. The Explorer also refuses an upload or copy that would cross it
 - Share creation: name, path, type, comment
 
-### Configuration tabs (6: the share list + 5 protocols)
+### Configuration tabs (7: the share list + 5 protocols + Rsync)
 - **Shares** — CRUD, service start/stop, status badges
-- **SMB** — workgroup, security mode, protocol version, guest access, advanced options
+- **SMB** — workgroup, security mode, protocol version, guest access, advanced options, per-share recycle bin toggle (files deleted over the network are kept and shown in the Explorer's Trash), and per-share **Time Machine** (`vfs_fruit`, with an optional maximum size in GB; the share is advertised over Bonjour `_adisk._tcp` so macOS lists it without typing an address — AFP is not used)
 - **NFS** — networks, default access, version, root squash, custom options
 - **FTP** — port, passive ports, max clients, TLS, anonymous, chroot, welcome message
 - **WebDAV** — port, path prefix, SSL, auth, compression, locking, allowed methods
 - **SFTP** — port, list of beneficiaries (user + shares + key state), user addition, public key addition, jail rebuild
+- **Rsync** — opt-in rsync daemon (enable, port, maximum connections, per-module confinement), one authenticated module per share (name, share picked from the existing shares only, comment, read-only, allowed accounts, enable), one rsync password per account (write-only, never displayed again), and the rsync-over-SSH alternative spelled out
 
 ### Permission management
 - View current permissions (beneficiary, r/rw level, recursive)
@@ -599,8 +650,11 @@ The screen refreshes on tab switch, on window focus and every 45 s
 **8 categories in the sidebar** (grouped 2026-09-09 from 12 flat tabs, re-themed 2026-09-14 from the Figma mockup "Settings Screen"):
 
 1. **General** — Server name, language (EN/FR/ES/DE), time zone, automatic startup
-2. **Security** (4 merged cards):
-   - **HTTPS / TLS** — Enablement of the built-in HTTPS listener (port, self-signed or provided certificate, HTTP→HTTPS redirect, certificate info, regeneration); applies after restart
+2. **Security** (7 merged cards):
+   - **HTTPS / TLS** — Enablement of the built-in HTTPS listener (port, self-signed, provided certificate or an automatically issued one, HTTP→HTTPS redirect, certificate info, regeneration); applies after restart
+   - **Certificate automation** — One public name, contact address, challenge (`http-01` / `dns-01`), DNS provider (`manual` / Cloudflare with a write-only token), status badge, issued/Renew, pending-record confirmation, "test port 80"
+   - **Dynamic DNS** — Provider (DuckDNS, dynv6, Cloudflare, custom HTTPS URL), host name, write-only token, the address the host would publish vs. the one recorded, last result and reason, "Update now"
+   - **Reachability** — read-only ordered checklist (HTTPS on, trusted certificate, automation, dynamic DNS, names agree, ports 443/80) with a fix under each failing check
    - **Antivirus (ClamAV)** — Status, scheduled scans, execution, history, threats, quarantine, definition updates
    - **Anti-Ransomware** — Enable/disable, honeypot, thresholds, auto-response mode, protected paths, history
    - **Firewall (ufw)** — Enable/disable with preview, rules (port/protocol/action/source), protection of mandatory rules
@@ -611,6 +665,11 @@ The screen refreshes on tab switch, on window focus and every 45 s
 7. **Monitoring** (3 cards):
    - **UPS Monitoring** — UPS list: battery/runtime/voltage/load/status
    - **SNMP** — Community, version, system info, interfaces, storage queries
+   - **Full configuration backup** — one archive that can rebuild the box: the database snapshot (accounts, groups, shares, ACLs, quotas, settings), the exported settings and the generated service configs; optionally encrypted with a passphrase, with credentials left out by default (sessions, API tokens and private keys are removed). A restore is validated then **staged**, and applied at the next start, keeping the previous database as `homevault.db.pre-restore`
+   - **Wake-on-LAN** — saved machines (name + network-card address): wake one now, or let a scheduled task wake it first; shows which interface a packet would leave through and says "sent, not confirmed" (only the machine itself can prove it woke)
+   - **Connected clients** — who is connected right now over SMB / NFS / SFTP / FTP (not just the web UI): client address and host name, account, the share or export they hold, how many files are open, and the process evidence; each source says whether its collector answered and why not; a session can be disconnected (two clicks, and only for the protocols where a per-connection process exists — an NFS export is kernel-held and says so)
+   - **Failed sign-in blocking** — block an address for a configurable time after N wrong passwords: the block survives a restart, can also be installed in the firewall (`ufw deny from …`), lists the blocked addresses with their remaining time, and offers a one-click **Pardon** (which also removes the firewall rule); a request-rate row caps unauthenticated requests per minute so a flood is refused instead of reaching the database. The address you are using is never blocked
+   - **Remote syslog** — forward the audit events to a collector: UDP/TCP/TLS, RFC 5424 or 3164, facility, the pinned CA for TLS, live queue counters (waiting/sent/dropped) and a "send a test message" probe that reports the collector's own error
    - **Power** — CPU scaling governor, host reboot/shutdown/suspend and per-disk spindown (hdparm APM + idle timer)
    - _(the per-group "File quotas" card was removed on 2026-09-09 — quotas are managed from Users/Groups)_
 8. **System** — Software updates (frequency, current/latest version) + system information (IP/port, platform, version) + data management (settings export/import/reset) + privacy (local processing, cookies, offline)
@@ -649,6 +708,39 @@ flat line at zero.
 
 ---
 
+## 30. Backup destination (Destinations)
+
+**Features:**
+- Receive role: on/off, port (default 8001), bind (this machine only / local network), live service state
+- One entry per sending computer (tenant): name, repository address, used-of-quota bar with the percentage, over-quota warning, last integrity check, delete
+- **Secrets are shown exactly once**, on creation or rotation: repository address, token, repository password, plus a copy-paste `restic init` block
+- Quota per tenant in GB (empty = unlimited); over quota the computer's access is revoked until the quota is raised
+- Rotate a token (asks first — the old token stops working immediately), check integrity now, optional daily check
+- Warnings when the programs the role needs (`rest-server`, `restic`) are missing
+
+**Invariants:** every repository is append-only and private to its tenant, so a
+compromised source cannot prune the history it depends on; no read ever returns
+a token or a password; mutations are admin-only.
+
+---
+
+## 31. Replication
+
+**Features:**
+- Job list: name, source → destination, storage type, schedule, copies kept, bandwidth cap, last result with its error, running state
+- Capability line: what this host can actually do (ZFS, Btrfs, SSH, bandwidth limiting)
+- Create/edit: name, storage type, source dataset, destination (another dataset here, or another machine over SSH with host/user/port), interval in minutes (0 = manual only), copies to keep, bandwidth in kB/s, enabled
+- **Preview** the exact command the next run will execute, without sending anything
+- Run now (asks first), delete (warns that copies already made stay on the destination)
+- Inline validation: datasets must be dataset paths, Btrfs over SSH is refused, a local destination cannot be the source
+
+**Invariants:** a run creates its own `hv-repl-<id>-` snapshots and prunes
+**only** those on the destination; the source is never pruned and a hand-made
+snapshot is never touched; every stage is an argv vector, so no credential or
+raw argument list reaches a log or a shell.
+
+---
+
 ## Summary by category
 
 | Category | Number of screens |
@@ -662,4 +754,4 @@ flat line at zero.
 | Productivity | 2 (AI Assistant, Downloader) |
 | Infrastructure | 2 (Docker, Rescue) |
 | Configuration | 1 (Settings — 8 categories) |
-| **Total** | **29 main screens** (= the 26 desktop apps + Login + Setup Wizard + Desktop) |
+| **Total** | **33 main screens** (= the 28 desktop apps + Widgets editor + Login + Setup Wizard + Desktop + the public share page) |

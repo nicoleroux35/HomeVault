@@ -53,6 +53,8 @@ SPA's `ApiClient` (`frontend/src/lib/services/api.ts`) prefixes every call with
 | POST | `/auth/recovery-code` | auth | `handle_generate_recovery_code` (400 if one exists unless `?regenerate=true`) |
 | POST | `/auth/verify-recovery-code` | public | `handle_verify_recovery_code` — `{ username, code }` |
 | POST | `/auth/reset-password-recovery` | public | `handle_reset_password_recovery` — code is not consumed |
+| POST | `/auth/recover` | public | `identity::handle_recover_request` — `{ username }` → `{ sent: true }` with the same answer whether or not the account exists, has a rescue address, or was throttled (one mail per account per minute) |
+| POST | `/auth/recover/verify` | public | `identity::handle_recover_verify` — `{ username, code }` → `{ username, recovery_code }`; the six-digit code is single use and destroyed after five wrong attempts |
 | GET | `/auth/setup-status` | public | `handle_setup_status` — `is_first_run` (DB-derived), `is_setup_valid`, `hardware_changed`, `needs_recovery`, `server_machine_id`, `sudo_available`, `system_language` (host POSIX locale → `en`/`fr`/`de`/`es`) |
 | GET | `/auth/check-username` | public (local network only, first-run only) | `handle_check_username` — 403 once an admin exists (post-setup it would be a free username oracle) |
 | POST | `/auth/setup` | public (local network only) | `handle_setup` — accepts optional `totp_secret` + `totp_code` (enrolled at the wizard's password step); response may include `totp_enabled` + `backup_codes`. Refused once an admin exists |
@@ -126,22 +128,93 @@ an old client that still sends them is accepted and they are ignored. |
 | GET | `/settings/export` | admin | JSON dump, stamped with `schema_version` (SMTP password redacted) |
 | POST | `/settings/import` | admin | JSON import — refused when `schema_version` is newer than this build or any field is invalid, naming the field |
 | POST | `/settings/reset` | admin | reset to defaults, including antivirus / anti-ransomware / disk spindown / DB-backup settings and `ups.conf`; a domain that failed is listed in `warnings` |
-| GET/PUT | `/settings/tls` | admin | built-in HTTPS config + cert info; PUT returns `requires_restart` |
+| GET/PUT | `/settings/tls` | admin | built-in HTTPS config + cert info; PUT returns `requires_restart`. `mode` is `self-signed` \| `manual` \| `acme`; `acme` is refused until a certificate was actually issued |
 | POST | `/settings/tls/regenerate` | admin | force self-signed cert regeneration |
+| GET | `/settings/config-backup` | admin | full configuration backup state: `app_version`, `format_version`, `settings_schema`, `max_archive_bytes`, the config allow-list, the archives on disk, `pending_restore` |
+| POST | `/settings/config-backup/export` | admin | `{ include_secrets, passphrase? }` → `{ id, bytes, path, created_at, encrypted, skipped }`; `include_secrets` requires a passphrase of 12+ characters (`400` otherwise, nothing written) |
+| GET | `/settings/config-backup/archives/{id}` | admin | the archive (`application/octet-stream`, attachment, `no-store`); the id must match `[A-Za-z0-9_-]{1,64}` **and** resolve inside the archive directory |
+| POST | `/settings/config-backup/inspect` | admin | dry run: archive as the raw body, passphrase in `x-backup-passphrase` → the manifest, or the refusal. Nothing staged |
+| POST | `/settings/config-backup/restore` | admin | validates, stages into `data/restore/`, answers `{ staged: true, requires_restart: true, staged_entries, needs_root, manifest }` — applied at the next start, with the old database kept as `homevault.db.pre-restore` |
+| GET/PUT | `/settings/acme` | admin | certificate automation: `enabled`, `domain`, `contact_email`, `directory_url`, `tos_agreed`, `challenge` (`http-01`/`dns-01`), `provider` (`manual`/`cloudflare`), `dns_api_token` (write-only: `"set"` keeps, `""` clears), `dns_propagation_seconds`; response adds the derived `status` (`disabled`/`idle`/`pending`/`valid`/`expiring`/`error`), `last_error`, `last_attempt`, `last_success`, `pending_dns_record`, `cert_info`. A change to domain / challenge / provider / directory URL resets `consecutive_failures` and `last_error` |
+| POST | `/settings/acme/issue` | admin | start an issuance in the background → `{started:true}`; `400` when disabled, invalid, a DNS record already waits, or a run is already going (never queued) |
+| POST | `/settings/acme/confirm` | admin | resume the pending manual DNS-01 run → `{started:true}`; `400` when nothing waits |
+| POST | `/settings/acme/test-challenge` | admin | publish a throwaway token and fetch it over plain HTTP at the domain → `{reachable, url, status?, error?}`; the port-80 check that happens before an authority fails an order |
+| GET | `/settings/ddns` | admin | dynamic DNS: `enabled`, `provider` (`duckdns`/`dynv6`/`cloudflare`/`custom`), `hostname`, `token` (write-only — `"set"` or `""`), `custom_update_url`, `status`, `last_ip`, `last_update`, `last_error`, plus the read-only `current_ip` and `providers[]` |
+| PUT | `/settings/ddns` | admin | save; validated only when `enabled` (a disabled form may be half-filled), token kept on `"set"`, recorded result cleared when the name or provider changes |
+| POST | `/settings/ddns/update` | admin | send an update now regardless of the change check; `400` when disabled, with the provider's own reason on failure |
+| GET | `/settings/syslog` | admin | remote syslog forwarding: `enabled`, `protocol` (`udp`/`tcp`/`tls`), `host`, `port`, `format` (`rfc5424`/`rfc3164`), `facility` (0-23), `ca_pem` + `ca_set` (TLS only, pinned), `include_app_events`, the derived `status` (`disabled`/`idle`/`forwarding`/`degraded`), `last_sent_at`, `last_error`, and the live `queue` (`pending`, `enqueued`, `dropped`, `sent`, `failed`) |
+| PUT | `/settings/syslog` | admin | save; validation only while `enabled` (a disabled entry may stay half-filled). TLS requires a PEM CA. `status`/`last_error`/`last_sent_at` are server-owned and **ignored** on write; changing the destination clears the recorded outcome |
+| POST | `/settings/syslog/test` | admin | sends one real message now: `200` on success ("sent, check the collector" — UDP is fire-and-forget), `400` with the collector's own reason otherwise, and `400` while forwarding is disabled |
+| GET | `/settings/reachability` | admin | read-only ordered report `{checks:[{id,state,detail,fix}], state, counts:{ok,warn,fail}}`; `id` is stable API (`tls.enabled`, `tls.trusted_certificate`, `acme.automation`, `ddns.enabled`, `names.agree`, `ports.https`, `ports.http01`, `tls.mode`) |
+
+**Outside `/api`:** `GET /.well-known/acme-challenge/{token}` serves the HTTP-01
+answer from a process-wide registry (no session, no CSRF, no contract layer — an
+authority fetches it anonymously). A miss is a bodyless `404`; an answer carries
+`Cache-Control: no-store` and a token with anything but `[A-Za-z0-9_-]` is
+treated as a miss, never as a path.
 | GET | `/settings/backup/db` | admin | snapshots of HomeVault's own database — settings, files on disk, total size and `last_error` (the reason the last attempt failed, cleared by the next success). The DB is WAL, so the `.db` alone is not restorable |
 | PUT | `/settings/backup/db` | admin | update `interval_hours` / `retain`; a lower retention prunes immediately. `retain` bounds regular snapshots only — a `.pre-migration` restore point is never pruned by it and is bounded separately (3) |
 | POST | `/settings/backup/db/now` | admin | take a `VACUUM INTO` snapshot now → `{ backup, status }`. Serialised process-wide: it waits for a snapshot already running instead of starting a second `VACUUM INTO` |
 | GET/PUT | `/settings/autostart` | admin | start-on-boot (systemd) for `homevault.service`. Both calls are bounded (`run_timed`) and run off the async runtime. GET answers `200 {enabled}` or `500 {success:false, message:<host reason>}` when the host cannot answer (container / no systemd / unit missing) — it never reports a false `enabled:false`. PUT answers `200 {enabled, message}` or `500` with the host's own stderr (`polkit refused: …`, `sudo: a password is required`, `Failed to get unit file state…`); a refusal changes nothing |
 
+## Passkeys — `passkeys/*` (identity)
+
+| Method | Path | Auth | Handler |
+|--------|------|------|---------|
+| GET | `/passkeys` | auth | the caller's passkeys (`credential_id`, `label`, `algorithm`, `attestation_fmt`, `user_verified`, `created_at`, `last_used_at`), plus `supported` and `relying_party {id, origin}`. **No key material** is ever in the payload |
+| POST | `/passkeys/register/begin` | auth | WebAuthn creation options: `challenge` (single use, 5 min), `rp`, `user` (a base64url user handle), `pub_key_cred_params` (`-7` ES256 then `-8` EdDSA), `attestation: "none"`, `authenticator_selection`, `exclude_credentials`. Refused with a named reason when the account already holds 20 passkeys |
+| POST | `/passkeys/register/finish` | auth | `{client_data_json, attestation_object, credential_id, label?}` (base64url). Verifies the ceremony and stores the credential. `400` naming the rule on any failed check; the challenge is consumed whatever the outcome |
+| POST | `/passkeys/login/begin` | public | `{username?}` → `{challenge, rp_id, timeout, allow_credentials[], user_verification}`. An unknown username gets the same shape (a real challenge, an empty list) — no enumeration oracle. Applies the login auto-block |
+| POST | `/passkeys/login/finish` | public | `{credential_id, client_data_json, authenticator_data, signature, username?, remember_me?}` → the same `LoginResponse` as `POST /auth/login` on success. `401` with one sentence ("Passkey sign-in failed") for an unknown credential, a bad signature or a counter regression — never a hint about whether the account exists |
+| PATCH | `/passkeys/{id}` | auth | `{label}` — rename one the caller owns; `404` for anyone else's |
+| DELETE | `/passkeys/{id}` | auth | revoke one the caller owns; `404` for anyone else's |
+| POST | `/passkeys/sweep` | admin | drop the expired challenges now → `{removed}` |
+
+The relying party (`rp_id` / origin) is derived from `HOMEVAULT_HOSTNAME`, then the ACME domain, then the machine's host name — **never** from the request's `Host`/`Origin` header. The origin carries the port when it is not the scheme default (HomeVault's HTTPS listener is 8443).
+
+## Global search — `search/*` (session)
+
+| Method | Path | Auth | Handler |
+|--------|------|------|---------|
+| GET | `/search/files` | session | `handle_search_files` — cross-root **file name** search for the ⌘K overlay (QW-12). Query: `q` (required, 2–128 characters, trimmed and lowercased, no `/`, `\` or NUL), `limit` (clamped to `1..=100`, default 30), `files_only` (drops directories). Answers `{ query, hits[], roots[], timed_out[], unreadable[], truncated, elapsed_ms }`; each hit is a `FileInfo` plus `root` and `root_kind`. Fanned out over the same roots the caller's Explorer sidebar lists (`explorer_roots_for_session`), so an unauthorised folder can never produce a hit; **admins are bounded to those roots too**. Bounded end to end: 16 roots max, 1.5 s per root, 4 s total — a root that does not answer is named in `timed_out` rather than dropped. A refused query is a `400` naming the rule, never a `200` with an empty list. **Name search only** (no content index) |
+
 ## Security — `security/*` (auth)
 
 | Method | Path | Auth | Handler |
 |--------|------|------|---------|
+| GET | `/security/advisor` | admin | the read-only hardening audit (QW-10): `score` (0–100, weighted and floored), `counts` (`pass`/`info`/`warn`/`fail`/`total`), `findings[]` (worst first: `id`, `severity` `pass`/`info`/`warn`/`fail`, `title`, `evidence`, `fix`, `link` `{app, category}`), `generated_at`, `app_version`. **There is no write route** — the advisor never changes a setting, every fix is a deep link. Never cached: a fixed finding is gone on the next call. A signal that cannot be read is an `info` finding, never a pass |
 | GET | `/security/sessions` | auth | `handle_get_my_sessions` |
 | POST | `/security/sessions/revoke` | auth | `handle_revoke_sessions` |
 | POST | `/security/sessions/revoke-all` | auth | `handle_revoke_all_sessions` |
+| GET | `/security/connected-clients` | admin | who is connected over the file protocols: `clients[]` (`id`, `protocol` `smb`/`nfs`/`sftp`/`ftp`, `username`, `client_ip`, `client_host`, `target` (share or export), `opened_files` **count** — never a path — `kickable`, `detail`), `sources[]` (`source`, `available`, `error`, `count`), `kickable`, `checked_at`. **Always `200`**: an unavailable collector is reported, not turned into an error |
+| POST | `/security/connected-clients/kick` | admin | `{ id }` — disconnect one client. The body names a **client id, never a pid**: the server re-collects and takes the pid from the fresh observation. SMB uses `smbcontrol <pid> close-share <share>`, SFTP/FTP a `TERM` to that connection's process; an NFS export cannot be dropped (`400` with the reason) |
+| GET | `/security/auto-block` | admin | login auto-block: `settings` (`enabled`, `threshold`, `window_seconds`, `ban_seconds`, `apply_firewall`, `dos_enabled`, `dos_requests_per_minute`), `bans[]` (active first; `ip`, `reason`, `failures`, `expires_at`, `firewall_rule`, `active`, `remaining_minutes`), `active`, `firewall_rules`, `firewall_available` (whether `ufw` exists), `limits` |
+| PUT | `/security/auto-block` | admin | save the policy (a flat optional subset); validated only while `enabled` (a zero threshold/window/ban or a zero DoS cap is a `400` naming the field), then clamped into range |
+| POST | `/security/auto-block/pardon` | admin | `{ ip }` — lifts the row **and** the `ufw` rule it installed; a block that is not there is a `400`; if the row was removed but its firewall rule could not be, that is reported instead of claimed as success |
+| POST | `/security/auto-block/clear` | admin | lifts every block → `{ lifted, state }` |
+| POST | `/security/auto-block/sweep` | admin | expires the due bans now → `{ removed, state }` (the same sweep runs on every login check) |
 | GET | `/security/login-history` | admin | `handle_get_login_history` — truthful rows: each recorded attempt carries the real `success` flag and the HTTP `User-Agent`; rate-limited failures are kept (they are security-relevant) but the per-user counters only count `success = 0` attempts, and `clear_attempts` only purges failures — successful logins stay in history |
 | GET | `/security/login-history/{username}` | admin | `handle_get_user_login_history` — same truthful success/user-agent per row |
+
+## Identity — `identity/*` (auth)
+
+Every route acts on the caller's **own** account: the username comes from the
+session, never from the body, so there is no id to tamper with. A stray device
+cookie (or a JWT for another account) is a miss, not a cross-account action.
+See [Identity](./guides/identity.md).
+
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| GET | `/identity/devices` | auth | `{ devices: [{id, label, created_at, last_seen_at, expires_at}], total, lifetime_days }` — never the token or its hash |
+| POST | `/identity/devices/revoke` | auth | `{ id }`; revoking another account's device is a `400` miss ("no such trusted device") |
+| POST | `/identity/devices/revoke-all` | auth | `{ revoked: n }` |
+| GET | `/identity/rescue-email` | auth | `{ configured, email, code_ttl_minutes }` — `configured` only once a code came back |
+| POST | `/identity/rescue-email` | auth | `{ email }`; validated, a code is mailed, and **nothing is stored** yet. `400` when the mail could not be sent |
+| POST | `/identity/rescue-email/verify` | auth | `{ code }` → `{ email }`; the address is stored and the code consumed (single use, 5 attempts, 15 min) |
+| DELETE | `/identity/rescue-email` | auth | remove the address and any outstanding code |
+| POST | `/auth/login` | public | an account with 2FA skips the second factor when the request carries a valid `hv_trusted_device` cookie for **that** account (`requires_2fa` otherwise) |
+| POST | `/auth/2fa/verify` | public | accepts `remember_device`; `true` adds `Set-Cookie: hv_trusted_device=…` (HttpOnly, SameSite=Strict, 30 days, `Secure` only over TLS) |
+| POST | `/auth/2fa/setup` (`disable`) | auth | also revokes every trusted device of the account |
 
 ## Dashboard & widgets
 
@@ -313,11 +386,16 @@ Any refusal answers 400 and keeps the metadata row.
 | GET | `/explorer/search` | auth | `?path=&query=&max_results=` |
 | GET | `/explorer/disks` | auth | `handle_explorer_disks` — mounted volumes grouped `system\|internal\|raid\|external\|cloud\|network`; per entry `mount_point`/`filesystem`/`size_bytes`/`used_bytes` + optional `label`/`vendor`/`model`/`serial` |
 | POST | `/explorer/mkdir` | auth | `?path=` |
-| POST | `/explorer/delete` | **admin** | `?path=` — permanent; internal use only now, see `/explorer/trash`. Even for admins the path passes the PathGuard, and deleting a browsing root itself is refused |
+| POST | `/explorer/delete` | **admin** | `?path=` — permanent; internal use only now, see `/explorer/trash`. Even for admins the path passes the PathGuard, and deleting a browsing root itself is refused. Since 2026-10-30 a path outside the roots is allowed **only** inside the scratch space (`$TMPDIR`/`/tmp`/`/var/tmp`) |
 | POST | `/explorer/rename` | auth | `?path=&new_name=` — **both** paths are path-guard validated |
 | POST | `/explorer/save` | auth | `handle_explorer_save` — inline text/code editor, atomic temp-file + rename, 5 MB cap |
-| POST | `/explorer/copy` | auth | `?source=&destination=&strategy=overwrite\|keep_both\|skip`; directories return `{job_id, sse_url}`; every file is SHA-256 verified end-to-end |
-| POST | `/explorer/move` | auth | `?source=&destination=&strategy=`; same job pattern; source deleted only after a verified copy |
+| POST | `/explorer/copy` | auth | `?source=&destination=&strategy=overwrite\|keep_both\|skip`; directories return `{job_id, sse_url}`; a single file answers `{message, method, instant, bytes}` where `method` is `clone` \| `kernel_copy` \| `stream` (a clone shares the source's blocks — see *Instant copy* below); every non-clone copy is SHA-256 verified end-to-end |
+| POST | `/explorer/move` | auth | `?source=&destination=&strategy=`; same job pattern; source deleted only after a verified copy. Answers `{message, method, instant}` — `method` is `null` for a same-filesystem atomic rename (nothing was copied) and names the strategy only for the cross-filesystem fallback |
+| GET | `/explorer/instant-copy` | auth | `handle_explorer_instant_copy_get` — `{ mode: "auto"\|"off", mounts: [{ mount_point, fs_type, reflink }] }`; the mounts are evidence for the UI, never a gate |
+| PUT | `/explorer/instant-copy` | **admin** | `handle_explorer_instant_copy_update` — body `{ mode }`; strict parse, an unknown value is refused rather than coerced; persisted in the singleton `instant_copy_policy` row (migration 062) |
+| GET | `/shares/{name}/{share_type}/quota` | **admin** | per-share size ceiling: `backend` (`zfs`/`btrfs`/`xfs_project`/`unsupported`), `supported`, `filesystem`, `reason` (when unsupported), `quota_bytes`, `used_bytes`, `free_bytes`, `percent`, `quota_human`, `used_human` |
+| PUT | `/shares/{name}/{share_type}/quota` | **admin** | `{ quota_bytes }` (`0` removes it); the filesystem is changed **first**, and the row only records what it accepted; `400` under 1 MiB or over 1 PiB, or when the filesystem cannot enforce a limit |
+| DELETE | `/shares/{name}/{share_type}/quota` | **admin** | remove the ceiling (filesystem, then row) |
 | GET/POST | `/explorer/permissions` | auth | `?path=&mode=` — read/set POSIX mode |
 | GET | `/explorer/preview` | auth | text/image preview; `previewable: false` for non-text binaries |
 | POST | `/explorer/extract` | auth | `?path=&destination=` — members listed + validated pre-flight (no absolute names, no `..`, no symlink members), extracts into a staging dir verified confined below the destination, `.gz` decompresses straight to disk |
@@ -334,16 +412,20 @@ Any refusal answers 400 and keeps the metadata row.
 | POST/GET/DELETE | `/explorer/trash` | auth | `?path=` (POST) — move to trash / list trash / empty trash |
 | POST | `/explorer/trash/restore` | auth | `?id=` (cross-device EXDEV fallback) |
 | DELETE | `/explorer/trash/{id}` | auth | permanently delete one trashed item |
+| GET | `/explorer/trash/policy` | auth | current `{ retention_days, max_bytes, last_purge_at }` (default 30 days / 10 GiB, `0` = that limit off) |
+| PUT | `/explorer/trash/policy` | **admin** | body `{ retention_days, max_bytes }`; `0` is a real "off" value, not a reset to the default |
+| POST | `/explorer/trash/purge-now` | **admin** | run the retention pass now with the saved policy, answers `{ purged, freed_bytes }` |
 | POST | `/explorer/format` | admin | `{ device, fstype, label? }` — format a block device as `ext4` or `exfat` (`mkfs.*` under `sudo`); `fstype` allow-list and the device validated against the available-disk list **before** any `mkfs` runs |
 | GET | `/explorer/history` | auth | `?path=` — **Rewind**: the ZFS snapshot timeline covering that file/folder, oldest→newest, each with a read-only `snapshot_path` under `.zfs/snapshot/`; empty outside ZFS |
 | POST | `/explorer/watch/ticket` | auth | JSON body `{ path }` — validates the path against the caller's roots, mints a single-use 15 s ticket **bound to (user, path)** for the filesystem-watcher SSE connection (EventSource cannot set custom headers) |
 | GET | `/explorer/watch` | auth \| ticket | `?ticket=&path=` — SSE stream; the ticket only opens the **exact path it was minted for** (otherwise refused), `change` events are filtered component-based to the watched directory + `heartbeat` every 30 s; the inotify watch is released when the stream drops |
 | GET | `/explorer/snapshots` | auth | `?path=` — lists ZFS snapshots covering that path with a `browse_path` under `.zfs/snapshot/…` (read-only browsing) |
 | POST | `/explorer/eject` | admin | `?path=<mount>` — safe-eject a removable drive (guarded to removable block devices only) |
-| GET | `/explorer/shares` | auth | list the caller's "share by link" links |
-| POST | `/explorer/shares` | auth | `{ path, mode?, expires_days? }` — create a download link to a file (`mode`: `anyone` \| `signed_in`; default 30-day expiry) |
-| DELETE | `/explorer/shares/{token}` | auth | revoke a link (owner or admin) |
-| GET | `/share/{token}` | public | **public** download (outside `/api`, before the SPA fallback); `signed_in` links need the `x-session-token` header; HTTP `Range` (206) + `X-Content-Sha256` for files ≤ 64 MB; per-token bandwidth bucket + global concurrency cap |
+| GET | `/explorer/shares` | auth | list the caller's "share by link" links — `protected` (a password is set), `download_count`, `max_downloads` and `exhausted` (the cap is spent); the Argon2 hash and the in-flight reservation are never serialised |
+| POST | `/explorer/shares` | auth | `{ path, mode?, expires_days?, password?, max_downloads? }` — create a download link to a file (`mode`: `anyone` \| `signed_in`; default 30-day expiry, `0` = never). `password` is 8–256 characters and stored as an Argon2id hash; `max_downloads` is 1–100000 and **only counts completed transfers**, so `1` is the one-time link. Only regular files can be shared |
+| DELETE | `/explorer/shares/{token}` | auth | revoke a link (owner or admin); any unlock minted for it stops working immediately |
+| POST | `/share/{token}/unlock` | public | `{ password }` → `200` with `Set-Cookie: hv_share_unlock=…` (HttpOnly, SameSite=Lax, `Secure` over TLS, scoped to `Path=/share/{token}`, 15 min). `401` carries `x-hv-share-auth: password`; `429` once 8 wrong passwords were tried inside 5 minutes. A wrong password or an oversized body is refused before Argon2 runs |
+| GET / HEAD | `/share/{token}` | public | **public** download (outside `/api`, before the SPA fallback). A password-protected link accepts either the unlock cookie or an `x-share-password` header — **never** the password in the query string. `signed_in` links accept the `x-session-token` header **or** the `hv_session` login cookie (a navigation cannot send a header), and a `401` carries `x-hv-share-auth: session`. HTTP `Range` (206) + `X-Content-Sha256` for files ≤ 64 MB; per-token bandwidth bucket + global concurrency cap; `Cache-Control: no-store`. `HEAD` spends no download slot, and an expired, revoked or spent link answers `400` (indistinguishable, so the endpoint is not a token oracle). A browser navigation (`Accept: text/html`) that cannot be answered with the file itself receives the SPA page instead of JSON — the password form, or the reason the link is unavailable |
 
 Paths are guarded by `config::PathGuard` (`AppState.path_guard`). See
 [File Explorer](./guides/explorer.md) for the trash/compress/progress-job
@@ -354,14 +436,18 @@ design and everything found+fixed during live verification.
 Copy, move (cross-filesystem fallback) and upload guarantee the stored bytes
 match the source:
 
-- **Copy/move** (`FileBrowser::copy_file_verified` in `src/browser.rs`) streams
-  the source while computing its SHA-256, `fsync`s the destination, then reads
-  the destination back and compares hashes. On any mismatch the corrupt
-  destination is deleted and `BrowserError::IntegrityMismatch` is returned — so
-  a move never deletes the source unless a byte-identical copy is confirmed on
-  disk. Symlinks are recreated as symlinks (never dereferenced), and permission
-  bits, ownership (uid/gid) and mtime are preserved (best-effort, like
-  `rsync -a`).
+- **Copy/move** (`FileBrowser::copy_file_instant` in `src/browser.rs`, built on
+  `src/browser/reflink.rs`) tries a copy-on-write clone (`ioctl(FICLONE)`), then
+  a kernel-side `copy_file_range`, and only then the verified stream. The
+  stream computes the source's SHA-256 while copying, `fsync`s the destination,
+  then reads it back and compares hashes; on a mismatch the corrupt destination
+  is deleted and `BrowserError::IntegrityMismatch` is returned — so a move never
+  deletes the source unless a byte-identical copy is confirmed on disk. A clone
+  is byte-identical by construction and skips that read-back (hashing it would
+  re-read the whole file and cancel the speed-up); it is only claimed when the
+  ioctl actually succeeded. Symlinks are recreated as symlinks (never
+  dereferenced), and permission bits, ownership (uid/gid) and mtime are
+  preserved (best-effort, like `rsync -a`).
 - **Upload** (`handle_explorer_upload`) `flush`es + `fsync`s each file before
   reporting success, returns each file's SHA-256 in `checksums[]`, and enforces
   an optional client `X-Expected-Sha256` header.
@@ -390,6 +476,13 @@ and `handle_share_get` accepted any non-empty `X-Session-Token`; they now use
 | POST | `/shares/sftp/rebuild` | admin | reconcile SFTP jails against current ACL grants |
 | POST | `/shares/{share_type}/start\|stop\|restart` | admin | service control |
 | GET/POST/DELETE | `/shares/{name}/{share_type}/permissions` | admin | per-user/group ACL |
+| GET | `/shares/smb/time-machine` | admin | `handle_smb_time_machine_list` — per-share `{ enabled, quota_gb }` |
+| PUT | `/shares/{name}/smb/time-machine` | admin | `handle_smb_time_machine_set` — `{ enabled, quota_gb }` (`0` = unlimited), renders the one managed `# homevault-smb-vfs` block |
+| GET | `/shares/rsync` | admin | `handle_rsync_state` — settings, modules, `share_candidates`, `users_with_secret` (**never** a password), service state, limits |
+| PUT | `/shares/rsync/config` | admin | `handle_rsync_settings_update` — `{ enabled, port?, max_connections?, chroot? }` |
+| POST | `/shares/rsync/modules` | admin | `handle_rsync_module_create` — `{ name, path, comment?, read_only?, users[], enabled }` |
+| PUT/DELETE | `/shares/rsync/modules/{name}` | admin | update (toggle / read-only / users) or remove a module |
+| PUT/DELETE | `/shares/rsync/users/{user}/secret` | admin | `handle_rsync_secret_set` — sets an rsync password (write-only) / forgets it |
 | POST | `/shares/{name}/{share_type}/permissions/sync` | admin | re-apply ACLs |
 | GET | `/users/{username}/permissions` | admin | `handle_user_permissions` |
 | GET | `/shares/access` | admin | `handle_list_access` — every per-member resource grant (optional `?member=`) |
@@ -1288,6 +1381,12 @@ privilege path, two JSON shapes (see *Server control* above).
 | GET | `/power/spindown` | admin | `handle_power_spindown_get` |
 | PUT | `/power/spindown` | admin | `handle_power_spindown_set` — `{ device, apm_level?, spindown_minutes? }`, applied immediately |
 | POST | `/power/spindown/apply` | admin | `handle_power_spindown_apply` — re-apply all saved settings |
+| GET | `/power/wol/hosts` | admin | saved Wake-on-LAN machines + the interface evidence a packet would use (`interfaces[]`: `name`, `address`, `prefix`, `broadcast`, `up`), `ports` and `max_hosts` |
+| POST | `/power/wol/hosts` | admin | `{ label, mac, broadcast? }`; the MAC is normalised to `AA:BB:CC:DD:EE:FF`, `broadcast` must be an IP literal, the label is unique case-insensitively (`400` names the problem) |
+| PUT | `/power/wol/hosts/{id}` | admin | edit a machine (`400` on a duplicate name or a vanished row) |
+| DELETE | `/power/wol/hosts/{id}` | admin | forget a machine |
+| POST | `/power/wol/wake` | admin | `{ id }` or `{ mac }` → `{ sent: true, report: { mac, destination, interface, ports }, message }`; the message says **sent, not confirmed**, because a magic packet is an unacknowledged datagram and the target is off |
+| (task payload) | — | — | any scheduled-task payload may carry `"wake": { "host_id", "delay_seconds" }`; validated on save (delay ≤ 600 s) and again before the run |
 
 ## Snapshot schedules — `snapshot-schedules/*`
 
@@ -1315,6 +1414,76 @@ Cron-driven pool snapshots with GFS retention. See
 - A run whose prune fails is recorded as `last_status: "failed"` with the
   reason in `last_error`, and raises one `snapshot.schedules` notification
   per outage.
+
+## Snapshots — immutable locks — `snapshots/locks*`
+
+A lock is a row **and** a filesystem hold (`zfs hold homevault-lock` /
+`btrfs property set ro true`), so a snapshot cannot be destroyed before its
+horizon even by a direct command. See
+[guides/snapshots.md](./guides/snapshots.md#immutable-snapshots-2026-10-31-roadmap-p25).
+
+| Method | Path | Auth | Handler |
+|--------|------|------|---------|
+| GET | `/snapshots/locks?pool=` | auth | `handle_snapshot_locks_list` — active locks (`break_glass_phrase` per row), the 50 most recent released rows, `max_lock_days`, `tag` |
+| POST | `/snapshots/locks` | **admin** | `handle_snapshot_lock_create` — `{ pool, snapshot, days, reason? }`; the hold is applied before the row, and rolled back if the row cannot be written |
+| DELETE | `/snapshots/locks/{id}` | **admin** | `handle_snapshot_lock_release` — body `{ confirmation? }`; before the horizon it must equal `release <snapshot-name>` |
+
+- **Refused with 200/`success:false`** (the house style): an already-locked
+  snapshot (`"… is already locked until …"`), a horizon outside 1–3650 days, a
+  reason over 200 characters or with control characters, and an early release
+  whose `confirmation` does not match the phrase.
+- A release after the horizon needs no phrase. An early one is journaled as
+  `BREAK-GLASS: …` and keeps `release_reason` on the row.
+- A lapsed lock is **not** treated as released: `snapshot_lock_scheduler`
+  releases the hold first and only then marks the row, so an unreachable pool
+  keeps the snapshot protected.
+
+## Backup destination — `backup-target/*`
+
+Receive `restic` backups from other machines, one append-only repository per
+tenant. See [guides/backup-target.md](./guides/backup-target.md).
+
+| Method | Path | Auth | Handler |
+|--------|------|------|---------|
+| GET | `/backup-target` | auth | `handle_backup_target_state` — settings, tenants, `repos_root`, `rest_server_available`, `restic_available`, `service_active` |
+| PUT | `/backup-target/config` | **admin** | `handle_backup_target_settings_update` — `{ enabled, port, listen }` |
+| POST | `/backup-target/tenants` | **admin** | `handle_backup_tenant_create` — `{ name, quota_bytes }`; returns `token`, `repository_password`, `repository_url` **once** |
+| PUT/DELETE | `/backup-target/tenants/{id}` | **admin** | quota and verification toggle / delete the tenant row (repository left on disk) |
+| POST | `/backup-target/tenants/{id}/rotate` | **admin** | new token + repository password, returned once |
+| POST | `/backup-target/tenants/{id}/verify` | **admin** | `restic check` now (10-minute ceiling) |
+
+- **Secrets never come back.** Reads expose `has_token` and the last check
+  outcome; the token is stored as SHA-256 and the repository password sealed
+  with the appliance key. The `htpasswd` file `rest-server` reads carries a
+  `{SHA}` entry — acceptable only because the password is machine-generated.
+- **Quota enforcement is revocation**: over quota, the tenant is removed from
+  the htpasswd file and every request is refused until the quota is raised.
+- The generated unit is `homevault-rest-server` with `--append-only
+  --private-repos`; it is started only when the role is enabled.
+
+## Snapshot replication — `replication/*`
+
+Scheduled `zfs send`/`btrfs send` to another dataset (local or over SSH). See
+[guides/replication.md](./guides/replication.md).
+
+| Method | Path | Auth | Handler |
+|--------|------|------|---------|
+| GET | `/replication` | auth | `handle_replication_jobs_list` — jobs + `capabilities` (`zfs`, `btrfs`, `ssh`, `pv`, limits) |
+| POST | `/replication` | **admin** | `handle_replication_job_create` |
+| PUT/DELETE | `/replication/{id}` | **admin** | update / delete (existing copies stay on the destination) |
+| GET | `/replication/{id}/preview` | auth | `handle_replication_preview` — the exact next-run pipeline, a dry run |
+| POST | `/replication/{id}/run` | **admin** | `handle_replication_run_now` |
+
+- Validation refuses: a name over 64 characters or with control characters, a
+  dataset containing `@` (the job creates its own snapshots), Btrfs over SSH,
+  a local destination equal to the source, an interval other than 0 or
+  5–43200 minutes, `keep_last` outside 1–365, and a bandwidth cap above
+  10 000 000 kB/s.
+- A run is single-flight per job (`run_job` holds a process-wide registry): a
+  second `run` answers `success:false` instead of interleaving two sends of the
+  same dataset. A missing `zfs`/`ssh` binary is refused up front for the backend
+  and destination the job uses.
+- `bandwidth_note` reports a cap that could not be applied (no `pv`).
 
 ## Health endpoint detail
 

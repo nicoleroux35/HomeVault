@@ -49,7 +49,12 @@ Svelte 5 frontend rendered as a desktop-like windowing UI.
 - **Network**: configure your interfaces and Wi-Fi, and diagnose the
   connection.
 - **Security**: antivirus (ClamAV), anti-ransomware protection and firewall
-  (ufw).
+  (ufw). Built-in HTTPS with a trusted-certificate report, plus automatic
+  certificates (HTTP-01 / DNS-01), dynamic DNS and a reachability check that
+  says what still stands between you and a name that works from anywhere.
+- **Account safety**: trusted browsers that skip the verification code for
+  30 days, a verified rescue address, and account recovery by e-mail when
+  both the password and the written recovery code are gone.
 - **Docker and app catalog**: containers, Compose stacks and a
   one-click app catalog.
 - **Virtual machines**: Incus VMs and containers, cloud images, console.

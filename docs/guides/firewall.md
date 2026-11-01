@@ -217,6 +217,41 @@ existing `install_optional` helper — non-fatal if declined;
 `ufw_available()` degrades the UI to "not installed" rather than
 erroring.
 
+## The login-ban rule (2026-10-31, QW-05)
+
+The single place the firewall is driven by something other than an explicit
+admin action: Settings → Security → *Failed sign-in blocking* can install
+`ufw deny from <ip>` when an address trips the auto-block threshold.
+
+- `src/firewall.rs::ban_source(ip, comment)` — validates the address with
+  `validate_source` (an IPv4/IPv6 address or network, never a host name or a
+  shell fragment), validates the comment, then runs exactly
+  `sudo ufw deny from <ip> comment homevault-autoblock-<ip>`. Idempotent: ufw
+  answers "Skipping adding existing rule" and exits 0.
+- `src/firewall.rs::unban_source(ip)` — rebuilds the live spec
+  (`delete deny from <ip>`) from the **validated address**, so it can never
+  delete a different rule; "rule does not exist" is treated as success, because
+  the desired state already holds.
+- The rules are tagged with the `homevault-autoblock-` comment prefix, so an
+  admin (and the code) can tell them apart from a hand-written rule.
+- `ufw` is only touched while both the auto-block **and** its *firewall* switch
+  are on; the default is off, because cutting an address off every service is a
+  bigger hammer than refusing a sign-in.
+- Every invocation goes through `run_ufw` (30 s `UFW_TIMEOUT`) — a wedged `ufw`
+  cannot hold the login path.
+- **No new sudoers grant**: the ban uses `deny *` and `delete *`, both already in
+  the per-subcommand policy above, so enabling the feature cannot widen the
+  process's privileges.
+- A ban whose rule could not be installed still blocks the web sign-in and
+  records `firewall_rule = 0`; the card shows "firewall rule installed" only
+  when it really was, and a pardon removes only what that flag claims.
+
+**Not covered by automated tests**: the live effect (a rule appearing in
+`ufw status`). It needs root and would modify the host; the argv shape and the
+address validation are unit-tested, and the decision is integration-tested with
+the firewall switched on (asserting the recorded flag follows
+`ufw_available()`).
+
 ## Invariants
 
 - Covers `ufw` on Debian/Ubuntu only, matching the installer's existing

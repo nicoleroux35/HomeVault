@@ -38,6 +38,92 @@ Btrfs is deliberately excluded: its qgroups are subtree-based and there is no
 uid/gid quota interface, so `setquota` cannot work there. Never add it to the
 support matrix without a real enforcement path.
 
+## Per-share quotas (2026-10-31, QW-07)
+
+The guide above covers **per-user** quotas (a limit on a person's home). This is
+the other axis DSM calls *shared-folder quota*: a ceiling on **one share**, so a
+single runaway folder cannot fill the pool.
+
+`src/share_quota.rs` (backend selection, argv, parsers, the decision),
+`src/storage/share_quota_repo.rs` (`share_quotas`, migration **066**),
+`src/handlers/share_quota.rs` (endpoints).
+
+A share has no row of its own — it is derived from `smb.conf` / `/etc/exports`
+(`SharesService::get_shares`) — so the split is: **the intent lives in
+`share_quotas`, the enforcement lives in the filesystem.**
+
+| Endpoint | Auth | Notes |
+|----------|------|-------|
+| `GET /api/shares/{name}/{share_type}/quota` | admin | `{ backend, supported, filesystem, reason, quota_bytes, used_bytes, free_bytes, percent, quota_human, used_human, min_bytes, max_bytes }` |
+| `PUT /api/shares/{name}/{share_type}/quota` | admin | `{ quota_bytes }`; `0` removes the limit. The filesystem is changed **first** — the row only records what it accepted |
+| `DELETE /api/shares/{name}/{share_type}/quota` | admin | removes the limit (filesystem, then row) |
+
+### Which filesystems can enforce one
+
+| Filesystem | Mechanism | Notes |
+|------------|-----------|-------|
+| **ZFS** | `zfs set refquota=<bytes>` on the dataset | native, independent of any per-user quota |
+| **Btrfs** | `btrfs qgroup limit <bytes> <subvolume>` | only when the share **is** a subvolume; a plain folder inside one is refused, because a qgroup limit would cap every share in that subvolume |
+| **XFS** | project quota (`xfs_quota … limit -p bhard=…`) | requires `prjquota`/`pquota` in the mount options; the project id is derived deterministically from the share path (never from a counter, so it survives restarts) |
+| ext4 / FAT / network mounts | — | **`supported: false`** with the reason, and the card shows the reason instead of a field |
+
+The detection reuses the same `findmnt` probe as the per-user quotas, and the
+selection is a **pure function** (`backend_for`) whose whole matrix is
+unit-tested — including the two refusals that matter (a plain folder in a Btrfs
+subvolume, an XFS mount without `prjquota`).
+
+### Usage is read back, never guessed
+
+| Backend | Read |
+|---------|------|
+| ZFS | `zfs list -H -p -o used <dataset>` (raw bytes) |
+| Btrfs | `btrfs qgroup show --raw <path>`, the share's own `0/<id>` row (`rfer`) |
+| XFS | `xfs_quota -x -c "report -p -b -N"`, the project's block count × 1024 |
+
+Every command runs through `run_timed` with a 10 s deadline and on the blocking
+pool, like the rest of the quota code (ROADMAP X.1/X.2).
+
+### Where enforcement starts
+
+The Explorer's **upload** and **copy** paths check the destination share
+(`handlers/explorer.rs::enforce_share_quota`):
+
+- **Upload** — once before the first byte (an obviously-full share refuses
+  immediately) and once after each file lands. The second check is per *file*,
+  not per chunk: each check is a `zfs list`/`btrfs qgroup`/`xfs_quota` probe, and
+  a per-chunk probe would cost more than the upload. A file that pushes the share
+  past its ceiling is **deleted** and the request refused, so the share is never
+  left over its limit.
+- **Copy** — the source's real size (`stat`, or a recursive walk for a tree) is
+  compared before anything is written, so the answer is "it does not fit", not
+  "try and see".
+- The refusal is `507 Insufficient Storage` with the three numbers in the
+  sentence (`2.5 GB of 10 GB used, and this transfer needs 9 GB`).
+- A protocol client writing over SMB/NFS is bounded by the **filesystem** limit
+  itself — that is the whole point of `refquota`/qgroups/project quotas — so the
+  two enforcement points are complementary, not duplicated.
+
+The decision itself is pure:
+
+```rust
+pub fn would_exceed(used_bytes: u64, quota_bytes: u64, incoming_bytes: u64)
+    -> Result<(), QuotaExceeded>
+```
+
+`quota_bytes == 0` means "no limit" and can never be exceeded; a transfer that
+lands **exactly** on the ceiling is allowed (the quota is the ceiling, not one
+byte below it); and the sum saturates rather than wrapping.
+
+### The screen
+
+Shares → each card has a **Size quota** button (an `IconGauge`, with an
+`aria-label`, never a bare `title`). With a ceiling set the card shows
+`2.5 GB of 10 GB` and a `role="progressbar"` bar (`aria-valuenow`/`-min`/`-max`,
+a translated `aria-label`) that turns warning at 80 % and error at 95 %. The
+editor takes **GB** (what an admin thinks in) and converts to bytes; `0` or
+**Clear** removes the limit. When the filesystem cannot enforce one, the card
+shows `A size quota cannot be enforced on ext4 — <reason>` instead of a field.
+
 ## Backend
 
 `src/quota.rs` — `QuotaService`, no repository, no state:
@@ -180,6 +266,46 @@ falls back to the server's English `reason` for an unknown code, so a future
 backend variant can never blank the explanation. After a save the card is
 refilled from `refreshAll()` → `hydrateDetail()` → `loadHomeQuota()`, never
 from the form, so a limit the kernel refused cannot show up as success.
+
+## Tests for per-share quotas
+
+- `src/share_quota.rs` — **22 unit**: the backend matrix (ZFS → `refquota`,
+  Btrfs subvolume → qgroup, Btrfs **plain folder refused** with the reason
+  naming "every share", XFS only with `prjquota`/`pquota` and refused without,
+  four unsupported filesystems each naming itself and the alternatives, empty
+  fstype → `unknown`); the project id being stable, path-normalised, different
+  per share and never in XFS's reserved range; the argv for every backend
+  (ZFS `refquota=<bytes>` / `none`, Btrfs `qgroup limit <bytes|none>`, XFS
+  `project -s -p … <id>` then `limit -p bhard=<blocks>` with blocks rounded
+  **up**); the parsers on real-shaped output (`zfs list -p`, `btrfs qgroup
+  show --raw`, `xfs_quota report -p -b -N`, `btrfs subvolume show`, `findmnt
+  -J`) including the "not found" answers that must stay `None` rather than
+  guess; the decision (`would_exceed`: fits, lands exactly on the ceiling,
+  crosses it with its three numbers, `0` never full, an already-full share
+  refusing a 1-byte file, no wraparound at `u64::MAX`) and the **acceptance
+  criterion verbatim** (11 GB into a 10 GB share is refused with both numbers in
+  the sentence); validation floor/ceiling; `human_size` rendering.
+- `tests/share_quota_integration.rs` — **5**: the admin matrix on all three
+  verbs; an unknown share named in the refusal and an unknown protocol refused
+  as such; the validation floor and ceiling refused **with nothing stored**; the
+  declared limit round-tripping in the database (per (name, type), `0` deletes
+  the row, `clear_all_for` dropping every protocol's row); and the state payload
+  carrying every key the card needs, with an unsupported backend **always**
+  explaining itself and claiming `quota_bytes: 0`.
+- `tests/e2e/shares/quota.spec.ts` — **9 `test(`**: the quota action on every
+  share card with an accessible name; the editor opening with a real `<label>`
+  and cancelling; a set ceiling rendering `used of quota`, the percentage and a
+  `role="progressbar"` carrying `aria-valuenow`/`-max`/`-label`; an unsupported
+  filesystem explaining itself (naming `ext4` and what does work) with **no**
+  bar; saving sending **bytes** while the editor speaks GB, and the bar
+  appearing from the answer; a refused save as `role="alert"`; a member refused
+  on read and write; no duplicate ids with the editor open; no horizontal
+  overflow with the bar and editor open. Every write is **mocked**.
+
+**No test applies a real filesystem limit.** That needs ZFS/Btrfs/XFS with root
+and would modify the host; the argv and parsers are unit-tested, the endpoint
+contract is integration-tested, and the screen is E2E-tested with the endpoints
+intercepted.
 
 ## Tests
 

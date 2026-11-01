@@ -3,9 +3,10 @@
 **Purpose:** let HomeVault terminate HTTPS itself, so a home admin gets an
 encrypted web UI without standing up a reverse proxy. Opt-in and **additive** —
 the plain-HTTP listener on `PORT` is unchanged. Modelled on the standard appliance pattern:
-a self-signed certificate HomeVault generates and renews, or an admin-supplied
-PEM pair, plus an HTTP→HTTPS redirect toggle. No ACME/Let's Encrypt yet (a
-possible later phase). Lives in **Settings > Security > HTTPS/TLS**.
+a self-signed certificate HomeVault generates and renews, an admin-supplied
+PEM pair, or a certificate issued automatically by a certificate authority
+(see [Certificate automation](./acme.md)), plus an HTTP→HTTPS redirect toggle.
+Lives in **Settings > Security > HTTPS/TLS**.
 
 ## Overview
 
@@ -27,7 +28,7 @@ environment defaults.
 |---|---|---|---|
 | `enabled` | `TLS_ENABLED` | `false` | `1`/`true`/`yes`/`on` |
 | `https_port` | `HTTPS_PORT` | `8443` | must differ from `PORT` |
-| `mode` | `TLS_MODE` | `self-signed` | `self-signed` \| `manual` |
+| `mode` | `TLS_MODE` | `self-signed` | `self-signed` \| `manual` \| `acme` |
 | `cert_path` | `TLS_CERT_PATH` | — | manual mode; absolute, traversal-free, readable PEM |
 | `key_path` | `TLS_KEY_PATH` | — | manual mode; absolute, traversal-free, readable PEM key |
 | `redirect` | `TLS_REDIRECT` | `false` | 301 non-loopback HTTP → HTTPS |
@@ -52,7 +53,29 @@ redaction. `settings_persistence::reset()` deletes it alongside `settings.json`.
 
 Browsers show a trust warning for the self-signed cert — expected, as with every
 self-signed appliance. For a trusted cert, use **manual** mode with a cert from
-your own CA, `certbot`, `mkcert`, or an existing reverse proxy.
+your own CA, `mkcert`, or an existing reverse proxy — or **acme** mode, which
+lets HomeVault fetch and renew one itself ([Certificate
+automation](./acme.md)).
+
+## Automated certificates (`mode = "acme"`)
+
+`TlsMode::Acme` makes the listener read the pair issued by the automation
+component: `{DATA_DIRECTORY}/data/acme/tls/cert.pem` (the full chain) and
+`key.pem`. Nothing is copied: the automation worker rewrites those two files on
+every renewal, and the next restart loads the new pair.
+
+- The switch is **refused** while `automation_active()` is false — automation
+  enabled, a domain set, and both files present. A certificate that was never
+  issued cannot be served, and accepting the setting anyway would produce a
+  listener that silently fell back on every boot.
+- If the pair disappears *after* the switch (deleted `data/acme`, a restored
+  backup without it), `resolved_cert_key_paths()` logs a warning and returns the
+  self-signed pair: an appliance must keep answering, and a fallback with a
+  visible warning beats an HTTPS port that refuses connections.
+- `CertInfo` for this mode reports `days_remaining` from the issued
+  certificate, so the card and the [reachability
+  advisor](./reachability.md) see the real expiry.
+- Saving the mode reports `requires_restart: true`, like every other TLS change.
 
 ## HTTP → HTTPS redirect (on by default, 2026-10-17)
 
@@ -130,6 +153,9 @@ is active.
 - `resolved_cert_key_paths()` for manual mode rejects relative paths, `.`/`..`
   components, control chars, and non-readable / non-file targets.
 - `validate_settings()` rejects `https_port == 0` and `https_port == PORT`.
+- `validate_settings()` rejects `mode = "acme"` when automation is off or has
+  not issued a pair yet; a vanished pair after the switch falls back to the
+  self-signed certificate instead of failing to serve.
 - `tls.json` never contains key material.
 - The card's restart button calls the same primitive as the power menu
   (`/api/server/restart` → `sudo systemctl reboot`, ROADMAP 24). A refused
@@ -139,15 +165,15 @@ is active.
 
 ## Not covered / later
 
-- ACME / Let's Encrypt (public trusted certs). DNS-01 avoids the open-port
-  requirement; HTTP-01 / TLS-ALPN-01 need an open port 80/443, which most
-  home NATs lack.
 - Hot rebind without a restart.
+- TLS-ALPN-01 — the automation component speaks HTTP-01 and DNS-01 only. DNS-01
+  avoids the open-port requirement entirely; HTTP-01 needs port 80.
 - HTTP/2 is left in the ALPN set (`axum-server` default) — WebSockets
   (Terminal, app-proxy) still negotiate HTTP/1.1; verified to work.
 
 ## Related docs
 
 - [Architecture](../ARCHITECTURE.md), [API Contract](../API.md),
-  [Network](./network.md), [Server control](./server-control.md),
-  [Settings](./settings.md).
+  [Certificate automation](./acme.md), [Dynamic DNS](./ddns.md),
+  [Reachability](./reachability.md), [Network](./network.md),
+  [Server control](./server-control.md), [Settings](./settings.md).

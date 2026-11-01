@@ -136,6 +136,71 @@ per grant. Handlers no longer call either directly:
 
 `share_type` ∈ {`smb`, `nfs`, `ftp`, `webdav`, `sftp`}.
 
+### Per-share size quota (2026-10-31, QW-07)
+
+One folder may not grow past a ceiling. The **intent** is stored per
+`(share name, protocol)` in `share_quotas` (migration 066); the **enforcement**
+is the filesystem's — ZFS `refquota`, a Btrfs qgroup, or an XFS project quota —
+so the limit also binds clients writing over SMB/NFS and not just the web UI.
+A share on a filesystem that cannot cap one directory says so and the card hides
+the field. Endpoints and the detection matrix:
+[Quotas → Per-share quotas](./quotas.md#per-share-quotas-2026-10-31-qw-07).
+
+The Shares card shows a **Size quota** action per share
+(`data-testid="shares-quota-btn"`), the `used of quota` bar when a ceiling is
+set, and the reason when it cannot be enforced.
+
+### Per-share recycle bin (unified with the Explorer Trash)
+
+An SMB share can keep a copy of everything a network client deletes, so a file
+deleted over the network is recoverable from the **same Trash screen** the web
+Explorer uses instead of vanishing silently.
+
+- **One folder, two deletion paths.** The recycle repository is
+  `RECYCLE_DIR_NAME` (`= crate::browser::TRASH_DIR_NAME`, `.homevault-trash`),
+  a folder at the top of the share's own root. That is exactly the folder the
+  Explorer's Trash view already reads, so a network delete and a web delete
+  converge on one list — restore a network-deleted file from the web UI and it
+  goes back to its original path via the usual `.trashinfo` sidecar.
+- **State lives in `smb.conf`, not in a new column.** A share recycles when its
+  `[section]` carries a marked block:
+  ```ini
+  # homevault-recycle:begin
+    vfs objects = recycle
+    recycle:repository = .homevault-trash
+    recycle:keeptree = yes
+    recycle:versions = yes
+    recycle:touch = yes
+    recycle:maxsize = 0
+    recycle:exclude = *.tmp, *.temp, *.swp, .DS_Store, Thumbs.db
+    recycle:directory_mode = 0700
+  # homevault-recycle:end
+  ```
+  `smb_recycle_block()` / `apply_recycle_to_section()` / `section_has_recycle()`
+  in `src/shares.rs`. Enabling inserts the block if absent, disabling removes
+  exactly those lines and nothing else, and enabling twice is a no-op — a
+  hand-added `veto files` or any other directive in the section survives the
+  round-trip. `parse_smb_config` skips `#` lines so the markers never leak into a
+  share's displayed `options`.
+- **No second source of truth.** `SharesService::get_smb_recycle_map()` derives
+  the per-share on/off state by scanning the live `smb.conf` for the markers, so
+  the UI never disagrees with the file the daemon actually reads. A
+  mutation validates the share name first (`validate_share_name`, so a name with
+  `..` cannot forge an extra section) and reloads `smbd` best-effort.
+- **The share roots feed the Trash roots.** `SharesService::smb_share_paths()`
+  returns every configured share path; `crate::trash::roots_from` adds
+  `<share>/​.homevault-trash` to the trash roots the Explorer lists, for every
+  user (a non-admin still recovers what they deleted over the network).
+
+| Endpoint | Auth | Notes |
+|----------|------|-------|
+| `GET /shares/smb/recycle` | admin | `{ shareName: bool }` map derived from `smb.conf` |
+| `PUT /shares/{name}/smb/recycle` | admin | body `{ enabled: bool }`; rewrites that share's section, reloads `smbd` |
+
+The Trash **retention policy** (how long deleted files are kept, and the size
+ceiling) is a separate, appliance-wide setting owned by the Explorer — see
+[Explorer → Trash retention](./explorer.md#trash-retention--auto-purge-2026-10-29).
+
 **SFTP grant order matters:** a share-permission grant applies a real `setfacl`
 entry for the grantee, which requires that user to already exist as a real
 Linux account — so a user's SFTP key must be set (`PUT /shares/sftp/users/key`,
@@ -180,6 +245,10 @@ stderr or only care that the reload ran). A source guard
   `grantSharePermission`, `revokeSharePermission`, `syncSharePermissions`, and
   the generic `delete(..., body)` used by revoke. SFTP config/user endpoints go
   through the generic `get`/`put`/`post`, no dedicated methods.
+- The SMB tab shows a **Recycle bin** card (`data-testid="shares-recycle"`) with
+  one optimistic toggle per SMB share; a rejected change reverts the switch and
+  reports through `notifyError`. The SMB recycle endpoints use the generic
+  `get`/`put`, no dedicated api.ts method.
 - WebDAV access URL is assigned in a live code path (a past bug had it inside an
   `{#if false}` block).
 
@@ -198,6 +267,15 @@ stderr or only care that the reload ran). A source guard
   one line and a name matching several exports is a `400`, never a
   multiple-line rewrite. Disabled exports stay in the file behind the
   `# homevault-nfs-disabled:<name>` tag so the state survives reboots.
+- **The SMB recycle bin is one marked block in one share section, and its
+  folder is the Explorer Trash folder.** Enable/disable rewrites only the
+  `# homevault-recycle:begin … # homevault-recycle:end` block via
+  `apply_recycle_to_section`; never append a bare `vfs objects = recycle` line
+  (that would fight a hand-added `vfs objects`, and disabling could not remove
+  it cleanly). The repository is `crate::browser::TRASH_DIR_NAME`, so a network
+  delete lands where the web Explorer already looks — do not introduce a second
+  recycle folder name or a persisted per-share flag that could drift from
+  `smb.conf`.
 - **No `SharesService`/`SftpJailService` call runs inline in an async
   handler.** They go through `run_share_op`/`run_jail_rebuild`
   (`spawn_blocking` + timeout). `SftpJailService::rebuild_jails` keeps its
@@ -259,6 +337,56 @@ stderr or only care that the reload ran). A source guard
   `src/handlers/permissions.rs`, `src/permissions.rs`, `src/sftp.rs` and the
   SFTP line in `handle_user_delete` are open to edits. The invariants above stay
   binding: a change keeps the Rust integration + Playwright E2E suites green.
+
+## Time Machine over SMB (2026-10-31, ROADMAP P2.1)
+
+macOS backs up over SMB today; AFP is not used and not shipped. Turning Time
+Machine on for a share therefore means three things, and nothing else:
+
+1. **One managed block in `smb.conf` per share** (`src/shares.rs`). Both
+   per-share VFS features — the recycle bin and Time Machine — render into a
+   **single** `# homevault-smb-vfs:begin … end` block, because `vfs objects`
+   may only be set once per share section. The Time Machine block carries the
+   recipe `vfs_fruit` documents:
+
+   ```ini
+   vfs objects = fruit streams_xattr            # 'recycle' appended when enabled
+   fruit:time machine = yes
+   fruit:time machine max size = 500G           # 0 = no ceiling
+   fruit:metadata = stream
+   fruit:model = MacSamba
+   fruit:posix_rename = yes
+   fruit:veto_appledouble = no
+   fruit:wipe_intentionally_left_blank_rfork = yes
+   fruit:delete_empty_adfiles = yes
+   ```
+
+   `fruit` is listed **before** `streams_xattr` (the order the module
+   documents), and the recycle module is appended last so a network delete is
+   offered the fruit-handled stream before the recycle module captures it.
+   Lines an admin added by hand are preserved verbatim; toggling either
+   feature rewrites only this block. A legacy `# homevault-recycle:begin`
+   block is still recognised, so an existing install upgrades in place
+   instead of stacking a second block.
+
+2. **A maximum size, in GiB** (`fruit:time machine max size`). Empty means
+   `0`, i.e. macOS grows until the share is full. The ceiling is validated
+   (1 PiB) so a typo cannot become a Samba value it reads differently.
+
+3. **A Bonjour advertisement** so the share appears in *System Settings →
+   Time Machine* without typing an address — see
+   [mDNS](./mdns.md#time-machine-_adisk_tcp-2026-10-31-roadmap-p21).
+
+Screen: Shares → **SMB** tab → *Time Machine* card, one row per SMB share
+(`GET /api/shares/smb/time-machine`, `PUT /api/shares/{name}/smb/time-machine`).
+The toggle is optimistic and **rolls back** when the server refuses, so the
+switch never shows a state the generated config does not have.
+
+**What is deliberately not claimed:** a real macOS first/incremental backup
+cannot run in CI. The generator is unit-tested against the documented recipe,
+and the mDNS advertisement is unit-tested for its shape, but "a Mac backs up
+successfully" is an acceptance test to run on hardware, not a claim this guide
+makes.
 
 ## Related
 

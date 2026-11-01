@@ -8,6 +8,318 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Back up a Mac to a share, and get it back when a disk dies (2026-10-31,
+  Phase 2 — protocol and backup interoperability).** Phase 2 is about the
+  copies your data lives on, and every item is a working path rather than a
+  checkbox.
+
+  **Time Machine over SMB (P2.1).** A share can now be a macOS Time Machine
+  destination. Turning it on writes one managed block into that share's
+  `smb.conf` section — `fruit`/`streams_xattr` plus the recipe `vfs_fruit`
+  documents (`fruit:time machine = yes`, `fruit:metadata = stream`,
+  `fruit:posix_rename`, the `_adfile` wipe/delete options) and an optional
+  maximum size, because a backup that silently fills the pool is worse than no
+  ceiling at all — and publishes a `_adisk._tcp` advertisement for **that**
+  share in its own Bonjour service group, with a `adVU` UUID derived from host
+  and share so macOS keeps recognising the same volume across restarts. AFP is
+  not used: macOS backs up over SMB today. The recycle bin and Time Machine
+  share one managed block, because `vfs objects` can only be set once per share
+  section, and a legacy recycle-only block upgrades in place.
+
+  **Rsync server (P2.2).** Shares → **Rsync**: an opt-in daemon of HomeVault's
+  own (`homevault-rsync.service`, its own port and config, never the host's
+  `rsyncd`), with one authenticated module per share. A module can only serve a
+  folder that is already a HomeVault share, re-checked against the live
+  inventory on every apply, so the screen can never expose another part of the
+  machine; a module with no allowed accounts is refused outright, because an
+  anonymous rsync export of a home directory is exactly the accident this must
+  not make possible. Each account gets its own rsync password — stored `0600`,
+  written through a pipe, never returned by the API, never shown again. The
+  daemon chroots by default and does not wait for reverse DNS. The screen also
+  spells out the path most people actually want: rsync over SSH, using the SFTP
+  account and key that already exist.
+
+  **Backup destination (P2.3).** HomeVault can now *receive* backups: a
+  **Backup destination** app turns on a dedicated `rest-server` unit
+  (`--append-only --private-repos`, its own port and htpasswd file) and gives
+  each sending machine a tenant with a token, a private repository and a quota.
+  Append-only is the whole point — a compromised source cannot `forget` or
+  `prune` the history it depends on, so ransomware on a laptop cannot reach
+  round and delete its own backups. The token and repository password are
+  displayed exactly once and never again (SHA-256 for the token, the appliance
+  key for the password); over quota, the tenant is removed from the htpasswd
+  file so every request is refused until an admin raises the limit; a tenant can
+  ask for a daily `restic check` and run one on demand. Deleting a tenant
+  removes access and leaves the repository on disk.
+
+  **Snapshot replication (P2.4).** A **Replication** app pushes ZFS/Btrfs
+  snapshots to another dataset — local, or another machine over SSH. Each run
+  creates its own `hv-repl-<job>-<timestamp>` snapshot, sends the increment from
+  the last successful run, resumes an interrupted stream instead of restarting
+  it, and prunes **only** the copies it made on the destination: the source is
+  never pruned and a snapshot you made by hand is never touched. An optional
+  `pv` throttle caps the bandwidth, and when `pv` is missing the job says the
+  cap was not applied instead of pretending. Before anything moves, **Preview**
+  shows the exact command the next run would execute. Every stage is an argv
+  vector, so no credential and no raw argument list reaches a log or a shell.
+
+  **Immutable snapshots (P2.5).** A snapshot can now be **locked** for a number
+  of days, and the lock is real: a row the appliance consults *and* a
+  filesystem hold (`zfs hold homevault-lock` / a read-only Btrfs subvolume), so
+  `zfs destroy` itself fails while the lock is active. Retention never overrides
+  a lock — the prune skips a locked snapshot and reports how many it kept — and
+  a lapsed lock is not silently treated as released: the release loop runs the
+  release first and only then marks the row, so an unreachable pool keeps the
+  snapshot protected. Releasing before the horizon is break-glass: the dialog
+  will not enable its button until you type the phrase the server returned, and
+  the release is journaled as `BREAK-GLASS:` with who, when and why. Rows are
+  never deleted, so the history of who unlocked what stays readable.
+
+  Phase 2 also adds the runbook it needs: a **disaster recovery** guide that
+  says which copy answers which question (snapshots undo a mistake, replication
+  survives a dead disk, the destination holds another machine's backups,
+  configuration backup rebuilds the appliance but not the data), walks a
+  bare-metal rebuild on new hardware, and gives the quarterly rehearsal worth
+  doing before you need it.
+
+  Guides: `shares.md` (Time Machine), `mdns.md` (`_adisk._tcp`), `snapshots.md`
+  (locks), and the new `rsync.md`, `backup-target.md`, `replication.md` and
+  `disaster-recovery.md`. Migrations `068` (locks) and `069` (replication),
+  `070` (backup tenants). Tests: **+68 integration** (`time_machine_integration`
+  8, `rsync_integration` 7, `replication_integration` 7,
+  `backup_target_integration` 8, `snapshot_locks_integration` 7, plus the unit
+  suites in `rsync_server.rs`, `backup_target.rs`, `replication.rs`,
+  `snapshot_locks.rs` and their schedulers), and **43 new E2E** across
+  `tests/e2e/{shares/time-machine,shares/rsync,backup/destinations,backup/replication,storage/snapshot-locks}.spec.ts`.
+
+- **Sign in with your finger, not a password (2026-10-31, Phase 1 P1.3 —
+  passkeys).** An account can now hold one or more **passkeys**: the fingerprint,
+  face or PIN reader on your own device signs you in, and the private half never
+  leaves that device. It is a *separate* credential — your password and your
+  two-factor code keep working exactly as before, and revoking a passkey removes
+  neither. Account → **Passkeys** lists them with a name you can change, when
+  each was added and last used, and whether the authenticator confirmed you with
+  a PIN or biometric; **Add a passkey** runs the browser's own sheet; revoking
+  one asks first. The login screen grows a **"Sign in with a passkey"** button
+  when the browser can do it — and a cancelled prompt says it was cancelled
+  rather than telling you your password was wrong. Everything the WebAuthn spec
+  makes security-relevant is verified **server-side, in this tree**: the
+  ceremony type, the one-shot challenge (single use, five minutes), the origin
+  (exact equality — `https://vault.home.evil.example` is refused for
+  `https://vault.home`), the relying-party id hash, the user-presence and
+  user-verification flags, the COSE key (ES256 or EdDSA only), the signature over
+  `authenticatorData ‖ SHA-256(clientDataJSON)`, and the signature counter (a
+  regression is refused as a possible clone). Only the **public** key is stored.
+  Three things the feature says plainly instead of implying: attestation is
+  **not** verified (the format is recorded as evidence, nothing more); a passkey
+  is bound to the hostname the appliance is configured with, which the card shows
+  because a passkey created for another address will simply not work; and a
+  locked account cannot be entered with a passkey either, or a passkey would be a
+  way around an administrator's lock.
+
+- **⌘K now finds your files, not just your apps (2026-10-31, QUICK-WIN
+  QW-12).** The desktop search overlay answered "which app or setting is called
+  this" and nothing else; the Explorer could only search the folder you were
+  already standing in. So "where is that contract from last spring?" still meant
+  opening the Explorer and guessing which share it was in. One query now fans
+  out over **every root the signed-in user may read** — their home directory,
+  the shared folders, the attached pools — merged, deduplicated and ranked
+  (exact name first, then prefix, then shorter names, then directories).
+  Each result shows the folder that holds it, so two files called `photo.jpg`
+  in different shares are finally distinguishable, and picking one opens the
+  Explorer on that folder **with the file already selected**. Three rules keep
+  it honest: it is the Explorer's own root list and ACL filter (one definition,
+  two callers, so the search can never reach a folder the sidebar would not
+  show — admins included); it is bounded end to end (two characters minimum,
+  sixteen roots, 1.5 s per root, 4 s total, a capped list); and it **says when
+  it is incomplete** — a location that did not answer, or an answer that was
+  cut, is stated under the results instead of being disguised as "no such
+  file". Name search only: no content index is built.
+
+- **The box can tell you what to fix, and in what order (2026-10-31, QUICK-WIN
+  QW-10 / DSM-18).** Health, Firewall, Antivirus, Ransomware and TLS each
+  answered one question about one subsystem; nothing answered *"is this box
+  safely configured, and what should I do first?"*. The Health screen now
+  carries a **Security Advisor** card that does, and only that: nineteen
+  checks over state the other screens already compute — an administrator
+  exists and none is named `admin`/`administrator`/`root`, every administrator
+  uses 2FA, no administrator still holds an administrator-chosen password,
+  HTTPS is on with a certificate that is trusted and not about to lapse with
+  automatic renewal, the firewall is on **and still lets SSH and the web
+  interface through**, SMB refuses guests, requires signing and rejects SMB1,
+  no share folder is world-writable, share size limits, snapshots scheduled,
+  a configuration backup on disk, failed sign-ins blocked, and HomeVault up to
+  date. Each finding says what is true, on what evidence, what fixes it, and
+  links to the screen that owns the setting; the score is the weighted
+  percentage of passing checks, floored so "99.6" can never read as a perfect
+  hundred. Three rules hold the whole thing together: **a signal that cannot be
+  read is never a green tick** (it becomes an `info` finding saying so), **the
+  score is arithmetic rather than opinion**, and **nothing is cached**, so a
+  fixed finding disappears on the very next run without a restart. The advisor
+  only reads — there is no write route, every mutation stays behind the card
+  that owns the setting — and the update check reuses the cached answer, so
+  opening Health never contacts a third party. Administrator-only, because the
+  report names accounts, the certificate, the firewall and the shares.
+
+- **The box can be rebuilt on new hardware (2026-10-31, QUICK-WIN QW-11).** The
+  settings export carried preferences and nothing else; Settings → System →
+  *Full configuration backup* now produces **one archive** with a consistent
+  `VACUUM INTO` snapshot of the database (accounts, groups, shares, ACLs,
+  quotas, every settings row), the exported settings, and the generated service
+  configurations (`smb.conf`, `/etc/exports`, netplan, the SFTP `sshd`, the ufw
+  rules) — so a replacement box gets its accounts and its shares back, not just
+  its colour scheme. It is optionally encrypted with a passphrase
+  (AES-256-GCM under an Argon2id key), and **by default it holds no working
+  credential**: sessions, trusted devices and API tokens are removed, private
+  keys are left out, and the config allow-list cannot name a secret file.
+  Including credentials requires a passphrase of 12+ characters, enforced where
+  the bytes are built rather than only in the handler. Every entry carries a
+  SHA-256, so a truncated or edited archive is refused *by name* instead of
+  restoring half a configuration; a file that was missing at export time is
+  recorded with its reason rather than silently dropped; and an archive from a
+  newer HomeVault is refused with both versions named. **Restoring is a staged
+  swap, never a hot swap**: the archive is validated, staged, and applied at the
+  next start — with the previous database kept as `homevault.db.pre-restore` —
+  because replacing a live SQLite file underneath running requests is the one
+  thing this feature must not pretend to do.
+
+- **One folder can no longer fill the pool (2026-10-31, QUICK-WIN QW-07).** A
+  share can carry a **size quota**: Shares → the *Size quota* action sets a
+  ceiling in GB, and the card shows `2.5 GB of 10 GB` with a progress bar that
+  turns amber at 80 % and red at 95 %. The enforcement belongs to the filesystem
+  that holds the share — ZFS `refquota`, a Btrfs subvolume's qgroup, or an XFS
+  project quota — so a client writing over SMB or NFS is bound too, not just a
+  browser upload. The Explorer additionally refuses an upload or a copy that
+  would cross the ceiling (`507` naming used, quota and incoming bytes), because
+  a refusal *before* the bytes land beats a filesystem error halfway through.
+  Usage is always read back from the filesystem (`zfs list`, `btrfs qgroup
+  show`, `xfs_quota`), never estimated. Two honest limits instead of silent
+  no-ops: a share on a filesystem this build cannot cap (ext4, tmpfs, network
+  mounts) says so and hides the field, and a share that is a plain folder inside
+  a Btrfs subvolume is refused with the reason that a qgroup limit would cap
+  every share in that subvolume. The filesystem is changed **before** the
+  database records the intent, so the card can never claim a ceiling that is not
+  in force.
+
+- **"Who is connected, and can I get them off?" (2026-10-31, QUICK-WIN QW-06).**
+  Settings → Security → *Connected clients* lists the sessions the file
+  protocols hold — SMB (`smbstatus`), NFS (`showmount`) and the SSH/SFTP/FTP
+  streams (`ss`) — with the account, the client address and host name, the share
+  or export they hold, how many files are open, and the process evidence. It is
+  the answer to "why is the disk busy" that the browser-only *Active sessions*
+  could never give. One session can be disconnected: SMB closes the **share**
+  (the session survives and can reconnect), SFTP/FTP get a `TERM` to that
+  connection's process — and an NFS export is honestly marked as not
+  disconnectable, because the kernel holds it. The request names a client, never
+  a pid: the server re-collects and takes the pid from the fresh observation, so
+  a stale or forged id cannot signal an unrelated process. Every probe is bounded
+  and runs off the request thread, and **one failing source never fails the
+  list** — a box without Samba reports SMB as unavailable with its own reason and
+  still shows its NFS mounts. No absolute path is ever exposed: the card answers
+  "who", not "what are they reading".
+
+- **A block on a scanned address now survives a restart — and can reach the
+  firewall (2026-10-31, QUICK-WIN QW-05).** Settings → Security → *Failed
+  sign-in blocking*: after N wrong passwords from one address inside a window,
+  that address is refused for a configurable time. The block is a database row
+  (`ip_bans`), not in-memory state, so it is still in force after a reboot — the
+  in-memory limiter was the previous answer and it forgot everything on restart.
+  It is checked **before** the password is verified, so a blocked address cannot
+  keep counting against an account; that, plus the ban being keyed by *address*
+  and never by account, is what stops one attacker from locking a legitimate
+  user out from somewhere else. Optionally the ban is also installed as
+  `ufw deny from <ip>`, so it reaches file sharing and SSH and not just the web
+  sign-in; the row records whether that rule was *really* installed, and a
+  one-click **Pardon** removes exactly what it added. Three things it will never
+  do: block loopback, block an unparsable address, or block the address the
+  request itself came from (an admin mistyping their own password must not lock
+  themselves out of the box they are configuring). Expiry is self-healing — the
+  sweep runs on every enforcement check, so an old ban lifts itself without a
+  scheduler or a restart. One more row caps unauthenticated requests per minute
+  per address, so a flood is refused instead of reaching the database; it
+  deliberately ignores signed-in traffic, because a family behind one router
+  shares that budget.
+
+- **The box can wake a sleeping machine again — and scheduled tasks can wait
+  for it (2026-10-31, QUICK-WIN QW-09).** Settings → System → **Wake-on-LAN**
+  keeps a list of machines by network-card address; "Wake" sends the standard
+  102-byte magic packet to ports 9 and 7 over the interface that actually owns
+  the target's segment (a frame is a *link-layer* broadcast, so the directed
+  broadcast of the right interface is what reaches a powered-off NIC), with an
+  optional explicit destination for a relay on another VLAN. The answer is
+  **"sent — this only confirms it left"**, never "woken": a UDP datagram is
+  unacknowledged and the target is off by definition, so claiming success would
+  be a lie in exactly the case the feature exists for. Any scheduled task may
+  now carry a `wake` pre-step (`host_id`, `delay_seconds` 0–600), validated when
+  the task is saved — a `delay` typo or a missing host is a 400 rather than a
+  03:00 run that wakes nothing — and a host that vanished or cannot be reached
+  **fails the run** instead of letting a backup hit a sleeping machine. MACs are
+  accepted in the spellings an admin pastes (`AA:BB:…`, `aa-bb-…`,
+  `aabb.ccdd.eeff`, bare hex) and refused when they are not one machine's
+  (`FF:FF:FF:FF:FF:FF` is every NIC on the segment). The interface inventory is
+  read from `/sys/class/net` — opening the card forks nothing.
+
+- **The audit trail can finally leave the box (2026-10-31, QUICK-WIN QW-08).**
+  Settings → Monitoring → **Remote syslog** forwards HomeVault's own event
+  stream to a collector over UDP, TCP or TLS, framed as RFC 5424 or the older
+  RFC 3164, with a configurable facility. Two properties make it safe to switch
+  on: a log call **never waits on the collector** (it pushes a string into a
+  1024-entry queue and returns, so a dead collector can only fill a queue, never
+  slow a sign-in), and the feature is **inert while disabled** — the hot path is
+  a cached flag, not a JSON read. When the queue overflows the *oldest* entries
+  are dropped and counted, and the card shows waiting / sent / dropped next to a
+  status pill (`idle`, `forwarding`, `degraded`) so losses are visible instead
+  of silent. TLS trusts **only** the CA the admin pastes: the public root list
+  is deliberately not loaded, which is what makes the pinning meaningful for a
+  self-signed home collector. "Send a test message" reports the collector's own
+  reason, and says "sent — check the collector", because a UDP datagram can only
+  ever claim the packet left. The host's own `/var/log` sources are deliberately
+  not re-shipped (the OS already collects them).
+
+- **Share links can finally be "send this to my neighbour, once" (2026-10-31,
+  ROADMAP-DSM QW-04).** A link used to have one knob: time. It now also takes a
+  **password** (Argon2id, the same primitive as user passwords) and a
+  **download cap**, which is what makes a one-time link (`max_downloads = 1`)
+  expressible at all. A download is counted only when the last byte was
+  written, so an interrupted, refused or abandoned transfer does not spend it;
+  the reserved slot is released on a read error and on a client disconnect,
+  which a capped link cannot survive leaking. The owner sees `2/2` and a
+  "Download limit reached" badge in the modal instead of a link that silently
+  stops working.
+
+  The password never enters a URL. The recipient's page (`/share/<token>`)
+  `HEAD`s the link, asks for a password only when the link has one, posts it
+  once to `POST /share/{token}/unlock`, and receives a short-lived (15 min),
+  path-scoped, `HttpOnly` unlock cookie; the download is then an ordinary
+  navigation, so `Range`/resume work and a large file is not buffered into a
+  JavaScript blob first. API clients can still send `x-share-password`. Guessing
+  is bounded to 8 wrong passwords per link per 5 minutes (checked *before*
+  Argon2 runs), while an empty password — the probe the page makes to decide
+  whether to show the field — costs nothing. A `401` says `password` or
+  `session` in `x-hv-share-auth`, so a signed-in-only link explains itself
+  instead of looking broken.
+
+  Five defects of the in-flight implementation were fixed on the way, each one
+  user-visible: the `HEAD` probe reported a spent link as downloadable and only
+  failed at the actual download; a failure between reserving a slot and opening
+  the file leaked the slot forever; a client that disconnected mid-stream leaked
+  it too; **a completed download was recorded as interrupted** because hyper
+  stops polling a body once its `Content-Length` is written (so a one-time link
+  was never spent — a `Drop`-time `sent == expected` check is the fix, and a
+  new test reproduces hyper's framing); and **the service worker cached
+  `/share/` responses cache-first**, so a spent or revoked link kept working
+  from the browser cache (it now skips `/share/`, and the server sends
+  `Cache-Control: no-store`). A browser navigation that cannot be answered with
+  the file (`Accept: text/html`) now gets the public page instead of JSON, and
+  `signed_in` links honour the `hv_session` login cookie because a navigation
+  cannot send a header. `GET`/`HEAD` list responses still never carry
+  `password_hash` or `active_downloads`. Tests: 11 unit
+  (`handlers::share_links`, up from 2) and 8 new integration tests
+  (`share_links_integration.rs` **13 → 21**); E2E §16.4/16.5 —
+  **16.1–16.5 all green live on Firefox and Chromium** (2026-10-31, scratch
+  server `:8099`). Docs: `docs/guides/explorer.md`, `docs/API.md`,
+  `SCREENS.md`.
+
 - **A Cloud Sync job can finally run on its own (2026-10-24, ROADMAP 16.4).**
   Until now `POST /rclone/jobs/{id}/run` was the only way a saved sync job ever
   ran: the row held the definition and nothing else, so a nightly sync could not

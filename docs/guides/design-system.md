@@ -1126,6 +1126,17 @@ Appliance palette with it. Everything it declares lives under
    the markup and in `svelte-check`; it was found on 2026-10-19 by measuring
    the Settings headers (73px where the classes said 57px). Write `mb-0!`
    (or `m-0!`) on any `<p>` whose box must be tight.
+   **And it is not text-only either:** the form-element block in
+   `base.css` (`input, select, textarea { width: 100%; border; padding;
+   background }`) is written for *text* fields but also matches
+   `<input type="radio">` and `<input type="checkbox">`. A bare
+   `<input type="radio" class="flex-none">` therefore renders 100% wide —
+   it stretches across its `<label>` and squeezes the option text to one
+   word per line, which can inflate a dialog past the viewport. Found on
+   2026-10-30 on the Explorer's instant-copy modal (1246px tall in a 720px
+   viewport). Always give a radio/checkbox an explicit box —
+   `class="h-4 w-4 flex-none accent-[var(--hv-primary)]"` — as
+   `CloudSync.svelte` and `Rescue.svelte` already do.
 7. **Touchscreen and mouse are both first-class (WCAG 2.5.5 / Apple HIG /
    Material).** Every interactive target — button, input, select, textarea,
    switch, slider, icon-button, picker row — is ≥ `--hv-touch-target-min`

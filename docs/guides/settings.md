@@ -417,6 +417,108 @@ success clears it (2026-10-24, ROADMAP 22.2). See
 [backup-restic.md](./backup-restic.md) → *HomeVault's own database* for the
 mechanics, the process-wide serialisation and the restore procedure.
 
+## System → Full configuration backup (2026-10-31, QW-11)
+
+"Move HomeVault to new hardware" is a guaranteed lifecycle event, and the JSON
+settings export could not serve it: it carries preferences, not accounts,
+groups, shares, ACLs or the generated service configs. This is **one archive that
+can rebuild the box**.
+
+`src/config_backup.rs` (container, encryption, staging, startup apply),
+`src/handlers/config_backup.rs` (endpoints),
+`frontend/src/lib/components/settings/ConfigBackupCard.svelte`.
+
+| Endpoint | Auth | Notes |
+|----------|------|-------|
+| `GET /api/settings/config-backup` | admin | state: `app_version`, `format_version`, `settings_schema`, `max_archive_bytes`, the config allow-list, the archives on disk, and `pending_restore` |
+| `POST /api/settings/config-backup/export` | admin | `{ include_secrets, passphrase? }` → `{ id, bytes, path, created_at, encrypted, skipped }`. A secrets archive **must** carry a passphrase (≥ 12 characters) |
+| `GET /api/settings/config-backup/archives/{id}` | admin | the archive itself (`application/octet-stream`, `Content-Disposition: attachment`, `no-store`). The id is checked against a `[A-Za-z0-9_-]{1,64}` allow-list **and** the resolved path is confined to the archive directory |
+| `POST /api/settings/config-backup/inspect` | admin | dry run: the archive as the raw body, `x-backup-passphrase` header → the manifest, or the refusal. Nothing is staged |
+| `POST /api/settings/config-backup/restore` | admin | validate → **stage** → `{ staged: true, requires_restart: true, staged_entries, needs_root, manifest }` |
+
+### What the archive contains
+
+A single container (no tar/gzip dependency):
+
+```text
+" HVCONFIG1 " | version u32 | flags u8 | salt[16] | nonce[12] | manifest_len u32 | manifest JSON | payload
+```
+
+The payload is the concatenation of the manifest's entries, in order:
+`database.db` (a `VACUUM INTO` snapshot — consistent while the server keeps
+serving), `settings.json` (`settings_persistence::export`, which already masks
+the SMTP password) and the **allow-listed** config files:
+
+| Archive path | Host path |
+|--------------|-----------|
+| `configs/smb.conf` | `/etc/samba/smb.conf` |
+| `configs/exports` | `/etc/exports` |
+| `configs/netplan.yaml` | `/etc/netplan/90-homevault.yaml` |
+| `configs/sshd_config.sftp` | `/etc/ssh/homevault_sftp_sshd_config` |
+| `configs/ufw.user.rules`, `configs/ufw.user6.rules` | `/etc/ufw/user*.rules` |
+
+A missing file is **not** an error — Samba is optional, netplan is not on every
+host — but it is recorded in `manifest.skipped` with the reason, so a restore can
+say what it will be missing instead of producing a box that looks migrated and
+is not. Every entry carries its `sha256`, so a truncated or edited archive is
+refused **by entry name** even when it is not encrypted.
+
+### Secrets: off by default, and really
+
+`includes_secrets = false` (the default) is a guarantee:
+
+- the settings document is the redacted export;
+- the config list above is an **allow-list** — no `tls.json` key, no VPN
+  configs, no Syncthing/SFTP keys, no DDNS/ACME tokens (a unit test asserts no
+  allow-listed path contains `tls`, `key`, `vpn`, `acme`, `ddns`, `syncthing` or
+  `secret`);
+- the database copy is **scrubbed** of the credentials stored in plaintext:
+  `sessions`, `trusted_devices`, `mcp_tokens`, `password_recovery_codes`,
+  `login_attempts`, and `vpn_peers.private_key`. A restore therefore logs
+  everyone out and revokes their API tokens — the correct consequence of a
+  migration. Password **hashes** and encrypted TOTP blobs stay: a restore needs
+  them, and a hash is not a plaintext secret.
+
+`includes_secrets = true` requires a passphrase and encrypts the payload with
+AES-256-GCM under an Argon2id-derived key (random 16-byte salt, 12-byte nonce,
+the manifest authenticated as associated data). A wrong passphrase and a tampered
+payload are indistinguishable by design; the answer says "the passphrase does not
+open this archive", which is the useful one for the common case.
+
+### Restore is a staged swap, never a hot swap
+
+Replacing a live SQLite file underneath a running process is the one thing this
+feature must not pretend to do. A restore:
+
+1. **validates** the container and every checksum, refusing a newer
+   `format_version` or `settings_schema` with a sentence that names both
+   versions and says to update HomeVault;
+2. **stages** the payload into `data/restore/` (database, settings, configs) and
+   writes `READY` **last**, so an interrupted staging is never applied;
+3. answers `requires_restart: true` — the card then shows a permanent
+   "a restore is staged, it will be applied at the next start" banner.
+
+At startup, **before the database is opened**, `apply_pending_restore()` copies
+the staged database into place, deletes SQLite's `-wal`/`-shm` sidecars (they
+belong to the old database and would be replayed against the new one), removes
+the marker first, and keeps the previous database as `homevault.db.pre-restore`.
+A failure is logged and the box boots on its current data: an unappliable
+restore must never prevent a start.
+
+Config files are staged, not copied over `/etc` from a request thread: they need
+root, so the answer lists them in `needs_root` and the startup path applies them
+with the same privileges as the installer.
+
+### The screen
+
+Settings → System → **Full configuration backup**
+(`data-testid="config-backup-*"`): the archive's format/schema/limit, the
+"include credentials" switch (which reveals the passphrase field and explains
+why it must be encrypted), **Create an archive**, the list of archives with a
+download button each, and a restore block with a file input, a passphrase field,
+**Check the archive** (dry run) and a **two-click** restore whose second state is
+carried by text *and* an outline, never colour alone.
+
 ## Widgets category — real monitors + refresh interval
 
 `widgets` is not a mock: the 11 rows come from `stores/widgetCatalog.ts`
@@ -618,6 +720,26 @@ localised sentence `settings.autostart_error`. The staged flip is reverted to
 the last server-accepted value (`baselines['autostart']`) so the switch never
 shows a state the host refused; the rail-footer Save button parks on
 `data-state="error"`.
+
+## Invariants (configuration backup)
+
+- **`includes_secrets` is enforced where the bytes are built**, not by the
+  handler alone: `config_backup::build` refuses a secrets archive without a
+  passphrase, so no future caller can produce an unencrypted archive full of
+  credentials.
+- **A missing config file is reported, never silently dropped** — a restore that
+  lacks `smb.conf` says so.
+- **Every entry is checksummed** and a mismatch names the entry; a truncated
+  archive is refused, not partially restored.
+- **A newer format or schema is refused** with both versions in the sentence.
+- **The archive id is untrusted input**: allow-listed characters *and* a
+  canonicalised path confined to the archive directory (an id is not a filename).
+- **The restore never touches the running database**: it stages, then the
+  startup hook swaps it in with a `homevault.db.pre-restore` copy.
+- **A refused restore stages nothing**: `READY` is written last and only after
+  every entry landed.
+- **The passphrase never travels in a URL** — it is an `x-backup-passphrase`
+  header on the two POST endpoints, and `no-store` on the download.
 
 ## Invariants
 

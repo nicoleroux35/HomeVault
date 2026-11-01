@@ -67,6 +67,29 @@ in: `0 2 * * *` is 00:00 UTC in July and 01:00 UTC in January for
   next to the cron (`tasks.timezone_server` when the task follows the
   appliance).
 
+## Wake first (QUICK-WIN QW-09)
+
+Any task type may carry a **pre-step** that wakes a saved machine before it
+runs — the "wake the NAS, then run the 03:00 backup" pairing:
+
+```json
+{ "type": "command", "command": "/usr/local/bin/backup", "args": [],
+  "wake": { "host_id": 2, "delay_seconds": 90 } }
+```
+
+- `host_id` names a machine from Settings → System → **Wake-on-LAN**.
+- `delay_seconds` (0–600, default 0) is how long to wait after the packet before
+  the task starts. A cold boot from WOL is typically 20–90 s.
+- The block is validated **when the task is saved** (`crate::wol::parse_wake_plan`
+  — `deny_unknown_fields`, so a `delay` typo is a 400 rather than "wake and run
+  immediately") and again before each run.
+- The run's output starts with the "sent, not confirmed" sentence and the wait;
+  a machine that was deleted or that cannot be woken **fails the run**. Running
+  a backup against a sleeping box is the one outcome the option exists to
+  prevent.
+
+See [Power → Wake-on-LAN](./power.md#wake-on-lan-quick-win-qw-09).
+
 ## Invariants
 
 - **Validation gate.** `TaskAction::from_parts` validates `task_type` +
