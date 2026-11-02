@@ -231,8 +231,8 @@ pub fn validate_password(password: &str) -> Result<(), String> {
 /// Returns the canonical path to store and serve.
 pub fn validate_module_path(path: &str, allowed_roots: &[PathBuf]) -> Result<PathBuf, String> {
     validate_share_path(path)?;
-    let canonical = std::fs::canonicalize(path)
-        .map_err(|e| format!("'{path}' cannot be read: {e}"))?;
+    let canonical =
+        std::fs::canonicalize(path).map_err(|e| format!("'{path}' cannot be read: {e}"))?;
     let inside = allowed_roots.iter().any(|root| canonical.starts_with(root));
     if !inside {
         return Err(format!(
@@ -320,10 +320,7 @@ pub fn render_config(settings: &RsyncSettings, modules: &[RsyncModule], secrets:
     // is usually owned by) a system rsyncd.
     out.push_str(&format!("lock file = /run/{RSYNC_SERVICE}.lock\n"));
     out.push_str(&format!("log file = /var/log/{RSYNC_SERVICE}.log\n"));
-    out.push_str(&format!(
-        "max connections = {}\n",
-        settings.max_connections
-    ));
+    out.push_str(&format!("max connections = {}\n", settings.max_connections));
     out.push_str("use chroot = ");
     out.push_str(if settings.chroot { "yes\n" } else { "no\n" });
     // With chroot off, `munge symlinks` is what keeps a symlink inside the
@@ -453,7 +450,10 @@ fn write_generated(path: &Path, content: &str, mode: u32) -> Result<(), String> 
     {
         use std::os::unix::fs::PermissionsExt;
         if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
-            warn!("rsync: could not set mode {mode:o} on {}: {e}", path.display());
+            warn!(
+                "rsync: could not set mode {mode:o} on {}: {e}",
+                path.display()
+            );
         }
     }
     if !overridden() {
@@ -753,7 +753,11 @@ mod tests {
             ],
             &["alice", "bob"],
         );
-        let conf = render_config(&state.settings, &state.modules, "/etc/homevault-rsync/rsyncd.secrets");
+        let conf = render_config(
+            &state.settings,
+            &state.modules,
+            "/etc/homevault-rsync/rsyncd.secrets",
+        );
         assert!(conf.contains(&format!("port = {DEFAULT_PORT}")), "{conf}");
         assert!(
             conf.contains(&format!("lock file = /run/{RSYNC_SERVICE}.lock")),
@@ -765,7 +769,11 @@ mod tests {
         assert!(conf.contains("  auth users = alice"), "{conf}");
         assert!(conf.contains("  auth users = alice,bob"), "{conf}");
         assert!(conf.contains("  read only = no"), "{conf}");
-        assert_eq!(conf.matches("secrets file =").count(), 3, "global + 2: {conf}");
+        assert_eq!(
+            conf.matches("secrets file =").count(),
+            3,
+            "global + 2: {conf}"
+        );
         assert!(conf.contains(&format!("  uid = {RSYNC_USER}")), "{conf}");
         // Exactly one `[module]` header per module, and no anonymous export.
         assert_eq!(conf.matches("[media]").count(), 1, "{conf}");
@@ -814,7 +822,10 @@ mod tests {
     fn test_render_unit_runs_the_dedicated_daemon() {
         let unit = render_unit(Path::new("/etc/homevault-rsync/rsyncd.conf"));
         assert!(unit.contains(&format!("--config=/etc/homevault-rsync/rsyncd.conf")));
-        assert!(unit.contains("--no-detach"), "systemd needs a foreground daemon: {unit}");
+        assert!(
+            unit.contains("--no-detach"),
+            "systemd needs a foreground daemon: {unit}"
+        );
         assert!(unit.contains("NoNewPrivileges=true"), "{unit}");
     }
 
@@ -892,11 +903,7 @@ mod tests {
 
         // The share itself and a subdirectory are both acceptable…
         assert_eq!(
-            validate_module_path(
-                &share.to_string_lossy(),
-                &[canonical_share.clone()]
-            )
-            .unwrap(),
+            validate_module_path(&share.to_string_lossy(), &[canonical_share.clone()]).unwrap(),
             canonical_share
         );
         let sub = share.join("sub");
@@ -904,13 +911,13 @@ mod tests {
         assert!(validate_module_path(&sub.to_string_lossy(), &[canonical_share.clone()]).is_ok());
 
         // …a sibling directory, a relative path and a traversal are not.
-        assert!(validate_module_path(&outside.to_string_lossy(), &[canonical_share.clone()]).is_err());
+        assert!(
+            validate_module_path(&outside.to_string_lossy(), &[canonical_share.clone()]).is_err()
+        );
         assert!(validate_module_path("relative/path", &[canonical_share.clone()]).is_err());
-        assert!(validate_module_path(
-            &share.join("..").to_string_lossy(),
-            &[canonical_share]
-        )
-        .is_err());
+        assert!(
+            validate_module_path(&share.join("..").to_string_lossy(), &[canonical_share]).is_err()
+        );
     }
 
     #[test]
@@ -922,7 +929,8 @@ mod tests {
         std::fs::create_dir_all(&outside).unwrap();
         std::os::unix::fs::symlink(&outside, share.join("escape")).unwrap();
         let roots = vec![std::fs::canonicalize(&share).unwrap()];
-        let err = validate_module_path(&share.join("escape").to_string_lossy(), &roots).unwrap_err();
+        let err =
+            validate_module_path(&share.join("escape").to_string_lossy(), &roots).unwrap_err();
         assert!(err.contains("not one of HomeVault's shares"), "{err}");
     }
 
@@ -935,7 +943,10 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for candidate in &candidates {
             assert!(!candidate.path.is_empty());
-            assert!(seen.insert(candidate.path.clone()), "duplicate path: {candidate:?}");
+            assert!(
+                seen.insert(candidate.path.clone()),
+                "duplicate path: {candidate:?}"
+            );
             assert!(!candidate.used, "nothing is used by the default state");
         }
         // A module whose path matches a candidate marks it as used.

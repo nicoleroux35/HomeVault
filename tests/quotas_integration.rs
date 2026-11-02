@@ -425,7 +425,11 @@ async fn test_an_unknown_period_is_refused_and_nothing_is_stored() {
         Some(put_body("yearly", 4096, 0)),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "the module answers errors in 200 JSON");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the module answers errors in 200 JSON"
+    );
     assert_eq!(body["success"], json!(false));
     let error = body["error"].as_str().unwrap_or_default();
     assert!(error.contains("lifetime"), "{error}");
@@ -462,13 +466,18 @@ async fn test_a_period_round_trips_with_its_window_and_next_reset() {
     // The window opens on the 1st at 00:00 local time, so the stored instant
     // is a calendar boundary — in any zone it is the 1st somewhere within ±14h.
     assert!(
-        started.contains("T00:00:00") || started.contains("T22:00:00") || started.contains("T23:00:00"),
+        started.contains("T00:00:00")
+            || started.contains("T22:00:00")
+            || started.contains("T23:00:00"),
         "unexpected window start: {started}"
     );
     let resets = body["data"]["period_resets_at"]
         .as_str()
         .expect("a monthly quota announces its next reset");
-    assert_ne!(resets, started, "the reset instant is the next window's start");
+    assert_ne!(
+        resets, started,
+        "the reset instant is the next window's start"
+    );
 }
 
 #[tokio::test]
@@ -650,7 +659,10 @@ async fn test_the_reset_pass_only_touches_elapsed_windows() {
     .expect("reset pass");
     assert!(reset >= 1, "the stale row must be reset");
 
-    assert_eq!(repo.get("user", "stale").await.unwrap().upload_used_bytes, 0);
+    assert_eq!(
+        repo.get("user", "stale").await.unwrap().upload_used_bytes,
+        0
+    );
     assert_eq!(
         repo.get("user", "fresh").await.unwrap().upload_used_bytes,
         900,

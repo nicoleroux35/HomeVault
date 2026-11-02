@@ -214,6 +214,62 @@ function createAuthStore() {
     },
 
     /**
+     * Adopt the session an identity provider has already created.
+     *
+     * Both providers use the same ticket: the callback (OpenID Connect) or the
+     * ACS (SAML) leaves a one-shot ticket in the URL fragment and this
+     * exchanges it for exactly the `LoginResponse` a password login returns. From there the ordering rules
+     * of `login()` apply unchanged — tokens persisted before the store
+     * updates, a non-admin session invalidated server-side instead of being
+     * left dangling, `user` set last.
+     */
+    async completeSso(ticket: string, provider: 'oidc' | 'saml' = 'oidc') {
+      update(state => ({ ...state, isLoading: true }));
+      const response = provider === 'saml'
+        ? await api.completeSamlSignIn(ticket)
+        : await api.completeOidcSignIn(ticket);
+
+      if (!response.success || !response.data?.token) {
+        set({
+          user: null,
+          isAuthenticated: false,
+          isLoading: false,
+          mustChangePassword: null,
+        });
+        return { success: false, error: response.message || 'Sign-in failed' };
+      }
+
+      const data = response.data;
+      api.setTokens(data.token, data.csrf_token || '');
+
+      if (!data.is_admin) {
+        // Same rule as `login()`: the web UI is administrators-only, so a
+        // valid but non-admin session is ended server-side right away rather
+        // than surviving in the browser for the next reload.
+        await api.logout();
+        set({
+          user: null,
+          isAuthenticated: false,
+          isLoading: false,
+          mustChangePassword: null,
+        });
+        return { success: true, isAdmin: false };
+      }
+
+      const user: User = { username: data.username, is_admin: data.is_admin };
+      const profile = await api.getCurrentUser();
+      const fullUser = profile.success && profile.data ? profile.data : user;
+
+      set({
+        user: fullUser,
+        isAuthenticated: true,
+        isLoading: false,
+        mustChangePassword: null,
+      });
+      return { success: true, isAdmin: true };
+    },
+
+    /**
      * End the session: notify the server and wipe all local auth state.
      */
     async logout() {

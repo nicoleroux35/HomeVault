@@ -602,16 +602,16 @@ async fn call_tool(
                             std::time::Duration::from_secs(30),
                         )
                         .map_err(|e| format!("failed to run docker compose logs: {e}"))
-                            .and_then(|o| {
-                                if o.status.success() {
-                                    Ok(String::from_utf8_lossy(&o.stdout).to_string())
-                                } else {
-                                    Err(format!(
-                                        "docker compose logs: {}",
-                                        String::from_utf8_lossy(&o.stderr).trim()
-                                    ))
-                                }
-                            })
+                        .and_then(|o| {
+                            if o.status.success() {
+                                Ok(String::from_utf8_lossy(&o.stdout).to_string())
+                            } else {
+                                Err(format!(
+                                    "docker compose logs: {}",
+                                    String::from_utf8_lossy(&o.stderr).trim()
+                                ))
+                            }
+                        })
                     })
                     .await
                     .map_err(|e| format!("Task join error: {e}"))??;
@@ -770,9 +770,7 @@ async fn call_tool(
                 crate::power::host_power_action(crate::power::PowerAction::Reboot)
             })
             .await
-            .unwrap_or_else(|join_err| {
-                Err(format!("the host task could not run: {join_err}"))
-            });
+            .unwrap_or_else(|join_err| Err(format!("the host task could not run: {join_err}")));
             match outcome {
                 Ok(()) => Ok("Server restart initiated".to_string()),
                 Err(reason) => Err(format!("Server restart refused: {reason}")),

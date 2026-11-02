@@ -44,6 +44,7 @@ use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::PathBuf;
+use std::time::Duration;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -417,7 +418,22 @@ pub(crate) struct QuotaRefundStream<S> {
     reserved: u64,
     upload: bool,
     completed: bool,
+    /// What to write into the transfer history when the stream ends (or is
+    /// dropped early). `None` for a wrapper that is not a user download.
+    history: Option<DownloadHistory>,
     _guard: crate::transfer_quota::QuotaLockGuard,
+}
+
+/// The identity of a download, carried by [`QuotaRefundStream`] so the history
+/// row can be written exactly once — as `complete` when the body was fully
+/// consumed, as `cancelled` when the client went away first.
+pub(crate) struct DownloadHistory {
+    pub username: String,
+    /// Destination as the user sees it (the path they downloaded).
+    pub path: String,
+    /// Bytes we offered to send (the ranged length, not the file size).
+    pub bytes: u64,
+    pub started: std::time::Instant,
 }
 
 impl<S> Stream for QuotaRefundStream<S>
@@ -449,6 +465,27 @@ impl<S> Drop for QuotaRefundStream<S> {
             let upload = self.upload;
             tokio::spawn(async move {
                 crate::transfer_quota::refund_usage(pool, &quotas, reserved, upload).await;
+            });
+        }
+        // Audit trail (HV-ADV-02): a download's outcome is only known here —
+        // the handler returned long before the last byte left. A body that
+        // reached its end is `complete`; one dropped early is `cancelled`, not
+        // a failure, because that is what a user pressing "stop" produces.
+        if let Some(history) = self.history.take() {
+            let pool = self.pool.clone();
+            let completed = self.completed;
+            tokio::spawn(async move {
+                let mut record = crate::transfer_history::NewTransfer::complete(
+                    &history.username,
+                    crate::transfer_history::TransferOperation::Download,
+                )
+                .dest(&history.path)
+                .bytes(history.bytes)
+                .duration_ms(history.started.elapsed().as_millis() as u64);
+                if !completed {
+                    record = record.cancelled();
+                }
+                crate::transfer_history::record_transfer(pool.clone(), record).await;
             });
         }
     }
@@ -593,17 +630,18 @@ fn spawn_tracked_copy_job(
     destination: String,
     owner: String,
     mode: InstantCopyMode,
+    pool: Arc<sqlx::SqlitePool>,
 ) -> (String, String) {
     // `owner` scopes the job in the desktop activity feed — a non-admin only
     // sees their own copy/move jobs, never another user's file paths.
     let job_id = crate::sse::PROGRESS_MANAGER.create_job_with_owner(
         crate::sse::JobType::Custom("explorer_copy".to_string()),
         "Starting copy...",
-        Some(owner),
+        Some(owner.clone()),
     );
     let jid = job_id.clone();
     tokio::spawn(async move {
-        run_tracked_copy(&jid, &source, &destination, false, mode).await;
+        run_tracked_copy(&jid, &source, &destination, false, mode, &owner, &pool).await;
     });
     (job_id.clone(), format!("/api/progress/{}", job_id))
 }
@@ -615,15 +653,16 @@ fn spawn_tracked_move_job(
     destination: String,
     owner: String,
     mode: InstantCopyMode,
+    pool: Arc<sqlx::SqlitePool>,
 ) -> (String, String) {
     let job_id = crate::sse::PROGRESS_MANAGER.create_job_with_owner(
         crate::sse::JobType::Custom("explorer_move".to_string()),
         "Starting move...",
-        Some(owner),
+        Some(owner.clone()),
     );
     let jid = job_id.clone();
     tokio::spawn(async move {
-        run_tracked_copy(&jid, &source, &destination, true, mode).await;
+        run_tracked_copy(&jid, &source, &destination, true, mode, &owner, &pool).await;
     });
     (job_id.clone(), format!("/api/progress/{}", job_id))
 }
@@ -665,9 +704,12 @@ async fn run_tracked_copy(
     destination: &str,
     delete_source_after: bool,
     mode: InstantCopyMode,
+    owner: &str,
+    pool: &Arc<sqlx::SqlitePool>,
 ) {
     use crate::sse::ProgressEmitter;
 
+    let started = std::time::Instant::now();
     let count_path = std::path::PathBuf::from(source);
     let total = tokio::task::spawn_blocking(move || FileBrowser::count_files(&count_path))
         .await
@@ -765,6 +807,11 @@ async fn run_tracked_copy(
         );
     }
 
+    let operation = if delete_source_after {
+        crate::transfer_history::TransferOperation::Move
+    } else {
+        crate::transfer_history::TransferOperation::Copy
+    };
     match final_result {
         Ok(()) => {
             let verb = if delete_source_after {
@@ -773,11 +820,68 @@ async fn run_tracked_copy(
                 "Copied"
             };
             let message = tracked_completion_message(&stats, verb);
-            ProgressEmitter::progress(job_id, 100.0, &message);
+            // The byte total is the size of what this run actually created
+            // (`CopyStats` counts files per method, not bytes). A clone still
+            // counts its logical size here: the destination holds that many
+            // bytes even though no block was rewritten.
+            let created_for_size = created.clone();
+            let bytes = tokio::task::spawn_blocking(move || {
+                created_for_size
+                    .iter()
+                    .filter_map(|p| std::fs::symlink_metadata(p).ok())
+                    .filter(|m| m.is_file())
+                    .map(|m| m.len())
+                    .sum::<u64>()
+            })
+            .await
+            .unwrap_or(0);
+            ProgressEmitter::transfer_progress(
+                job_id,
+                100.0,
+                &message,
+                &crate::sse::TransferDetail {
+                    bytes_processed: Some(bytes),
+                    bytes_total: Some(bytes),
+                    method: stats.slowest().map(|m| m.slug().to_string()),
+                    ..crate::sse::TransferDetail::default()
+                },
+            );
             ProgressEmitter::complete(job_id, &message);
+            crate::transfer_history::record_transfer(
+                pool.clone(),
+                crate::transfer_history::NewTransfer::complete(owner, operation)
+                    .job_id(job_id)
+                    .source(source)
+                    .dest(destination)
+                    .bytes(bytes)
+                    .duration_ms(started.elapsed().as_millis() as u64)
+                    .method(
+                        stats
+                            .slowest()
+                            .map(|m| m.slug().to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                    )
+                    // Exact, not approximate: every file must have taken the
+                    // hashed read-back stream. A mixed tree where one file was
+                    // cloned has not been verified as a whole.
+                    .verified(
+                        stats.total() > 0 && stats.count(CopyMethod::Stream) == stats.total(),
+                    ),
+            )
+            .await;
         }
         Err(e) => {
             ProgressEmitter::fail(job_id, &e);
+            crate::transfer_history::record_transfer(
+                pool.clone(),
+                crate::transfer_history::NewTransfer::complete(owner, operation)
+                    .job_id(job_id)
+                    .source(source)
+                    .dest(destination)
+                    .duration_ms(started.elapsed().as_millis() as u64)
+                    .failed(&e),
+            )
+            .await;
         }
     }
 }
@@ -1252,6 +1356,7 @@ pub async fn handle_explorer_download(
     Query(params): Query<ExplorerDownloadQuery>,
     headers: HeaderMap,
 ) -> Response {
+    let started = std::time::Instant::now();
     // 1. Resolve authorisation → (username, canonical file path).
     let (username, file_path) = if let Some(ticket) = params.ticket.as_deref() {
         match crate::media_ticket::consume_download_ticket(ticket, &params.path) {
@@ -1403,6 +1508,12 @@ pub async fn handle_explorer_download(
             reserved: send_len,
             upload: false,
             completed: false,
+            history: Some(DownloadHistory {
+                username: username.clone(),
+                path: file_path.to_string_lossy().into_owned(),
+                bytes: send_len,
+                started,
+            }),
             _guard: guard,
         })
     };
@@ -1767,15 +1878,24 @@ pub async fn handle_explorer_upload(
 use parking_lot::Mutex as ParkingMutex;
 use std::collections::HashMap;
 use std::sync::LazyLock;
-use std::time::{Duration, Instant};
 
-const UPLOAD_SESSION_TTL: Duration = Duration::from_secs(30 * 60);
+/// Idle lifetime of a resumable upload session, in seconds.
+///
+/// Idle-based (measured from the last chunk, `last_chunk_at`), not
+/// creation-based: a slow multi-gigabyte upload that keeps receiving chunks is
+/// not dead after half an hour, and an abandoned one is swept away with its
+/// temp file. The TTL is also the window in which a client may resume after a
+/// HomeVault restart, because the session now lives in the database (HV-UX-03,
+/// migration 074).
+const UPLOAD_SESSION_TTL_SECS: i64 = 30 * 60;
 
 /// ROADMAP 10.3: hard caps on concurrent resumable upload sessions — the TTL
-/// prunes only on touch, so an uncapped map could grow without bound. The
-/// per-user cap stops one account from starving everyone else.
-const MAX_UPLOAD_SESSIONS: usize = 256;
-const MAX_UPLOAD_SESSIONS_PER_USER: usize = 20;
+/// prunes only on touch, so an uncapped table could grow without bound. The
+/// per-user cap stops one account from starving everyone else. Counted in the
+/// **database** (see `UploadSessionRepository::counts`), so a restart cannot
+/// reset the caps while the sessions' temp files are still there.
+const MAX_UPLOAD_SESSIONS: u64 = 256;
+const MAX_UPLOAD_SESSIONS_PER_USER: u64 = 20;
 
 #[derive(Clone)]
 struct UploadSession {
@@ -1788,30 +1908,123 @@ struct UploadSession {
     username: String,
     strategy: crate::browser::CollisionStrategy,
     expected_sha256: Option<String>,
-    created_at: Instant,
+    /// Unix seconds. Epoch rather than `Instant` because the row is persisted:
+    /// an `Instant` means nothing to the next process.
+    created_at: i64,
+    last_chunk_at: i64,
 }
 
+impl UploadSession {
+    /// The durable row for this session.
+    fn stored(&self, session_id: &str) -> crate::upload_session::StoredUploadSession {
+        crate::upload_session::StoredUploadSession {
+            session_id: session_id.to_string(),
+            username: self.username.clone(),
+            dir: self.dir.clone(),
+            filename: self.filename.clone(),
+            tmp_path: self.tmp_path.to_string_lossy().into_owned(),
+            offset: self.offset,
+            total_bytes: self.total_bytes,
+            strategy: self.strategy.as_str().to_string(),
+            expected_sha256: self.expected_sha256.clone(),
+            created_at: self.created_at,
+            last_chunk_at: self.last_chunk_at,
+            speed_bps: None,
+        }
+    }
+
+    /// Rebuild the in-memory view from a persisted row.
+    fn from_stored(row: crate::upload_session::StoredUploadSession) -> Self {
+        Self {
+            dir: row.dir,
+            filename: row.filename,
+            tmp_path: PathBuf::from(row.tmp_path),
+            offset: row.offset,
+            total_bytes: row.total_bytes,
+            username: row.username,
+            strategy: crate::browser::CollisionStrategy::parse(Some(&row.strategy)),
+            expected_sha256: row.expected_sha256,
+            created_at: row.created_at,
+            last_chunk_at: row.last_chunk_at,
+        }
+    }
+}
+
+/// Write-through cache of the live sessions, keyed by session id.
+///
+/// The chunk path is hot (one request per chunk), so it reads this map first;
+/// a miss falls back to the database, which is what makes a session survive a
+/// restart. Every mutation is persisted *before* the cache is updated, so the
+/// cache can never be ahead of the durable row.
 static UPLOAD_SESSIONS: LazyLock<ParkingMutex<HashMap<String, UploadSession>>> =
     LazyLock::new(|| ParkingMutex::new(HashMap::new()));
 
-/// Removes expired sessions and their leftover temp files. Called opportunistically
-/// on every session-touching endpoint so stale state never accumulates.
-async fn prune_upload_sessions() {
-    let now = Instant::now();
-    let expired: Vec<UploadSession> = {
+fn upload_session_repo(state: &Arc<AppState>) -> crate::upload_session::UploadSessionRepository {
+    crate::upload_session::UploadSessionRepository::new(state.db.pool().clone())
+}
+
+fn now_epoch() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+/// Looks a session up in the cache, then in the database, rehydrating on a
+/// hit.
+///
+/// A row whose temp file has disappeared is deleted rather than returned: the
+/// chunk handler would otherwise answer "offset accepted" for a file that
+/// cannot be appended to. An expired row is removed the same way.
+async fn load_upload_session(
+    state: &Arc<AppState>,
+    session_id: &str,
+) -> Option<UploadSession> {
+    if let Some(session) = UPLOAD_SESSIONS.lock().get(session_id).cloned() {
+        return Some(session);
+    }
+    let repo = upload_session_repo(state);
+    let row = repo.load(session_id).await.ok().flatten()?;
+    let now = now_epoch();
+    let stale = row.is_expired(now, UPLOAD_SESSION_TTL_SECS)
+        || !std::path::Path::new(&row.tmp_path).exists();
+    if stale {
+        let _ = repo.delete(session_id).await;
+        let _ = tokio::fs::remove_file(&row.tmp_path).await;
+        return None;
+    }
+    let session = UploadSession::from_stored(row);
+    UPLOAD_SESSIONS
+        .lock()
+        .insert(session_id.to_string(), session.clone());
+    Some(session)
+}
+
+/// Removes expired sessions **and their leftover temp files**, from the cache
+/// and from the durable table. Called opportunistically on every
+/// session-touching endpoint so stale state never accumulates.
+async fn prune_upload_sessions(state: &Arc<AppState>) {
+    let cutoff = now_epoch() - UPLOAD_SESSION_TTL_SECS;
+    let expired: Vec<(String, UploadSession)> = {
         let mut map = UPLOAD_SESSIONS.lock();
         let keys: Vec<String> = map
             .iter()
-            .filter(|(_, s)| now.duration_since(s.created_at) >= UPLOAD_SESSION_TTL)
+            .filter(|(_, s)| s.last_chunk_at <= cutoff)
             .map(|(k, _)| k.clone())
             .collect();
-        keys.into_iter().filter_map(|k| map.remove(&k)).collect()
+        keys.into_iter()
+            .filter_map(|k| map.remove(&k).map(|s| (k, s)))
+            .collect()
     };
     // The lock is released before the unlink: `tokio::fs::remove_file` hops to
     // the blocking pool, and holding a `parking_lot` guard across an await
     // point would park a worker for the duration of a filesystem call.
-    for session in expired {
+    for (_, session) in &expired {
         let _ = tokio::fs::remove_file(&session.tmp_path).await;
+    }
+    // The durable side is the authority: sweep the rows this process never had
+    // in memory (a restart leaves them behind) and unlink their temp files.
+    if let Ok(rows) = upload_session_repo(state).prune_expired(cutoff).await {
+        for row in rows {
+            let _ = tokio::fs::remove_file(&row.tmp_path).await;
+        }
     }
 }
 
@@ -1845,7 +2058,7 @@ pub async fn handle_explorer_upload_session_start(
     Query(params): Query<UploadSessionQuery>,
     headers: HeaderMap,
 ) -> Response {
-    prune_upload_sessions().await;
+    prune_upload_sessions(&state).await;
 
     let session_token =
         match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
@@ -1876,22 +2089,33 @@ pub async fn handle_explorer_upload_session_start(
     };
 
     // ROADMAP 10.3: refuse a new slot when the global or per-user cap is hit.
-    {
-        let map = UPLOAD_SESSIONS.lock();
-        let user_sessions = map
-            .values()
-            .filter(|s| s.username == session.username)
-            .count();
-        if map.len() >= MAX_UPLOAD_SESSIONS || user_sessions >= MAX_UPLOAD_SESSIONS_PER_USER {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                axum::Json(serde_json::json!({
-                    "success": false,
-                    "message": "Too many uploads in progress; finish or cancel an upload first"
-                })),
+    // Counted in the database since HV-UX-03: after a restart the in-memory
+    // map is empty while the durable sessions still hold temp files, and a cap
+    // that only looked at the map let one account start twenty more on top.
+    let cutoff = now_epoch() - UPLOAD_SESSION_TTL_SECS;
+    let (total_sessions, user_sessions) = upload_session_repo(&state)
+        .counts(&session.username, cutoff)
+        .await
+        .unwrap_or_else(|e| {
+            // A count that cannot be answered must not block uploads: fall
+            // back to the cache, which is the same set minus the rows this
+            // process never loaded.
+            tracing::warn!("Could not count live upload sessions: {e}");
+            let map = UPLOAD_SESSIONS.lock();
+            (
+                map.len() as u64,
+                map.values().filter(|s| s.username == session.username).count() as u64,
             )
-                .into_response();
-        }
+        });
+    if total_sessions >= MAX_UPLOAD_SESSIONS || user_sessions >= MAX_UPLOAD_SESSIONS_PER_USER {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            axum::Json(serde_json::json!({
+                "success": false,
+                "message": "Too many uploads in progress; finish or cancel an upload first"
+            })),
+        )
+            .into_response();
     }
     let strategy = crate::browser::CollisionStrategy::parse(params.strategy.as_deref());
     let expected_sha256 = params
@@ -1917,22 +2141,35 @@ pub async fn handle_explorer_upload_session_start(
     }
 
     let session_id = uuid::Uuid::new_v4().to_string();
-    UPLOAD_SESSIONS.lock().insert(
-        session_id.clone(),
-        UploadSession {
-            dir: dir.to_string_lossy().into_owned(),
-            filename,
-            tmp_path,
-            offset: 0,
-            total_bytes: params.size,
-            username: session.username.clone(),
-            strategy,
-            expected_sha256,
-            created_at: Instant::now(),
-        },
-    );
+    let now = now_epoch();
+    let upload = UploadSession {
+        dir: dir.to_string_lossy().into_owned(),
+        filename,
+        tmp_path,
+        offset: 0,
+        total_bytes: params.size,
+        username: session.username.clone(),
+        strategy,
+        expected_sha256,
+        created_at: now,
+        last_chunk_at: now,
+    };
+    // Durable first (HV-UX-03): a session the client was told about must
+    // survive a restart, so a failed insert refuses the slot instead of
+    // handing out an id that only this process knows.
+    if let Err(e) = upload_session_repo(&state).save(&upload.stored(&session_id)).await {
+        let _ = tokio::fs::remove_file(&upload.tmp_path).await;
+        return ResponseHelper::json_error(format!("Failed to open upload slot: {e}"));
+    }
+    UPLOAD_SESSIONS.lock().insert(session_id.clone(), upload);
 
-    ResponseHelper::json_success(serde_json::json!({ "session_id": session_id }))
+    ResponseHelper::json_success(serde_json::json!({
+        "session_id": session_id,
+        // The client resumes from here after any interruption, including a
+        // HomeVault restart.
+        "offset": 0,
+        "expires_in_seconds": UPLOAD_SESSION_TTL_SECS
+    }))
 }
 
 /// Largest chunk the server accepts for one `/upload/chunk` request.
@@ -1967,19 +2204,17 @@ pub async fn handle_explorer_upload_chunk(
     headers: HeaderMap,
     body: axum::body::Body,
 ) -> Response {
-    prune_upload_sessions().await;
+    prune_upload_sessions(&state).await;
 
     let caller = match crate::handlers::admin_guard::require_auth(&state, &headers).await {
         Ok(username) => username,
         Err(resp) => return resp,
     };
 
-    let session = {
-        let session_map = UPLOAD_SESSIONS.lock();
-        let Some(s) = session_map.get(&params.session_id).cloned() else {
-            return ResponseHelper::json_error("Upload session not found or expired".to_string());
-        };
-        s
+    // The cache first, the durable row second — this is what lets a chunk
+    // arrive after a HomeVault restart and still land at the right offset.
+    let Some(session) = load_upload_session(&state, &params.session_id).await else {
+        return ResponseHelper::json_error("Upload session not found or expired".to_string());
     };
 
     // ROADMAP 10.3: upload sessions are owned by the account that opened
@@ -2028,10 +2263,34 @@ pub async fn handle_explorer_upload_chunk(
                 return ResponseHelper::json_error("Empty chunk".to_string());
             }
             let next = params.offset + n;
+            let now = now_epoch();
+            // Throughput of the chunk that just landed: the only honest number
+            // available without a sample history, and it is what the transfer
+            // tray needs to show "12 MB/s" and an ETA instead of a bare bar.
+            let elapsed = now
+                .saturating_sub(session.last_chunk_at)
+                .max(1) as u64;
+            let speed_bps = Some(n / elapsed);
             if let Some(s) = UPLOAD_SESSIONS.lock().get_mut(&params.session_id) {
                 s.offset = next;
+                s.last_chunk_at = now;
             }
-            ResponseHelper::json_success(serde_json::json!({ "offset": next }))
+            // Durable resume point (HV-UX-03). A failed write is reported: the
+            // client would otherwise keep appending to a session the next
+            // process does not know, and only discover it after a restart.
+            if let Err(e) = upload_session_repo(&state)
+                .update_offset(&params.session_id, next, speed_bps, now)
+                .await
+            {
+                return ResponseHelper::json_error(format!(
+                    "Chunk stored but the upload session could not be updated: {e}"
+                ));
+            }
+            ResponseHelper::json_success(serde_json::json!({
+                "offset": next,
+                "bytes_total": session.total_bytes,
+                "speed_bps": speed_bps
+            }))
         }
         // The cap was reached: nothing is committed, so the client resumes from
         // the offset it already had. `413` is the honest status — the request
@@ -2117,23 +2376,17 @@ pub async fn handle_explorer_upload_complete(
     Query(params): Query<UploadSessionIdQuery>,
     headers: HeaderMap,
 ) -> Response {
-    prune_upload_sessions().await;
+    prune_upload_sessions(&state).await;
 
     let caller = match crate::handlers::admin_guard::require_auth(&state, &headers).await {
         Ok(username) => username,
         Err(resp) => return resp,
     };
 
-    let session = {
-        let map = UPLOAD_SESSIONS.lock();
-        match map.get(&params.session_id) {
-            Some(s) => s.clone(),
-            None => {
-                return ResponseHelper::json_error(
-                    "Upload session not found or expired".to_string(),
-                )
-            }
-        }
+    // Cache first, durable row second: an upload finished after a restart must
+    // still be finalisable (HV-UX-03).
+    let Some(session) = load_upload_session(&state, &params.session_id).await else {
+        return ResponseHelper::json_error("Upload session not found or expired".to_string());
     };
 
     // ROADMAP 10.3: same ownership rule as the chunk endpoint.
@@ -2234,6 +2487,19 @@ pub async fn handle_explorer_upload_complete(
         // Collision strategy said "skip" — nothing to keep.
         let _ = tokio::fs::remove_file(&tmp_path).await;
         UPLOAD_SESSIONS.lock().remove(&params.session_id);
+        let _ = upload_session_repo(&state).delete(&params.session_id).await;
+        crate::transfer_history::record_transfer(
+            state.db.pool(),
+            crate::transfer_history::NewTransfer::complete(
+                &session.username,
+                crate::transfer_history::TransferOperation::Upload,
+            )
+            .dest(session.dir.clone() + "/" + &filename)
+            .bytes(total_bytes)
+            .method("sha256")
+            .cancelled(),
+        )
+        .await;
         return ResponseHelper::json_success(serde_json::json!({
             "skipped": true,
             "message": "Destination already exists — skipped"
@@ -2250,10 +2516,33 @@ pub async fn handle_explorer_upload_complete(
     crate::transfer_quota::record_usage(state.db.pool(), &upload_quotas, total_bytes, true).await;
     drop(guard);
     UPLOAD_SESSIONS.lock().remove(&params.session_id);
+    let _ = upload_session_repo(&state).delete(&params.session_id).await;
+
+    // Audit trail (HV-ADV-02). `verified` is honest: the stored file's digest
+    // was read back and either matched the client's promise or there was no
+    // promise to check — the row records a digest either way.
+    let finished = file_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&filename)
+        .to_string();
+    crate::transfer_history::record_transfer(
+        state.db.pool(),
+        crate::transfer_history::NewTransfer::complete(
+            &session.username,
+            crate::transfer_history::TransferOperation::Upload,
+        )
+        .dest(format!("{}/{}", session.dir.trim_end_matches('/'), finished))
+        .bytes(total_bytes)
+        .method("sha256")
+        .verified(session.expected_sha256.is_some()),
+    )
+    .await;
 
     ResponseHelper::json_success(serde_json::json!({
-        "filename": file_path.file_name().and_then(|n| n.to_str()).unwrap_or(&filename),
-        "checksum": checksum
+        "filename": finished,
+        "checksum": checksum,
+        "verified": session.expected_sha256.is_some()
     }))
 }
 
@@ -2269,13 +2558,10 @@ pub async fn handle_explorer_upload_session_abort(
         Ok(username) => username,
         Err(resp) => return resp,
     };
-    let owner = {
-        let map = UPLOAD_SESSIONS.lock();
-        match map.get(&params.session_id) {
-            Some(s) => s.username.clone(),
-            None => return ResponseHelper::json_error("Upload session not found".to_string()),
-        }
+    let Some(session) = load_upload_session(&state, &params.session_id).await else {
+        return ResponseHelper::json_error("Upload session not found".to_string());
     };
+    let owner = session.username.clone();
     // ROADMAP 10.3: aborting someone else's upload used to be possible with
     // any authenticated session — the temp file would vanish mid-transfer.
     if owner != caller {
@@ -2284,8 +2570,24 @@ pub async fn handle_explorer_upload_session_abort(
         );
     }
     let removed = UPLOAD_SESSIONS.lock().remove(&params.session_id);
+    let _ = upload_session_repo(&state).delete(&params.session_id).await;
     if let Some(session) = removed {
         let _ = tokio::fs::remove_file(&session.tmp_path).await;
+        crate::transfer_history::record_transfer(
+            state.db.pool(),
+            crate::transfer_history::NewTransfer::complete(
+                &session.username,
+                crate::transfer_history::TransferOperation::Upload,
+            )
+            .dest(format!(
+                "{}/{}",
+                session.dir.trim_end_matches('/'),
+                session.filename
+            ))
+            .bytes(session.offset)
+            .cancelled(),
+        )
+        .await;
         return ResponseHelper::json_success(serde_json::json!({ "aborted": true }));
     }
     ResponseHelper::json_error("Upload session not found".to_string())
@@ -2451,7 +2753,13 @@ pub async fn handle_explorer_copy(
     // `spawn_tracked_copy_job`) since a large tree can take a long time;
     // single files stay on the fast synchronous path.
     if path_is_dir(std::path::Path::new(&source)).await {
-        let (job_id, sse_url) = spawn_tracked_copy_job(source, destination, username, mode);
+        let (job_id, sse_url) = spawn_tracked_copy_job(
+            source,
+            destination,
+            username,
+            mode,
+            state.db.pool(),
+        );
         return ResponseHelper::json_success(serde_json::json!({
             "job_id": job_id,
             "sse_url": sse_url,
@@ -2461,22 +2769,60 @@ pub async fn handle_explorer_copy(
 
     // Single file: same cascade, reported inline. The method is what lets the
     // caller say "copied instantly" instead of the speed-up being invisible.
-    match tokio::task::spawn_blocking(move || {
+    let started = std::time::Instant::now();
+    let src_for_history = source.clone();
+    let dst_for_history = destination.clone();
+    let copy_result = tokio::task::spawn_blocking(move || {
         FileBrowser::copy_file_instant(
             std::path::Path::new(&source),
             std::path::Path::new(&destination),
             mode,
         )
     })
-    .await
-    {
-        Ok(Ok(inv)) => ResponseHelper::json_success(serde_json::json!({
-            "message": "Item copied successfully",
-            "method": inv.method.slug(),
-            "instant": inv.method.is_instant(),
-            "bytes": inv.bytes,
-        })),
-        Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to copy item: {}", e)),
+    .await;
+
+    // Audit trail (HV-ADV-02): the row is written for the outcome we are about
+    // to report, so a failure is recorded too — that is the row an
+    // administrator goes looking for.
+    let duration_ms = started.elapsed().as_millis() as u64;
+    match copy_result {
+        Ok(Ok(inv)) => {
+            crate::transfer_history::record_transfer(
+                state.db.pool(),
+                crate::transfer_history::NewTransfer::complete(
+                    &username,
+                    crate::transfer_history::TransferOperation::Copy,
+                )
+                .source(&src_for_history)
+                .dest(&dst_for_history)
+                .bytes(inv.bytes)
+                .duration_ms(duration_ms)
+                .method(inv.method.slug())
+                .verified(!inv.method.is_instant()),
+            )
+            .await;
+            ResponseHelper::json_success(serde_json::json!({
+                "message": "Item copied successfully",
+                "method": inv.method.slug(),
+                "instant": inv.method.is_instant(),
+                "bytes": inv.bytes,
+            }))
+        }
+        Ok(Err(e)) => {
+            crate::transfer_history::record_transfer(
+                state.db.pool(),
+                crate::transfer_history::NewTransfer::complete(
+                    &username,
+                    crate::transfer_history::TransferOperation::Copy,
+                )
+                .source(&src_for_history)
+                .dest(&dst_for_history)
+                .duration_ms(duration_ms)
+                .failed(e.to_string()),
+            )
+            .await;
+            ResponseHelper::json_error(format!("Failed to copy item: {}", e))
+        }
         Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
     }
 }
@@ -2549,13 +2895,32 @@ pub async fn handle_explorer_move(
             tokio::task::spawn_blocking(move || std::fs::rename(&rename_src, &rename_dst)).await;
 
         if let Ok(Ok(())) = rename_result {
+            // An atomic rename copies nothing: no method, no bytes, and
+            // `verified` stays false because there was nothing to verify.
+            crate::transfer_history::record_transfer(
+                state.db.pool(),
+                crate::transfer_history::NewTransfer::complete(
+                    &username,
+                    crate::transfer_history::TransferOperation::Move,
+                )
+                .source(&source)
+                .dest(&destination)
+                .method("rename"),
+            )
+            .await;
             return ResponseHelper::json_success(
                 serde_json::json!({"message": "Item moved successfully"}),
             );
         }
 
         tracing::warn!("Atomic directory move failed (cross-filesystem?), falling back to a tracked copy+delete job");
-        let (job_id, sse_url) = spawn_tracked_move_job(source, destination, username, mode);
+        let (job_id, sse_url) = spawn_tracked_move_job(
+            source,
+            destination,
+            username,
+            mode,
+            state.db.pool(),
+        );
         return ResponseHelper::json_success(serde_json::json!({
             "job_id": job_id,
             "sse_url": sse_url,
@@ -2572,6 +2937,8 @@ pub async fn handle_explorer_move(
     // `IntegrityMismatch` (real data corruption caught by the hash check)
     // as if it were a routine cross-device fallback, hiding a corruption
     // event from the caller whenever the retry happened to succeed.
+    let src_for_history = source.clone();
+    let dst_for_history = destination.clone();
     let result = tokio::task::spawn_blocking(move || {
         FileBrowser::move_item_with_mode(&source, &destination, mode).map_err(|e| e.to_string())
     })
@@ -2584,13 +2951,40 @@ pub async fn handle_explorer_move(
             // must not be described as one).
             let method = inv.as_ref().map(|i| i.method.slug());
             let instant = inv.as_ref().map(|i| i.method.is_instant());
+            let mut record = crate::transfer_history::NewTransfer::complete(
+                &username,
+                crate::transfer_history::TransferOperation::Move,
+            )
+            .source(&src_for_history)
+            .dest(&dst_for_history);
+            record = match (&method, inv.as_ref()) {
+                (Some(slug), Some(i)) => record
+                    .method(*slug)
+                    .bytes(i.bytes)
+                    .verified(!i.method.is_instant()),
+                _ => record.method("rename"),
+            };
+            crate::transfer_history::record_transfer(state.db.pool(), record).await;
             ResponseHelper::json_success(serde_json::json!({
                 "message": "Item moved successfully",
                 "method": method,
                 "instant": instant,
             }))
         }
-        Ok(Err(e)) => ResponseHelper::json_error(e),
+        Ok(Err(e)) => {
+            crate::transfer_history::record_transfer(
+                state.db.pool(),
+                crate::transfer_history::NewTransfer::complete(
+                    &username,
+                    crate::transfer_history::TransferOperation::Move,
+                )
+                .source(&src_for_history)
+                .dest(&dst_for_history)
+                .failed(&e),
+            )
+            .await;
+            ResponseHelper::json_error(e)
+        }
         Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
     }
 }
@@ -5189,6 +5583,465 @@ pub async fn handle_explorer_format(
         }
         Err(e) => ResponseHelper::json_error(e),
     }
+}
+
+
+// ---------------------------------------------------------------------------
+// On-demand checksums (HV-INT-01)
+// ---------------------------------------------------------------------------
+//
+// DSM ships a dedicated `SYNO.FileStation.MD5` module; this is the HomeVault
+// equivalent with a modern digest (SHA-256 / SHA-512 / BLAKE3, never MD5). Two
+// call shapes come out of the same hashing loop in `crate::checksum`:
+//
+//   * a file up to `checksum::INLINE_MAX_BYTES` is hashed inside the request
+//     (a user asking "what is the digest of this?" waits a few milliseconds);
+//   * anything larger — or `async=true` — becomes a tracked job, so the request
+//     returns a `job_id` and the tray follows the same progress stream every
+//     other transfer uses. The digest is readable afterwards through
+//     `GET /api/explorer/checksum/result?job_id=…`.
+//
+// `compare_with` hashes a second file with the same algorithm and reports
+// whether the two digests match — the "prove the copy is identical" case that
+// otherwise sends a user to a shell.
+
+/// Body of `POST /api/explorer/checksum`.
+#[derive(Debug, Deserialize)]
+pub struct ExplorerChecksumRequest {
+    pub path: String,
+    /// `sha256` (default) | `sha512` | `blake3`.
+    pub algorithm: Option<String>,
+    /// Optional second file to compare against, same algorithm.
+    pub compare_with: Option<String>,
+    /// Force a tracked job even for a small file.
+    #[serde(default, rename = "async")]
+    pub async_job: bool,
+}
+
+/// How often the tracked checksum job republishes its byte counter.
+const CHECKSUM_PROGRESS_TICK: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// `POST /api/explorer/checksum` — hash one file, optionally comparing it with
+/// a second one.
+pub async fn handle_explorer_checksum(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Json(payload): axum::extract::Json<ExplorerChecksumRequest>,
+) -> Response {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let session = match state.auth.get_session(&session_token).await {
+        Ok(s) => s,
+        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
+    };
+    let Some(path) = validate_path_access(&state, &payload.path, &session) else {
+        tracing::warn!(
+            "Explorer checksum blocked: path '{}' outside allowed roots",
+            payload.path
+        );
+        return ResponseHelper::json_error(
+            "Access denied: path outside allowed directory".to_string(),
+        );
+    };
+    let algorithm = match payload.algorithm.as_deref() {
+        None => crate::checksum::ChecksumAlgorithm::default(),
+        Some(value) => match crate::checksum::ChecksumAlgorithm::parse(value) {
+            Some(a) => a,
+            None => {
+                return ResponseHelper::json_error(format!(
+                    "Unsupported checksum algorithm '{}'; use sha256, sha512 or blake3",
+                    value
+                ))
+            }
+        },
+    };
+    // The comparison target is confined exactly like the subject: it is a
+    // second path the caller asks us to read.
+    let compare_with = match payload.compare_with.as_deref() {
+        None => None,
+        Some(raw) => match validate_path_access(&state, raw, &session) {
+            Some(p) => Some(p),
+            None => {
+                return ResponseHelper::json_error(
+                    "Access denied: comparison path outside allowed directory".to_string(),
+                )
+            }
+        },
+    };
+
+    let size = match tokio::fs::metadata(&path).await {
+        Ok(m) if m.is_file() => m.len(),
+        Ok(_) => return ResponseHelper::json_error("Not a regular file".to_string()),
+        Err(e) => return ResponseHelper::json_error(format!("File not found: {e}")),
+    };
+
+    if payload.async_job || size > crate::checksum::INLINE_MAX_BYTES {
+        return spawn_checksum_job(
+            &state,
+            path,
+            compare_with,
+            algorithm,
+            size,
+            &session.username,
+        );
+    }
+
+    // Inline: small enough that the caller can wait, and `spawn_blocking`
+    // keeps the hash off the async worker either way.
+    let path_for_hash = path.clone();
+    let compare_for_hash = compare_with.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let primary = crate::checksum::hash_file(&path_for_hash, algorithm)?;
+        let other = match &compare_for_hash {
+            Some(other) => Some(crate::checksum::hash_file(other, algorithm)?),
+            None => None,
+        };
+        Ok::<_, crate::checksum::ChecksumError>((primary, other))
+    })
+    .await;
+
+    let (primary, other) = match result {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => {
+            return ResponseHelper::json_error(format!("Checksum failed: {e}"));
+        }
+        Err(e) => return ResponseHelper::json_error(format!("Internal error: {e}")),
+    };
+    let matches = other
+        .as_ref()
+        .map(|o| crate::checksum::digests_match(&primary.checksum, &o.checksum));
+
+    // Recorded in the audit trail so "was it verified?" has an answer later.
+    crate::transfer_history::record_transfer(
+        state.db.pool(),
+        crate::transfer_history::NewTransfer::complete(
+            &session.username,
+            crate::transfer_history::TransferOperation::Checksum,
+        )
+        .dest(path.to_string_lossy().into_owned())
+        .bytes(primary.file_size)
+        .duration_ms(primary.duration_ms)
+        .method(algorithm.as_str())
+        .verified(matches == Some(true)),
+    )
+    .await;
+
+    let mut data = serde_json::json!({
+        "path": path.to_string_lossy(),
+        "algorithm": algorithm.as_str(),
+        "checksum": primary.checksum,
+        "file_size": primary.file_size,
+        "duration_ms": primary.duration_ms,
+    });
+    if let Some(other) = other {
+        data["compare_with"] = serde_json::json!({
+            "path": compare_with.map(|p| p.to_string_lossy().into_owned()),
+            "checksum": other.checksum,
+            "file_size": other.file_size,
+        });
+        data["match"] = serde_json::json!(matches);
+    }
+    ResponseHelper::json_success(data)
+}
+
+/// Starts the tracked job for a large (or explicitly asynchronous) hash.
+///
+/// The byte counter is published through an `AtomicU64` and read by a poll
+/// task, the same shape `run_tracked_copy` uses: the hashing thread never
+/// takes a lock, and the job's speed/ETA come from `SpeedTracker` so the tray
+/// shows the same detail as a copy.
+fn spawn_checksum_job(
+    state: &Arc<AppState>,
+    path: PathBuf,
+    compare_with: Option<PathBuf>,
+    algorithm: crate::checksum::ChecksumAlgorithm,
+    size: u64,
+    owner: &str,
+) -> Response {
+    let job_id = crate::sse::PROGRESS_MANAGER.create_job_with_owner(
+        crate::sse::JobType::Custom("explorer_checksum".to_string()),
+        &format!("Hashing with {}...", algorithm.as_str()),
+        Some(owner.to_string()),
+    );
+
+    // The hash loop belongs to this job, so it can genuinely be interrupted:
+    // the hook flips the flag the per-block callback reads, and the run ends
+    // without reporting a digest.
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    crate::sse::PROGRESS_MANAGER.register_cancel_hook(
+        &job_id,
+        Box::new({
+            let cancel = cancel.clone();
+            move || cancel.store(true, std::sync::atomic::Ordering::Relaxed)
+        }),
+    );
+
+    let state = state.clone();
+    let owner = owner.to_string();
+    let display_path = path.to_string_lossy().into_owned();
+    let handler_job_id = job_id.clone();
+    tokio::spawn(async move {
+        let progress = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let poll_progress = progress.clone();
+        let poll_job = handler_job_id.clone();
+        let started = std::time::Instant::now();
+        let poll_handle = tokio::spawn(async move {
+            let mut tracker = crate::sse::SpeedTracker::default();
+            loop {
+                tokio::time::sleep(CHECKSUM_PROGRESS_TICK).await;
+                let processed = poll_progress.load(std::sync::atomic::Ordering::Relaxed);
+                tracker.record(std::time::Instant::now(), processed);
+                let pct = if size > 0 {
+                    ((processed.min(size) as f64 / size as f64) * 100.0).min(99.0)
+                } else {
+                    99.0
+                };
+                crate::sse::ProgressEmitter::transfer_progress(
+                    &poll_job,
+                    pct,
+                    &format!("{}/{} bytes", processed, size),
+                    &crate::sse::TransferDetail {
+                        bytes_processed: Some(processed),
+                        bytes_total: Some(size),
+                        speed_bps: tracker.speed_bps(),
+                        eta_seconds: tracker.eta_seconds(size),
+                        method: Some(algorithm.as_str().to_string()),
+                    },
+                );
+            }
+        });
+
+        let path_for_hash = path.clone();
+        let compare_for_hash = compare_with.clone();
+        let result = crate::checksum::hash_file_async(
+            path_for_hash.clone(),
+            algorithm,
+            progress,
+            cancel.clone(),
+        )
+            .await
+            .and_then(|primary| {
+                let other = match &compare_for_hash {
+                    Some(other) => Some(
+                        crate::checksum::hash_file(other, algorithm)
+                            .map_err(|e| crate::checksum::ChecksumError::Io(std::io::Error::other(e.to_string())))?,
+                    ),
+                    None => None,
+                };
+                Ok((primary, other))
+            });
+        poll_handle.abort();
+        crate::sse::PROGRESS_MANAGER.clear_cancel_hook(&handler_job_id);
+
+        let recorded_at = chrono::Utc::now().timestamp();
+        match result {
+            Ok((primary, other)) => {
+                let matches = other
+                    .as_ref()
+                    .map(|o| crate::checksum::digests_match(&primary.checksum, &o.checksum));
+                let message = match matches {
+                    Some(true) => format!("{}: {} (match)", algorithm.as_str(), primary.checksum),
+                    Some(false) => {
+                        format!("{}: {} (MISMATCH)", algorithm.as_str(), primary.checksum)
+                    }
+                    None => primary.checksum.clone(),
+                };
+                crate::sse::ProgressEmitter::complete(&handler_job_id, &message);
+                crate::checksum::remember_outcome(crate::checksum::JobOutcome {
+                    job_id: handler_job_id.clone(),
+                    owner: Some(owner.clone()),
+                    state: crate::checksum::ChecksumJobState::Complete,
+                    algorithm,
+                    path: display_path.clone(),
+                    checksum: Some(primary.checksum.clone()),
+                    file_size: primary.file_size,
+                    duration_ms: primary.duration_ms,
+                    matches,
+                    error: None,
+                    recorded_at,
+                });
+                crate::transfer_history::record_transfer(
+                    state.db.pool(),
+                    crate::transfer_history::NewTransfer::complete(
+                        &owner,
+                        crate::transfer_history::TransferOperation::Checksum,
+                    )
+                    .job_id(&handler_job_id)
+                    .dest(&display_path)
+                    .bytes(primary.file_size)
+                    .duration_ms(started.elapsed().as_millis() as u64)
+                    .method(algorithm.as_str())
+                    .verified(matches == Some(true)),
+                )
+                .await;
+            }
+            Err(crate::checksum::ChecksumError::Cancelled) => {
+                // `cancel_job` already marked the job cancelled; re-stating it
+                // as a failure would report a deliberate stop as an error.
+                crate::sse::ProgressEmitter::cancelled(&handler_job_id, "Cancelled by the user");
+                crate::transfer_history::record_transfer(
+                    state.db.pool(),
+                    crate::transfer_history::NewTransfer::complete(
+                        &owner,
+                        crate::transfer_history::TransferOperation::Checksum,
+                    )
+                    .job_id(&handler_job_id)
+                    .dest(&display_path)
+                    .bytes(size)
+                    .duration_ms(started.elapsed().as_millis() as u64)
+                    .method(algorithm.as_str())
+                    .cancelled(),
+                )
+                .await;
+            }
+            Err(e) => {
+                let human = e.to_string();
+                crate::sse::ProgressEmitter::fail(&handler_job_id, &human);
+                crate::checksum::remember_outcome(crate::checksum::JobOutcome {
+                    job_id: handler_job_id.clone(),
+                    owner: Some(owner.clone()),
+                    state: crate::checksum::ChecksumJobState::Failed,
+                    algorithm,
+                    path: display_path.clone(),
+                    checksum: None,
+                    file_size: size,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                    matches: None,
+                    error: Some(human.clone()),
+                    recorded_at,
+                });
+                crate::transfer_history::record_transfer(
+                    state.db.pool(),
+                    crate::transfer_history::NewTransfer::complete(
+                        &owner,
+                        crate::transfer_history::TransferOperation::Checksum,
+                    )
+                    .job_id(&handler_job_id)
+                    .dest(&display_path)
+                    .bytes(size)
+                    .duration_ms(started.elapsed().as_millis() as u64)
+                    .method(algorithm.as_str())
+                    .failed(human),
+                )
+                .await;
+            }
+        }
+    });
+
+    ResponseHelper::json_success(serde_json::json!({
+        "job_id": job_id,
+        "sse_url": format!("/api/progress/{}", job_id),
+        "status": "running",
+        "algorithm": algorithm.as_str(),
+        "file_size": size,
+    }))
+}
+
+/// `GET /api/explorer/checksum/result?job_id=…` — the digest of a finished
+/// asynchronous checksum job.
+///
+/// Only the job's owner (or an administrator) may read it: the row carries a
+/// file path.
+#[derive(Debug, Deserialize)]
+pub struct ChecksumResultQuery {
+    pub job_id: String,
+}
+
+pub async fn handle_explorer_checksum_result(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<ChecksumResultQuery>,
+) -> Response {
+    let caller = match crate::handlers::admin_guard::require_auth(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
+    let Some(outcome) = crate::checksum::remembered_outcome(&params.job_id) else {
+        return ResponseHelper::json_error("Checksum job not found or expired".to_string());
+    };
+    // Visibility mirrors the activity feed: an ownerless job is admin-only. The
+    // owner travels with the outcome, so this check keeps working after the job
+    // has left the progress registry (`cleanup_old_jobs`).
+    let is_admin = state.auth.is_admin(&caller).await;
+    let owned_by_caller = outcome.owner.as_deref() == Some(caller.as_str());
+    if !is_admin && !owned_by_caller {
+        return ResponseHelper::json_forbidden(
+            "This checksum job belongs to another user".to_string(),
+        );
+    }
+    ResponseHelper::json_success(serde_json::json!({
+        "job_id": outcome.job_id,
+        "state": outcome.state.as_str(),
+        "path": outcome.path,
+        "algorithm": outcome.algorithm.as_str(),
+        "checksum": outcome.checksum,
+        "file_size": outcome.file_size,
+        "duration_ms": outcome.duration_ms,
+        "match": outcome.matches,
+        "error": outcome.error,
+    }))
+}
+
+/// One in-flight chunked upload, as the transfer tray renders it.
+#[derive(Debug, Clone, Serialize)]
+pub struct ActiveUploadView {
+    pub session_id: String,
+    pub filename: String,
+    pub dir: String,
+    pub bytes_received: u64,
+    pub bytes_total: u64,
+    /// `0..=100`, or `None` when the client declared no size.
+    pub progress: Option<f64>,
+    pub speed_bps: Option<u64>,
+    pub eta_seconds: Option<u64>,
+    /// Always `"running"`: a session that is not running is deleted.
+    pub state: &'static str,
+    /// Unix seconds — the tray shows "for 4 minutes".
+    pub created_at: i64,
+    pub last_chunk_at: i64,
+}
+
+/// The caller's live chunked uploads, newest state first.
+///
+/// Read from the **database** (`upload_sessions`, migration 074) rather than
+/// the in-memory map: that is what makes the tray correct right after a
+/// restart, when the map is empty and the partial files are still on the pool.
+pub(crate) async fn active_upload_views(state: &Arc<AppState>, username: &str) -> Vec<ActiveUploadView> {
+    let cutoff = now_epoch() - UPLOAD_SESSION_TTL_SECS;
+    let rows = match upload_session_repo(state)
+        .list_for_user(username, cutoff)
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!("Could not list active upload sessions for '{username}': {e}");
+            return Vec::new();
+        }
+    };
+    rows.into_iter()
+        .map(|row| {
+            // Read the derived values *before* the struct is moved field by
+            // field (`progress` borrows the whole row).
+            let progress = row.progress();
+            let eta_seconds = row.eta_seconds();
+            ActiveUploadView {
+                session_id: row.session_id,
+                filename: row.filename,
+                dir: row.dir,
+                bytes_received: row.offset,
+                bytes_total: row.total_bytes,
+                progress,
+                speed_bps: row.speed_bps,
+                eta_seconds,
+                state: "running",
+                created_at: row.created_at,
+                last_chunk_at: row.last_chunk_at,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

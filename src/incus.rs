@@ -813,8 +813,11 @@ impl IncusService {
         body: Option<&[u8]>,
         timeout: Duration,
     ) -> Result<serde_json::Value, IncusError> {
-        match tokio::time::timeout(timeout, Self::request_json_inner(socket, method, path, body))
-            .await
+        match tokio::time::timeout(
+            timeout,
+            Self::request_json_inner(socket, method, path, body),
+        )
+        .await
         {
             Ok(r) => r,
             Err(_) => Err(IncusError::Timeout(timeout.as_secs())),
@@ -1080,20 +1083,26 @@ mod tests {
     fn classify_operation_reads_the_async_status_codes() {
         // success
         assert_eq!(
-            classify_operation(&json!({"type": "async", "metadata": {"status": "Success", "status_code": 200}})),
+            classify_operation(
+                &json!({"type": "async", "metadata": {"status": "Success", "status_code": 200}})
+            ),
             OperationState::Succeeded
         );
         // an operation that is still working (100/101/103/104)
         for code in [100, 101, 103, 104] {
             assert_eq!(
-                classify_operation(&json!({"metadata": {"status": "Running", "status_code": code}})),
+                classify_operation(
+                    &json!({"metadata": {"status": "Running", "status_code": code}})
+                ),
                 OperationState::StillRunning,
                 "status_code {code} must read as still running"
             );
         }
         // terminal failures, each with Incus' own wording when it gives one
         assert_eq!(
-            classify_operation(&json!({"metadata": {"status": "Failure", "status_code": 107, "err": "not enough disk"}})),
+            classify_operation(
+                &json!({"metadata": {"status": "Failure", "status_code": 107, "err": "not enough disk"}})
+            ),
             OperationState::Failed("not enough disk".to_string())
         );
         assert_eq!(
@@ -1116,14 +1125,19 @@ mod tests {
         // all. The old code read the missing code as 0 and answered "the
         // operation did not complete" — a successful create reported as failed.
         assert_eq!(
-            classify_operation(&json!({"type": "sync", "status_code": 200, "metadata": {"name": "web"}})),
+            classify_operation(
+                &json!({"type": "sync", "status_code": 200, "metadata": {"name": "web"}})
+            ),
             OperationState::Succeeded
         );
         assert_eq!(
             classify_operation(&json!({"type": "sync", "metadata": {"name": "web"}})),
             OperationState::Succeeded
         );
-        assert_eq!(classify_operation(&json!({"metadata": null})), OperationState::Succeeded);
+        assert_eq!(
+            classify_operation(&json!({"metadata": null})),
+            OperationState::Succeeded
+        );
         // ...but an explicit failure is still a failure.
         assert_eq!(
             classify_operation(&json!({"metadata": {"status": "Failure"}})),

@@ -124,7 +124,10 @@ async fn setup() -> Harness {
 fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/auth/login", post(handle_login))
-        .route("/api/settings/config-backup", get(handle_config_backup_state))
+        .route(
+            "/api/settings/config-backup",
+            get(handle_config_backup_state),
+        )
         .route(
             "/api/settings/config-backup/export",
             post(handle_config_backup_export),
@@ -272,7 +275,10 @@ async fn export_and_fetch(
     )
     .await;
     assert_eq!(status, StatusCode::OK, "export: {body}");
-    let id = body["data"]["id"].as_str().expect("an archive id").to_string();
+    let id = body["data"]["id"]
+        .as_str()
+        .expect("an archive id")
+        .to_string();
     let request = Request::builder()
         .method(Method::GET)
         .uri(format!("/api/settings/config-backup/archives/{id}"))
@@ -393,7 +399,10 @@ async fn test_a_backup_round_trips_through_the_endpoints() {
 
     // A real configuration to carry: the admin account exists, so the archive's
     // database snapshot holds it.
-    assert!(h.root.join("data").is_dir(), "the isolated data directory exists");
+    assert!(
+        h.root.join("data").is_dir(),
+        "the isolated data directory exists"
+    );
     let archive = export_and_fetch(&mut router, &admin, false, None).await;
     assert!(homevault::config_backup::looks_like_archive(&archive));
     assert!(archive.len() > 1024, "the snapshot makes a real archive");
@@ -425,7 +434,9 @@ async fn test_a_backup_round_trips_through_the_endpoints() {
     assert_eq!(manifest["includes_secrets"], false);
     assert!(manifest["entries"].as_array().unwrap().len() >= 2);
     // Nothing is staged by an inspect.
-    assert!(!homevault::config_backup::staging_dir().join("READY").exists());
+    assert!(!homevault::config_backup::staging_dir()
+        .join("READY")
+        .exists());
 
     // Restore: validated and staged, and the answer says a restart is required
     // instead of claiming the running server changed.
@@ -501,7 +512,8 @@ async fn test_secrets_require_a_passphrase_and_an_encrypted_archive_round_trips(
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     // The real thing.
-    let archive = export_and_fetch(&mut router, &admin, true, Some("a long enough passphrase")).await;
+    let archive =
+        export_and_fetch(&mut router, &admin, true, Some("a long enough passphrase")).await;
 
     // Without the passphrase the archive refuses to be read…
     let (status, body) = send_bytes(
@@ -623,9 +635,14 @@ async fn test_a_newer_archive_is_refused_with_the_versions_named() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let message = body["message"].as_str().unwrap_or_default();
     assert!(message.contains("newer HomeVault"), "{message}");
-    assert!(message.contains("Update HomeVault"), "the refusal says what to do: {message}");
+    assert!(
+        message.contains("Update HomeVault"),
+        "the refusal says what to do: {message}"
+    );
     // Nothing was staged by a refused restore.
-    assert!(!homevault::config_backup::staging_dir().join("READY").exists());
+    assert!(!homevault::config_backup::staging_dir()
+        .join("READY")
+        .exists());
 }
 
 #[tokio::test]

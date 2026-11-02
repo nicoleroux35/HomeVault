@@ -1917,7 +1917,8 @@ async fn run_sync_core(admin_username: &str, req: &SyncRequest) -> SyncOutcome {
         &format!("Sync {} -> {}", req.source, req.destination),
     );
 
-    let output = run_timed_async_result(rclone_command().args(&args), RCLONE_TRANSFER_TIMEOUT).await;
+    let output =
+        run_timed_async_result(rclone_command().args(&args), RCLONE_TRANSFER_TIMEOUT).await;
 
     match output {
         Ok(output) => {
@@ -2475,7 +2476,8 @@ pub async fn handle_copy(
         &format!("Copy {} -> {}", req.source, req.destination),
     );
 
-    let output = run_timed_async_result(rclone_command().args(&args), RCLONE_TRANSFER_TIMEOUT).await;
+    let output =
+        run_timed_async_result(rclone_command().args(&args), RCLONE_TRANSFER_TIMEOUT).await;
 
     match output {
         Ok(output) => {

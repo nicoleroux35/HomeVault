@@ -145,10 +145,7 @@ impl ReplicationRepository {
 
     /// Jobs whose next run is due, oldest first. A job with no schedule
     /// (`interval_minutes = 0`) is never due.
-    pub async fn due(
-        &self,
-        now: DateTime<Utc>,
-    ) -> Result<Vec<ReplicationJob>, DbError> {
+    pub async fn due(&self, now: DateTime<Utc>) -> Result<Vec<ReplicationJob>, DbError> {
         Ok(sqlx::query_as::<_, ReplicationJob>(
             "SELECT * FROM replication_jobs \
              WHERE enabled = 1 AND interval_minutes > 0 AND next_run_at IS NOT NULL \

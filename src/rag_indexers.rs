@@ -271,6 +271,21 @@ Widgets can be rearranged by drag-and-drop. Monitor panels (Resource, RAID, Secu
 - Share a file by a revocable download link (URL + QR code; 'anyone' or 'signed-in' only; default 30-day expiry). A link can also require a password and allow a limited number of downloads — "one download" is the one-time link, and a download only counts once it has finished, so an interrupted transfer does not use it up. The recipient's page asks for the password only when the link has one, and the password is never put in the URL
 - Drag a file onto a folder to move it, or drag a rubber-band box to select several at once
 - Live auto-refresh pushed over SSE when files in the browsed directory change
+- A transfers panel (three zones: uploads, downloads, copies) showing every
+  running transfer with its progress bar, bytes transferred out of the total,
+  speed, time remaining, and a cancel button per row. A badge on the toolbar
+  button says how many are running, and an open upload can be cancelled from the
+  panel. A failed transfer stays listed for a minute so its outcome is visible
+- An upload that is interrupted resumes where it stopped, even after HomeVault
+  restarts: the upload session is stored in the database, not only in memory
+- An on-demand checksum of any file: SHA-256, SHA-512 or BLAKE3, computed in the
+  request for small files and as a background job for large ones; a second file
+  can be compared in the same call, which answers whether the two are identical
+  (MD5 is deliberately not offered)
+- A transfer history listing finished uploads, downloads, copies, moves and
+  checksums with their size, duration, how the copy was made (cloned or copied
+  byte for byte), whether it was verified, and whether it succeeded; each user
+  sees their own, an administrator sees everyone's, and rows are kept 90 days
 - Permanent delete is admin-only, path-guard confined, and refuses to delete a
   browsing root; resumable upload sessions are private to the user who opened
   them and capped in number
@@ -296,6 +311,29 @@ PathGuard restricts non-admin users to their home directory and allowed roots."#
             id: "replication".to_string(),
             title: "Snapshot replication".to_string(),
             content: r#"Replication keeps a second copy of a dataset on another disk or another machine. A job names a source dataset and a destination — either another dataset on this machine or, over SSH, a dataset on another one — and HomeVault does the rest on a schedule you choose: it takes a snapshot of the source, sends it, and next time sends only what changed since the last successful run. A transfer can be interrupted and resumed instead of starting over, and an optional bandwidth limit keeps it from saturating a home connection. Retention only counts the copies the job itself created, so it never deletes a snapshot you made by hand and never touches the source. Before anything is sent you can preview the exact command the next run would execute, which is the quickest way to check that a destination path or SSH account is what you think it is. Replicating Btrfs snapshots over SSH is not supported yet; use a local destination for those."#.to_string(),
+        },
+        FeatureDoc {
+            id: "traffic-control".to_string(),
+            title: "Traffic control".to_string(),
+            content: r#"Traffic control keeps one kind of transfer from saturating your home connection. You choose the network interface HomeVault sends through, then give SMB, NFS, FTP, WebDAV or SFTP a ceiling in kbit/s; a value of 0 leaves that service unlimited. The limit applies to traffic leaving HomeVault, which is the direction a client download from a share takes — uploads from clients are not shaped. Administration ports are never limited, so you cannot throttle your own session out of the appliance. An optional weekly schedule narrows when the limits apply: a window can run over midnight, and having no window means the limits apply all the time. Pause all releases the queue immediately while keeping your settings, which is the fastest response when the link is saturated, and Resume puts them back. Saving applies the new policy at once, and Apply now re-applies the saved one. If the shaping tool is not installed on the machine, the screen says so instead of pretending anything changed."#.to_string(),
+        },
+        FeatureDoc {
+            id: "iscsi".to_string(),
+            title: "iSCSI exports".to_string(),
+            content: r#"iSCSI publishes a disk over the network so another machine can mount it as a local block device — a client formats it itself, unlike a share that serves files. You create two things: a disk, which is either a file HomeVault owns and sizes or a whole block device, and an export, which is the iSCSI name (IQN) an initiator logs in to. An export lists portals (the address and port clients connect to, 0.0.0.0 for every address), LUNs (which number maps to which disk) and the initiators allowed to log in. Listing no initiator allows every client; listing one restricts access to it, and an initiator can additionally be protected with CHAP, a user name plus a 12 to 16 character secret that is stored encrypted and never shown again. Saving only writes HomeVault's settings: press Apply now to run the iSCSI tools and make the exports reachable, which is also how a removed LUN, a removed portal or a disabled export actually stops being served. Apply rebuilds every object HomeVault itself created, so running it twice is safe, and it never touches a target you configured by hand. Turning the feature off disconnects every initiator at once but keeps the disks and exports for later. If the machine lacks the iSCSI tools or kernel modules, the screen hides the editors and names exactly what is missing."#.to_string(),
+        },
+        FeatureDoc {
+            id: "directory-sso".to_string(),
+            title: "Directory and single sign-on (LDAP / AD / OpenID Connect / SAML)".to_string(),
+            content: r#"Directory and single sign-on let people sign in with the account they already have — on an LDAP or Active Directory server, or at the identity provider that already guards their mail and cloud accounts — instead of a second HomeVault password. One screen offers all three: a three-button switch picks Directory (LDAP / Active Directory), Single sign-on (OpenID Connect) or Single sign-on (SAML), and the list of remote accounts below is shared, with a badge naming the provider each account came from.
+
+For a directory, you point HomeVault at the server, give it a read-only service account to search with, a search base, and a user filter that must contain {username}, and then say which directory groups mean Administrator: the highest matching role wins, and someone in no mapped group gets the default role you pick. Group names can be written as a full distinguished name or just as a group name, because Active Directory reports full names and hand-written mappings usually do not. The password is checked with the directory on every sign-in even when the search result is cached, and a wrong password is rejected immediately.
+
+For single sign-on you register an application at the provider and paste four things here: the button text people will see on the login screen, the issuer URL exactly as the provider reports it, the client ID, and the callback URL to register at the provider, which must end in /api/auth/oidc/callback. A client secret is optional — leave it empty for a public client that only uses PKCE. The callback address is configured explicitly rather than guessed from the request, must be https, and http is accepted only for a loopback address, so a forged host header cannot move where a credential is sent. Behind Advanced you can rename the claims that carry the login name, display name, e-mail and groups, and edit the scopes, which must contain openid. Signing in then leaves for the provider, comes back to the callback, and the answer is verified before anything is stored: the signature against the provider's published keys, an algorithm from an allow-list (never none or a shared secret), the issuer, the audience, the expiry and the nonce from the start of the flow. The claims become a login name, a display name and an e-mail, the groups resolve to a role with exactly the same group mapping as the directory path, and the browser is handed a one-shot ticket rather than a token in the address bar.
+
+SAML is the third way in, for a provider that does not speak OpenID Connect. You paste the provider's entity ID, its sign-in address and its signing certificates (one per line), or simply paste its metadata address and press Read metadata to fill those three fields for you — nothing is stored until you save. HomeVault then shows its own entity ID and sign-in address (the ACS URL) to give back to the provider, plus a copyable metadata document, and behind Advanced you can rename the three attributes that carry the display name, the e-mail and the groups. A sign-in leaves for the provider, comes back as a signed assertion, and the signature is checked over the canonicalised XML against your certificate before anything is stored; the assertion must be addressed to HomeVault, still be inside its validity window, and use a request that was issued here and never used before. The groups then resolve to a role with exactly the same mapping as the other two paths. If no certificate is configured, every assertion is refused rather than accepted unsigned.
+
+Test before saving: the panel tries the form as typed, saving nothing, and for a directory it can also tell you which role a typed login name and password would get — the quickest way to catch a wrong mapping. A local account always keeps its own password and its own two-factor setting, so an integration that is off, misconfigured or unreachable can never lock an administrator out, and the screen always shows how many local administrators can still sign in. A remote account is not a local one: typing its name in the password form is refused with a sentence pointing at the single sign-on button, because the provider stored on the account decides which way in is allowed. Disabling an account here ends its sessions without touching the directory or the provider, and Forget removes the account HomeVault mirrored, so the next sign-in starts clean. The service-account password and the client secret are stored encrypted and never shown again; a SAML signing certificate is public, so there is no secret to keep."#.to_string(),
         },
         FeatureDoc {
             id: "disaster-recovery".to_string(),
@@ -1329,6 +1367,9 @@ mod tests {
         ("rsync", "rsync.md"),
         ("backup-target", "backup-target.md"),
         ("replication", "replication.md"),
+        ("traffic-control", "traffic-control.md"),
+        ("iscsi", "iscsi.md"),
+        ("directory-sso", "directory-sso.md"),
         ("disaster-recovery", "disaster-recovery.md"),
     ];
 

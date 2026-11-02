@@ -53,8 +53,9 @@ use homevault::config::PathGuard;
 use homevault::handlers::notifications::{
     handle_notification_delete, handle_notification_events_config_get,
     handle_notification_events_config_update, handle_notification_mark_read,
-    handle_notifications_clear_all, handle_notifications_events, handle_notifications_events_ticket,
-    handle_notifications_list, handle_notifications_mark_all_read, handle_notifications_unread_count,
+    handle_notifications_clear_all, handle_notifications_events,
+    handle_notifications_events_ticket, handle_notifications_list,
+    handle_notifications_mark_all_read, handle_notifications_unread_count,
 };
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{auth::handle_login, AppState};
@@ -743,7 +744,10 @@ async fn test_clear_all_requires_admin_and_empties_feed() {
         None,
     )
     .await;
-    assert_eq!(body["data"]["notifications"].as_array().map(|a| a.len()), Some(0));
+    assert_eq!(
+        body["data"]["notifications"].as_array().map(|a| a.len()),
+        Some(0)
+    );
     let (_, body) = send(
         &mut r,
         Method::GET,
@@ -767,9 +771,12 @@ async fn test_list_paginates_with_limit_offset_and_total() {
     let token = login(&mut r, "u", "Password123!").await;
 
     // Explicit, distinct timestamps so ordering is deterministic.
-    let _newest = insert_notification_at(&state, "newest", "info", "'2026-01-03T00:00:00Z'", None).await;
-    let _middle = insert_notification_at(&state, "middle", "info", "'2026-01-02T00:00:00Z'", None).await;
-    let _oldest = insert_notification_at(&state, "oldest", "info", "'2026-01-01T00:00:00Z'", None).await;
+    let _newest =
+        insert_notification_at(&state, "newest", "info", "'2026-01-03T00:00:00Z'", None).await;
+    let _middle =
+        insert_notification_at(&state, "middle", "info", "'2026-01-02T00:00:00Z'", None).await;
+    let _oldest =
+        insert_notification_at(&state, "oldest", "info", "'2026-01-01T00:00:00Z'", None).await;
 
     // First page: limit 2, newest first.
     let (status, body) = send(

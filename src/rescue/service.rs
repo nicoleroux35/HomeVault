@@ -25,7 +25,7 @@
 
 use super::jobs;
 use super::models::*;
-use super::validator::{ClonePlan, SecurityValidator, check_clone_safety};
+use super::validator::{check_clone_safety, ClonePlan, SecurityValidator};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::process::Command;

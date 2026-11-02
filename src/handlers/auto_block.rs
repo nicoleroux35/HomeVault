@@ -28,12 +28,7 @@
 
 use std::sync::Arc;
 
-use axum::{
-    extract::State,
-    http::HeaderMap,
-    response::Response,
-    Json,
-};
+use axum::{extract::State, http::HeaderMap, response::Response, Json};
 use chrono::Utc;
 use serde::Deserialize;
 
@@ -213,8 +208,12 @@ pub async fn handle_auto_block_pardon(
                 username, ip
             ));
             match status_payload(&state).await {
-                Ok(payload) => ResponseHelper::json_success(serde_json::json!({ "state": payload })),
-                Err(e) => ResponseHelper::json_error(format!("Lifted, but could not re-read it: {e}")),
+                Ok(payload) => {
+                    ResponseHelper::json_success(serde_json::json!({ "state": payload }))
+                }
+                Err(e) => {
+                    ResponseHelper::json_error(format!("Lifted, but could not re-read it: {e}"))
+                }
             }
         }
         Ok(false) => ResponseHelper::json_error(format!("'{ip}' is not blocked")),
@@ -244,7 +243,9 @@ pub async fn handle_auto_block_clear(
                     "lifted": lifted,
                     "state": payload,
                 })),
-                Err(e) => ResponseHelper::json_error(format!("Lifted, but could not re-read it: {e}")),
+                Err(e) => {
+                    ResponseHelper::json_error(format!("Lifted, but could not re-read it: {e}"))
+                }
             }
         }
         Err(reason) => ResponseHelper::json_error(reason),

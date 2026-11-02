@@ -763,6 +763,17 @@ pub async fn handle_user_update_password(
         return ResponseHelper::json_forbidden("Access denied".to_string());
     }
 
+    // A directory principal has no password here: its `users.password_hash` is
+    // a sentinel and the credential lives in the directory. Writing over it
+    // would quietly create a second, local way into an account whose password
+    // someone else owns. Say where it lives instead of failing with "wrong
+    // current password".
+    if let Some(message) =
+        crate::handlers::directory::password_is_managed_elsewhere(&state, &username).await
+    {
+        return ResponseHelper::json_error(message.to_string());
+    }
+
     let current_password = if caller_is_admin {
         None
     } else {

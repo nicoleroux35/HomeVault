@@ -58,6 +58,11 @@ use crate::handlers::{
         handle_verify_recovery_code,
     },
     avatars::{handle_avatar_preview, handle_update_my_avatar, handle_user_avatar},
+    backup_target::{
+        handle_backup_target_settings_update, handle_backup_target_state,
+        handle_backup_tenant_create, handle_backup_tenant_delete, handle_backup_tenant_rotate,
+        handle_backup_tenant_update, handle_backup_tenant_verify,
+    },
     cache::{
         handle_cache_mover_run, handle_cache_mover_runs, handle_cache_pools_get,
         handle_cache_settings_get, handle_cache_settings_update, handle_cache_share_create,
@@ -75,6 +80,10 @@ use crate::handlers::{
         handle_network_traffic_data, handle_remove_widget, handle_reorder_widgets,
         handle_server_details, handle_storage_data, handle_storage_volumes,
         handle_update_widget_preference, handle_widget_data,
+    },
+    directory::{
+        handle_directory_get, handle_directory_settings_put, handle_directory_test,
+        handle_identity_delete, handle_identity_disabled,
     },
     docker::{
         handle_docker_available, handle_docker_container_create, handle_docker_container_exec,
@@ -115,25 +124,26 @@ use crate::handlers::{
         handle_encryption_lock, handle_encryption_unlock,
     },
     explorer::{
-        handle_explorer_compress, handle_explorer_copy, handle_explorer_delete,
+        handle_explorer_checksum, handle_explorer_checksum_result, handle_explorer_compress,
+        handle_explorer_copy, handle_explorer_delete,
         handle_explorer_disks, handle_explorer_download, handle_explorer_download_ticket,
         handle_explorer_eject, handle_explorer_extract, handle_explorer_favorites_add,
         handle_explorer_favorites_list, handle_explorer_favorites_remove, handle_explorer_format,
         handle_explorer_history, handle_explorer_instant_copy_get,
         handle_explorer_instant_copy_update, handle_explorer_list, handle_explorer_mkdir,
-        handle_explorer_move,
-        handle_explorer_network_discovery, handle_explorer_permissions, handle_explorer_preview,
-        handle_explorer_recents_clear, handle_explorer_recents_list, handle_explorer_recents_touch,
-        handle_explorer_rename, handle_explorer_roots, handle_explorer_save,
-        handle_explorer_search, handle_explorer_snapshots, handle_explorer_thumbnail,
-        handle_explorer_thumbnail_ticket, handle_explorer_trash, handle_explorer_trash_empty,
-        handle_explorer_trash_list, handle_explorer_trash_policy_get,
+        handle_explorer_move, handle_explorer_network_discovery, handle_explorer_permissions,
+        handle_explorer_preview, handle_explorer_recents_clear, handle_explorer_recents_list,
+        handle_explorer_recents_touch, handle_explorer_rename, handle_explorer_roots,
+        handle_explorer_save, handle_explorer_search, handle_explorer_snapshots,
+        handle_explorer_thumbnail, handle_explorer_thumbnail_ticket, handle_explorer_trash,
+        handle_explorer_trash_empty, handle_explorer_trash_list, handle_explorer_trash_policy_get,
         handle_explorer_trash_policy_update, handle_explorer_trash_purge,
-        handle_explorer_trash_purge_now, handle_explorer_trash_restore,
-        handle_explorer_upload, handle_explorer_upload_chunk, handle_explorer_upload_complete,
+        handle_explorer_trash_purge_now, handle_explorer_trash_restore, handle_explorer_upload,
+        handle_explorer_upload_chunk, handle_explorer_upload_complete,
         handle_explorer_upload_session_abort, handle_explorer_upload_session_start,
         handle_explorer_watch, handle_explorer_watch_ticket,
     },
+    transfers::{handle_active_transfers, handle_transfer_history},
     firewall::{
         handle_firewall_default_policy, handle_firewall_disable, handle_firewall_enable,
         handle_firewall_enable_preview, handle_firewall_history, handle_firewall_rule_add,
@@ -143,6 +153,11 @@ use crate::handlers::{
         handle_group_add_member, handle_group_create, handle_group_delete, handle_group_get,
         handle_group_remove_member, handle_group_update, handle_groups_list,
         handle_groups_list_users, handle_user_groups,
+    },
+    iscsi::{
+        handle_iscsi_apply, handle_iscsi_backstore_create, handle_iscsi_backstore_delete,
+        handle_iscsi_backstore_update, handle_iscsi_get, handle_iscsi_settings_put,
+        handle_iscsi_target_create, handle_iscsi_target_delete, handle_iscsi_target_update,
     },
     journal::{
         handle_journal_cleanup_settings_get, handle_journal_cleanup_settings_update,
@@ -162,6 +177,10 @@ use crate::handlers::{
         handle_notifications_clear_all, handle_notifications_events,
         handle_notifications_events_ticket, handle_notifications_list,
         handle_notifications_mark_all_read, handle_notifications_unread_count,
+    },
+    oidc::{
+        handle_auth_methods, handle_oidc_callback, handle_oidc_complete, handle_oidc_get,
+        handle_oidc_settings_put, handle_oidc_start, handle_oidc_test,
     },
     permissions::{
         handle_share_permission_grant, handle_share_permission_revoke,
@@ -185,6 +204,11 @@ use crate::handlers::{
         handle_rclone_status, handle_run_sync_job, handle_save_config, handle_sync,
         handle_update_sync_job_schedule,
     },
+    replication::{
+        handle_replication_job_create, handle_replication_job_delete,
+        handle_replication_job_update, handle_replication_jobs_list, handle_replication_preview,
+        handle_replication_run_now,
+    },
     resource_shares::{
         handle_grant_access, handle_grant_group_access, handle_list_access,
         handle_list_group_access, handle_my_access, handle_revoke_access,
@@ -201,6 +225,15 @@ use crate::handlers::{
         handle_restic_stats, handle_restic_unlock, handle_restic_version,
         handle_retention_policies_list, handle_retention_policy_create,
         handle_retention_policy_delete, handle_retention_policy_update,
+    },
+    rsync::{
+        handle_rsync_module_create, handle_rsync_module_delete, handle_rsync_module_update,
+        handle_rsync_secret_delete, handle_rsync_secret_set, handle_rsync_settings_update,
+        handle_rsync_state,
+    },
+    saml::{
+        handle_public_saml_metadata, handle_saml_acs, handle_saml_complete, handle_saml_get,
+        handle_saml_metadata, handle_saml_settings_put, handle_saml_start, handle_saml_test,
     },
     scheduled_tasks::{
         handle_task_create, handle_task_delete, handle_task_get, handle_task_run_now,
@@ -235,22 +268,7 @@ use crate::handlers::{
         handle_smb_recycle_list, handle_smb_recycle_set, handle_smb_time_machine_list,
         handle_smb_time_machine_set, handle_webdav_config_get, handle_webdav_config_update,
     },
-    rsync::{
-        handle_rsync_module_create, handle_rsync_module_delete, handle_rsync_module_update,
-        handle_rsync_secret_delete, handle_rsync_secret_set, handle_rsync_settings_update,
-        handle_rsync_state,
-    },
     shortcuts::handle_fetch_metadata,
-    backup_target::{
-        handle_backup_target_settings_update, handle_backup_target_state,
-        handle_backup_tenant_create, handle_backup_tenant_delete, handle_backup_tenant_rotate,
-        handle_backup_tenant_update, handle_backup_tenant_verify,
-    },
-    replication::{
-        handle_replication_job_create, handle_replication_job_delete,
-        handle_replication_job_update, handle_replication_jobs_list,
-        handle_replication_preview, handle_replication_run_now,
-    },
     snapshot_locks::{
         handle_snapshot_lock_create, handle_snapshot_lock_release, handle_snapshot_locks_list,
     },
@@ -311,6 +329,23 @@ use crate::handlers::{
         handle_widget_cpu_temp, handle_widget_cpu_usage, handle_widget_network_traffic,
         handle_widget_ram_usage, handle_widget_update_info,
     },
+    // Phase 4 handlers
+    ups_server::{
+        handle_ups_server_get, handle_ups_server_shutdown, handle_ups_server_start,
+        handle_ups_server_stop, handle_ups_server_update,
+    },
+    usb_copy::{
+        handle_devices_list, handle_execute, handle_profile_create, handle_profile_delete,
+        handle_profile_update, handle_profiles_list,
+    },
+    dhcp_server::{
+        handle_get as handle_dhcp_get, handle_leases, handle_start as handle_dhcp_start,
+        handle_stop as handle_dhcp_stop, handle_update as handle_dhcp_update,
+    },
+    fan_control::{
+        handle_channels_list, handle_config_get, handle_config_update, handle_restore_auto,
+    },
+    guided_redundancy::{handle_apply, handle_recommend},
     AppState, AppStateArc,
 };
 
@@ -1216,6 +1251,68 @@ pub fn create_app(state: AppStateArc) -> Router {
             get(handle_importable_pools_list),
         )
         .route("/api/storage/import-pool", post(handle_import_pool))
+        // iSCSI targets (P3.3). The metadata is HomeVault's; only `apply`
+        // (and turning the feature off) touches the host's `targetcli`.
+        .route("/api/storage/iscsi", get(handle_iscsi_get))
+        .route(
+            "/api/storage/iscsi/settings",
+            put(handle_iscsi_settings_put),
+        )
+        .route(
+            "/api/storage/iscsi/backstores",
+            post(handle_iscsi_backstore_create),
+        )
+        .route(
+            "/api/storage/iscsi/backstores/{id}",
+            axum::routing::put(handle_iscsi_backstore_update).delete(handle_iscsi_backstore_delete),
+        )
+        .route(
+            "/api/storage/iscsi/targets",
+            post(handle_iscsi_target_create),
+        )
+        .route(
+            "/api/storage/iscsi/targets/{id}",
+            axum::routing::put(handle_iscsi_target_update).delete(handle_iscsi_target_delete),
+        )
+        .route("/api/storage/iscsi/apply", post(handle_iscsi_apply))
+        // LDAP/AD directory sign-in (P3.1, stage 1). Admin-only: the settings
+        // carry a service-account password and decide who becomes an
+        // administrator.
+        .route("/api/directory", get(handle_directory_get))
+        .route(
+            "/api/directory/settings",
+            put(handle_directory_settings_put),
+        )
+        .route("/api/directory/test", post(handle_directory_test))
+        .route(
+            "/api/directory/identities/{id}/disabled",
+            post(handle_identity_disabled),
+        )
+        .route(
+            "/api/directory/identities/{id}",
+            axum::routing::delete(handle_identity_delete),
+        )
+        // OpenID Connect single sign-on (P3.1, stage 2). The admin half carries
+        // a client secret and decides who becomes an administrator; the
+        // `/api/auth/*` half IS the sign-in and is public by design.
+        .route("/api/oidc", get(handle_oidc_get))
+        .route("/api/oidc/settings", put(handle_oidc_settings_put))
+        .route("/api/oidc/test", post(handle_oidc_test))
+        .route("/api/auth/methods", get(handle_auth_methods))
+        .route("/api/auth/oidc/start", post(handle_oidc_start))
+        .route("/api/auth/oidc/callback", get(handle_oidc_callback))
+        .route("/api/auth/oidc/complete", post(handle_oidc_complete))
+        // SAML 2.0 (ROADMAP P3.1 stage 3). The settings half is admin-only;
+        // the three sign-in routes are public because a signed-out browser
+        // has to reach them.
+        .route("/api/saml", get(handle_saml_get))
+        .route("/api/saml/settings", put(handle_saml_settings_put))
+        .route("/api/saml/test", post(handle_saml_test))
+        .route("/api/saml/metadata", get(handle_saml_metadata))
+        .route("/api/auth/saml/start", post(handle_saml_start))
+        .route("/api/auth/saml/acs", post(handle_saml_acs))
+        .route("/api/auth/saml/complete", post(handle_saml_complete))
+        .route("/api/auth/saml/metadata", get(handle_public_saml_metadata))
         // Cache tier (HomeVault write caching)
         .route("/api/cache/settings", get(handle_cache_settings_get))
         .route("/api/cache/settings", put(handle_cache_settings_update))
@@ -1347,8 +1444,7 @@ pub fn create_app(state: AppStateArc) -> Router {
         )
         .route(
             "/api/backup-target/tenants/{id}",
-            axum::routing::put(handle_backup_tenant_update)
-                .delete(handle_backup_tenant_delete),
+            axum::routing::put(handle_backup_tenant_update).delete(handle_backup_tenant_delete),
         )
         .route(
             "/api/backup-target/tenants/{id}/rotate",
@@ -1366,8 +1462,7 @@ pub fn create_app(state: AppStateArc) -> Router {
         )
         .route(
             "/api/replication/{id}",
-            axum::routing::put(handle_replication_job_update)
-                .delete(handle_replication_job_delete),
+            axum::routing::put(handle_replication_job_update).delete(handle_replication_job_delete),
         )
         .route(
             "/api/replication/{id}/preview",
@@ -1406,6 +1501,33 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/power/spindown/apply",
             post(handle_power_spindown_apply),
         )
+        // Phase 4 — UPS Server Mode
+        .route("/api/power/ups-server", get(handle_ups_server_get))
+        .route("/api/power/ups-server", put(handle_ups_server_update))
+        .route("/api/power/ups-server/start", post(handle_ups_server_start))
+        .route("/api/power/ups-server/stop", post(handle_ups_server_stop))
+        .route("/api/power/ups-server/shutdown", post(handle_ups_server_shutdown))
+        // Phase 4 — USB Copy
+        .route("/api/usb-copy/profiles", get(handle_profiles_list))
+        .route("/api/usb-copy/profiles", post(handle_profile_create))
+        .route("/api/usb-copy/profiles/:id", put(handle_profile_update))
+        .route("/api/usb-copy/profiles/:id", axum::routing::delete(handle_profile_delete))
+        .route("/api/usb-copy/devices", get(handle_devices_list))
+        .route("/api/usb-copy/execute/:profile_id", post(handle_execute))
+        // Phase 4 — DHCP Server
+        .route("/api/network/dhcp-server", get(handle_dhcp_get))
+        .route("/api/network/dhcp-server", put(handle_dhcp_update))
+        .route("/api/network/dhcp-server/start", post(handle_dhcp_start))
+        .route("/api/network/dhcp-server/stop", post(handle_dhcp_stop))
+        .route("/api/network/dhcp-server/leases", get(handle_leases))
+        // Phase 4 — Fan Control
+        .route("/api/system/fans", get(handle_channels_list))
+        .route("/api/system/fans/config", get(handle_config_get))
+        .route("/api/system/fans/config", put(handle_config_update))
+        .route("/api/system/fans/restore-auto", post(handle_restore_auto))
+        // Phase 4 — Guided Redundancy
+        .route("/api/storage/guided-redundancy", get(handle_recommend))
+        .route("/api/storage/guided-redundancy/apply/:id", post(handle_apply))
         // App-proxy auth entry (browser navigation, cookie-authenticated):
         // mints the app-scoped session and redirects to the app origin.
         .route("/app-auth", get(handle_app_auth))
@@ -1471,6 +1593,19 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route(
             "/api/explorer/upload/complete",
             post(handle_explorer_upload_complete),
+        )
+        .route("/api/explorer/checksum", post(handle_explorer_checksum))
+        .route(
+            "/api/explorer/checksum/result",
+            get(handle_explorer_checksum_result),
+        )
+        .route(
+            "/api/explorer/transfers/active",
+            get(handle_active_transfers),
+        )
+        .route(
+            "/api/explorer/transfers/history",
+            get(handle_transfer_history),
         )
         .route("/api/explorer/compress", post(handle_explorer_compress))
         .route("/api/explorer/trash", post(handle_explorer_trash))
@@ -1580,16 +1715,17 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/shares/rsync/config",
             axum::routing::put(handle_rsync_settings_update),
         )
-        .route("/api/shares/rsync/modules", post(handle_rsync_module_create))
+        .route(
+            "/api/shares/rsync/modules",
+            post(handle_rsync_module_create),
+        )
         .route(
             "/api/shares/rsync/modules/{name}",
-            axum::routing::put(handle_rsync_module_update)
-                .delete(handle_rsync_module_delete),
+            axum::routing::put(handle_rsync_module_update).delete(handle_rsync_module_delete),
         )
         .route(
             "/api/shares/rsync/users/{user}/secret",
-            axum::routing::put(handle_rsync_secret_set)
-                .delete(handle_rsync_secret_delete),
+            axum::routing::put(handle_rsync_secret_set).delete(handle_rsync_secret_delete),
         )
         .route("/api/shares/nfs/config", get(handle_nfs_config_get))
         .route("/api/shares/nfs/config", put(handle_nfs_config_update))
@@ -2420,6 +2556,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tokio::spawn(crate::backup_target_scheduler::run_scheduler_loop(
         state.clone(),
     ));
+    // Per-service bandwidth control (P3.2): re-evaluates the weekly schedule
+    // once a minute and only runs `tc` when the effective policy changed.
+    tokio::spawn(crate::traffic_control::run_scheduler());
     tokio::spawn(crate::metrics::run_collector_loop(state.db.pool()));
     // Transfer quotas (ROADMAP 23.2): re-opens the counters of every subject
     // whose counting window elapsed, so the Quotas/Users screens show a reset

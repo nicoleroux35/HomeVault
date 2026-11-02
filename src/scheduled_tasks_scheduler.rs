@@ -39,7 +39,7 @@ use crate::power::{host_power_action, PowerAction};
 use crate::snapshots::SnapshotService;
 use crate::storage::scheduled_task_repo::{ScheduledTask, ScheduledTaskRepository};
 use chrono::{DateTime, Utc};
-use chrono_tz::{TZ_VARIANTS, Tz};
+use chrono_tz::{Tz, TZ_VARIANTS};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::str::FromStr;

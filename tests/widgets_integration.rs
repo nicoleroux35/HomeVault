@@ -509,7 +509,10 @@ async fn test_monitor_layout_rejects_deep_nesting_and_huge_keys() {
     let (status, body) = post_layout(&mut r, &token, &long_key).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(
-        body["message"].as_str().unwrap_or("").contains("key longer"),
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("key longer"),
         "{body}"
     );
 

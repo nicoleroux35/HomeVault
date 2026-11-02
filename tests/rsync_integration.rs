@@ -136,8 +136,14 @@ fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/auth/login", post(handle_login))
         .route("/api/shares/rsync", get(handle_rsync_state))
-        .route("/api/shares/rsync/config", put(handle_rsync_settings_update))
-        .route("/api/shares/rsync/modules", post(handle_rsync_module_create))
+        .route(
+            "/api/shares/rsync/config",
+            put(handle_rsync_settings_update),
+        )
+        .route(
+            "/api/shares/rsync/modules",
+            post(handle_rsync_module_create),
+        )
         .route(
             "/api/shares/rsync/modules/{name}",
             put(handle_rsync_module_update).delete(handle_rsync_module_delete),
@@ -316,7 +322,10 @@ async fn test_a_module_writes_an_authenticated_conf_and_a_0600_secrets_file() {
 
     let conf = read_file(&h.rsync_dir.join("rsyncd.conf"));
     assert!(conf.contains("[media]"), "{conf}");
-    assert!(conf.contains(&format!("  path = {}", h.share.display())), "{conf}");
+    assert!(
+        conf.contains(&format!("  path = {}", h.share.display())),
+        "{conf}"
+    );
     assert!(conf.contains("  auth users = member"), "{conf}");
     assert!(conf.contains("  read only = no"), "{conf}");
 
@@ -326,12 +335,23 @@ async fn test_a_module_writes_an_authenticated_conf_and_a_0600_secrets_file() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&secrets_path).unwrap().permissions().mode() & 0o777;
+        let mode = std::fs::metadata(&secrets_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o600, "secrets file mode was {mode:o}");
     }
 
     // …and the list endpoint reads the state back without leaking it.
-    let (status, list) = send(&mut router, Method::GET, "/api/shares/rsync", Some(&admin), None).await;
+    let (status, list) = send(
+        &mut router,
+        Method::GET,
+        "/api/shares/rsync",
+        Some(&admin),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{list}");
     assert_eq!(list["data"]["modules"][0]["name"], json!("media"));
     assert!(!list.to_string().contains("rsync-secret"));
@@ -369,7 +389,10 @@ async fn test_enabling_a_module_without_a_user_or_password_is_refused() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(
-        body["message"].as_str().unwrap_or_default().contains("password"),
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("password"),
         "{body}"
     );
 }
@@ -425,7 +448,10 @@ async fn test_disabling_and_deleting_a_module_rewrites_the_config_each_time() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let conf = read_file(&h.rsync_dir.join("rsyncd.conf"));
-    assert!(!conf.contains("[media]"), "a disabled module is removed: {conf}");
+    assert!(
+        !conf.contains("[media]"),
+        "a disabled module is removed: {conf}"
+    );
 
     let (status, body) = send(
         &mut router,
@@ -633,7 +659,10 @@ async fn test_a_real_rsync_client_lists_and_copies_through_a_generated_module() 
         ])
         .output()
         .expect("run rsync with a wrong password");
-    assert!(!refused.status.success(), "a wrong password must be refused");
+    assert!(
+        !refused.status.success(),
+        "a wrong password must be refused"
+    );
 
     let _ = daemon.kill();
     let _ = daemon.wait();

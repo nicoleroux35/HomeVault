@@ -241,10 +241,7 @@ impl SnmpService {
         if let Ok(ifx) = run_walk("1.3.6.1.2.1.31.1.1.1", community, &version) {
             output.push_str(&ifx);
         }
-        Ok(filter_interfaces(
-            parse_interface_stats(&output),
-            iface,
-        ))
+        Ok(filter_interfaces(parse_interface_stats(&output), iface))
     }
 
     /// Walk HOST-RESOURCES-MIB for storage filesystem statistics.
@@ -576,7 +573,10 @@ mod tests {
             );
         }
         for bad in ["", "2", "2b", "4"] {
-            assert!(validate_snmp_version(bad).is_err(), "'{bad}' is not a version");
+            assert!(
+                validate_snmp_version(bad).is_err(),
+                "'{bad}' is not a version"
+            );
         }
     }
 

@@ -27,10 +27,10 @@
 //! killed (not merely abandoned) when the deadline expires.
 
 use std::io::Read as _;
-use std::process::{Command, ExitStatus, Output, Stdio};
-use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
+use std::process::{Command, ExitStatus, Output, Stdio};
+use std::time::{Duration, Instant};
 
 /// Default deadline for a one-shot host probe (SMART status/temperature,
 /// `lsblk`, `df`, `ip`, `nvidia-smi`, `sensors`, `dpkg-query`, …).
@@ -550,10 +550,7 @@ mod tests {
     fn a_pipeline_connects_one_stage_stdout_to_the_next_stdin() {
         // `printf abc | tr a-z A-Z` — the second stage can only produce `ABC`
         // if it actually received the first stage's output.
-        let stages = vec![
-            stage("printf", &["abc"]),
-            stage("tr", &["a-z", "A-Z"]),
-        ];
+        let stages = vec![stage("printf", &["abc"]), stage("tr", &["a-z", "A-Z"])];
         run_pipeline_timed(&stages, Duration::from_secs(5)).expect("the pipeline must succeed");
         // An empty pipeline is a caller bug, not a silent success.
         assert!(run_pipeline_timed(&[], Duration::from_secs(1)).is_err());
@@ -592,7 +589,10 @@ mod tests {
         let stages = vec![stage("homevault-no-such-binary", &[])];
         let err = run_pipeline_timed(&stages, Duration::from_secs(1))
             .expect_err("a missing program is an error");
-        assert!(err.contains("Failed to run homevault-no-such-binary"), "{err}");
+        assert!(
+            err.contains("Failed to run homevault-no-such-binary"),
+            "{err}"
+        );
     }
 
     #[test]

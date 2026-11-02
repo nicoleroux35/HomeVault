@@ -137,7 +137,11 @@ impl WidgetRepository {
     /// another account's id is silently ignored instead of moving it. Returns
     /// how many of the caller's rows were updated, which lets the handler
     /// answer 404 when the list matched nothing of theirs.
-    pub async fn reorder_for(&self, username: &str, widget_order: &[String]) -> Result<u64, DbError> {
+    pub async fn reorder_for(
+        &self,
+        username: &str,
+        widget_order: &[String],
+    ) -> Result<u64, DbError> {
         if widget_order.is_empty() {
             return Ok(0);
         }

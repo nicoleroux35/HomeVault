@@ -40,6 +40,10 @@ rand = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.11"
+# BLAKE3 for on-demand file checksums (src/checksum.rs, HV-INT-01): the same
+# 256-bit output width as SHA-256 at several times the throughput, which is what
+# makes verifying a multi-gigabyte file on request practical.
+blake3 = "1.8"
 # SHA-512 crypt ($6$) hashing for the cloud-init user password we seed into a
 # new VM — the plaintext never touches the instance config or any log.
 sha-crypt = { version = "0.6", features = ["getrandom"] }
@@ -115,6 +119,14 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # (src/passkey.rs). Pinned to the version the tree already resolves (0.17.14),
 # so this adds no second copy of the crate.
 ring = "0.17"
+# SAML 2.0 (src/saml.rs): the event parser from `xml` (the crate `xml-rs` was
+# renamed to; already resolved through xmltree/dav-server) and raw DEFLATE for
+# the HTTP-Redirect binding (`flate2` is already in the tree through
+# tower-http/axum). Both are named here to become direct dependencies — the
+# lock file already pins these exact versions, so this adds no new supply
+# chain and no second copy of either crate.
+xml = "1"
+flate2 = "1"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 time = "0.3"
 # dav-server 0.11.0 uses lru 0.16.4 which has RUSTSEC-2026-0253 (unsound).
@@ -124,6 +136,9 @@ time = "0.3"
 dav-server = { version = "0.11.0", default-features = false, features = ["localfs"] }
 percent-encoding = "2.3.2"
 base64 = "0.23.1"
+ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-ring"] }
+# Phase 4 — CIDR parsing for UPS server client allowlists
+ipnetwork = "0.20"
 
 [dev-dependencies]
 tempfile = "3.27"

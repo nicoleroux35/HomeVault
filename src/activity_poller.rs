@@ -674,11 +674,8 @@ pub fn apply_plan(plan: &ReconcilePlan) {
             // inserted under an id nothing ever addressed again, so every
             // following `emit_progress` was a silent no-op and the bar never
             // existed. `create_job_with_id` is the fix, not a cosmetic one.
-            let created = PROGRESS_MANAGER.create_job_with_id(
-                op.id.clone(),
-                op.job_type(),
-                &op.message,
-            );
+            let created =
+                PROGRESS_MANAGER.create_job_with_id(op.id.clone(), op.job_type(), &op.message);
             debug_assert_eq!(
                 created, op.id,
                 "the manager must honour the derived id, or the row cannot be advanced"
@@ -836,13 +833,7 @@ pub async fn run_poller_loop(_state: AppStateArc) {
         // admin who starts a scrub or installs Syncthing expects the row to
         // appear without a restart.
         let (pools, syncthing_enabled) = poller_inputs().await;
-        let plan = tick(
-            &known,
-            Path::new("/proc/mdstat"),
-            &pools,
-            syncthing_enabled,
-        )
-        .await;
+        let plan = tick(&known, Path::new("/proc/mdstat"), &pools, syncthing_enabled).await;
         known = plan.live.iter().map(|o| o.id.clone()).collect();
         if !plan.finished.is_empty() {
             tracing::debug!(
@@ -867,10 +858,9 @@ async fn poller_inputs() -> (Vec<(String, ScrubKind)>, bool) {
             .into_iter()
             .filter_map(|p| match p.pool_type {
                 crate::pools::PoolType::Zfs => Some((p.name, ScrubKind::Zfs)),
-                crate::pools::PoolType::Btrfs => p
-                    .mount_point
-                    .clone()
-                    .map(|m| (p.name, ScrubKind::Btrfs(m))),
+                crate::pools::PoolType::Btrfs => {
+                    p.mount_point.clone().map(|m| (p.name, ScrubKind::Btrfs(m)))
+                }
                 // mdadm arrays are covered by `/proc/mdstat`; an unknown type
                 // has no scrub to report.
                 _ => None,
@@ -1251,7 +1241,10 @@ Rate:             250.00MiB/s
         let total = 1024u64 * 1024 * 1024 * 1024;
         let need = 40u64 * 1024 * 1024 * 1024;
         let pct = folder_sync_progress(total, need).expect("still work to do");
-        assert!(pct < 97.0, "the bar must show 40 GB left, not 1 file: {pct}");
+        assert!(
+            pct < 97.0,
+            "the bar must show 40 GB left, not 1 file: {pct}"
+        );
         assert!(pct > 90.0);
     }
 
@@ -1333,9 +1326,12 @@ Rate:             250.00MiB/s
     /// whose id happens to be in `known` (or any foreign job) is left alone.
     #[test]
     fn the_poller_never_touches_a_job_it_did_not_create() {
-        let known: HashSet<String> = ["somebackup-uuid".to_string(), "sys:raid:md0:resync".to_string()]
-            .into_iter()
-            .collect();
+        let known: HashSet<String> = [
+            "somebackup-uuid".to_string(),
+            "sys:raid:md0:resync".to_string(),
+        ]
+        .into_iter()
+        .collect();
         let plan = plan_reconcile(&known, vec![]);
         assert_eq!(
             plan.finished,
@@ -1532,10 +1528,7 @@ Rate:             250.00MiB/s
 
     #[test]
     fn collapse_whitespace_joins_a_multiline_block() {
-        assert_eq!(
-            collapse_whitespace("a  b\n c\t d "),
-            "a b c d".to_string()
-        );
+        assert_eq!(collapse_whitespace("a  b\n c\t d "), "a b c d".to_string());
     }
 
     /// ROADMAP X.9 — every subprocess of the tree runs under a deadline. This

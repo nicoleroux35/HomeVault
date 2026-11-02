@@ -54,7 +54,9 @@
 
 use crate::handlers::admin_guard::require_admin;
 use crate::handlers::AppState;
-use crate::incus::{self, ExecSession, IncusError, IncusInstance, IncusService, WaitOutcome, STATUS_RUNNING};
+use crate::incus::{
+    self, ExecSession, IncusError, IncusInstance, IncusService, WaitOutcome, STATUS_RUNNING,
+};
 use crate::sse::{JobType, PROGRESS_MANAGER};
 use crate::utils::ResponseHelper;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -336,7 +338,9 @@ where
 {
     match tokio::task::spawn_blocking(f).await {
         Ok(r) => r,
-        Err(e) => Err(format!("The server could not finish that file operation: {e}")),
+        Err(e) => Err(format!(
+            "The server could not finish that file operation: {e}"
+        )),
     }
 }
 
@@ -647,9 +651,7 @@ pub async fn handle_vm_create(
         // (`swtpm-tools`). If not, the VM is still created (Windows 10 is fine,
         // Win11 can be bypassed) and the job note says so.
         let tpm_wanted = windows;
-        let tpm_available = blocking_io(|| Ok(swtpm_available()))
-            .await
-            .unwrap_or(false);
+        let tpm_available = blocking_io(|| Ok(swtpm_available())).await.unwrap_or(false);
         let tpm_added = tpm_wanted && tpm_available;
         if tpm_added {
             devices.insert("vtpm".to_string(), serde_json::json!({ "type": "tpm" }));
@@ -2654,7 +2656,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_alloc_vnc_display_in_range() {
-        let d = alloc_vnc_display().await.expect("a free display on a test box");
+        let d = alloc_vnc_display()
+            .await
+            .expect("a free display on a test box");
         assert!((VNC_DISPLAY_MIN..=VNC_DISPLAY_MAX).contains(&d));
         release_vnc_display(d);
     }

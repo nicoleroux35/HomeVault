@@ -98,6 +98,10 @@
   import SnmpCard from '$lib/components/settings/SnmpCard.svelte';
   import McpCard from '$lib/components/settings/McpCard.svelte';
   import KnowledgeBaseCard from '$lib/components/settings/KnowledgeBaseCard.svelte';
+  // Phase 4 cards
+  import UpsServerCard from '$lib/components/settings/UpsServerCard.svelte';
+  import DhcpServerCard from '$lib/components/settings/DhcpServerCard.svelte';
+  import FanControlCard from '$lib/components/settings/FanControlCard.svelte';
   import { IconAlertTriangle, IconCookie, IconShield, IconCheck, IconSettings, IconWifiOff, IconRefresh, IconMapPin, IconPencil, IconLock } from '@tabler/icons-svelte';
 
   // Sidebar categories — 8 grouped entries instead of a 12-item flat list.
@@ -427,12 +431,15 @@
         };
         draft.appearance = {
           wallpaper: '',
-          accent_color: data.appearance?.accent_color || '#1E62AE'
+          accent_color: data.appearance?.accent_color || '#1E62AE',
+          density: data.appearance?.density || 'comfortable'
         };
 
         // Apply the persisted accent color and wallpaper live — the desktop
         // updates immediately, but the server only gets the new value on Save.
         document.documentElement.style.setProperty('--hv-primary', draft.appearance.accent_color);
+        // Apply density mode
+        document.documentElement.dataset.density = draft.appearance.density;
         if (data.appearance?.wallpaper) {
           try {
             // applyRaw keeps only a bundled /wallpapers/ image; anything else
@@ -1109,6 +1116,7 @@
         <AcmeCard class="mt-3" />
         <DdnsCard class="mt-3" />
         <ReachabilityCard class="mt-3" />
+        <DhcpServerCard class="mt-3" />
         <AutoBlockCard class="mt-3" />
         <ConnectedClientsCard class="mt-3" />
         <AntivirusCard class="mt-3" />
@@ -1154,6 +1162,30 @@
                 {/each}
               </div>
             </div>
+          </div>
+        </div>
+
+        <!-- Density Selector -->
+        <div data-testid="settings-card-title" class={secLabel}></div>
+        <div data-testid="settings-card" class={settingsCard}>
+          <div class={settingsRowLast}>
+            <div class="min-w-0">
+              <label class={settingsLabel} for="densitySelect">{$t('settings.density')}</label>
+              <p class={settingsHint}>{$t('settings.density_hint')}</p>
+            </div>
+            <select
+              id="densitySelect"
+              class={cn(settingsInput, 'max-w-[280px]')}
+              bind:value={draft.appearance.density}
+              disabled={appearanceReadOnly}
+              onchange={() => {
+                document.documentElement.dataset.density = draft.appearance.density;
+              }}
+            >
+              <option value="comfortable">{$t('settings.density_comfortable')} — {$t('settings.density_comfortable_desc')}</option>
+              <option value="compact">{$t('settings.density_compact')} — {$t('settings.density_compact_desc')}</option>
+              <option value="dense">{$t('settings.density_dense')} — {$t('settings.density_dense_desc')}</option>
+            </select>
           </div>
         </div>
       {/if}
@@ -1383,8 +1415,10 @@
       {/if}
       {#if activeCategory === 'monitoring'}
         <UpsCard class="mt-6" />
+        <UpsServerCard class="mt-3" />
         <SnmpCard class="mt-3" />
         <SyslogCard class="mt-3" />
+        <FanControlCard class="mt-3" />
       {/if}
       {#if activeCategory === 'widgets'}
         <div data-testid="settings-card-title" class={secLabelFirst}></div>

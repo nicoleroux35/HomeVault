@@ -297,7 +297,9 @@ async fn test_the_list_always_answers_with_a_status_per_source() {
     // The rest of the envelope is always present.
     assert!(body["data"]["clients"].is_array());
     assert!(body["data"]["kickable"].is_number());
-    assert!(body["data"]["checked_at"].as_str().is_some_and(|s| s.contains('T')));
+    assert!(body["data"]["checked_at"]
+        .as_str()
+        .is_some_and(|s| s.contains('T')));
 }
 
 /// Nothing in the payload may be a path from `smbstatus`'s `open_files`: the

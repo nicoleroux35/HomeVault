@@ -226,7 +226,6 @@ fn clear_outcome(failures: Vec<String>) -> Result<(), String> {
     }
 }
 
-
 /// List the log sources this caller may read.
 ///
 /// A non-admin only ever sees `app`: the host sources are not just refused
@@ -332,9 +331,7 @@ pub async fn handle_journal_entries(
     let permit = match READ_PERMITS.clone().acquire_owned().await {
         Ok(p) => p,
         Err(_) => {
-            return ResponseHelper::json_internal_error(
-                "Journal reader is unavailable".to_string(),
-            )
+            return ResponseHelper::json_internal_error("Journal reader is unavailable".to_string())
         }
     };
     let result = tokio::task::spawn_blocking(move || {
@@ -1058,7 +1055,10 @@ mod tests {
             assert_eq!(validate_unit_filter(ok).unwrap(), ok, "{ok}");
         }
         // Surrounding whitespace is trimmed, not rejected.
-        assert_eq!(validate_unit_filter("  nginx.service ").unwrap(), "nginx.service");
+        assert_eq!(
+            validate_unit_filter("  nginx.service ").unwrap(),
+            "nginx.service"
+        );
     }
 
     #[test]
@@ -1072,7 +1072,10 @@ mod tests {
             "",
             "   ",
         ] {
-            assert!(validate_unit_filter(bad).is_err(), "{bad:?} should be refused");
+            assert!(
+                validate_unit_filter(bad).is_err(),
+                "{bad:?} should be refused"
+            );
         }
         // The 256-character systemd ceiling is enforced.
         let long = "a".repeat(MAX_UNIT_NAME_LEN + 1);
@@ -1125,7 +1128,11 @@ mod tests {
         let err = run_timed(cmd, Duration::from_millis(150)).unwrap_err();
         assert!(err.contains("did not finish within"), "{err}");
         // The deadline is honoured instead of waiting out the child.
-        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     // --- read_file_tail: bounded read, newest lines kept ---
@@ -1145,7 +1152,10 @@ mod tests {
         // 40 bytes; a 20-byte cap seeks into the middle of a line.
         std::fs::write(&path, "aaaaaaaaaa\nbbbbbbbbbb\ncccccccccc\n").unwrap();
         let tail = read_file_tail(&path, 20).unwrap();
-        assert!(!tail.contains("aaaaaaaaaa"), "the cut line must be dropped: {tail:?}");
+        assert!(
+            !tail.contains("aaaaaaaaaa"),
+            "the cut line must be dropped: {tail:?}"
+        );
         assert!(tail.contains("cccccccccc"), "{tail:?}");
         assert!(tail.len() <= 20, "{tail:?}");
     }

@@ -192,6 +192,25 @@ pub async fn handle_login(
         );
     }
 
+    // A name the directory owns is signed in there, not against a local hash.
+    // The decision comes from `users.auth_source`, never from the request, so a
+    // local account always takes the local path and keeps working when the
+    // directory is down (see handlers::directory).
+    match crate::handlers::directory::directory_login(
+        &state,
+        &req.username,
+        &req.password,
+        &ip_address,
+        req.remember_me,
+        user_agent,
+        over_tls,
+    )
+    .await
+    {
+        crate::handlers::directory::DirectoryLogin::Answer(response) => return response,
+        crate::handlers::directory::DirectoryLogin::Local => {}
+    }
+
     match state
         .auth
         .authenticate(&req.username, &req.password, &ip_address, user_agent)

@@ -80,11 +80,10 @@ use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{
     auth::handle_login,
     syncthing::{
-        handle_syncthing_config, handle_syncthing_connections,
-        handle_syncthing_create_device, handle_syncthing_create_folder,
-        handle_syncthing_delete_device, handle_syncthing_delete_folder,
-        handle_syncthing_devices, handle_syncthing_errors, handle_syncthing_folders,
-        handle_syncthing_pause_device, handle_syncthing_restart,
+        handle_syncthing_config, handle_syncthing_connections, handle_syncthing_create_device,
+        handle_syncthing_create_folder, handle_syncthing_delete_device,
+        handle_syncthing_delete_folder, handle_syncthing_devices, handle_syncthing_errors,
+        handle_syncthing_folders, handle_syncthing_pause_device, handle_syncthing_restart,
         handle_syncthing_resume_device, handle_syncthing_scan_folder, handle_syncthing_status,
     },
     AppState,
@@ -607,7 +606,10 @@ async fn test_create_device_refuses_a_bad_id_before_any_daemon_call() {
     for (device, fragment) in [
         (json!({"device_id": ""}), "must not be empty"),
         (json!({"device_id": "AAAA-BBBB"}), "56 characters"),
-        (json!({"device_id": "0".repeat(56)}), "letters A-Z and digits 2-7"),
+        (
+            json!({"device_id": "0".repeat(56)}),
+            "letters A-Z and digits 2-7",
+        ),
         (
             json!({"device_id": DEVICE_ID, "name": "bad\nname"}),
             "control characters",
@@ -623,7 +625,10 @@ async fn test_create_device_refuses_a_bad_id_before_any_daemon_call() {
         .await;
         denied(&res, fragment);
         assert!(
-            !res["error"].as_str().unwrap_or_default().contains("Failed to connect"),
+            !res["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Failed to connect"),
             "validation must run before the daemon call, got {res}"
         );
     }
@@ -647,7 +652,10 @@ async fn test_delete_endpoints_refuse_an_invalid_parameter_before_the_call() {
         assert_eq!(status, StatusCode::OK, "{uri} {res}");
         denied(&res, fragment);
         assert!(
-            !res["error"].as_str().unwrap_or_default().contains("Failed to connect"),
+            !res["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Failed to connect"),
             "{uri}: validation must run before the daemon call, got {res}"
         );
     }

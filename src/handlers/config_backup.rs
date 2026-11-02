@@ -173,9 +173,7 @@ pub async fn handle_config_backup_export(
     // Secrets excluded means the *bytes* must be clean, not just the manifest:
     // the snapshot is scrubbed before it is read into the archive.
     if !body.include_secrets {
-        if let Err(e) =
-            config_backup::scrub_database(std::path::Path::new(&snapshot.path)).await
-        {
+        if let Err(e) = config_backup::scrub_database(std::path::Path::new(&snapshot.path)).await {
             return ResponseHelper::json_error(e);
         }
     }
@@ -252,7 +250,9 @@ pub async fn handle_config_backup_export(
         input.configs.len() + 2,
         crate::share_quota::human_size(bytes.len() as u64),
         body.include_secrets,
-        body.passphrase.as_deref().is_some_and(|p| !p.trim().is_empty())
+        body.passphrase
+            .as_deref()
+            .is_some_and(|p| !p.trim().is_empty())
     ));
 
     ResponseHelper::json_success(serde_json::json!({

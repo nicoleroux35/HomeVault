@@ -130,9 +130,7 @@ async fn run_due(state: &Arc<crate::handlers::AppState>) -> Result<(), String> {
                     // The clock only advances because the cleanup worked.
                     repo.set_last_cleanup(&now.to_rfc3339())
                         .await
-                        .map_err(|e| {
-                            format!("Cleanup succeeded but could not be recorded: {}", e)
-                        })
+                        .map_err(|e| format!("Cleanup succeeded but could not be recorded: {}", e))
                 }
                 Err(e) => {
                     // Nothing is recorded: the next tick (one hour from now)

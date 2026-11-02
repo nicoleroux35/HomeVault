@@ -209,7 +209,11 @@ async fn test_wol_endpoints_are_admin_only() {
             "/api/power/wol/hosts",
             Some(json!({"label": "pc", "mac": "AA:BB:CC:DD:EE:FF"})),
         ),
-        (Method::POST, "/api/power/wol/wake", Some(json!({"mac": "AA:BB:CC:DD:EE:FF"}))),
+        (
+            Method::POST,
+            "/api/power/wol/wake",
+            Some(json!({"mac": "AA:BB:CC:DD:EE:FF"})),
+        ),
     ] {
         let (status, _) = send(&mut router, method, uri, None, body).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
@@ -368,17 +372,41 @@ async fn test_wol_rejects_an_invalid_host() {
     let (mut router, admin, _) = signed_in(&h).await;
 
     let cases: Vec<(&str, Value)> = vec![
-        ("empty label", json!({"label": "  ", "mac": "AA:BB:CC:DD:EE:FF"})),
-        ("label too long", json!({"label": "x".repeat(65), "mac": "AA:BB:CC:DD:EE:FF"})),
+        (
+            "empty label",
+            json!({"label": "  ", "mac": "AA:BB:CC:DD:EE:FF"}),
+        ),
+        (
+            "label too long",
+            json!({"label": "x".repeat(65), "mac": "AA:BB:CC:DD:EE:FF"}),
+        ),
         ("missing mac", json!({"label": "pc", "mac": ""})),
         ("short mac", json!({"label": "pc", "mac": "AA:BB:CC:DD:EE"})),
-        ("non-hex mac", json!({"label": "pc", "mac": "GG:BB:CC:DD:EE:FF"})),
-        ("all-zero mac", json!({"label": "pc", "mac": "00:00:00:00:00:00"})),
-        ("broadcast mac", json!({"label": "pc", "mac": "FF:FF:FF:FF:FF:FF"})),
-        ("multicast mac", json!({"label": "pc", "mac": "01:00:5E:00:00:01"})),
+        (
+            "non-hex mac",
+            json!({"label": "pc", "mac": "GG:BB:CC:DD:EE:FF"}),
+        ),
+        (
+            "all-zero mac",
+            json!({"label": "pc", "mac": "00:00:00:00:00:00"}),
+        ),
+        (
+            "broadcast mac",
+            json!({"label": "pc", "mac": "FF:FF:FF:FF:FF:FF"}),
+        ),
+        (
+            "multicast mac",
+            json!({"label": "pc", "mac": "01:00:5E:00:00:01"}),
+        ),
         // A host name would be resolved at wake time.
-        ("named destination", json!({"label": "pc", "mac": "AA:BB:CC:DD:EE:FF", "broadcast": "nas.local"})),
-        ("cidr destination", json!({"label": "pc", "mac": "AA:BB:CC:DD:EE:FF", "broadcast": "192.168.1.255/24"})),
+        (
+            "named destination",
+            json!({"label": "pc", "mac": "AA:BB:CC:DD:EE:FF", "broadcast": "nas.local"}),
+        ),
+        (
+            "cidr destination",
+            json!({"label": "pc", "mac": "AA:BB:CC:DD:EE:FF", "broadcast": "192.168.1.255/24"}),
+        ),
     ];
     for (label, payload) in cases {
         let (status, body) = send(

@@ -64,7 +64,10 @@ pub async fn handle_notifications_list(
         Err(r) => return r,
     };
 
-    let limit = query.limit.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE);
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_PAGE_SIZE)
+        .clamp(1, MAX_PAGE_SIZE);
     let offset = query.offset.unwrap_or(0).max(0);
 
     let repo = NotificationRepository::new(state.db.pool());

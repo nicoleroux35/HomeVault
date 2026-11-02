@@ -40,9 +40,7 @@ use chrono::Utc;
 use serde::Deserialize;
 
 use crate::handlers::admin_guard::{require_admin, require_auth};
-use crate::replication::{
-    self, DestinationKind, ReplicationBackend, ReplicationJob,
-};
+use crate::replication::{self, DestinationKind, ReplicationBackend, ReplicationJob};
 use crate::replication_scheduler;
 use crate::storage::ReplicationRepository;
 use crate::utils::ResponseHelper;
@@ -74,11 +72,7 @@ pub struct ReplicationJobRequest {
     pub enabled: Option<bool>,
 }
 
-fn job_from_request(
-    id: i64,
-    body: &ReplicationJobRequest,
-    created_by: &str,
-) -> ReplicationJob {
+fn job_from_request(id: i64, body: &ReplicationJobRequest, created_by: &str) -> ReplicationJob {
     let now = Utc::now();
     let mut job = ReplicationJob {
         id,
@@ -344,10 +338,8 @@ pub async fn handle_replication_run_now(
         Ok(None) => return ResponseHelper::json_error("That job no longer exists".to_string()),
         Err(e) => return ResponseHelper::json_error(format!("Failed to read the job: {e}")),
     };
-    if matches!(
-        job.backend_kind(),
-        Some(ReplicationBackend::Zfs)
-    ) && !crate::dependencies::binary_available("zfs", "/usr/sbin/zfs")
+    if matches!(job.backend_kind(), Some(ReplicationBackend::Zfs))
+        && !crate::dependencies::binary_available("zfs", "/usr/sbin/zfs")
     {
         return ResponseHelper::json_error(
             "This host has no ZFS, so a ZFS job cannot run".to_string(),

@@ -87,9 +87,7 @@ pub enum DbError {
     },
     /// `PRAGMA wal_checkpoint(TRUNCATE)` kept answering `busy`: another
     /// connection is reading, so the WAL was neither folded nor truncated.
-    #[error(
-        "The write-ahead log could not be checkpointed: another connection is still reading"
-    )]
+    #[error("The write-ahead log could not be checkpointed: another connection is still reading")]
     CheckpointBusy,
 }
 
@@ -350,10 +348,9 @@ impl Database {
             .execute(&mut *conn)
             .await?;
         for attempt in 0..4u32 {
-            let (busy, _, _): (i64, i64, i64) =
-                sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE)")
-                    .fetch_one(&mut *conn)
-                    .await?;
+            let (busy, _, _): (i64, i64, i64) = sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE)")
+                .fetch_one(&mut *conn)
+                .await?;
             if busy == 0 {
                 return Ok(());
             }

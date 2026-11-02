@@ -418,10 +418,9 @@ pub fn is_valid_email_address(addr: &str) -> bool {
     if addr.is_empty() || addr.len() > 254 {
         return false;
     }
-    if addr
-        .chars()
-        .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '<' | '>' | '(' | ')' | ',' | ';' | '"'))
-    {
+    if addr.chars().any(|c| {
+        c.is_control() || c.is_whitespace() || matches!(c, '<' | '>' | '(' | ')' | ',' | ';' | '"')
+    }) {
         return false;
     }
     let Some((local, domain)) = addr.split_once('@') else {
@@ -465,8 +464,8 @@ pub fn validate_webhook_url(raw: &str) -> Result<String, String> {
     if url.chars().any(|c| c.is_control() || c.is_whitespace()) {
         return Err("Webhook URL must not contain spaces or control characters".to_string());
     }
-    let parsed = url::Url::parse(url)
-        .map_err(|e| format!("Invalid webhook URL '{}': {}", url, e))?;
+    let parsed =
+        url::Url::parse(url).map_err(|e| format!("Invalid webhook URL '{}': {}", url, e))?;
     match parsed.scheme() {
         "http" | "https" => {}
         other => {
@@ -554,6 +553,7 @@ pub const DEFAULT_ACCENT: &str = "#1E62AE";
 pub struct AppearanceSettings {
     pub wallpaper: Option<String>,
     pub accent_color: Option<String>,
+    pub density: Option<String>,
 }
 
 impl Default for AppearanceSettings {
@@ -561,6 +561,7 @@ impl Default for AppearanceSettings {
         Self {
             wallpaper: Some(String::new()),
             accent_color: Some(DEFAULT_ACCENT.to_string()),
+            density: Some("comfortable".to_string()),
         }
     }
 }
@@ -668,6 +669,17 @@ pub fn validate_accent_color_field(raw: &str) -> Result<String, String> {
         ));
     }
     Ok(trimmed.to_string())
+}
+
+/// Validate the density field. Must be one of: "comfortable", "compact", "dense".
+pub fn validate_density_field(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    match trimmed {
+        "comfortable" | "compact" | "dense" => Ok(trimmed.to_string()),
+        _ => Err(format!(
+            "density: '{trimmed}' is not a valid density mode (comfortable, compact, or dense)"
+        )),
+    }
 }
 
 /// Rewrite the legacy non-compliant default accent on every path that can
@@ -1707,6 +1719,13 @@ pub async fn handle_appearance_settings_update(
         },
         None => None,
     };
+    let density = match req.density.as_deref() {
+        Some(raw) => match validate_density_field(raw) {
+            Ok(v) => Some(v),
+            Err(e) => return ResponseHelper::json_error(e),
+        },
+        None => None,
+    };
 
     let mut settings = APPEARANCE_SETTINGS.write();
     if let Some(wallpaper) = wallpaper {
@@ -1714,6 +1733,9 @@ pub async fn handle_appearance_settings_update(
     }
     if let Some(accent) = accent {
         settings.accent_color = Some(accent);
+    }
+    if let Some(density) = density {
+        settings.density = Some(density);
     }
     drop(settings);
 
@@ -2431,7 +2453,10 @@ mod tests {
 
     #[test]
     fn test_general_settings_default_language_is_the_shipped_one() {
-        assert_eq!(GeneralSettings::default().language.as_deref(), Some(DEFAULT_LANGUAGE));
+        assert_eq!(
+            GeneralSettings::default().language.as_deref(),
+            Some(DEFAULT_LANGUAGE)
+        );
         assert!(SUPPORTED_LANGUAGES.contains(&DEFAULT_LANGUAGE));
     }
 

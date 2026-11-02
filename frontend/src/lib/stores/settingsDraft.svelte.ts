@@ -125,10 +125,9 @@ export interface DraftValues {
     webhook_format: string;
   };
   update: { check_frequency: string };
-  // ROADMAP 26.2: `theme` and `density` were staged and PUT but consumed
-  // nothing — they are gone from the draft and from the wire. Appearance is
-  // the wallpaper + accent pair an admin saves for the whole appliance.
-  appearance: { wallpaper: string; accent_color: string };
+  // ROADMAP 26.2: `theme` was removed. Appearance now includes wallpaper,
+  // accent color, and density mode.
+  appearance: { wallpaper: string; accent_color: string; density: string };
   autostart: { enabled: boolean };
   ai: { model: string };
   widgets: WidgetsDraft;
@@ -177,7 +176,7 @@ export const draft = $state<DraftValues>({
     webhook_format: 'generic',
   },
   update: { check_frequency: 'weekly' },
-  appearance: { wallpaper: '', accent_color: '#1E62AE' },
+  appearance: { wallpaper: '', accent_color: '#1E62AE', density: 'comfortable' },
   autostart: { enabled: false },
   ai: { model: '' },
   widgets: { visible: {}, refreshMs: 5000 },
@@ -442,6 +441,7 @@ async function saveGroup(group: SettingsGroup): Promise<void> {
       const res = await api.updateAppearanceSettings({
         wallpaper: draft.appearance.wallpaper,
         accent_color: draft.appearance.accent_color,
+        density: draft.appearance.density,
       });
       if (!res.success) throw new Error(group);
       break;

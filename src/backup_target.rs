@@ -205,7 +205,8 @@ fn validate_settings(settings: &BackupTargetSettings) -> Result<(), String> {
     }
     let listen_ok = settings.listen == "0.0.0.0"
         || settings.listen == "::"
-        || settings.listen
+        || settings
+            .listen
             .parse::<std::net::IpAddr>()
             .map(|ip| ip.is_loopback())
             .unwrap_or(false);
@@ -401,8 +402,8 @@ pub fn verify_repository(repository: &str, password: &str) -> Result<VerifyOutco
         "--no-lock",
     ]);
     restic_env(&mut check, password);
-    let checked = run_timed(&mut check, VERIFY_TIMEOUT)
-        .map_err(|e| format!("restic check failed: {e}"))?;
+    let checked =
+        run_timed(&mut check, VERIFY_TIMEOUT).map_err(|e| format!("restic check failed: {e}"))?;
     if !checked.status.success() {
         return Err(format!(
             "the repository failed its integrity check: {}",
@@ -426,8 +427,8 @@ pub fn verify_repository(repository: &str, password: &str) -> Result<VerifyOutco
     let mut ls = Command::new("restic");
     ls.args(["-r", repository, "ls", "--json", "--no-lock", "latest"]);
     restic_env(&mut ls, password);
-    let listed_files = run_timed(&mut ls, VERIFY_TIMEOUT)
-        .map_err(|e| format!("restic ls failed: {e}"))?;
+    let listed_files =
+        run_timed(&mut ls, VERIFY_TIMEOUT).map_err(|e| format!("restic ls failed: {e}"))?;
     let mut restored = None;
     if listed_files.status.success() {
         let paths = parse_file_paths(&String::from_utf8_lossy(&listed_files.stdout));
@@ -539,9 +540,13 @@ pub fn load_settings() -> BackupTargetSettings {
 }
 
 /// Persist the settings and (re)apply the daemon.
-pub fn save_settings(settings: &BackupTargetSettings, tenants: &[BackupTenant]) -> Result<(), String> {
+pub fn save_settings(
+    settings: &BackupTargetSettings,
+    tenants: &[BackupTenant],
+) -> Result<(), String> {
     validate_settings(settings)?;
-    std::fs::create_dir_all(config_dir()).map_err(|e| format!("cannot create the config dir: {e}"))?;
+    std::fs::create_dir_all(config_dir())
+        .map_err(|e| format!("cannot create the config dir: {e}"))?;
     std::fs::create_dir_all(repos_root())
         .map_err(|e| format!("cannot create the repository root: {e}"))?;
     let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
@@ -553,7 +558,8 @@ pub fn save_settings(settings: &BackupTargetSettings, tenants: &[BackupTenant]) 
 /// `settings.enabled`.
 pub fn apply(settings: &BackupTargetSettings, tenants: &[BackupTenant]) -> Result<(), String> {
     validate_settings(settings)?;
-    std::fs::create_dir_all(config_dir()).map_err(|e| format!("cannot create the config dir: {e}"))?;
+    std::fs::create_dir_all(config_dir())
+        .map_err(|e| format!("cannot create the config dir: {e}"))?;
     write_generated(&auth_path(), &render_htpasswd(tenants), 0o600)?;
     if overridden() {
         return Ok(());
@@ -871,6 +877,9 @@ mod tests {
         assert!(unit.contains("--private-repos"), "{unit}");
         assert!(unit.contains("--htpasswd-file"), "{unit}");
         assert!(unit.contains("NoNewPrivileges=true"), "{unit}");
-        assert!(unit.contains(&format!("--listen 0.0.0.0:{DEFAULT_PORT}")), "{unit}");
+        assert!(
+            unit.contains(&format!("--listen 0.0.0.0:{DEFAULT_PORT}")),
+            "{unit}"
+        );
     }
 }

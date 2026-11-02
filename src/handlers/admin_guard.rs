@@ -121,20 +121,14 @@ impl From<Denial> for Response {
 }
 
 /// [`require_auth`] with the reason intact, for modules that relay it.
-pub async fn check_auth(
-    state: &Arc<AppState>,
-    headers: &HeaderMap,
-) -> Result<String, Denial> {
+pub async fn check_auth(state: &Arc<AppState>, headers: &HeaderMap) -> Result<String, Denial> {
     check_auth_caller(state, headers)
         .await
         .map(|caller| caller.username)
 }
 
 /// [`require_admin`] with the reason intact, for modules that relay it.
-pub async fn check_admin(
-    state: &Arc<AppState>,
-    headers: &HeaderMap,
-) -> Result<String, Denial> {
+pub async fn check_admin(state: &Arc<AppState>, headers: &HeaderMap) -> Result<String, Denial> {
     let username = check_auth(state, headers).await?;
     if state.auth.is_admin(&username).await {
         Ok(username)
@@ -172,7 +166,9 @@ pub struct Caller {
 // through every call site for no real benefit, so allow the lint here.
 #[allow(clippy::result_large_err)]
 pub async fn require_auth(state: &Arc<AppState>, headers: &HeaderMap) -> Result<String, Response> {
-    check_auth(state, headers).await.map_err(Denial::into_response)
+    check_auth(state, headers)
+        .await
+        .map_err(Denial::into_response)
 }
 
 /// [`require_auth_caller`] with the reason intact, for modules that relay it.
@@ -365,9 +361,6 @@ mod tests {
             assert_eq!(denial.status(), StatusCode::UNAUTHORIZED);
         }
         assert_eq!(Denial::MissingToken.message(), "No session token provided");
-        assert_eq!(
-            Denial::InvalidToken.message(),
-            "Invalid or expired session"
-        );
+        assert_eq!(Denial::InvalidToken.message(), "Invalid or expired session");
     }
 }

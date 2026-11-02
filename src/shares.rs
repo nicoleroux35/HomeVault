@@ -831,10 +831,9 @@ fn section_vfs_flags(section: &str) -> SmbVfsFlags {
         };
         flags.recycle |= modules.split_whitespace().any(|m| m == "recycle");
         flags.time_machine |= modules.split_whitespace().any(|m| m == "fruit")
-            && section.lines().any(|l| {
-                l.trim()
-                    .eq_ignore_ascii_case("fruit:time machine = yes")
-            });
+            && section
+                .lines()
+                .any(|l| l.trim().eq_ignore_ascii_case("fruit:time machine = yes"));
     }
     flags
 }
@@ -847,10 +846,7 @@ fn section_time_machine_quota(section: &str) -> u32 {
             continue;
         };
         let value = value.trim();
-        let Some(digits) = value
-            .strip_suffix('G')
-            .or_else(|| value.strip_suffix('g'))
-        else {
+        let Some(digits) = value.strip_suffix('G').or_else(|| value.strip_suffix('g')) else {
             continue;
         };
         return digits.trim().parse::<u32>().unwrap_or(0);
@@ -904,10 +900,7 @@ fn smb_section_states() -> HashMap<String, (SmbVfsFlags, u32)> {
             if let Some(name) = current.take() {
                 map.insert(
                     name,
-                    (
-                        section_vfs_flags(&body),
-                        section_time_machine_quota(&body),
-                    ),
+                    (section_vfs_flags(&body), section_time_machine_quota(&body)),
                 );
             }
             body.clear();
@@ -923,10 +916,7 @@ fn smb_section_states() -> HashMap<String, (SmbVfsFlags, u32)> {
     if let Some(name) = current {
         map.insert(
             name,
-            (
-                section_vfs_flags(&body),
-                section_time_machine_quota(&body),
-            ),
+            (section_vfs_flags(&body), section_time_machine_quota(&body)),
         );
     }
     map
@@ -2882,7 +2872,10 @@ mod tests {
         assert!(!disabled.contains(SMB_VFS_BEGIN), "{disabled:?}");
         // Every original directive survives the round-trip.
         assert!(disabled.contains("\n[media]\n"), "{disabled:?}");
-        assert!(disabled.contains("  path = /mnt/pool/media"), "{disabled:?}");
+        assert!(
+            disabled.contains("  path = /mnt/pool/media"),
+            "{disabled:?}"
+        );
         // Disabling a share that never had a block is a no-op.
         assert_eq!(apply_recycle_to_section(&base, false), base);
     }
@@ -2897,7 +2890,10 @@ mod tests {
         let enabled = apply_recycle_to_section(&base, true);
         assert!(enabled.contains("veto files = /lost+found/"), "{enabled:?}");
         let disabled = apply_recycle_to_section(&enabled, false);
-        assert!(disabled.contains("veto files = /lost+found/"), "{disabled:?}");
+        assert!(
+            disabled.contains("veto files = /lost+found/"),
+            "{disabled:?}"
+        );
         assert!(!disabled.contains(SMB_VFS_BEGIN), "{disabled:?}");
     }
 
@@ -2914,7 +2910,10 @@ mod tests {
             },
             500,
         );
-        assert!(block.contains("vfs objects = fruit streams_xattr"), "{block:?}");
+        assert!(
+            block.contains("vfs objects = fruit streams_xattr"),
+            "{block:?}"
+        );
         assert!(block.contains("fruit:time machine = yes"), "{block:?}");
         assert!(
             block.contains("fruit:time machine max size = 500G"),
@@ -2937,7 +2936,10 @@ mod tests {
             },
             0,
         );
-        assert!(block.contains("fruit:time machine max size = 0\n"), "{block:?}");
+        assert!(
+            block.contains("fruit:time machine max size = 0\n"),
+            "{block:?}"
+        );
         assert_eq!(section_time_machine_quota(&block), 0);
     }
 
@@ -2953,14 +2955,16 @@ mod tests {
         // Samba accepts only one `vfs objects` line per share: fruit must come
         // first, recycle last, and there must be exactly one line.
         assert_eq!(
-            both
-                .lines()
+            both.lines()
                 .filter(|l| l.trim().starts_with("vfs objects ="))
                 .count(),
             1,
             "{both:?}"
         );
-        assert!(both.contains("vfs objects = fruit streams_xattr recycle"), "{both:?}");
+        assert!(
+            both.contains("vfs objects = fruit streams_xattr recycle"),
+            "{both:?}"
+        );
         assert!(both.contains("recycle:repository ="), "{both:?}");
         let flags = section_vfs_flags(&both);
         assert!(flags.time_machine && flags.recycle);

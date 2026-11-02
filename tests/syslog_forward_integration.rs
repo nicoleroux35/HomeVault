@@ -332,14 +332,35 @@ async fn test_syslog_rejects_an_invalid_configuration() {
     let (mut router, admin, _) = signed_in(&h).await;
 
     let cases: Vec<(&str, Value)> = vec![
-        ("unknown protocol", json!({"enabled": true, "host": "10.0.0.9", "protocol": "quic"})),
-        ("unknown format", json!({"enabled": true, "host": "10.0.0.9", "format": "rfc9999"})),
+        (
+            "unknown protocol",
+            json!({"enabled": true, "host": "10.0.0.9", "protocol": "quic"}),
+        ),
+        (
+            "unknown format",
+            json!({"enabled": true, "host": "10.0.0.9", "format": "rfc9999"}),
+        ),
         ("missing host", json!({"enabled": true, "host": "   "})),
-        ("host with a scheme", json!({"enabled": true, "host": "https://collector.lan"})),
-        ("host with a path", json!({"enabled": true, "host": "collector.lan/syslog"})),
-        ("port zero", json!({"enabled": true, "host": "10.0.0.9", "port": 0})),
-        ("facility too high", json!({"enabled": true, "host": "10.0.0.9", "facility": 24})),
-        ("tls without a CA", json!({"enabled": true, "host": "10.0.0.9", "protocol": "tls"})),
+        (
+            "host with a scheme",
+            json!({"enabled": true, "host": "https://collector.lan"}),
+        ),
+        (
+            "host with a path",
+            json!({"enabled": true, "host": "collector.lan/syslog"}),
+        ),
+        (
+            "port zero",
+            json!({"enabled": true, "host": "10.0.0.9", "port": 0}),
+        ),
+        (
+            "facility too high",
+            json!({"enabled": true, "host": "10.0.0.9", "facility": 24}),
+        ),
+        (
+            "tls without a CA",
+            json!({"enabled": true, "host": "10.0.0.9", "protocol": "tls"}),
+        ),
         (
             "tls with a non-PEM CA",
             json!({"enabled": true, "host": "10.0.0.9", "protocol": "tls", "ca_pem": "hunter2"}),
@@ -468,8 +489,14 @@ async fn test_syslog_test_message_reaches_a_udp_collector() {
     let line = String::from_utf8_lossy(&buf[..len]).to_string();
     // `user.info` (1×8+6) in RFC 5424, from this app, tagged as a test.
     assert!(line.starts_with("<14>1 "), "framed RFC 5424, got: {line}");
-    assert!(line.contains(" homevault "), "app name in the header: {line}");
-    assert!(line.contains(" test "), "the test message is identifiable: {line}");
+    assert!(
+        line.contains(" homevault "),
+        "app name in the header: {line}"
+    );
+    assert!(
+        line.contains(" test "),
+        "the test message is identifiable: {line}"
+    );
     assert!(
         line.contains("HomeVault test message"),
         "the human-readable body travels: {line}"
@@ -565,7 +592,11 @@ async fn test_syslog_unreachable_collector_is_reported_not_hidden() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "a dead collector is not a save error");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a dead collector is not a save error"
+    );
 
     let (status, body) = send(
         &mut router,

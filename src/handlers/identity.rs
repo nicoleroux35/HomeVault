@@ -299,7 +299,10 @@ pub async fn handle_admin_devices_revoke_all(
         Ok(u) => u,
         Err(resp) => return resp,
     };
-    match DeviceStore::new(&state.db.pool()).revoke_all(&username).await {
+    match DeviceStore::new(&state.db.pool())
+        .revoke_all(&username)
+        .await
+    {
         Ok(count) => {
             if count > 0 {
                 crate::events::log_event(format!(

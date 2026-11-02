@@ -56,9 +56,7 @@ use std::sync::Arc;
 use std::sync::{LazyLock, Mutex};
 use tower::{Service, ServiceExt};
 
-use homevault::activity_poller::{
-    plan_reconcile, tick, ScrubKind, KIND_RAID, SYNTHETIC_PREFIX,
-};
+use homevault::activity_poller::{plan_reconcile, tick, ScrubKind, KIND_RAID, SYNTHETIC_PREFIX};
 use homevault::auth::AuthService;
 use homevault::config::PathGuard;
 use homevault::handlers::terminal_pty::PtyManager;
@@ -238,10 +236,7 @@ async fn a_resync_becomes_a_live_row_with_its_percentage() {
     assert_eq!(row["state"], json!("running"));
     assert_eq!(row["progress"], json!(12.6), "the kernel's percentage");
     assert!(
-        row["detail"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("md0"),
+        row["detail"].as_str().unwrap_or_default().contains("md0"),
         "the row names the array: {row}"
     );
 }

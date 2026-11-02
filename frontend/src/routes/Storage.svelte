@@ -24,6 +24,7 @@
   import { onAppVisible } from '$lib/utils/autoRevalidate';
   import { Spinner, Badge, Modal, Button, Toggle, Alert } from '$lib/components/theme';
   import { PageLayout, ConfirmDialog, StatCard, EmptyState } from '$lib/components/app';
+  import GuidedRedundancyDialog from '$lib/components/storage/GuidedRedundancyDialog.svelte';
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
   import { cn } from '$lib/utils.js';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
@@ -201,6 +202,7 @@
 
   let showDiskModal = false;
   let selectedDisk: PhysicalDisk | null = null;
+  let showGuidedRedundancy = false;
 
   // SMART test state
   let smartCapabilities: SmartCapabilities | null = null;
@@ -1282,6 +1284,13 @@
         {#if virtualDisks.length === 0}
           <EmptyState data-testid="storage-empty" title={$t('storage.no_virtual_disks')} description={$t('storage.no_virtual_disks_hint')}>
             {#snippet iconSnippet()}<IconStack size={32} stroke={1.8} />{/snippet}
+            {#snippet actionsSnippet()}
+              {#if isAdmin}
+                <Button variant="primary" onclick={() => showGuidedRedundancy = true}>
+                  <IconTool size={16} /> {$t('storage.guided_redundancy')}
+                </Button>
+              {/if}
+            {/snippet}
           </EmptyState>
         {:else}
           <div class="flex flex-col gap-3">
@@ -1994,3 +2003,6 @@
     </div>
   {/snippet}
 </Modal>
+
+<!-- Phase 4: Guided Redundancy Dialog -->
+<GuidedRedundancyDialog bind:open={showGuidedRedundancy} />

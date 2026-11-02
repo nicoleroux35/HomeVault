@@ -136,8 +136,9 @@ impl AutoBlockSettings {
             ));
         }
         if self.ban_seconds == 0 {
-            return Err("a ban duration of 0 would block nobody — set at least one second"
-                .to_string());
+            return Err(
+                "a ban duration of 0 would block nobody — set at least one second".to_string(),
+            );
         }
         if self.window_seconds == 0 {
             return Err("the failure window must be at least one second".to_string());
@@ -320,10 +321,7 @@ pub async fn sweep_expired(repo: &IpBanRepository, now: &str) -> Result<usize, D
         if repo.delete(&ban.ip).await? {
             removed += 1;
         }
-        crate::events::log_event(format!(
-            "Login ban for '{}' expired and was lifted",
-            ban.ip
-        ));
+        crate::events::log_event(format!("Login ban for '{}' expired and was lifted", ban.ip));
     }
     Ok(removed)
 }
@@ -400,14 +398,7 @@ pub async fn record_failure(
     }
 
     if let Err(e) = repo
-        .upsert(
-            ip,
-            &reason,
-            failures,
-            &created_at,
-            &expires_at,
-            installed,
-        )
+        .upsert(ip, &reason, failures, &created_at, &expires_at, installed)
         .await
     {
         tracing::error!("Auto-block: could not store the ban for {ip}: {e}");
@@ -853,7 +844,11 @@ mod tests {
             dos_requests_per_minute: 0,
             ..settings()
         };
-        assert_eq!(dos_limiter(&zero), None, "0 is off, not 'no requests at all'");
+        assert_eq!(
+            dos_limiter(&zero),
+            None,
+            "0 is off, not 'no requests at all'"
+        );
     }
 
     #[test]

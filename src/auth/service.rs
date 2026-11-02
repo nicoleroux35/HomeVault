@@ -1308,6 +1308,28 @@ except Exception as e:
         Ok(user_repo.count_by_role(ADMIN_ROLE_ID).await?)
     }
 
+    /// How many accounts can still sign in locally **as an administrator**.
+    ///
+    /// This is the break-glass count the directory screen shows. A principal
+    /// mirrored from a directory can hold the admin role, but only a local
+    /// account with its own password is guaranteed to work while the directory
+    /// is unreachable — so the screen must be able to say, before anyone saves
+    /// anything, "N local administrators keep their own way in".
+    ///
+    /// A locked account is not counted: it cannot sign in either, and counting
+    /// it would turn a reassuring number into a false one.
+    pub async fn count_local_admins(&self) -> i64 {
+        sqlx::query_as::<_, (i64,)>(
+            "SELECT COUNT(*) FROM users \
+             WHERE role_id = ? AND auth_source = 'local' AND locked = 0",
+        )
+        .bind(ADMIN_ROLE_ID)
+        .fetch_one(self.pool.as_ref())
+        .await
+        .map(|row| row.0)
+        .unwrap_or(0)
+    }
+
     pub async fn get_all_users(&self) -> Result<Vec<User>, AuthError> {
         let user_repo = UserRepository::new(Arc::clone(&self.pool));
         Ok(user_repo.find_all().await?)

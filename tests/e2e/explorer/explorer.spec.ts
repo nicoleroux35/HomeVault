@@ -1845,3 +1845,236 @@ test.describe('17 — Instant copy (reflink)', () => {
     expect((await apiDownloadLen(page, adminTokens, `${dir}/m2.txt`)).len).toBe('MOVE-ME'.length);
   });
 });
+
+// ===========================================================================
+// 18. Transfer tray, transfer history and on-demand checksums
+//    (HV-UX-01 / HV-UX-02 / HV-ADV-02 / HV-INT-01)
+// ===========================================================================
+
+test.describe('18 — Transfers', () => {
+  test('18.1 — the tray opens from the toolbar and shows the three zones', async ({ page }) => {
+    await openWork(page);
+
+    await win(page).locator('[data-testid="explorer-transfers-btn"]').click();
+    const modal = page.locator('[data-slot="dialog-content"]');
+    await expect(modal).toBeVisible({ timeout: 10_000 });
+    await expect(modal.locator('[data-testid="transfer-tray"]')).toBeVisible();
+
+    // Three zones, each an accessible toggle button with a badge.
+    for (const zone of ['upload', 'download', 'copy']) {
+      const tab = modal.locator(`[data-testid="transfer-tab-${zone}"]`);
+      await expect(tab).toBeVisible();
+      await expect(tab).toHaveAttribute('aria-pressed', zone === 'upload' ? 'true' : 'false');
+      await expect(modal.locator(`[data-testid="transfer-count-${zone}"]`)).toBeVisible();
+    }
+    // The panel always says something: either rows, or the empty state — never
+    // a blank box. (A rerun can legitimately still hold rows from an earlier
+    // crashed run, whose sessions live for 30 minutes, so the assertion is
+    // "one of the two", not "empty".)
+    if ((await modal.locator('[data-testid="transfer-row"]').count()) === 0) {
+      await expect(modal.locator('[data-testid="transfer-empty"]')).toBeVisible();
+    }
+
+    // Switching zones keeps the panel usable and updates the pressed state.
+    await modal.locator('[data-testid="transfer-tab-copy"]').click();
+    await expect(modal.locator('[data-testid="transfer-tab-copy"]')).toHaveAttribute('aria-pressed', 'true');
+    await modal.locator('[data-testid="transfer-close"]').click();
+    await expect(modal).toBeHidden();
+  });
+
+  test('18.2 — an open upload is listed with its bytes and can be cancelled from the tray', async ({ page }) => {
+    await openWork(page);
+    const dir = `${WORK}/${uniq('tray_')}`;
+    await apiPost(page, adminTokens, `/api/explorer/mkdir?path=${q(dir)}`);
+
+    // Open a chunked session and send the first chunk, then leave it open —
+    // this is what a browser does between two chunks of a large file.
+    const start = await apiPost(
+      page,
+      adminTokens,
+      `/api/explorer/upload/session?path=${q(dir)}&filename=partial.bin&size=2048`,
+    );
+    expect(start.success).toBe(true);
+    const sessionId = start.data?.session_id;
+    expect(typeof sessionId).toBe('string');
+    const chunk = await page.evaluate(
+      async ({ token, csrf, sessionId }) => {
+        const r = await fetch(`/api/explorer/upload/chunk?session_id=${sessionId}&offset=0`, {
+          method: 'POST',
+          headers: { 'x-session-token': token, 'x-csrf-token': csrf },
+          body: new Uint8Array(1024),
+        });
+        return r.json();
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf, sessionId },
+    );
+    expect(chunk?.success).toBe(true);
+    expect(chunk?.data?.offset).toBe(1024);
+
+    await win(page).locator('[data-testid="explorer-transfers-btn"]').click();
+    const modal = page.locator('[data-slot="dialog-content"]');
+    await expect(modal).toBeVisible({ timeout: 10_000 });
+
+    // The upload zone lists it with the byte detail the enriched progress adds.
+    const row = modal.locator('[data-testid="transfer-row"]').filter({ hasText: 'partial.bin' });
+    await expect(row).toHaveCount(1);
+    await expect(row.locator('[data-testid="transfer-detail"]')).toContainText('1 KB / 2 KB');
+    await expect(modal.locator('[data-testid="transfer-count-upload"]')).not.toHaveText('0');
+
+    // Cancelling removes it — and the server agrees, not just the UI.
+    await row.locator('[data-testid="transfer-cancel"]').click();
+    await expect(row).toHaveCount(0, { timeout: 10_000 });
+    const after = await apiGet(page, adminTokens, '/api/explorer/transfers/active');
+    expect(after.success).toBe(true);
+    expect(
+      (after.data?.uploads ?? []).filter((u: { session_id: string }) => u.session_id === sessionId),
+    ).toHaveLength(0);
+    // No partial file was left behind under its final name.
+    const listing = await apiGet(page, adminTokens, `/api/explorer/list?path=${q(dir)}`);
+    expect((listing.data?.entries ?? []).map((e: { name: string }) => e.name)).not.toContain('partial.bin');
+  });
+
+  test('18.3 — a finished copy is recorded in the transfer history', async ({ page }) => {
+    await openWork(page);
+    const dir = `${WORK}/${uniq('hist_')}`;
+    await apiPost(page, adminTokens, `/api/explorer/mkdir?path=${q(dir)}`);
+    const payload = 'HISTORY-PROBE-' + 'y'.repeat(64);
+    expect((await apiUpload(page, adminTokens, dir, 'h1.txt', payload)).success).toBe(true);
+    const copied = await apiPost(
+      page,
+      adminTokens,
+      `/api/explorer/copy?source=${q(`${dir}/h1.txt`)}&destination=${q(`${dir}/h2.txt`)}`,
+    );
+    expect(copied.success).toBe(true);
+
+    // The API row carries the byte count, the method and the status.
+    const history = await apiGet(page, adminTokens, '/api/explorer/transfers/history?operation=copy&limit=5');
+    expect(history.success).toBe(true);
+    const entry = (history.data?.entries ?? []).find(
+      (e: { dest_path: string | null }) => e.dest_path === `${dir}/h2.txt`,
+    );
+    expect(entry).toBeTruthy();
+    expect(entry.status).toBe('complete');
+    expect(entry.bytes_total).toBe(payload.length);
+    expect(entry.method).toBeTruthy();
+
+    // And the tray renders it (the audit trail is visible, not API-only).
+    await win(page).locator('[data-testid="explorer-transfers-btn"]').click();
+    const modal = page.locator('[data-slot="dialog-content"]');
+    await modal.locator('[data-testid="transfer-history"] summary').click();
+    await expect(modal.locator('[data-testid="transfer-history-row"]').first()).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(modal.locator('[data-testid="transfer-history-row"]').first()).toContainText('h2.txt');
+  });
+
+  test('18.4 — on-demand checksum returns the real digest and compares two files', async ({ page }) => {
+    await openWork(page);
+    const dir = `${WORK}/${uniq('sum_')}`;
+    await apiPost(page, adminTokens, `/api/explorer/mkdir?path=${q(dir)}`);
+    expect((await apiUpload(page, adminTokens, dir, 'abc.txt', 'abc')).success).toBe(true);
+    expect((await apiUpload(page, adminTokens, dir, 'same.txt', 'abc')).success).toBe(true);
+    expect((await apiUpload(page, adminTokens, dir, 'other.txt', 'abd')).success).toBe(true);
+
+    // `abc` is the classic vector: SHA-256("abc").
+    const digest = await apiPost(page, adminTokens, '/api/explorer/checksum', {
+      path: `${dir}/abc.txt`,
+    });
+    expect(digest.success).toBe(true);
+    expect(digest.data?.algorithm).toBe('sha256');
+    expect(digest.data?.checksum).toBe(
+      'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+    );
+
+    const same = await apiPost(page, adminTokens, '/api/explorer/checksum', {
+      path: `${dir}/abc.txt`,
+      compare_with: `${dir}/same.txt`,
+    });
+    expect(same.data?.match).toBe(true);
+
+    const different = await apiPost(page, adminTokens, '/api/explorer/checksum', {
+      path: `${dir}/abc.txt`,
+      algorithm: 'blake3',
+      compare_with: `${dir}/other.txt`,
+    });
+    expect(different.success).toBe(true);
+    expect(different.data?.algorithm).toBe('blake3');
+    expect(different.data?.match).toBe(false);
+
+    // MD5 is what DSM offers and what this refuses; the refusal must not be a
+    // silent SHA-256.
+    const refused = await apiPost(page, adminTokens, '/api/explorer/checksum', {
+      path: `${dir}/abc.txt`,
+      algorithm: 'md5',
+    });
+    expect(refused.success).toBe(false);
+    expect(refused.http).toBeGreaterThanOrEqual(400);
+    expect(refused.http).toBeLessThan(500);
+  });
+
+  test('18.5 — another user cannot read the digest of a private file', async ({ page }) => {
+    await openWork(page);
+    const dir = `${WORK}/${uniq('priv_')}`;
+    await apiPost(page, adminTokens, `/api/explorer/mkdir?path=${q(dir)}`);
+    expect((await apiUpload(page, adminTokens, dir, 'secret.txt', 'do-not-leak')).success).toBe(true);
+
+    // The throwaway member cannot reach the admin's work directory at all.
+    const denied = await apiPost(page, plainUser, '/api/explorer/checksum', {
+      path: `${dir}/secret.txt`,
+    });
+    expect(denied.success).toBe(false);
+    expect(denied.http).toBeGreaterThanOrEqual(400);
+    expect(denied.http).toBeLessThan(500);
+
+    // An anonymous call is unauthorized, never a 200.
+    const anonymous = await page.evaluate(async ({ dir }) => {
+      const r = await fetch('/api/explorer/checksum', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: `${dir}/secret.txt` }),
+      });
+      return r.status;
+    }, { dir });
+    expect(anonymous).toBe(401);
+  });
+
+  test('18.6 — the tray is keyboard reachable and closes on Escape', async ({ page }) => {
+    await openWork(page);
+
+    const button = win(page).locator('[data-testid="explorer-transfers-btn"]');
+    await expect(button).toHaveAttribute('aria-label', /transfers|transferts|übertragungen|transferencias/i);
+    await button.focus();
+    await expect(button).toBeFocused();
+    await page.keyboard.press('Enter');
+
+    const modal = page.locator('[data-slot="dialog-content"]');
+    await expect(modal).toBeVisible({ timeout: 10_000 });
+    // The zone toggles are buttons: Tab reaches them, Space activates them.
+    const copyTab = modal.locator('[data-testid="transfer-tab-copy"]');
+    await copyTab.focus();
+    await expect(copyTab).toBeFocused();
+    await page.keyboard.press(' ');
+    await expect(copyTab).toHaveAttribute('aria-pressed', 'true');
+
+    await page.keyboard.press('Escape');
+    await expect(modal).toBeHidden();
+    // Focus goes back to the control that opened it.
+    await expect(button).toBeFocused();
+  });
+
+  test('18.7 — the tray stays usable at 360, 768 and 1920 px', async ({ page }) => {
+    await openWork(page);
+    for (const width of [360, 768, 1920]) {
+      await page.setViewportSize({ width, height: 900 });
+      await win(page).locator('[data-testid="explorer-transfers-btn"]').click();
+      const modal = page.locator('[data-slot="dialog-content"]');
+      await expect(modal).toBeVisible({ timeout: 10_000 });
+      const box = await modal.boundingBox();
+      expect(box).not.toBeNull();
+      // No horizontal overflow: the dialog never exceeds the viewport.
+      expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(width + 1);
+      await page.keyboard.press('Escape');
+      await expect(modal).toBeHidden();
+    }
+  });
+});

@@ -804,7 +804,9 @@ mod tests {
         );
 
         drop(guard);
-        let entry = snapshot.await.expect("the snapshot runs once the lock frees");
+        let entry = snapshot
+            .await
+            .expect("the snapshot runs once the lock frees");
         assert!(Path::new(&entry.path).exists(), "{}", entry.path);
         assert!(!entry.is_pre_migration);
         assert!(LAST_ERROR.lock().is_none(), "a success clears the reason");

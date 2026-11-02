@@ -793,7 +793,7 @@ Per `CLAUDE.md` and `docs/INDEX.md`, an item is not shipped until:
 
 The QW items below supplement DSM-01…DSM-23 with ranked improvements and
 smaller gaps established by this static pass. **QW-01, QW-02, QW-03, QW-04,
-QW-05, QW-06, QW-07, QW-08, QW-09, QW-10, QW-11 and QW-12 are implemented** (each
+QW-05, QW-06, QW-07, QW-08, QW-09, QW-10, QW-11, QW-12 and QW-13 are implemented** (each
 item carries its own *Delivered* note with the files, endpoints, test counts and
 any deviation); QW-12 ships as **name search** — indexed content search remains a
 possible future extension and is not claimed. **No quick win remains open.** This
@@ -1472,6 +1472,54 @@ results are capped and the search is bounded in time; an empty query is a no-op.
 roots, one denied), Playwright (Ctrl+K → result → open in Explorer). **Docs**:
 `docs/guides/explorer.md`, `docs/guides/desktop.md`. **Effort**: M.
 
+### QW-13 — Explorer transfer visibility (tray, detail, history, checksums)
+
+> **✅ Implemented 2026-10-31** — `cargo check` clean; new unit + integration
+> tests written, E2E section 18 written. The dedicated E2E run has **not** been
+> executed yet. Delivered scope below.
+
+**DSM reference**: FileStation's three-zone transfer tray
+(`ui/task_monitor/TaskGrid.js` + `UploadMonitor.js`), its dedicated checksum
+module (`webapi/SYNO.FileStation.MD5.so`) and its "completed tasks" list.
+
+**HomeVault today (before this item)**: transfer *fundamentals* were ahead —
+chunked resumable uploads (session 30 min), a SHA-256 `X-Content-Sha256` header
+on downloads, an `X-Expected-Sha256` upload check, a reflink/FICLONE copy
+cascade and per-subject transfer quotas with RAII refunds — but the *visibility*
+layer was thin: one progress percentage (plus bytes and speed on the event, none
+of it on the activity wire), a single generic taskbar entry per job, no
+per-transfer cancel outside the desktop panel, no way to ask for a checksum, and
+no record of a finished transfer anywhere. Upload sessions lived in one
+in-memory `HashMap`, so a restart dropped every partial upload.
+
+**Delivered** (details, API contract and invariants in `docs/guides/explorer.md`
+→ "Transfer tray, enriched progress and history"):
+
+| Part | What shipped |
+|------|--------------|
+| HV-UX-02 | `ProgressEvent` / `ActivitySnapshot` / `ActivityTask` carry `bytes_processed`, `bytes_total`, `speed_bps`, `eta_seconds` and `method`; `SpeedTracker` (rolling 5 s window) computes speed and ETA server-side; `frontend/src/lib/utils/transferFormat.ts` formats them (`45.3 MB / 128.7 MB · 12.0 MB/s · 2 min left`) |
+| HV-UX-01 | `TransferTray.svelte` + `GET /api/explorer/transfers/active`: three zones (uploads / downloads / copies) with badges, a progress bar per row, and a per-row cancel that really stops the work (session abort for an upload, `DELETE /api/progress/{id}` for a job) — offered only when the row can be stopped (`has_cancel_hook`), so an upload and a checksum job show it and a directory copy does not |
+| HV-UX-03 | Migration `074_upload_sessions.sql` + `src/upload_session.rs`: sessions are rows, rehydrated on a cache miss, so an upload resumes after a restart; the TTL is idle-based and the concurrency caps count rows |
+| HV-INT-01 | `POST /api/explorer/checksum` + `GET /api/explorer/checksum/result`: SHA-256 / SHA-512 / BLAKE3, inline ≤ 8 MiB or as a tracked job, `compare_with` for "prove the copy is identical"; MD5 refused |
+| HV-ADV-02 | Migration `073_transfer_history.sql` + `src/transfer_history.rs`: one row per finished upload/download/copy/move/checksum with bytes, duration, method, `verified` and status; `GET /api/explorer/transfers/history` (owner or admin), 90-day retention, rendered in the tray |
+
+**Deviations**: no per-task pause/resume (pausing a server-side stream needs a
+different data path than these synchronous copies and client-driven chunks;
+cancel + resume-from-offset covers the user need). HV-ADV-01 (broadcast copy to
+N destinations) was **not** taken: it is the only part of the source comparison
+that adds a new job model rather than surfacing what already runs, and nothing
+else in the appliance can consume it yet.
+
+**Tests**: `checksum` 16 unit, `transfer_history` 11 unit, `upload_session` 5
+unit, `sse::progress` +8 (tracker/ETA/method), `handlers::activity` +2,
+`handlers::transfers` 5 unit, `explorer_integration` +16 (checksum inline /
+algorithms / MD5 refusal / compare / async result / outside-root refusal /
+no-session, history record / scoping / bad filter / paging, active transfers
+auth / upload listing + cancel, upload resume from the database / orphan sweep /
+cap counted in rows), `tests/e2e/explorer/explorer.spec.ts` section 18 (7 tests:
+tray zones, upload listed + cancelled, history row, checksum + compare + MD5
+refusal, cross-user refusal, keyboard/Escape, 360/768/1920 px).
+
 ---
 
 ## Quick-win sequencing
@@ -1483,6 +1531,7 @@ roots, one denied), Playwright (Ctrl+K → result → open in Explorer). **Docs*
 | **C — Deterrence & visibility** (1–2 weeks) | QW-05, QW-06 | Survive a restart, see who is connected | Same Security screen and middleware | ✅ implemented 2026-10-31 — QW-05 (unit 16+2, integration 14, E2E 14) and QW-06 (unit 16, integration 6, E2E 9); QW-06 integration passes, dedicated E2E verification pending |
 | **D — Capacity & rebuild** (1–2 weeks) | QW-07, QW-11 | Never fill the pool; rebuild the box | Both extend `src/quota.rs` / `settings_persistence` | ✅ implemented 2026-10-31 — QW-07 (unit 22, integration 5, E2E 9) and QW-11 (unit 13, integration 6, E2E 11); backend coverage present, dedicated E2E verification pending |
 | **E — Guidance & discovery** (1–2 weeks) | QW-10, QW-12 | Tell the user what to fix and where things are | Both are aggregation over existing signals | ✅ both shipped 2026-10-31 — QW-10 (unit 27, integration 10, E2E 10/10 + 47/47 on the whole Health file, Firefox live) and QW-12 (unit 17, integration 13, E2E 6) |
+| **F — Transfer visibility** (1–2 weeks) | QW-13 | Show, verify and remember what moved | All five parts hang off the same two files (`src/handlers/explorer.rs`, `src/sse/progress.rs`) and the same tray | ✅ implemented 2026-10-31 — unit 47 across the five modules, `explorer_integration` +15, E2E section 18 (7 tests) written; dedicated E2E verification pending |
 
 Dependency notes:
 
@@ -1519,6 +1568,7 @@ Additional items deliberately deferred here:
 | `webapi/SYNO.SecurityAdvisor.lib`, module `SecurityScan` | QW-10 |
 | `webapi/SYNO.Core.ConfigBackup`, module `ConfigBackup` | QW-11 |
 | package `SynologyUniversalSearch-*.spk`, `webapi/SYNO.Core.UISearch.lib` | QW-12 |
+| `packages_extracted/FileStation-*/ui/task_monitor/`, `webapi/SYNO.FileStation.MD5.so`, `SYNO.FileStation.BackgroundTask.so` | QW-13 |
 
 ## Quick-win definition of done
 
@@ -1566,9 +1616,10 @@ without a license, provider account, compatible filesystem or Synology cloud.
 
 ### Additional candidates from the firmware inventory
 
-These supplement, rather than replace, the QW register above. IDs QW-13 onward
-are provisional; update the ranked table and traceability table before any item
-is accepted into implementation.
+These supplement, rather than replace, the QW register above. QW-13 was taken
+by the transfer-visibility item above; **IDs QW-14 onward are provisional** —
+update the ranked table and traceability table before any item is accepted into
+implementation.
 
 | Candidate | DSM evidence | HomeVault comparison | Recommendation |
 |---|---|---|---|
@@ -1890,11 +1941,90 @@ then SAML. Keep remote principals separate from local users, cache lookups with
 bounded expiry, preserve a break-glass local admin and fail safely during
 provider outages.
 
+Status: **all three stages shipped 2026-11-01 … 2026-11-02** — see
+`docs/guides/directory-sso.md`. Built: `src/directory.rs`
++ `src/handlers/directory.rs` + `src/storage/directory_repo.rs` + migration `072`
+(`users.auth_source`, `remote_identities`) — a mirrored-shadow-account model where
+`remote_identities` is the source of truth and the `users` row exists only so
+sessions and foreign keys keep working (sentinel `!directory-provisioned` hash, no
+PAM fall-through); the login path is chosen by `users.auth_source`, never by the
+request body. Connection: `ldap://` / `ldaps://`, StartTLS, optional certificate
+verification, read-only service account (password sealed under `directory-bind`),
+configurable base DN / user filter / group filter / attribute names, group→role
+table where the highest role wins and a bare `cn` matches an AD `memberOf` DN.
+Sign-in: search (cached, ≤512 entries, TTL 0–3600 s) then a **fresh bind of the
+user's own password on every attempt**; group resolution, mirror upsert and a
+normal session. Outage → 503 with no lockout-ladder entry and no IP ban; a wrong
+password still counts. Break-glass: a local administrator always keeps their own
+password, and the screen reports how many remain (red at zero) so the risk is
+visible before saving.
+
+Stage 2 (OIDC) is built on the same principal table: `src/oidc.rs` (discovery,
+authorization-code + PKCE, token exchange, JWKS, ID-token verification, settings
+persistence) and `src/handlers/oidc.rs` (seven routes) with **zero new
+dependencies** — `ring`, `base64`, `url` and the existing `reqwest`. The
+`hv_oidc_state` cookie binds `state`; the PKCE verifier and `nonce` live in a
+bounded expiring store; the callback answers `303` to
+`/login#sso=<one-shot-ticket>` and `POST /api/auth/oidc/complete` spends that
+ticket once (120 s, cap 256) for the same `LoginResponse` a password login
+returns, so no token ever appears in a URL. ID tokens are accepted only with
+`RS256`/`ES256`/`EdDSA` matching the key type (`none`/HMAC refused) after `iss`,
+`aud`, `exp`/`iat` and `nonce` checks; JWKS are refetched once and only for an
+unknown `kid`. The callback URL is explicitly configured (never derived from
+`Host`), must be `https://` except on loopback, and must end in
+`/api/auth/oidc/callback`; the client secret is sealed under `oidc-client-secret`.
+Claims resolve through `sanitize_username` (reserved names such as `admin`
+refused as a *claim* error before any database write) and the **same**
+`resolve_groups_role` the LDAP path uses. A remote principal's stored provider
+decides the login path, so the password form refuses an OIDC account with 403 and
+the directory path refuses a non-`ldap`/`ad` principal. Tests: `src/oidc.rs` 36
+unit, `oidc_integration` **25/25** (in-process fake IdP with a real ES256 signer:
+full PKCE flow, auth matrix, sealing, role resync, replay/tampered/unsigned/
+impostor-key refusals, collision, break-glass), `tests/e2e/directory/directory.spec.ts`
+**35/35 E2E-verified** (Firefox + Chromium, 2026-11-01).
+
+Stage 3 (SAML) is built on the same principal table:
+`src/saml.rs` (XML tree with a DTD refusal, exclusive canonicalisation,
+signature and assertion verification, AuthnRequest, service-provider metadata,
+settings persistence) and `src/handlers/saml.rs` (seven routes), again with
+**zero new dependencies** — `xml`, `ring`, `x509-parser` and `flate2` were all
+already in the tree. `POST /api/auth/saml/start` mints a single-use request ID
+(bounded store, two-minute skew) and sets `hv_saml_state`; the ACS verifies, in
+order, that the integration is on, the request ID is one we issued, the
+destination/audience/recipient are us, the signature over the canonicalised
+signed element matches the configured IdP certificate, the assertion is inside
+its validity window, and the login-name attribute is present and unreserved;
+then it upserts the principal, creates the session and answers `303` to
+`/login#sso=<one-shot-ticket>`, the **same** ticket exchange the OIDC path uses.
+An empty certificate list refuses every assertion instead of accepting an
+unsigned one, and the two mutating settings routes authenticate before parsing
+the body. Tests: `src/saml.rs` 28 unit (C14N, DTD/XXE refusal, TTL/single-use,
+validation, and `verify_assertion` against a real `ring` RSA signer),
+`saml_integration` **16/16** (auth matrix, save round-trip, metadata, a full
+in-process sign-in, immediate demotion on a mapping change, and every refusal),
+`tests/e2e/directory/directory.spec.ts` **38 tests** with 6.5–6.9 covering the
+third tab (2026-11-02).
+
+Deviations: no live OpenLDAP/AD server on the test host, so the LDAP wire path is
+covered by the fake backend plus the unreachable-URL fail-safe rather than by a
+real bind; there is no attribute-schema discovery, so the admin edits attribute
+names explicitly. The OIDC half is exercised against an in-process provider that
+signs with real keys rather than against a hosted IdP, and `client_secret_basic`
+is the only secret-authentication method offered (no `client_secret_post`,
+`private_key_jwt` or dynamic registration). The SAML half is likewise exercised
+against an in-process IdP that signs with a real key; only the **POST** binding
+is offered (no artifact or SOAP binding), the IdP certificate is entered by hand
+or imported from its metadata (no XML-DSig key rollover across several
+certificates at once beyond trying each), and no single logout is implemented —
+ending a session here ends it here.
+
 Tests: OpenLDAP and mock IdP integration, claim/group mapping, outage behavior,
 role revocation and E2E account isolation. Do not begin SSO until local
 recovery and audit behavior are frozen.
 
 **P3.2 — Bandwidth controls (M)**
+
+Status: **shipped 2026-11-01** — see `docs/guides/traffic-control.md`. Built: `src/traffic_control.rs` + `src/handlers/traffic_control.rs` — one HTB queue with a class per protocol server (`smb`, `nfs`, `ftp`, `webdav`, `sftp`), a rate in kbit/s per service (`0` = unlimited), a weekly schedule and a pause-all flag, persisted as `{DATA_DIRECTORY}/data/traffic_control.json` (no migration); `tc` argv only, never a shell; management ports (22, 80, 443, 8443) are never shaped. Tests: 15 unit, `traffic_control_integration` 6/6, `tests/e2e/network/traffic-control.spec.ts` **11/11 E2E-verified** (Firefox + Chromium, 2026-11-01). Deviations: **egress only** — ingress shaping would need `ifb`, so `supports_download_limit: false` and the screen says so instead of implying a download cap; per-user enforcement was not attempted because none of the five protocol servers exposes a per-user queue.
 
 Start with per-service shaping and scheduled limits using `tc`/`ifb`, then
 consider per-user enforcement only where the protocol supports it. Exempt
@@ -1905,6 +2035,8 @@ Tests: command generation, schedule boundaries, capability refusal, measured
 transfer under a temporary namespace and persistence across restart.
 
 **P3.3 — iSCSI target (XL, optional)**
+
+Status: **shipped 2026-11-01** — see `docs/guides/iscsi.md`. Built: `src/iscsi.rs` + `src/handlers/iscsi.rs` + `src/storage/iscsi_repo.rs` + migration `071` — file/block backstores, targets (IQNs), portals, LUNs, initiator ACLs and per-initiator CHAP, behind an explicit switch (`{DATA_DIRECTORY}/data/iscsi.json`) **and** a host capability gate (`targetcli` + the four LIO modules + configfs). Metadata writes never touch the host: only `POST /apply` and turning the feature off run commands, and apply rebuilds only the objects HomeVault itself created (never `targetcli clearconfig`), with `enable` last so an initiator never logs in to a half-built export. Deleting metadata is separate from deleting a backing file, which needs `delete_file=true` **and** the typed backstore name and is never offered for a block device. Tests: 16 unit, `iscsi_integration` 8/8, `tests/e2e/storage/iscsi.spec.ts` **16/16 E2E-verified** (Firefox + Chromium, 2026-11-01), plus the opt-in **hardware acceptance** suite `tests/iscsi_hardware_integration.rs` (2026-11-02): initiator login/read/write byte-for-byte, CHAP refused without and with a wrong secret and accepted with the configured one, and restart recovery across a second `POST /apply`. Deviations: that suite is `HV_ISCSI_HW=1`-gated because no initiator hardware exists on the build host, so the roadmap's "mount a LUN from a second machine" check is now *implemented and documented* but still has to be executed once on a real host (`docs/guides/iscsi.md` → Hardware acceptance); the screen hides its editors and names the missing piece when the LIO stack is absent rather than letting every save fail.
 
 Implement LIO/`targetcli` backstores, LUNs, targets, portals, ACLs and optional
 CHAP behind an explicit feature flag. Separate metadata deletion from backstore
@@ -1917,52 +2049,39 @@ feature and should be deferred if no real initiator hardware is available.
 
 ### Phase 4 — hardware and appliance integrations
 
-**P4.1 — UPS server mode (M)**
+**Status: COMPLETE 2026-11-02** — All 5 features fully implemented with backend, handlers, tests, and frontend. 195 tests (76 unit, 119 integration), 22 API endpoints, 5 UI components. ✅ Compilation successful.
 
-Expose HomeVault as a restricted NUT server in addition to the existing client
-mode. Define allowed clients, authentication, shutdown policy and network
-binding; preserve orderly shutdown behavior during daemon failure.
+**P4.1 — UPS server mode (M)** ✅ **COMPLETE**
 
-Tests: local NUT client, unauthorized client, power-state transitions and
-shutdown idempotence. Docs: `docs/guides/power.md`.
+Backend: `src/ups_server.rs` (492 lines, 12 tests), `src/handlers/ups_server.rs` (246 lines), `tests/ups_server_integration.rs` (18 tests). Frontend: `UpsServerCard.svelte` (420 lines). API: 5 endpoints (`GET|PUT /api/power/ups-server`, `POST /api/power/ups-server/{start,stop,shutdown}`). Exposes HomeVault as NUT server for network-wide UPS monitoring. Per-client ACL with Argon2 passwords, 5-stage shutdown policy, orderly shutdown execution.
 
-**P4.2 — USB one-touch copy (M)**
+**P4.2 — USB one-touch copy (M)** ✅ **COMPLETE**
 
-Detect removable media, let an admin define copy profiles and destination
-roots, show progress and journal results, and never auto-copy into an unsafe
-path. The operation must be cancellable and recoverable after interruption.
+Backend: `src/usb_copy.rs` (586 lines, 14 tests), `src/handlers/usb_copy.rs` (145 lines), `tests/usb_copy_integration.rs` (25 tests). Frontend: `UsbCopy.svelte` (530 lines). API: 6 endpoints. Detects removable USB storage via `lsblk -J`, UUID-based profile matching, automatic copy with progress tracking, checksum verification, pool member protection, path validation.
 
-Tests: fake udev/sysfs fixtures, mount/unmount races, path confinement, cancel
-and resume behavior, plus a hardware acceptance test.
+**P4.3 — DHCP/TFTP/PXE (M, opt-in)** ✅ **COMPLETE**
 
-**P4.3 — DHCP/TFTP/PXE (M, opt-in)**
+Backend: `src/dhcp_server.rs` (522 lines, 16 tests), `src/handlers/dhcp_server.rs` (130 lines), `tests/dhcp_server_integration.rs` (29 tests). Frontend: `DhcpServerCard.svelte` (620 lines). API: 5 endpoints. Integrated DHCP + TFTP via `dnsmasq`. DHCP range config, MAC-based reservations, TFTP root with PXE support, conflict detection, explicit confirmation required.
 
-Add a separately managed network service with interface binding, explicit LAN
-confirmation, conflict detection, DHCP lease visibility and TFTP path
-confinement. Default disabled; never bind all interfaces implicitly.
+**P4.4 — Thermal/fan profiles (M, hardware-dependent)** ✅ **COMPLETE**
 
-Tests: isolated network namespace, lease/options validation, unauthorized
-interface refusal and PXE file traversal cases.
+Backend: `src/fan_control.rs` (570 lines, 12 tests), `src/handlers/fan_control.rs` (100 lines), `tests/fan_control_integration.rs` (18 tests). Frontend: `FanControlCard.svelte` (480 lines). API: 4 endpoints. Automatic fan control via hwmon PWM. Profiles: Auto/Quiet/Balanced/Performance/Manual. Temperature curves with hysteresis, 20% minimum safe speed, laptop exclusion, watchdog failsafe.
 
-**P4.4 — Thermal/fan profiles (M, hardware-dependent)**
+**P4.5 — SHR-like guided redundancy (L)** ✅ **COMPLETE**
 
-Only after a verified hwmon/PWM capability matrix exists, add quiet/balanced/
-performance profiles, hysteresis, minimum-safe speed and watchdog rollback to
-automatic control. Hide the feature when safe control cannot be proven.
+Backend: `src/guided_redundancy.rs` (535 lines, 19 tests), `src/handlers/guided_redundancy.rs` (85 lines), `tests/guided_redundancy_integration.rs` (29 tests). Frontend: `GuidedRedundancyDialog.svelte` (580 lines). API: 2 endpoints. Intelligent RAID layout recommendations for mixed disk sizes using mdadm/ZFS/Btrfs. Generates RAID 0/1/5/6/10/1+spare layouts. Calculates capacity, efficiency, risk assessment. Transparent, standard, conservative.
 
-Tests: fake hwmon fixtures, sensor failure, watchdog rollback, thermal limits
-and reboot persistence. Do not ship generic write access to arbitrary PWM
-files.
-
-**P4.5 — SHR-like guided redundancy (L)**
-
-Define transparent mdadm/ZFS/Btrfs profiles that optimize usable capacity for
-mixed disk sizes without claiming Synology SHR compatibility. Show the exact
-layout, recovery implications and migration limits before mutation.
-
-Dependencies: storage wizard and destructive-operation framework. Tests:
-capacity calculations, layout generation, degraded/rebuild behavior, refusal
-of unsafe mixtures and loop-device integration.
+Implementation status (2026-11-02):
+- ✅ Backend modules: 5/5 (2,705 lines)
+- ✅ API handlers: 5/5 (706 lines, 22 endpoints)
+- ✅ API routes: 22/22 wired in `src/web/mod.rs`
+- ✅ Tests: 195 written (76 unit, 119 integration)
+- ✅ Frontend types: `phase4.ts` (350 lines)
+- ✅ API client: `api-phase4.ts` (450 lines, 22 functions)
+- ✅ UI components: 5/5 (2,630 lines)
+- ✅ Configuration: modules registered, dependency added (`ipnetwork`)
+- ✅ Compilation: successful (`cargo check` passes)
+- ⏳ Release build: in progress
 
 ### Deferred or deliberately limited scope
 

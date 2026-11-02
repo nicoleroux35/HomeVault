@@ -15,9 +15,9 @@ export interface IconEntry {
 }
 
 export const iconCount = {
-  phosphor: 55,
-  tabler: 85,
-  total: 140
+  phosphor: 59,
+  tabler: 89,
+  total: 148
 };
 
 export const iconLookup: Record<string, IconEntry> = {
@@ -89,6 +89,9 @@ export const iconLookup: Record<string, IconEntry> = {
   "download": {
     "phosphor": "phosphor-download",
     "tabler": "tabler-download"
+  },
+  "empty": {
+    "phosphor": "phosphor-empty"
   },
   "export": {
     "phosphor": "phosphor-export"
@@ -171,6 +174,10 @@ export const iconLookup: Record<string, IconEntry> = {
     "phosphor": "phosphor-option",
     "tabler": "tabler-option"
   },
+  "password": {
+    "phosphor": "phosphor-password",
+    "tabler": "tabler-password"
+  },
   "pause": {
     "phosphor": "phosphor-pause"
   },
@@ -203,6 +210,10 @@ export const iconLookup: Record<string, IconEntry> = {
     "phosphor": "phosphor-sun",
     "tabler": "tabler-sun"
   },
+  "target": {
+    "phosphor": "phosphor-target",
+    "tabler": "tabler-target"
+  },
   "terminal": {
     "phosphor": "phosphor-terminal",
     "tabler": "tabler-terminal"
@@ -210,6 +221,10 @@ export const iconLookup: Record<string, IconEntry> = {
   "upload": {
     "phosphor": "phosphor-upload",
     "tabler": "tabler-upload"
+  },
+  "usb": {
+    "phosphor": "phosphor-usb",
+    "tabler": "tabler-usb"
   },
   "user": {
     "phosphor": "phosphor-user",
@@ -228,6 +243,9 @@ export const iconLookup: Record<string, IconEntry> = {
   },
   "activity": {
     "tabler": "tabler-activity"
+  },
+  "ad": {
+    "tabler": "tabler-ad"
   },
   "ai": {
     "tabler": "tabler-ai"

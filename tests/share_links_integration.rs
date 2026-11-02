@@ -299,27 +299,66 @@ async fn test_share_link_password_limit_and_redaction() {
     create_test_user(&h.state, "admin", "pass", 2).await;
     let admin = login(&mut router, "admin", "pass").await;
     let file = make_file(&h.root, "protected.txt", "secret");
-    let (status, body) = send(&mut router, Method::POST, "/api/explorer/shares", Some(&admin), Some(json!({
-        "path": file, "password": "correct horse", "max_downloads": 1
-    }))).await;
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/explorer/shares",
+        Some(&admin),
+        Some(json!({
+            "path": file, "password": "correct horse", "max_downloads": 1
+        })),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["protected"], true);
     assert!(body["data"].get("password_hash").is_none());
     let token = body["data"]["token"].as_str().unwrap().to_string();
 
-    let (status, _) = send(&mut router, Method::GET, &format!("/share/{token}"), None, None).await;
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        &format!("/share/{token}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    let (status, _) = send(&mut router, Method::GET, &format!("/share/{token}"), None, None).await;
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        &format!("/share/{token}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-    let request = Request::builder().method(Method::GET).uri(format!("/share/{token}"))
-        .header("x-share-password", "correct horse").body(axum::body::Body::empty()).unwrap();
-    let response = ServiceExt::<Req>::ready(&mut router).await.unwrap().call(request).await.unwrap();
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/share/{token}"))
+        .header("x-share-password", "correct horse")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let response = ServiceExt::<Req>::ready(&mut router)
+        .await
+        .unwrap()
+        .call(request)
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     assert_eq!(&bytes[..], b"secret");
 
-    let (status, _) = send(&mut router, Method::GET, &format!("/share/{token}"), None, None).await;
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        &format!("/share/{token}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
@@ -1090,7 +1129,15 @@ async fn test_share_link_aborted_download_does_not_spend_a_slot() {
 async fn test_share_link_head_probe_is_honest_and_never_consumes_the_cap() {
     let h = setup().await;
     let mut router = router(h.state.clone());
-    let (admin, token) = password_link(&mut router, &h.state, &h.root, "probe.txt", "open sesame", Some(1)).await;
+    let (admin, token) = password_link(
+        &mut router,
+        &h.state,
+        &h.root,
+        "probe.txt",
+        "open sesame",
+        Some(1),
+    )
+    .await;
 
     let head = |password: Option<&str>| {
         let mut req = Request::builder()
@@ -1154,8 +1201,15 @@ async fn test_share_link_head_probe_is_honest_and_never_consumes_the_cap() {
 async fn test_share_link_unlock_cookie_flow() {
     let h = setup().await;
     let mut router = router(h.state.clone());
-    let (_admin, token) =
-        password_link(&mut router, &h.state, &h.root, "unlocked.txt", "correct horse", None).await;
+    let (_admin, token) = password_link(
+        &mut router,
+        &h.state,
+        &h.root,
+        "unlocked.txt",
+        "correct horse",
+        None,
+    )
+    .await;
     let unlock_uri = format!("/share/{token}/unlock");
 
     // A wrong password is refused, and says which factor failed.
@@ -1165,7 +1219,9 @@ async fn test_share_link_unlock_cookie_flow() {
             .method(Method::POST)
             .uri(&unlock_uri)
             .header("content-type", "application/json")
-            .body(axum::body::Body::from(json!({"password": "wrong"}).to_string()))
+            .body(axum::body::Body::from(
+                json!({"password": "wrong"}).to_string(),
+            ))
             .unwrap(),
     )
     .await;
@@ -1213,7 +1269,9 @@ async fn test_share_link_unlock_cookie_flow() {
     // A grant that can expire, be revoked or run out must not be replayed from
     // a cache — that would keep a spent one-time link alive in that browser.
     assert_eq!(
-        headers.get(http::header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+        headers
+            .get(http::header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok()),
         Some("no-store")
     );
 
@@ -1246,8 +1304,15 @@ async fn test_share_link_unlock_cookie_flow() {
 async fn test_share_link_wrong_passwords_are_throttled() {
     let h = setup().await;
     let mut router = router(h.state.clone());
-    let (_admin, token) =
-        password_link(&mut router, &h.state, &h.root, "throttled.txt", "correct horse", None).await;
+    let (_admin, token) = password_link(
+        &mut router,
+        &h.state,
+        &h.root,
+        "throttled.txt",
+        "correct horse",
+        None,
+    )
+    .await;
 
     // Empty probes (the public page asking "is a password needed?") are free.
     for _ in 0..20 {
@@ -1327,7 +1392,9 @@ async fn test_share_unlock_reachable_through_production_router() {
             .method(Method::POST)
             .uri(format!("/share/{}/unlock", link.token))
             .header("content-type", "application/json")
-            .body(axum::body::Body::from(json!({"password": "hunter2"}).to_string()))
+            .body(axum::body::Body::from(
+                json!({"password": "hunter2"}).to_string(),
+            ))
             .unwrap(),
     )
     .await;

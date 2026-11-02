@@ -30,9 +30,7 @@ use axum::{extract::State, http::HeaderMap, response::Response, Json};
 use serde::Deserialize;
 
 use crate::handlers::admin_guard::require_admin;
-use crate::syslog_forward::{
-    self, SyslogFormat, SyslogProtocol, SyslogSettings, SyslogStatus,
-};
+use crate::syslog_forward::{self, SyslogFormat, SyslogProtocol, SyslogSettings, SyslogStatus};
 use crate::utils::ResponseHelper;
 
 use super::AppState;
@@ -194,8 +192,8 @@ pub async fn handle_syslog_test(
             // can only ever claim the packet left, never that it was received.
             "message": "Test message sent — the collector must show it to confirm the path.",
         })),
-        Err(reason) => ResponseHelper::json_error(format!(
-            "The test message could not be sent: {reason}"
-        )),
+        Err(reason) => {
+            ResponseHelper::json_error(format!("The test message could not be sent: {reason}"))
+        }
     }
 }

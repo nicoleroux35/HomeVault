@@ -345,10 +345,7 @@ pub(crate) async fn notify(
                 Ok(Err(e)) => {
                     tracing::warn!("Notification engine: failed to send alert email: {}", e)
                 }
-                Err(e) => tracing::warn!(
-                    "Notification engine: alert email task failed: {}",
-                    e
-                ),
+                Err(e) => tracing::warn!("Notification engine: alert email task failed: {}", e),
             }
         }
     }
@@ -381,10 +378,9 @@ pub(crate) async fn notify(
             // this future alive forever.
             match webhook_client().post(&url).json(&payload).send().await {
                 Ok(resp) if resp.status().is_success() => {}
-                Ok(resp) => tracing::warn!(
-                    "Notification engine: webhook answered {}",
-                    resp.status()
-                ),
+                Ok(resp) => {
+                    tracing::warn!("Notification engine: webhook answered {}", resp.status())
+                }
                 Err(e) => tracing::warn!("Notification engine: failed to post webhook: {}", e),
             }
         }

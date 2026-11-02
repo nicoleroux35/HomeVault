@@ -100,9 +100,7 @@ mod tests {
         // Padding must be trimmed. Spelled from the constant, not from a
         // literal: this assertion used to hardcode " 1 " and turned red the
         // day CONTRACT_VERSION was bumped to 2.
-        assert!(client_is_compatible(Some(&format!(
-            " {CONTRACT_VERSION} "
-        ))));
+        assert!(client_is_compatible(Some(&format!(" {CONTRACT_VERSION} "))));
     }
 
     #[test]

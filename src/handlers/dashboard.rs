@@ -34,10 +34,10 @@
 //! SMART-backed health — session-auth, per-user.
 
 use axum::{
-    Json as AxumJson,
     extract::{Path, State},
     http::HeaderMap,
     response::Response,
+    Json as AxumJson,
 };
 use chrono::Utc;
 use once_cell::sync::Lazy;
@@ -48,8 +48,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
 
-use crate::handlers::AppState;
 use crate::handlers::admin_guard::require_auth;
+use crate::handlers::AppState;
 use crate::storage::models::Widget;
 use crate::utils::ProcParser;
 use crate::utils::ResponseHelper;

@@ -235,11 +235,9 @@ pub fn ipv4_interfaces(interfaces: &[NetworkInterface]) -> Vec<IfaceV4> {
                 .as_deref()
                 .and_then(|m| m.parse::<Ipv4Addr>().ok())
                 .or_else(|| {
-                    iface
-                        .ipv6_prefix
-                        .and_then(|_| None)
-                        // No netmask reported: assume a /24, the home default,
-                        // rather than refusing to wake anything.
+                    iface.ipv6_prefix.and_then(|_| None)
+                    // No netmask reported: assume a /24, the home default,
+                    // rather than refusing to wake anything.
                 })
                 .unwrap_or(Ipv4Addr::new(255, 255, 255, 0));
             let prefix = netmask_to_prefix(mask)?;
@@ -262,7 +260,10 @@ pub fn ipv4_interfaces(interfaces: &[NetworkInterface]) -> Vec<IfaceV4> {
 /// * without one, the first **up** interface that is not loopback — a home box
 ///   has one LAN, and its directed broadcast is the honest default;
 /// * an interface that exists but is down is never chosen.
-pub fn select_interface<'a>(ifaces: &'a [IfaceV4], target: Option<Ipv4Addr>) -> Option<&'a IfaceV4> {
+pub fn select_interface<'a>(
+    ifaces: &'a [IfaceV4],
+    target: Option<Ipv4Addr>,
+) -> Option<&'a IfaceV4> {
     match target {
         Some(target) => ifaces
             .iter()
@@ -298,7 +299,10 @@ pub fn destination_for(host: &WolHost, ifaces: &[IfaceV4]) -> Result<Destination
         let address = override_value
             .parse::<IpAddr>()
             .map_err(|_| format!("'{override_value}' is not an IP address"))?;
-        return Ok(Destination { address, interface: None });
+        return Ok(Destination {
+            address,
+            interface: None,
+        });
     }
     match select_interface(ifaces, None) {
         Some(iface) => Ok(Destination {
@@ -459,8 +463,8 @@ pub fn parse_wake_plan(payload_json: &str) -> Result<Option<WakePlan>, String> {
         wake: Option<Block>,
     }
 
-    let envelope: Envelope = serde_json::from_str(payload_json)
-        .map_err(|e| format!("Invalid task payload: {e}"))?;
+    let envelope: Envelope =
+        serde_json::from_str(payload_json).map_err(|e| format!("Invalid task payload: {e}"))?;
     let Some(block) = envelope.wake else {
         return Ok(None);
     };
@@ -575,11 +579,20 @@ mod tests {
 
     #[test]
     fn a_contiguous_netmask_maps_to_its_prefix() {
-        assert_eq!(netmask_to_prefix("255.255.255.0".parse().unwrap()), Some(24));
+        assert_eq!(
+            netmask_to_prefix("255.255.255.0".parse().unwrap()),
+            Some(24)
+        );
         assert_eq!(netmask_to_prefix("255.255.0.0".parse().unwrap()), Some(16));
-        assert_eq!(netmask_to_prefix("255.255.255.252".parse().unwrap()), Some(30));
+        assert_eq!(
+            netmask_to_prefix("255.255.255.252".parse().unwrap()),
+            Some(30)
+        );
         assert_eq!(netmask_to_prefix("0.0.0.0".parse().unwrap()), Some(0));
-        assert_eq!(netmask_to_prefix("255.255.255.255".parse().unwrap()), Some(32));
+        assert_eq!(
+            netmask_to_prefix("255.255.255.255".parse().unwrap()),
+            Some(32)
+        );
         // Not contiguous: a config typo must not be rounded into a subnet.
         assert_eq!(netmask_to_prefix("255.0.255.0".parse().unwrap()), None);
         assert_eq!(netmask_to_prefix("255.255.255.1".parse().unwrap()), None);
@@ -587,9 +600,15 @@ mod tests {
 
     #[test]
     fn a_prefix_maps_back_to_its_netmask() {
-        assert_eq!(prefix_to_netmask(24), Some("255.255.255.0".parse().unwrap()));
+        assert_eq!(
+            prefix_to_netmask(24),
+            Some("255.255.255.0".parse().unwrap())
+        );
         assert_eq!(prefix_to_netmask(0), Some("0.0.0.0".parse().unwrap()));
-        assert_eq!(prefix_to_netmask(32), Some("255.255.255.255".parse().unwrap()));
+        assert_eq!(
+            prefix_to_netmask(32),
+            Some("255.255.255.255".parse().unwrap())
+        );
         assert_eq!(prefix_to_netmask(33), None);
     }
 
@@ -606,10 +625,7 @@ mod tests {
         );
         // A /32 has no broadcast, and a /0 would be the whole internet.
         assert_eq!(directed_broadcast(ip, 32), None);
-        assert_eq!(
-            directed_broadcast(ip, 0),
-            Some(Ipv4Addr::BROADCAST)
-        );
+        assert_eq!(directed_broadcast(ip, 0), Some(Ipv4Addr::BROADCAST));
         assert_eq!(directed_broadcast(ip, 40), None);
     }
 
@@ -732,9 +748,12 @@ mod tests {
         let ifaces = vec![iface("eth0", "192.168.1.5", "255.255.255.0", true)];
 
         // An explicit destination wins and names no interface.
-        let destination = destination_for(&host("AA:BB:CC:DD:EE:FF", Some("192.168.9.255")), &ifaces)
-            .unwrap();
-        assert_eq!(destination.address, "192.168.9.255".parse::<IpAddr>().unwrap());
+        let destination =
+            destination_for(&host("AA:BB:CC:DD:EE:FF", Some("192.168.9.255")), &ifaces).unwrap();
+        assert_eq!(
+            destination.address,
+            "192.168.9.255".parse::<IpAddr>().unwrap()
+        );
         assert_eq!(destination.interface, None);
 
         // Otherwise the selected interface's directed broadcast.
@@ -762,7 +781,10 @@ mod tests {
 
     #[test]
     fn a_label_is_trimmed_and_bounded() {
-        assert_eq!(validate_label("  Living room PC  ").unwrap(), "Living room PC");
+        assert_eq!(
+            validate_label("  Living room PC  ").unwrap(),
+            "Living room PC"
+        );
         assert!(validate_label("   ").is_err());
         assert!(validate_label(&"x".repeat(65)).is_err());
         assert!(validate_label("bad\u{0}label").is_err());
@@ -823,16 +845,19 @@ mod tests {
 
         // A payload without the block is simply a task that does not wake
         // anything — the shape every existing task already has.
-        assert!(parse_wake_plan(r#"{"type":"command","command":"/bin/true"}"#)
-            .unwrap()
-            .is_none());
+        assert!(
+            parse_wake_plan(r#"{"type":"command","command":"/bin/true"}"#)
+                .unwrap()
+                .is_none()
+        );
         // …including a payload that is a bare object with no `type` at all
         // (the executor re-validates the task separately).
         assert!(parse_wake_plan("{}").unwrap().is_none());
         // A missing delay means "send, then run at once".
-        let immediate = parse_wake_plan(r#"{"type":"power","action":"reboot","wake":{"host_id":1}}"#)
-            .unwrap()
-            .unwrap();
+        let immediate =
+            parse_wake_plan(r#"{"type":"power","action":"reboot","wake":{"host_id":1}}"#)
+                .unwrap()
+                .unwrap();
         assert_eq!(immediate.delay_seconds, 0);
     }
 
@@ -843,10 +868,9 @@ mod tests {
             r#"{"type":"power","action":"reboot","wake":{"host_id":1,"delay":90}}"#
         )
         .is_err());
-        assert!(parse_wake_plan(
-            r#"{"type":"power","action":"reboot","wake":{"host_id":0}}"#
-        )
-        .is_err());
+        assert!(
+            parse_wake_plan(r#"{"type":"power","action":"reboot","wake":{"host_id":0}}"#).is_err()
+        );
         assert!(parse_wake_plan(
             r#"{"type":"power","action":"reboot","wake":{"host_id":1,"delay_seconds":601}}"#
         )

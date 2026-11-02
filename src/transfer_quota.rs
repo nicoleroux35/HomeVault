@@ -277,7 +277,8 @@ pub fn window_containing(
         Period::Week => {
             // Monday-first, the ISO week the UI shows: `num_days_from_monday`
             // is 0 on Monday, so this lands on the current week's Monday.
-            let monday = today - chrono::Duration::days(i64::from(today.weekday().num_days_from_monday()));
+            let monday =
+                today - chrono::Duration::days(i64::from(today.weekday().num_days_from_monday()));
             (monday, monday.checked_add_days(chrono::Days::new(7))?)
         }
         Period::Month => (
@@ -353,18 +354,15 @@ pub fn resets_at(
 /// The appliance timezone (Settings → General, `UTC` when unset or invalid).
 /// Pure in-memory read — safe to call from the enforcement path.
 pub fn appliance_timezone() -> Tz {
-    crate::scheduled_tasks_scheduler::parse_timezone(&crate::handlers::settings::effective_timezone())
-        .unwrap_or(chrono_tz::UTC)
+    crate::scheduled_tasks_scheduler::parse_timezone(
+        &crate::handlers::settings::effective_timezone(),
+    )
+    .unwrap_or(chrono_tz::UTC)
 }
 
 /// Fills `period_resets_at` on a row about to be serialised to the UI.
 pub fn fill_resets_at(quota: &mut TransferQuota, now: DateTime<Utc>, tz: Tz) {
-    quota.period_resets_at = resets_at(
-        &quota.period,
-        quota.period_started_at.as_deref(),
-        now,
-        tz,
-    );
+    quota.period_resets_at = resets_at(&quota.period, quota.period_started_at.as_deref(), now, tz);
 }
 
 /// Brings one stored row's window up to date before its counters are trusted:
@@ -817,7 +815,10 @@ mod tests {
     #[test]
     fn test_window_containing_is_none_for_a_lifetime_quota() {
         let now = Utc.with_ymd_and_hms(2026, 10, 23, 14, 30, 0).unwrap();
-        assert_eq!(window_containing(now, Period::Lifetime, chrono_tz::UTC), None);
+        assert_eq!(
+            window_containing(now, Period::Lifetime, chrono_tz::UTC),
+            None
+        );
         assert!(!window_elapsed(None, now, Period::Lifetime, chrono_tz::UTC));
         assert_eq!(resets_at("lifetime", None, now, chrono_tz::UTC), None);
     }
@@ -841,7 +842,12 @@ mod tests {
 
         // A Monday is its own window start, not the previous Monday's end.
         let monday = Utc.with_ymd_and_hms(2026, 10, 19, 0, 0, 0).unwrap();
-        assert_eq!(window_containing(monday, Period::Week, chrono_tz::UTC).unwrap().0, monday);
+        assert_eq!(
+            window_containing(monday, Period::Week, chrono_tz::UTC)
+                .unwrap()
+                .0,
+            monday
+        );
     }
 
     #[test]
@@ -870,7 +876,10 @@ mod tests {
         assert_eq!(start, Utc.with_ymd_and_hms(2026, 10, 31, 23, 0, 0).unwrap());
         // The same instant is still October in UTC.
         let (utc_start, _) = window_containing(now, Period::Month, chrono_tz::UTC).unwrap();
-        assert_eq!(utc_start, Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap());
+        assert_eq!(
+            utc_start,
+            Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap()
+        );
     }
 
     #[test]
@@ -905,7 +914,12 @@ mod tests {
         // Never opened, or unreadable: the window must be opened now.
         assert!(window_elapsed(None, now, Period::Day, utc));
         assert!(window_elapsed(Some(""), now, Period::Day, utc));
-        assert!(window_elapsed(Some("not a timestamp"), now, Period::Day, utc));
+        assert!(window_elapsed(
+            Some("not a timestamp"),
+            now,
+            Period::Day,
+            utc
+        ));
     }
 
     #[test]

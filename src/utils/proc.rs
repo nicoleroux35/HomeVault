@@ -221,9 +221,8 @@ impl ProcParser {
 
     /// Get interface IPv4 address using ip command
     fn get_interface_ipv4(iface_name: &str) -> Option<String> {
-        let output = probe(std::process::Command::new("ip")
-            .args(["-4", "addr", "show", iface_name])
-            );
+        let output =
+            probe(std::process::Command::new("ip").args(["-4", "addr", "show", iface_name]));
 
         if let Ok(result) = output {
             if result.status.success() {
@@ -245,9 +244,8 @@ impl ProcParser {
 
     /// Get interface netmask using ip command
     fn get_interface_netmask(iface_name: &str) -> Option<String> {
-        let output = probe(std::process::Command::new("ip")
-            .args(["-4", "addr", "show", iface_name])
-            );
+        let output =
+            probe(std::process::Command::new("ip").args(["-4", "addr", "show", iface_name]));
 
         if let Ok(result) = output {
             if result.status.success() {
@@ -294,11 +292,11 @@ impl ProcParser {
         }
 
         // Try ethtool for more detailed info
-        if let Ok(output) = probe(std::process::Command::new("ethtool")
-            .arg("-i")
-            .arg(iface_name)
-            )
-        {
+        if let Ok(output) = probe(
+            std::process::Command::new("ethtool")
+                .arg("-i")
+                .arg(iface_name),
+        ) {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
                 if line.contains("driver:") {
@@ -327,10 +325,7 @@ impl ProcParser {
         }
 
         // Try ethtool for speed
-        if let Ok(output) = probe(std::process::Command::new("ethtool")
-            .arg(iface_name)
-            )
-        {
+        if let Ok(output) = probe(std::process::Command::new("ethtool").arg(iface_name)) {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
                 if line.contains("Speed:") {
@@ -371,9 +366,8 @@ impl ProcParser {
 
     /// Get interface IPv6 address using `ip -6 addr show`
     fn get_interface_ipv6(iface_name: &str) -> Option<String> {
-        let output = probe(std::process::Command::new("ip")
-            .args(["-6", "addr", "show", iface_name])
-            );
+        let output =
+            probe(std::process::Command::new("ip").args(["-6", "addr", "show", iface_name]));
 
         if let Ok(result) = output {
             if result.status.success() {
@@ -410,10 +404,7 @@ impl ProcParser {
 
     /// Get workgroup/domain from Samba config
     pub fn get_workgroup() -> String {
-        if let Ok(output) = probe(std::process::Command::new("testparm")
-            .args(["-s", "-l"])
-            )
-        {
+        if let Ok(output) = probe(std::process::Command::new("testparm").args(["-s", "-l"])) {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
@@ -441,9 +432,8 @@ impl ProcParser {
 
     /// Get default gateway using `ip route`
     pub fn get_default_gateway() -> String {
-        if let Ok(output) = probe(std::process::Command::new("ip")
-            .args(["route", "show", "default"])
-            )
+        if let Ok(output) =
+            probe(std::process::Command::new("ip").args(["route", "show", "default"]))
         {
             if output.status.success() {
                 let content = String::from_utf8_lossy(&output.stdout);
@@ -481,9 +471,8 @@ impl ProcParser {
 
     /// Check if a systemd service is running
     fn check_service_status(service_name: &str) -> bool {
-        if let Ok(output) = probe(std::process::Command::new("systemctl")
-            .args(["is-active", service_name])
-            )
+        if let Ok(output) =
+            probe(std::process::Command::new("systemctl").args(["is-active", service_name]))
         {
             let stdout_owned = output.stdout.clone();
             let status = String::from_utf8_lossy(&stdout_owned).trim().to_string();
@@ -715,10 +704,7 @@ impl ProcParser {
     /// Run dmidecode for a given string keyword, with sudo -n fallback.
     fn run_dmidecode(keyword: &str) -> Option<String> {
         // Try direct command first
-        if let Ok(output) = probe(std::process::Command::new("dmidecode")
-            .args(["-s", keyword])
-            )
-        {
+        if let Ok(output) = probe(std::process::Command::new("dmidecode").args(["-s", keyword])) {
             if output.status.success() {
                 let val = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !val.is_empty() {
@@ -728,9 +714,8 @@ impl ProcParser {
         }
 
         // Fallback: try sudo -n (non-interactive, caches credentials)
-        if let Ok(output) = probe(std::process::Command::new("sudo")
-            .args(["-n", "dmidecode", "-s", keyword])
-            )
+        if let Ok(output) =
+            probe(std::process::Command::new("sudo").args(["-n", "dmidecode", "-s", keyword]))
         {
             if output.status.success() {
                 let val = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -767,18 +752,16 @@ impl ProcParser {
 
     /// Parse verbose dmidecode --type 17 output for type and speed.
     fn parse_dmidecode_type17(info: &mut RamInfo) {
-        let output = if let Ok(out) = probe(std::process::Command::new("dmidecode")
-            .args(["--type", "17"])
-            )
+        let output = if let Ok(out) =
+            probe(std::process::Command::new("dmidecode").args(["--type", "17"]))
         {
             if out.status.success() {
                 String::from_utf8_lossy(&out.stdout).to_string()
             } else {
                 return;
             }
-        } else if let Ok(out) = probe(std::process::Command::new("sudo")
-            .args(["-n", "dmidecode", "--type", "17"])
-            )
+        } else if let Ok(out) =
+            probe(std::process::Command::new("sudo").args(["-n", "dmidecode", "--type", "17"]))
         {
             if out.status.success() {
                 String::from_utf8_lossy(&out.stdout).to_string()
@@ -814,10 +797,7 @@ impl ProcParser {
     pub fn get_gpu_info() -> Vec<GpuInfo> {
         let mut gpus = Vec::new();
 
-        if let Ok(output) = probe(std::process::Command::new("lspci")
-            .args(["-nn", "-D"])
-            )
-        {
+        if let Ok(output) = probe(std::process::Command::new("lspci").args(["-nn", "-D"])) {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
                 if line.contains("VGA") || line.contains("3D") || line.contains("Display") {
@@ -944,8 +924,7 @@ impl ProcParser {
                 info.available = true;
 
                 // Get UPS status
-                if let Ok(status_output) = probe(std::process::Command::new("upsc").arg(ups_name))
-                {
+                if let Ok(status_output) = probe(std::process::Command::new("upsc").arg(ups_name)) {
                     let status_stdout = String::from_utf8_lossy(&status_output.stdout);
                     for line in status_stdout.lines() {
                         if line.contains("battery.charge") {
@@ -997,10 +976,7 @@ impl ProcParser {
         let mut info = SoftwareInfo::default();
 
         // Get OS name and version
-        if let Ok(output) = probe(std::process::Command::new("lsb_release")
-            .args(["-a"])
-            )
-        {
+        if let Ok(output) = probe(std::process::Command::new("lsb_release").args(["-a"])) {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
                 if line.contains("Distributor ID") {
@@ -1197,7 +1173,11 @@ pub struct ServiceStatus {
 /// `None` when the line is missing or unparsable, which the callers report as
 /// "no measurement" rather than `0 %`.
 pub fn parse_cpu_totals(content: &str) -> Option<(u64, u64)> {
-    let line = content.lines().next()?.split_whitespace().collect::<Vec<_>>();
+    let line = content
+        .lines()
+        .next()?
+        .split_whitespace()
+        .collect::<Vec<_>>();
     if line.len() < 5 || line[0] != "cpu" {
         return None;
     }
@@ -1289,10 +1269,7 @@ mod tests {
     #[test]
     fn cpu_usage_percent_is_the_busy_share_of_the_delta() {
         // 1000 ticks total, 250 of them idle → 75 % busy.
-        assert_eq!(
-            cpu_usage_percent((1_000, 500), (2_000, 750)),
-            Some(75.0)
-        );
+        assert_eq!(cpu_usage_percent((1_000, 500), (2_000, 750)), Some(75.0));
     }
 
     #[test]

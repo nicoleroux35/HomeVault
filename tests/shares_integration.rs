@@ -89,8 +89,8 @@ use homevault::handlers::{
         handle_share_delete, handle_share_get, handle_share_service_restart,
         handle_share_service_start, handle_share_service_stop, handle_share_toggle,
         handle_share_update, handle_shares_list, handle_smb_config_get, handle_smb_config_update,
-        handle_smb_recycle_list, handle_smb_recycle_set,
-        handle_webdav_config_get, handle_webdav_config_update,
+        handle_smb_recycle_list, handle_smb_recycle_set, handle_webdav_config_get,
+        handle_webdav_config_update,
     },
     AppState,
 };

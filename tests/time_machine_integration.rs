@@ -269,7 +269,10 @@ async fn test_enabling_time_machine_writes_the_fruit_profile() {
     assert!(conf.contains("[media]"), "{conf}");
     assert!(conf.contains("vfs objects = fruit streams_xattr"), "{conf}");
     assert!(conf.contains("fruit:time machine = yes"), "{conf}");
-    assert!(conf.contains("fruit:time machine max size = 500G"), "{conf}");
+    assert!(
+        conf.contains("fruit:time machine max size = 500G"),
+        "{conf}"
+    );
     // Only this share was touched.
     assert!(!conf.contains("[tm]\n  vfs objects"), "{conf}");
 

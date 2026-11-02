@@ -1213,8 +1213,11 @@ homevault ALL=(root) NOPASSWD: {power_grants}
 
                 // Validate sudoers syntax
                 match run_timed(
-                    std::process::Command::new("visudo")
-                        .args(["-c", "-f", "/etc/sudoers.d/homevault"]),
+                    std::process::Command::new("visudo").args([
+                        "-c",
+                        "-f",
+                        "/etc/sudoers.d/homevault",
+                    ]),
                     SETUP_OP_TIMEOUT,
                 ) {
                     Ok(output) => {
@@ -1584,7 +1587,10 @@ fn service_grants(
     grants.push(grant(chmod, "600 /etc/homevault-backup/*"));
     grants.push(grant(chmod, "640 /etc/homevault-rsync/*"));
     grants.push(grant(chmod, "640 /etc/homevault-backup/*"));
-    grants.push(grant(chmod, "644 /etc/systemd/system/homevault-rsync.service"));
+    grants.push(grant(
+        chmod,
+        "644 /etc/systemd/system/homevault-rsync.service",
+    ));
     grants.push(grant(
         chmod,
         "644 /etc/systemd/system/homevault-rest-server.service",
@@ -1602,11 +1608,15 @@ fn service_grants(
 /// service user has no right to do — one verb set, one privilege path.
 fn power_grants(systemctl: &str) -> String {
     use crate::power::PowerAction;
-    [PowerAction::Reboot, PowerAction::Shutdown, PowerAction::Suspend]
-        .iter()
-        .map(|action| grant(systemctl, action.systemctl_verb()))
-        .collect::<Vec<_>>()
-        .join(", ")
+    [
+        PowerAction::Reboot,
+        PowerAction::Shutdown,
+        PowerAction::Suspend,
+    ]
+    .iter()
+    .map(|action| grant(systemctl, action.systemctl_verb()))
+    .collect::<Vec<_>>()
+    .join(", ")
 }
 
 #[cfg(test)]
@@ -2379,7 +2389,9 @@ mod tests {
         }
 
         assert!(
-            !grants.split(", ").any(|g| g.ends_with("/shutdown") || g.contains(" shutdown")),
+            !grants
+                .split(", ")
+                .any(|g| g.ends_with("/shutdown") || g.contains(" shutdown")),
             "the bare `shutdown` binary must not be granted: {grants}"
         );
     }

@@ -114,9 +114,10 @@ async fn run_due(state: &Arc<crate::handlers::AppState>) -> Result<(), String> {
         TickPlan::Due => {
             let state = state.clone();
             let policy = policy;
-            let result = tokio::task::spawn_blocking(move || crate::trash::purge_all(&state, &policy))
-                .await
-                .map_err(|e| e.to_string())?;
+            let result =
+                tokio::task::spawn_blocking(move || crate::trash::purge_all(&state, &policy))
+                    .await
+                    .map_err(|e| e.to_string())?;
 
             tracing::info!(
                 "Trash retention pass removed {} item(s), reclaimed {} byte(s)",

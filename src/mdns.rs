@@ -280,7 +280,8 @@ pub fn adisk_share_name(svc: &AdvertisedService) -> Option<&str> {
     }
     svc.txt.iter().find_map(|record| {
         let rest = record.strip_prefix("dk0=")?;
-        rest.split(',').find_map(|field| field.strip_prefix("adVN="))
+        rest.split(',')
+            .find_map(|field| field.strip_prefix("adVN="))
     })
 }
 
@@ -448,10 +449,7 @@ pub fn render_service_file(web_port: u16, services: &[AdvertisedService]) -> Str
     for svc in services.iter().filter(|s| s.group.is_some()) {
         let name = svc.group.as_deref().unwrap_or("HomeVault");
         xml.push_str("<service-group>\n");
-        xml.push_str(&format!(
-            "  <name>{}</name>\n",
-            xml_escape(name)
-        ));
+        xml.push_str(&format!("  <name>{}</name>\n", xml_escape(name)));
         xml.push_str("  <service>\n");
         xml.push_str(&format!("    <type>{}</type>\n", svc.svc_type));
         xml.push_str(&format!("    <port>{}</port>\n", svc.port));
@@ -972,7 +970,10 @@ mod tests {
         let uuid = adisk_uuid("homevault", "macbackup");
         assert_eq!(uuid.len(), 36, "{uuid}");
         assert_eq!(uuid.as_bytes()[14], b'5', "version 5: {uuid}");
-        assert!(matches!(uuid.as_bytes()[19], b'8' | b'9' | b'a' | b'b'), "{uuid}");
+        assert!(
+            matches!(uuid.as_bytes()[19], b'8' | b'9' | b'a' | b'b'),
+            "{uuid}"
+        );
         // Stable across calls, distinct per host and per share.
         assert_eq!(uuid, adisk_uuid("homevault", "macbackup"));
         assert_ne!(uuid, adisk_uuid("homevault", "other"));
@@ -1001,7 +1002,10 @@ mod tests {
         let xml = render_service_file(8080, &svcs);
         // Two groups: the shared one and the Time Machine volume's own.
         assert_eq!(xml.matches("<service-group>").count(), 2, "{xml}");
-        assert!(xml.contains("<name>HomeVault Time Machine (macbackup)</name>"), "{xml}");
+        assert!(
+            xml.contains("<name>HomeVault Time Machine (macbackup)</name>"),
+            "{xml}"
+        );
         assert!(xml.contains("<type>_adisk._tcp</type>"), "{xml}");
         assert!(
             xml.contains("adVN=macbackup,adVU="),

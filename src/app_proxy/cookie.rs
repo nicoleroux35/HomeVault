@@ -135,6 +135,12 @@ fn cookie_value<'a>(header: &'a str, name: &str) -> Option<&'a str> {
     None
 }
 
+/// Read one named cookie. Exposed for the OIDC state cookie, which binds a
+/// started sign-in to this browser and is not a session credential.
+pub fn named_cookie_from_header<'a>(header: &'a str, name: &str) -> Option<&'a str> {
+    cookie_value(header, name)
+}
+
 /// Rebuild a `Cookie:` header value with both HomeVault credentials removed,
 /// keeping every other cookie (apps set and read their own). Returns `None`
 /// when nothing is left, so the caller can drop the header entirely.

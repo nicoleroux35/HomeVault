@@ -41,9 +41,7 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::backup_target::{
-    self, BackupTargetSettings, BackupTenant,
-};
+use crate::backup_target::{self, BackupTargetSettings, BackupTenant};
 use crate::handlers::admin_guard::{require_admin, require_auth};
 use crate::storage::secret_box;
 use crate::storage::BackupTenantRepository;
@@ -119,9 +117,7 @@ pub async fn handle_backup_target_state(
     }
     match payload(&state, &headers).await {
         Ok(payload) => ResponseHelper::json_success(payload),
-        Err(e) => ResponseHelper::json_error(format!(
-            "Failed to read the backup destination: {e}"
-        )),
+        Err(e) => ResponseHelper::json_error(format!("Failed to read the backup destination: {e}")),
     }
 }
 
@@ -153,14 +149,14 @@ pub async fn handle_backup_target_settings_update(
     let repo = BackupTenantRepository::new(state.db.pool());
     let tenants = match repo.list().await {
         Ok(tenants) => tenants,
-        Err(e) => {
-            return ResponseHelper::json_error(format!("Failed to read the tenants: {e}"))
-        }
+        Err(e) => return ResponseHelper::json_error(format!("Failed to read the tenants: {e}")),
     };
     let settings_for_save = settings.clone();
-    match run_op("save backup destination settings", BACKUP_OP_TIMEOUT, move || {
-        backup_target::save_settings(&settings_for_save, &tenants)
-    })
+    match run_op(
+        "save backup destination settings",
+        BACKUP_OP_TIMEOUT,
+        move || backup_target::save_settings(&settings_for_save, &tenants),
+    )
     .await
     {
         Ok(()) => {
@@ -224,9 +220,7 @@ pub async fn handle_backup_tenant_create(
     let token_hash = backup_target::hash_token(&token);
     let sealed = match secret_box::seal(&format!("backup-tenant:{name}"), &repo_password) {
         Ok(sealed) => sealed,
-        Err(e) => {
-            return ResponseHelper::json_error(format!("Could not store the password: {e}"))
-        }
+        Err(e) => return ResponseHelper::json_error(format!("Could not store the password: {e}")),
     };
     let repo_path = match backup_target::repo_path_for(&backup_target::repos_root(), &name) {
         Ok(path) => path,
@@ -260,9 +254,11 @@ pub async fn handle_backup_tenant_create(
     }
     let settings = backup_target::load_settings();
     let tenants = repo.list().await.unwrap_or_default();
-    if let Err(e) = run_op("apply the backup destination", BACKUP_OP_TIMEOUT, move || {
-        backup_target::apply(&settings, &tenants)
-    })
+    if let Err(e) = run_op(
+        "apply the backup destination",
+        BACKUP_OP_TIMEOUT,
+        move || backup_target::apply(&settings, &tenants),
+    )
     .await
     {
         return ResponseHelper::json_error(format!(
@@ -326,9 +322,7 @@ pub async fn handle_backup_tenant_update(
     if let Err(e) = backup_target::validate_quota(quota) {
         return ResponseHelper::json_error(e);
     }
-    let verify = body
-        .verify_enabled
-        .unwrap_or(existing.verify_enabled != 0);
+    let verify = body.verify_enabled.unwrap_or(existing.verify_enabled != 0);
     if let Err(e) = repo.set_quota_and_verify(id, quota, verify).await {
         return ResponseHelper::json_error(format!("Failed to save the tenant: {e}"));
     }
@@ -383,9 +377,7 @@ pub async fn handle_backup_tenant_rotate(
     let token_hash = backup_target::hash_token(&token);
     let sealed = match secret_box::seal(&existing.secret_scope(), &repo_password) {
         Ok(sealed) => sealed,
-        Err(e) => {
-            return ResponseHelper::json_error(format!("Could not store the password: {e}"))
-        }
+        Err(e) => return ResponseHelper::json_error(format!("Could not store the password: {e}")),
     };
     let tenant = match repo
         .set_credentials(id, &auth_hash, &token_hash, &sealed)
@@ -513,9 +505,13 @@ pub async fn handle_backup_tenant_verify(
         }
     };
     let repository = tenant.repo_path.clone();
-    let result = run_op("verify the backup repository", VERIFY_OP_TIMEOUT, move || {
-        backup_target::verify_repository(&repository, &password).map(|outcome| outcome.message)
-    })
+    let result = run_op(
+        "verify the backup repository",
+        VERIFY_OP_TIMEOUT,
+        move || {
+            backup_target::verify_repository(&repository, &password).map(|outcome| outcome.message)
+        },
+    )
     .await;
     match &result {
         Ok(message) => {
@@ -534,7 +530,9 @@ pub async fn handle_backup_tenant_verify(
         }
     }
     match result {
-        Ok(message) => ResponseHelper::json_success(serde_json::json!({ "verified": true, "message": message })),
+        Ok(message) => ResponseHelper::json_success(
+            serde_json::json!({ "verified": true, "message": message }),
+        ),
         Err(e) => ResponseHelper::json_error(format!("The repository check failed: {e}")),
     }
 }

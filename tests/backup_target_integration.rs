@@ -52,9 +52,9 @@ use homevault::auth::AuthService;
 use homevault::config::PathGuard;
 use homevault::handlers::auth::handle_login;
 use homevault::handlers::backup_target::{
-    handle_backup_target_settings_update, handle_backup_target_state,
-    handle_backup_tenant_create, handle_backup_tenant_delete, handle_backup_tenant_rotate,
-    handle_backup_tenant_update, handle_backup_tenant_verify,
+    handle_backup_target_settings_update, handle_backup_target_state, handle_backup_tenant_create,
+    handle_backup_tenant_delete, handle_backup_tenant_rotate, handle_backup_tenant_update,
+    handle_backup_tenant_verify,
 };
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::AppState;
@@ -129,8 +129,7 @@ fn router(state: Arc<AppState>) -> Router {
         )
         .route(
             "/api/backup-target/tenants/{id}",
-            axum::routing::put(handle_backup_tenant_update)
-                .delete(handle_backup_tenant_delete),
+            axum::routing::put(handle_backup_tenant_update).delete(handle_backup_tenant_delete),
         )
         .route(
             "/api/backup-target/tenants/{id}/rotate",
@@ -261,7 +260,11 @@ async fn test_reads_need_a_session_and_mutations_need_an_admin() {
             "/api/backup-target/tenants/1/rotate".to_string(),
             None,
         ),
-        (Method::DELETE, "/api/backup-target/tenants/1".to_string(), None),
+        (
+            Method::DELETE,
+            "/api/backup-target/tenants/1".to_string(),
+            None,
+        ),
         (
             Method::POST,
             "/api/backup-target/tenants/1/verify".to_string(),
@@ -367,7 +370,10 @@ async fn test_creating_a_tenant_shows_its_secrets_once_and_never_again() {
     // the token itself.
     let htpasswd = std::fs::read_to_string(auth_path(&h)).unwrap();
     assert!(htpasswd.starts_with("family:{SHA}"), "{htpasswd}");
-    assert!(!htpasswd.contains(&token), "the token must not be on disk in clear text");
+    assert!(
+        !htpasswd.contains(&token),
+        "the token must not be on disk in clear text"
+    );
 
     // The list never repeats either secret.
     let (status, list) = send(
@@ -395,7 +401,10 @@ async fn test_creating_a_tenant_shows_its_secrets_once_and_never_again() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(
-        body["message"].as_str().unwrap_or_default().contains("already exists"),
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("already exists"),
         "{body}"
     );
 }
@@ -442,7 +451,9 @@ async fn test_deleting_a_tenant_removes_its_htpasswd_entry_and_keeps_data_by_def
         .expect("repo path")
         .to_string();
     assert!(std::path::Path::new(&repo_path).exists(), "{repo_path}");
-    assert!(std::fs::read_to_string(auth_path(&h)).unwrap().contains("family"));
+    assert!(std::fs::read_to_string(auth_path(&h))
+        .unwrap()
+        .contains("family"));
 
     let (status, body) = send(
         &mut router,
@@ -454,9 +465,15 @@ async fn test_deleting_a_tenant_removes_its_htpasswd_entry_and_keeps_data_by_def
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     // The received data is kept unless the admin explicitly asked to delete it.
-    assert!(std::path::Path::new(&repo_path).exists(), "data must be kept");
+    assert!(
+        std::path::Path::new(&repo_path).exists(),
+        "data must be kept"
+    );
     let htpasswd = std::fs::read_to_string(auth_path(&h)).unwrap_or_default();
-    assert!(!htpasswd.contains("family"), "access must be revoked: {htpasswd}");
+    assert!(
+        !htpasswd.contains("family"),
+        "access must be revoked: {htpasswd}"
+    );
     assert_eq!(body["data"]["tenants"], json!([]));
 }
 
@@ -568,7 +585,10 @@ fn run_restic(repository: &str, password: &str, args: &[&str]) -> bool {
     let mut cmd = Command::new("restic");
     cmd.args(["-r", repository]).args(args);
     cmd.env("RESTIC_PASSWORD", password);
-    cmd.env("RESTIC_CACHE_DIR", std::env::temp_dir().join("hv-restic-test-cache"));
+    cmd.env(
+        "RESTIC_CACHE_DIR",
+        std::env::temp_dir().join("hv-restic-test-cache"),
+    );
     cmd.output().map(|o| o.status.success()).unwrap_or(false)
 }
 
@@ -663,7 +683,10 @@ async fn test_a_real_repository_is_verified_and_a_missing_one_fails_cleanly() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(
-        body["message"].as_str().unwrap_or_default().contains("failed"),
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("failed"),
         "{body}"
     );
 }

@@ -83,6 +83,25 @@ pub enum JobType {
     Custom(String),
 }
 
+/// Stable slug for a job kind — the client localises `activity_kind_<slug>`.
+///
+/// Shared by the desktop activity feed and the Explorer's transfer tray so the
+/// two can never disagree about what a job is called.
+pub fn job_type_slug(job_type: &JobType) -> String {
+    match job_type {
+        JobType::Backup => "backup".to_string(),
+        JobType::Restore => "restore".to_string(),
+        JobType::Verify => "verify".to_string(),
+        JobType::Upload => "upload".to_string(),
+        JobType::Download => "download".to_string(),
+        JobType::Sync => "sync".to_string(),
+        JobType::CacheMover => "cache_mover".to_string(),
+        // "antivirus_scan", "explorer_copy", "explorer_move", "docker_install",
+        // "rescue_ddrescue", "rescue_photorec", ...
+        JobType::Custom(slug) => slug.clone(),
+    }
+}
+
 impl Default for JobType {
     fn default() -> Self {
         JobType::Custom("unknown".to_string())
@@ -119,8 +138,118 @@ pub struct ProgressEvent {
     pub bytes_total: Option<u64>,
     /// Optional: speed in bytes/second
     pub speed_bps: Option<u64>,
+    /// Optional: estimated seconds remaining, from the last speed sample.
+    ///
+    /// The desktop transfer tray renders "4 min left" beside the byte counter;
+    /// `None` means "we cannot estimate yet" (no sample, or an unknown total),
+    /// never `0`. Computing it on the server keeps one honest answer for every
+    /// client instead of each one re-deriving it from two polls.
+    pub eta_seconds: Option<u64>,
+    /// Optional: how the bytes were actually moved (`clone`, `kernel_copy`,
+    /// `stream`, …). Only copy/move/checksum jobs set it — it is what lets the
+    /// tray say "copied instantly" instead of the reflink speed-up being
+    /// invisible.
+    pub method: Option<String>,
     /// Timestamp of the event
     pub timestamp: DateTime<Utc>,
+}
+
+/// The extra transfer detail a job can report on top of a percentage.
+///
+/// Grouped in one struct rather than seven positional arguments: the transfer
+/// producers (explorer copy/move/checksum, chunked uploads) all carry the same
+/// set, and a caller that only knows some of it can use `..Default::default()`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TransferDetail {
+    pub bytes_processed: Option<u64>,
+    pub bytes_total: Option<u64>,
+    pub speed_bps: Option<u64>,
+    pub eta_seconds: Option<u64>,
+    /// Copy method slug (`clone`, `kernel_clone`, `kernel_copy`, `stream`).
+    pub method: Option<String>,
+}
+
+/// Rolling transfer-speed estimator.
+///
+/// A copy/checksum/upload reports a cumulative byte counter every tick; the
+/// speed is the slope over the last [`SpeedTracker::DEFAULT_WINDOW`], not the
+/// slope over the whole run (which would keep answering "2 MB/s" after the disk
+/// has stalled) and not the last two samples (which is noise). The ETA is then
+/// `remaining / speed`.
+///
+/// Pure time arithmetic over `Instant`s: no clock reads inside the tracker, so
+/// the unit tests drive it with fixed instants.
+#[derive(Debug, Clone)]
+pub struct SpeedTracker {
+    samples: Vec<(std::time::Instant, u64)>,
+    window: std::time::Duration,
+}
+
+impl SpeedTracker {
+    /// Samples older than this are dropped as new ones arrive.
+    pub const DEFAULT_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+
+    pub fn new(window: std::time::Duration) -> Self {
+        Self {
+            samples: Vec::new(),
+            window,
+        }
+    }
+
+    /// Record a cumulative byte counter at `at`.
+    ///
+    /// A counter that goes backwards (a retried chunk, a resumed session) is
+    /// treated as a fresh baseline rather than as negative throughput.
+    pub fn record(&mut self, at: std::time::Instant, processed: u64) {
+        if let Some((_, last)) = self.samples.last() {
+            if processed < *last {
+                self.samples.clear();
+            }
+        }
+        self.samples.push((at, processed));
+        // Keep at least two samples so a speed is still derivable right after
+        // the window has been pruned.
+        while self.samples.len() > 2 {
+            let too_old = self.samples[0].0 + self.window <= at;
+            if too_old {
+                self.samples.remove(0);
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Bytes per second over the window, or `None` when there is not enough
+    /// evidence (fewer than two samples, or a zero-length span).
+    pub fn speed_bps(&self) -> Option<u64> {
+        let (first_at, first_bytes) = *self.samples.first()?;
+        let (last_at, last_bytes) = *self.samples.last()?;
+        let elapsed = last_at.duration_since(first_at).as_secs_f64();
+        if elapsed <= 0.0 || last_bytes <= first_bytes {
+            return None;
+        }
+        Some(((last_bytes - first_bytes) as f64 / elapsed).round() as u64)
+    }
+
+    /// Seconds left to reach `total`, or `None` when the speed is unknown.
+    pub fn eta_seconds(&self, total: u64) -> Option<u64> {
+        let processed = self.samples.last()?.1;
+        if processed >= total {
+            return Some(0);
+        }
+        let speed = self.speed_bps()?;
+        if speed == 0 {
+            return None;
+        }
+        // Rounded up: "1 s left" is never shown for a quarter second of work.
+        Some((total - processed).div_ceil(speed))
+    }
+}
+
+impl Default for SpeedTracker {
+    fn default() -> Self {
+        Self::new(Self::DEFAULT_WINDOW)
+    }
 }
 
 impl ProgressEvent {
@@ -140,6 +269,8 @@ impl ProgressEvent {
             bytes_processed: None,
             bytes_total: None,
             speed_bps: None,
+            eta_seconds: None,
+            method: None,
             timestamp: Utc::now(),
         }
     }
@@ -184,6 +315,17 @@ pub struct ActivitySnapshot {
     pub bytes_processed: Option<u64>,
     pub bytes_total: Option<u64>,
     pub speed_bps: Option<u64>,
+    /// Seconds remaining as last computed by the producer's [`SpeedTracker`].
+    pub eta_seconds: Option<u64>,
+    /// Copy/checksum method slug when the job is a byte-moving one.
+    pub method: Option<String>,
+}
+
+impl ActivitySnapshot {
+    /// The row's stable kind slug (see [`job_type_slug`]).
+    pub fn kind_slug(&self) -> String {
+        job_type_slug(&self.job_type)
+    }
 }
 
 /// One-shot cancellation callback registered by a job's producer.
@@ -239,6 +381,17 @@ impl ProgressManager {
     /// silently drop a cancellation.
     pub fn register_cancel_hook(&self, job_id: &str, hook: CancelHook) {
         self.cancel_hooks.lock().insert(job_id.to_string(), hook);
+    }
+
+    /// Whether `job_id` registered a producer hook — i.e. whether cancelling it
+    /// would actually stop work.
+    ///
+    /// Read by the Explorer's transfer tray so it only offers a cancel button
+    /// on a row it can really stop: a tracked directory copy has no hook (the
+    /// copy loop does not observe one), and a button that only hides the row
+    /// while 40 GB keep being written would be a lie.
+    pub fn has_cancel_hook(&self, job_id: &str) -> bool {
+        self.cancel_hooks.lock().contains_key(job_id)
     }
 
     /// Drop the registered hook without running it (the job finished on its
@@ -452,6 +605,28 @@ impl ProgressManager {
         bytes_total: Option<u64>,
         speed_bps: Option<u64>,
     ) -> bool {
+        self.emit_transfer_progress(
+            job_id,
+            progress,
+            message,
+            &TransferDetail {
+                bytes_processed,
+                bytes_total,
+                speed_bps,
+                ..TransferDetail::default()
+            },
+        )
+    }
+
+    /// Emit progress carrying the full transfer detail (bytes, speed, ETA and
+    /// copy method) — what the desktop transfer tray renders.
+    pub fn emit_transfer_progress(
+        &self,
+        job_id: &str,
+        progress: f64,
+        message: &str,
+        detail: &TransferDetail,
+    ) -> bool {
         if let Some(job) = self.jobs.read().get(job_id) {
             let event = ProgressEvent {
                 job_id: job_id.to_string(),
@@ -459,9 +634,11 @@ impl ProgressManager {
                 state: ProgressState::Running,
                 progress: progress.clamp(0.0, 100.0),
                 message: message.to_string(),
-                bytes_processed,
-                bytes_total,
-                speed_bps,
+                bytes_processed: detail.bytes_processed,
+                bytes_total: detail.bytes_total,
+                speed_bps: detail.speed_bps,
+                eta_seconds: detail.eta_seconds,
+                method: detail.method.clone(),
                 timestamp: Utc::now(),
             };
             *job.last_event.lock() = Some(event.clone());
@@ -580,6 +757,8 @@ impl ProgressManager {
                     bytes_processed: last.as_ref().and_then(|e| e.bytes_processed),
                     bytes_total: last.as_ref().and_then(|e| e.bytes_total),
                     speed_bps: last.as_ref().and_then(|e| e.speed_bps),
+                    eta_seconds: last.as_ref().and_then(|e| e.eta_seconds),
+                    method: last.as_ref().and_then(|e| e.method.clone()),
                 }
             })
             .collect()
@@ -680,6 +859,17 @@ impl ProgressEmitter {
             bytes_total,
             speed_bps,
         )
+    }
+
+    /// Emit progress carrying the full transfer detail (bytes, speed, ETA,
+    /// method) — the shape the desktop transfer tray renders.
+    pub fn transfer_progress(
+        job_id: &str,
+        progress: f64,
+        message: &str,
+        detail: &TransferDetail,
+    ) -> bool {
+        PROGRESS_MANAGER.emit_transfer_progress(job_id, progress, message, detail)
     }
 
     /// Mark job as completed
@@ -1118,5 +1308,128 @@ mod tests {
         let id = m.create_job(JobType::Backup, "start");
         assert!(m.mark_cancelled(&id, "Cancelled"));
         assert_eq!(m.get_progress(&id).unwrap().state, ProgressState::Cancelled);
+    }
+
+    // ---------------------------------------------------------------------
+    // Transfer detail + speed/ETA estimation (HV-UX-02)
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn test_emit_transfer_progress_carries_bytes_speed_eta_and_method() {
+        let m = ProgressManager::new();
+        let id = m.create_job(JobType::Custom("explorer_copy".into()), "start");
+        let detail = TransferDetail {
+            bytes_processed: Some(1024),
+            bytes_total: Some(4096),
+            speed_bps: Some(512),
+            eta_seconds: Some(6),
+            method: Some("clone".into()),
+        };
+        assert!(m.emit_transfer_progress(&id, 25.0, "1.0 KB / 4.0 KB", &detail));
+
+        let event = m.get_progress(&id).expect("last event");
+        assert_eq!(event.bytes_processed, Some(1024));
+        assert_eq!(event.bytes_total, Some(4096));
+        assert_eq!(event.speed_bps, Some(512));
+        assert_eq!(event.eta_seconds, Some(6));
+        assert_eq!(event.method.as_deref(), Some("clone"));
+
+        // The activity snapshot (what the tray polls) carries the same detail.
+        let activity = m.list_activity();
+        let s = snap(&activity, &id);
+        assert_eq!(s.eta_seconds, Some(6));
+        assert_eq!(s.method.as_deref(), Some("clone"));
+        assert_eq!(s.bytes_total, Some(4096));
+    }
+
+    #[test]
+    fn test_emit_progress_plain_leaves_eta_and_method_empty() {
+        // A job that only knows a percentage must not fabricate an ETA or a
+        // copy method — the tray renders "no estimate" rather than "0 s left".
+        let m = ProgressManager::new();
+        let id = m.create_job(JobType::Backup, "start");
+        m.emit_progress(&id, 40.0, "40 %");
+        let event = m.get_progress(&id).expect("last event");
+        assert_eq!(event.eta_seconds, None);
+        assert_eq!(event.method, None);
+    }
+
+    #[test]
+    fn test_speed_tracker_needs_two_samples() {
+        let mut t = SpeedTracker::default();
+        assert_eq!(t.speed_bps(), None);
+        assert_eq!(t.eta_seconds(1_000), None);
+        let start = std::time::Instant::now();
+        t.record(start, 0);
+        assert_eq!(t.speed_bps(), None, "one sample is not a rate");
+    }
+
+    #[test]
+    fn test_speed_tracker_slope_over_the_window() {
+        let mut t = SpeedTracker::new(std::time::Duration::from_secs(5));
+        let start = std::time::Instant::now();
+        t.record(start, 0);
+        t.record(start + std::time::Duration::from_secs(2), 2_000_000);
+        assert_eq!(t.speed_bps(), Some(1_000_000));
+    }
+
+    #[test]
+    fn test_speed_tracker_prunes_samples_older_than_the_window() {
+        let mut t = SpeedTracker::new(std::time::Duration::from_secs(5));
+        let start = std::time::Instant::now();
+        // A slow start (1 MB/s) then a fast burst (10 MB/s): once the old
+        // sample falls out of the window the answer must be the burst, not the
+        // run-long average.
+        t.record(start, 0);
+        t.record(start + std::time::Duration::from_secs(10), 10_000_000);
+        assert_eq!(t.speed_bps(), Some(1_000_000));
+        t.record(start + std::time::Duration::from_secs(11), 20_000_000);
+        assert_eq!(t.speed_bps(), Some(5_000_000));
+    }
+
+    #[test]
+    fn test_speed_tracker_backwards_counter_restarts_the_baseline() {
+        let mut t = SpeedTracker::new(std::time::Duration::from_secs(5));
+        let start = std::time::Instant::now();
+        t.record(start, 0);
+        t.record(start + std::time::Duration::from_secs(1), 1_000);
+        // The client retried a chunk: the counter goes back to 500.
+        t.record(start + std::time::Duration::from_secs(2), 500);
+        assert_eq!(t.speed_bps(), None, "a fresh baseline has no slope yet");
+        t.record(start + std::time::Duration::from_secs(3), 1_500);
+        assert_eq!(t.speed_bps(), Some(1_000));
+    }
+
+    #[test]
+    fn test_speed_tracker_eta_rounds_up_and_saturates() {
+        let mut t = SpeedTracker::new(std::time::Duration::from_secs(5));
+        let start = std::time::Instant::now();
+        t.record(start, 0);
+        t.record(start + std::time::Duration::from_secs(1), 1_000);
+        assert_eq!(t.eta_seconds(2_500), Some(2), "1.5 s left rounds up to 2");
+        assert_eq!(t.eta_seconds(1_000), Some(0), "already there is 0, not None");
+        assert_eq!(t.eta_seconds(999), Some(0));
+    }
+
+    #[test]
+    fn test_transfer_detail_serializes_eta_and_method_on_the_wire() {
+        // The SSE payload is `serde_json::to_string(&event)`, so the field
+        // names are the client contract.
+        let m = ProgressManager::new();
+        let id = m.create_job(JobType::Custom("explorer_checksum".into()), "start");
+        m.emit_transfer_progress(
+            &id,
+            50.0,
+            "hashing",
+            &TransferDetail {
+                bytes_total: Some(100),
+                eta_seconds: Some(3),
+                method: Some("sha256".into()),
+                ..TransferDetail::default()
+            },
+        );
+        let json = serde_json::to_string(&m.get_progress(&id).unwrap()).expect("serialize");
+        assert!(json.contains("\"eta_seconds\":3"), "{json}");
+        assert!(json.contains("\"method\":\"sha256\""), "{json}");
     }
 }

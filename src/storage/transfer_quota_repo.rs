@@ -415,7 +415,9 @@ mod tests {
             .await
             .unwrap();
         repo.add_upload_usage("user", "alice", 900).await.unwrap();
-        repo.add_download_usage("user", "alice", 1_900).await.unwrap();
+        repo.add_download_usage("user", "alice", 1_900)
+            .await
+            .unwrap();
 
         // Switching to a monthly window must not bill the whole lifetime
         // history against the new cap.
@@ -467,12 +469,22 @@ mod tests {
         repo.add_upload_usage("user", "bob", 300).await.unwrap();
 
         let changed = repo
-            .reset_expired("day", "2026-10-23T00:00:00+00:00", "2026-10-23T00:00:00+00:00")
+            .reset_expired(
+                "day",
+                "2026-10-23T00:00:00+00:00",
+                "2026-10-23T00:00:00+00:00",
+            )
             .await
             .unwrap();
         assert_eq!(changed, 1, "only the day row was in that period");
-        assert_eq!(repo.get("user", "alice").await.unwrap().upload_used_bytes, 0);
-        assert_eq!(repo.get("user", "bob").await.unwrap().upload_used_bytes, 300);
+        assert_eq!(
+            repo.get("user", "alice").await.unwrap().upload_used_bytes,
+            0
+        );
+        assert_eq!(
+            repo.get("user", "bob").await.unwrap().upload_used_bytes,
+            300
+        );
     }
 
     #[tokio::test]
@@ -484,7 +496,11 @@ mod tests {
         repo.add_upload_usage("user", "alice", 500).await.unwrap();
 
         let changed = repo
-            .reset_expired("day", "2026-10-23T00:00:00+00:00", "2026-10-23T00:00:00+00:00")
+            .reset_expired(
+                "day",
+                "2026-10-23T00:00:00+00:00",
+                "2026-10-23T00:00:00+00:00",
+            )
             .await
             .unwrap();
         assert_eq!(changed, 0);
@@ -503,7 +519,10 @@ mod tests {
         repo.add_upload_usage("user", "alice", 100).await.unwrap();
         // A refund of a reservation that was itself reset must not go negative.
         repo.add_upload_usage("user", "alice", -500).await.unwrap();
-        assert_eq!(repo.get("user", "alice").await.unwrap().upload_used_bytes, 0);
+        assert_eq!(
+            repo.get("user", "alice").await.unwrap().upload_used_bytes,
+            0
+        );
     }
 
     #[tokio::test]

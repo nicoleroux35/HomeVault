@@ -57,7 +57,11 @@ pub fn root_for(allowed_roots: &[PathBuf], path: &str) -> PathBuf {
 ///
 /// The share folders are included regardless of `is_admin` so a non-admin
 /// still sees and can restore what they deleted over the network. Pure.
-pub fn roots_from(allowed_roots: &[PathBuf], share_paths: &[PathBuf], is_admin: bool) -> Vec<PathBuf> {
+pub fn roots_from(
+    allowed_roots: &[PathBuf],
+    share_paths: &[PathBuf],
+    is_admin: bool,
+) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = allowed_roots
         .iter()
         .map(|r| r.join(TRASH_DIR_NAME))

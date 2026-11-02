@@ -276,7 +276,7 @@ async fn run_timed(
 /// named. Keeping one implementation is the point: this module used to carry
 /// its own copy, and every other call in it still awaited its output bare.
 async fn bounded(cmd: &mut Command, timeout: Duration) -> Result<std::process::Output, DiskError> {
-    use crate::utils::process::{ProcessFailure, run_timed_async_result};
+    use crate::utils::process::{run_timed_async_result, ProcessFailure};
     let program = cmd.as_std().get_program().to_string_lossy().into_owned();
     match run_timed_async_result(cmd, timeout).await {
         Ok(output) => Ok(output),
@@ -2154,7 +2154,7 @@ impl DiskService {
     /// system path can block on a slow filesystem or a locked file, and this
     /// runs inside the array-creation job while `PERSIST_LOCK` is held.
     async fn write_file_as_root(path: &str, content: &str) -> Result<(), DiskError> {
-        use crate::utils::process::{ProcessFailure, run_timed_async_with_stdin};
+        use crate::utils::process::{run_timed_async_with_stdin, ProcessFailure};
         let output = run_timed_async_with_stdin(
             Command::new("sudo").args(["tee", path]),
             MOUNT_TIMEOUT,
@@ -3988,8 +3988,8 @@ mod tests {
 
     #[test]
     fn test_sub_progress_maps_a_window_onto_the_parent_scale() {
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
 
         struct Capture(Arc<AtomicUsize>);
         impl CreateProgress for Capture {
@@ -4500,13 +4500,11 @@ recommended polling time: \t (   5) minutes.
         );
         // A by-id path is not the same name: the intersection is empty, which
         // means "wipe nothing" rather than "wipe the wrong device".
-        assert!(
-            wipe_targets(
-                &["/dev/disk/by-id/ata-ST1000-x".to_string()],
-                &["/dev/sda".to_string()]
-            )
-            .is_empty()
-        );
+        assert!(wipe_targets(
+            &["/dev/disk/by-id/ata-ST1000-x".to_string()],
+            &["/dev/sda".to_string()]
+        )
+        .is_empty());
     }
 
     // -- ROADMAP 8.2: a silent array fails the create -------------------------
@@ -4916,9 +4914,7 @@ recommended polling time: \t (   5) minutes.
             .collect();
         assert_eq!(
             tail,
-            vec![
-                "mirror", "/dev/sda", "/dev/sdb", "mirror", "/dev/sdc", "/dev/sdd"
-            ],
+            vec!["mirror", "/dev/sda", "/dev/sdb", "mirror", "/dev/sdc", "/dev/sdd"],
             "{args:?}"
         );
         // A bare device name still gets its `/dev/` prefix.

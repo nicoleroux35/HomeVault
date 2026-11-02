@@ -23,7 +23,7 @@
   import { authStore } from '$lib/stores/auth';
   import { passkeySupported } from '$lib/stores/passkey';
   import { appGate } from '$lib/stores/appGate';
-  import { translations, languageStore } from '$lib/stores/i18n';
+  import { t as i18nT, translations, languageStore } from '$lib/stores/i18n';
   import { IconAlertTriangle, IconArrowLeft, IconEye, IconEyeOff, IconFingerprint, IconLock, IconLogin, IconRefresh, IconShieldCheckered, IconUser, IconWifiOff } from '@tabler/icons-svelte';
   import { Modal, Button } from '$lib/components/theme';
   import { Switch } from '$lib/components/ui/switch/index.js';
@@ -77,6 +77,16 @@
   // Inline field error (the approved mock shows it under the fields) — shown
   // alongside the modal so the E2E error flow stays intact.
   let inlineError = '';
+  // Single sign-on: the server is the only place that knows whether an
+  // integration is on, so the buttons are drawn from `/auth/methods` rather
+  // than from anything the browser guesses. Each label is the text an
+  // administrator configured ("Sign in with Authentik"), shown as-is.
+  // Two providers can be on at once (OpenID Connect and SAML), so this is a
+  // list, not a boolean — and `ssoBusy` names the one in flight so only that
+  // button shows the spinner.
+  type SsoProvider = { id: 'oidc' | 'saml'; label: string };
+  let ssoProviders: SsoProvider[] = [];
+  let ssoBusy: 'oidc' | 'saml' | null = null;
   // Plain-HTTP warning: the password travels in the clear and the browser gives
   // no hint. Loopback is exempt — nothing leaves the machine there.
   let insecureConnection = false;
@@ -85,8 +95,20 @@
   // (WCAG 2.4.3 / the project's overlay invariant), not drop it on <body>.
   let errorModalTrigger: HTMLElement | null = null;
 
-  $: t = (key: string) =>
-    (translations as any)?.[$languageStore]?.[key] || (translations as any)?.en?.[key] || key;
+  // The login screen's own wording historically lives in the bundled seed
+  // dictionary below (`translations`), while newer keys — passkeys, single
+  // sign-on — exist only in the TOML files the server flattens into the map
+  // every other screen reads. Ask the server map first, then the seed, so
+  // neither source can render a raw `login.*` key on the sign-in card.
+  $: t = (key: string) => {
+    const fromServer = $i18nT(key);
+    if (fromServer !== key) return fromServer;
+    return (
+      (translations as any)?.[$languageStore]?.[key] ??
+      (translations as any)?.en?.[key] ??
+      key
+    );
+  };
 
   $: totpCode = codeDigits.join('');
 
@@ -168,12 +190,129 @@
     appGate.refresh();
   }
 
+  // ------------------------------------------------------------------
+  // Single sign-on
+  // ------------------------------------------------------------------
+
+  /// One sentence per failure code the callback leaves in the URL. The server
+  /// never sends free-form text there: a short code keeps the URL clean and
+  /// lets the wording follow the reader's chosen language.
+  const SSO_ERROR_KEYS: Record<string, string> = {
+    state: 'login.sso_error_state',
+    expired: 'login.sso_error_expired',
+    denied: 'login.sso_error_denied',
+    disabled: 'login.sso_error_disabled',
+    unavailable: 'login.sso_error_unavailable',
+    refused: 'login.sso_error_refused',
+    claim: 'login.sso_error_claim',
+    account: 'login.sso_error_account',
+    account_disabled: 'login.sso_error_account_disabled',
+    session: 'login.sso_error_session',
+  };
+
+  function ssoErrorText(code: string): string {
+    return t(SSO_ERROR_KEYS[code] || 'login.sso_error_generic');
+  }
+
+  /**
+   * Consume what a round-trip through the identity provider left behind.
+   *
+   * The ticket is a credential for exactly one exchange, so it is removed from
+   * the URL *before* the exchange starts: a reload or a back button must not
+   * find it again. The query is preserved so the app-proxy flow
+   * (`/login?next=/app-auth…`) still finishes its round-trip afterwards.
+   */
+  function consumeSsoReturn() {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const failure = params.get('sso_error');
+    if (failure) {
+      params.delete('sso_error');
+      const query = params.toString();
+      window.history.replaceState({}, '', '/login' + (query ? `?${query}` : ''));
+      inlineError = ssoErrorText(failure);
+      return;
+    }
+    const hash = window.location.hash || '';
+    if (!hash.startsWith('#sso=')) return;
+    const fragment = new URLSearchParams(hash.slice(1));
+    const ticket = (fragment.get('sso') || '').trim();
+    const provider = fragment.get('p') === 'saml' ? 'saml' : 'oidc';
+    window.history.replaceState({}, '', '/login' + (window.location.search || ''));
+    if (!ticket) {
+      inlineError = t('login.sso_error_generic');
+      return;
+    }
+    void completeSsoSignIn(ticket, provider);
+  }
+
+  /**
+   * Send the browser to the identity provider.
+   *
+   * The server answers with the URL and has already bound the flow to this
+   * browser with an HttpOnly cookie, so neither the URL nor the state can be
+   * forged here.
+   */
+  async function handleSsoSignIn(provider: 'oidc' | 'saml') {
+    if (ssoBusy || isLoading) return;
+    inlineError = '';
+    ssoBusy = provider;
+    try {
+      const res = provider === 'saml' ? await api.startSamlSignIn() : await api.startOidcSignIn();
+      const authorized = res.success ? res.data?.authorize_url || '' : '';
+      if (authorized) {
+        window.location.href = authorized;
+        return;
+      }
+      ssoBusy = null;
+      showErrorText(res.message || t('login.sso_error_unavailable'));
+    } catch {
+      ssoBusy = null;
+      showErrorText(t('login.sso_error_unavailable'));
+    }
+  }
+
+  /// The callback already created the session; this trades the ticket for it.
+  async function completeSsoSignIn(ticket: string, provider: 'oidc' | 'saml' = 'oidc') {
+    ssoBusy = provider;
+    const result = await authStore.completeSso(ticket, provider);
+    ssoBusy = null;
+    if (result.success && result.isAdmin) {
+      unlocking = true;
+      setTimeout(gotoDesktop, 700);
+      return;
+    }
+    if (result.success) {
+      showLoginError('login.error.not_admin');
+      return;
+    }
+    showErrorText(result.error || t('login.sso_error_generic'));
+  }
+
   onMount(() => {
     insecureConnection = isInsecureConnection();
     // Consumed the one-shot confirmation: the key is read during component
     // initialisation (pwNotice) and cleared here so a later refresh shows a
     // plain login card.
     if (pwNotice) sessionStorage.removeItem('hv_password_changed');
+    // A return from the identity provider carries either a one-shot ticket
+    // (in the fragment) or a short error code. Both are consumed once, before
+    // the form is usable, so a reload never replays either.
+    consumeSsoReturn();
+    api.getAuthMethods()
+      .then((res) => {
+        if (res.success && res.data) {
+          const providers: SsoProvider[] = [];
+          if (res.data.oidc?.enabled) {
+            providers.push({ id: 'oidc', label: res.data.oidc.label || '' });
+          }
+          if (res.data.saml?.enabled) {
+            providers.push({ id: 'saml', label: res.data.saml.label || '' });
+          }
+          ssoProviders = providers;
+        }
+      })
+      .catch(() => {});
     api.getPublicSettings().then((res) => {
       if (res.success && res.data?.version) serverVersion = res.data.version;
     }).catch(() => {});
@@ -202,7 +341,13 @@
   }
 
   function showLoginError(key: string) {
-    const message = t(key);
+    showErrorText(t(key));
+  }
+
+  /// Show an arbitrary sentence in the same modal + inline slot. Used by the
+  /// single sign-on paths, whose failures are worded by the server (or by a
+  /// code→sentence table) rather than by an `login.error.*` key.
+  function showErrorText(message: string) {
     errorModalMessage = message;
     inlineError = message;
     if (!showErrorModal) {
@@ -947,6 +1092,30 @@
                     {#if passkeyBusy}<div class="hv-spinner"></div>{:else}<IconFingerprint size={18} stroke={1.8} />{/if}
                     <span>{passkeyBusy ? t('login.passkey_verifying') : t('login.passkey_button')}</span>
                   </button>
+                {/if}
+                {#if ssoProviders.length > 0}
+                  <!-- The label is the text the administrator configured at the
+                       provider ("Sign in with Authentik"), so it is shown as-is
+                       rather than assembled from a translated template. Two
+                       providers can be on at once, so each gets its own button
+                       and only the one in flight shows the spinner. -->
+                  <div class="flex items-center gap-3" aria-hidden="true">
+                    <span class="h-px flex-1 bg-[var(--hv-login-hairline)]"></span>
+                    <span class="text-xs uppercase tracking-[0.1em] text-[var(--hv-login-muted)]">{t('login.sso_divider')}</span>
+                    <span class="h-px flex-1 bg-[var(--hv-login-hairline)]"></span>
+                  </div>
+                  {#each ssoProviders as provider (provider.id)}
+                    <button
+                      type="button"
+                      data-testid={provider.id === 'oidc' ? 'login-sso' : 'login-sso-saml'}
+                      class="flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-[var(--hv-login-hairline)] bg-transparent px-4 text-t-body font-medium text-[var(--hv-shell-text-2)] transition-colors hover:text-[var(--hv-shell-text-strong)] disabled:opacity-60"
+                      onclick={() => handleSsoSignIn(provider.id)}
+                      disabled={isLoading || ssoBusy !== null}
+                    >
+                      {#if ssoBusy === provider.id}<div class="hv-spinner"></div>{:else}<IconLogin size={18} stroke={1.8} />{/if}
+                      <span>{ssoBusy === provider.id ? t('login.sso_starting') : (provider.label || t('login.sso_generic'))}</span>
+                    </button>
+                  {/each}
                 {/if}
               </div>
             </form>

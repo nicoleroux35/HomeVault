@@ -45,7 +45,7 @@ SPA's `ApiClient` (`frontend/src/lib/services/api.ts`) prefixes every call with
 
 | Method | Path | Auth | Handler |
 |--------|------|------|---------|
-| POST | `/auth/login` | public | `handle_login` — 401 bad credentials, 429 per-IP throttle / account lockout; response includes `must_change_password` (admin-chosen password pending) |
+| POST | `/auth/login` | public | `handle_login` — 401 bad credentials, 429 per-IP throttle / account lockout; response includes `must_change_password` (admin-chosen password pending). A name whose `users.auth_source` is `directory` takes the directory path instead (see [Directory sign-in](./guides/directory-sso.md)): 503 when the directory is unreachable or the integration is off, with **no** lockout-ladder entry. A directory principal is never checked against a local hash, and a local account is never sent to the directory |
 | POST | `/auth/logout` | auth | `handle_logout` |
 | GET | `/auth/me` | auth | `handle_get_current_user` — includes `must_change_password` |
 | POST | `/auth/2fa/verify` | public | `handle_2fa_verify` |
@@ -90,6 +90,62 @@ plain HTTP (see [Apps Center](./guides/apps-center.md)).
 2FA-enabled accounts: `/auth/login` returns `requires_2fa`; the TOTP code is sent
 to `/auth/2fa/verify`. The old email `/auth/forgot-password` + `/auth/reset-password`
 flow was **removed** 2026-09-03 — see [Authentication](./guides/auth.md).
+
+## Directory and single sign-on — `directory/*`, `oidc/*`, `saml/*`, `auth/oidc/*`, `auth/saml/*`
+
+Three providers, one principal model. The settings halves are `admin`; the
+`/auth/*` halves **are** the sign-in and are `public` by design. Full behaviour,
+refusal table and failure modes: [Directory and single sign-on](./guides/directory-sso.md).
+
+| Method | Path | Auth | Handler / notes |
+|--------|------|------|-----------------|
+| GET | `/directory` | admin | `handle_directory_get` — settings (password write-only, `has_bind_password`), live `status` (`enabled`, `usable`, `problem`, cache hits/misses/entries), the mirrored identities, `counts`, and `break_glass.local_admins` |
+| PUT | `/directory/settings` | admin | `handle_directory_settings_put` — the whole document; `bind_password` is three-valued (`null`/absent keeps the sealed one, `""` clears it, any other string seals and replaces it); answers the full `GET` payload |
+| POST | `/directory/test` | admin | `handle_directory_test` — reads the form as typed, saves nothing; with a `username`/`password` it also reports the role that sign-in would grant |
+| POST | `/directory/identities/{id}/disabled` | admin | `handle_identity_disabled` — `{ disabled }`; disabling also ends that principal's sessions, the directory is untouched |
+| DELETE | `/directory/identities/{id}` | admin | `handle_identity_delete` — forgets the mirrored principal and its shadow `users` row |
+| GET | `/oidc` | admin | `handle_oidc_get` — same shape as `/directory` for the OpenID Connect half (`has_client_secret`, no secret ever returned) |
+| PUT | `/oidc/settings` | admin | `handle_oidc_settings_put` — `enabled`, `label`, `issuer`, `client_id`, `client_secret` (three-valued like `bind_password`), `redirect_url`, `scopes`, the four claim names, `default_role`, `group_roles` |
+| POST | `/oidc/test` | admin | `handle_oidc_test` — fetches the provider's discovery document with the form as typed, saves nothing |
+| GET | `/auth/methods` | public | `handle_auth_methods` — `{ password: true, oidc: { enabled, label }, saml: { enabled, label } }`, what the login screen reads to decide which buttons to show |
+| POST | `/auth/oidc/start` | public | `handle_oidc_start` — mints `state`, `nonce` and a PKCE verifier, sets the `hv_oidc_state` cookie (`HttpOnly`, `Path=/api/auth/oidc`, `SameSite=Lax`, 600 s) and answers `{ authorize_url, state }` |
+| GET | `/auth/oidc/callback` | public | `handle_oidc_callback` — the provider's redirect target; verifies the cookie/state, exchanges the code, verifies the ID token, upserts the principal, creates the session and answers **`303`** to `/login#sso=<one-shot-ticket>`. Every failure is a `303` to `/login?sso_error=<code>` |
+| POST | `/auth/oidc/complete` | public | `handle_oidc_complete` — `{ code }` → the same `LoginResponse` a password login returns. The ticket lives 120 s in a bounded store and is spent exactly once; a missing/spent/expired one is `401` |
+| GET | `/saml` | admin | `handle_saml_get` — same shape as `/directory` for the SAML half: `settings`, `status` (`enabled`, `usable`, `problem`, `pending_requests`), `counts`, `break_glass.local_admins` |
+| PUT | `/saml/settings` | admin | `handle_saml_settings_put` — the whole document: `enabled`, `label`, `idp_metadata_url`, `idp_entity_id`, `idp_sso_url`, `idp_certificates`, `sp_entity_id`, `acs_url`, the three attribute names, `default_role`, `group_roles`. Authenticates **before** parsing the body |
+| POST | `/saml/test` | admin | `handle_saml_test` — fetches and parses the IdP's metadata document with the form as typed, saves nothing. Authenticates before parsing |
+| GET | `/saml/metadata` | admin | `handle_saml_metadata` — our service-provider metadata (`EntityDescriptor`, `SPSSODescriptor`, signing certificate), for the admin to copy into the IdP |
+| POST | `/auth/saml/start` | public | `handle_saml_start` — mints a request ID, sets the `hv_saml_state` cookie and answers `{ authorize_url, request_id }` |
+| POST | `/auth/saml/acs` | public | `handle_saml_acs` — the IdP's POST target; verifies the signed assertion and answers **`303`** to `/login#sso=<one-shot-ticket>` or `/login?sso_error=<code>` |
+| POST | `/auth/saml/complete` | public | `handle_saml_complete` — `{ code }` → the same `LoginResponse`; one-shot, 120 s, `401` when missing/spent/expired |
+| GET | `/auth/saml/metadata` | public | the same service-provider metadata, for an IdP that fetches it itself |
+
+Both settings documents are persisted to `{DATA_DIRECTORY}/data/directory.json`
+and `…/oidc.json`; the service-account password is sealed under the
+`directory-bind` scope and the client secret under `oidc-client-secret`
+(`src/storage/secret_box.rs`), and neither is ever returned. SAML settings live
+in `…/saml.json` and hold no secret — the IdP certificate is public. Every
+mutation answers with the full `GET` payload so the screen never guesses what a
+change did.
+
+**Who may sign in** is decided server-side and never by the request body:
+`users.auth_source = 'directory'` (and the provider stored on the principal)
+selects the remote path, so a local account is never sent to a provider and a
+remote account is never checked against a local hash. `POST /auth/login` on an
+OIDC principal answers `403` ("This account signs in through single sign-on —
+use the single sign-on button"), and the LDAP path refuses any principal whose
+provider is not `ldap`/`ad`. A provider outage is a `503` (or a `303` to
+`sso_error=unavailable`) with **no** lockout-ladder entry and no IP ban, and
+local accounts are never affected — the break-glass rule.
+
+The `redirect_url` is configured explicitly, never derived from the request's
+`Host` header; it must be `https://` (`http://` only for a loopback address) and
+must end in `/api/auth/oidc/callback`. ID tokens are accepted only with `RS256`,
+`ES256` or `EdDSA` and a matching key type (`none` and HMAC are refused) after
+`iss`, `aud`, `exp`/`iat` and `nonce` checks; the JWKS are refetched once, and
+only for a `kid` the cached set does not contain.
+
+
 
 ## Settings — `settings/*`
 
@@ -405,10 +461,14 @@ Any refusal answers 400 and keeps the metadata row.
 | GET | `/explorer/thumbnail` | auth \| ticket | image thumbnail; `?ticket=` (multi-use, directory-scoped) or session header |
 | POST | `/explorer/thumbnail-ticket` | auth | `?path=` — mint a multi-use 5 min thumbnail ticket for a directory |
 | POST | `/explorer/upload` | auth | multipart `file` + `?path=` + `?strategy=`; `fsync`'d before success; SHA-256 in `checksums[]`, `skipped[]` for `strategy=skip`; optional `X-Expected-Sha256` header (single-file) |
-| POST | `/explorer/upload/session` | auth | `?path=&filename=&size=` — open a resumable upload session; owned by the calling user; capped per user (20) and globally (256), 429 beyond; 429 over quota, 503 if the quota guard cannot answer |
+| POST | `/explorer/upload/session` | auth | `?path=&filename=&size=&sha256?=` — open a resumable upload session; owned by the calling user; capped per user (20) and globally (256) **counted in `upload_sessions`**, so a restart does not reset them; 429 beyond, 429 over quota, 503 if the quota guard cannot answer. Answers `{ session_id, offset, expires_in_seconds }`; the row survives a restart (migration 074) |
 | DELETE | `/explorer/upload/session` | auth | `?session_id=` — abort a resumable upload, remove the partial temp file; 403 unless the session belongs to the caller |
-| POST | `/explorer/upload/chunk` | auth | **streamed** body + `?session_id=&offset=` — write one chunk at the server's authoritative offset (409 + current offset on mismatch); the body is written frame by frame and capped at 32 MiB and at the session's remaining size, so an over-cap chunk is `413` with the offset to resume at and commits nothing; 403 unless the session belongs to the caller |
+| POST | `/explorer/upload/chunk` | auth | **streamed** body + `?session_id=&offset=` — write one chunk at the server's authoritative offset (409 + current offset on mismatch); the body is written frame by frame and capped at 32 MiB and at the session's remaining size, so an over-cap chunk is `413` with the offset to resume at and commits nothing; 403 unless the session belongs to the caller. Answers `{ offset, bytes_total, speed_bps }`. The session is rehydrated from `upload_sessions` on a cache miss, so a chunk sent after a restart resumes at the stored offset |
 | POST | `/explorer/upload/complete` | auth | `?session_id=` — fsync + SHA-256 + atomic rename into place, then debit the quota; 403 unless the session belongs to the caller |
+| POST | `/explorer/checksum` | auth | JSON body `{ path, algorithm?, compare_with?, async? }` — on-demand digest (`sha256` default, `sha512`, `blake3`; MD5 and unknown values are `400`). A file ≤ 8 MiB answers `{ path, algorithm, checksum, file_size, duration_ms }` inline; a larger one (or `async: true`) answers `{ job_id, sse_url, status }` and the job reports bytes/speed/ETA like any transfer. `compare_with` adds `{ compare_with: { path, checksum, file_size }, match }`. Both paths pass the PathGuard |
+| GET | `/explorer/checksum/result` | auth | `?job_id=` — the outcome of an asynchronous checksum (`{ state, path, algorithm, checksum, file_size, duration_ms, match, error }`), owner or admin only, 15-minute lifetime |
+| GET | `/explorer/transfers/active` | auth | live transfers for the tray: `{ uploads: [{ session_id, filename, dir, bytes_received, bytes_total, progress, speed_bps, eta_seconds, state, created_at, last_chunk_at }], transfers: [{ id, zone, kind, state, label, progress, bytes_processed, bytes_total, speed_bps, eta_seconds, method, detail, cancel_path }], counts: { uploads, downloads, copies, total } }`. Uploads come from `upload_sessions` (a row, not a job), jobs from the progress manager scoped to the caller; `zone` is `upload`\|`download`\|`copy`; `cancel_path` is API-relative (`/progress/{id}`) and `null` for an upload (abort it with the session id) |
+| GET | `/explorer/transfers/history` | auth | `?limit=&offset=&operation=&status=&since=` — finished transfers, newest first: `{ entries: [{ id, job_id, username, operation, source_path, dest_path, bytes_total, duration_ms, method, verified, status, error_message, created_at, completed_at }], has_more, limit, offset }`. A non-admin sees only their own rows, an admin sees every user's; unknown `operation`/`status` values are `400`; retention 90 days |
 | POST/GET/DELETE | `/explorer/trash` | auth | `?path=` (POST) — move to trash / list trash / empty trash |
 | POST | `/explorer/trash/restore` | auth | `?id=` (cross-device EXDEV fallback) |
 | DELETE | `/explorer/trash/{id}` | auth | permanently delete one trashed item |

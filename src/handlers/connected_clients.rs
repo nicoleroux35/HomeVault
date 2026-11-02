@@ -90,9 +90,7 @@ pub async fn handle_connected_client_kick(
                 "detail": detail,
             }))
         }
-        Err(KickError::Unknown(id)) => {
-            ResponseHelper::json_error(KickError::Unknown(id).message())
-        }
+        Err(KickError::Unknown(id)) => ResponseHelper::json_error(KickError::Unknown(id).message()),
         Err(KickError::NotKickable(protocol)) => {
             ResponseHelper::json_error(KickError::NotKickable(protocol).message())
         }

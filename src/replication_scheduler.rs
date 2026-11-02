@@ -150,10 +150,10 @@ pub async fn preview_job(job: &ReplicationJob) -> Result<replication::SendPlan, 
         };
         let mut names: Vec<String> =
             SnapshotService::list_snapshots_of(snapshot_kind, &pool_for_list)
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .map(|snapshot| snapshot.name)
-            .collect();
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .map(|snapshot| snapshot.name)
+                .collect();
         names.sort();
         Ok::<_, String>(names)
     })
@@ -183,7 +183,10 @@ fn paths_for(
 ) -> Result<(Option<String>, Option<String>), String> {
     match job.backend_kind() {
         Some(ReplicationBackend::Btrfs) => Ok((
-            Some(replication::btrfs_source_snapshot_path(pool, snapshot_name)?),
+            Some(replication::btrfs_source_snapshot_path(
+                pool,
+                snapshot_name,
+            )?),
             replication::btrfs_destination_path(job),
         )),
         _ => Ok((None, None)),
@@ -211,13 +214,11 @@ async fn run_job_inner(job: &ReplicationJob) -> Result<RunOutcome, String> {
     .map_err(|e| format!("pool lookup panicked: {e}"))??;
     let matches = matches!(
         (resolved, backend),
-        (
-            crate::snapshots::SnapshotKind::Zfs,
-            ReplicationBackend::Zfs
-        ) | (
-            crate::snapshots::SnapshotKind::Btrfs,
-            ReplicationBackend::Btrfs
-        )
+        (crate::snapshots::SnapshotKind::Zfs, ReplicationBackend::Zfs)
+            | (
+                crate::snapshots::SnapshotKind::Btrfs,
+                ReplicationBackend::Btrfs
+            )
     );
     if !matches {
         return Err(format!(
@@ -443,7 +444,10 @@ mod tests {
     fn a_single_job_cannot_run_twice_at_once() {
         let first = RunGuard::acquire(42).expect("first run acquires");
         assert!(is_running(42));
-        assert!(RunGuard::acquire(42).is_none(), "a second run must be refused");
+        assert!(
+            RunGuard::acquire(42).is_none(),
+            "a second run must be refused"
+        );
         drop(first);
         assert!(!is_running(42));
         assert!(RunGuard::acquire(42).is_some());

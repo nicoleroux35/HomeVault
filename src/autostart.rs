@@ -166,14 +166,8 @@ mod tests {
     fn args_for_builds_the_scoped_sudo_argv() {
         // ROADMAP 25 — the exact argv the sudoers grant is scoped to. A change
         // here (bare `systemctl`, another verb, a second unit) must fail.
-        assert_eq!(
-            args_for(true),
-            vec!["systemctl", "enable", "homevault"]
-        );
-        assert_eq!(
-            args_for(false),
-            vec!["systemctl", "disable", "homevault"]
-        );
+        assert_eq!(args_for(true), vec!["systemctl", "enable", "homevault"]);
+        assert_eq!(args_for(false), vec!["systemctl", "disable", "homevault"]);
         assert_eq!(is_enabled_args(), vec!["is-enabled", "homevault"]);
     }
 
@@ -220,7 +214,10 @@ mod tests {
             "Failed to get unit file state for homevault.service: No such file or directory\n",
         ))
         .expect_err("a missing unit must be an error, not 'disabled'");
-        assert!(missing.contains("Failed to get unit file state"), "{missing}");
+        assert!(
+            missing.contains("Failed to get unit file state"),
+            "{missing}"
+        );
     }
 
     #[test]
@@ -247,10 +244,7 @@ mod tests {
 
     #[test]
     fn set_enabled_outcome_is_ok_on_success() {
-        assert_eq!(
-            set_enabled_outcome(true, &finished(0, "", "")),
-            Ok(())
-        );
+        assert_eq!(set_enabled_outcome(true, &finished(0, "", "")), Ok(()));
     }
 
     #[test]

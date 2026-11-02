@@ -81,20 +81,21 @@ use homevault::handlers::explorer::{
     handle_explorer_download, handle_explorer_download_ticket, handle_explorer_eject,
     handle_explorer_extract, handle_explorer_favorites_add, handle_explorer_favorites_list,
     handle_explorer_favorites_remove, handle_explorer_format, handle_explorer_history,
-    handle_explorer_instant_copy_get, handle_explorer_instant_copy_update,
-    handle_explorer_list, handle_explorer_mkdir, handle_explorer_move,
-    handle_explorer_network_discovery, handle_explorer_permissions, handle_explorer_preview,
-    handle_explorer_recents_clear, handle_explorer_recents_list, handle_explorer_recents_touch,
-    handle_explorer_rename, handle_explorer_roots, handle_explorer_save, handle_explorer_search,
-    handle_explorer_snapshots, handle_explorer_thumbnail, handle_explorer_thumbnail_ticket,
-    handle_explorer_trash, handle_explorer_trash_empty, handle_explorer_trash_list,
-    handle_explorer_trash_policy_get, handle_explorer_trash_policy_update,
-    handle_explorer_trash_purge, handle_explorer_trash_purge_now,
-    handle_explorer_trash_restore, handle_explorer_upload,
+    handle_explorer_instant_copy_get, handle_explorer_instant_copy_update, handle_explorer_list,
+    handle_explorer_mkdir, handle_explorer_move, handle_explorer_network_discovery,
+    handle_explorer_permissions, handle_explorer_preview, handle_explorer_recents_clear,
+    handle_explorer_recents_list, handle_explorer_recents_touch, handle_explorer_rename,
+    handle_explorer_roots, handle_explorer_save, handle_explorer_search, handle_explorer_snapshots,
+    handle_explorer_thumbnail, handle_explorer_thumbnail_ticket, handle_explorer_trash,
+    handle_explorer_trash_empty, handle_explorer_trash_list, handle_explorer_trash_policy_get,
+    handle_explorer_trash_policy_update, handle_explorer_trash_purge,
+    handle_explorer_trash_purge_now, handle_explorer_trash_restore, handle_explorer_upload,
     handle_explorer_upload_chunk, handle_explorer_upload_complete,
+    handle_explorer_checksum, handle_explorer_checksum_result,
     handle_explorer_upload_session_abort, handle_explorer_upload_session_start,
     handle_explorer_watch, handle_explorer_watch_ticket,
 };
+use homevault::handlers::transfers::{handle_active_transfers, handle_transfer_history};
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{auth::handle_login, AppState};
 use homevault::middleware::rate_limit::RateLimitState;
@@ -209,6 +210,19 @@ fn explorer_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/explorer/upload/complete",
             post(handle_explorer_upload_complete),
+        )
+        .route("/api/explorer/checksum", post(handle_explorer_checksum))
+        .route(
+            "/api/explorer/checksum/result",
+            get(handle_explorer_checksum_result),
+        )
+        .route(
+            "/api/explorer/transfers/active",
+            get(handle_active_transfers),
+        )
+        .route(
+            "/api/explorer/transfers/history",
+            get(handle_transfer_history),
         )
         .route("/api/explorer/compress", post(handle_explorer_compress))
         .route("/api/explorer/trash", post(handle_explorer_trash))
@@ -354,6 +368,35 @@ async fn send_raw_headers(
         .unwrap()
         .to_vec();
     (status, bytes)
+}
+
+/// Send a raw byte body (a chunk of a resumable upload, not JSON).
+async fn send_raw_body(
+    router: &mut Router,
+    uri: &str,
+    token: &str,
+    body: Vec<u8>,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header("x-session-token", token)
+        .header("content-type", "application/octet-stream")
+        .body(axum::body::Body::from(body))
+        .unwrap();
+    let resp = ServiceExt::<Req>::ready(router)
+        .await
+        .unwrap()
+        .call(req)
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json =
+        serde_json::from_slice(&bytes).unwrap_or(json!({"raw": String::from_utf8_lossy(&bytes)}));
+    (status, json)
 }
 
 /// Send a `multipart/form-data` upload with a single file field.
@@ -964,7 +1007,14 @@ async fn test_instant_copy_policy_requires_auth_and_admin() {
     let mut r = explorer_router(h.state.clone());
 
     // Unauthenticated.
-    let (status, _) = send(&mut r, Method::GET, "/api/explorer/instant-copy", None, None).await;
+    let (status, _) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/instant-copy",
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     let bob = login(&mut r, "bob", "Password123!").await;
@@ -1411,9 +1461,11 @@ async fn test_download_blocked_when_quota_exceeded() {
 
     // A 5-byte download cap for bob.
     homevault::storage::transfer_quota_repo::TransferQuotaRepository::new(h.state.db.pool())
-        .set_limits(homevault::storage::transfer_quota_repo::QuotaLimits::lifetime(
-            "user", "bob", false, 0, true, 5,
-        ))
+        .set_limits(
+            homevault::storage::transfer_quota_repo::QuotaLimits::lifetime(
+                "user", "bob", false, 0, true, 5,
+            ),
+        )
         .await
         .expect("set quota");
 
@@ -1444,16 +1496,13 @@ async fn test_download_allowed_under_quota_and_records_usage() {
 
     let repo =
         homevault::storage::transfer_quota_repo::TransferQuotaRepository::new(h.state.db.pool());
-    repo.set_limits(homevault::storage::transfer_quota_repo::QuotaLimits::lifetime(
-        "user",
-        "bob",
-        false,
-        0,
-        true,
-        1_000_000,
-    ))
-        .await
-        .expect("set quota");
+    repo.set_limits(
+        homevault::storage::transfer_quota_repo::QuotaLimits::lifetime(
+            "user", "bob", false, 0, true, 1_000_000,
+        ),
+    )
+    .await
+    .expect("set quota");
 
     let mut r = explorer_router(h.state.clone());
     let token = login(&mut r, "bob", "Password123!").await;
@@ -1480,9 +1529,11 @@ async fn test_upload_blocked_when_quota_exceeded() {
     create_test_user(&h.state, "bob", "Password123!", 1).await;
 
     homevault::storage::transfer_quota_repo::TransferQuotaRepository::new(h.state.db.pool())
-        .set_limits(homevault::storage::transfer_quota_repo::QuotaLimits::lifetime(
-            "user", "bob", true, 8, false, 0,
-        ))
+        .set_limits(
+            homevault::storage::transfer_quota_repo::QuotaLimits::lifetime(
+                "user", "bob", true, 8, false, 0,
+            ),
+        )
         .await
         .expect("set quota");
 
@@ -1939,7 +1990,8 @@ async fn test_disk_scan_does_not_block_the_runtime() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).expect("chmod shim");
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod shim");
     }
     let previous_path = std::env::var("PATH").ok();
     std::env::set_var("PATH", shim_dir.path());
@@ -3168,10 +3220,7 @@ async fn test_admin_delete_allows_scratch_outside_roots_only() {
     let (status, body) = send(
         &mut r,
         Method::POST,
-        &format!(
-            "/api/explorer/delete?path={}",
-            scratch.to_string_lossy()
-        ),
+        &format!("/api/explorer/delete?path={}", scratch.to_string_lossy()),
         Some(&token),
         None,
     )
@@ -3901,4 +3950,695 @@ async fn test_a_non_admin_traversal_is_still_refused() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+// ===========================================================================
+// HV-INT-01 — on-demand checksums
+// ===========================================================================
+
+/// `POST /api/explorer/checksum` on a small file answers inline with the real
+/// digest (the known SHA-256 of "abc", so a swapped algorithm or a bug in the
+/// read loop fails the test rather than the user).
+#[tokio::test]
+async fn test_checksum_inline_returns_the_real_digest() {
+    let h = setup().await;
+    create_test_user(&h.state, "member", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "member", "Password123!").await;
+    std::fs::write(h.root.join("abc.txt"), b"abc").unwrap();
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/checksum",
+        Some(&token),
+        Some(json!({"path": p(&h.root, "abc.txt")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["algorithm"], "sha256");
+    assert_eq!(
+        body["data"]["checksum"],
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+    assert_eq!(body["data"]["file_size"], 3);
+}
+
+#[tokio::test]
+async fn test_checksum_accepts_every_supported_algorithm() {
+    let h = setup().await;
+    create_test_user(&h.state, "member", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "member", "Password123!").await;
+    std::fs::write(h.root.join("abc.txt"), b"abc").unwrap();
+
+    let (_, sha512) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/checksum",
+        Some(&token),
+        Some(json!({"path": p(&h.root, "abc.txt"), "algorithm": "sha512"})),
+    )
+    .await;
+    assert_eq!(sha512["data"]["algorithm"], "sha512");
+    assert_eq!(
+        sha512["data"]["checksum"]
+            .as_str()
+            .expect("digest")
+            .len(),
+        128
+    );
+
+    let (_, blake3) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/checksum",
+        Some(&token),
+        Some(json!({"path": p(&h.root, "abc.txt"), "algorithm": "blake3"})),
+    )
+    .await;
+    assert_eq!(blake3["data"]["algorithm"], "blake3");
+    assert_eq!(
+        blake3["data"]["checksum"],
+        "6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85"
+    );
+}
+
+/// MD5 is what DSM offers and what this product deliberately refuses: an
+/// unknown algorithm is a `400`, never a silent fallback to SHA-256.
+#[tokio::test]
+async fn test_checksum_refuses_an_unsupported_algorithm() {
+    let h = setup().await;
+    create_test_user(&h.state, "member", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "member", "Password123!").await;
+    std::fs::write(h.root.join("abc.txt"), b"abc").unwrap();
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/checksum",
+        Some(&token),
+        Some(json!({"path": p(&h.root, "abc.txt"), "algorithm": "md5"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"].as_str().unwrap_or_default().contains("md5"),
+        "{body}"
+    );
+}
+
+/// `compare_with` is the "prove the copy is identical" case: equal files match,
+/// different files do not, and the digest of both is reported.
+#[tokio::test]
+async fn test_checksum_compare_with_reports_match_and_mismatch() {
+    let h = setup().await;
+    create_test_user(&h.state, "member", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "member", "Password123!").await;
+    std::fs::write(h.root.join("a.txt"), b"identical").unwrap();
+    std::fs::write(h.root.join("b.txt"), b"identical").unwrap();
+    std::fs::write(h.root.join("c.txt"), b"different").unwrap();
+
+    let (status, same) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/checksum",
+        Some(&token),
+        Some(json!({
+            "path": p(&h.root, "a.txt"),
+            "compare_with": p(&h.root, "b.txt")
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{same}");
+    assert_eq!(same["data"]["match"], true);
+    assert_eq!(same["data"]["compare_with"]["checksum"], same["data"]["checksum"]);
+
+    let (status, different) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/checksum",
+        Some(&token),
+        Some(json!({
+            "path": p(&h.root, "a.txt"),
+            "compare_with": p(&h.root, "c.txt")
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{different}");
+    assert_eq!(different["data"]["match"], false);
+}
+
+/// `async=true` hands back a job id; the digest is readable afterwards through
+/// `/explorer/checksum/result` (the progress event is not enough to carry it).
+#[tokio::test]
+async fn test_checksum_async_job_result_is_readable_afterwards() {
+    let h = setup().await;
+    create_test_user(&h.state, "member", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "member", "Password123!").await;
+    // Larger than one read block, so the job actually reports progress.
+    std::fs::write(h.root.join("big.bin"), vec![9u8; 300 * 1024]).unwrap();
+
+    let (status, started) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/checksum",
+        Some(&token),
+        Some(json!({"path": p(&h.root, "big.bin"), "async": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let job_id = started["data"]["job_id"]
+        .as_str()
+        .expect("job id")
+        .to_string();
+    assert!(started["data"]["sse_url"]
+        .as_str()
+        .unwrap_or_default()
+        .contains(&job_id));
+
+    // The job runs on a blocking thread; poll the result endpoint briefly.
+    let mut result = serde_json::json!({});
+    for _ in 0..100 {
+        let (status, body) = send(
+            &mut r,
+            Method::GET,
+            &format!("/api/explorer/checksum/result?job_id={}", urlencode(&job_id)),
+            Some(&token),
+            None,
+        )
+        .await;
+        if status == StatusCode::OK {
+            result = body;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(result["data"]["state"], "complete", "{result}");
+    assert_eq!(result["data"]["file_size"], 300 * 1024);
+    assert_eq!(
+        result["data"]["checksum"].as_str().unwrap_or_default().len(),
+        64,
+        "{result}"
+    );
+}
+
+/// The comparison path is confined like the subject: a checksum request cannot
+/// be used to read (hash) a file outside the caller's roots.
+#[tokio::test]
+async fn test_checksum_refuses_an_outside_root_path() {
+    let h = setup().await;
+    create_test_user(&h.state, "member", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "member", "Password123!").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/checksum",
+        Some(&token),
+        Some(json!({"path": "/etc/passwd"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    std::fs::write(h.root.join("a.txt"), b"x").unwrap();
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/checksum",
+        Some(&token),
+        Some(json!({"path": p(&h.root, "a.txt"), "compare_with": "/etc/passwd"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
+async fn test_checksum_requires_a_session() {
+    let h = setup().await;
+    let mut r = explorer_router(h.state.clone());
+    create_test_user(&h.state, "member", "Password123!", 1).await;
+    std::fs::write(h.root.join("a.txt"), b"x").unwrap();
+    let (status, _) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/checksum",
+        None,
+        Some(json!({"path": p(&h.root, "a.txt")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+// ===========================================================================
+// HV-ADV-02 — transfer history
+// ===========================================================================
+
+/// A single-file copy is recorded with its byte count, its method and its
+/// status — the row an administrator goes looking for.
+#[tokio::test]
+async fn test_transfer_history_records_a_copy() {
+    let h = setup().await;
+    create_test_user(&h.state, "member", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "member", "Password123!").await;
+    std::fs::write(h.root.join("a.txt"), b"copy me").unwrap();
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        &format!(
+            "/api/explorer/copy?source={}&destination={}",
+            urlencode(&p(&h.root, "a.txt")),
+            urlencode(&p(&h.root, "b.txt"))
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, history) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/transfers/history?operation=copy",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    let entries = history["data"]["entries"].as_array().expect("entries");
+    assert_eq!(entries.len(), 1, "{history}");
+    assert_eq!(entries[0]["operation"], "copy");
+    assert_eq!(entries[0]["status"], "complete");
+    assert_eq!(entries[0]["bytes_total"], 7);
+    assert_eq!(entries[0]["username"], "member");
+    assert!(
+        entries[0]["method"].as_str().is_some(),
+        "a copy always reports how it was made: {history}"
+    );
+}
+
+/// A failed copy is recorded too, with the reason — and the history stays
+/// visible to an administrator while another user's rows do not.
+#[tokio::test]
+async fn test_transfer_history_scopes_rows_to_the_owner_and_the_admin() {
+    let h = setup().await;
+    create_test_user(&h.state, "admin1", "Password123!", 2).await;
+    create_test_user(&h.state, "alice", "Password123!", 1).await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let alice = login(&mut r, "alice", "Password123!").await;
+    let bob = login(&mut r, "bob", "Password123!").await;
+    let admin = login(&mut r, "admin1", "Password123!").await;
+
+    std::fs::write(h.root.join("a.txt"), b"alice").unwrap();
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        &format!(
+            "/api/explorer/copy?source={}&destination={}",
+            urlencode(&p(&h.root, "a.txt")),
+            urlencode(&p(&h.root, "b.txt"))
+        ),
+        Some(&alice),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (_, mine) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/transfers/history",
+        Some(&alice),
+        None,
+    )
+    .await;
+    assert_eq!(mine["data"]["entries"].as_array().unwrap().len(), 1);
+
+    let (_, others) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/transfers/history",
+        Some(&bob),
+        None,
+    )
+    .await;
+    assert!(
+        others["data"]["entries"].as_array().unwrap().is_empty(),
+        "a member must never see another user's transfers: {others}"
+    );
+
+    let (_, all) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/transfers/history",
+        Some(&admin),
+        None,
+    )
+    .await;
+    let rows = all["data"]["entries"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "an admin sees every user's rows: {all}");
+    assert_eq!(rows[0]["username"], "alice");
+}
+
+#[tokio::test]
+async fn test_transfer_history_refuses_an_unknown_filter() {
+    let h = setup().await;
+    create_test_user(&h.state, "member", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "member", "Password123!").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/transfers/history?operation=teleport",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("teleport"),
+        "{body}"
+    );
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/transfers/history?status=half-done",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+/// `has_more` is derived from a page fetched one row deep, so a full page does
+/// not silently look like the end of the history.
+#[tokio::test]
+async fn test_transfer_history_pages_with_has_more() {
+    let h = setup().await;
+    create_test_user(&h.state, "member", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "member", "Password123!").await;
+
+    for i in 0..3 {
+        std::fs::write(h.root.join("a.txt"), b"x").unwrap();
+        let (status, body) = send(
+            &mut r,
+            Method::POST,
+            &format!(
+                "/api/explorer/copy?source={}&destination={}",
+                urlencode(&p(&h.root, "a.txt")),
+                urlencode(&p(&h.root, &format!("b{i}.txt")))
+            ),
+            Some(&token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    let (_, first) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/transfers/history?limit=2",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(first["data"]["entries"].as_array().unwrap().len(), 2);
+    assert_eq!(first["data"]["has_more"], true, "{first}");
+
+    let (_, second) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/transfers/history?limit=2&offset=2",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(second["data"]["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(second["data"]["has_more"], false, "{second}");
+}
+
+// ===========================================================================
+// HV-UX-01 / HV-UX-03 — live transfers and durable upload sessions
+// ===========================================================================
+
+#[tokio::test]
+async fn test_active_transfers_requires_a_session() {
+    let h = setup().await;
+    let mut r = explorer_router(h.state.clone());
+    let (status, _) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/transfers/active",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// An open chunked upload appears in the tray with its declared size, its
+/// received bytes and its zone badge — then disappears when it is aborted.
+#[tokio::test]
+async fn test_active_transfers_lists_and_cancels_an_upload_session() {
+    let h = setup().await;
+    create_test_user(&h.state, "member", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "member", "Password123!").await;
+
+    let (status, started) = send(
+        &mut r,
+        Method::POST,
+        &format!(
+            "/api/explorer/upload/session?path={}&filename=movie.bin&size=4096",
+            urlencode(&h.root.to_string_lossy())
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let session_id = started["data"]["session_id"]
+        .as_str()
+        .expect("session id")
+        .to_string();
+    assert_eq!(started["data"]["expires_in_seconds"], 1800);
+
+    let (_, busy) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/transfers/active",
+        Some(&token),
+        None,
+    )
+    .await;
+    let uploads = busy["data"]["uploads"].as_array().expect("uploads");
+    assert_eq!(uploads.len(), 1, "{busy}");
+    assert_eq!(uploads[0]["session_id"], session_id);
+    assert_eq!(uploads[0]["filename"], "movie.bin");
+    assert_eq!(uploads[0]["bytes_received"], 0);
+    assert_eq!(uploads[0]["bytes_total"], 4096);
+    assert_eq!(uploads[0]["state"], "running");
+    assert_eq!(busy["data"]["counts"]["uploads"], 1);
+
+    let (status, _) = send(
+        &mut r,
+        Method::DELETE,
+        &format!(
+            "/api/explorer/upload/session?session_id={}",
+            urlencode(&session_id)
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, idle) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/transfers/active",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert!(idle["data"]["uploads"].as_array().unwrap().is_empty(), "{idle}");
+    assert_eq!(idle["data"]["counts"]["uploads"], 0);
+}
+
+/// HV-UX-03: the session is a **row**, so an upload can be resumed by a process
+/// that never had it in memory. Inserting the row directly is exactly what a
+/// restart leaves behind — the handler must rehydrate from the database, accept
+/// the chunk at the stored offset, and finalise the file.
+#[tokio::test]
+async fn test_upload_session_resumes_from_the_database_after_a_restart() {
+    let h = setup().await;
+    create_test_user(&h.state, "member", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "member", "Password123!").await;
+
+    let tmp_path = h.root.join(".movie.bin.hvupl-test");
+    std::fs::write(&tmp_path, b"hello ").unwrap();
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO upload_sessions
+            (session_id, username, dir_path, filename, tmp_path, offset, total_bytes,
+             strategy, expected_sha256, created_at, last_chunk_at)
+         VALUES ('resumed-1', 'member', ?, 'movie.bin', ?, 6, 11, 'overwrite', NULL, ?, ?)",
+    )
+    .bind(h.root.to_string_lossy().to_string())
+    .bind(tmp_path.to_string_lossy().to_string())
+    .bind(now)
+    .bind(now)
+    .execute(&*h.state.db.pool())
+    .await
+    .expect("insert session row");
+
+    // The chunk is appended at the *stored* offset, from a process that has the
+    // session only in the database.
+    let (status, body) = send_raw_body(
+        &mut r,
+        "/api/explorer/upload/chunk?session_id=resumed-1&offset=6",
+        &token,
+        b"world".to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["offset"], 11);
+    assert_eq!(body["data"]["bytes_total"], 11);
+
+    let (status, done) = send(
+        &mut r,
+        Method::POST,
+        "/api/explorer/upload/complete?session_id=resumed-1",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(
+        std::fs::read(h.root.join("movie.bin")).expect("final file"),
+        b"hello world"
+    );
+
+    // The row is gone, and the upload is in the audit trail.
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM upload_sessions WHERE session_id = 'resumed-1'")
+            .fetch_one(&*h.state.db.pool())
+            .await
+            .expect("count");
+    assert_eq!(remaining, 0);
+
+    let (_, history) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/transfers/history?operation=upload",
+        Some(&token),
+        None,
+    )
+    .await;
+    let entries = history["data"]["entries"].as_array().expect("entries");
+    assert_eq!(entries.len(), 1, "{history}");
+    assert_eq!(entries[0]["bytes_total"], 11);
+    assert_eq!(entries[0]["status"], "complete");
+}
+
+/// A session row whose temp file disappeared (a crashed upload, a manual
+/// cleanup) is dropped rather than answered: the next chunk cannot be appended
+/// to a file that is not there.
+#[tokio::test]
+async fn test_upload_session_with_a_missing_temp_file_is_discarded() {
+    let h = setup().await;
+    create_test_user(&h.state, "member", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "member", "Password123!").await;
+
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO upload_sessions
+            (session_id, username, dir_path, filename, tmp_path, offset, total_bytes,
+             strategy, expected_sha256, created_at, last_chunk_at)
+         VALUES ('orphan-1', 'member', ?, 'gone.bin', ?, 0, 4, 'overwrite', NULL, ?, ?)",
+    )
+    .bind(h.root.to_string_lossy().to_string())
+    .bind(h.root.join(".gone.bin.hvupl-missing").to_string_lossy().to_string())
+    .bind(now)
+    .bind(now)
+    .execute(&*h.state.db.pool())
+    .await
+    .expect("insert orphan row");
+
+    let (status, body) = send_raw_body(
+        &mut r,
+        "/api/explorer/upload/chunk?session_id=orphan-1&offset=0",
+        &token,
+        b"data".to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upload_sessions WHERE session_id = 'orphan-1'",
+    )
+    .fetch_one(&*h.state.db.pool())
+    .await
+    .expect("count");
+    assert_eq!(remaining, 0, "the orphan row is swept");
+}
+
+/// The concurrency caps are counted in the database, so a restart cannot reset
+/// them while the durable sessions still hold temp files.
+#[tokio::test]
+async fn test_upload_session_cap_counts_durable_rows() {
+    let h = setup().await;
+    create_test_user(&h.state, "member", "Password123!", 1).await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "member", "Password123!").await;
+
+    // 20 live rows for the same user = the documented per-user cap.
+    let now = chrono::Utc::now().timestamp();
+    for i in 0..20 {
+        let tmp = h.root.join(format!(".f{i}.hvupl-cap"));
+        std::fs::write(&tmp, b"").unwrap();
+        sqlx::query(
+            "INSERT INTO upload_sessions
+                (session_id, username, dir_path, filename, tmp_path, offset, total_bytes,
+                 strategy, expected_sha256, created_at, last_chunk_at)
+             VALUES (?, 'member', ?, ?, ?, 0, 10, 'overwrite', NULL, ?, ?)",
+        )
+        .bind(format!("cap-{i}"))
+        .bind(h.root.to_string_lossy().to_string())
+        .bind(format!("f{i}.bin"))
+        .bind(tmp.to_string_lossy().to_string())
+        .bind(now)
+        .bind(now)
+        .execute(&*h.state.db.pool())
+        .await
+        .expect("insert session row");
+    }
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        &format!(
+            "/api/explorer/upload/session?path={}&filename=one-too-many.bin&size=10",
+            urlencode(&h.root.to_string_lossy())
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
 }

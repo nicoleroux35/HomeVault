@@ -106,7 +106,10 @@ pub const CONFIG_FILES: &[(&str, &str)] = &[
     ("configs/smb.conf", "/etc/samba/smb.conf"),
     ("configs/exports", "/etc/exports"),
     ("configs/netplan.yaml", "/etc/netplan/90-homevault.yaml"),
-    ("configs/sshd_config.sftp", "/etc/ssh/homevault_sftp_sshd_config"),
+    (
+        "configs/sshd_config.sftp",
+        "/etc/ssh/homevault_sftp_sshd_config",
+    ),
     ("configs/ufw.user.rules", "/etc/ufw/user.rules"),
     ("configs/ufw.user6.rules", "/etc/ufw/user6.rules"),
 ];
@@ -306,7 +309,9 @@ pub fn build(
         None => payload,
     };
 
-    let mut out = Vec::with_capacity(MAGIC.len() + 4 + 1 + SALT_LEN + NONCE_LEN + 4 + manifest_json.len() + body.len());
+    let mut out = Vec::with_capacity(
+        MAGIC.len() + 4 + 1 + SALT_LEN + NONCE_LEN + 4 + manifest_json.len() + body.len(),
+    );
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
     out.push(flags);
@@ -578,7 +583,7 @@ pub fn stage(archive: &Archive) -> Result<StagedRestore, String> {
     // A marker is what the startup hook looks for; writing it last means an
     // interrupted staging is never applied.
     crate::storage::AtomicWriter::write(dir.join("READY"), &archive.manifest.created_at)
-    .map_err(|e| format!("the restore marker could not be written: {e}"))?;
+        .map_err(|e| format!("the restore marker could not be written: {e}"))?;
 
     Ok(StagedRestore {
         manifest: archive.manifest.clone(),
@@ -603,8 +608,7 @@ pub fn write_staged_manifest(manifest: &Manifest) -> Result<(), String> {
     let dir = staging_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let json = serde_json::to_string_pretty(manifest).map_err(|e| e.to_string())?;
-    crate::storage::AtomicWriter::write(dir.join("manifest.json"), &json)
-        .map_err(|e| e.to_string())
+    crate::storage::AtomicWriter::write(dir.join("manifest.json"), &json).map_err(|e| e.to_string())
 }
 
 /// Apply a staged restore. Runs at startup, **before** the database is opened.
@@ -775,8 +779,14 @@ mod tests {
             database: b"SQLite format 3\0pretend database".to_vec(),
             settings: r#"{"schema_version":3,"smtp_password":"**redacted**"}"#.to_string(),
             configs: vec![
-                ("configs/smb.conf".to_string(), b"[photos]\n  path = /srv/photos\n".to_vec()),
-                ("configs/exports".to_string(), b"/srv/photos 192.168.1.0/24(rw)\n".to_vec()),
+                (
+                    "configs/smb.conf".to_string(),
+                    b"[photos]\n  path = /srv/photos\n".to_vec(),
+                ),
+                (
+                    "configs/exports".to_string(),
+                    b"/srv/photos 192.168.1.0/24(rw)\n".to_vec(),
+                ),
             ],
             skipped: vec![SkippedEntry {
                 path: "configs/netplan.yaml".to_string(),
@@ -828,14 +838,17 @@ mod tests {
     #[test]
     fn an_encrypted_archive_round_trips_and_hides_its_contents() {
         let plain = build(&input(), false, None, "2026-10-31T12:00:00+00:00").expect("build");
-        let sealed = build(&input(), true, Some("correct horse battery"), "2026-10-31T12:00:00+00:00")
-            .expect("build");
+        let sealed = build(
+            &input(),
+            true,
+            Some("correct horse battery"),
+            "2026-10-31T12:00:00+00:00",
+        )
+        .expect("build");
 
         // The encrypted container must not contain the plaintext it holds.
         assert!(
-            !sealed
-                .windows(b"[photos]".len())
-                .any(|w| w == b"[photos]"),
+            !sealed.windows(b"[photos]".len()).any(|w| w == b"[photos]"),
             "the payload must not be readable in an encrypted archive"
         );
         // The manifest itself stays readable (that is what lets the UI say
@@ -867,7 +880,9 @@ mod tests {
         );
         assert_eq!(read(&[], None).unwrap_err(), ArchiveError::NotAnArchive);
         // …and the message tells the admin what the file should be.
-        assert!(ArchiveError::NotAnArchive.message().contains("not a HomeVault"));
+        assert!(ArchiveError::NotAnArchive
+            .message()
+            .contains("not a HomeVault"));
     }
 
     #[test]
@@ -879,7 +894,10 @@ mod tests {
         assert_eq!(error, ArchiveError::NewerFormat(FORMAT_VERSION + 1));
         let message = error.message();
         assert!(message.contains("newer HomeVault"), "{message}");
-        assert!(message.contains("Update HomeVault"), "the refusal says what to do: {message}");
+        assert!(
+            message.contains("Update HomeVault"),
+            "the refusal says what to do: {message}"
+        );
     }
 
     #[test]
@@ -895,15 +913,25 @@ mod tests {
 
     #[test]
     fn an_encrypted_archive_needs_its_passphrase_and_a_plain_one_refuses_it() {
-        let sealed = build(&input(), true, Some("secret pass"), "2026-10-31T12:00:00+00:00")
-            .expect("build");
-        assert_eq!(read(&sealed, None).unwrap_err(), ArchiveError::PassphraseRequired);
+        let sealed = build(
+            &input(),
+            true,
+            Some("secret pass"),
+            "2026-10-31T12:00:00+00:00",
+        )
+        .expect("build");
+        assert_eq!(
+            read(&sealed, None).unwrap_err(),
+            ArchiveError::PassphraseRequired
+        );
         assert_eq!(
             read(&sealed, Some("wrong pass")).unwrap_err(),
             ArchiveError::WrongPassphrase
         );
         // A wrong passphrase is a clean refusal, never a partial restore.
-        assert!(ArchiveError::WrongPassphrase.message().contains("does not open"));
+        assert!(ArchiveError::WrongPassphrase
+            .message()
+            .contains("does not open"));
 
         let plain = build(&input(), false, None, "2026-10-31T12:00:00+00:00").expect("build");
         assert_eq!(
@@ -969,7 +997,11 @@ mod tests {
         assert!(archive.manifest.entry("configs/nope").is_none());
         assert_eq!(
             archive.manifest.total_bytes(),
-            archive.entries.iter().map(|(_, b)| b.len() as u64).sum::<u64>()
+            archive
+                .entries
+                .iter()
+                .map(|(_, b)| b.len() as u64)
+                .sum::<u64>()
         );
     }
 

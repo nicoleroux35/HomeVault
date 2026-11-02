@@ -153,7 +153,10 @@ pub async fn definitions_status_async() -> DefinitionsStatus {
 /// directory by default, plus any configured storage root). A relative path is
 /// refused rather than resolved, because `clamscan` resolves it against its own
 /// working directory, which is not the one the admin is looking at.
-pub fn validate_quarantine_dir(input: &str, allowed_roots: &[std::path::PathBuf]) -> Result<String, String> {
+pub fn validate_quarantine_dir(
+    input: &str,
+    allowed_roots: &[std::path::PathBuf],
+) -> Result<String, String> {
     let raw = input.trim();
     if raw.is_empty() {
         return Err("Quarantine directory must not be empty".to_string());
@@ -177,8 +180,10 @@ pub fn validate_quarantine_dir(input: &str, allowed_roots: &[std::path::PathBuf]
     {
         return Err("Quarantine directory must not contain '..'".to_string());
     }
-    let normalized: std::path::PathBuf =
-        path.components().filter(|c| matches!(c, std::path::Component::Normal(_))).collect();
+    let normalized: std::path::PathBuf = path
+        .components()
+        .filter(|c| matches!(c, std::path::Component::Normal(_)))
+        .collect();
     if normalized.as_os_str().is_empty() {
         return Err("Quarantine directory must not be the filesystem root".to_string());
     }
@@ -703,10 +708,10 @@ mod tests {
         for bad in [
             "",
             "   ",
-            "quarantine",              // relative
-            "./quarantine",            // relative
-            "/",                       // filesystem root
-            "/etc",                    // outside every root
+            "quarantine",                // relative
+            "./quarantine",              // relative
+            "/",                         // filesystem root
+            "/etc",                      // outside every root
             "/var/lib/homevault/../etc", // traversal
             "/mnt/data/../etc",
             "/var/lib/homevault/quar\nantine",

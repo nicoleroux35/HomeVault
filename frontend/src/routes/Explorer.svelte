@@ -30,13 +30,15 @@
   import { cn } from '$lib/utils.js';
   import { api } from '$lib/services/api';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
-  import { t, translate } from '$lib/stores/i18n';
+  import { t, translate, languageStore } from '$lib/stores/i18n';
+  import { transferDetailLine } from '$lib/utils/transferFormat';
   import { explorerShareIntent } from '$lib/stores/explorerShareIntent';
   import { explorerIntent } from '$lib/stores/explorerIntent';
   import { get } from 'svelte/store';
   import FolderPicker from '$lib/components/theme/FolderPicker.svelte';
-  import { IconAlertCircle, IconArchive, IconArrowBackUp, IconArrowUp, IconBolt, IconClock, IconCloud, IconCloudCheck, IconCloudUpload, IconCopy, IconDatabase, IconDownload, IconHistory, IconPlayerEject, IconPencil, IconEye, IconFileZip, IconFolderMinus, IconFolderOpen, IconFolderPlus, IconServer, IconHome, IconLayoutGrid, IconList, IconLoader, IconLock, IconRefresh, IconSearch, IconShare, IconShield, IconShieldCheckered, IconStar, IconStarFilled, IconTrash, IconUpload, IconUsb, IconX } from '@tabler/icons-svelte';
+  import { IconAlertCircle, IconArchive, IconArrowBackUp, IconArrowUp, IconBolt, IconClock, IconCloud, IconCloudCheck, IconCloudUpload, IconCopy, IconDatabase, IconDownload, IconHistory, IconPlayerEject, IconPencil, IconEye, IconFileZip, IconFolderMinus, IconFolderOpen, IconFolderPlus, IconServer, IconHome, IconLayoutGrid, IconList, IconLoader, IconLock, IconRefresh, IconSearch, IconShare, IconShield, IconShieldCheckered, IconStar, IconStarFilled, IconTrash, IconUpload, IconUsb, IconX, IconArrowsExchange } from '@tabler/icons-svelte';
   import ShareLinkModal from '$lib/components/explorer/ShareLinkModal.svelte';
+  import TransferTray from '$lib/components/explorer/TransferTray.svelte';
   import ExplorerWidget from '$lib/components/explorer/ExplorerWidget.svelte';
 
   interface FileEntry {
@@ -116,6 +118,16 @@
   let previewContent = $state<{ name: string; content: string; is_truncated: boolean; size_bytes: number; mime_type: string; path: string; previewable: boolean } | null>(null);
   let uploading = $state(false);
   let uploadProgress = $state(0);
+  /** Uploaded / total bytes of the file being uploaded, for the
+   *  "45.3 MB / 128.7 MB" line under the window's progress bar (HV-UX-02). */
+  let uploadLoaded = $state(0);
+  let uploadTotal = $state(0);
+  // Transfer tray (HV-UX-01): a badge on the toolbar button, refreshed from
+  // the same endpoint the tray polls. Paused while the tray is open so the two
+  // never double-poll the server.
+  let showTransfers = $state(false);
+  let transferCount = $state(0);
+  let transferTimer: ReturnType<typeof setTimeout> | undefined;
   let searchQuery = $state('');
   let searchResults = $state<FileEntry[] | null>(null);
   let searching = $state(false);
@@ -384,7 +396,22 @@
     }
   }
 
+  /** Refresh the toolbar badge. One indexed read plus the in-memory job
+   *  registry; skipped while the tray is open, which polls itself. */
+  async function pollTransferCount() {
+    if (!showTransfers) {
+      try {
+        const res = await api.getActiveTransfers();
+        if (res.success && res.data) transferCount = res.data.counts.total;
+      } catch {
+        /* a badge is not worth an error state */
+      }
+    }
+    transferTimer = setTimeout(pollTransferCount, 5000);
+  }
+
   onMount(async () => {
+    pollTransferCount();
     await loadFavorites();
     await loadRecents();
     await loadDisks();
@@ -421,6 +448,7 @@
   });
 
   onDestroy(() => {
+    if (transferTimer) clearTimeout(transferTimer);
     if (diskRefreshInterval) clearInterval(diskRefreshInterval);
     if (watchEventSource) watchEventSource.close();
     if (typeof document !== 'undefined') {
@@ -1491,6 +1519,8 @@
       for (const file of files) {
         const result = await api.uploadFile(dest, file, (loaded: number, total: number) => {
           uploadProgress = total > 0 ? Math.round((loaded / total) * 100) : 0;
+          uploadLoaded = loaded;
+          uploadTotal = total;
         }, strategy);
         if (result.success) {
           uploaded++;
@@ -1511,6 +1541,8 @@
     } finally {
       uploading = false;
       uploadProgress = 0;
+      uploadLoaded = 0;
+      uploadTotal = 0;
     }
   }
 
@@ -1866,6 +1898,22 @@
         <span class="text-c-xs text-[var(--hv-shell-text-2)]">{$t('explorer.search_results_count', { count: String(searchResults.length) })}</span>
       {/if}
       <button data-testid="explorer-fuzzy-toggle" class={cn(toolbarBtn, fuzzySearch && 'bg-[var(--hv-primary-light)] text-[var(--hv-primary)]')} class:active={fuzzySearch} aria-pressed={fuzzySearch} onclick={() => { fuzzySearch = !fuzzySearch; if (searchQuery.trim()) runSearch(searchQuery.trim()); }} title={$t('explorer.fuzzy_search')} aria-label={$t('explorer.fuzzy_search')}><span class="text-sm font-bold" aria-hidden="true">≈</span></button>
+      <button
+        data-testid="explorer-transfers-btn"
+        class={cn(toolbarBtn, 'relative')}
+        aria-label={$t('explorer.transfers')}
+        title={$t('explorer.transfers')}
+        onclick={() => { showTransfers = true; }}
+      >
+        <IconArrowsExchange size={16} />
+        {#if transferCount > 0}
+          <span
+            data-testid="explorer-transfers-badge"
+            class="absolute -top-1 -right-1 min-w-4 rounded-full bg-[var(--hv-primary)] px-1 text-center text-c-xs font-semibold leading-4 text-[var(--hv-on-primary)]"
+            aria-hidden="true"
+          >{transferCount}</span>
+        {/if}
+      </button>
       <div data-testid="explorer-view-toggle" class="flex gap-0.5">
         <button class={cn(toolbarBtn, view === 'list' && 'bg-[var(--hv-primary-light)] text-[var(--hv-primary)]')} class:active={view === 'list'} data-testid="explorer-view-list" onclick={() => view = 'list'} title={$t('explorer.view_list')}><IconList size={16} /></button>
         <button class={cn(toolbarBtn, view === 'grid' && 'bg-[var(--hv-primary-light)] text-[var(--hv-primary)]')} class:active={view === 'grid'} data-testid="explorer-view-grid" onclick={() => view = 'grid'} title={$t('explorer.view_grid')}><IconLayoutGrid size={16} /></button>
@@ -1895,6 +1943,11 @@
     <div class="flex items-center gap-2 px-4 py-2 bg-[var(--hv-shell-fill)] border-b border-[var(--hv-shell-border)] text-sm text-[var(--hv-shell-text-2)]">
       <IconLoader size={16} class="animate-spin" />
       <span>{jobProgress ? (jobProgress.message || $t('explorer.working')) : $t('explorer.uploading', { percent: String(uploadProgress) })}</span>
+      {#if !jobProgress && uploadTotal > 0}
+        <span data-testid="explorer-upload-bytes" class="text-c-xs text-[var(--hv-shell-text-3)]">
+          {transferDetailLine({ bytes_processed: uploadLoaded, bytes_total: uploadTotal }, { language: $languageStore, etaLabel: $t('explorer.transfer_eta_left') })}
+        </span>
+      {/if}
       <div class="flex-1 h-1.5 rounded-full bg-[var(--hv-shell-border-soft)] overflow-hidden">
         <div class="h-full bg-[var(--hv-primary)]" style="width: {jobProgress ? jobProgress.progress : uploadProgress}%"></div>
       </div>
@@ -2193,6 +2246,20 @@
       {/if}
     </div>
   {/snippet}
+</Modal>
+
+<!-- Transfer tray (HV-UX-01): one panel for in-flight uploads, downloads and
+     copies, with a per-row cancel. `Modal` supplies the focus trap and the
+     focus restore, so the tray needs no overlay logic of its own. -->
+<Modal
+  open={showTransfers}
+  title={$t('explorer.transfers')}
+  size="md"
+  onclose={() => { showTransfers = false; }}
+>
+  {#if showTransfers}
+    <TransferTray onclose={() => { showTransfers = false; }} />
+  {/if}
 </Modal>
 
 <!-- Copy/move/upload name-collision prompt -->

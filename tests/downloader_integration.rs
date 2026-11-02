@@ -449,10 +449,7 @@ async fn test_status_success_path_for_admin() {
         .expect("`dir` must be a string");
     assert_eq!(
         dir,
-        tmp.path()
-            .join("downloads")
-            .to_string_lossy()
-            .as_ref(),
+        tmp.path().join("downloads").to_string_lossy().as_ref(),
         "the download root must live under DATA_DIRECTORY, not /tmp"
     );
 

@@ -52,6 +52,9 @@
       if (response.data.accent_color) {
         document.documentElement.style.setProperty('--hv-primary', response.data.accent_color);
       }
+      if (response.data.density) {
+        document.documentElement.dataset.density = response.data.density;
+      }
       if (response.data.wallpaper) {
         try {
           // normalizeWallpaper (inside applyRaw) keeps only a bundled

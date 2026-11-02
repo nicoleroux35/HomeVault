@@ -277,10 +277,7 @@ pub async fn handle_wol_wake(
         Ok(report) => {
             crate::events::log_event(format!(
                 "Admin '{}' sent a wake-on-LAN packet to '{}' ({}) via {}",
-                username,
-                host.label,
-                report.mac,
-                report.destination
+                username, host.label, report.mac, report.destination
             ));
             ResponseHelper::json_success(serde_json::json!({
                 "sent": true,
@@ -290,8 +287,8 @@ pub async fn handle_wol_wake(
                 "message": report.message(),
             }))
         }
-        Err(reason) => ResponseHelper::json_error(format!(
-            "The magic packet could not be sent: {reason}"
-        )),
+        Err(reason) => {
+            ResponseHelper::json_error(format!("The magic packet could not be sent: {reason}"))
+        }
     }
 }

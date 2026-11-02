@@ -348,7 +348,9 @@ pub async fn handle_rsync_secret_set(
                 admin, log_user
             ));
             // The password itself is deliberately absent from the response.
-            ResponseHelper::json_success(serde_json::json!({ "user": log_user, "has_secret": true }))
+            ResponseHelper::json_success(
+                serde_json::json!({ "user": log_user, "has_secret": true }),
+            )
         }
         Err(e) => ResponseHelper::json_error(format!("Failed to set the password: {e}")),
     }
@@ -375,7 +377,9 @@ pub async fn handle_rsync_secret_delete(
                 "Admin '{}' removed the Rsync password of '{}'",
                 admin, log_user
             ));
-            ResponseHelper::json_success(serde_json::json!({ "user": log_user, "has_secret": false }))
+            ResponseHelper::json_success(
+                serde_json::json!({ "user": log_user, "has_secret": false }),
+            )
         }
         Err(e) => ResponseHelper::json_error(format!("Failed to remove the password: {e}")),
     }

@@ -80,6 +80,113 @@ export interface ActivityTask {
   progress: number | null;
   /** Latest message / "12/40 files" / "8.4 MB/s". */
   detail: string | null;
+  /**
+   * Structured transfer detail (HV-UX-02). `null` when the producer reports no
+   * byte counter — the client then renders an indeterminate bar and no ETA
+   * rather than a fabricated "0 s left".
+   */
+  bytes_processed: number | null;
+  bytes_total: number | null;
+  /** Bytes per second over the producer's rolling window. */
+  speed_bps: number | null;
+  /** Seconds remaining, computed server-side from `speed_bps`. */
+  eta_seconds: number | null;
+  /** Copy method / digest slug (`clone`, `kernel_copy`, `stream`, `sha256`). */
+  method: string | null;
+}
+
+/** Which zone of the Explorer's transfer tray a row belongs to. */
+export type TransferZone = 'upload' | 'download' | 'copy';
+
+/** One in-flight chunked upload (`upload_sessions`, server-side). */
+export interface ActiveUpload {
+  session_id: string;
+  filename: string;
+  dir: string;
+  bytes_received: number;
+  bytes_total: number;
+  /** `0..100`, or `null` when the client declared no size. */
+  progress: number | null;
+  speed_bps: number | null;
+  eta_seconds: number | null;
+  state: 'running';
+  /** Unix seconds. */
+  created_at: number;
+  last_chunk_at: number;
+}
+
+/** One live copy / move / checksum / download job. */
+export interface LiveTransfer {
+  /** Progress-manager job id. */
+  id: string;
+  zone: TransferZone;
+  /** Stable slug, localised via `explorer.transfer_kind_<kind>`. */
+  kind: string;
+  state: 'pending' | 'running' | 'failed' | 'cancelled' | 'completed';
+  label: string;
+  progress: number | null;
+  bytes_processed: number | null;
+  bytes_total: number | null;
+  speed_bps: number | null;
+  eta_seconds: number | null;
+  method: string | null;
+  detail: string | null;
+  /**
+   * API-relative `DELETE` path that stops this transfer (`/progress/{id}`),
+   * or `null` for an upload — those are aborted with the session id instead.
+   */
+  cancel_path: string | null;
+}
+
+export interface ZoneCounts {
+  uploads: number;
+  downloads: number;
+  copies: number;
+  total: number;
+}
+
+/** `GET /api/explorer/transfers/active`. */
+export interface ActiveTransfers {
+  uploads: ActiveUpload[];
+  transfers: LiveTransfer[];
+  counts: ZoneCounts;
+}
+
+/** One finished transfer (`GET /api/explorer/transfers/history`). */
+export interface TransferHistoryEntry {
+  id: number;
+  job_id: string | null;
+  username: string;
+  operation: 'upload' | 'download' | 'copy' | 'move' | 'checksum';
+  source_path: string | null;
+  dest_path: string | null;
+  bytes_total: number;
+  duration_ms: number | null;
+  method: string | null;
+  verified: boolean;
+  status: 'complete' | 'failed' | 'cancelled';
+  error_message: string | null;
+  /** Unix seconds. */
+  created_at: number;
+  completed_at: number | null;
+}
+
+export interface TransferHistoryPage {
+  entries: TransferHistoryEntry[];
+  has_more: boolean;
+  limit: number;
+  offset: number;
+}
+
+/** Result of an inline `POST /api/explorer/checksum`. */
+export interface ChecksumResult {
+  path: string;
+  algorithm: 'sha256' | 'sha512' | 'blake3';
+  checksum: string;
+  file_size: number;
+  duration_ms: number;
+  compare_with?: { path: string | null; checksum: string; file_size: number };
+  match?: boolean;
 }
 
 /** What the filesystem actually does about one user's home size limit. */
@@ -501,6 +608,51 @@ class ApiClient {
 
   async getCurrentUser() {
     return this.get('/auth/me', { cache: false }); // Never cache user data
+  }
+
+  /**
+   * Which sign-in methods this appliance currently offers.
+   *
+   * Public on purpose: the login screen has to decide whether to draw a
+   * single sign-on button, and only the server knows. Never cached, so an
+   * administrator switching the integration on does not need a reload.
+   */
+  async getAuthMethods() {
+    return this.get<{
+      password: boolean;
+      oidc: { enabled: boolean; label: string };
+      saml?: { enabled: boolean; label: string };
+    }>('/auth/methods', { cache: false });
+  }
+
+  /**
+   * Start a single sign-on. The answer is the provider URL to visit; the
+   * server has already bound the flow to this browser with a cookie.
+   */
+  async startOidcSignIn() {
+    return this.post<{ authorize_url: string; state: string }>('/auth/oidc/start', {}, false);
+  }
+
+  /**
+   * Trade the one-shot ticket the callback left in the URL fragment for the
+   * session the desktop needs. `includeAuth: false` — the caller is not signed
+   * in yet, and a stale token must not be attached to the exchange.
+   */
+  async completeOidcSignIn(code: string) {
+    return this.post<LoginResponse>('/auth/oidc/complete', { code }, false);
+  }
+
+  /**
+   * Start a SAML sign-in. Same shape as the OpenID Connect one: the answer is
+   * the identity provider URL, and the flow is already bound to this browser.
+   */
+  async startSamlSignIn() {
+    return this.post<{ authorize_url: string; state: string }>('/auth/saml/start', {}, false);
+  }
+
+  /** Trade the one-shot ticket the SAML ACS left in the fragment. */
+  async completeSamlSignIn(code: string) {
+    return this.post<LoginResponse>('/auth/saml/complete', { code }, false);
   }
 
   // Numeric recovery code — the "forgot password" flow.
@@ -1294,7 +1446,7 @@ class ApiClient {
    * previous look.
    */
   async getAppearanceSettings() {
-    return this.get<{ wallpaper: string | null; accent_color: string | null }>(
+    return this.get<{ wallpaper: string | null; accent_color: string | null; density: string | null }>(
       '/settings/appearance',
       { cache: false },
     );
@@ -1303,6 +1455,7 @@ class ApiClient {
   async updateAppearanceSettings(data: {
     wallpaper?: string;
     accent_color?: string;
+    density?: string;
   }) {
     return this.put('/settings/appearance', data);
   }
@@ -2040,6 +2193,66 @@ class ApiClient {
   // ==============================================
   // File Explorer
   // ==============================================
+
+  /**
+   * Live transfer list for the Explorer's tray (HV-UX-01): in-flight chunked
+   * uploads plus the copy/move/checksum/download jobs, grouped into zones by
+   * the server so the client never has to guess which zone a job belongs to.
+   */
+  async getActiveTransfers() {
+    return this.get<ActiveTransfers>('/explorer/transfers/active', { cache: false });
+  }
+
+  /**
+   * Finished-transfer audit trail (HV-ADV-02), newest first. A non-admin only
+   * ever sees their own rows; an administrator sees every user's.
+   */
+  async getTransferHistory(
+    params: {
+      limit?: number;
+      offset?: number;
+      operation?: 'upload' | 'download' | 'copy' | 'move' | 'checksum';
+      status?: 'complete' | 'failed' | 'cancelled';
+      since?: number;
+    } = {},
+  ) {
+    const qs = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      // `String(value)` on both sides: the parameter values are a union of
+      // string and numeric slugs, so comparing the raw value with `''` does
+      // not typecheck.
+      if (value !== undefined && value !== null && String(value) !== '') {
+        qs.set(key, String(value));
+      }
+    }
+    const suffix = qs.toString();
+    return this.get<TransferHistoryPage>(
+      `/explorer/transfers/history${suffix ? `?${suffix}` : ''}`,
+      { cache: false },
+    );
+  }
+
+  /**
+   * On-demand checksum (HV-INT-01). A small file answers inline; a large one
+   * (or `async: true`) answers `{ job_id, sse_url }` and the digest is read
+   * back through `getChecksumResult`.
+   */
+  async computeChecksum(body: {
+    path: string;
+    algorithm?: 'sha256' | 'sha512' | 'blake3';
+    compare_with?: string;
+    async?: boolean;
+  }) {
+    return this.post<ChecksumResult | { job_id: string; sse_url: string; status: string }>(
+      '/explorer/checksum',
+      body,
+    );
+  }
+
+  /** The digest of a finished asynchronous checksum job. */
+  async getChecksumResult(jobId: string) {
+    return this.explorerGet('/explorer/checksum/result', { job_id: jobId });
+  }
 
   async listDirectory(path: string = '/') {
     return this.get(`/explorer/list?path=${encodeURIComponent(path)}`, { cache: false });

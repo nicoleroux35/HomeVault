@@ -27,29 +27,55 @@ pub struct ShareLink {
 }
 
 #[derive(Clone)]
-pub struct ShareLinkRepository { pool: Arc<SqlitePool> }
+pub struct ShareLinkRepository {
+    pool: Arc<SqlitePool>,
+}
 impl_repository!(ShareLinkRepository);
 
 impl ShareLinkRepository {
-    pub fn new(pool: Arc<SqlitePool>) -> Self { Self { pool } }
-
-    pub async fn list_by_user(&self, username: &str) -> Result<Vec<ShareLink>, DbError> {
-        Ok(sqlx::query_as("SELECT * FROM explorer_share_links WHERE username = ? ORDER BY id DESC")
-            .bind(username).fetch_all(self.pool.as_ref()).await?)
+    pub fn new(pool: Arc<SqlitePool>) -> Self {
+        Self { pool }
     }
 
-    pub async fn find_by_user_path(&self, username: &str, path: &str) -> Result<Option<ShareLink>, DbError> {
+    pub async fn list_by_user(&self, username: &str) -> Result<Vec<ShareLink>, DbError> {
+        Ok(
+            sqlx::query_as(
+                "SELECT * FROM explorer_share_links WHERE username = ? ORDER BY id DESC",
+            )
+            .bind(username)
+            .fetch_all(self.pool.as_ref())
+            .await?,
+        )
+    }
+
+    pub async fn find_by_user_path(
+        &self,
+        username: &str,
+        path: &str,
+    ) -> Result<Option<ShareLink>, DbError> {
         Ok(sqlx::query_as("SELECT * FROM explorer_share_links WHERE username = ? AND path = ? ORDER BY id DESC LIMIT 1")
             .bind(username).bind(path).fetch_optional(self.pool.as_ref()).await?)
     }
 
     pub async fn find_by_token(&self, token: &str) -> Result<Option<ShareLink>, DbError> {
-        Ok(sqlx::query_as("SELECT * FROM explorer_share_links WHERE token = ?")
-            .bind(token).fetch_optional(self.pool.as_ref()).await?)
+        Ok(
+            sqlx::query_as("SELECT * FROM explorer_share_links WHERE token = ?")
+                .bind(token)
+                .fetch_optional(self.pool.as_ref())
+                .await?,
+        )
     }
 
-    pub async fn create(&self, username: &str, token: &str, path: &str, mode: &str,
-        expires_at: Option<&str>, password_hash: Option<&str>, max_downloads: Option<i64>) -> Result<ShareLink, DbError> {
+    pub async fn create(
+        &self,
+        username: &str,
+        token: &str,
+        path: &str,
+        mode: &str,
+        expires_at: Option<&str>,
+        password_hash: Option<&str>,
+        max_downloads: Option<i64>,
+    ) -> Result<ShareLink, DbError> {
         sqlx::query("INSERT INTO explorer_share_links (token, username, path, mode, expires_at, password_hash, max_downloads) VALUES (?, ?, ?, ?, ?, ?, ?)")
             .bind(token).bind(username).bind(path).bind(mode).bind(expires_at).bind(password_hash).bind(max_downloads)
             .execute(self.pool.as_ref()).await?;
@@ -66,19 +92,30 @@ impl ShareLinkRepository {
     pub async fn finish_download(&self, token: &str, completed: bool) -> Result<(), DbError> {
         let result = sqlx::query("UPDATE explorer_share_links SET active_downloads = MAX(active_downloads - 1, 0), download_count = download_count + ? WHERE token = ? AND active_downloads > 0")
             .bind(i64::from(completed)).bind(token).execute(self.pool.as_ref()).await?;
-        if result.rows_affected() == 0 { return Err(DbError::NotFound); }
+        if result.rows_affected() == 0 {
+            return Err(DbError::NotFound);
+        }
         Ok(())
     }
 
     pub async fn delete(&self, token: &str) -> Result<(), DbError> {
-        let result = sqlx::query("DELETE FROM explorer_share_links WHERE token = ?").bind(token).execute(self.pool.as_ref()).await?;
-        if result.rows_affected() == 0 { return Err(DbError::NotFound); }
+        let result = sqlx::query("DELETE FROM explorer_share_links WHERE token = ?")
+            .bind(token)
+            .execute(self.pool.as_ref())
+            .await?;
+        if result.rows_affected() == 0 {
+            return Err(DbError::NotFound);
+        }
         Ok(())
     }
 
     pub async fn delete_expired(&self, now: &str) -> Result<u64, DbError> {
-        let result = sqlx::query("DELETE FROM explorer_share_links WHERE expires_at IS NOT NULL AND expires_at < ?")
-            .bind(now).execute(self.pool.as_ref()).await?;
+        let result = sqlx::query(
+            "DELETE FROM explorer_share_links WHERE expires_at IS NOT NULL AND expires_at < ?",
+        )
+        .bind(now)
+        .execute(self.pool.as_ref())
+        .await?;
         Ok(result.rows_affected())
     }
 }
@@ -95,11 +132,18 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_expiry_none_for_zero() { assert_eq!(compute_expiry(0), None); }
+    fn test_compute_expiry_none_for_zero() {
+        assert_eq!(compute_expiry(0), None);
+    }
 
     #[test]
     fn test_compute_expiry_positive_days_is_forward_dated() {
         let expiry = compute_expiry(7).unwrap();
-        assert!(chrono::DateTime::parse_from_rfc3339(&expiry).unwrap().timestamp() > chrono::Utc::now().timestamp());
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(&expiry)
+                .unwrap()
+                .timestamp()
+                > chrono::Utc::now().timestamp()
+        );
     }
 }

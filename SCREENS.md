@@ -77,7 +77,7 @@ visible from 901px, icon only below that — the touch target stays
 - Search bar with fuzzy matching on app names/descriptions
 - Keyboard navigation (arrows + Enter)
 
-### 28 available applications
+### 29 available applications
 
 | # | Application | Category | Description |
 |---|---|---|---|
@@ -109,12 +109,15 @@ visible from 901px, icon only below that — the touch target stays
 | 26 | Metrics | Monitoring | Historical performance charts (CPU, memory, load, network, temperature) over 1 h / 24 h / 7 d |
 | 27 | Backup destination | Storage | Receive restic backups from another machine (append-only tenants, quotas) |
 | 28 | Replication | Storage | Copy pool snapshots to another dataset, locally or over SSH |
+| 29 | Traffic control | Network | Per-service bandwidth limits (SMB/NFS/FTP/WebDAV/SFTP), weekly schedule, pause-all |
+| 30 | iSCSI | Storage | Export disks (file or block device) over iSCSI — targets, portals, LUNs, initiator ACLs, CHAP, apply-now |
+| 31 | Directory sign-in | System | Sign in with an LDAP / Active Directory account **or** an OpenID Connect provider — group→role mapping, break-glass local admin |
 
-> That is 26 entries in `appDefs` (25 app tiles + the Widgets editor) + Terminal + Settings +
+> That is 29 entries in `appDefs` (28 app tiles + the Widgets editor) + Terminal + Settings +
 > My account. Storage gained a 7th tab ("Snapshots" — scheduled snapshots with GFS retention
 > **and protection locks**) and Settings gained the Power card (Monitoring). Shares gained a
 > 7th protocol tab (Rsync) and the SMB tab gained the per-share Time Machine card.
-> The 33 Svelte routes = these 28 apps + the Widgets editor + Login + Setup Wizard + Desktop
+> The 36 Svelte routes = these 31 apps + the Widgets editor + Login + Setup Wizard + Desktop
 > + the public share page (`/share/<token>`, outside the app shell).
 
 ### Floating monitoring widgets (11 panels)
@@ -383,6 +386,8 @@ and in the Groups screen.
 - Sorting: by name, size, modification date
 - Trash system: view, restore, purge, empty
 - Trash retention (admin): keep deleted files for a number of days, cap the trash size, and a "Clean up now" button that runs the pass immediately; past a limit the oldest items are removed automatically
+- Transfers panel: a toolbar button (with a badge counting what is running) opens three zones — uploads, downloads, copies. Each row shows the file name, a progress bar, the bytes transferred out of the total, the speed, the time remaining and how a copy was made, with a cancel button that really stops it. An interrupted upload resumes where it stopped, even after HomeVault restarts. A collapsible section lists the last finished transfers (size, duration, method, "verified", and whether it succeeded)
+- Checksum on demand: pick SHA-256, SHA-512 or BLAKE3 for any file (small files answer immediately, large ones run as a background job), and optionally compare a second file to answer "are these two identical?"
 - Instant copy (admin): copies share the original's data on filesystems that support it (Btrfs, reflink-enabled XFS), so a large copy finishes immediately and costs no extra space; the modal can turn it off ("Always make a full copy") and lists which folders can copy instantly. When the filesystem cannot share data the copy falls back to a normal verified copy, and the message says "cloned" only when it really was
 - Archive extraction (.zip/.tar/.gz/.bz2/.xz)
 - Compression of selected items
@@ -741,17 +746,137 @@ raw argument list reaches a log or a shell.
 
 ---
 
+## 32. Traffic control
+
+**Features:**
+- Live status: shaping on/off with the reason (off, paused, no interface, every
+  service unlimited, outside the schedule) and the exact `tc` commands in play
+- Enable switch, interface picker (name + IPv4), one rate per service in kbit/s
+  (`0` = unlimited) with a "≈ MB/s" reading
+- Egress-only statement and a notice when `tc` (iproute2) is missing
+- Weekly schedule: add/remove windows, per-day toggle buttons, start/end times;
+  a window that ends before it starts runs over midnight
+- Pause all / Resume in one click; Save (applies immediately) and Apply now
+- Inline validation errors from the server and the failing `tc` command with
+  its stderr
+
+**Invariants:** management ports (22, 80, 443, 8443) are never shaped; the
+interface name is the only free-text field reaching a root command and is gated
+to the kernel's character set; every command is an argv vector; disabling or
+pausing tears the queue down; a missing `tc` reports honestly instead of
+pretending to limit anything.
+
+---
+
+## 33. iSCSI
+
+**Features:**
+- Live status banner (`role="status"`): on with the number of reachable exports,
+  saved-but-not-applied, off, or "this host cannot export" with the exact
+  missing pieces (`targetcli`, each kernel module, configfs)
+- Feature switch with a named consequence ("turning this off disconnects every
+  initiator immediately; disks and exports are kept")
+- **Disks to share** — a file HomeVault creates and sizes, or a whole block
+  device; read-only flag; per-disk "used by N LUN(s)" and a refusal to delete a
+  disk a LUN still serves
+- **Exports** — IQN (immutable once created), enabled flag, portals (address +
+  port), LUNs (number → disk), allowed initiators with optional CHAP
+- Delete a disk's backing file only after ticking "also delete the file" **and**
+  typing the disk name
+- **Apply now** in the toolbar: the only action that runs `targetcli`
+
+**Invariants:** saving only writes metadata — nothing reaches the kernel until
+Apply; apply rebuilds only the objects HomeVault itself created
+(`targetcli /iscsi delete <iqn>`, `/backstores/<kind> delete <name>`) and never
+runs `clearconfig`; `enable` is the last command so an initiator never logs in
+to a half-built export; fileio paths are canonicalised and must stay under the
+data directory or a pool; block paths must be real devices under `/dev`; CHAP
+secrets are sealed with the target IQN + initiator as associated data, never
+returned, and redacted from the rendered command list; the editors are hidden
+when the host lacks the LIO stack.
+
+---
+
+## 34. Directory sign-in (LDAP / AD + OpenID Connect + SAML)
+
+**Features:**
+- A three-button segment — **Directory (LDAP / Active Directory)** / **Single
+  sign-on (OpenID Connect)** / **Single sign-on (SAML)** — picks which provider
+  the form below configures; a `role="group"` of `aria-pressed` buttons
+  (deliberately not a half tablist). The toolbar Save and the footer counts
+  follow the active tab, and the remote-accounts list is shared, each account
+  badged with its provider
+- Live health banner (`role="status"`): on with the number of known remote
+  accounts, off, or "the saved configuration needs attention" with the exact
+  server sentence — plus, always, how many **local** administrators can still
+  sign in (red at zero)
+- **Directory server** — type picker (LDAP / Active Directory, defaults only),
+  URL, StartTLS (disabled for `ldaps://`), certificate verification with the
+  cost of turning it off spelled out, search base, read-only service account
+  and its write-only password (`Keep` / `Forget the stored password`)
+- **Test the connection** before saving: the service account alone, or a full
+  sign-in with a name and password that reports the role it would grant
+- **Who can sign in** — user filter (`{username}` required), optional group
+  filter (`{dn}`), and, behind **Advanced**, the four attribute names plus the
+  lookup-cache TTL and hit/miss counters
+- **Single sign-on** — the button text shown on the login screen, issuer URL,
+  client ID, write-only client secret (`Keep` / `Clear the stored secret`),
+  the explicit callback URL, and, behind **Advanced**, the four claim names and
+  the scopes; its own **Check the provider** panel reads discovery without
+  saving anything
+- **SAML** — an on/off switch (the status card says "off" *and* the switch is
+  right there), the provider entity ID, its sign-in URL and its signing
+  certificates (one per line), and a **metadata import**: paste the provider's
+  metadata address, *Read metadata*, see what came back, and only then *Use
+  these details* — still nothing is written until Save. HomeVault's own entity
+  ID and ACS URL are shown read-only, with a copyable service-provider metadata
+  document; behind **Advanced**, the three assertion attribute names
+- **Roles from groups** — a default role plus `group → role` rows, shared by
+  all three providers; a bare group name and a full DN both match
+- **Remote accounts** — each principal with its role, provider badge, last
+  sign-in, group count, Enable/Disable and Forget (confirm first; the message
+  names the consequence and says the remote account is untouched)
+
+**Invariants:** every settings route is `require_admin`, and the two mutating
+SAML settings routes authenticate **before** parsing the body (the three
+`/api/auth/oidc/*` and three `/api/auth/saml/*` sign-in routes plus
+`/api/auth/methods` are public because a signed-out browser must reach them, and
+none trusts a credential from the request body alone); the login path is decided
+by `users.auth_source` **and** by the provider stored on the principal, never by
+the request body, so a local account is never sent to the directory and a remote
+account is never checked against a local hash; the directory password is
+verified with a fresh bind on every attempt even when the search result is
+cached; an outage is a 503 (or a `303` to `/login?sso_error=unavailable`) and
+never enters the lockout ladder or the IP ban list; the service-account password
+(`directory-bind`) and the OIDC client secret (`oidc-client-secret`) are sealed
+with AES-256-GCM and never returned; every substituted filter value is RFC
+4515-escaped; the callback URL is configured, never derived from `Host`, must be
+`https://` (loopback may use `http://`) and must end in
+`/api/auth/oidc/callback`; an ID token is verified before anything is stored —
+signature, `alg` ∈ {`RS256`, `ES256`, `EdDSA`} and matching key type, `iss`,
+`aud`, `exp`/`iat`, `nonce` — and no token ever reaches a URL (the callback
+answers `303` to `/login#sso=<one-shot-ticket>`, spent once within 120 s); a SAML
+assertion is verified the same way before anything is stored — an XML DTD is
+refused, the signature is checked over exclusive canonicalisation of the signed
+element against the configured IdP certificate, the request ID is single-use and
+expires, and audience, destination and recipient must all be us; an empty
+certificate list refuses every assertion instead of accepting an unsigned one;
+limits are re-checked on load and on each sign-in; a corrupt `directory.json`,
+`oidc.json` or `saml.json` falls back to "off" rather than to a lockout.
+
+---
+
 ## Summary by category
 
 | Category | Number of screens |
 |---|---|
 | Authentication / Setup | 2 (Login, Setup Wizard) |
 | Desktop | 1 (Desktop + 11 floating widgets + search + notifications) |
-| System | 9 (Dashboard, Users, Quotas, Groups, My account, Terminal, Virtual Machines, Scheduled Tasks, Widgets) |
-| Storage | 4 (Storage, RAID, Explorer, Backup — Shares ∈ Storage on the desktop registry side, can be opened via Explorer) |
-| Network | 4 (Network, VPN, Cloud Sync, Syncthing) + 1 (Shares) |
+| System | 10 (Dashboard, Users, Quotas, Groups, My account, Terminal, Virtual Machines, Scheduled Tasks, Widgets, Directory sign-in) |
+| Storage | 5 (Storage, RAID, Explorer, Backup, iSCSI — Shares ∈ Storage on the desktop registry side, can be opened via Explorer) |
+| Network | 5 (Network, VPN, Cloud Sync, Syncthing, Traffic control) + 1 (Shares) |
 | Monitoring | 3 (Health, System journal, Metrics) |
 | Productivity | 2 (AI Assistant, Downloader) |
 | Infrastructure | 2 (Docker, Rescue) |
 | Configuration | 1 (Settings — 8 categories) |
-| **Total** | **33 main screens** (= the 28 desktop apps + Widgets editor + Login + Setup Wizard + Desktop + the public share page) |
+| **Total** | **36 main screens** (= the 31 desktop apps + Widgets editor + Login + Setup Wizard + Desktop + the public share page) |

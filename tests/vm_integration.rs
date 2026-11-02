@@ -68,10 +68,9 @@ use homevault::handlers::{
     vm::{
         handle_console_ticket, handle_screen_ticket, handle_vm_available, handle_vm_config,
         handle_vm_create, handle_vm_delete, handle_vm_get, handle_vm_iso_delete,
-        handle_vm_iso_download, handle_vm_isos,
-        handle_vm_list, handle_vm_os_options, handle_vm_restart, handle_vm_snapshot_create,
-        handle_vm_snapshot_delete, handle_vm_snapshot_restore, handle_vm_snapshots,
-        handle_vm_start, handle_vm_stop,
+        handle_vm_iso_download, handle_vm_isos, handle_vm_list, handle_vm_os_options,
+        handle_vm_restart, handle_vm_snapshot_create, handle_vm_snapshot_delete,
+        handle_vm_snapshot_restore, handle_vm_snapshots, handle_vm_start, handle_vm_stop,
     },
     AppState,
 };
@@ -645,7 +644,8 @@ async fn iso_store_lists_and_deletes_through_the_blocking_pool() {
 }
 
 #[tokio::test]
-async fn create_rejects_both_os_and_iso() {    let (state, _tmp, _guard) = setup_state().await;
+async fn create_rejects_both_os_and_iso() {
+    let (state, _tmp, _guard) = setup_state().await;
     let mut router = vm_router(state.clone());
     let token = admin_token(&state, &mut router).await;
     let msg = create_err(
@@ -667,7 +667,8 @@ async fn create_rejects_neither_os_nor_iso() {
 }
 
 #[tokio::test]
-async fn create_iso_with_real_file_reaches_incus() {    let (state, tmp, _guard) = setup_state().await;
+async fn create_iso_with_real_file_reaches_incus() {
+    let (state, tmp, _guard) = setup_state().await;
     let mut router = vm_router(state.clone());
     let token = admin_token(&state, &mut router).await;
     // Only meaningful on a host without Incus: with a live daemon this would

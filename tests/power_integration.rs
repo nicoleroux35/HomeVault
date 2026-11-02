@@ -335,7 +335,8 @@ async fn an_invalid_session_is_rejected_on_every_power_route() {
         "/api/power/shutdown",
         "/api/power/suspend",
     ] {
-        let (status, body) = send(&mut router, Method::POST, uri, Some("not-a-session"), None).await;
+        let (status, body) =
+            send(&mut router, Method::POST, uri, Some("not-a-session"), None).await;
         assert_eq!(
             status,
             StatusCode::UNAUTHORIZED,
@@ -382,7 +383,10 @@ fn a_refused_host_command_reaches_the_response_body() {
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body["success"], false);
     assert!(
-        body["message"].as_str().unwrap_or_default().contains(reason),
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(reason),
         "the refusal reason must reach the body: {body}"
     );
     assert!(body.get("data").is_none());

@@ -580,5 +580,20 @@ pub fn create_network_router(state: AppStateArc) -> Router {
         .route("/summary", axum::routing::get(handle_network_summary))
         .route("/services", axum::routing::get(handle_network_services))
         .route("/public-ip", axum::routing::get(handle_public_ip))
+        // Per-service bandwidth control (P3.2). Reads need a session; every
+        // mutation is admin-only because the policy drives root-owned `tc`.
+        .route(
+            "/traffic-control",
+            axum::routing::get(crate::handlers::traffic_control::handle_traffic_control_get)
+                .put(crate::handlers::traffic_control::handle_traffic_control_put),
+        )
+        .route(
+            "/traffic-control/pause",
+            axum::routing::post(crate::handlers::traffic_control::handle_traffic_control_pause),
+        )
+        .route(
+            "/traffic-control/apply",
+            axum::routing::post(crate::handlers::traffic_control::handle_traffic_control_apply),
+        )
         .with_state(state)
 }

@@ -80,8 +80,8 @@ use homevault::config::PathGuard;
 use homevault::handlers::settings::{
     handle_all_settings_get, handle_appearance_settings_get, handle_appearance_settings_update,
     handle_autostart_get, handle_autostart_update, handle_check_version_now,
-    handle_email_settings_get, handle_email_settings_update,
-    handle_get_language, handle_notification_settings_get, handle_notification_settings_update,
+    handle_email_settings_get, handle_email_settings_update, handle_get_language,
+    handle_notification_settings_get, handle_notification_settings_update,
     handle_public_settings_get, handle_set_language, handle_settings_export,
     handle_settings_import, handle_settings_reset, handle_timezones_get,
     handle_update_settings_get, handle_update_settings_update, handle_version_info,
@@ -1758,7 +1758,9 @@ impl PathShim {
         for (name, script) in programs {
             let path = dir.path().join(name);
             std::fs::write(&path, script).expect("write shim");
-            let mut perms = std::fs::metadata(&path).expect("shim metadata").permissions();
+            let mut perms = std::fs::metadata(&path)
+                .expect("shim metadata")
+                .permissions();
             perms.set_mode(0o755);
             std::fs::set_permissions(&path, perms).expect("chmod shim");
         }

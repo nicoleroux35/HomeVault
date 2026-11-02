@@ -438,6 +438,63 @@ mod tests {
         }
     }
 
+    /// QW-13 added the Explorer's transfer tray, whose whole chrome — the
+    /// three zone labels, the badges, the empty state, the per-row cancel, the
+    /// state lines and the history section — is rendered from the translation
+    /// map, and whose strings use the `%name%`/`%count%` placeholders the
+    /// frontend substitutes. A key present in English and missing elsewhere
+    /// would show a raw `explorer.transfer_*` key in exactly that locale, so
+    /// the family is pinned across all four files.
+    #[test]
+    fn explorer_transfer_keys_are_at_parity_in_every_locale() {
+        let sources = embedded_translation_sources();
+        assert_eq!(sources.len(), 4, "four locales ship");
+        let mut by_locale = std::collections::HashMap::new();
+        for (code, toml_src) in &sources {
+            let parsed: toml::Value = toml::from_str(toml_src).expect("parse");
+            by_locale.insert(*code, flatten_toml(&parsed, ""));
+        }
+
+        let english = by_locale.get("en").expect("en is embedded");
+        let prefixes = ["explorer.transfer", "explorer.transfers"];
+        let expected: Vec<String> = english
+            .keys()
+            .filter(|key| prefixes.iter().any(|p| key.starts_with(p)))
+            .cloned()
+            .collect();
+        assert!(
+            expected.len() >= 20,
+            "the transfer tray carries its own strings, found {}",
+            expected.len()
+        );
+
+        for (code, map) in &by_locale {
+            for key in &expected {
+                let value = map
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{key} missing from {code}.toml"));
+                assert!(
+                    !value.trim().is_empty(),
+                    "{key} is empty in {code}.toml — a blank label is worse than a raw key"
+                );
+            }
+        }
+
+        // The cancel label and the zone badge are formatted, not concatenated:
+        // the placeholder must be `%name%`/`%count%` in every locale, because
+        // that is what the frontend's `translate()` replaces.
+        for (code, map) in &by_locale {
+            let cancel = map
+                .get("explorer.transfer_cancel")
+                .unwrap_or_else(|| panic!("explorer.transfer_cancel missing from {code}.toml"));
+            assert!(cancel.contains("%name%"), "{code}: {cancel}");
+            let count = map
+                .get("explorer.transfer_zone_count")
+                .unwrap_or_else(|| panic!("explorer.transfer_zone_count missing from {code}.toml"));
+            assert!(count.contains("%count%"), "{code}: {count}");
+        }
+    }
+
     /// QW-10 added the Security Advisor card, whose whole chrome (title,
     /// severities, summary, the two placeholders, the per-app deep-link
     /// labels) is rendered from the translation map. A key missing from one
@@ -556,6 +613,53 @@ mod tests {
                 partial.contains("%count%"),
                 "search.files_partial in {code}.toml must interpolate %count%: {partial}"
             );
+        }
+    }
+
+    /// ROADMAP P3.1 stage 3 added the third single sign-on tab. Its whole panel
+    /// is rendered from `saml.*`, so a key present in one locale and missing
+    /// from another would show a raw key in exactly that locale. Pin the family
+    /// by prefix: any `saml.*` key in English must exist and be non-empty
+    /// everywhere, and the counted footer string must keep `%total%`/`%local%`.
+    #[test]
+    fn saml_keys_are_at_parity_in_every_locale() {
+        let sources = embedded_translation_sources();
+        let mut maps = std::collections::HashMap::new();
+        for (code, toml_src) in &sources {
+            let parsed: toml::Value = toml::from_str(toml_src).expect("parse");
+            maps.insert(*code, flatten_toml(&parsed, ""));
+        }
+
+        let english = maps.get("en").expect("en is embedded");
+        let keys: Vec<String> = english
+            .keys()
+            .filter(|key| key.starts_with("saml."))
+            .cloned()
+            .collect();
+        assert!(keys.len() >= 49, "the SAML panel ships 49 strings: {keys:?}");
+
+        for (code, map) in &maps {
+            for key in &keys {
+                let value = map
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{key} missing from {code}.toml"));
+                assert!(
+                    !value.trim().is_empty(),
+                    "{key} is empty in {code}.toml — a blank label is worse than a raw key"
+                );
+            }
+        }
+
+        for (code, map) in &maps {
+            for (key, placeholders) in [("saml.footer_counts", ["%total%", "%local%"])] {
+                let value = map.get(key).unwrap_or_else(|| panic!("{key} missing from {code}.toml"));
+                for placeholder in placeholders {
+                    assert!(
+                        value.contains(placeholder),
+                        "{key} in {code}.toml must interpolate {placeholder}: {value}"
+                    );
+                }
+            }
         }
     }
 

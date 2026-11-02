@@ -211,7 +211,10 @@ impl ShareAuthState {
         let entry = self
             .failures
             .entry(token.to_string())
-            .or_insert(PasswordFailures { count: 0, since: now });
+            .or_insert(PasswordFailures {
+                count: 0,
+                since: now,
+            });
         entry.count += 1;
     }
 
@@ -361,8 +364,14 @@ where
     type Item = Result<Bytes, std::io::Error>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match Pin::new(&mut self.inner).poll_next(cx) {
-            Poll::Ready(Some(Ok(chunk))) => { self.sent += chunk.len() as u64; Poll::Ready(Some(Ok(chunk))) }
-            Poll::Ready(Some(Err(error))) => { self.finish(false); Poll::Ready(Some(Err(error))) }
+            Poll::Ready(Some(Ok(chunk))) => {
+                self.sent += chunk.len() as u64;
+                Poll::Ready(Some(Ok(chunk)))
+            }
+            Poll::Ready(Some(Err(error))) => {
+                self.finish(false);
+                Poll::Ready(Some(Err(error)))
+            }
             Poll::Ready(None) => {
                 // Same rule as `Drop`: the bytes actually written decide.
                 let complete = self.sent == self.expected;
@@ -376,15 +385,21 @@ where
 
 impl<S> CompletionShareStream<S> {
     fn finish(&mut self, completed: bool) {
-        if self.finished { return; }
+        if self.finished {
+            return;
+        }
         self.finished = true;
         // `Drop` can run outside a runtime (a caller dropping the response), and
         // `tokio::spawn` would panic there. Losing the release is recoverable —
         // the slot is released on the next server start — a panic is not.
-        if tokio::runtime::Handle::try_current().is_err() { return; }
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
         let token = self.token.clone();
         let repo = self.repo.clone();
-        tokio::spawn(async move { let _ = repo.finish_download(&token, completed).await; });
+        tokio::spawn(async move {
+            let _ = repo.finish_download(&token, completed).await;
+        });
     }
 }
 
@@ -464,7 +479,13 @@ fn to_view(link: ShareLink) -> ShareLinkView {
     let share_path = format!("/share/{}", link.token);
     let protected = link.password_hash.is_some();
     let exhausted = is_exhausted(&link);
-    ShareLinkView { link, share_path, expired, protected, exhausted }
+    ShareLinkView {
+        link,
+        share_path,
+        expired,
+        protected,
+        exhausted,
+    }
 }
 
 /// A capped link with no slots left. `download_count` only rises when a
@@ -545,7 +566,8 @@ pub async fn handle_share_link_create(
             .into_response();
     }
     if !file_path.is_file() {
-        return ResponseHelper::json_error("Only regular files can be shared by link".to_string()).into_response();
+        return ResponseHelper::json_error("Only regular files can be shared by link".to_string())
+            .into_response();
     }
 
     let mode = req.mode.unwrap_or_else(|| "anyone".to_string());
@@ -565,15 +587,36 @@ pub async fn handle_share_link_create(
     let repo = ShareLinkRepository::new(state.db.pool());
     let token = generate_share_token();
     let expires_at = compute_expiry(expires_days);
-    if req.password.as_ref().is_some_and(|p| p.len() < 8 || p.len() > 256) {
-        return ResponseHelper::json_error("Share password must be between 8 and 256 characters".to_string()).into_response();
+    if req
+        .password
+        .as_ref()
+        .is_some_and(|p| p.len() < 8 || p.len() > 256)
+    {
+        return ResponseHelper::json_error(
+            "Share password must be between 8 and 256 characters".to_string(),
+        )
+        .into_response();
     }
-    if req.max_downloads.is_some_and(|n| !(1..=100_000).contains(&n)) {
-        return ResponseHelper::json_error("max_downloads must be between 1 and 100000".to_string()).into_response();
+    if req
+        .max_downloads
+        .is_some_and(|n| !(1..=100_000).contains(&n))
+    {
+        return ResponseHelper::json_error(
+            "max_downloads must be between 1 and 100000".to_string(),
+        )
+        .into_response();
     }
-    let password_hash = match req.password.as_deref().map(|p| state.auth.hash_password(p)).transpose() {
+    let password_hash = match req
+        .password
+        .as_deref()
+        .map(|p| state.auth.hash_password(p))
+        .transpose()
+    {
         Ok(hash) => hash,
-        Err(_) => return ResponseHelper::json_error("Could not protect share link".to_string()).into_response(),
+        Err(_) => {
+            return ResponseHelper::json_error("Could not protect share link".to_string())
+                .into_response()
+        }
     };
     match repo
         .create(
@@ -670,9 +713,7 @@ pub async fn handle_share_link_unlock(
         return share_not_found();
     }
     let Some(hash) = link.password_hash.as_deref() else {
-        return ResponseHelper::json_error(
-            "This share link is not password protected".to_string(),
-        );
+        return ResponseHelper::json_error("This share link is not password protected".to_string());
     };
 
     let now = Instant::now();
@@ -697,8 +738,7 @@ pub async fn handle_share_link_unlock(
     let nonce = generate_share_token();
     SHARE_AUTH.lock().grant(&token, &nonce, now);
     let cookie = unlock_cookie(&token, &nonce, over_tls.is_some());
-    let mut response =
-        ResponseHelper::json_success(serde_json::json!({ "unlocked": true }));
+    let mut response = ResponseHelper::json_success(serde_json::json!({ "unlocked": true }));
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -752,11 +792,8 @@ pub async fn handle_share_link_download(
     // path) or the password itself in a header (the API path). The password is
     // never read from the query string: that would put it in the access log.
     if let Some(hash) = &link.password_hash {
-        let unlocked = share_unlock_cookie(&headers).is_some_and(|nonce| {
-            SHARE_AUTH
-                .lock()
-                .unlocked(&token, &nonce, Instant::now())
-        });
+        let unlocked = share_unlock_cookie(&headers)
+            .is_some_and(|nonce| SHARE_AUTH.lock().unlocked(&token, &nonce, Instant::now()));
         if !unlocked {
             let supplied = headers
                 .get("x-share-password")
@@ -768,17 +805,13 @@ pub async fn handle_share_link_download(
                 if page {
                     return share_page(nonce).await;
                 }
-                return share_auth_refusal(
-                    "A valid share password is required",
-                    "password",
-                );
+                return share_auth_refusal("A valid share password is required", "password");
             }
             let now = Instant::now();
             if !SHARE_AUTH.lock().may_try_password(&token, now) {
                 return ResponseHelper::json_error_with_status(
                     StatusCode::TOO_MANY_REQUESTS,
-                    "Too many incorrect password attempts, try again in a few minutes"
-                        .to_string(),
+                    "Too many incorrect password attempts, try again in a few minutes".to_string(),
                 );
             }
             if supplied.len() > 256 || !state.auth.verify_password(supplied, hash) {
@@ -814,10 +847,7 @@ pub async fn handle_share_link_download(
             if page {
                 return share_page(nonce).await;
             }
-            return share_auth_refusal(
-                "This share requires a HomeVault session",
-                "session",
-            );
+            return share_auth_refusal("This share requires a HomeVault session", "session");
         }
     }
 
@@ -939,7 +969,9 @@ pub async fn handle_share_link_download(
         }
     };
     let body = if is_head || total == 0 {
-        if reserved { let _ = repo.finish_download(&token, true).await; }
+        if reserved {
+            let _ = repo.finish_download(&token, true).await;
+        }
         Body::empty()
     } else {
         use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
@@ -1179,7 +1211,10 @@ mod tests {
         let mut state = ShareAuthState::default();
         let now = Instant::now();
         for attempt in 1..=SHARE_PASSWORD_MAX_FAILURES {
-            assert!(state.may_try_password("tok", now), "attempt {attempt} allowed");
+            assert!(
+                state.may_try_password("tok", now),
+                "attempt {attempt} allowed"
+            );
             state.note_password_failure("tok", now);
         }
         // The budget is spent: Argon2 must not be reachable any more.

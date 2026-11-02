@@ -243,6 +243,14 @@ fn check_dmidecode() -> bool {
 fn check_ethtool() -> bool {
     binary_present("ethtool", "/usr/sbin/ethtool")
 }
+// Per-service bandwidth control (P3.2) drives `tc` from iproute2.
+fn check_tc() -> bool {
+    binary_present("tc", "/usr/sbin/tc")
+}
+// iSCSI targets (P3.3) are configured through `targetcli` (python3-rtslib).
+fn check_targetcli() -> bool {
+    binary_present("targetcli", "/usr/sbin/targetcli")
+}
 fn check_avahi() -> bool {
     binary_present("avahi-daemon", "/usr/sbin/avahi-daemon")
 }
@@ -759,6 +767,24 @@ fn specs() -> Vec<DependencySpec> {
             required: false,
             used_by: "Link-speed / driver diagnostics (Network app)",
             check_installed: check_ethtool,
+            check_running: None,
+        },
+        DependencySpec {
+            name: "tc (iproute2)",
+            package: "iproute2",
+            category: "Network",
+            required: false,
+            used_by: "Per-service bandwidth control (Traffic control app)",
+            check_installed: check_tc,
+            check_running: None,
+        },
+        DependencySpec {
+            name: "targetcli (python3-rtslib)",
+            package: "targetcli-fb",
+            category: "Storage",
+            required: false,
+            used_by: "iSCSI targets (iSCSI app)",
+            check_installed: check_targetcli,
             check_running: None,
         },
         DependencySpec {

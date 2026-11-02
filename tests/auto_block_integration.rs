@@ -253,7 +253,15 @@ async fn test_auto_block_is_admin_only() {
         (Method::POST, "/api/security/auto-block/clear"),
         (Method::POST, "/api/security/auto-block/sweep"),
     ] {
-        let (status, _) = send(&mut router, method, uri, None, None, Some(json!({"ip": "1.2.3.4"}))).await;
+        let (status, _) = send(
+            &mut router,
+            method,
+            uri,
+            None,
+            None,
+            Some(json!({"ip": "1.2.3.4"})),
+        )
+        .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
     }
 
@@ -367,8 +375,14 @@ async fn test_auto_block_rejects_a_policy_that_cannot_work() {
 
     let cases: Vec<(&str, Value)> = vec![
         ("threshold zero", json!({"enabled": true, "threshold": 0})),
-        ("threshold above the cap", json!({"enabled": true, "threshold": 101})),
-        ("zero ban duration", json!({"enabled": true, "ban_seconds": 0})),
+        (
+            "threshold above the cap",
+            json!({"enabled": true, "threshold": 101}),
+        ),
+        (
+            "zero ban duration",
+            json!({"enabled": true, "ban_seconds": 0}),
+        ),
         ("zero window", json!({"enabled": true, "window_seconds": 0})),
         (
             "window above the cap",
@@ -444,9 +458,15 @@ async fn test_repeated_failures_ban_the_address() {
     assert_eq!(status, StatusCode::OK, "policy saved: {body}");
 
     let attacker = "203.0.113.9";
-    assert_eq!(fail_login(&mut router, "admin", attacker).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        fail_login(&mut router, "admin", attacker).await,
+        StatusCode::UNAUTHORIZED
+    );
     // Second failure: the threshold trips and the ban is created.
-    assert_eq!(fail_login(&mut router, "admin", attacker).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        fail_login(&mut router, "admin", attacker).await,
+        StatusCode::UNAUTHORIZED
+    );
 
     let repo = IpBanRepository::new(h.state.db.pool());
     let ban = repo
@@ -468,7 +488,11 @@ async fn test_repeated_failures_ban_the_address() {
         Some(json!({"username": "admin", "password": "pass"})),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "a banned address is refused: {body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a banned address is refused: {body}"
+    );
     let message = body["message"].as_str().unwrap_or_default();
     assert!(message.contains("temporarily blocked"), "{message}");
     assert!(message.contains("administrator"), "{message}");
@@ -509,7 +533,10 @@ async fn test_a_ban_survives_a_restart() {
     assert_eq!(status, StatusCode::OK);
 
     let attacker = "198.51.100.7";
-    assert_eq!(fail_login(&mut router, "admin", attacker).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        fail_login(&mut router, "admin", attacker).await,
+        StatusCode::UNAUTHORIZED
+    );
 
     // A "new process": fresh router + state over the same database.
     let mut restarted = build_router(h.state.clone());
@@ -545,7 +572,10 @@ async fn test_a_ban_never_locks_out_another_address() {
 
     let attacker = "203.0.113.50";
     let family = "192.0.2.20";
-    assert_eq!(fail_login(&mut router, "admin", attacker).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        fail_login(&mut router, "admin", attacker).await,
+        StatusCode::UNAUTHORIZED
+    );
 
     // The attacker is refused…
     let (status, _) = send(
@@ -569,7 +599,11 @@ async fn test_a_ban_never_locks_out_another_address() {
         Some(json!({"username": "member", "password": "pass"})),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "another address is unaffected: {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "another address is unaffected: {body}"
+    );
     assert!(body["data"]["token"].is_string());
 }
 
@@ -660,7 +694,10 @@ async fn test_a_pardon_lifts_the_block_immediately() {
     assert_eq!(status, StatusCode::OK);
 
     let attacker = "203.0.113.61";
-    assert_eq!(fail_login(&mut router, "admin", attacker).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        fail_login(&mut router, "admin", attacker).await,
+        StatusCode::UNAUTHORIZED
+    );
 
     // Lifting a block that is not there is a refusal, not a silent success.
     let (status, _) = send(
@@ -697,7 +734,11 @@ async fn test_a_pardon_lifts_the_block_immediately() {
         Some(json!({"username": "member", "password": "pass"})),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "a pardoned address may sign in again");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a pardoned address may sign in again"
+    );
 
     // An empty address is refused rather than treated as "everything".
     let (status, _) = send(
@@ -850,7 +891,10 @@ async fn test_the_ban_outlives_a_failed_firewall_rule() {
     assert_eq!(status, StatusCode::OK, "policy saved: {body}");
 
     let attacker = "203.0.113.123";
-    assert_eq!(fail_login(&mut router, "admin", attacker).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        fail_login(&mut router, "admin", attacker).await,
+        StatusCode::UNAUTHORIZED
+    );
 
     let repo = IpBanRepository::new(h.state.db.pool());
     let ban = repo

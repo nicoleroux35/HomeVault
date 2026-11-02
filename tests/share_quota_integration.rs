@@ -262,7 +262,10 @@ async fn test_an_unknown_share_is_named_and_an_unknown_protocol_is_refused() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
-        body["message"].as_str().unwrap_or_default().contains("nope"),
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("nope"),
         "the refusal names the share: {body}"
     );
 
@@ -304,9 +307,16 @@ async fn test_a_quota_below_the_floor_or_above_the_ceiling_is_refused() {
         Some(json!({"quota_bytes": 1})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "a 1-byte share is a typo: {body}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a 1-byte share is a typo: {body}"
+    );
     assert!(
-        body["message"].as_str().unwrap_or_default().contains("at least"),
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("at least"),
         "{body}"
     );
 
@@ -320,7 +330,10 @@ async fn test_a_quota_below_the_floor_or_above_the_ceiling_is_refused() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
-        body["message"].as_str().unwrap_or_default().contains("at most"),
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("at most"),
         "{body}"
     );
 
@@ -338,7 +351,9 @@ async fn test_the_declared_limit_round_trips_in_the_database() {
     let repo = ShareQuotaRepository::new(h.state.db.pool());
 
     assert_eq!(repo.quota("photos", "smb").await.expect("db"), None);
-    repo.set("photos", "smb", 10_000_000_000).await.expect("set");
+    repo.set("photos", "smb", 10_000_000_000)
+        .await
+        .expect("set");
     assert_eq!(
         repo.quota("photos", "smb").await.expect("db"),
         Some(10_000_000_000)
@@ -347,7 +362,10 @@ async fn test_the_declared_limit_round_trips_in_the_database() {
     assert_eq!(repo.quota("photos", "nfs").await.expect("db"), None);
 
     let all = repo.all().await.expect("db");
-    assert_eq!(all, vec![("photos".to_string(), "smb".to_string(), 10_000_000_000)]);
+    assert_eq!(
+        all,
+        vec![("photos".to_string(), "smb".to_string(), 10_000_000_000)]
+    );
 
     // 0 clears (the row goes away, so "no quota" has one representation).
     repo.set("photos", "smb", 0).await.expect("clear");

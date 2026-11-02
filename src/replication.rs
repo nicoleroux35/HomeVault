@@ -187,9 +187,10 @@ pub fn validate_dataset(value: &str) -> Result<(), String> {
     if v.starts_with('-') || v.starts_with('.') {
         return Err("a dataset name cannot start with '-' or '.'".to_string());
     }
-    if !v.chars().all(|c| {
-        c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '.' | ':' | '@' | '+')
-    }) {
+    if !v
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '.' | ':' | '@' | '+'))
+    {
         return Err(format!(
             "'{v}' contains characters a dataset name may not use (spaces and shell metacharacters are refused)"
         ));
@@ -333,11 +334,7 @@ pub fn select_prune(names: &[String], job_id: i64, keep_last: usize) -> Vec<Stri
     // The embedded timestamp sorts lexicographically (ISO-8601 basic format),
     // so a plain string sort is chronological — no clock parsing needed.
     owned.sort_by(|a, b| b.cmp(a));
-    owned
-        .into_iter()
-        .skip(keep_last.max(1))
-        .cloned()
-        .collect()
+    owned.into_iter().skip(keep_last.max(1)).cloned().collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -443,11 +440,9 @@ pub fn build_plan(
             stages.push(send);
 
             let mut receive = match kind {
-                DestinationKind::Local => vec![
-                    "sudo".to_string(),
-                    "zfs".to_string(),
-                    "receive".to_string(),
-                ],
+                DestinationKind::Local => {
+                    vec!["sudo".to_string(), "zfs".to_string(), "receive".to_string()]
+                }
                 DestinationKind::Ssh => vec![
                     "ssh".to_string(),
                     "-p".to_string(),
@@ -679,10 +674,7 @@ pub fn btrfs_destination_path(job: &ReplicationJob) -> Option<String> {
 }
 
 /// The source snapshot path of a Btrfs job (`<mount>/.snapshots/<name>`).
-pub fn btrfs_source_snapshot_path(
-    pool: &str,
-    snapshot_name: &str,
-) -> Result<String, String> {
+pub fn btrfs_source_snapshot_path(pool: &str, snapshot_name: &str) -> Result<String, String> {
     let mount = crate::pools::PoolService::btrfs_mount_point(pool)
         .ok_or_else(|| format!("pool '{pool}' is not mounted"))?;
     Ok(format!("{mount}/.snapshots/{snapshot_name}"))
@@ -900,8 +892,16 @@ mod tests {
     #[test]
     fn test_a_full_local_zfs_send_is_resumable_and_incremental_thereafter() {
         let job = job();
-        let full = build_plan(&job, "tank", None, "hv-repl-7-20261031T120000Z", None, None, false)
-            .unwrap();
+        let full = build_plan(
+            &job,
+            "tank",
+            None,
+            "hv-repl-7-20261031T120000Z",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
         assert_eq!(
             full.stages[0],
             vec![
@@ -941,14 +941,25 @@ mod tests {
             ]
         );
         let description = incremental.describe();
-        assert!(description.contains(" | sudo zfs receive -s backup/data"), "{description}");
+        assert!(
+            description.contains(" | sudo zfs receive -s backup/data"),
+            "{description}"
+        );
     }
 
     #[test]
     fn test_an_ssh_destination_pipes_into_ssh_without_a_shell() {
         let job = ssh_job();
-        let plan = build_plan(&job, "tank", None, "hv-repl-7-20261031T120000Z", None, None, false)
-            .unwrap();
+        let plan = build_plan(
+            &job,
+            "tank",
+            None,
+            "hv-repl-7-20261031T120000Z",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
         let receive = &plan.stages[1];
         assert_eq!(receive[0], "ssh");
         assert!(receive.contains(&"-p".to_string()));
@@ -966,16 +977,29 @@ mod tests {
     fn test_a_bandwidth_cap_inserts_pv_between_send_and_receive() {
         let mut job = job();
         job.bandwidth_kbps = 8000;
-        let plan = build_plan(&job, "tank", None, "hv-repl-7-20261031T120000Z", None, None, true)
-            .unwrap();
+        let plan = build_plan(
+            &job,
+            "tank",
+            None,
+            "hv-repl-7-20261031T120000Z",
+            None,
+            None,
+            true,
+        )
+        .unwrap();
         assert_eq!(plan.stages.len(), 3);
-        assert_eq!(
-            plan.stages[1],
-            vec!["pv", "-q", "-L", "8000k"]
-        );
+        assert_eq!(plan.stages[1], vec!["pv", "-q", "-L", "8000k"]);
         // Without `pv` installed the cap is skipped, not faked.
-        let unthrottled = build_plan(&job, "tank", None, "hv-repl-7-20261031T120000Z", None, None, false)
-            .unwrap();
+        let unthrottled = build_plan(
+            &job,
+            "tank",
+            None,
+            "hv-repl-7-20261031T120000Z",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
         assert_eq!(unthrottled.stages.len(), 2);
         assert!(bandwidth_note(&job).is_some());
     }
@@ -1024,19 +1048,13 @@ mod tests {
                    backup/data@hv-repl-7-20261002T000000Z\t1759400000\n";
         assert_eq!(
             parse_destination_listing(ReplicationBackend::Zfs, zfs),
-            vec![
-                "hv-repl-7-20261001T000000Z",
-                "hv-repl-7-20261002T000000Z"
-            ]
+            vec!["hv-repl-7-20261001T000000Z", "hv-repl-7-20261002T000000Z"]
         );
         let btrfs = "ID 257 gen 41 top level 5 otime 2026-10-01 path backup/data/hv-repl-7-20261001T000000Z\n\
                      ID 258 gen 42 top level 5 otime 2026-10-02 path backup/data/hv-repl-7-20261002T000000Z\n";
         assert_eq!(
             parse_destination_listing(ReplicationBackend::Btrfs, btrfs),
-            vec![
-                "hv-repl-7-20261001T000000Z",
-                "hv-repl-7-20261002T000000Z"
-            ]
+            vec!["hv-repl-7-20261001T000000Z", "hv-repl-7-20261002T000000Z"]
         );
         assert!(parse_destination_listing(ReplicationBackend::Zfs, "").is_empty());
     }
@@ -1063,7 +1081,10 @@ mod tests {
         let ssh_delete =
             destination_delete_command(&ssh_job(), "hv-repl-7-20261001T000000Z").unwrap();
         assert_eq!(ssh_delete[0], "ssh");
-        assert_eq!(ssh_delete[ssh_delete.len() - 1], "backup/data@hv-repl-7-20261001T000000Z");
+        assert_eq!(
+            ssh_delete[ssh_delete.len() - 1],
+            "backup/data@hv-repl-7-20261001T000000Z"
+        );
     }
 
     #[test]
@@ -1071,5 +1092,4 @@ mod tests {
         assert_eq!(source_dataset_of("tank/data@snap-1"), "tank/data");
         assert_eq!(source_dataset_of("tank"), "tank");
     }
-
 }

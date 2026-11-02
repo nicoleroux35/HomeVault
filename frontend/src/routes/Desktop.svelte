@@ -72,6 +72,9 @@
   const Restic = () => import('./Restic.svelte');
   const Destinations = () => import('./Destinations.svelte');
   const Replication = () => import('./Replication.svelte');
+  const TrafficControl = () => import('./TrafficControl.svelte');
+  const Iscsi = () => import('./Iscsi.svelte');
+  const Directory = () => import('./Directory.svelte');
   const Shares = () => import('./Shares.svelte');
   const Explorer = () => import('./Explorer.svelte');
   const Groups = () => import('./Groups.svelte');
@@ -83,6 +86,7 @@
   const Downloader = () => import('./Downloader.svelte');
   const Rescue = () => import('./Rescue.svelte');
   const Storage = () => import('./Storage.svelte');
+  const UsbCopy = () => import('./UsbCopy.svelte');
   const VPN = () => import('./VPN.svelte');
   const Widgets = () => import('./Widgets.svelte');
   const EditWidgets = () => import('./EditWidgets.svelte');
@@ -1051,7 +1055,7 @@
   // `destinations` and `replication` are admin-only on the backend (they drive
   // root-owned units and receive/send data on the admin's behalf), so their
   // tiles are hidden from a member session rather than shown and then 403'd.
-  const ADMIN_ONLY_APP_IDS = new Set(['journal', 'destinations', 'replication']);
+  const ADMIN_ONLY_APP_IDS = new Set(['journal', 'destinations', 'replication', 'traffic-control', 'iscsi', 'directory']);
 
   // Applications configuration. Structural fields (id/icon/color/category/
   // component) never change; `name`/`desc` below are the English fallback
@@ -1062,6 +1066,7 @@
   const appDefs = [
     { id: 'dashboard', name: 'Dashboard', icon: 'dashboard', color: 'var(--hv-app-dashboard-grad)', category: 'System', desc: 'System overview & live stats', component: Dashboard, customIcon: launchpadIcons.dashboard },
     { id: 'storage', name: 'Storage', icon: 'storage', color: 'var(--hv-app-storage-grad)', category: 'Storage', desc: 'Disks, volumes & pools', component: Storage, customIcon: launchpadIcons.storage },
+    { id: 'usb-copy', name: 'USB Copy', icon: 'usb', color: 'var(--hv-app-storage-grad)', category: 'Storage', desc: 'One-touch USB device copy', component: UsbCopy, customIcon: launchpadIcons.storage },
     { id: 'raid', name: 'RAID', icon: 'database', color: 'var(--hv-app-raid-grad)', category: 'Storage', desc: 'Create virtual disks', component: Raid, customIcon: launchpadIcons.raid },
     { id: 'explorer', name: 'Explorer', icon: 'folder_open', color: 'var(--hv-app-explorer-grad)', category: 'Storage', desc: 'Browse shared files', component: Explorer, customIcon: launchpadIcons.explorer },
     { id: 'docker', name: 'Docker', icon: 'inventory_2', color: 'var(--hv-app-docker-grad)', category: 'System', desc: 'Containers & images', component: Docker, customIcon: launchpadIcons.docker },
@@ -1070,6 +1075,9 @@
     { id: 'backup', name: 'Backup', icon: 'backup', color: 'var(--hv-app-backup-grad)', category: 'Storage', desc: 'Snapshots & restores', component: Restic, customIcon: launchpadIcons.backup },
     { id: 'destinations', name: 'Backup destination', icon: 'backup', color: 'var(--hv-app-backup-grad)', category: 'Storage', desc: 'Receive backups from another machine', component: Destinations, customIcon: launchpadIcons.backup },
     { id: 'replication', name: 'Replication', icon: 'storage', color: 'var(--hv-app-storage-grad)', category: 'Storage', desc: 'Copy snapshots to another dataset', component: Replication, customIcon: launchpadIcons.storage },
+    { id: 'traffic-control', name: 'Traffic control', icon: 'network', color: 'var(--hv-app-traffic-control-grad)', category: 'Network', desc: 'Limit bandwidth per service', component: TrafficControl, customIcon: launchpadIcons.network },
+    { id: 'iscsi', name: 'iSCSI', icon: 'server', color: 'var(--hv-app-iscsi-grad)', category: 'Storage', desc: 'Share disks over iSCSI', component: Iscsi, customIcon: launchpadIcons.storage },
+    { id: 'directory', name: 'Directory sign-in', icon: 'users', color: 'var(--hv-app-directory-grad)', category: 'System', desc: 'Sign in with LDAP, Active Directory or single sign-on', component: Directory, customIcon: launchpadIcons.directory },
     { id: 'users', name: 'Users', icon: 'people', color: 'var(--hv-app-users-grad)', category: 'System', desc: 'Accounts & permissions', component: Users, customIcon: launchpadIcons.users },
     { id: 'groups', name: 'Groups', icon: 'group', color: 'var(--hv-app-groups-grad)', category: 'System', desc: 'User groups & roles', component: Groups, customIcon: launchpadIcons.groups },
     { id: 'quotas', name: 'Quotas', icon: 'gauge', color: 'var(--hv-app-quotas-grad)', category: 'System', desc: 'Transfer quota usage', component: Quotas, customIcon: launchpadIcons.quotas },

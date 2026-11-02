@@ -332,7 +332,9 @@ fn api_key_header(raw: &str) -> Result<Option<HeaderValue>, String> {
     if !key.is_ascii() || key.chars().any(|c| c.is_control()) {
         return Err(unusable_key());
     }
-    HeaderValue::from_str(key).map(Some).map_err(|_| unusable_key())
+    HeaderValue::from_str(key)
+        .map(Some)
+        .map_err(|_| unusable_key())
 }
 
 /// Build the outgoing header set from an already-read key.
@@ -1661,8 +1663,7 @@ mod tests {
     // never reaches the daemon.
 
     /// A structurally valid device ID: 56 base-32 characters in eight groups.
-    const DEVICE_ID: &str =
-        "AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
+    const DEVICE_ID: &str = "AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
 
     fn allowed_roots() -> Vec<std::path::PathBuf> {
         vec![
@@ -1674,8 +1675,16 @@ mod tests {
     #[test]
     fn test_validate_folder_id_accepts_normal_ids() {
         assert_eq!(validate_folder_id("photos").unwrap(), "photos");
-        assert_eq!(validate_folder_id("  my-folder_1.2  ").unwrap(), "my-folder_1.2");
-        assert_eq!(validate_folder_id(&"a".repeat(MAX_FOLDER_ID_LEN)).unwrap().len(), MAX_FOLDER_ID_LEN);
+        assert_eq!(
+            validate_folder_id("  my-folder_1.2  ").unwrap(),
+            "my-folder_1.2"
+        );
+        assert_eq!(
+            validate_folder_id(&"a".repeat(MAX_FOLDER_ID_LEN))
+                .unwrap()
+                .len(),
+            MAX_FOLDER_ID_LEN
+        );
     }
 
     #[test]
@@ -1695,16 +1704,22 @@ mod tests {
             assert!(err.contains(needle), "{input:?} → {err}");
         }
         let too_long = "a".repeat(MAX_FOLDER_ID_LEN + 1);
-        assert!(validate_folder_id(&too_long).unwrap_err().contains("too long"));
+        assert!(validate_folder_id(&too_long)
+            .unwrap_err()
+            .contains("too long"));
     }
 
     #[test]
     fn test_validate_folder_label_trims_and_bounds() {
         assert_eq!(validate_folder_label("  Photos  ").unwrap(), "Photos");
         assert_eq!(validate_folder_label("").unwrap(), "");
-        assert!(validate_folder_label("a\u{0}b").unwrap_err().contains("control characters"));
+        assert!(validate_folder_label("a\u{0}b")
+            .unwrap_err()
+            .contains("control characters"));
         let long = "a".repeat(MAX_FOLDER_LABEL_LEN + 1);
-        assert!(validate_folder_label(&long).unwrap_err().contains("too long"));
+        assert!(validate_folder_label(&long)
+            .unwrap_err()
+            .contains("too long"));
     }
 
     #[test]
@@ -1762,7 +1777,10 @@ mod tests {
     #[test]
     fn test_validate_folder_type_allowlist() {
         assert_eq!(validate_folder_type("").unwrap(), "sendreceive");
-        assert_eq!(validate_folder_type(" sendreceive ").unwrap(), "sendreceive");
+        assert_eq!(
+            validate_folder_type(" sendreceive ").unwrap(),
+            "sendreceive"
+        );
         assert_eq!(validate_folder_type("sendonly").unwrap(), "sendonly");
         assert_eq!(validate_folder_type("receiveonly").unwrap(), "receiveonly");
         // Offered nowhere in the UI and only meaningful for an untrusted
@@ -1771,7 +1789,9 @@ mod tests {
         assert!(validate_folder_type("receiveencrypted")
             .unwrap_err()
             .contains("not supported"));
-        assert!(validate_folder_type("whatever").unwrap_err().contains("not supported"));
+        assert!(validate_folder_type("whatever")
+            .unwrap_err()
+            .contains("not supported"));
     }
 
     #[test]
@@ -1781,19 +1801,34 @@ mod tests {
         // Dashes optional, lower case accepted, surrounding spaces ignored.
         let compact: String = DEVICE_ID.replace('-', "");
         assert_eq!(normalize_device_id(&compact).unwrap(), DEVICE_ID);
-        assert_eq!(normalize_device_id(&DEVICE_ID.to_lowercase()).unwrap(), DEVICE_ID);
-        assert_eq!(normalize_device_id(&format!("  {compact}\n")).unwrap(), DEVICE_ID);
+        assert_eq!(
+            normalize_device_id(&DEVICE_ID.to_lowercase()).unwrap(),
+            DEVICE_ID
+        );
+        assert_eq!(
+            normalize_device_id(&format!("  {compact}\n")).unwrap(),
+            DEVICE_ID
+        );
         // Dashes in unexpected places are re-grouped, not trusted.
-        assert_eq!(normalize_device_id(&format!("{}--{}", &compact[..7], &compact[7..])).unwrap(), DEVICE_ID);
+        assert_eq!(
+            normalize_device_id(&format!("{}--{}", &compact[..7], &compact[7..])).unwrap(),
+            DEVICE_ID
+        );
     }
 
     #[test]
     fn test_normalize_device_id_rejects_bad_shape_and_alphabet() {
-        assert!(normalize_device_id("").unwrap_err().contains("must not be empty"));
-        assert!(normalize_device_id("AAAAAAA-BBBBBBB").unwrap_err().contains("56 characters"));
+        assert!(normalize_device_id("")
+            .unwrap_err()
+            .contains("must not be empty"));
+        assert!(normalize_device_id("AAAAAAA-BBBBBBB")
+            .unwrap_err()
+            .contains("56 characters"));
         // 0, 1, 8 and 9 are not in Syncthing's base-32 alphabet.
         let bad = "0".repeat(DEVICE_ID_LEN);
-        assert!(normalize_device_id(&bad).unwrap_err().contains("letters A-Z and digits 2-7"));
+        assert!(normalize_device_id(&bad)
+            .unwrap_err()
+            .contains("letters A-Z and digits 2-7"));
         // A UTF-8 device ID would break the daemon's config, never mind ours.
         let dashed_unicode = format!("{}-AAAAAAA", "é".repeat(DEVICE_ID_LEN - 8));
         assert!(normalize_device_id(&dashed_unicode).is_err());
@@ -1802,10 +1837,17 @@ mod tests {
     #[test]
     fn test_validate_device_name_defaults_to_the_short_id() {
         assert_eq!(validate_device_name("", DEVICE_ID).unwrap(), "AAAAAAA");
-        assert_eq!(validate_device_name("  Laptop  ", DEVICE_ID).unwrap(), "Laptop");
-        assert!(validate_device_name("a\nb", DEVICE_ID).unwrap_err().contains("control characters"));
+        assert_eq!(
+            validate_device_name("  Laptop  ", DEVICE_ID).unwrap(),
+            "Laptop"
+        );
+        assert!(validate_device_name("a\nb", DEVICE_ID)
+            .unwrap_err()
+            .contains("control characters"));
         let long = "n".repeat(MAX_DEVICE_NAME_LEN + 1);
-        assert!(validate_device_name(&long, DEVICE_ID).unwrap_err().contains("too long"));
+        assert!(validate_device_name(&long, DEVICE_ID)
+            .unwrap_err()
+            .contains("too long"));
     }
 
     #[test]
@@ -1819,7 +1861,9 @@ mod tests {
         .unwrap();
         assert_eq!(out, vec![DEVICE_ID.to_string(), other.to_string()]);
 
-        let too_many: Vec<String> = (0..=MAX_FOLDER_DEVICES).map(|_| DEVICE_ID.to_string()).collect();
+        let too_many: Vec<String> = (0..=MAX_FOLDER_DEVICES)
+            .map(|_| DEVICE_ID.to_string())
+            .collect();
         // 65 *identical* IDs collapse to one — the cap is on distinct devices.
         assert_eq!(validate_folder_devices(&too_many).unwrap().len(), 1);
         assert!(validate_folder_devices(&["nope".to_string()])
@@ -1852,8 +1896,14 @@ mod tests {
         assert_eq!(folder_devices_with_self(&listed, Some(self_id)).len(), 2);
         // Unknown self (daemon did not answer) → the picked devices are sent
         // as-is and Syncthing normalises the list itself.
-        assert_eq!(folder_devices_with_self(&[DEVICE_ID.to_string()], None), vec![DEVICE_ID.to_string()]);
-        assert_eq!(folder_devices_with_self(&[], Some("   ")), Vec::<String>::new());
+        assert_eq!(
+            folder_devices_with_self(&[DEVICE_ID.to_string()], None),
+            vec![DEVICE_ID.to_string()]
+        );
+        assert_eq!(
+            folder_devices_with_self(&[], Some("   ")),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

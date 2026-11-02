@@ -415,9 +415,7 @@ pub async fn run_collector_loop(pool: Arc<SqlitePool>) {
         interval.tick().await;
         let at = chrono::Utc::now().timestamp();
         let counters = read_counters();
-        let elapsed_secs = prev
-            .map(|p| (at - p.at).max(0) as f64)
-            .unwrap_or(0.0);
+        let elapsed_secs = prev.map(|p| (at - p.at).max(0) as f64).unwrap_or(0.0);
         let values = sample_from(prev.as_ref().map(|p| &p.counters), &counters, elapsed_secs);
         if let Err(e) = store_sample(pool.as_ref(), at, &values).await {
             tracing::warn!("Metrics collector tick failed: {}", e);
@@ -497,8 +495,24 @@ mod tests {
         // bucket 0 → cpu 20 avg; t=150 alone in bucket 2. Bucket 3 is the
         // in-progress trailing bucket (empty here).
         let samples = vec![
-            sample(0, Some(10.0), Some(1.0), Some(0.1), Some(1.0), Some(1.0), None),
-            sample(30, Some(30.0), Some(2.0), Some(0.2), Some(2.0), Some(2.0), None),
+            sample(
+                0,
+                Some(10.0),
+                Some(1.0),
+                Some(0.1),
+                Some(1.0),
+                Some(1.0),
+                None,
+            ),
+            sample(
+                30,
+                Some(30.0),
+                Some(2.0),
+                Some(0.2),
+                Some(2.0),
+                Some(2.0),
+                None,
+            ),
             sample(
                 150,
                 Some(50.0),
@@ -522,7 +536,15 @@ mod tests {
     #[test]
     fn bucketing_ignores_samples_outside_the_window() {
         let samples = vec![
-            sample(0, Some(99.0), Some(99.0), Some(99.0), Some(99.0), Some(99.0), None),
+            sample(
+                0,
+                Some(99.0),
+                Some(99.0),
+                Some(99.0),
+                Some(99.0),
+                Some(99.0),
+                None,
+            ),
             sample(
                 5000,
                 Some(10.0),
@@ -544,8 +566,24 @@ mod tests {
     #[test]
     fn temperature_takes_the_max_within_a_bucket() {
         let samples = vec![
-            sample(0, Some(1.0), Some(1.0), Some(0.0), Some(0.0), Some(0.0), Some(40.0)),
-            sample(10, Some(1.0), Some(1.0), Some(0.0), Some(0.0), Some(0.0), Some(55.0)),
+            sample(
+                0,
+                Some(1.0),
+                Some(1.0),
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+                Some(40.0),
+            ),
+            sample(
+                10,
+                Some(1.0),
+                Some(1.0),
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+                Some(55.0),
+            ),
         ];
         let out = bucket_samples(&samples, 60, 60, 59);
         assert_eq!(out[0].temp, Some(55.0));
@@ -559,7 +597,15 @@ mod tests {
         // fabricated measurement (ROADMAP 11.1).
         let samples = vec![
             sample(0, Some(50.0), None, Some(0.5), None, None, None),
-            sample(10, None, Some(40.0), None, Some(100.0), Some(200.0), Some(44.0)),
+            sample(
+                10,
+                None,
+                Some(40.0),
+                None,
+                Some(100.0),
+                Some(200.0),
+                Some(44.0),
+            ),
         ];
         let out = bucket_samples(&samples, 60, 60, 59);
         assert_eq!(out[0].cpu, Some(50.0), "one CPU reading, not 50/2");
@@ -600,9 +646,15 @@ mod tests {
         assert_eq!(v.cpu, Some(50.0), "the CPU delta still works");
         assert_eq!(v.mem, None, "a failed meminfo read is unknown, not 0 %");
         assert_eq!(v.load1, None, "a failed loadavg read is unknown, not 0");
-        assert_eq!(v.net_rx, None, "a failed net/dev read is unknown, not 0 B/s");
+        assert_eq!(
+            v.net_rx, None,
+            "a failed net/dev read is unknown, not 0 B/s"
+        );
         assert_eq!(v.net_tx, None);
-        assert_eq!(v.temp, None, "a host without thermal zones has no temperature");
+        assert_eq!(
+            v.temp, None,
+            "a host without thermal zones has no temperature"
+        );
     }
 
     #[test]
@@ -754,7 +806,10 @@ mod tests {
         assert_eq!(parse_net_dev(fixture), (1_500, 2_250));
         // Only loopback: a real zero, not an error (the caller signals a read
         // failure with `None`).
-        assert_eq!(parse_net_dev("h1\nh2\n    lo: 5 1 0 0 0 0 0 0 6 1 0 0 0 0 0 0\n"), (0, 0));
+        assert_eq!(
+            parse_net_dev("h1\nh2\n    lo: 5 1 0 0 0 0 0 0 6 1 0 0 0 0 0 0\n"),
+            (0, 0)
+        );
     }
 
     #[test]

@@ -67,7 +67,10 @@ async fn run_due(state: &Arc<crate::handlers::AppState>) -> Result<(), String> {
         return Ok(());
     };
 
-    if !is_due(&settings.scheduled_scan_cron, settings.last_scan_at.as_deref()) {
+    if !is_due(
+        &settings.scheduled_scan_cron,
+        settings.last_scan_at.as_deref(),
+    ) {
         return Ok(());
     }
 

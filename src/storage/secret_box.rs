@@ -103,7 +103,9 @@ pub fn open_with_key(key: &[u8; 32], scope: &str, stored: &str) -> Result<String
                 aad: scope.as_bytes(),
             },
         )
-        .map_err(|_| "the sealed secret could not be opened (wrong scope or corrupt data)".to_string())?;
+        .map_err(|_| {
+            "the sealed secret could not be opened (wrong scope or corrupt data)".to_string()
+        })?;
     String::from_utf8(plaintext).map_err(|_| "the sealed secret is not UTF-8".to_string())
 }
 
@@ -130,7 +132,10 @@ mod tests {
         assert!(sealed.starts_with(SEALED_PREFIX));
         assert_ne!(sealed, "correct horse battery staple");
         assert!(is_sealed(&sealed));
-        assert_eq!(super::tests::open(scope, &sealed).unwrap(), "correct horse battery staple");
+        assert_eq!(
+            super::tests::open(scope, &sealed).unwrap(),
+            "correct horse battery staple"
+        );
     }
 
     #[test]

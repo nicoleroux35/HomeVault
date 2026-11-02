@@ -126,8 +126,8 @@ impl ConnectedClients {
 /// **no path from `open_files` is exposed** — only the count: the card answers
 /// "who is connected", not "what are they reading".
 pub fn parse_smbstatus_json(raw: &str) -> Result<Vec<ConnectedClient>, String> {
-    let value: serde_json::Value = serde_json::from_str(raw)
-        .map_err(|e| format!("smbstatus did not print JSON: {e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| format!("smbstatus did not print JSON: {e}"))?;
 
     // pid -> (share services, open file count)
     let mut shares_by_pid: std::collections::HashMap<String, Vec<String>> =
@@ -142,8 +142,7 @@ pub fn parse_smbstatus_json(raw: &str) -> Result<Vec<ConnectedClient>, String> {
             shares_by_pid.entry(pid).or_default().push(service);
         }
     }
-    let mut files_by_pid: std::collections::HashMap<String, u32> =
-        std::collections::HashMap::new();
+    let mut files_by_pid: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     if let Some(open) = value.get("open_files").and_then(|v| v.as_object()) {
         for file in open.values() {
             let pid = text(file.get("pid"));
@@ -204,7 +203,11 @@ pub fn parse_smbstatus_json(raw: &str) -> Result<Vec<ConnectedClient>, String> {
             });
         }
     }
-    clients.sort_by(|a, b| a.client_ip.cmp(&b.client_ip).then(a.username.cmp(&b.username)));
+    clients.sort_by(|a, b| {
+        a.client_ip
+            .cmp(&b.client_ip)
+            .then(a.username.cmp(&b.username))
+    });
     Ok(clients)
 }
 
@@ -408,7 +411,11 @@ pub fn clients_from_streams(streams: &[InboundStream]) -> Vec<ConnectedClient> {
             },
         });
     }
-    clients.sort_by(|a, b| a.client_ip.cmp(&b.client_ip).then(a.protocol.cmp(&b.protocol)));
+    clients.sort_by(|a, b| {
+        a.client_ip
+            .cmp(&b.client_ip)
+            .then(a.protocol.cmp(&b.protocol))
+    });
     clients
 }
 
@@ -476,9 +483,9 @@ pub async fn collect() -> ConnectedClients {
     let mut sources = Vec::new();
 
     let push_source = |source: &str,
-                           result: &Result<Vec<ConnectedClient>, String>,
-                           sources: &mut Vec<SourceStatus>,
-                           clients: &mut Vec<ConnectedClient>| {
+                       result: &Result<Vec<ConnectedClient>, String>,
+                       sources: &mut Vec<SourceStatus>,
+                       clients: &mut Vec<ConnectedClient>| {
         match result {
             Ok(list) => {
                 sources.push(SourceStatus {
@@ -532,9 +539,7 @@ pub fn merge(clients: Vec<ConnectedClient>) -> Vec<ConnectedClient> {
         if let Some(existing) = out.iter_mut().find(|c| {
             c.client_ip == client.client_ip
                 && c.protocol == client.protocol
-                && (c.username == client.username
-                    || c.username == "-"
-                    || client.username == "-")
+                && (c.username == client.username || c.username == "-" || client.username == "-")
                 && (c.target == client.target || c.target == "-" || client.target == "-")
         }) {
             // Prefer a real account, a real share, the higher file count and the
@@ -561,7 +566,11 @@ pub fn merge(clients: Vec<ConnectedClient>) -> Vec<ConnectedClient> {
         }
         out.push(client);
     }
-    out.sort_by(|a, b| a.client_ip.cmp(&b.client_ip).then(a.protocol.cmp(&b.protocol)));
+    out.sort_by(|a, b| {
+        a.client_ip
+            .cmp(&b.client_ip)
+            .then(a.protocol.cmp(&b.protocol))
+    });
     out
 }
 
@@ -583,9 +592,9 @@ pub enum KickError {
 impl KickError {
     pub fn message(&self) -> String {
         match self {
-            KickError::Unknown(id) => format!(
-                "No client '{id}' is connected right now — refresh the list and try again"
-            ),
+            KickError::Unknown(id) => {
+                format!("No client '{id}' is connected right now — refresh the list and try again")
+            }
             KickError::NotKickable(protocol) => format!(
                 "A {protocol} connection cannot be disconnected from here: the export is held by \
                  the kernel. Change the export or block the address instead."
@@ -634,7 +643,12 @@ pub async fn kick(client_id: &str) -> Result<String, KickError> {
                 ));
             }
             probe("smbcontrol", &[&pid.to_string(), "close-share", share])
-                .map(|_| format!("Closed share '{share}' for {} (session {pid})", client.client_ip))
+                .map(|_| {
+                    format!(
+                        "Closed share '{share}' for {} (session {pid})",
+                        client.client_ip
+                    )
+                })
                 .map_err(KickError::Failed)
         }
         "sftp" | "ftp" => {
@@ -783,7 +797,9 @@ mod tests {
     #[test]
     fn an_empty_smbstatus_is_an_empty_list_not_an_error() {
         assert!(parse_smbstatus_json("{}").unwrap().is_empty());
-        assert!(parse_smbstatus_json(r#"{"sessions":{}}"#).unwrap().is_empty());
+        assert!(parse_smbstatus_json(r#"{"sessions":{}}"#)
+            .unwrap()
+            .is_empty());
     }
 
     // ---------------------------------------------------------------------
@@ -827,7 +843,11 @@ ESTAB 0 0 192.168.1.5:8080 192.168.1.22:40001 users:((\"homevault\",pid=1,fd=3))
 CLOSE-WAIT 0 0 192.168.1.5:445 192.168.1.23:50000 users:((\"smbd\",pid=99,fd=20))
 ";
         let streams = parse_ss_streams(raw, &[SMB_PORT, SFTP_PORT]);
-        assert_eq!(streams.len(), 2, "only established streams on managed ports");
+        assert_eq!(
+            streams.len(),
+            2,
+            "only established streams on managed ports"
+        );
         assert_eq!(streams[0].local_port, 445);
         assert_eq!(streams[0].remote_ip, "192.168.1.20");
         assert_eq!(streams[0].process, "smbd");
@@ -886,7 +906,10 @@ ESTAB 0 0 192.168.1.5:445 192.168.1.20:51235 users:((\"smbd\",pid=4242,fd=21))
             &[SMB_PORT],
         ));
         let merged = merge([smb, streams].concat());
-        let alice: Vec<_> = merged.iter().filter(|c| c.client_ip == "192.168.1.20").collect();
+        let alice: Vec<_> = merged
+            .iter()
+            .filter(|c| c.client_ip == "192.168.1.20")
+            .collect();
         assert_eq!(alice.len(), 1, "one row per connection: {merged:?}");
         assert_eq!(alice[0].username, "alice");
         assert_eq!(alice[0].target, "photos");

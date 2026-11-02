@@ -89,8 +89,8 @@ pub fn validate_layout_blob(blob: &str) -> Result<(), String> {
         ));
     }
 
-    let value: serde_json::Value = serde_json::from_str(blob)
-        .map_err(|e| format!("Layout payload is not valid JSON: {e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(blob).map_err(|e| format!("Layout payload is not valid JSON: {e}"))?;
     if !value.is_object() {
         return Err("Layout payload must be a JSON object".to_string());
     }

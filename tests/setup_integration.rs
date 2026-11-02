@@ -31,9 +31,9 @@
 //!   cargo test --test setup_integration -- --nocapture
 
 use axum::extract::ConnectInfo;
-use axum::{Router, routing::get};
+use axum::{routing::get, Router};
 use http::{Method, Request, StatusCode};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -48,11 +48,11 @@ static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 use homevault::config::PathGuard;
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{
-    AppState,
     auth::{
         handle_check_username, handle_setup, handle_setup_progress_get, handle_setup_progress_put,
         handle_setup_rebaseline, handle_setup_status, handle_setup_verify_totp,
     },
+    AppState,
 };
 use homevault::middleware::rate_limit::RateLimitState;
 use homevault::storage::Database;
@@ -1444,12 +1444,10 @@ async fn test_setup_guard_blocks_setup_from_a_public_peer() {
         "a public peer must not reach first-run setup: {:?}",
         body
     );
-    assert!(
-        body["message"]
-            .as_str()
-            .unwrap_or("")
-            .contains("local network")
-    );
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("local network"));
 }
 
 // ------------------------------------------------------------------------
@@ -1513,12 +1511,10 @@ async fn test_setup_guard_rejects_a_cross_site_origin() {
     .await;
 
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert!(
-        body["message"]
-            .as_str()
-            .unwrap_or("")
-            .contains("own interface")
-    );
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("own interface"));
 }
 
 /// `Sec-Fetch-Site: cross-site` alone (no Origin) is enough to refuse.

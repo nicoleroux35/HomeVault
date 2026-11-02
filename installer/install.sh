@@ -826,6 +826,11 @@ install_packages "Storage and monitoring tools" required \
     acl quota smartmontools mdadm rsync gnupg iproute2 util-linux \
     lsb-release lm-sensors udisks2 udiskie dmidecode ethtool iputils-ping hdparm
 
+# iSCSI exports (P3.3) are driven through `targetcli` (python3-rtslib). The
+# app hides its editors and names the missing piece when the tool is absent,
+# so this stays optional instead of failing the whole install.
+install_optional targetcli-fb "iSCSI targetcli (disk exports)"
+
 # `hdparm` above backs the Power app's per-disk spindown (APM level + idle
 # timer, re-applied at boot by `src/power.rs`). Priority: standard and tiny,
 # but NOT part of a minimal install — without it that page reports
@@ -1776,6 +1781,11 @@ check "Storage (smartmontools)"        "command -v smartctl"
 check "Software RAID (mdadm)"          "command -v mdadm"
 check "Backups (rsync)"                "command -v rsync"
 check "Network (iproute2)"             "command -v ip"
+# Bandwidth control needs `tc` from the same package; `ip` alone does not
+# imply it on a minimal image.
+check "Bandwidth control (tc)"         "command -v tc"
+# iSCSI targets need targetcli (python3-rtslib) plus the LIO modules.
+check "iSCSI targets (targetcli)"      "command -v targetcli"
 check "Media player (ffmpeg/ffprobe)"  "command -v ffmpeg && command -v ffprobe"
 check "Downloader (aria2)"             "command -v aria2c"
 check "Antivirus (ClamAV)"             "command -v clamscan"

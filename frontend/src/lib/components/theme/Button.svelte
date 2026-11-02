@@ -66,6 +66,10 @@
     class?: string;
     /** Test hook forwarded to the rendered button. */
     'data-testid'?: string;
+    /** Accessible name for a button whose visible text is a glyph or is
+     *  ambiguous out of context (WCAG 4.1.2). Forwarded to the rendered
+     *  `<button>` through `...rest`. */
+    'aria-label'?: string;
     onclick?: (e: MouseEvent) => void;
     onmouseenter?: (e: MouseEvent) => void;
     onmouseleave?: (e: MouseEvent) => void;

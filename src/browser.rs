@@ -91,6 +91,17 @@ impl CollisionStrategy {
             _ => Self::Overwrite,
         }
     }
+
+    /// The wire/query spelling of this strategy — what `parse` accepts, and
+    /// what an upload session row stores so a resumed session keeps the
+    /// collision choice the client originally made.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Overwrite => "overwrite",
+            Self::KeepBoth => "keep_both",
+            Self::Skip => "skip",
+        }
+    }
 }
 
 /// Subsequence (fuzzy) match score of `query` against a file `name`.

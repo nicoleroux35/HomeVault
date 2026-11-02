@@ -89,6 +89,19 @@ pub struct ActivityTask {
     pub progress: Option<f64>,
     /// Latest message / "12/40 files" / "8.4 MB/s". Never carries a secret.
     pub detail: Option<String>,
+    /// Bytes moved so far, when the producer reports a byte counter.
+    ///
+    /// Structured rather than folded into `detail`: a client that wants
+    /// "45.3 MB / 128.7 MB · 12 MB/s · 2 min left" (HV-UX-02) must not parse a
+    /// human-formatted string the server could reword. `detail` stays for
+    /// producers that only have a sentence.
+    pub bytes_processed: Option<u64>,
+    pub bytes_total: Option<u64>,
+    pub speed_bps: Option<u64>,
+    pub eta_seconds: Option<u64>,
+    /// Copy method / digest slug when the job reports one (`clone`, `stream`,
+    /// `sha256`, …).
+    pub method: Option<String>,
 }
 
 /// `GET /api/activity`
@@ -148,19 +161,11 @@ fn state_slug(s: &ProgressState) -> &'static str {
 }
 
 /// Map a `JobType` to the stable slug the frontend localises.
+///
+/// The mapping lives in `crate::sse::job_type_slug` so the Explorer's transfer
+/// tray and this feed cannot drift apart.
 fn job_type_kind(t: &JobType) -> String {
-    match t {
-        JobType::Backup => "backup".to_string(),
-        JobType::Restore => "restore".to_string(),
-        JobType::Verify => "verify".to_string(),
-        JobType::Upload => "upload".to_string(),
-        JobType::Download => "download".to_string(),
-        JobType::Sync => "sync".to_string(),
-        JobType::CacheMover => "cache_mover".to_string(),
-        // "antivirus_scan", "explorer_copy", "explorer_move", "docker_install",
-        // "docker_update", "rescue_ddrescue", "rescue_photorec", ...
-        JobType::Custom(slug) => slug.clone(),
-    }
+    crate::sse::job_type_slug(t)
 }
 
 fn activity_task_from_snapshot(s: ActivitySnapshot) -> ActivityTask {
@@ -179,6 +184,11 @@ fn activity_task_from_snapshot(s: ActivitySnapshot) -> ActivityTask {
         label: String::new(),
         progress: s.progress.map(|p| p.clamp(0.0, 100.0)),
         detail,
+        bytes_processed: s.bytes_processed,
+        bytes_total: s.bytes_total,
+        speed_bps: s.speed_bps,
+        eta_seconds: s.eta_seconds,
+        method: s.method,
     }
 }
 
@@ -205,6 +215,12 @@ fn activity_task_from_aria2(t: Aria2Task) -> Option<ActivityTask> {
         label: aria2_name(&t),
         progress,
         detail,
+        bytes_processed: Some(completed),
+        bytes_total: (total > 0).then_some(total),
+        speed_bps: Some(speed),
+        // aria2 knows neither an ETA of its own nor a "copy method".
+        eta_seconds: None,
+        method: None,
     })
 }
 
@@ -300,6 +316,8 @@ mod tests {
             bytes_processed: None,
             bytes_total: None,
             speed_bps: None,
+            eta_seconds: None,
+            method: None,
         }
     }
 
@@ -423,12 +441,65 @@ mod tests {
             label: "f.bin".into(),
             progress: Some(40.0),
             detail: None,
+            bytes_processed: None,
+            bytes_total: None,
+            speed_bps: None,
+            eta_seconds: None,
+            method: None,
         })
         .unwrap();
         let obj = json.as_object().unwrap();
         let mut keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["detail", "id", "kind", "label", "progress", "state"]);
+        assert_eq!(
+            keys,
+            [
+                "bytes_processed",
+                "bytes_total",
+                "detail",
+                "eta_seconds",
+                "id",
+                "kind",
+                "label",
+                "method",
+                "progress",
+                "speed_bps",
+                "state"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_from_snapshot_carries_the_structured_transfer_detail() {
+        // HV-UX-02: the byte counters, the speed, the ETA and the copy method
+        // travel as fields, not baked into `detail` — the tray formats them.
+        let mut s = snapshot(JobType::Custom("explorer_copy".into()));
+        s.message = "4.0 KB / 8.0 KB".into();
+        s.bytes_processed = Some(4096);
+        s.bytes_total = Some(8192);
+        s.speed_bps = Some(1024);
+        s.eta_seconds = Some(4);
+        s.method = Some("clone".into());
+        let out = activity_task_from_snapshot(s);
+        assert_eq!(out.bytes_processed, Some(4096));
+        assert_eq!(out.bytes_total, Some(8192));
+        assert_eq!(out.speed_bps, Some(1024));
+        assert_eq!(out.eta_seconds, Some(4));
+        assert_eq!(out.method.as_deref(), Some("clone"));
+    }
+
+    #[test]
+    fn test_aria2_task_carries_its_byte_counters() {
+        let mut t = task("active");
+        t.total_length = "1000".into();
+        t.completed_length = "250".into();
+        t.download_speed = "50".into();
+        let row = activity_task_from_aria2(t).expect("active task");
+        assert_eq!(row.bytes_processed, Some(250));
+        assert_eq!(row.bytes_total, Some(1000));
+        assert_eq!(row.speed_bps, Some(50));
+        assert_eq!(row.progress, Some(25.0));
+        assert_eq!(row.eta_seconds, None);
     }
 
     // -----------------------------------------------------------------

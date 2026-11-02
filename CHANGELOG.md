@@ -8,6 +8,53 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **See, verify and remember every transfer in the File Explorer (2026-10-31,
+  QW-13).** A comparison against DSM 7's File Station found HomeVault ahead on
+  the fundamentals (chunked resumable uploads, a SHA-256 download digest, the
+  reflink copy cascade, quota refunds) but behind on *visibility*: one
+  percentage per job, no per-transfer cancel, no way to ask for a checksum, and
+  nothing recorded once a transfer finished. Five parts close that gap, all
+  documented in `docs/guides/explorer.md` → "Transfer tray, enriched progress
+  and history".
+
+  **Transfer tray (HV-UX-01).** A toolbar button with a running-count badge
+  opens three zones — uploads, downloads, copies — with a progress bar per row,
+  and a cancel button that really stops the work (the session abort for an
+  upload, the progress manager's cancellation hook for a job). A collapsible
+  section lists the last finished transfers. New `TransferTray.svelte`,
+  `GET /api/explorer/transfers/active`.
+
+  **Detailed progress (HV-UX-02).** Progress events, the activity feed and the
+  tray now carry `bytes_processed`, `bytes_total`, `speed_bps`,
+  `eta_seconds` and the copy `method`, with the speed taken over a rolling
+  five-second window and the ETA derived from it. The client formats them
+  (`45.3 MB / 128.7 MB · 12.0 MB/s · 2 min left`) instead of parsing a
+  server-rendered sentence.
+
+  **Uploads survive a restart (HV-UX-03).** Resumable upload sessions moved from
+  one in-memory map to the `upload_sessions` table (migration 074). A chunk that
+  arrives after a restart is rehydrated from the database and resumes at the
+  stored offset; the 30-minute TTL is idle-based, and the concurrency caps are
+  counted in rows so a restart cannot reset them.
+
+  **Checksums on demand (HV-INT-01).** `POST /api/explorer/checksum` computes
+  SHA-256, SHA-512 or BLAKE3 for any file — inline up to 8 MiB, as a tracked job
+  above it — and `compare_with` answers whether a second file is identical. MD5
+  is refused rather than offered. The digest of an asynchronous run is read back
+  from `GET /api/explorer/checksum/result`.
+
+  **Transfer history (HV-ADV-02).** `transfer_history` (migration 073) records
+  one row per finished upload, download, copy, move and checksum: bytes,
+  duration, how the copy was made, whether the bytes were verified, and the
+  outcome. Downloads are recorded when the body ends (complete) or is dropped
+  (cancelled), not when they start. `GET /api/explorer/transfers/history` scopes
+  rows to their owner (an administrator sees every user's), refuses an unknown
+  filter instead of ignoring it, and keeps 90 days.
+
+  Deviations: no per-task pause/resume (pausing a server-side stream needs a
+  different data path than these copies; cancel plus resume-from-offset covers
+  the need), and the broadcast-copy idea from the same comparison was not taken.
+
 - **Back up a Mac to a share, and get it back when a disk dies (2026-10-31,
   Phase 2 — protocol and backup interoperability).** Phase 2 is about the
   copies your data lives on, and every item is a working path rather than a

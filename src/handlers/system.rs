@@ -242,11 +242,8 @@ mod tests {
     #[test]
     fn refused_command_carries_the_host_reason() {
         let reason = "systemctl poweroff failed: Interactive authentication required";
-        let (status, body) = power_outcome(
-            PowerAction::Shutdown,
-            "shutdown",
-            &Err(reason.to_string()),
-        );
+        let (status, body) =
+            power_outcome(PowerAction::Shutdown, "shutdown", &Err(reason.to_string()));
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(body["success"], false);
         let message = body["message"].as_str().expect("refusal message");

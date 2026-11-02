@@ -113,6 +113,17 @@ export const launchpadIcons = {
 <line x1="22" x2="16" y1="11" y2="11"/>
 </svg>`,
 
+  // Directory sign-in (P3.1): an address book — a list of people, not "another
+  // Users tile". Kept monochrome to match the dock.
+  directory: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<path d="M20 6v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2"/>
+<path d="M10 16h6"/>
+<circle cx="13" cy="9" r="2"/>
+<path d="M4 8h2"/>
+<path d="M4 12h2"/>
+<path d="M4 16h2"/>
+</svg>`,
+
   downloader: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
 <polyline points="7 10 12 15 17 10"/>

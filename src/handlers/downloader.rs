@@ -440,10 +440,7 @@ async fn aria2_rpc_with_secret(
         .await
         .map_err(|e| {
             if e.is_timeout() {
-                format!(
-                    "aria2 did not answer within {} s",
-                    timeout.as_secs().max(1)
-                )
+                format!("aria2 did not answer within {} s", timeout.as_secs().max(1))
             } else {
                 format!("aria2 RPC connection failed: {}", e)
             }
@@ -1295,7 +1292,10 @@ mod tests {
     fn test_validate_uri_refuses_empty_whitespace_and_control_characters() {
         assert!(validate_uri("").is_err());
         assert!(validate_uri("   ").is_err());
-        assert!(validate_uri("http://example.com/a b").is_err(), "a space splits the link");
+        assert!(
+            validate_uri("http://example.com/a b").is_err(),
+            "a space splits the link"
+        );
         assert!(validate_uri("http://example.com/a\nb").is_err());
         assert!(validate_uri("http://example.com/a\u{0}b").is_err());
     }
@@ -1334,7 +1334,10 @@ mod tests {
     fn test_validate_subfolder_accepts_relative_paths() {
         assert_eq!(validate_subfolder("").unwrap(), None);
         assert_eq!(validate_subfolder("   ").unwrap(), None);
-        assert_eq!(validate_subfolder("films").unwrap().as_deref(), Some("films"));
+        assert_eq!(
+            validate_subfolder("films").unwrap().as_deref(),
+            Some("films")
+        );
         assert_eq!(
             validate_subfolder("films/2026/octobre").unwrap().as_deref(),
             Some("films/2026/octobre")
@@ -1476,7 +1479,10 @@ mod tests {
             redact_userinfo("https://example.com/a.bin"),
             "https://example.com/a.bin"
         );
-        assert_eq!(redact_userinfo("magnet:?xt=urn:btih:abc"), "magnet:?xt=urn:btih:abc");
+        assert_eq!(
+            redact_userinfo("magnet:?xt=urn:btih:abc"),
+            "magnet:?xt=urn:btih:abc"
+        );
     }
 
     // -- ROADMAP 17.2: per-process RPC secret -----------------------------
@@ -1487,7 +1493,11 @@ mod tests {
         let b = Aria2Process::new();
         assert!(a.rpc_secret().starts_with("hv_"), "secret shape changed");
         assert_eq!(a.rpc_secret().len(), 3 + 32, "128 bits of hex expected");
-        assert_ne!(a.rpc_secret(), b.rpc_secret(), "each start needs its own secret");
+        assert_ne!(
+            a.rpc_secret(),
+            b.rpc_secret(),
+            "each start needs its own secret"
+        );
         assert!(a.child.is_none());
     }
 

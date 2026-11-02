@@ -159,11 +159,8 @@ pub fn host_power_action(action: PowerAction) -> Result<(), String> {
 
     // Bounded (ROADMAP X.2): a `systemctl reboot` that is waiting on a stuck
     // unit must still answer, not hold the request open.
-    let output = run_timed(
-        &mut host_power_command(action),
-        Duration::from_secs(30),
-    )
-    .map_err(|e| e.to_string())?;
+    let output = run_timed(&mut host_power_command(action), Duration::from_secs(30))
+        .map_err(|e| e.to_string())?;
     if output.status.success() {
         Ok(())
     } else {

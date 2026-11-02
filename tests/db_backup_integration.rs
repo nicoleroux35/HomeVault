@@ -491,10 +491,7 @@ async fn test_retention_never_prunes_the_pre_migration_restore_point() {
     )
     .await;
     let backups = list["data"]["backups"].as_array().expect("array");
-    let names: Vec<&str> = backups
-        .iter()
-        .filter_map(|b| b["name"].as_str())
-        .collect();
+    let names: Vec<&str> = backups.iter().filter_map(|b| b["name"].as_str()).collect();
 
     assert!(
         names.contains(&restore_point),
@@ -565,10 +562,7 @@ async fn test_pre_migration_restore_points_are_bounded_separately() {
     )
     .await;
     let backups = list["data"]["backups"].as_array().expect("array");
-    let names: Vec<&str> = backups
-        .iter()
-        .filter_map(|b| b["name"].as_str())
-        .collect();
+    let names: Vec<&str> = backups.iter().filter_map(|b| b["name"].as_str()).collect();
 
     // A 100-snapshot retention must not let them grow without bound either.
     assert_eq!(

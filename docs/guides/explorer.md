@@ -1028,6 +1028,180 @@ feature job becomes `{"type":"custom","name":"explorer_copy"}`. Do not
 should be re-run live to confirm the progress bar now animates and the listing
 refreshes (see `TESTING.md`).
 
+## Transfer tray, enriched progress and history — 2026-10-31
+
+DSM's File Station dominates one dimension HomeVault was weak on: **seeing what
+is happening**. It has a three-zone tray (uploads / downloads / background) with
+animated badges, `"45.3 MB / 128.7 MB"` + throughput + time remaining, a
+per-task cancel, and a list of finished tasks. This section is the HomeVault
+answer, built on the existing `PROGRESS_MANAGER` rather than a second job
+system. A comparison document (DSM vs HomeVault, file transfer) drove it; the
+work is HV-UX-01/02/03, HV-INT-01 and HV-ADV-02 in that document.
+
+### HV-UX-02 — the progress event carries the transfer detail
+
+`ProgressEvent` (and `ActivitySnapshot`, and the `ActivityTask` wire shape) grew
+four fields, all `Option` and all `null` when the producer does not know:
+
+| Field | Meaning |
+|-------|---------|
+| `bytes_processed` | cumulative bytes moved (already existed on the event, now also on the activity/tray wire) |
+| `bytes_total` | declared or measured total |
+| `speed_bps` | bytes/second over a **rolling 5 s window** (`SpeedTracker`) |
+| `eta_seconds` | seconds remaining, computed server-side from the two above |
+| `method` | the copy method / digest slug (`clone`, `kernel_copy`, `stream`, `sha256`) |
+
+Producers emit through `ProgressEmitter::transfer_progress(job_id, pct, message,
+&TransferDetail { … })`; `emit_progress_extended` is kept and delegates, so
+existing callers are untouched. `SpeedTracker` (in `src/sse/progress.rs`) is pure
+`Instant` arithmetic — no clock reads inside it — so the unit tests drive it with
+fixed instants: two samples before a rate exists, the slope over the window (not
+the run-long average), pruning, a backwards counter treated as a fresh baseline
+(a retried chunk), and an ETA that rounds up and answers `0` — never `None` — once
+the total is reached.
+
+The **client formats, the server reports numbers**. `frontend/src/lib/utils/
+transferFormat.ts` owns `formatBytes` / `formatSpeed` / `formatEta` /
+`transferDetailLine` / `progressPercent`, and the Explorer's own upload bar now
+shows `45.3 MB / 128.7 MB` next to the percentage.
+
+### HV-UX-01 — the tray (`TransferTray.svelte`)
+
+A toolbar button (`data-testid="explorer-transfers-btn"`, badge =
+`counts.total`) opens a `Modal` holding `TransferTray.svelte`. Three zone
+buttons with badges, one row per transfer: name, progress bar
+(`role="progressbar"`, indeterminate when the percentage is `null`), the detail
+line, and a **cancel** button per row. A `<details>` section at the bottom lists
+the last ten finished transfers (the audit trail, below).
+
+The tray polls **one** endpoint, `GET /api/explorer/transfers/active`, every 2 s
+(the toolbar badge polls the same endpoint every 5 s and pauses while the tray is
+open). One poll is deliberate: the tray needs both the progress-manager jobs
+**and** the in-flight chunked uploads, which are not jobs at all — they are rows
+in `upload_sessions` (see below). The desktop taskbar's `/api/activity` stays the
+appliance-wide feed; the tray is the Explorer's narrower question, and the zone
+grouping (`zone_for_kind`) only the Explorer can answer.
+
+Cancelling is real, not cosmetic — and the button only appears on a row that
+can actually be stopped. An upload is aborted with
+`DELETE /api/explorer/upload/session`; a job is cancelled with
+`DELETE /api/progress/{id}`, which runs the producer's cancellation hook. The
+server advertises `cancel_path` **only when the job registered a hook**
+(`ProgressManager::has_cancel_hook`), so the tray never shows a button that
+would merely hide a row. Concretely: a **checksum job** is cancellable (it owns
+its hash loop, and the hook flips a flag the per-block callback reads, ending
+the run without a digest), an **upload** is cancellable, and a tracked
+**directory copy** is **not** — its copy loop does not observe a stop flag, so
+no button is offered instead of a false promise.
+
+**Deviation:** there is no per-task *pause/resume*. Pausing a server-side stream
+means holding its body producer and its file handle across requests — a
+different data path from the one these transfers use (they are synchronous
+copies on the blocking pool, and the upload protocol is client-driven chunks).
+Cancel + resume-from-offset already covers the user-visible need for uploads
+(the client resends from the server's offset), so pause was not faked.
+
+### HV-UX-03 — resumable uploads survive a restart
+
+`upload_sessions` (migration **074**) is the durable half of the chunked upload
+state; the process-wide map stays as a write-through cache because the chunk
+path is hot. Writes are ordered database-first, so the cache is never ahead of
+the row:
+
+| Event | Effect |
+|-------|--------|
+| `POST /upload/session` | row inserted (`offset = 0`, `last_chunk_at = now`, `speed_bps = NULL`); a failed insert refuses the slot rather than handing out an id only this process knows |
+| `POST /upload/chunk` | cache hit, else **load the row and rehydrate**; `offset` + `last_chunk_at` + `speed_bps` (last chunk's throughput) updated in one statement |
+| `POST /upload/complete` | row deleted after the atomic rename |
+| `DELETE /upload/session` | row deleted with the temp file |
+| any session endpoint | `prune_expired` deletes idle rows (`last_chunk_at` older than the 30-minute TTL) and unlinks each temp file |
+
+Three consequences worth knowing:
+
+1. **The TTL is idle-based**, measured from `last_chunk_at`, not from creation:
+   a slow multi-gigabyte upload that keeps receiving chunks never expires
+   mid-flight, and an abandoned one is swept with its temp file.
+2. **The concurrency caps count rows**, not map entries (256 total, 20 per
+   user). A cap that only looked at the map let one account start twenty more
+   uploads on top of the twenty a restart had orphaned.
+3. **A row whose temp file disappeared is dropped**, not answered: the next chunk
+   cannot be appended to a file that is not there, and a silent `200` would only
+   move the failure to `complete`.
+
+`src/upload_session.rs` owns the SQL; `StoredUploadSession::progress` /
+`eta_seconds` / `is_expired` are pure and unit-tested.
+
+### HV-INT-01 — on-demand checksums
+
+DSM ships a whole module for MD5 (`SYNO.FileStation.MD5`). HomeVault now offers
+the same capability with a modern digest:
+
+| Endpoint | Method | Auth | Notes |
+|----------|--------|------|-------|
+| `/explorer/checksum` | POST | auth | body `{ path, algorithm?, compare_with?, async? }`; `sha256` (default) \| `sha512` \| `blake3`; both paths are PathGuard-validated |
+| `/explorer/checksum/result` | GET | auth | `?job_id=` — the outcome of an asynchronous run (owner or admin only; the owner is stored with the outcome, so the check survives the job leaving the progress registry) |
+
+Behaviour:
+
+- A file up to `checksum::INLINE_MAX_BYTES` (8 MiB) is hashed **inside the
+  request** (`spawn_blocking`, 64 KiB blocks) and answers
+  `{ path, algorithm, checksum, file_size, duration_ms }`.
+- A larger file — or any file with `"async": true` — becomes a tracked job
+  (`JobType::Custom("explorer_checksum")`) answering `{ job_id, sse_url,
+  status: "running" }`. The job publishes bytes, speed and ETA through
+  `SpeedTracker`, so it looks like every other transfer in the tray, and its
+  digest is read back from `/checksum/result` (a `JobOutcomeStore`, bounded to
+  256 entries and 15 minutes — a progress event is not a place to keep a result).
+- `compare_with` hashes a second file with the same algorithm and answers
+  `{ compare_with: { path, checksum, file_size }, match: bool }` — the "prove the
+  copy is identical" case that otherwise sends a user to a shell.
+- **MD5 is refused**, and so is any unknown algorithm: a typo is a `400`, never a
+  silent fallback to SHA-256.
+
+BLAKE3 comes from the `blake3` crate; the module holds known-vector tests for all
+three algorithms (`""`, `"abc"`), a cumulative-progress test, the
+`NotAFile`/`Io` error paths and `digests_match`'s case/whitespace tolerance.
+
+### HV-ADV-02 — transfer history
+
+`transfer_history` (migration **073**) records one row per finished transfer:
+`job_id`, `username`, `operation` (`upload`/`download`/`copy`/`move`/`checksum`),
+`source_path`, `dest_path`, `bytes_total`, `duration_ms`, `method`, `verified`,
+`status` (`complete`/`failed`/`cancelled`), `error_message`, `created_at`,
+`completed_at` (unix seconds).
+
+- **Written best-effort**: `record_transfer` logs and swallows a database error.
+  History is bookkeeping; a failed insert must never turn a successful upload
+  into an error the user cannot fix (the bytes are already on disk).
+- **Downloads are recorded when the body ends, not when it starts.**
+  `QuotaRefundStream` already knew whether the stream reached its end (it refunds
+  the quota reservation otherwise); it now also writes `complete` or `cancelled`
+  from that same signal, because a handler returns long before the last byte
+  leaves.
+- **`verified` is honest**: `true` only when the bytes were proven identical (an
+  upload whose `X-Expected-Sha256`/session digest matched, a copy that took the
+  verified stream, a checksum whose `compare_with` matched). A clone is byte
+  identical *by construction* and is recorded with `verified = false`, not with a
+  re-hash it never performed.
+- **Retention is 90 days**, pruned at most hourly (`should_prune`) on the write
+  path.
+
+| Endpoint | Method | Auth | Notes |
+|----------|--------|------|-------|
+| `/explorer/transfers/active` | GET | auth | `{ uploads: [...], transfers: [...], counts: { uploads, downloads, copies, total } }` |
+| `/explorer/transfers/history` | GET | auth | `?limit=&offset=&operation=&status=&since=`; a non-admin sees only their own rows, an admin sees every user's; unknown filter values are a `400`; `has_more` comes from a page fetched one row deep (no second COUNT) |
+
+A completed job never appears in the *live* list (the screen that started it
+reports its own success); a failed or cancelled one stays for 60 s
+(`FAILED_GRACE_SECS`) so the row the user was watching reports its outcome.
+
+### RAG
+
+`src/rag_indexers.rs`'s `explorer` `FeatureDoc` lists the tray, the detailed
+progress, the resumable-upload durability, the checksum endpoint and the history,
+so the assistant can answer "how do I verify a copy?" from the same facts as this
+guide.
+
 ## Related
 
 - [Storage](./storage.md), [Shares](./shares.md), [API Contract](../API.md)

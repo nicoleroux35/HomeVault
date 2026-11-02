@@ -38,9 +38,7 @@ use chrono::Utc;
 use serde::Deserialize;
 
 use crate::handlers::admin_guard::{require_admin, require_auth};
-use crate::snapshot_locks::{
-    self, break_glass_phrase, decide_release, ReleaseDecision,
-};
+use crate::snapshot_locks::{self, break_glass_phrase, decide_release, ReleaseDecision};
 use crate::snapshots::SnapshotService;
 use crate::storage::SnapshotLockRepository;
 use crate::utils::ResponseHelper;
@@ -57,7 +55,10 @@ where
     match tokio::time::timeout(LOCK_OP_TIMEOUT, tokio::task::spawn_blocking(f)).await {
         Ok(Ok(result)) => result,
         Ok(Err(e)) => Err(format!("{op} worker failed: {e}")),
-        Err(_) => Err(format!("{op} timed out after {}s", LOCK_OP_TIMEOUT.as_secs())),
+        Err(_) => Err(format!(
+            "{op} timed out after {}s",
+            LOCK_OP_TIMEOUT.as_secs()
+        )),
     }
 }
 
@@ -80,9 +81,7 @@ pub async fn handle_snapshot_locks_list(
     let now = Utc::now();
     let active = match repo.active(query.pool.as_deref()).await {
         Ok(locks) => locks,
-        Err(e) => {
-            return ResponseHelper::json_error(format!("Failed to read the locks: {e}"))
-        }
+        Err(e) => return ResponseHelper::json_error(format!("Failed to read the locks: {e}")),
     };
     let history = match repo.history(50).await {
         Ok(locks) => locks,
@@ -176,9 +175,7 @@ pub async fn handle_snapshot_lock_create(
     })
     .await;
     if let Err(e) = applied {
-        return ResponseHelper::json_error(format!(
-            "The snapshot could not be locked: {e}"
-        ));
+        return ResponseHelper::json_error(format!("The snapshot could not be locked: {e}"));
     }
 
     match repo
@@ -194,10 +191,7 @@ pub async fn handle_snapshot_lock_create(
         Ok(lock) => {
             crate::events::log_event(format!(
                 "Admin '{}' locked snapshot '{}' on pool '{}' until {}",
-                admin,
-                lock.snapshot,
-                lock.pool,
-                lock.locked_until
+                admin, lock.snapshot, lock.pool, lock.locked_until
             ));
             ResponseHelper::json_success(serde_json::json!({
                 "lock": lock,
@@ -269,9 +263,7 @@ pub async fn handle_snapshot_lock_release(
     })
     .await;
     if let Err(e) = released {
-        return ResponseHelper::json_error(format!(
-            "The snapshot hold could not be released: {e}"
-        ));
+        return ResponseHelper::json_error(format!("The snapshot hold could not be released: {e}"));
     }
 
     let reason = if break_glass {

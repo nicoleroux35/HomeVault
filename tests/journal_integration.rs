@@ -487,7 +487,10 @@ fn numbered_log(needle_at: usize, total: usize) -> String {
                     i
                 )
             } else {
-                format!("2026-07-17T10:00:00Z  INFO homevault::x: filler line {}\n", i)
+                format!(
+                    "2026-07-17T10:00:00Z  INFO homevault::x: filler line {}\n",
+                    i
+                )
             }
         })
         .collect()

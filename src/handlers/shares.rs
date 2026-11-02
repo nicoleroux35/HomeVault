@@ -457,10 +457,7 @@ pub async fn handle_smb_time_machine_list(
     .await
     {
         Ok(map) => ResponseHelper::json_success(map),
-        Err(e) => ResponseHelper::json_error(format!(
-            "Failed to load Time Machine state: {}",
-            e
-        )),
+        Err(e) => ResponseHelper::json_error(format!("Failed to load Time Machine state: {}", e)),
     }
 }
 
@@ -509,10 +506,7 @@ pub async fn handle_smb_time_machine_set(
                 "quota_gb": quota_gb,
             }))
         }
-        Err(e) => ResponseHelper::json_error(format!(
-            "Failed to update Time Machine: {}",
-            e
-        )),
+        Err(e) => ResponseHelper::json_error(format!("Failed to update Time Machine: {}", e)),
     }
 }
 

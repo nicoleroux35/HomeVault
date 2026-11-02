@@ -1482,6 +1482,14 @@
   --hv-app-quotas-grad:       linear-gradient(145deg, #d946ef, #a21caf);
   --hv-app-tasks-grad:        linear-gradient(145deg, #34d399, #059669);
   --hv-app-metrics-grad:      linear-gradient(145deg, #fb923c, #ea580c);
+  /* P3.2 — Traffic control. Cyan/turquoise pair kept on the network ladder. */
+  --hv-app-traffic-control-grad: linear-gradient(145deg, #06b6d4, #0e7490);
+  /* P3.3 — iSCSI. Violet pair, distinct from the VPN indigo so both tiles read
+     apart at launcher size. */
+  --hv-app-iscsi-grad:        linear-gradient(145deg, #a78bfa, #7c3aed);
+  /* P3.1 — Directory sign-in. Lime-to-emerald pair, the one hue family no
+     other app tile uses, so it never reads as Users or Groups at a glance. */
+  --hv-app-directory-grad:    linear-gradient(145deg, #a3e635, #15803d);
   /* The Launchpad launcher is not an app — it keeps a bespoke light slate and
      is the one tile that stays off the app-colour ladder on purpose. */
   --hv-app-launchpad-grad:    linear-gradient(145deg, #eef2fb, #ccd7ef);
@@ -1531,6 +1539,9 @@
   --hv-app-quotas-c:          #a21caf;
   --hv-app-tasks-c:           #059669;
   --hv-app-metrics-c:         #ea580c;
+  --hv-app-traffic-control-c: #0e7490;
+  --hv-app-iscsi-c:           #7c3aed;
+  --hv-app-directory-c:       #15803d;
   --hv-app-launchpad-c:       #6366f1;
 
   /* ============================================
@@ -1549,6 +1560,34 @@
   --hv-scrollbar-thumb: rgba(31, 39, 51, 0.30);            /* appliance ink, low alpha */
   --hv-scrollbar-thumb-hover: rgba(31, 39, 51, 0.48);
   --hv-scrollbar-thumb-active: rgba(30, 98, 174, 0.55);    /* --hv-primary tint while grabbed */
+
+  /* ============================================
+     DENSITY SYSTEM (2026-10-24)
+     --------------------------------------------
+     Interface density modes: Comfortable (default), Compact, Dense.
+     These tokens adapt spacing, heights, and radii based on user preference.
+     Comfortable = current spacious design (touch-friendly, 44px targets)
+     Compact = balanced (30% denser)
+     Dense = maximum information (90% denser)
+     All modes preserve WCAG 2.2 AA accessibility.
+     ============================================ */
+
+  /* Comfortable mode (default - current values) */
+  --hv-density-chrome-h: 72px;
+  --hv-density-card-padding: 32px;
+  --hv-density-card-padding-x: 32px;
+  --hv-density-card-padding-y: 32px;
+  --hv-density-row-height: 48px;
+  --hv-density-input-height: 44px;
+  --hv-density-button-height: 44px;
+  --hv-density-menu-item-height: 40px;
+  --hv-density-window-body-padding: 24px;
+  --hv-density-form-spacing: 16px;
+  --hv-density-section-gap: 24px;
+  --hv-density-component-gap: 16px;
+  --hv-density-item-gap: 8px;
+  --hv-density-radius-control: 12px;
+  --hv-density-radius-surface: 18px;
 }
 
 /* Tighten the desktop-chrome inset + shrink the topbar on phone-width
@@ -1573,4 +1612,72 @@
     /* Identity chip a step down with the pill. */
     --hv-chrome-avatar-size: 32px;
   }
+}
+
+/* ============================================
+   DENSITY MODE: COMPACT
+   Balanced between comfort and efficiency
+   ============================================ */
+:root[data-density="compact"] {
+  --hv-density-chrome-h: 56px;
+  --hv-density-card-padding: 16px;
+  --hv-density-card-padding-x: 16px;
+  --hv-density-card-padding-y: 16px;
+  --hv-density-row-height: 40px;
+  --hv-density-input-height: 36px;
+  --hv-density-button-height: 36px;
+  --hv-density-menu-item-height: 36px;
+  --hv-density-window-body-padding: 16px;
+  --hv-density-form-spacing: 12px;
+  --hv-density-section-gap: 16px;
+  --hv-density-component-gap: 12px;
+  --hv-density-item-gap: 6px;
+  --hv-density-radius-control: 8px;
+  --hv-density-radius-surface: 12px;
+
+  /* Chrome adaptation */
+  --hv-chrome-topbar-h: 56px;
+  --hv-chrome-dock-h: 56px;
+  --hv-chrome-topbar-btn-size: 44px;
+  --hv-dock-item-size: 44px;
+
+  /* Radius adaptation */
+  --hv-radius-control: 8px;
+  --hv-radius-card: 12px;
+  --hv-radius-2xl: 12px;
+  --hv-radius-badge: 6px;
+}
+
+/* ============================================
+   DENSITY MODE: DENSE
+   Maximum information density for power users
+   ============================================ */
+:root[data-density="dense"] {
+  --hv-density-chrome-h: 48px;
+  --hv-density-card-padding: 12px;
+  --hv-density-card-padding-x: 12px;
+  --hv-density-card-padding-y: 12px;
+  --hv-density-row-height: 36px;
+  --hv-density-input-height: 32px;
+  --hv-density-button-height: 32px;
+  --hv-density-menu-item-height: 32px;
+  --hv-density-window-body-padding: 12px;
+  --hv-density-form-spacing: 8px;
+  --hv-density-section-gap: 12px;
+  --hv-density-component-gap: 8px;
+  --hv-density-item-gap: 4px;
+  --hv-density-radius-control: 4px;
+  --hv-density-radius-surface: 6px;
+
+  /* Chrome adaptation */
+  --hv-chrome-topbar-h: 48px;
+  --hv-chrome-dock-h: 48px;
+  --hv-chrome-topbar-btn-size: 36px;
+  --hv-dock-item-size: 36px;
+
+  /* Radius adaptation */
+  --hv-radius-control: 4px;
+  --hv-radius-card: 6px;
+  --hv-radius-2xl: 6px;
+  --hv-radius-badge: 4px;
 }

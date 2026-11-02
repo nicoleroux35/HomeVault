@@ -906,7 +906,8 @@ async fn test_a_slow_host_tool_is_waited_out_not_dropped() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).expect("chmod shim");
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod shim");
     }
     let previous_path = std::env::var("PATH").ok();
     // Prepend, never replace: the shim is `/bin/sh` + `sleep`, so a PATH that
@@ -1043,7 +1044,10 @@ async fn test_a_finished_mover_run_releases_its_single_flight_slot() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert!(claimed, "the spawned mover never claimed its single-flight slot");
+    assert!(
+        claimed,
+        "the spawned mover never claimed its single-flight slot"
+    );
     // …then for the slot to come back.
     let mut released = false;
     for _ in 0..200 {

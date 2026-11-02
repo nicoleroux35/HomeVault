@@ -45,11 +45,10 @@ use super::AppState;
 /// The share's configured path, or a refusal naming the share.
 async fn share_path(name: &str, share_type: ShareType) -> Result<String, String> {
     let name_owned = name.to_string();
-    let resolved = tokio::task::spawn_blocking(move || {
-        SharesService::get_share(&name_owned, share_type)
-    })
-    .await
-    .map_err(|e| format!("the share lookup did not finish: {e}"))?;
+    let resolved =
+        tokio::task::spawn_blocking(move || SharesService::get_share(&name_owned, share_type))
+            .await
+            .map_err(|e| format!("the share lookup did not finish: {e}"))?;
     match resolved {
         Ok(share) => Ok(share.path),
         Err(_) => Err(format!("Share '{name}' does not exist")),
@@ -155,10 +154,7 @@ pub async fn handle_share_quota_set(
     };
 
     let repo = ShareQuotaRepository::new(state.db.pool());
-    if let Err(e) = repo
-        .set(&name, share_type.as_str(), quota_bytes)
-        .await
-    {
+    if let Err(e) = repo.set(&name, share_type.as_str(), quota_bytes).await {
         return ResponseHelper::json_internal_error(format!(
             "The filesystem accepted the quota but it could not be saved: {e}"
         ));
@@ -212,9 +208,7 @@ pub async fn handle_share_quota_clear(
     }
     let repo = ShareQuotaRepository::new(state.db.pool());
     if let Err(e) = repo.clear(&name, share_type.as_str()).await {
-        return ResponseHelper::json_internal_error(format!(
-            "The quota could not be cleared: {e}"
-        ));
+        return ResponseHelper::json_internal_error(format!("The quota could not be cleared: {e}"));
     }
     crate::events::log_event(format!(
         "Admin '{}' removed the quota of share '{}' ({})",

@@ -121,8 +121,11 @@ pub enum SyslogProtocol {
 }
 
 impl SyslogProtocol {
-    pub const ALL: &'static [SyslogProtocol] =
-        &[SyslogProtocol::Udp, SyslogProtocol::Tcp, SyslogProtocol::Tls];
+    pub const ALL: &'static [SyslogProtocol] = &[
+        SyslogProtocol::Udp,
+        SyslogProtocol::Tcp,
+        SyslogProtocol::Tls,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -307,7 +310,9 @@ pub fn load_settings() -> SyslogSettings {
         Ok(Some(s)) => normalize(s),
         Ok(None) => SyslogSettings::default(),
         Err(e) => {
-            tracing::warn!("Syslog: cannot read data/syslog_forward.json, treating it as disabled: {e}");
+            tracing::warn!(
+                "Syslog: cannot read data/syslog_forward.json, treating it as disabled: {e}"
+            );
             SyslogSettings::default()
         }
     }
@@ -342,9 +347,7 @@ pub fn save_settings(s: &SyslogSettings) -> Result<(), String> {
 /// The worker never writes a whole snapshot it captured before the send: it
 /// re-reads under the write lock and changes only these three fields, so a
 /// destination saved during the send survives.
-pub fn update_observation(
-    apply: impl FnOnce(&mut SyslogSettings),
-) -> Result<(), String> {
+pub fn update_observation(apply: impl FnOnce(&mut SyslogSettings)) -> Result<(), String> {
     let _guard = SETTINGS_LOCK.lock();
     let mut current = load_settings();
     apply(&mut current);
@@ -412,7 +415,9 @@ pub fn validate_host(host: &str) -> Result<String, String> {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
-            return Err("the server name may only contain letters, digits, hyphens and dots".to_string());
+            return Err(
+                "the server name may only contain letters, digits, hyphens and dots".to_string(),
+            );
         }
     }
     Ok(h.to_ascii_lowercase())
@@ -432,7 +437,9 @@ pub fn parse_ca_pem(pem: &str) -> Result<Vec<Vec<u8>>, String> {
         }
     }
     if certs.is_empty() {
-        return Err("paste the collector's CA certificate in PEM form (BEGIN CERTIFICATE)".to_string());
+        return Err(
+            "paste the collector's CA certificate in PEM form (BEGIN CERTIFICATE)".to_string(),
+        );
     }
     Ok(certs)
 }
@@ -451,9 +458,7 @@ pub fn validate_settings(s: &SyslogSettings) -> Result<(), String> {
         return Err("the facility must be between 0 and 23".to_string());
     }
     if s.protocol == SyslogProtocol::Tls && s.ca_pem.trim().is_empty() {
-        return Err(
-            "TLS needs the collector's CA certificate so it can be pinned".to_string(),
-        );
+        return Err("TLS needs the collector's CA certificate so it can be pinned".to_string());
     }
     if s.protocol == SyslogProtocol::Tls {
         parse_ca_pem(&s.ca_pem)?;
@@ -1038,15 +1043,7 @@ pub async fn run() {
         let now = chrono::Utc::now();
         let hostname = local_hostname();
         let proc_id = std::process::id();
-        let outcome = send_batch(
-            &NetTransport,
-            &settings,
-            events,
-            now,
-            &hostname,
-            proc_id,
-        )
-        .await;
+        let outcome = send_batch(&NetTransport, &settings, events, now, &hostname, proc_id).await;
 
         {
             let mut queue = QUEUE.lock();
@@ -1100,7 +1097,10 @@ mod tests {
     }
 
     fn at(seconds: i64) -> chrono::DateTime<chrono::Utc> {
-        chrono::Utc.timestamp_opt(seconds, 0).single().expect("valid")
+        chrono::Utc
+            .timestamp_opt(seconds, 0)
+            .single()
+            .expect("valid")
     }
 
     // ---------------------------------------------------------------------
@@ -1143,7 +1143,10 @@ mod tests {
             "homevault[4242]",
             "Failed login for 'bob'",
         );
-        assert_eq!(line, "<12>Oct 31 12:00:00 nas homevault[4242]: Failed login for 'bob'");
+        assert_eq!(
+            line,
+            "<12>Oct 31 12:00:00 nas homevault[4242]: Failed login for 'bob'"
+        );
     }
 
     #[test]
@@ -1158,34 +1161,62 @@ mod tests {
     fn a_space_in_a_header_field_cannot_break_the_header() {
         // A host name with a space would make the collector read "nas" as the
         // host and "extra" as the APP-NAME.
-        let line = frame_rfc5424(1, 6, "2026-10-31T12:00:00Z", "nas extra", "homevault", "1", "audit", "x");
+        let line = frame_rfc5424(
+            1,
+            6,
+            "2026-10-31T12:00:00Z",
+            "nas extra",
+            "homevault",
+            "1",
+            "audit",
+            "x",
+        );
         assert!(line.starts_with("<14>1 2026-10-31T12:00:00Z nas_extra homevault 1 audit - x"));
     }
 
     #[test]
     fn rfc3164_timestamps_space_pad_a_single_digit_day() {
         // "Oct 3" is unparsable for a strict collector; "Oct  3" is the ABNF.
-        let third = chrono::Utc.with_ymd_and_hms(2026, 10, 3, 4, 53, 20).unwrap();
+        let third = chrono::Utc
+            .with_ymd_and_hms(2026, 10, 3, 4, 53, 20)
+            .unwrap();
         assert_eq!(rfc3164_timestamp(third), "Oct  3 04:53:20");
-        let fourteenth = chrono::Utc.with_ymd_and_hms(2026, 10, 14, 4, 53, 20).unwrap();
+        let fourteenth = chrono::Utc
+            .with_ymd_and_hms(2026, 10, 14, 4, 53, 20)
+            .unwrap();
         assert_eq!(rfc3164_timestamp(fourteenth), "Oct 14 04:53:20");
     }
 
     #[test]
     fn rfc5424_timestamps_are_utc_with_seconds_precision() {
         assert_eq!(rfc5424_timestamp(at(0)), "1970-01-01T00:00:00Z");
-        let instant = chrono::Utc.with_ymd_and_hms(2026, 10, 31, 12, 0, 0).unwrap();
+        let instant = chrono::Utc
+            .with_ymd_and_hms(2026, 10, 31, 12, 0, 0)
+            .unwrap();
         assert_eq!(rfc5424_timestamp(instant), "2026-10-31T12:00:00Z");
     }
 
     #[test]
     fn frame_honours_the_configured_format() {
         let mut s = settings();
-        let line = String::from_utf8(frame(&s, SEVERITY_INFO, "audit", "hello", at(0), "nas", 7)).unwrap();
-        assert_eq!(line, "<14>1 1970-01-01T00:00:00Z nas homevault 7 audit - hello");
+        let line =
+            String::from_utf8(frame(&s, SEVERITY_INFO, "audit", "hello", at(0), "nas", 7)).unwrap();
+        assert_eq!(
+            line,
+            "<14>1 1970-01-01T00:00:00Z nas homevault 7 audit - hello"
+        );
 
         s.format = SyslogFormat::Rfc3164;
-        let line = String::from_utf8(frame(&s, SEVERITY_WARNING, "audit", "hello", at(0), "nas", 7)).unwrap();
+        let line = String::from_utf8(frame(
+            &s,
+            SEVERITY_WARNING,
+            "audit",
+            "hello",
+            at(0),
+            "nas",
+            7,
+        ))
+        .unwrap();
         assert_eq!(line, "<12>Jan  1 00:00:00 nas homevault[7]: hello");
     }
 
@@ -1195,7 +1226,10 @@ mod tests {
         let long = "é".repeat(2048); // 4096 bytes
         let bytes = frame(&s, SEVERITY_INFO, "audit", &long, at(0), "nas", 7);
         assert!(bytes.len() <= MAX_UDP_DATAGRAM, "udp datagram bounded");
-        assert!(std::str::from_utf8(&bytes).is_ok(), "truncated on a char boundary");
+        assert!(
+            std::str::from_utf8(&bytes).is_ok(),
+            "truncated on a char boundary"
+        );
 
         // A stream transport may carry the whole thing.
         s.protocol = SyslogProtocol::Tcp;
@@ -1219,20 +1253,32 @@ mod tests {
 
     #[test]
     fn protocol_and_format_parse_strictly_for_requests_and_leniently_for_storage() {
-        assert_eq!(SyslogProtocol::parse_strict("TCP").unwrap(), SyslogProtocol::Tcp);
-        assert_eq!(SyslogProtocol::parse_strict(" tls ").unwrap(), SyslogProtocol::Tls);
+        assert_eq!(
+            SyslogProtocol::parse_strict("TCP").unwrap(),
+            SyslogProtocol::Tcp
+        );
+        assert_eq!(
+            SyslogProtocol::parse_strict(" tls ").unwrap(),
+            SyslogProtocol::Tls
+        );
         assert!(SyslogProtocol::parse_strict("quic").is_err());
         // A stored value that no longer parses must not brick the feature.
         assert_eq!(SyslogProtocol::parse("quic"), SyslogProtocol::Udp);
 
-        assert_eq!(SyslogFormat::parse_strict("rfc3164").unwrap(), SyslogFormat::Rfc3164);
+        assert_eq!(
+            SyslogFormat::parse_strict("rfc3164").unwrap(),
+            SyslogFormat::Rfc3164
+        );
         assert!(SyslogFormat::parse_strict("rfc9999").is_err());
         assert_eq!(SyslogFormat::parse("rfc9999"), SyslogFormat::Rfc5424);
     }
 
     #[test]
     fn a_hostname_or_ip_is_accepted_and_a_url_is_not() {
-        assert_eq!(validate_host(" collector.example.com ").unwrap(), "collector.example.com");
+        assert_eq!(
+            validate_host(" collector.example.com ").unwrap(),
+            "collector.example.com"
+        );
         assert_eq!(validate_host("192.168.1.10").unwrap(), "192.168.1.10");
         assert_eq!(validate_host("fe80::1").unwrap(), "fe80::1");
         assert_eq!(validate_host("NAS-01.lan").unwrap(), "nas-01.lan");
@@ -1250,7 +1296,11 @@ mod tests {
     fn a_disabled_entry_may_stay_half_filled() {
         // The admin must be able to turn the feature off without deleting the
         // address first.
-        let s = SyslogSettings { enabled: false, host: String::new(), ..settings() };
+        let s = SyslogSettings {
+            enabled: false,
+            host: String::new(),
+            ..settings()
+        };
         assert!(validate_settings(&s).is_ok());
     }
 
@@ -1259,11 +1309,26 @@ mod tests {
         let ok = settings();
         assert!(validate_settings(&ok).is_ok());
 
-        assert!(validate_settings(&SyslogSettings { host: String::new(), ..settings() }).is_err());
-        assert!(validate_settings(&SyslogSettings { port: 0, ..settings() }).is_err());
-        assert!(validate_settings(&SyslogSettings { facility: 24, ..settings() }).is_err());
+        assert!(validate_settings(&SyslogSettings {
+            host: String::new(),
+            ..settings()
+        })
+        .is_err());
+        assert!(validate_settings(&SyslogSettings {
+            port: 0,
+            ..settings()
+        })
+        .is_err());
+        assert!(validate_settings(&SyslogSettings {
+            facility: 24,
+            ..settings()
+        })
+        .is_err());
 
-        let tls_without_ca = SyslogSettings { protocol: SyslogProtocol::Tls, ..settings() };
+        let tls_without_ca = SyslogSettings {
+            protocol: SyslogProtocol::Tls,
+            ..settings()
+        };
         assert!(validate_settings(&tls_without_ca).is_err());
 
         let tls_with_bad_ca = SyslogSettings {
@@ -1283,12 +1348,18 @@ mod tests {
         assert_eq!(certs.len(), 1);
         assert!(!certs[0].is_empty());
         assert!(parse_ca_pem("").is_err());
-        assert!(parse_ca_pem("-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n").is_err());
+        assert!(
+            parse_ca_pem("-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n").is_err()
+        );
     }
 
     #[test]
     fn normalize_follows_the_enabled_flag() {
-        let disabled = normalize(SyslogSettings { enabled: false, status: SyslogStatus::Forwarding, ..settings() });
+        let disabled = normalize(SyslogSettings {
+            enabled: false,
+            status: SyslogStatus::Forwarding,
+            ..settings()
+        });
         assert_eq!(disabled.status, SyslogStatus::Disabled);
 
         let enabled = normalize(SyslogSettings {
@@ -1304,7 +1375,11 @@ mod tests {
     // ---------------------------------------------------------------------
 
     fn event(i: usize) -> QueuedEvent {
-        QueuedEvent { severity: SEVERITY_INFO, msg_id: "audit".to_string(), message: format!("event {i}") }
+        QueuedEvent {
+            severity: SEVERITY_INFO,
+            msg_id: "audit".to_string(),
+            message: format!("event {i}"),
+        }
     }
 
     #[test]
@@ -1317,7 +1392,10 @@ mod tests {
         assert_eq!(queue.dropped, 5);
         // The five oldest went first.
         assert_eq!(queue.items.front().unwrap().message, "event 5");
-        assert_eq!(queue.items.back().unwrap().message, format!("event {}", MAX_QUEUE + 4));
+        assert_eq!(
+            queue.items.back().unwrap().message,
+            format!("event {}", MAX_QUEUE + 4)
+        );
     }
 
     #[test]
@@ -1327,7 +1405,10 @@ mod tests {
         for i in 1..MAX_QUEUE {
             assert!(!queue.push(event(i)));
         }
-        assert!(queue.push(event(MAX_QUEUE)), "the overflow reports the drop");
+        assert!(
+            queue.push(event(MAX_QUEUE)),
+            "the overflow reports the drop"
+        );
     }
 
     #[test]
@@ -1339,7 +1420,10 @@ mod tests {
         let batch = queue.take_batch();
         assert_eq!(batch.len(), BATCH_SIZE);
         assert_eq!(batch[0].message, "event 0");
-        assert_eq!(batch[BATCH_SIZE - 1].message, format!("event {}", BATCH_SIZE - 1));
+        assert_eq!(
+            batch[BATCH_SIZE - 1].message,
+            format!("event {}", BATCH_SIZE - 1)
+        );
         // The rest stays queued for the next wake.
         assert_eq!(queue.len(), 3);
         assert!(queue.take_batch().iter().all(|e| e.msg_id == "audit"));
@@ -1399,17 +1483,31 @@ mod tests {
 
     #[tokio::test]
     async fn an_empty_batch_sends_nothing() {
-        let count = send_batch(&Scripted { fail: false }, &settings(), vec![], at(0), "nas", 7)
-            .await
-            .unwrap();
+        let count = send_batch(
+            &Scripted { fail: false },
+            &settings(),
+            vec![],
+            at(0),
+            "nas",
+            7,
+        )
+        .await
+        .unwrap();
         assert_eq!(count, 0);
     }
 
     #[tokio::test]
     async fn a_refused_batch_reports_the_collectors_reason() {
-        let error = send_batch(&Scripted { fail: true }, &settings(), vec![event(0)], at(0), "nas", 7)
-            .await
-            .unwrap_err();
+        let error = send_batch(
+            &Scripted { fail: true },
+            &settings(),
+            vec![event(0)],
+            at(0),
+            "nas",
+            7,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(error, "connection refused");
     }
 }

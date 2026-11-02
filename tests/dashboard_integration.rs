@@ -905,7 +905,8 @@ async fn test_widget_add_rejects_invalid_fields() {
     let mut router = dashboard_router(state);
     let token = login(&mut router, "u", "Password123!").await;
 
-    let valid = || json!({"id": "cpu", "wtype": "cpu", "title": "CPU", "size": "1x1", "row": 1, "col": 1});
+    let valid =
+        || json!({"id": "cpu", "wtype": "cpu", "title": "CPU", "size": "1x1", "row": 1, "col": 1});
     let mut cases: Vec<(String, Value)> = Vec::new();
 
     let mut body = valid();

@@ -559,10 +559,7 @@ fn run(program: &str, args: &[String]) -> Result<String, String> {
 ///
 /// Runs on the blocking pool: `findmnt` + the backend probe are subprocesses,
 /// and a request must never hold a runtime thread while they run (ROADMAP X.1).
-pub async fn inspect(
-    share_path: &str,
-    quota_bytes: u64,
-) -> Result<ShareQuotaState, String> {
+pub async fn inspect(share_path: &str, quota_bytes: u64) -> Result<ShareQuotaState, String> {
     let path = share_path.to_string();
     let resolved = tokio::task::spawn_blocking(move || resolve_backend(&path))
         .await
@@ -645,12 +642,10 @@ fn resolve_backend(
             .ok()
             .and_then(|out| parse_zfs_used(&out))
             .unwrap_or(0),
-        ShareQuotaBackend::Btrfs { subvolume_id, .. } => {
-            run("btrfs", &btrfs_show_args(share_path))
-                .ok()
-                .and_then(|out| parse_btrfs_usage(&out, subvolume_id))
-                .unwrap_or(0)
-        }
+        ShareQuotaBackend::Btrfs { subvolume_id, .. } => run("btrfs", &btrfs_show_args(share_path))
+            .ok()
+            .and_then(|out| parse_btrfs_usage(&out, subvolume_id))
+            .unwrap_or(0),
         ShareQuotaBackend::XfsProject { project_id, .. } => run("xfs_quota", &xfs_report_args())
             .ok()
             .and_then(|out| parse_xfs_project_usage(&out, *project_id))
@@ -738,7 +733,14 @@ mod tests {
 
     #[test]
     fn a_zfs_dataset_gets_a_refquota() {
-        let backend = backend_for("zfs", "tank/photos", "rw,relatime", "/tank/photos", "/tank/photos", None);
+        let backend = backend_for(
+            "zfs",
+            "tank/photos",
+            "rw,relatime",
+            "/tank/photos",
+            "/tank/photos",
+            None,
+        );
         assert_eq!(
             backend,
             ShareQuotaBackend::Zfs {
@@ -754,7 +756,14 @@ mod tests {
 
     #[test]
     fn a_btrfs_subvolume_gets_a_qgroup_limit() {
-        let backend = backend_for("btrfs", "/dev/sda2", "rw,subvolid=256", "/", "/mnt/photos", Some("0/256"));
+        let backend = backend_for(
+            "btrfs",
+            "/dev/sda2",
+            "rw,subvolid=256",
+            "/",
+            "/mnt/photos",
+            Some("0/256"),
+        );
         assert_eq!(
             backend,
             ShareQuotaBackend::Btrfs {
@@ -773,12 +782,22 @@ mod tests {
         assert!(!backend.is_supported());
         let reason = backend.reason().unwrap_or_default();
         assert!(reason.contains("subvolume"), "{reason}");
-        assert!(reason.contains("every share"), "the reason must say why: {reason}");
+        assert!(
+            reason.contains("every share"),
+            "the reason must say why: {reason}"
+        );
     }
 
     #[test]
     fn xfs_needs_prjquota_and_says_so_when_it_is_missing() {
-        let with = backend_for("xfs", "/dev/sdb1", "rw,prjquota", "/srv", "/srv/photos", None);
+        let with = backend_for(
+            "xfs",
+            "/dev/sdb1",
+            "rw,prjquota",
+            "/srv",
+            "/srv/photos",
+            None,
+        );
         assert!(with.is_supported());
         assert_eq!(with.as_str(), "xfs_project");
         match with {
@@ -793,7 +812,9 @@ mod tests {
         assert!(without.reason().unwrap_or_default().contains("prjquota"));
 
         // `pquota` is XFS's older spelling of the same mount option.
-        assert!(backend_for("xfs", "/dev/sdb1", "rw,pquota", "/srv", "/srv/x", None).is_supported());
+        assert!(
+            backend_for("xfs", "/dev/sdb1", "rw,pquota", "/srv", "/srv/x", None).is_supported()
+        );
     }
 
     #[test]
@@ -810,7 +831,10 @@ mod tests {
             );
         }
         // An empty fstype (findmnt gave nothing) is "unknown", never a guess.
-        assert_eq!(backend_for("", "", "", "", "/x", None).filesystem(), "unknown");
+        assert_eq!(
+            backend_for("", "", "", "", "/x", None).filesystem(),
+            "unknown"
+        );
     }
 
     #[test]
@@ -873,8 +897,14 @@ mod tests {
         assert_eq!(xfs_blocks(1_048_577), 1025);
         assert_eq!(xfs_blocks(1024), 1);
         assert_eq!(xfs_blocks(0), 0);
-        assert_eq!(xfs_limit_args(1001, 1_048_576), vec!["-x", "-c", "limit -p bhard=1024 1001"]);
-        assert_eq!(xfs_limit_args(1001, 0), vec!["-x", "-c", "limit -p bhard=0 1001"]);
+        assert_eq!(
+            xfs_limit_args(1001, 1_048_576),
+            vec!["-x", "-c", "limit -p bhard=1024 1001"]
+        );
+        assert_eq!(
+            xfs_limit_args(1001, 0),
+            vec!["-x", "-c", "limit -p bhard=0 1001"]
+        );
         assert_eq!(xfs_report_args(), vec!["-x", "-c", "report -p -b -N"]);
     }
 
@@ -889,7 +919,11 @@ mod tests {
         // `used` can legitimately be 0 on a fresh dataset.
         assert_eq!(parse_zfs_used("0\n"), Some(0));
         assert_eq!(parse_zfs_used(""), None);
-        assert_eq!(parse_zfs_used("10.5G\n"), None, "raw mode prints bytes only");
+        assert_eq!(
+            parse_zfs_used("10.5G\n"),
+            None,
+            "raw mode prints bytes only"
+        );
     }
 
     #[test]
@@ -951,7 +985,10 @@ mod tests {
     #[test]
     fn a_transfer_that_fits_is_allowed() {
         assert!(would_exceed(0, 10_000, 1_000).is_ok());
-        assert!(would_exceed(9_000, 10_000, 1_000).is_ok(), "landing exactly on the ceiling");
+        assert!(
+            would_exceed(9_000, 10_000, 1_000).is_ok(),
+            "landing exactly on the ceiling"
+        );
     }
 
     #[test]

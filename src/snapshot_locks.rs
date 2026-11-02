@@ -109,9 +109,9 @@ fn parse_time(value: &str) -> Option<DateTime<Utc>> {
 /// scheduler is allowed to release it. Corrupt horizons count as protected.
 pub fn protects(locks: &[SnapshotLock], pool: &str, snapshot: &str, _now: DateTime<Utc>) -> bool {
     let bare = snapshot.rsplit('@').next().unwrap_or(snapshot);
-    locks.iter().any(|lock| {
-        lock.is_active() && lock.pool == pool && lock.bare_snapshot() == bare
-    })
+    locks
+        .iter()
+        .any(|lock| lock.is_active() && lock.pool == pool && lock.bare_snapshot() == bare)
 }
 
 /// The bare names of every currently protected snapshot in one pool.
@@ -176,7 +176,10 @@ pub fn validate_snapshot_name(snapshot: &str) -> Result<(), String> {
 /// A typed phrase (not a checkbox) is the point: breaking a retention lock is
 /// the one action whose whole purpose is to be hard to do by accident.
 pub fn break_glass_phrase(snapshot: &str) -> String {
-    format!("release {}", snapshot.rsplit('@').next().unwrap_or(snapshot))
+    format!(
+        "release {}",
+        snapshot.rsplit('@').next().unwrap_or(snapshot)
+    )
 }
 
 /// Whether a release request is allowed.
@@ -263,11 +266,7 @@ fn run_sudo(args: &[String]) -> Result<(), String> {
 }
 
 /// Place the filesystem-side hold for one snapshot.
-pub fn apply_hold(
-    kind: SnapshotKind,
-    pool: &str,
-    snapshot: &str,
-) -> Result<(), String> {
+pub fn apply_hold(kind: SnapshotKind, pool: &str, snapshot: &str) -> Result<(), String> {
     validate_snapshot_name(snapshot)?;
     match kind {
         SnapshotKind::Zfs => {
@@ -286,11 +285,7 @@ pub fn apply_hold(
 }
 
 /// Remove the filesystem-side hold.
-pub fn release_hold(
-    kind: SnapshotKind,
-    pool: &str,
-    snapshot: &str,
-) -> Result<(), String> {
+pub fn release_hold(kind: SnapshotKind, pool: &str, snapshot: &str) -> Result<(), String> {
     validate_snapshot_name(snapshot)?;
     match kind {
         SnapshotKind::Zfs => {
@@ -422,18 +417,27 @@ mod tests {
     #[test]
     fn test_release_after_the_horizon_needs_no_confirmation() {
         let lapsed = lock("snap-1", now() - Duration::days(1));
-        assert_eq!(decide_release(&lapsed, None, now()), ReleaseDecision::Normal);
+        assert_eq!(
+            decide_release(&lapsed, None, now()),
+            ReleaseDecision::Normal
+        );
         let already = SnapshotLock {
             released_at: Some(now().to_rfc3339()),
             ..lock("snap-2", now() + Duration::days(1))
         };
-        assert_eq!(decide_release(&already, None, now()), ReleaseDecision::Normal);
+        assert_eq!(
+            decide_release(&already, None, now()),
+            ReleaseDecision::Normal
+        );
     }
 
     #[test]
     fn test_release_before_the_horizon_requires_the_exact_phrase() {
         let active = lock("tank@snap-1", now() + Duration::days(30));
-        assert_eq!(decide_release(&active, None, now()), ReleaseDecision::Refused);
+        assert_eq!(
+            decide_release(&active, None, now()),
+            ReleaseDecision::Refused
+        );
         assert_eq!(
             decide_release(&active, Some("release snap-1"), now()),
             ReleaseDecision::BreakGlass

@@ -48,9 +48,8 @@ use homevault::auth::AuthService;
 use homevault::config::PathGuard;
 use homevault::handlers::auth::handle_login;
 use homevault::handlers::replication::{
-    handle_replication_job_create, handle_replication_job_delete,
-    handle_replication_job_update, handle_replication_jobs_list, handle_replication_preview,
-    handle_replication_run_now,
+    handle_replication_job_create, handle_replication_job_delete, handle_replication_job_update,
+    handle_replication_jobs_list, handle_replication_preview, handle_replication_run_now,
 };
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::AppState;
@@ -111,14 +110,16 @@ fn router(state: Arc<AppState>) -> Router {
         )
         .route(
             "/api/replication/{id}",
-            axum::routing::put(handle_replication_job_update)
-                .delete(handle_replication_job_delete),
+            axum::routing::put(handle_replication_job_update).delete(handle_replication_job_delete),
         )
         .route(
             "/api/replication/{id}/preview",
             get(handle_replication_preview),
         )
-        .route("/api/replication/{id}/run", post(handle_replication_run_now))
+        .route(
+            "/api/replication/{id}/run",
+            post(handle_replication_run_now),
+        )
         .with_state(state)
 }
 
@@ -222,11 +223,22 @@ async fn test_reads_need_a_session_and_mutations_need_an_admin() {
 
     let (status, _) = send(&mut router, Method::GET, "/api/replication", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    let (status, body) = send(&mut router, Method::GET, "/api/replication", Some(&member), None).await;
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/replication",
+        Some(&member),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
     for (method, uri, body) in [
-        (Method::POST, "/api/replication".to_string(), Some(valid_job())),
+        (
+            Method::POST,
+            "/api/replication".to_string(),
+            Some(valid_job()),
+        ),
         (
             Method::PUT,
             "/api/replication/1".to_string(),
@@ -269,7 +281,14 @@ async fn test_a_job_round_trips_through_create_update_and_delete() {
     );
 
     // The list shows it, with the capability evidence the UI needs.
-    let (status, list) = send(&mut router, Method::GET, "/api/replication", Some(&admin), None).await;
+    let (status, list) = send(
+        &mut router,
+        Method::GET,
+        "/api/replication",
+        Some(&admin),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{list}");
     assert_eq!(list["data"]["jobs"][0]["id"], json!(id));
     assert!(list["data"]["capabilities"].is_object(), "{list}");
@@ -300,7 +319,14 @@ async fn test_a_job_round_trips_through_create_update_and_delete() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let (status, list) = send(&mut router, Method::GET, "/api/replication", Some(&admin), None).await;
+    let (status, list) = send(
+        &mut router,
+        Method::GET,
+        "/api/replication",
+        Some(&admin),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(list["data"]["jobs"], json!([]));
 }
@@ -331,7 +357,10 @@ async fn test_a_duplicate_name_is_refused() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(
-        body["message"].as_str().unwrap_or_default().contains("already exists"),
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("already exists"),
         "{body}"
     );
 }
@@ -393,7 +422,11 @@ async fn test_dangerous_or_incomplete_jobs_are_refused() {
             Some(body.clone()),
         )
         .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{label}: {body} → {response}");
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{label}: {body} → {response}"
+        );
     }
 
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM replication_jobs")
@@ -433,7 +466,10 @@ async fn test_the_preview_reports_that_the_pool_is_missing_instead_of_guessing()
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(
-        body["message"].as_str().unwrap_or_default().contains("cannot run"),
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("cannot run"),
         "{body}"
     );
 
@@ -479,7 +515,10 @@ async fn test_run_now_refuses_when_the_backend_is_not_installed() {
     } else {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert!(
-            body["message"].as_str().unwrap_or_default().contains("no ZFS"),
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("no ZFS"),
             "{body}"
         );
     }
